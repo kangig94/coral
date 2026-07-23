@@ -144,8 +144,7 @@ function readTerminalOutcomeSessions(
     .prepare<unknown[], EventsRow>(
       `SELECT *
          FROM events
-        WHERE stream_kind = 'session'
-          AND type IN ('session.retention.discard.failed', 'session.retention.discard.completed')
+        WHERE type IN ('session.retention.discard.failed', 'session.retention.discard.completed')
           AND stream_id IN (${sqlPlaceholders(sessionIds.length)})`,
     )
     .all(...sessionIds);
@@ -174,7 +173,6 @@ function readTerminalReleasePairsBySession(
     .prepare<unknown[], EventsRow>(
       `SELECT * FROM events
         WHERE type = 'session.claim.released'
-          AND stream_kind = 'session'
           AND stream_id IN (${sqlPlaceholders(sessionIds.length)})
         ORDER BY seq ASC`,
     )
@@ -200,7 +198,6 @@ function readTerminalReleasePairsBySession(
     .prepare<unknown[], EventsRow>(
       `SELECT * FROM events
         WHERE type = 'job.terminal.recorded'
-          AND stream_kind = 'job'
           AND stream_id IN (${sqlPlaceholders(candidateJobIds.length)})
         ORDER BY seq ASC`,
     )

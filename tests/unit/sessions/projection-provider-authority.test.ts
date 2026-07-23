@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it } from 'vitest';
 
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -48,7 +49,6 @@ function openSession(
         type: 'session.opened',
         stream: { kind: 'session', id: entry.sessionId },
         refs: { sessionId: entry.sessionId },
-        bodyVersion: 1,
         body: { entry, controller: 'default', scope_key: 'test-scope' },
       },
     ],
@@ -85,7 +85,7 @@ describe('projection session provider authority', () => {
   it('rejects session.opened snapshots that already carry a job claim', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const entry: ProviderSession = {
         ...session('claimed-at-open', TEST_CODEX_BINDING),
         activeJobId: 'injected-job',
@@ -97,11 +97,10 @@ describe('projection session provider authority', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: entry.sessionId },
             refs: { sessionId: entry.sessionId },
-            bodyVersion: 1,
             body: { entry, controller: 'default', scope_key: 'test-scope' },
           },
         ]),
-      ).toThrowError(expect.objectContaining({ code: 'provider_session_claim_transition_invalid' }));
+      ).toThrowError('A newly opened provider session must have empty pending continuity and no active job.');
       expect((db.prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number }).count).toBe(0);
     } finally {
       db.close();
@@ -111,14 +110,13 @@ describe('projection session provider authority', () => {
   it('rejects continuity checkpoints that inject or clear a job claim', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const base = session('checkpoint-claim-authority', TEST_CODEX_BINDING);
       rawCommit(db, [
         {
           type: 'session.opened',
           stream: { kind: 'session', id: base.sessionId },
           refs: { sessionId: base.sessionId },
-          bodyVersion: 1,
           body: { entry: base, controller: 'default', scope_key: 'test-scope' },
         },
       ]);
@@ -130,7 +128,6 @@ describe('projection session provider authority', () => {
             type: 'session.continuity.checkpointed',
             stream: { kind: 'session', id: base.sessionId },
             refs: { sessionId: base.sessionId },
-            bodyVersion: 1,
             body: { entry: { ...base, activeJobId: 'injected-job', version: 2 }, snapshot },
           },
         ]),
@@ -142,7 +139,6 @@ describe('projection session provider authority', () => {
           type: 'session.claimed',
           stream: { kind: 'session', id: base.sessionId },
           refs: { sessionId: base.sessionId, jobId: 'claimed-job' },
-          bodyVersion: 1,
           body: { entry: claimed, jobId: 'claimed-job' },
         },
       ]);
@@ -153,7 +149,6 @@ describe('projection session provider authority', () => {
             type: 'session.continuity.checkpointed',
             stream: { kind: 'session', id: base.sessionId },
             refs: { sessionId: base.sessionId },
-            bodyVersion: 1,
             body: { entry: { ...withoutClaim, version: 3 }, snapshot },
           },
         ]),
@@ -184,7 +179,7 @@ describe('projection session provider authority', () => {
     for (const entry of corruptClaims) {
       const db = newRawDatabase(':memory:');
       try {
-        applyBundledStoreSchema(db);
+        applyBundledStoreSchema(db, currentCoralStoreFormat());
         openSession(db, base, permissiveProviderLookupPort);
         expect(() =>
           commitInputs(
@@ -194,7 +189,6 @@ describe('projection session provider authority', () => {
                 type: 'session.claimed',
                 stream: { kind: 'session', id: base.sessionId },
                 refs: { sessionId: base.sessionId, jobId: 'job-1' },
-                bodyVersion: 1,
                 body: { entry, jobId: 'job-1' },
               },
             ],
@@ -216,7 +210,7 @@ describe('projection session provider authority', () => {
   it('rejects corrupt claim release snapshots atomically', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const base = session('release-invariants', TEST_CODEX_BINDING);
       const claimed: ProviderSession = { ...base, activeJobId: 'job-1', version: 2 };
       openSession(db, base, permissiveProviderLookupPort);
@@ -233,7 +227,6 @@ describe('projection session provider authority', () => {
             type: 'session.claimed',
             stream: { kind: 'session', id: base.sessionId },
             refs: { sessionId: base.sessionId, jobId: 'job-1' },
-            bodyVersion: 1,
             body: { entry: claimed, jobId: 'job-1' },
           },
         ],
@@ -253,7 +246,6 @@ describe('projection session provider authority', () => {
               type: 'session.claim.released',
               stream: { kind: 'session', id: base.sessionId },
               refs: { sessionId: base.sessionId, jobId: 'job-1' },
-              bodyVersion: 1,
               body: { entry: corruptRelease, jobId: 'job-1' },
             },
           ],
@@ -289,7 +281,7 @@ describe('projection session provider authority', () => {
     for (const testCase of cases) {
       const db = newRawDatabase(':memory:');
       try {
-        applyBundledStoreSchema(db);
+        applyBundledStoreSchema(db, currentCoralStoreFormat());
         expect(() => openSession(db, session('rejected-session', TEST_CODEX_BINDING), testCase.providers)).toThrowError(
           expect.objectContaining({ code: testCase.code }),
         );
@@ -306,7 +298,7 @@ describe('projection session provider authority', () => {
   it('accepts session.opened only after the provider binding codec boundary succeeds', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       openSession(db, session('accepted-session', TEST_CODEX_BINDING), permissiveProviderLookupPort);
       expect(readProjectionSession(db, 'accepted-session')?.provider).toBe('codex');
     } finally {
@@ -317,7 +309,7 @@ describe('projection session provider authority', () => {
   it('derives provider reads and filtering solely from ProviderSession.binding', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const insert = db.prepare(
         `INSERT INTO projection_sessions (
            session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq

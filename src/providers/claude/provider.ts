@@ -9,6 +9,7 @@ import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import {
   buildClaudeBootstrapSignature,
   readClaudePersistedContinuity,
+  snapshotClaudePersistedContinuity,
   type ClaudePersistedContinuity,
 } from './request-mapping.js';
 import { claudeSessionKernel } from './session-kernel.js';
@@ -119,12 +120,8 @@ function snapshotClaudeContinuity(state: ClaudeContinuityState) {
   return {
     conversationRef: state.conversationRef ?? null,
     resumable: state.resumable,
-    providerContinuity: toProviderContinuityBlob(readClaudePersistedContinuity(state)),
+    providerContinuity: snapshotClaudePersistedContinuity(state),
   };
-}
-
-function toProviderContinuityBlob(continuity: ClaudePersistedContinuity): ProviderContinuityBlob | null {
-  return Object.keys(continuity).length === 0 ? null : continuity;
 }
 
 function applyConversationRefOverride(

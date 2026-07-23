@@ -4,6 +4,7 @@ import { defineDomainEvent, type DomainAppendValidator, type DomainEventRegistry
 import { readProjectionDiscuss, reduceDiscussProjection } from './projections.js';
 import { loadJobProjectionDetail } from '../jobs/read-queries.js';
 import { jobLaunchRequestBodySchema } from '../jobs/launch.js';
+import { decodeProjectionJobExecutionOwner, readProjectionJobRows } from '../jobs/projection-row.js';
 import { readDiscussEventLog } from './read-queries.js';
 import { createDiscussSnapshot } from './reducer.js';
 import {
@@ -37,7 +38,6 @@ export function toJournalInput(
     refs: {
       discussSessionId: domainEvent.sessionId,
     },
-    bodyVersion: 1,
     body: {
       ...domainEvent.payload,
       sourceSeq: domainEvent.seq,
@@ -56,7 +56,7 @@ const validateDiscussCreation: DomainAppendValidator = (ctx, inputs) => {
         .prepare<
           [string],
           { found: number }
-        >("SELECT 1 AS found FROM events WHERE stream_kind = 'discuss' AND stream_id = ? AND type = 'discuss.session.created' LIMIT 1")
+        >("SELECT 1 AS found FROM events WHERE stream_id = ? AND type = 'discuss.session.created' LIMIT 1")
         .get(input.stream.id) !== undefined;
     const isCreate = input.type === 'discuss.session.created';
     if (isCreate) {
@@ -162,14 +162,10 @@ const validateDiscussionJobLaunches: DomainAppendValidator = (ctx, inputs) => {
     const key = runKey(discussionId, agent);
     if (outstandingRuns.has(key)) return outstandingRuns.get(key) ?? null;
     const completed = completedFor(discussionId);
-    const rows = ctx.db
-      .prepare<[string], { job_id: string }>(
-        `SELECT job_id FROM projection_jobs
-          WHERE json_extract(execution_owner, '$.kind') = 'discussion'
-            AND json_extract(execution_owner, '$.id') = ?
-          ORDER BY created_at ASC, job_id ASC`,
-      )
-      .all(discussionId);
+    const rows = readProjectionJobRows(ctx.db).filter((row) => {
+      const owner = decodeProjectionJobExecutionOwner(row);
+      return owner.kind === 'discussion' && owner.id === discussionId;
+    });
     const outstanding =
       rows.find(({ job_id }) => {
         const launch = loadJobProjectionDetail(ctx.db, job_id, ctx.readCtx).launch;
@@ -184,15 +180,10 @@ const validateDiscussionJobLaunches: DomainAppendValidator = (ctx, inputs) => {
     let agents = sessionAgents.get(key);
     if (agents !== undefined) return agents;
     agents = new Set<string>();
-    const rows = ctx.db
-      .prepare<[string, string], { job_id: string }>(
-        `SELECT job_id FROM projection_jobs
-          WHERE json_extract(execution_owner, '$.kind') = 'discussion'
-            AND json_extract(execution_owner, '$.id') = ?
-            AND session_id = ?
-          ORDER BY created_at ASC, job_id ASC`,
-      )
-      .all(discussionId, sessionId);
+    const rows = readProjectionJobRows(ctx.db).filter((row) => {
+      const owner = decodeProjectionJobExecutionOwner(row);
+      return owner.kind === 'discussion' && owner.id === discussionId && row.session_id === sessionId;
+    });
     for (const { job_id } of rows) {
       const descriptor = loadJobProjectionDetail(ctx.db, job_id, ctx.readCtx).launch?.discussionRun;
       if (descriptor === undefined) throw new Error(`Discussion-owned job '${job_id}' has no durable run descriptor.`);
@@ -385,15 +376,10 @@ const validateDiscussionJobLinks: DomainAppendValidator = (ctx, inputs) => {
 
     if (input.type === 'discuss.agent.run.bound') {
       const body = discussEventBodySchemas['agent.run.bound'].parse(input.body);
-      const candidates = ctx.db
-        .prepare<[string, string], { job_id: string }>(
-          `SELECT job_id FROM projection_jobs
-            WHERE json_extract(execution_owner, '$.kind') = 'discussion'
-              AND json_extract(execution_owner, '$.id') = ?
-              AND session_id = ?
-            ORDER BY created_at ASC, job_id ASC`,
-        )
-        .all(discussionId, body.executionSessionId);
+      const candidates = readProjectionJobRows(ctx.db).filter((row) => {
+        const owner = decodeProjectionJobExecutionOwner(row);
+        return owner.kind === 'discussion' && owner.id === discussionId && row.session_id === body.executionSessionId;
+      });
       const ownsAgentRun =
         candidates.some(({ job_id }) => launchFor(job_id)?.discussionRun?.agent === body.agent) ||
         [...launchesInBatch.values()].some(
@@ -476,7 +462,12 @@ export const discussRegistry: DomainEventRegistry = {
       type: discussEventType(kind),
       schema: discussEventBodySchemas[kind],
       reducer: reduceDiscussProjection,
+      materializerContract: `projection_discuss:reduce-${kind}`,
     }),
   ),
-  appendValidators: [validateDiscussCreation, validateDiscussionJobLaunches, validateDiscussionJobLinks],
+  appendValidators: [
+    { contract: 'discuss:create-once-before-mutation', validate: validateDiscussCreation },
+    { contract: 'discuss:job-launch-owner-and-run-descriptor', validate: validateDiscussionJobLaunches },
+    { contract: 'discuss:event-job-link-state-machine', validate: validateDiscussionJobLinks },
+  ],
 };

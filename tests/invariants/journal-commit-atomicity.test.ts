@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -132,7 +133,7 @@ const FAILED_JOB_TERMINALS_WITHOUT_CAUSE_REF_SQL = `
 
 function createDb(): Db {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -186,8 +187,8 @@ function assertNoWorkflowAtomicityOrphans(db: Db): void {
 
 function insertOrphanKbOperationFailure(db: Db): void {
   db.prepare(
-    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body_version, body)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     NOW,
     'job.progress.emitted',
@@ -196,7 +197,6 @@ function insertOrphanKbOperationFailure(db: Db): void {
     'test-ns',
     '/workspace/orphan',
     JSON.stringify({ jobId: 'job-orphan' }),
-    1,
     encodeEventBody({
       kind: 'domain',
       stage: 'kb_operation_failed',
@@ -209,8 +209,8 @@ function insertOrphanKbOperationFailure(db: Db): void {
 
 function insertFailedWorkflowCompletedWithoutCauseRef(db: Db): void {
   db.prepare(
-    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body_version, body)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     NOW,
     'workflow.completed',
@@ -219,7 +219,6 @@ function insertFailedWorkflowCompletedWithoutCauseRef(db: Db): void {
     'test-ns',
     '/workspace/orphan',
     JSON.stringify({ workflowId: 'workflow-orphan' }),
-    1,
     encodeEventBody({
       outcome: 'failed',
       stepDetails: [],
@@ -229,8 +228,8 @@ function insertFailedWorkflowCompletedWithoutCauseRef(db: Db): void {
 
 function insertFailedWorkflowParentTerminalWithoutWorkflowCompletionCause(db: Db): void {
   const insert = db.prepare(
-    `INSERT INTO events (seq, ts, type, stream_kind, stream_id, namespace, project, refs, body_version, body)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (seq, ts, type, stream_kind, stream_id, namespace, project, refs, body)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   insert.run(
     1,
@@ -241,7 +240,6 @@ function insertFailedWorkflowParentTerminalWithoutWorkflowCompletionCause(db: Db
     'test-ns',
     '/workspace/orphan',
     JSON.stringify({ jobId: 'workflow-parent-orphan', sessionId: 'session-orphan' }),
-    1,
     encodeEventBody({
       sessionId: 'session-orphan',
       provider: 'codex',
@@ -270,7 +268,6 @@ function insertFailedWorkflowParentTerminalWithoutWorkflowCompletionCause(db: Db
     'test-ns',
     '/workspace/orphan',
     JSON.stringify({ jobId: 'workflow-parent-orphan', sessionId: 'session-orphan' }),
-    1,
     encodeEventBody({
       terminal: {
         content: '',
@@ -286,8 +283,8 @@ function insertFailedWorkflowParentTerminalWithoutWorkflowCompletionCause(db: Db
 
 function insertFailedJobTerminalWithoutCauseRef(db: Db): void {
   db.prepare(
-    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body_version, body)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     NOW,
     'job.terminal.recorded',
@@ -296,7 +293,6 @@ function insertFailedJobTerminalWithoutCauseRef(db: Db): void {
     TEST_NAMESPACE,
     PROJECT_ROOT,
     JSON.stringify({ jobId: 'job-terminal-without-cause' }),
-    1,
     encodeEventBody({
       terminal: {
         content: '',
@@ -343,7 +339,6 @@ function initWorkflowJob(progressStore: JobStore, jobId: string): void {
       namespace: TEST_NAMESPACE,
       project: PROJECT_ROOT,
       refs: { jobId, workflowId: jobId },
-      bodyVersion: 1,
       body: { transport: 'workflow', startedAt: NOW },
     });
     return undefined;

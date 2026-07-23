@@ -18,6 +18,8 @@ import type {
 import type { HostRef } from '#src/providers/contract.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { bindingSuccess } from '#src/providers/contracts/binding.js';
+import { validatedTestContinuityBlob } from '#tests/helpers/session.js';
 
 const launchRecord = {
   jobId: 'job-recovery-contract',
@@ -221,6 +223,7 @@ describe('interrupted recovery planning', () => {
     }));
     const boundProvider = {
       name: 'fixture',
+      decodeContinuity: (raw: unknown) => bindingSuccess(validatedTestContinuityBlob(raw as Record<string, unknown>)),
       recovery: {
         finalizeFromArtifacts,
       },

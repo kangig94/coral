@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { spawnSync } from 'node:child_process';
 import {
   copyFileSync,
@@ -190,6 +191,7 @@ Second line
 function seedStore(fixture: Fixture): void {
   const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
     storage: runtime.storage,
   });
@@ -198,6 +200,7 @@ function seedStore(fixture: Fixture): void {
     db.prepare(
       `INSERT INTO projection_jobs (
          job_id,
+         execution_owner,
          phase,
          terminal,
          diagnostics,
@@ -211,9 +214,10 @@ function seedStore(fixture: Fixture): void {
          workflow_slot,
          created_at,
          last_seq
-       ) VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
+       ) VALUES (?, ?, ?, NULL, '{"progressFaults":[]}', ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
     ).run(
       'job-library-read-1',
+      JSON.stringify({ kind: 'provider-session', id: 'session-library-read-1' }),
       'running',
       'session-library-read-1',
       'codex',
@@ -288,6 +292,7 @@ function runCliSubprocess(
 async function expectedOutput(fixture: Fixture, testCase: ReadCommandCase): Promise<string> {
   const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
     storage: runtime.storage,
     readonly: true,

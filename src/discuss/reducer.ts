@@ -362,7 +362,6 @@ export function createDiscussSnapshot(event: DiscussDomainEvent): PersistedDiscu
     throw new Error(`Discuss session '${event.sessionId}' must begin with session.created.`);
   }
   return {
-    schemaVersion: 3,
     providerScope: event.payload.providerScope,
     sessionId: event.sessionId,
     projectRoot: event.projectRoot,

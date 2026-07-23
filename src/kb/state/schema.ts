@@ -13,8 +13,8 @@ export interface KbCurateSchedulerRow {
   processed_through_seq: number | null;
   processed_through_entry_id: string | null;
   processed_through_entry_kind: string | null;
-  discovery_high_seq: number | null;
-  discovery_offset: number | null;
+  discovery_high_seq: number;
+  discovery_offset: number;
   last_run_day: string | null;
   last_attempted_through_seq: number | null;
   last_attempted_through_entry_id: string | null;

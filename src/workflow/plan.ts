@@ -33,7 +33,7 @@ export type CompiledPlanSlot = PlanSlot & {
 const planSlotSchema = z
   .object({
     slotId: z.string(),
-    dependencies: z.array(z.string()).default([]),
+    dependencies: z.array(z.string()),
     provider: z.string(),
     instruction: z.string(),
     agent: z.string().optional(),

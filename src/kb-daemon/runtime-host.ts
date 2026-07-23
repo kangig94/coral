@@ -55,6 +55,7 @@ import {
 import { parsePrincipalWire } from '../security/principal-wire.js';
 import { waitForCorpusReadiness } from './services/readiness.js';
 import { openWritableStoreDbNoReset, type Database } from '../store/db.js';
+import { currentCoralStoreFormat } from '../store-format.js';
 import type { KbDaemonExpansionRequest, KbDaemonExpansionResult } from './protocol.js';
 
 type KbDaemonWriteRuntimeOptions = {
@@ -301,7 +302,11 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     let daemonConsumerDriver: ConsumerDriver | null = null;
 
     try {
-      db = options.db ?? (openWritableStoreDbNoReset(runtime) as unknown as WritableDatabase);
+      db =
+        options.db ??
+        (openWritableStoreDbNoReset(runtime, {
+          storeFormat: currentCoralStoreFormat(),
+        }) as unknown as WritableDatabase);
       const activeDb = db;
       const flavor = readBuildFlavor(options.pluginRoot);
       const backendNamespace = options.backendNamespace ?? pluginRootNamespace(options.pluginRoot);

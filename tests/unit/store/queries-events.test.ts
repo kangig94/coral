@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -47,7 +48,7 @@ describe('events queries', () => {
 
   beforeEach(() => {
     db = newRawDatabase(':memory:');
-    applyBundledStoreSchema(db);
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
     applyTestCounterSchema(db);
 
     const inputs: CoralEventInput[] = [
@@ -57,7 +58,6 @@ describe('events queries', () => {
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-a',
-        bodyVersion: 1,
         body: { id: 'x', delta: 1 },
       },
       {
@@ -66,7 +66,6 @@ describe('events queries', () => {
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-b',
-        bodyVersion: 1,
         body: { id: 'x', delta: 1 },
       },
       {
@@ -75,7 +74,6 @@ describe('events queries', () => {
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-a',
-        bodyVersion: 1,
         body: { id: 'x', delta: 1 },
       },
       {
@@ -84,7 +82,6 @@ describe('events queries', () => {
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-c',
-        bodyVersion: 1,
         body: { id: 'x', delta: 1 },
       },
       {
@@ -93,7 +90,6 @@ describe('events queries', () => {
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-a',
-        bodyVersion: 1,
         body: { id: 'x', delta: 1 },
       },
       {
@@ -102,7 +98,6 @@ describe('events queries', () => {
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-a',
-        bodyVersion: 1,
         body: { id: 'x', delta: 1 },
       },
     ];
@@ -115,6 +110,7 @@ describe('events queries', () => {
     });
     readCtx = {
       schemas: queryReducers.schemas,
+      streamKinds: queryReducers.streamKinds,
       bodyCodec: createEventBodyCodec(),
     };
   });
@@ -189,20 +185,12 @@ describe('events queries', () => {
   it('rejects a stored event type outside the current codec registry', () => {
     db.prepare(
       `INSERT INTO events (
-         seq, ts, type, stream_kind, stream_id, body_version, body
-       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).run(7, '2026-04-18T00:00:01.000Z', 'test.unknown', 'job', 'job-unknown', 1, Buffer.from('{}'));
+         seq, ts, type, stream_kind, stream_id, body
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(7, '2026-04-18T00:00:01.000Z', 'test.unknown', 'job', 'job-unknown', Buffer.from('{}'));
 
     expect(() => getEvent(db, { kind: 'job', id: 'job-unknown' }, 7, readCtx)).toThrow(
       "No registered event body codec for stored type 'test.unknown'",
-    );
-  });
-
-  it('rejects a stored event body version outside the current codec', () => {
-    db.prepare('UPDATE events SET body_version = 2 WHERE seq = 1').run();
-
-    expect(() => getEvent(db, { kind: 'job', id: 'job-0' }, 1, readCtx)).toThrow(
-      "Stored event type 'test.counter.ticked' has body_version 2; the current codec accepts only 1",
     );
   });
 
@@ -211,6 +199,36 @@ describe('events queries', () => {
 
     expect(() => getEvent(db, { kind: 'job', id: 'job-0' }, 1, readCtx)).toThrow(
       "Current codec rejected stored event type 'test.counter.ticked'",
+    );
+  });
+
+  it('rejects a registered event type stored under a different valid stream kind', () => {
+    db.prepare("UPDATE events SET stream_kind = 'session' WHERE seq = 1").run();
+
+    expect(() => getEvent(db, { kind: 'session', id: 'job-0' }, 1, readCtx)).toThrow(
+      "Stored event type 'test.counter.ticked' belongs to stream kind 'job', not 'session'",
+    );
+    expect(() => getEventsSince(db, 0, {}, 1000, readCtx)).toThrow(
+      "Stored event type 'test.counter.ticked' belongs to stream kind 'job', not 'session'",
+    );
+  });
+
+  it.each([
+    ['ts', 'not-an-iso-timestamp'],
+    ['stream_id', ''],
+    ['causation_seq', -1],
+  ] as const)('rejects a corrupted persisted envelope scalar %s', (column, value) => {
+    db.prepare(`UPDATE events SET ${column} = ? WHERE seq = 1`).run(value);
+
+    expect(() => getEvent(db, { kind: 'job', id: 'job-0' }, 1, readCtx)).toThrow();
+    expect(() => getEventsSince(db, 0, {}, 1000, readCtx)).toThrow();
+  });
+
+  it('does not let a stream-kind filter hide a corrupted physical stream kind', () => {
+    db.prepare("UPDATE events SET stream_kind = 'job' WHERE seq = 3").run();
+
+    expect(() => getEventsSince(db, 0, { streamKind: 'session' }, 1000, readCtx)).toThrow(
+      "Stored event type 'test.counter.reset' belongs to stream kind 'session', not 'job'",
     );
   });
 

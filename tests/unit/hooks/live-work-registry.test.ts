@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import * as liveWorkRegistry from '../../../clients/hooks/lib/live-work-registry.mjs';
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { projectSlug, sandboxTmpDir } from '../../../clients/hooks/lib/plugin-paths.mjs';
+import { projectPathKey, sandboxTmpDir } from '../../../clients/hooks/lib/plugin-paths.mjs';
 
 const { beginBgTask, bgWrapperPreamble, hasLiveWork, recordSubagentStart, recordSubagentStop } = liveWorkRegistry;
 
@@ -55,11 +55,11 @@ afterEach(() => {
 });
 
 function subagentsDirFor(sessionId: string): string {
-  return join(sandboxTmpDir(), 'coral-work', projectSlug(projectDir), sessionId, 'subagents');
+  return join(sandboxTmpDir(), 'coral-work', projectPathKey(projectDir), sessionId, 'subagents');
 }
 
 function bgDirFor(sessionId: string): string {
-  return join(sandboxTmpDir(), 'coral-work', projectSlug(projectDir), sessionId, 'bg');
+  return join(sandboxTmpDir(), 'coral-work', projectPathKey(projectDir), sessionId, 'bg');
 }
 
 // Create the subagent transcript at the layout hasLiveWork derives from the

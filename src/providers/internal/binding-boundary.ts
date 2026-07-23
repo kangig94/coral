@@ -26,7 +26,9 @@ import type { AppServerHostAuthority } from './app-server-host.js';
 
 export interface ErasedProviderBindingBoundary {
   readonly provider: string;
+  readonly profileContract: CanonicalContractValue;
   readonly bindingContract: CanonicalContractValue;
+  readonly continuityContract: CanonicalContractValue;
   readonly bindingKind: 'account' | 'profile';
   captureSelection(context: ProviderSelectionCaptureContext): ProviderBindingResult<ProviderSelectionEnvelope>;
   canonicalizeProfile(
@@ -47,13 +49,16 @@ export interface ErasedProviderBindingBoundary {
   renderFailure(failure: ProviderBindingFailure): string;
 }
 
-interface CapturedBindingAuthority<Profile extends CredentialProfile & JsonValue, Source extends JsonValue> {
+interface CapturedBindingAuthority<Profile extends CredentialProfile & JsonValue, Access extends JsonValue> {
   readonly selectionParser: ProviderValueParser<JsonValue>;
   readonly profileParser: ProviderValueParser<Profile>;
+  readonly profileContract: CanonicalContractValue;
   readonly bindingParser: ProviderValueParser<unknown>;
   readonly bindingContract: CanonicalContractValue;
+  readonly continuityContract: CanonicalContractValue;
+  readonly continuityParser: ProviderValueParser<Record<string, unknown>>;
   readonly bindingKind: 'account' | 'profile';
-  readonly boundCodec: CapturedBoundCodec<Source>;
+  readonly boundCodec: CapturedBoundCodec<Access>;
   captureSelection(context: ProviderSelectionCaptureContext): ProviderBindingResult<JsonValue>;
   canonicalizeProfile(selection: JsonValue, runtime: ProviderBindingRuntime): Promise<ProviderBindingResult<Profile>>;
   bindProfile(profile: Profile, runtime: ProviderBindingRuntime): Promise<ProviderBindingResult<unknown>>;
@@ -65,8 +70,8 @@ function captureBindingAuthority<
   Selection extends JsonValue,
   Profile extends CredentialProfile & JsonValue,
   Subject extends AccountSubject & JsonValue,
-  Source extends JsonValue,
->(codec: ProviderBindingCodec<Selection, Profile, Subject, Source>): CapturedBindingAuthority<Profile, Source> {
+  Access extends JsonValue,
+>(codec: ProviderBindingCodec<Selection, Profile, Subject, Access>): CapturedBindingAuthority<Profile, Access> {
   const receiver = snapshotPlainReceiver(codec, 'Provider binding codec');
   const captureSelection = receiver.captureSelection;
   const canonicalizeProfile = receiver.canonicalizeProfile;
@@ -79,9 +84,15 @@ function captureBindingAuthority<
   ) => Promise<ProviderBindingResult<unknown>>;
   return Object.freeze({
     selectionParser: receiver.parseSelection,
-    profileParser: receiver.parseProfile,
+    profileParser: receiver.persistedProfile.parse,
+    profileContract: snapshotBoundaryData(receiver.persistedProfile.contract, 'Provider persisted profile contract'),
     bindingParser: receiver.persistedBinding.parse,
     bindingContract: snapshotBoundaryData(receiver.persistedBinding.contract, 'Provider persisted binding contract'),
+    continuityContract: snapshotBoundaryData(
+      receiver.persistedContinuity.contract,
+      'Provider persisted continuity contract',
+    ),
+    continuityParser: receiver.persistedContinuity.parse,
     bindingKind: receiver.bindingKind,
     boundCodec: captureBoundCodec(receiver),
     captureSelection: (context: ProviderSelectionCaptureContext) => captureSelection.call(receiver, context),
@@ -98,15 +109,17 @@ function captureBoundCodec<
   Selection extends JsonValue,
   Profile extends CredentialProfile & JsonValue,
   Subject extends AccountSubject & JsonValue,
-  Source extends JsonValue,
->(receiver: ProviderBindingCodec<Selection, Profile, Subject, Source>): CapturedBoundCodec<Source> {
-  const { bindingKind, presentBinding, credentialSource, readiness, compareBinding } = receiver;
+  Access extends JsonValue,
+>(receiver: ProviderBindingCodec<Selection, Profile, Subject, Access>): CapturedBoundCodec<Access> {
+  const { bindingKind, presentBinding, access, readiness, compareBinding } = receiver;
   const bindingParser = receiver.persistedBinding.parse;
+  const continuityParser = receiver.persistedContinuity.parse;
   return Object.freeze({
     bindingKind,
     parseBinding: (binding: unknown) => bindingParser(binding),
+    parseContinuity: (continuity: unknown) => continuityParser(continuity),
     presentBinding: (binding: unknown) => presentBinding.call(receiver, binding as never),
-    credentialSource: (binding: unknown) => credentialSource.call(receiver, binding as never),
+    access: (binding: unknown) => access.call(receiver, binding as never),
     readiness: (binding: unknown, use: ProviderBindingUse, runtime: ProviderBindingRuntime) =>
       readiness
         .call(receiver, binding as never, use, runtime)
@@ -122,12 +135,12 @@ function captureBoundCodec<
 function decodeCodecBinding<
   Plan extends ProviderExecutionPlan,
   Profile extends CredentialProfile & JsonValue,
-  Source extends JsonValue,
+  Access extends JsonValue,
 >(
   provider: string,
-  authority: CapturedBindingAuthority<Profile, Source>,
-  implementation: ProviderImplementation<Plan, Source>,
-  artifacts: ProviderArtifactCapability<Source>,
+  authority: CapturedBindingAuthority<Profile, Access>,
+  implementation: ProviderImplementation<Plan, Access>,
+  artifacts: ProviderArtifactCapability<Access>,
   rawBinding: unknown,
   appServerHost: AppServerHostAuthority | undefined,
 ): ProviderBindingResult<BoundProvider> {
@@ -139,9 +152,9 @@ function decodeCodecBinding<
     : bindingFailure({ reason: 'invalid-persisted-binding', provider });
 }
 
-function captureBoundarySelection<Profile extends CredentialProfile & JsonValue, Source extends JsonValue>(
+function captureBoundarySelection<Profile extends CredentialProfile & JsonValue, Access extends JsonValue>(
   provider: string,
-  authority: CapturedBindingAuthority<Profile, Source>,
+  authority: CapturedBindingAuthority<Profile, Access>,
   context: ProviderSelectionCaptureContext,
 ): ProviderBindingResult<ProviderSelectionEnvelope> {
   const captured = snapshotProviderResult(
@@ -158,9 +171,9 @@ function captureBoundarySelection<Profile extends CredentialProfile & JsonValue,
     : captured;
 }
 
-async function canonicalizeBoundaryProfile<Profile extends CredentialProfile & JsonValue, Source extends JsonValue>(
+async function canonicalizeBoundaryProfile<Profile extends CredentialProfile & JsonValue, Access extends JsonValue>(
   provider: string,
-  authority: CapturedBindingAuthority<Profile, Source>,
+  authority: CapturedBindingAuthority<Profile, Access>,
   rawEnvelope: ProviderSelectionEnvelope,
   runtime: ProviderBindingRuntime,
 ): Promise<ProviderBindingResult<ProviderProfileEnvelope>> {
@@ -189,12 +202,12 @@ async function canonicalizeBoundaryProfile<Profile extends CredentialProfile & J
 async function bindBoundaryProfile<
   Plan extends ProviderExecutionPlan,
   Profile extends CredentialProfile & JsonValue,
-  Source extends JsonValue,
+  Access extends JsonValue,
 >(
   provider: string,
-  authority: CapturedBindingAuthority<Profile, Source>,
-  implementation: ProviderImplementation<Plan, Source>,
-  artifacts: ProviderArtifactCapability<Source>,
+  authority: CapturedBindingAuthority<Profile, Access>,
+  implementation: ProviderImplementation<Plan, Access>,
+  artifacts: ProviderArtifactCapability<Access>,
   rawEnvelope: ProviderProfileEnvelope,
   runtime: ProviderBindingRuntime,
   appServerHost: AppServerHostAuthority | undefined,
@@ -219,12 +232,12 @@ async function bindBoundaryProfile<
 function decodeBoundaryEnvelope<
   Plan extends ProviderExecutionPlan,
   Profile extends CredentialProfile & JsonValue,
-  Source extends JsonValue,
+  Access extends JsonValue,
 >(
   provider: string,
-  authority: CapturedBindingAuthority<Profile, Source>,
-  implementation: ProviderImplementation<Plan, Source>,
-  artifacts: ProviderArtifactCapability<Source>,
+  authority: CapturedBindingAuthority<Profile, Access>,
+  implementation: ProviderImplementation<Plan, Access>,
+  artifacts: ProviderArtifactCapability<Access>,
   rawEnvelope: ProviderBindingEnvelope,
   appServerHost: AppServerHostAuthority | undefined,
 ): ProviderBindingResult<BoundProvider> {
@@ -235,9 +248,9 @@ function decodeBoundaryEnvelope<
   return decodeCodecBinding(provider, authority, implementation, artifacts, envelope.data.binding, appServerHost);
 }
 
-function parseBoundaryProfile<Profile extends CredentialProfile & JsonValue, Source extends JsonValue>(
+function parseBoundaryProfile<Profile extends CredentialProfile & JsonValue, Access extends JsonValue>(
   provider: string,
-  authority: CapturedBindingAuthority<Profile, Source>,
+  authority: CapturedBindingAuthority<Profile, Access>,
   rawProfile: unknown,
 ): ProviderBindingResult<ProviderProfileEnvelope> {
   const profile = authority.profileParser(snapshotBoundaryData(rawProfile, 'Provider profile parser input'));
@@ -253,18 +266,20 @@ export function eraseBindingCodec<
   Selection extends JsonValue,
   Profile extends CredentialProfile & JsonValue,
   Subject extends AccountSubject & JsonValue,
-  Source extends JsonValue,
+  Access extends JsonValue,
 >(
   provider: string,
-  codec: ProviderBindingCodec<Selection, Profile, Subject, Source>,
-  implementation: ProviderImplementation<Plan, Source>,
-  artifacts: ProviderArtifactCapability<Source>,
+  codec: ProviderBindingCodec<Selection, Profile, Subject, Access>,
+  implementation: ProviderImplementation<Plan, Access>,
+  artifacts: ProviderArtifactCapability<Access>,
 ): ErasedProviderBindingBoundary {
   const authority = captureBindingAuthority(codec);
 
   const boundary: ErasedProviderBindingBoundary = {
     provider,
+    profileContract: authority.profileContract,
     bindingContract: authority.bindingContract,
+    continuityContract: authority.continuityContract,
     bindingKind: authority.bindingKind,
     captureSelection: (context: ProviderSelectionCaptureContext) =>
       captureBoundarySelection(provider, authority, context),

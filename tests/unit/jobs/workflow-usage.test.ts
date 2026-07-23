@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import type { UsageSummary } from '#src/providers/contract.js';
@@ -61,7 +62,7 @@ const time = {
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -101,7 +102,6 @@ function launchJob(
             workflowSlotId: options.workflowSlotId,
           }),
     },
-    bodyVersion: 1,
     body: {
       owner:
         workflowOwnerId === undefined
@@ -134,7 +134,6 @@ function runtimeStarted(jobId: string, jobKind: 'provider' | 'workflow' = 'provi
     project: projectRoot,
     correlationId: `${jobId}-correlation`,
     refs: jobKind === 'workflow' ? { workflowId: jobId } : { sessionId: `${jobId}-session` },
-    bodyVersion: 1,
     body:
       jobKind === 'workflow'
         ? { transport: 'workflow', startedAt: createdAt }
@@ -177,7 +176,6 @@ function terminalRecorded(
                   workflowSlotId: options.workflowSlotId,
                 }),
           },
-    bodyVersion: 1,
     body: {
       terminal: {
         content: `${jobId} result`,
@@ -309,9 +307,9 @@ describe('workflow usage aggregation', () => {
       expect(terminalEvent(readJobEvents(db, workflowJobId, readCtx)).usage).toEqual(expectedUsage);
 
       const stored = db.prepare('SELECT diagnostics FROM projection_jobs WHERE job_id = ?').get(workflowJobId) as {
-        diagnostics: string | null;
+        diagnostics: string;
       };
-      expect(stored.diagnostics === null ? {} : JSON.parse(stored.diagnostics)).not.toHaveProperty('usage');
+      expect(JSON.parse(stored.diagnostics)).not.toHaveProperty('usage');
     } finally {
       db.close();
     }

@@ -19,7 +19,6 @@ import { providerScopeSchema } from '../infra/provider-scope.js';
 
 export const persistedDiscussSnapshotSchema: z.ZodType<PersistedDiscussSnapshot> = z
   .object({
-    schemaVersion: z.literal(3),
     providerScope: providerScopeSchema,
     sessionId: z.string(),
     projectRoot: z.string().min(1),

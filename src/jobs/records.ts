@@ -26,7 +26,8 @@ export function belongsToNamespace(status: JobStatus, namespace: string): boolea
   );
 }
 
-export type JobKind = 'provider' | 'workflow' | 'kb';
+export const jobKindSchema = z.enum(['provider', 'workflow', 'kb']);
+export type JobKind = z.infer<typeof jobKindSchema>;
 
 export function isWorkflowJobKind(kind: JobKind | null | undefined): kind is 'workflow' {
   return kind === 'workflow';
@@ -267,3 +268,4 @@ export type JobDetailResponse = {
   readiness: LaunchReadiness;
   exit: JobExit | null;
 };
+import { z } from 'zod';

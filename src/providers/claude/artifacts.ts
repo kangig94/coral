@@ -4,7 +4,7 @@ import { discardRecordedArtifacts, managed } from '../capability.js';
 import type { ProviderArtifactHandleInput, ProviderRuntime } from '../contract.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { ProviderArtifactIdentity } from '../artifact-identity.js';
-import type { ClaudeCredentialSource, ClaudeExecutionPlan } from './execution-plan.js';
+import type { ClaudeProviderAccess, ClaudeExecutionPlan } from './execution-plan.js';
 
 type ClaudeArtifactLocatorStorage = Pick<StoragePort, 'existsSync' | 'readdirSync'>;
 type ClaudeArtifactCleanupStorage = ClaudeArtifactLocatorStorage & Pick<StoragePort, 'unlinkSync'>;
@@ -178,12 +178,12 @@ function safeReadDir(storage: ClaudeArtifactLocatorStorage, path: string) {
   }
 }
 
-export const claudeArtifactCapability = managed<ClaudeCredentialSource>({
+export const claudeArtifactCapability = managed<ClaudeProviderAccess>({
   discardArtifacts: ({ handles, runtime }) => discardRecordedArtifacts(handles, runtime),
-  locateArtifact: ({ conversationRef, source, runtime }) => {
+  locateArtifact: ({ conversationRef, access, runtime }) => {
     const result = locateClaudeJsonlArtifact({
       conversationRef,
-      projectsRoot: source.projectsRoot,
+      projectsRoot: access.projectsRoot,
       storage: runtime.storage,
     });
     return result.kind === 'match' ? result.artifact.handle : null;

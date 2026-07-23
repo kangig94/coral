@@ -13,7 +13,6 @@ import type { AbortReason } from '../jobs/outcome.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminalInput, LaunchReadiness } from '../jobs/records.js';
 import type { TerminalWriteOptions } from '../jobs/contracts/job-store.js';
-import type { ContinuitySnapshot } from '../sessions/continuity.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST } from '../workflow/ast.js';
@@ -288,7 +287,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     sessionId: string,
     result: JobTerminalInput,
     phase: JobPhase,
-    options: TerminalWriteOptions & { pool: LaunchPool; sessionContinuity?: ContinuitySnapshot | null },
+    options: TerminalWriteOptions & { pool: LaunchPool },
   ): void {
     this.recoveryService.completeRecoveredJob(jobId, sessionId, result, phase, options);
   }

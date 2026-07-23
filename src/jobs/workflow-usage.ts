@@ -2,13 +2,13 @@ import type { Database } from '../store/db.js';
 
 import { USAGE_TOKEN_FIELDS, type UsageSummary } from '../providers/contract.js';
 import { jobDiagnosticsSchema } from './terminal/result.js';
-import { prepareCached } from '../store/db.js';
+import { readProjectionJobRows } from './projection-row.js';
 
 const TOKEN_FIELDS = USAGE_TOKEN_FIELDS;
 
 type TokenField = (typeof TOKEN_FIELDS)[number];
 type WorkflowUsageRow = {
-  diagnostics: string | null;
+  diagnostics: string;
 };
 
 function addToken(result: UsageSummary, field: TokenField, value: number | undefined): void {
@@ -26,12 +26,9 @@ function hasUsageValue(usage: UsageSummary): boolean {
 export function aggregateWorkflowUsage(db: Database, workflowJobId: string): UsageSummary | undefined {
   // Workflow aggregates intentionally sum direct child jobs only; nested
   // workflow jobs contribute through their own terminal diagnostics.
-  const rows = prepareCached<[string], WorkflowUsageRow>(
-    db,
-    `SELECT diagnostics
-       FROM projection_jobs
-      WHERE parent_workflow_job_id = ?`,
-  ).all(workflowJobId);
+  const rows: WorkflowUsageRow[] = readProjectionJobRows(db).filter(
+    (row) => row.parent_workflow_job_id === workflowJobId,
+  );
 
   const result: UsageSummary = {};
   let sawUsage = false;
@@ -40,10 +37,6 @@ export function aggregateWorkflowUsage(db: Database, workflowJobId: string): Usa
   let jobsWithoutCostData = 0;
 
   for (const row of rows) {
-    if (row.diagnostics === null) {
-      continue;
-    }
-
     const usage = jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics)).usage;
     if (usage === undefined || !hasUsageValue(usage)) {
       continue;

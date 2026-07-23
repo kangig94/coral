@@ -1,3 +1,4 @@
+import { describeCoralStoreFormat } from '#src/store-format.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -102,26 +103,27 @@ function createSimulationBindingSchema() {
 type SimulationSelection = z.infer<ReturnType<typeof createSimulationSelectionSchema>>;
 type SimulationProfile = z.infer<ReturnType<typeof createSimulationProfileSchema>>;
 
-type SimulationProviderSource = {
+type SimulationProviderAccess = {
   readonly profileRoot: string;
   readonly routingEnv: Readonly<Record<string, string>>;
 };
 
 type SimulationExecutionPlan = ProviderExecutionPlan<
-  Readonly<{ source: SimulationProviderSource; platform: string; environment: readonly EnvironmentLayer[] }>,
+  Readonly<{ access: SimulationProviderAccess; platform: string; environment: readonly EnvironmentLayer[] }>,
   Readonly<{ sessionId: string }>,
   Readonly<{ environment: readonly EnvironmentLayer[] }>
 >;
 
 type SimulationBindingCodec = Extract<
-  ProviderBindingCodec<SimulationSelection, SimulationProfile, AccountSubject & JsonValue, SimulationProviderSource>,
+  ProviderBindingCodec<SimulationSelection, SimulationProfile, AccountSubject & JsonValue, SimulationProviderAccess>,
   { readonly bindingKind: 'profile' }
 >;
 
 function simulationBindingCodec(provider: string): SimulationBindingCodec {
   return {
     parseSelection: zodValueParser(createSimulationSelectionSchema),
-    parseProfile: zodValueParser(createSimulationProfileSchema),
+    persistedProfile: zodPersistedParser(createSimulationProfileSchema),
+    persistedContinuity: zodPersistedParser(() => z.record(z.string(), z.unknown())),
     persistedBinding: zodPersistedParser(createSimulationBindingSchema),
     bindingKind: 'profile',
     captureSelection: () => bindingSuccess({ key: provider }),
@@ -142,7 +144,7 @@ function simulationBindingCodec(provider: string): SimulationBindingCodec {
     async readiness(_binding, use) {
       return bindingSuccess({ ready: true, use });
     },
-    credentialSource(binding) {
+    access(binding) {
       const routingEnv: Record<string, string> =
         provider === 'claude'
           ? { CLAUDE_CONFIG_DIR: binding.profile.canonicalLocation }
@@ -375,11 +377,11 @@ export function createFakeProvider(
         }),
       );
     });
-  return defineProvider<SimulationExecutionPlan, SimulationProviderSource>({
+  return defineProvider<SimulationExecutionPlan, SimulationProviderAccess>({
     name: providerName,
     transport: 'standalone',
     run,
-    prepareExecutionPlan: ({ source, request, baseEnv, protectedEnv, platform }) => {
+    prepareExecutionPlan: ({ access, request, baseEnv, protectedEnv, platform }) => {
       const authority = { CORAL_CHILD: '1', CORAL_SESSION_ID: request.sessionId, ...(protectedEnv ?? {}) };
       const hostEnvironment = [
         environmentLayer(
@@ -398,9 +400,9 @@ export function createFakeProvider(
             name: 'simulation-routing',
             lifetime: 'host',
             provenance: 'simulation-binding',
-            values: source.routingEnv,
-            writes: new Set(Object.keys(source.routingEnv)),
-            protects: new Set(Object.keys(source.routingEnv)),
+            values: access.routingEnv,
+            writes: new Set(Object.keys(access.routingEnv)),
+            protects: new Set(Object.keys(access.routingEnv)),
           },
           platform,
         ),
@@ -446,7 +448,7 @@ export function createFakeProvider(
         ),
       ];
       const plan: SimulationExecutionPlan = Object.freeze({
-        host: Object.freeze({ source, platform, environment: Object.freeze(hostEnvironment) }),
+        host: Object.freeze({ access, platform, environment: Object.freeze(hostEnvironment) }),
         session: Object.freeze({ sessionId: request.sessionId }),
         turn: Object.freeze({ environment: Object.freeze(turnEnvironment) }),
       });
@@ -586,8 +588,12 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const providerRegistry = new ProviderRegistry();
   const fakeProvider = createFakeProvider(runtime, scenario.fakeProvider);
   providerRegistry.register(fakeProvider);
+  const storeFormat = describeCoralStoreFormat(providerRegistry);
   const providerScope = simulationProviderScope(fakeProvider.name);
-  const storeDb = openWritableStoreDbNoReset(runtime, { path: ':memory:' });
+  const storeDb = openWritableStoreDbNoReset(runtime, {
+    path: ':memory:',
+    storeFormat,
+  });
   const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
     eventBus,
     db: storeDb,
@@ -684,6 +690,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   };
 
   const core = createCoordinatorCore({
+    storeFormat,
     runtime,
     pluginRoot,
     backendNamespace: namespace,

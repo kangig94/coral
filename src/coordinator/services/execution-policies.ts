@@ -2,7 +2,6 @@ import { resolve } from 'node:path';
 
 import type { EffortLevel, ProviderInstruction, ProviderPreflightInput } from '../../providers/contract.js';
 import type { BoundProvider } from '../../providers/bound-provider-contract.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { type JobLaunchRequest, type RejectedLaunchDecision, rejectLaunch } from '../../jobs/launch.js';
 import {
@@ -168,10 +167,6 @@ export function buildInterruptedAppServerReport(fault: SessionInterruptedFault, 
   return lines.join('\n');
 }
 
-export function isProviderContinuityBlob(value: unknown): value is ProviderContinuityBlob {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 export function serializeWorkflowResult(details: StepDetail[]): {
   markdown: string;
 } {
@@ -194,7 +189,7 @@ export function toPreflightRuntime(
   runtime: Runtime,
   cwd: string,
   requestEnv: Readonly<Record<string, string>>,
-): Omit<ProviderPreflightInput, 'credentialSource'> {
+): Omit<ProviderPreflightInput, 'access'> {
   const absoluteCwd = resolve(runtime.env.cwd(), cwd || '.');
   return {
     process: runtime.process,
@@ -212,7 +207,7 @@ export const PROVIDER_PREFLIGHT_TIMEOUT_MS = 30_000;
 
 function runPreflightWithTimeout(
   provider: BoundProvider,
-  runtime: Omit<ProviderPreflightInput, 'credentialSource'>,
+  runtime: Omit<ProviderPreflightInput, 'access'>,
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -250,7 +245,7 @@ function runPreflightWithTimeout(
 
 export async function runProviderPreflight(
   provider: BoundProvider,
-  runtime: Omit<ProviderPreflightInput, 'credentialSource'>,
+  runtime: Omit<ProviderPreflightInput, 'access'>,
 ): Promise<string | null> {
   try {
     await runPreflightWithTimeout(provider, runtime);

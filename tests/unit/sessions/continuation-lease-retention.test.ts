@@ -39,7 +39,6 @@ function applyMinimalSchema(db: ReturnType<typeof newRawDatabase>): void {
       correlation_id TEXT,
       causation_seq INTEGER,
       refs TEXT,
-      body_version INTEGER NOT NULL DEFAULT 1,
       body BLOB NOT NULL
     );
     CREATE INDEX events_stream ON events(stream_kind, stream_id, seq);
@@ -118,7 +117,7 @@ function createHarness(): {
   };
   const reactor = createLifecycleReactor({
     db: () => db,
-    readCtx: { schemas: reducers.schemas, bodyCodec },
+    readCtx: { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec },
     providers: providerRegistry,
     runtime,
     time: runtime.time,

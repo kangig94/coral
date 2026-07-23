@@ -65,7 +65,7 @@ function describeProviderFailureDiagnostic(diagnostic: SessionProviderFailureDia
     diagnostic.transcriptTail.length === 0
       ? ''
       : ` transcriptTail=${JSON.stringify(truncate(diagnostic.transcriptTail, 120))};`;
-  return ` Diagnostic v${diagnostic.schemaVersion}: reason=${diagnostic.reason}; phase=${diagnostic.phase}; idleMs=${diagnostic.idleMs}; attempts=${diagnostic.attempts}; sessionId=${diagnostic.sessionId ?? 'null'}; conversationRef=${diagnostic.conversationRef ?? 'null'};${childOutputTail}${transcriptTail}`;
+  return ` Diagnostic: reason=${diagnostic.reason}; phase=${diagnostic.phase}; idleMs=${diagnostic.idleMs}; attempts=${diagnostic.attempts}; sessionId=${diagnostic.sessionId ?? 'null'}; conversationRef=${diagnostic.conversationRef ?? 'null'};${childOutputTail}${transcriptTail}`;
 }
 
 const opened = typedDescriber(sessionOpenedBodySchema, () => 'Session opened.');

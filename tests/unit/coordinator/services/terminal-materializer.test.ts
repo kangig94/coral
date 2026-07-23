@@ -105,7 +105,6 @@ describe('terminal-materializer canonical output boundary', () => {
         parentJobId: 'parent-1',
         workflowSlotId: 'slot-1',
       },
-      bodyVersion: 1,
       body: fault,
     });
   });
@@ -175,7 +174,6 @@ describe('terminal-materializer canonical output boundary', () => {
           parentJobId: 'parent-1',
           workflowSlotId: 'slot-1',
         },
-        bodyVersion: 1,
         body: expectedBody,
       });
     },

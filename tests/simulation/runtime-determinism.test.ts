@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
@@ -39,6 +40,7 @@ interface Snapshot {
 
 function openMemoryDatabase(runtime: Pick<Runtime, 'storage'>): Database {
   return openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: ':memory:',
     storage: runtime.storage,
   });
@@ -78,7 +80,6 @@ function buildPlannedEvent(
     namespace: 'simulation',
     project: 'simulation',
     correlationId: runtime.ids.sha256(`correlation-${index % 2}`),
-    bodyVersion: 1,
     body: {
       id: counterIds[index % counterIds.length] ?? counterIds[0],
       delta: (runtime.ids.randomBytes(1)[0] % 7) + 1,
@@ -91,7 +92,7 @@ function captureSnapshot(db: Database): Snapshot {
   const counters = db.prepare('SELECT id, count, last_seq FROM projection_test_counter ORDER BY id').all();
   const events = db
     .prepare(
-      `SELECT seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, body_version, hex(body) AS body_hex
+      `SELECT seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, hex(body) AS body_hex
        FROM events
        ORDER BY seq`,
     )

@@ -1,5 +1,6 @@
 import {
   bindingFailure,
+  bindingSuccess,
   type ProviderBindingResult,
   type ProviderBindingRuntime,
   type ProviderBindingUse,
@@ -26,6 +27,11 @@ import type {
 } from '../contract.js';
 import type { ProviderCliRequest } from '../protocol.js';
 import type { ProviderValueParseResult } from '../binding-parser-contract.js';
+import type {
+  ProviderValidatedSessionContinuityMutation,
+  SessionContinuityMutation,
+} from '../../sessions/continuity-mutation.js';
+import type { ProviderValidatedContinuityBlob } from '../../sessions/continuity.js';
 import type { ProviderExecutionPlan } from '../execution-plan.js';
 import type {
   BoundProvider,
@@ -54,20 +60,82 @@ import {
   snapshotPlainReceiver,
   snapshotProviderResult,
   snapshotRequest,
-  snapshotSource,
+  snapshotAccess,
 } from './snapshot.js';
 
-export interface CapturedBoundCodec<Source extends JsonValue> {
+export interface CapturedBoundCodec<Access extends JsonValue> {
   readonly bindingKind: 'account' | 'profile';
   parseBinding(binding: unknown): ProviderValueParseResult<unknown>;
+  parseContinuity(continuity: unknown): ProviderValueParseResult<Record<string, unknown>>;
   presentBinding(binding: unknown): string;
-  credentialSource(binding: unknown): Source;
+  access(binding: unknown): Access;
   readiness(
     binding: unknown,
     use: ProviderBindingUse,
     runtime: ProviderBindingRuntime,
   ): Promise<ProviderBindingResult<ProviderReadiness>>;
   compareBinding(left: unknown, right: unknown): ProviderBindingResult<true>;
+}
+
+type BoundContinuityDecoder = (
+  rawContinuity: unknown,
+) => ProviderBindingResult<ProviderValidatedContinuityBlob | undefined>;
+
+function decodeBoundContinuity(
+  provider: string,
+  codec: CapturedBoundCodec<JsonValue>,
+  rawContinuity: unknown,
+): ProviderBindingResult<ProviderValidatedContinuityBlob | undefined> {
+  if (rawContinuity === null || rawContinuity === undefined) {
+    return bindingSuccess<ProviderValidatedContinuityBlob | undefined>(undefined);
+  }
+  const parsed = codec.parseContinuity(snapshotBoundaryData(rawContinuity, 'Provider continuity parser input'));
+  return parsed.success
+    ? bindingSuccess(
+        snapshotBoundaryData(
+          jsonValueSchema.parse(parsed.data),
+          'Decoded provider continuity',
+        ) as ProviderValidatedContinuityBlob,
+      )
+    : bindingFailure({ reason: 'invalid-persisted-binding', provider });
+}
+
+function requireBoundContinuity(
+  provider: string,
+  decodeContinuity: BoundContinuityDecoder,
+  rawContinuity: unknown,
+  label: string,
+): ProviderValidatedContinuityBlob {
+  const decoded = decodeContinuity(rawContinuity);
+  if (!decoded.ok || decoded.value === undefined) {
+    throw new TypeError(`Provider '${provider}' produced invalid ${label}.`);
+  }
+  return decoded.value;
+}
+
+function canonicalizeContinuityMutation(
+  provider: string,
+  decodeContinuity: BoundContinuityDecoder,
+  mutation: SessionContinuityMutation,
+): ProviderValidatedSessionContinuityMutation {
+  if (mutation.providerContinuity === undefined) {
+    return snapshotProviderResult(
+      mutation,
+      'Provider recovery continuity mutation',
+    ) as ProviderValidatedSessionContinuityMutation;
+  }
+  return snapshotProviderResult(
+    {
+      ...mutation,
+      providerContinuity: requireBoundContinuity(
+        provider,
+        decodeContinuity,
+        mutation.providerContinuity,
+        'recovery continuity mutation',
+      ),
+    },
+    'Provider recovery continuity mutation',
+  ) as ProviderValidatedSessionContinuityMutation;
 }
 
 function requireAppServerHost(authority: AppServerHostAuthority | undefined, provider: string): AppServerHostAuthority {
@@ -122,9 +190,9 @@ type BoundAppServerTools<Plan extends ProviderExecutionPlan> = Readonly<{
   session(transport: AppServerTransport): AppServerSession;
 }>;
 
-function createBoundAppServerTools<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
-  implementation: ProviderAppServerImplementation<Plan, Source>,
-  source: Source,
+function createBoundAppServerTools<Plan extends ProviderExecutionPlan, Access extends JsonValue>(
+  implementation: ProviderAppServerImplementation<Plan, Access>,
+  access: Access,
   appServerHost: AppServerHostAuthority | undefined,
 ): BoundAppServerTools<Plan> {
   const capability = implementation.appServer;
@@ -142,7 +210,7 @@ function createBoundAppServerTools<Plan extends ProviderExecutionPlan, Source ex
         baseEnv: snapshotBoundaryData(input.baseEnv, 'Provider host base environment'),
         platform: input.platform,
         storage: input.storage,
-        source,
+        access,
       }),
     compileHost: (hostPlan) => {
       const spec = snapshotBoundaryData(capability.compileStableHost(hostPlan), 'Provider stable host specification');
@@ -258,6 +326,7 @@ async function interruptBoundAppServer<Plan extends ProviderExecutionPlan>(
 
 async function probeBoundAppServer<Plan extends ProviderExecutionPlan>(
   tools: BoundAppServerTools<Plan>,
+  decodeContinuity: BoundContinuityDecoder,
   hostRef: HostRef,
   continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
   input: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
@@ -273,18 +342,30 @@ async function probeBoundAppServer<Plan extends ProviderExecutionPlan>(
       snapshotBoundaryData(continuity, 'Provider probe continuity'),
       { request: snapshotRequest(input.request) },
     );
+    const outcome = snapshotProviderResult(result, 'Provider recovery probe outcome');
     return Object.freeze({
       kind: 'probed' as const,
-      result: snapshotProviderResult(result, 'Provider recovery probe outcome'),
+      result:
+        outcome.updatedContinuity === undefined
+          ? outcome
+          : Object.freeze({
+              ...outcome,
+              updatedContinuity: requireBoundContinuity(
+                tools.providerName,
+                decodeContinuity,
+                outcome.updatedContinuity,
+                'probe continuity',
+              ),
+            }),
     });
   } finally {
     attached.managed.close();
   }
 }
 
-function bindArtifacts<Source extends JsonValue>(
-  artifacts: ProviderArtifactCapability<Source>,
-  source: Source,
+function bindArtifacts<Access extends JsonValue>(
+  artifacts: ProviderArtifactCapability<Access>,
+  access: Access,
 ): BoundProviderArtifacts {
   if (artifacts.kind === 'none') return artifacts;
   const discardArtifacts = artifacts.discardArtifacts;
@@ -297,7 +378,7 @@ function bindArtifacts<Source extends JsonValue>(
         Object.freeze({
           handles: snapshotBoundaryData(input.handles, 'Bound artifact handles'),
           runtime: input.runtime,
-          source,
+          access,
         }),
       ).then((result) => snapshotProviderResult(result, 'Bound artifact discard outcome'));
     },
@@ -307,7 +388,7 @@ function bindArtifacts<Source extends JsonValue>(
           locateArtifact: (options: { conversationRef: string; runtime: ArtifactCleanupRuntime }) => {
             const input = snapshotPlainReceiver(options, 'Bound artifact location input', new Set(['runtime']));
             return snapshotProviderResult(
-              locateArtifact(Object.freeze({ conversationRef: input.conversationRef, runtime: input.runtime, source })),
+              locateArtifact(Object.freeze({ conversationRef: input.conversationRef, runtime: input.runtime, access })),
               'Bound artifact location outcome',
             );
           },
@@ -315,15 +396,18 @@ function bindArtifacts<Source extends JsonValue>(
   });
 }
 
-function bindRecovery<Source extends JsonValue>(
-  recovery: ProviderRecoveryContract<Source> | undefined,
-  source: Source,
+function bindRecovery<Access extends JsonValue>(
+  recovery: ProviderRecoveryContract<Access> | undefined,
+  access: Access,
+  provider: string,
+  decodeContinuity: BoundContinuityDecoder,
 ): BoundProviderRecovery | undefined {
   if (recovery === undefined) return undefined;
   return Object.freeze({
-    finalizeInterrupted: recovery.finalizeInterrupted,
+    finalizeInterrupted: (...args: Parameters<ProviderRecoveryContract['finalizeInterrupted']>) =>
+      canonicalizeContinuityMutation(provider, decodeContinuity, recovery.finalizeInterrupted(...args)),
     finalizeFromArtifacts: (
-      options: Omit<Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0], 'source'>,
+      options: Omit<Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0], 'access'>,
     ) => {
       const input = snapshotPlainReceiver(options, 'Bound artifact recovery input', new Set(['storage']));
       return recovery
@@ -333,19 +417,35 @@ function bindRecovery<Source extends JsonValue>(
             ...(input.knownArtifactHandles === undefined
               ? {}
               : { knownArtifactHandles: snapshotArtifactHandles(input.knownArtifactHandles) }),
-            source,
+            access,
           }),
         )
-        .then((result) => snapshotProviderResult(result, 'Bound artifact recovery outcome'));
+        .then((result) => snapshotProviderResult(result, 'Bound artifact recovery outcome'))
+        .then((result) => {
+          const continuity = result.continuity;
+          if (continuity?.providerContinuity === undefined) return result;
+          return Object.freeze({
+            ...result,
+            continuity: Object.freeze({
+              ...continuity,
+              providerContinuity: requireBoundContinuity(
+                provider,
+                decodeContinuity,
+                continuity.providerContinuity,
+                'artifact recovery continuity',
+              ),
+            }),
+          });
+        });
     },
     ...(recovery.extractProgress === undefined ? {} : { extractProgress: recovery.extractProgress }),
   });
 }
 
-function bindCuration<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
-  curation: ProviderAppServerImplementation<Plan, Source>['curation'] | undefined,
+function bindCuration<Plan extends ProviderExecutionPlan, Access extends JsonValue>(
+  curation: ProviderAppServerImplementation<Plan, Access>['curation'] | undefined,
   appServer: BoundAppServerLifecycle<Plan> | undefined,
-  source: Source,
+  access: Access,
 ): BoundProviderCuration | undefined {
   if (curation === undefined) return undefined;
   if (appServer === undefined) {
@@ -363,7 +463,7 @@ function bindCuration<Plan extends ProviderExecutionPlan, Source extends JsonVal
           ids: canonicalRuntime.ids,
           baseEnv: snapshotBoundaryData(canonicalRuntime.baseEnv, 'Provider curation environment'),
           platform: canonicalRuntime.platform,
-          source,
+          access,
         }),
       );
       const receiver = snapshotPlainReceiver(prepared, 'Prepared provider curation');
@@ -380,20 +480,21 @@ function bindCuration<Plan extends ProviderExecutionPlan, Source extends JsonVal
         Object.freeze({
           storage: canonicalRuntime.storage,
           now: canonicalRuntime.now,
-          source,
+          access,
         }),
       );
     },
   });
 }
 
-function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
-  implementation: ProviderImplementation<Plan, Source>,
-  source: Source,
+function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Access extends JsonValue>(
+  implementation: ProviderImplementation<Plan, Access>,
+  access: Access,
   appServerHost: AppServerHostAuthority | undefined,
+  decodeContinuity: BoundContinuityDecoder,
 ): BoundAppServerLifecycle<Plan> | undefined {
   if (implementation.transport === 'standalone') return undefined;
-  const tools = createBoundAppServerTools(implementation, source, appServerHost);
+  const tools = createBoundAppServerTools(implementation, access, appServerHost);
 
   const lifecycle: BoundAppServerLifecycle<Plan> = {
     supportsInterrupt: tools.capability.interrupt !== undefined,
@@ -412,20 +513,20 @@ function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Sourc
         baseEnv: snapshotBoundaryData(runtime.baseEnv, 'Provider curation environment'),
         platform: runtime.platform,
         storage: runtime.storage,
-        source,
+        access,
       }),
     completeCuration: (hostPlan, signal, operation) =>
       completeBoundAppServerCuration(tools, hostPlan, signal, operation),
     openReplacement: (input, runtime) => openBoundReplacement(tools, input, runtime),
     interrupt: (hostRef, continuity, input) => interruptBoundAppServer(tools, hostRef, continuity, input),
-    probe: (hostRef, continuity, input) => probeBoundAppServer(tools, hostRef, continuity, input),
+    probe: (hostRef, continuity, input) => probeBoundAppServer(tools, decodeContinuity, hostRef, continuity, input),
   };
   return Object.freeze(lifecycle);
 }
 
-function prepareExecution<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
-  implementation: ProviderImplementation<Plan, Source>,
-  source: Source,
+function prepareExecution<Plan extends ProviderExecutionPlan, Access extends JsonValue>(
+  implementation: ProviderImplementation<Plan, Access>,
+  access: Access,
   input: Parameters<BoundProvider['prepareExecution']>[0],
   appServer: BoundAppServerLifecycle<Plan> | undefined,
 ): BoundProviderPreparedExecution {
@@ -447,7 +548,7 @@ function prepareExecution<Plan extends ProviderExecutionPlan, Source extends Jso
       : { protectedEnv: snapshotBoundaryData(canonicalInput.protectedEnv, 'Provider protected environment') }),
     platform: canonicalInput.platform,
     storage: canonicalInput.storage,
-    source,
+    access,
   };
 
   if (implementation.transport === 'standalone') {
@@ -508,10 +609,10 @@ function sealPreparedAppServerExecution<Plan extends ProviderExecutionPlan>(
   });
 }
 
-function runPreflight<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
-  implementation: ProviderImplementation<Plan, Source>,
-  source: Source,
-  input: Omit<ProviderPreflightInput, 'credentialSource'>,
+function runPreflight<Plan extends ProviderExecutionPlan, Access extends JsonValue>(
+  implementation: ProviderImplementation<Plan, Access>,
+  access: Access,
+  input: Omit<ProviderPreflightInput, 'access'>,
 ): Promise<void> {
   if (implementation.preflight === undefined) return Promise.resolve();
   const canonical = snapshotPlainReceiver(
@@ -529,17 +630,17 @@ function runPreflight<Plan extends ProviderExecutionPlan, Source extends JsonVal
       baseEnv: snapshotBoundaryData(canonical.baseEnv, 'Provider preflight base environment'),
       requestEnv: snapshotBoundaryData(canonical.requestEnv, 'Provider preflight request environment'),
       platform: canonical.platform,
-      credentialSource: source,
+      access: access,
     }),
   );
 }
 
-export function rehydrateCodecBinding<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
+export function rehydrateCodecBinding<Plan extends ProviderExecutionPlan, Access extends JsonValue>(
   provider: string,
-  codec: CapturedBoundCodec<Source>,
+  codec: CapturedBoundCodec<Access>,
   binding: unknown,
-  implementation: ProviderImplementation<Plan, Source>,
-  artifacts: ProviderArtifactCapability<Source>,
+  implementation: ProviderImplementation<Plan, Access>,
+  artifacts: ProviderArtifactCapability<Access>,
   appServerHost: AppServerHostAuthority | undefined,
 ): BoundProvider {
   const canonicalBinding = snapshotBoundaryData(jsonValueSchema.parse(binding), 'Provider binding');
@@ -548,13 +649,15 @@ export function rehydrateCodecBinding<Plan extends ProviderExecutionPlan, Source
     'Provider binding envelope',
   );
   const presentation = codec.presentBinding(canonicalBinding);
-  const source = snapshotSource(codec.credentialSource(canonicalBinding));
-  const recovery = bindRecovery(implementation.recovery, source);
-  const appServer = createBoundAppServerLifecycle(implementation, source, appServerHost);
+  const access = snapshotAccess(codec.access(canonicalBinding));
+  const decodeContinuity: BoundContinuityDecoder = (rawContinuity) =>
+    decodeBoundContinuity(provider, codec, rawContinuity);
+  const recovery = bindRecovery(implementation.recovery, access, provider, decodeContinuity);
+  const appServer = createBoundAppServerLifecycle(implementation, access, appServerHost, decodeContinuity);
   const curation = bindCuration(
     implementation.transport === 'app-server' ? implementation.curation : undefined,
     appServer,
-    source,
+    access,
   );
   return Object.freeze({
     name: provider,
@@ -562,12 +665,13 @@ export function rehydrateCodecBinding<Plan extends ProviderExecutionPlan, Source
     present: () => presentation,
     readiness: async (use: ProviderBindingUse, runtime: ProviderBindingRuntime) =>
       snapshotProviderResult(await codec.readiness(canonicalBinding, use, runtime), 'Provider readiness result'),
-    preflight: (input: Omit<ProviderPreflightInput, 'credentialSource'>) => runPreflight(implementation, source, input),
+    decodeContinuity,
+    preflight: (input: Omit<ProviderPreflightInput, 'access'>) => runPreflight(implementation, access, input),
     prepareExecution: (input: Parameters<BoundProvider['prepareExecution']>[0]) =>
-      prepareExecution(implementation, source, input, appServer),
+      prepareExecution(implementation, access, input, appServer),
     ...(appServer === undefined ? {} : { appServer }),
     ...(recovery === undefined ? {} : { recovery }),
-    artifacts: bindArtifacts(artifacts, source),
+    artifacts: bindArtifacts(artifacts, access),
     ...(curation === undefined ? {} : { curation }),
     compareIdentity(otherEnvelope: unknown) {
       const parsed = providerBindingEnvelopeSchema.safeParse(otherEnvelope);

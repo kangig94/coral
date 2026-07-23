@@ -7,7 +7,7 @@ import {
   createKbCurateAssistantHandler,
   createKbCurateUsageBudgetHandler,
 } from '#src/coordinator/services/kb-curate-assistant.js';
-import { fixtureProviderBindingCodec, type FixtureProviderSource } from '#tests/helpers/provider-binding.js';
+import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
 import {
   prepareFixtureAppServerExecutionPlan,
   prepareFixtureHost,
@@ -27,14 +27,14 @@ function createClaudeRegistry(
   options: {
     readonly readinessFailure?: ProviderBindingFailure;
     readonly complete?: (
-      request: Parameters<ProviderCurationCapability<FixtureProviderSource>['prepare']>[0],
-      runtime: Parameters<ProviderCurationCapability<FixtureProviderSource>['prepare']>[1],
+      request: Parameters<ProviderCurationCapability<FixtureProviderAccess>['prepare']>[0],
+      runtime: Parameters<ProviderCurationCapability<FixtureProviderAccess>['prepare']>[1],
     ) => Promise<string>;
     readonly includeCuration?: boolean;
   } = {},
 ): ProviderRegistry {
   const registry = new ProviderRegistry();
-  const curation: ProviderCurationCapability<FixtureProviderSource> = {
+  const curation: ProviderCurationCapability<FixtureProviderAccess> = {
     prepare(request, runtime) {
       return {
         complete: () => (options.complete ?? (async () => 'curated'))(request, runtime),
@@ -42,13 +42,13 @@ function createClaudeRegistry(
     },
     isUsageBudgetExhausted(runtime) {
       return isClaudeCurationUsageBudgetExhausted({
-        configDir: runtime.source.root,
+        configDir: runtime.access.root,
         runtime,
       });
     },
   };
   registry.register(
-    defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
+    defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
       name: 'claude',
       transport: 'app-server',
       run: async function* () {},
@@ -154,7 +154,7 @@ describe('KB curate assistant provider scope', () => {
     expect(runTurn).toHaveBeenCalledWith(
       expect.objectContaining({ prompt: 'curate this', model: 'claude-test' }),
       expect.objectContaining({
-        source: {
+        access: {
           root: '/system/claude',
           routingEnv: { CLAUDE_CONFIG_DIR: '/system/claude' },
         },

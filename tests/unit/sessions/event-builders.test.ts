@@ -78,7 +78,6 @@ describe('session fault event builders', () => {
         parentJobId: 'parent-1',
         workflowSlotId: 'slot-1',
       },
-      bodyVersion: 1,
       body: {
         trigger: 'restart',
         continuity: 'pre_checkpoint_preserved',
@@ -109,7 +108,6 @@ describe('session fault event builders', () => {
       type: 'session.provider_failed',
       stream: { kind: 'session', id: 'session-1' },
       refs: { sessionId: 'session-1' },
-      bodyVersion: 1,
       body: {
         provider: 'codex',
         reason: 'request_failed',
@@ -134,7 +132,6 @@ describe('session fault event builders', () => {
       type: 'session.adapter_unparseable',
       stream: { kind: 'session', id: 'session-1' },
       refs: { sessionId: 'session-1' },
-      bodyVersion: 1,
       body: {
         provider: 'claude',
         exitCode: 1,

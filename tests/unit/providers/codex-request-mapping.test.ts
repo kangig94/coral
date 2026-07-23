@@ -14,7 +14,6 @@ import {
   mapTurnStartParams,
   readCodexPersistedContinuity,
   resolveCodexServiceTier,
-  snapshotCodexPersistedContinuity,
 } from '#src/providers/codex/request-mapping.js';
 import { prepareTestCodexAppServer } from '#tests/helpers/provider-credentials.js';
 import type { ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
@@ -97,7 +96,7 @@ function makeTierRuntime(
   codexHome = join(home, '.codex'),
 ): Pick<CodexRuntime, 'executionPlan' | 'storage'> {
   const host = buildCodexHost({
-    source: { home: codexHome },
+    access: { home: codexHome },
     request: {
       action: 'exec',
       sessionId: 'tier-test',
@@ -110,7 +109,7 @@ function makeTierRuntime(
     platform: 'linux',
   });
   const prepared = buildCodexExecutionPlan({
-    source: { home: codexHome },
+    access: { home: codexHome },
     hostPlan: host,
     request: {
       action: 'exec',
@@ -348,39 +347,25 @@ describe('mapTurnStartParams effort mapping', () => {
 });
 
 describe('Codex continuity refs', () => {
-  it('drops unexpected persisted keys while preserving canonical durable cwd', () => {
-    const continuity = readCodexPersistedContinuity({
-      cwd: '/workspace/project',
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-      attacker: 'keep-out',
-    });
-
-    expect(continuity).toEqual({
-      cwd: '/workspace/project',
-      threadId: 'thread-1',
-      turnId: 'turn-1',
-    });
-    expect(continuity).not.toHaveProperty('attacker');
+  it('rejects an empty persisted payload instead of treating it as absent continuity', () => {
+    expect(() => readCodexPersistedContinuity({})).toThrow('Invalid persisted Codex continuity');
   });
 
-  it('drops empty persisted ids and never treats them as resumable', () => {
-    const continuity = readCodexPersistedContinuity({
-      cwd: '',
-      threadId: '',
-      turnId: '',
-    });
+  it('rejects unexpected persisted keys', () => {
+    expect(() =>
+      readCodexPersistedContinuity({
+        cwd: '/workspace/project',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        attacker: 'keep-out',
+      }),
+    ).toThrow('Invalid persisted Codex continuity');
+  });
 
-    expect(continuity).toEqual({
-      cwd: undefined,
-      threadId: undefined,
-      turnId: undefined,
-    });
-    expect(snapshotCodexPersistedContinuity(continuity)).toEqual({
-      conversationRef: null,
-      resumable: false,
-      providerContinuity: null,
-    });
+  it('rejects empty persisted identifiers', () => {
+    expect(() => readCodexPersistedContinuity({ cwd: '', threadId: '', turnId: '' })).toThrow(
+      'Invalid persisted Codex continuity',
+    );
   });
 
   it('uses explicit non-empty refs for updates while ignoring empty conversationRef', () => {
@@ -403,7 +388,6 @@ describe('Codex continuity refs', () => {
     const continuity = {
       cwd: '/workspace/project/subdir',
       threadId: 'thread-1',
-      attacker: 'keep-out',
     };
 
     const spec = prepareTestCodexAppServer({ cwd: '/workspace/project' }, continuity);

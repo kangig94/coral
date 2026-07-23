@@ -23,7 +23,6 @@ import {
   CLAUDE_BROKER_CHILD_EXIT_RPC_CODE,
   CLAUDE_BROKER_STATE_RPC_CODE,
   ClaudeBrokerRpcError,
-  TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION,
   isAutoAllowPermissionMode,
   readSessionId,
   systemProgressMessage,
@@ -804,7 +803,6 @@ export class PrintSessionController implements BrokerSessionController {
     reason: TurnFailureDiagnosticReason,
   ): TurnFailureDiagnostic {
     return {
-      schemaVersion: TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION,
       reason,
       phase: 'terminal',
       idleMs: Math.max(0, this.now() - turn.startedAt),

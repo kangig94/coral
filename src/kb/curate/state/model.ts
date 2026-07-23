@@ -142,18 +142,21 @@ export type CurateRepairFrontier =
       entrySeq: number;
     };
 
-export const kbEntryIdSchema = z.string().transform((value, ctx): KbEntryId => {
-  const entryId = parseKbEntryId(value);
-  if (entryId !== null) {
-    return entryId;
-  }
+export const kbEntryIdSchema = z
+  .string()
+  .transform((value, ctx): KbEntryId => {
+    const entryId = parseKbEntryId(value);
+    if (entryId !== null) {
+      return entryId;
+    }
 
-  ctx.addIssue({
-    code: z.ZodIssueCode.custom,
-    message: 'must be a KB entry ID',
-  });
-  return z.NEVER;
-});
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'must be a KB entry ID',
+    });
+    return z.NEVER;
+  })
+  .describe('parse-kb-entry-id');
 
 export function defaultCurateState(): CurateState {
   return {

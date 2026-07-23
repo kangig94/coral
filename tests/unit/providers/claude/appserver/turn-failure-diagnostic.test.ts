@@ -121,7 +121,6 @@ describe('Claude turn failure diagnostics', () => {
       expect(failed?.params.diagnostic.childOutputTail).toContain('API Error: upstream overloaded');
       expect(failed?.params.diagnostic.transcriptTail).toContain('transcript tail sentinel');
       expect(failed?.params.diagnostic).toMatchObject({
-        schemaVersion: 1,
         reason: 'api-error',
         phase: 'sent',
         attempts: 3,

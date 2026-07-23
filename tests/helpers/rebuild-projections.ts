@@ -25,7 +25,11 @@ const JOURNAL_PROJECTION_TABLES = [
 export function rebuildProjections(opts: RebuildOptions): void {
   const tables = [...JOURNAL_PROJECTION_TABLES, ...(opts.extraProjectionTables ?? [])];
   const batchSize = opts.batchSize ?? 1000;
-  const readCtx = { schemas: opts.reducers.schemas, bodyCodec: opts.bodyCodec };
+  const readCtx = {
+    schemas: opts.reducers.schemas,
+    streamKinds: opts.reducers.streamKinds,
+    bodyCodec: opts.bodyCodec,
+  };
 
   withImmediate(opts.db, () => {
     for (const table of tables) {

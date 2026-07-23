@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { createServer as createNetServer, type Server as NetServer } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
@@ -22,6 +23,14 @@ import {
   type JsonRpcResponseEnvelope,
 } from '#src/transport/ipc/json-rpc.js';
 import type { IncumbentHealth } from '#src/transport/ipc/handoff.js';
+import { JobStore } from '#src/jobs/store.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import { composeReducers } from '#src/store/reducers.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { sessionsRegistry } from '#src/sessions/events.js';
+import { discussRegistry } from '#src/discuss/event-registry.js';
+import { workflowRegistry } from '#src/workflow/events.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 const tempRoots: string[] = [];
 const httpServers = new Set<HttpServer>();
@@ -59,18 +68,24 @@ function createMismatchStore(dbPath: string): void {
     db.exec(`
       CREATE TABLE incumbent_owned_store (id INTEGER PRIMARY KEY);
       INSERT INTO incumbent_owned_store (id) VALUES (1);
-      PRAGMA user_version = 1;
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO meta (key, value) VALUES ('store_format_fingerprint', 'sha256:obsolete');
     `);
   } finally {
     db.close();
   }
 }
 
-function readUserVersion(dbPath: string): number {
+function readStoreFormatFingerprint(dbPath: string): string | undefined {
   const db = new DatabaseSync(dbPath);
   try {
-    const row = db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined;
-    return row?.user_version ?? 0;
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta' LIMIT 1").get() === undefined) {
+      return undefined;
+    }
+    const row = db.prepare("SELECT value FROM meta WHERE key = 'store_format_fingerprint'").get() as
+      | { value?: string }
+      | undefined;
+    return row?.value;
   } finally {
     db.close();
   }
@@ -170,15 +185,16 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
   throw new Error('Timed out waiting for condition');
 }
 
-function createStoreServices(storeDb: Database): CoordinatorStoreServices {
+function createStoreServices(storeDb: Database, runtime: Runtime, namespace: string): CoordinatorStoreServices {
   return {
     storeDb,
-    progressStore: {
-      getDb: () => storeDb,
-      liveJobCountByNamespace: () => 0,
-    },
+    progressStore: new JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: storeDb,
+      reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+      providers: permissiveProviderLookupPort,
+    }),
     consumerDriver: null,
-  } as unknown as CoordinatorStoreServices;
+  };
 }
 
 afterEach(async () => {
@@ -263,6 +279,7 @@ describe('incumbent handoff reset authority', () => {
     });
 
     const core = createCoordinatorCore({
+      storeFormat: currentCoralStoreFormat(),
       runtime,
       backendNamespace: 'ns',
       bootSnapshot: {
@@ -284,7 +301,7 @@ describe('incumbent handoff reset authority', () => {
         ipcListeners.add(listener);
         return result;
       },
-      createStoreServicesFromDbFn: createStoreServices,
+      createStoreServicesFromDbFn: (storeDb) => createStoreServices(storeDb, runtime, 'ns'),
       kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       runStartupRecoveryFn: async () => [],
       cleanupStaleJobsFn: () => {},
@@ -323,7 +340,7 @@ describe('incumbent handoff reset authority', () => {
       const startPromise = core.lifecycleController.start();
       await waitFor(() => shutdownReceived);
 
-      expect(readUserVersion(dbPath)).toBe(1);
+      expect(readStoreFormatFingerprint(dbPath)).toBe('sha256:obsolete');
       expect(tableExists(dbPath, 'incumbent_owned_store')).toBe(true);
 
       incumbentStore.close();
@@ -332,8 +349,29 @@ describe('incumbent handoff reset authority', () => {
       await startPromise;
 
       expect(core.storeServicesRef.tryGet()).not.toBeNull();
-      expect(readUserVersion(dbPath)).not.toBe(1);
+      expect(readStoreFormatFingerprint(dbPath)).toBe(currentCoralStoreFormat().fingerprint);
       expect(tableExists(dbPath, 'incumbent_owned_store')).toBe(false);
+
+      const postResetStore = core.storeServicesRef.get().progressStore;
+      postResetStore.appendLaunchRequested('post-reset-kb-job', {
+        jobId: 'post-reset-kb-job',
+        owner: { kind: 'system-task', id: 'kb.reindex:post-reset-kb-job' },
+        sessionId: null,
+        provider: null,
+        projectRoot: '/post-reset',
+        backendNamespace: 'ns',
+        jobKind: 'kb',
+        pool: 'curate',
+        enqueueSequence: postResetStore.nextEnqueueSequence(),
+        operation: 'kb.reindex',
+        request: {},
+        createdAt: '2026-07-23T00:00:00.000Z',
+      });
+      expect(postResetStore.readStatus('post-reset-kb-job')).toMatchObject({
+        phase: 'launching',
+        backendNamespace: 'ns',
+        jobKind: 'kb',
+      });
     } finally {
       try {
         incumbentStore.close();

@@ -79,6 +79,7 @@ export type CoralStoreOptions = {
 
 export class CoralStore implements StoreReadContext {
   public readonly schemas: StoreReadContext['schemas'];
+  public readonly streamKinds: StoreReadContext['streamKinds'];
   public readonly bodyCodec: StoreReadContext['bodyCodec'];
   private readonly runtime?: CoralStoreRuntime;
   private readonly namespace?: string;
@@ -120,6 +121,7 @@ export class CoralStore implements StoreReadContext {
   constructor(db: Database, readCtx: StoreReadContext, options: CoralStoreOptions = {}) {
     this.db = db;
     this.schemas = readCtx.schemas;
+    this.streamKinds = readCtx.streamKinds;
     this.bodyCodec = readCtx.bodyCodec;
     this.runtime = options.runtime;
     this.namespace = options.namespace;

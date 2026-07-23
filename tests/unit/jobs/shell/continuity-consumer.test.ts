@@ -3,7 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { consumeJobStream } from '#src/jobs/shell/continuity-consumer.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { attachContinuityCommit } from '#src/providers/internal/continuity-commit.js';
+import { bindingFailure, bindingSuccess } from '#src/providers/contracts/binding.js';
 import { createDeferred } from '#tools/testing/deferred.js';
+import { validatedTestContinuityBlob } from '#tests/helpers/session.js';
+
+const decodeContinuity = (rawContinuity: unknown) =>
+  bindingSuccess(
+    rawContinuity === null ? undefined : validatedTestContinuityBlob(rawContinuity as Record<string, unknown>),
+  );
 
 describe('consumeJobStream', () => {
   afterEach(() => {
@@ -22,6 +29,7 @@ describe('consumeJobStream', () => {
       jobId: 'job-1',
       sessionId: 'session-1',
       initialVersion: 7,
+      decodeContinuity,
       stream: (async function* () {
         yield { kind: 'progress', message: 'starting' } as const;
         yield {
@@ -102,6 +110,7 @@ describe('consumeJobStream', () => {
       jobId: 'job-2',
       sessionId: 'session-2',
       initialVersion: 3,
+      decodeContinuity,
       stream: (async function* () {
         yield { kind: 'progress', message: 'only-progress' } as const;
         yield {
@@ -139,6 +148,35 @@ describe('consumeJobStream', () => {
     });
   });
 
+  it('rejects provider continuity that the bound provider cannot persist', async () => {
+    const checkpointJobContinuityAtomic = vi.fn();
+    const rejection = vi.fn();
+
+    const result = await consumeJobStream({
+      jobId: 'job-invalid-continuity',
+      sessionId: 'session-invalid-continuity',
+      initialVersion: 1,
+      decodeContinuity: () => bindingFailure({ reason: 'invalid-persisted-binding', provider: 'strict-provider' }),
+      stream: (async function* () {
+        yield attachContinuityCommit(
+          {
+            kind: 'continuity',
+            conversationRef: 'thread-invalid',
+            resumable: true,
+            providerContinuity: { unknown: true },
+          },
+          { commit: vi.fn(), reject: rejection },
+        );
+      })(),
+      sessionApi: { checkpointJobContinuityAtomic, recordArtifactHandleAtomic: vi.fn() },
+      appendProgress: vi.fn(),
+    });
+
+    expect(result).toEqual({ kind: 'suspended', reason: 'durable_state_uncommitted' });
+    expect(checkpointJobContinuityAtomic).not.toHaveBeenCalled();
+    expect(rejection).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('invalid') }));
+  });
+
   it('fails closed on a stale checkpoint without accepting a later terminal', async () => {
     const appendProgress = vi.fn();
     const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
@@ -152,6 +190,7 @@ describe('consumeJobStream', () => {
       jobId: 'job-3',
       sessionId: 'session-3',
       initialVersion: 10,
+      decodeContinuity,
       stream: (async function* () {
         yield {
           kind: 'continuity',
@@ -218,6 +257,7 @@ describe('consumeJobStream', () => {
       jobId: 'job-4',
       sessionId: 'session-4',
       initialVersion: 5,
+      decodeContinuity,
       stream: (async function* () {
         yield {
           kind: 'artifact_handle',
@@ -293,6 +333,7 @@ describe('consumeJobStream', () => {
       jobId: 'job-durable',
       sessionId: 'session-durable',
       initialVersion: 1,
+      decodeContinuity,
       stream,
       sessionApi: { checkpointJobContinuityAtomic, recordArtifactHandleAtomic: vi.fn() },
       appendProgress: vi.fn(),
@@ -343,6 +384,7 @@ describe('consumeJobStream', () => {
         jobId: 'job-stale',
         sessionId: 'session-stale',
         initialVersion: 1,
+        decodeContinuity,
         stream,
         sessionApi: {
           checkpointJobContinuityAtomic: vi.fn(async () => ({ ok: false as const })),
@@ -377,6 +419,7 @@ describe('consumeJobStream', () => {
         jobId: 'job-write-error',
         sessionId: 'session-write-error',
         initialVersion: 1,
+        decodeContinuity,
         stream,
         sessionApi: {
           checkpointJobContinuityAtomic: vi.fn(async () => Promise.reject(failure)),

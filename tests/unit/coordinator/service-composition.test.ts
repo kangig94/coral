@@ -59,7 +59,11 @@ import { readWorkflowView } from '#src/workflow/read-queries.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { seedTestSessionProjection } from '#tests/helpers/session.js';
+import {
+  seedTestProviderContinuity,
+  seedTestSessionContinuity,
+  seedTestSessionProjection,
+} from '#tests/helpers/session.js';
 import {
   TEST_CLAUDE_BINDING,
   TEST_CODEX_BINDING,
@@ -837,7 +841,7 @@ describe('ExecutionService', () => {
       const homeByPrompt = new Map(
         execute.mock.calls.map((call) => [
           (call[0] as ProviderRequest).prompt,
-          (call[1] as { executionPlan: { host: { source: { root: string } } } }).executionPlan.host.source.root,
+          (call[1] as { executionPlan: { host: { access: { root: string } } } }).executionPlan.host.access.root,
         ]),
       );
       expect(homeByPrompt).toEqual(
@@ -1010,7 +1014,10 @@ describe('ExecutionService', () => {
           claudeModelCap: 'opus',
         },
       });
-      mgr.setConversationRef(entry.sessionId, 'thread-1');
+      await seedTestProviderContinuity(mgr, entry.sessionId, {
+        conversationRef: 'thread-1',
+        providerContinuity: { threadId: 'thread-1' },
+      });
       const service = createService(ctx);
 
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
@@ -1117,7 +1124,10 @@ describe('ExecutionService', () => {
       mockState.getNewProvider.mockReturnValue(provider);
       const mgr = createSessionManager(ctx.projectRoot);
       const entry = allocateCodexSession(mgr, 'alpha', 'gpt-5', ctx.projectRoot);
-      mgr.setConversationRef(entry.sessionId, 'thread-stale');
+      await seedTestProviderContinuity(mgr, entry.sessionId, {
+        conversationRef: 'thread-stale',
+        providerContinuity: { threadId: 'thread-stale' },
+      });
       const service = createService(ctx);
 
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
@@ -2494,7 +2504,7 @@ describe('ExecutionService', () => {
         const jobId = `app-server-waiting-${randomUUID()}`;
         trackJob(jobId);
         const session = allocateCodexSession(sessionManager, 'recover-waiting', 'gpt-5', ctx.projectRoot);
-        sessionManager.checkpointProviderContinuity(session.sessionId, {
+        await seedTestProviderContinuity(sessionManager, session.sessionId, {
           providerContinuity: {
             threadId: 'thread-existing',
           },
@@ -2679,7 +2689,7 @@ describe('ExecutionService', () => {
         const jobId = `app-server-verified-${randomUUID()}`;
         trackJob(jobId);
         const session = allocateCodexSession(sessionManager, 'recover-verified', 'gpt-5', ctx.projectRoot);
-        sessionManager.checkpointProviderContinuity(session.sessionId, {
+        await seedTestProviderContinuity(sessionManager, session.sessionId, {
           providerContinuity: { threadId: 'thread-recovered' },
           conversationRef: 'thread-recovered',
         });
@@ -2768,7 +2778,7 @@ describe('ExecutionService', () => {
         const jobId = `app-server-missing-${randomUUID()}`;
         trackJob(jobId);
         const session = allocateCodexSession(sessionManager, 'recover-missing', 'gpt-5', ctx.projectRoot);
-        sessionManager.checkpointProviderContinuity(session.sessionId, {
+        await seedTestProviderContinuity(sessionManager, session.sessionId, {
           providerContinuity: {
             threadId: 'thread-stale',
           },
@@ -2949,7 +2959,7 @@ describe('ExecutionService', () => {
         const jobId = `app-server-unavailable-${randomUUID()}`;
         trackJob(jobId);
         const session = allocateCodexSession(sessionManager, 'recover-unavailable', 'gpt-5', ctx.projectRoot);
-        sessionManager.checkpointProviderContinuity(session.sessionId, {
+        await seedTestProviderContinuity(sessionManager, session.sessionId, {
           providerContinuity: {
             threadId: 'thread-unverified',
           },
@@ -3180,7 +3190,11 @@ describe('ExecutionService adversarial', () => {
 
       const mgr = createSessionManager(ctx.projectRoot);
       const entry = allocateCodexSession(mgr, 'alpha', 'gpt-5', ctx.projectRoot);
-      mgr.setNonResumable(entry.sessionId);
+      await seedTestSessionContinuity(mgr, entry.sessionId, {
+        conversationRef: null,
+        resumable: false,
+        providerContinuity: null,
+      });
 
       const service = createService(ctx);
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);

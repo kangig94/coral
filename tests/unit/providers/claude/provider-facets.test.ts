@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { TEST_CLAUDE_SOURCE } from '../../../helpers/provider-credentials.js';
+import { TEST_CLAUDE_ACCESS } from '../../../helpers/provider-credentials.js';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
 import { claudePreflight, claudeRecoveryLifecycle } from '#src/providers/claude/provider-facets.js';
@@ -9,25 +9,25 @@ import {
   locateClaudeJsonlArtifact,
 } from '#src/providers/claude/artifacts.js';
 import type { ArtifactCleanupRuntime, ProviderPreflightRuntime } from '#src/providers/contract.js';
-import type { ClaudeCredentialSource } from '#src/providers/claude/execution-plan.js';
+import type { ClaudeProviderAccess } from '#src/providers/claude/execution-plan.js';
 
 function claudePreflightRuntime(
   files: Readonly<Record<string, string>>,
-): ProviderPreflightRuntime<ClaudeCredentialSource> {
+): ProviderPreflightRuntime<ClaudeProviderAccess> {
   const runExact = vi.fn(async (_command: string, args: string[]) =>
     args[0] === '--version'
       ? { stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null }
       : { stdout: JSON.stringify({ authenticated: true }), stderr: '', status: 0, signal: null },
   );
   return {
-    credentialSource: TEST_CLAUDE_SOURCE,
+    access: TEST_CLAUDE_ACCESS,
     cwd: '/workspace/project',
     storage: {
       existsSync: (path: string) => Object.hasOwn(files, path),
       readFileSync: (path: string) => files[path] ?? '',
     },
     runExact,
-  } as unknown as ProviderPreflightRuntime<ClaudeCredentialSource>;
+  } as unknown as ProviderPreflightRuntime<ClaudeProviderAccess>;
 }
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
@@ -102,7 +102,7 @@ describe('claudePreflight', () => {
   });
 
   it.each(['apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport'])(
-    'rejects the %s credential helper from the selected source',
+    'rejects the %s credential helper from the selected access',
     async (helper) => {
       const settingsPath = '/home/user/.claude/settings.json';
       const runtime = claudePreflightRuntime({ [settingsPath]: JSON.stringify({ [helper]: '/usr/bin/helper' }) });
@@ -146,10 +146,12 @@ describe('claudeRecoveryLifecycle.finalizeInterrupted', () => {
         resumable: true,
         updatedContinuity: {
           brokerSessionKey: 'broker-1',
+          brokerTurnId: 'turn-1',
         },
       },
       {
         brokerSessionKey: 'broker-1',
+        brokerTurnId: 'turn-1',
       },
       { preservedConversationRef: 'ref-x' },
     );
@@ -166,10 +168,12 @@ describe('claudeRecoveryLifecycle.finalizeInterrupted', () => {
         resumable: true,
         updatedContinuity: {
           brokerSessionKey: 'broker-1',
+          brokerTurnId: 'turn-1',
         },
       },
       {
         brokerSessionKey: 'broker-1',
+        brokerTurnId: 'turn-1',
       },
       {},
     );
@@ -237,12 +241,12 @@ describe('claudeArtifactCapability', () => {
     } as unknown as ArtifactCleanupRuntime;
 
     expect(
-      claudeArtifactCapability.locateArtifact?.({ conversationRef: 'session-1', source: TEST_CLAUDE_SOURCE, runtime }),
+      claudeArtifactCapability.locateArtifact?.({ conversationRef: 'session-1', access: TEST_CLAUDE_ACCESS, runtime }),
     ).toBe(`${root}/-workspace-a/session-1.jsonl`);
     expect(
       claudeArtifactCapability.locateArtifact?.({
         conversationRef: 'missing-session',
-        source: TEST_CLAUDE_SOURCE,
+        access: TEST_CLAUDE_ACCESS,
         runtime,
       }),
     ).toBeNull();
@@ -260,7 +264,7 @@ describe('claudeArtifactCapability', () => {
     } as unknown as ArtifactCleanupRuntime;
 
     expect(
-      claudeArtifactCapability.locateArtifact?.({ conversationRef: 'session-1', source: TEST_CLAUDE_SOURCE, runtime }),
+      claudeArtifactCapability.locateArtifact?.({ conversationRef: 'session-1', access: TEST_CLAUDE_ACCESS, runtime }),
     ).toBeNull();
   });
 });
@@ -309,7 +313,7 @@ describe('claudeArtifactCapability', () => {
     await expect(
       claudeArtifactCapability.discardArtifacts({
         handles: ['/tmp/session-a.jsonl', '/tmp/session-b.jsonl'],
-        source: TEST_CLAUDE_SOURCE,
+        access: TEST_CLAUDE_ACCESS,
         runtime,
       }),
     ).resolves.toEqual({ kind: 'discarded' });

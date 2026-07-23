@@ -1,7 +1,9 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { CoralSetupError } from '#src/runtime/errors.js';
+import { StoreCodecError } from '#src/store/body-codec.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -15,7 +17,7 @@ describe('rebuildProjections replay identity', () => {
   it('1000-event sequence produces byte-identical projection after rebuild', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       applyTestCounterSchema(db);
       const reducers = composeReducers(testCounterRegistry);
       const bodyCodec = createEventBodyCodec();
@@ -24,7 +26,6 @@ describe('rebuildProjections replay identity', () => {
       const inputs = Array.from({ length: 1000 }, (_, i) => ({
         type: 'test.counter.ticked' as const,
         stream: { kind: 'job' as const, id: `stream-${i % 3}` },
-        bodyVersion: 1,
         body: { id: ids[i % ids.length], delta: (i % 7) + 1 },
       }));
 
@@ -64,7 +65,7 @@ describe('rebuildProjections replay identity', () => {
   it('does NOT touch kb_corpus_state (Corpus control state)', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers({
         streamKind: 'job',
         entries: [defineDomainEvent({ type: 'test.invalid-stream-kind', schema: z.object({}).strict() })],
@@ -127,10 +128,10 @@ describe('rebuildProjections replay identity', () => {
     expect((thrown as CoralSetupError).code).toBe('reducer_duplicate');
   });
 
-  it('throws CoralSetupError(event_stream_kind_invalid) when an events row has an unknown stream kind', () => {
+  it('rejects an events row whose stream kind does not match its registered type', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
 
       db.prepare(
         `INSERT INTO events (
@@ -139,10 +140,9 @@ describe('rebuildProjections replay identity', () => {
            type,
            stream_kind,
            stream_id,
-           body_version,
            body
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(1, '2026-04-19T00:00:00.000Z', 'test.invalid-stream-kind', 'bogus', 'stream-1', 1, Buffer.from('{}'));
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(1, '2026-04-19T00:00:00.000Z', 'test.invalid-stream-kind', 'bogus', 'stream-1', Buffer.from('{}'));
 
       const reducers = composeReducers({
         streamKind: 'job',
@@ -162,48 +162,8 @@ describe('rebuildProjections replay identity', () => {
         thrown = error;
       }
 
-      expect(thrown).toBeInstanceOf(CoralSetupError);
-      expect((thrown as CoralSetupError).code).toBe('event_stream_kind_invalid');
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rejects a stored event body version outside the current codec during rebuild', () => {
-    const db = newRawDatabase(':memory:');
-    try {
-      applyBundledStoreSchema(db);
-      applyTestCounterSchema(db);
-      const reducers = composeReducers(testCounterRegistry);
-      const bodyCodec = createEventBodyCodec();
-      commitInputs(
-        db,
-        [
-          {
-            type: 'test.counter.ticked',
-            stream: { kind: 'job', id: 'job-version' },
-            bodyVersion: 1,
-            body: { id: 'version', delta: 1 },
-          },
-        ],
-        {
-          now: () => new Date(0),
-          reducers,
-          bodyCodec,
-          providers: permissiveProviderLookupPort,
-        },
-      );
-      db.prepare('UPDATE events SET body_version = 2 WHERE seq = 1').run();
-
-      expect(() =>
-        rebuildProjections({
-          db,
-          cutoffSeq: 1,
-          reducers,
-          bodyCodec,
-          extraProjectionTables: ['projection_test_counter'],
-        }),
-      ).toThrow("Stored event type 'test.counter.ticked' has body_version 2; the current codec accepts only 1");
+      expect(thrown).toBeInstanceOf(StoreCodecError);
+      expect((thrown as StoreCodecError).code).toBe('store_codec_rejected');
     } finally {
       db.close();
     }
@@ -212,7 +172,7 @@ describe('rebuildProjections replay identity', () => {
   it('rolls back projection rebuild when a registered stored body violates the current codec', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       applyTestCounterSchema(db);
       const reducers = composeReducers(testCounterRegistry);
       const bodyCodec = createEventBodyCodec();
@@ -222,7 +182,6 @@ describe('rebuildProjections replay identity', () => {
           {
             type: 'test.counter.ticked',
             stream: { kind: 'job', id: 'job-invalid-body' },
-            bodyVersion: 1,
             body: { id: 'preserved', delta: 3 },
           },
         ],

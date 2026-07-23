@@ -35,7 +35,7 @@ import {
   CODEX_CREDENTIAL_ENV_KEYS,
   CODEX_PROTECTED_REQUEST_ENV_KEYS,
 } from '#src/providers/codex/credential-policy.js';
-import { TEST_CLAUDE_SOURCE, TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CLAUDE_ACCESS, TEST_CODEX_ACCESS } from '#tests/helpers/provider-credentials.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/index.js';
 import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
@@ -47,7 +47,7 @@ afterAll(() => vi.unstubAllGlobals());
 
 function buildClaudeExecutionPlan(options: Omit<Parameters<typeof buildClaudeExecutionPlanWithHost>[0], 'hostPlan'>) {
   const host = buildClaudeHost({
-    source: options.source,
+    access: options.access,
     request: options.request,
     baseEnv: options.baseEnv,
     platform: options.platform,
@@ -162,7 +162,7 @@ describe('provider execution plan', () => {
         },
         EXECUTION_ENV_ALLOWLIST,
       ),
-      layer('routing', 'host', codexRoutingEnv(TEST_CODEX_SOURCE), new Set(['CODEX_HOME']), new Set(['CODEX_HOME'])),
+      layer('routing', 'host', codexRoutingEnv(TEST_CODEX_ACCESS), new Set(['CODEX_HOME']), new Set(['CODEX_HOME'])),
       layer('authority', 'turn', { CORAL_JOB_ID: 'job-1' }, new Set(['CORAL_JOB_ID']), new Set(['CORAL_JOB_ID'])),
       layer(
         'request',
@@ -176,7 +176,7 @@ describe('provider execution plan', () => {
       PATH: '/bin',
       HOME: '/home/operator',
       CORAL_OWNER: 'reviewer',
-      CODEX_HOME: TEST_CODEX_SOURCE.home,
+      CODEX_HOME: TEST_CODEX_ACCESS.home,
       CORAL_JOB_ID: 'job-1',
     });
     expect(Object.isFrozen(env)).toBe(true);
@@ -188,7 +188,7 @@ describe('provider execution plan', () => {
         layer(
           'routing',
           'host',
-          codexRoutingEnv(TEST_CODEX_SOURCE),
+          codexRoutingEnv(TEST_CODEX_ACCESS),
           new Set(['CODEX_HOME']),
           new Set(['CODEX_HOME', ...CODEX_CREDENTIAL_ENV_KEYS]),
         ),
@@ -203,9 +203,9 @@ describe('provider execution plan', () => {
       expect(
         compile([
           layer('base', 'host', { PATH: '/bin', [key]: '1' }, EXECUTION_ENV_ALLOWLIST),
-          layer('routing', 'host', claudeRoutingEnv(TEST_CLAUDE_SOURCE), new Set(['CLAUDE_CONFIG_DIR'])),
+          layer('routing', 'host', claudeRoutingEnv(TEST_CLAUDE_ACCESS), new Set(['CLAUDE_CONFIG_DIR'])),
         ]),
-      ).toEqual({ PATH: '/bin', CLAUDE_CONFIG_DIR: TEST_CLAUDE_SOURCE.configDir });
+      ).toEqual({ PATH: '/bin', CLAUDE_CONFIG_DIR: TEST_CLAUDE_ACCESS.configDir });
     },
   );
 
@@ -217,8 +217,8 @@ describe('provider execution plan', () => {
           'routing',
           'host',
           claudeRoutingEnv({
-            configDir: TEST_CLAUDE_SOURCE.configDir,
-            projectsRoot: TEST_CLAUDE_SOURCE.projectsRoot,
+            configDir: TEST_CLAUDE_ACCESS.configDir,
+            projectsRoot: TEST_CLAUDE_ACCESS.projectsRoot,
             routing: { kind: 'default-home', homeDir: '/caller' },
           }),
           new Set(['HOME']),
@@ -243,7 +243,7 @@ describe('provider execution plan', () => {
           layer(
             'routing',
             'host',
-            codexRoutingEnv(TEST_CODEX_SOURCE),
+            codexRoutingEnv(TEST_CODEX_ACCESS),
             new Set(['CODEX_HOME']),
             new Set(['CODEX_HOME']),
             'win32',
@@ -271,7 +271,7 @@ describe('provider execution plan', () => {
 
   it('keeps Claude broker account-neutral and binds only its controller', () => {
     const prepared = buildClaudeExecutionPlan({
-      source: TEST_CLAUDE_SOURCE,
+      access: TEST_CLAUDE_ACCESS,
       request: {
         action: 'exec',
         sessionId: 'session-1',
@@ -300,14 +300,14 @@ describe('provider execution plan', () => {
     });
     expect(controllerEnv).toMatchObject({
       PATH: '/bin',
-      CLAUDE_CONFIG_DIR: TEST_CLAUDE_SOURCE.configDir,
+      CLAUDE_CONFIG_DIR: TEST_CLAUDE_ACCESS.configDir,
       CORAL_CHILD: '1',
       CORAL_SESSION_ID: 'session-1',
       CORAL_JOB_ID: 'job-1',
       CORAL_CLAUDE_MODEL_CAP: 'sonnet',
     });
     expect(controllerEnv).not.toHaveProperty('CORAL_CODEX_EFFORT');
-    expect(plan.session.projectsRoot).toBe(TEST_CLAUDE_SOURCE.projectsRoot);
+    expect(plan.session.projectsRoot).toBe(TEST_CLAUDE_ACCESS.projectsRoot);
     expect(plan.host.broker.environment.every((entry) => entry.lifetime === 'host')).toBe(true);
     expect(plan.host.broker.environment.flatMap((entry) => Object.keys(entry.values))).not.toContain(
       'ANTHROPIC_API_KEY',
@@ -322,7 +322,7 @@ describe('provider execution plan', () => {
   it('keeps Claude broker identity invariant across owner, model, effort, and KB turn settings', () => {
     const prepare = (suffix: string) =>
       buildClaudeExecutionPlan({
-        source: TEST_CLAUDE_SOURCE,
+        access: TEST_CLAUDE_ACCESS,
         request: {
           action: 'exec',
           sessionId: `session-${suffix}`,
@@ -356,7 +356,7 @@ describe('provider execution plan', () => {
   it('keeps daemon HOME in one shared Claude broker while default-home bindings route only controllers', () => {
     const prepare = (homeDir: string, suffix: string) =>
       buildClaudeExecutionPlan({
-        source: {
+        access: {
           configDir: `${homeDir}/.claude`,
           projectsRoot: `${homeDir}/.claude/projects`,
           routing: { kind: 'default-home', homeDir },
@@ -400,20 +400,20 @@ describe('provider execution plan', () => {
       coralEnv: { CORAL_KB_PATH: '/kb', CORAL_OWNER: 'reviewer' },
     };
     const codexExecution = buildCodexExecutionPlan({
-      source: TEST_CODEX_SOURCE,
+      access: TEST_CODEX_ACCESS,
       request,
       baseEnv: { PATH: '/bin' },
       protectedEnv: { CORAL_CHILD_PRINCIPAL_HANDLE: 'replacement-only' },
       platform: 'linux',
     });
     const codexAttachmentPlan = buildCodexExecutionPlan({
-      source: TEST_CODEX_SOURCE,
+      access: TEST_CODEX_ACCESS,
       request,
       baseEnv: { PATH: '/bin' },
       platform: 'linux',
     });
     const claudeExecution = buildClaudeExecutionPlan({
-      source: TEST_CLAUDE_SOURCE,
+      access: TEST_CLAUDE_ACCESS,
       request,
       baseEnv: { PATH: '/bin' },
       protectedEnv: { CORAL_CHILD_PRINCIPAL_HANDLE: 'replacement-only' },
@@ -421,7 +421,7 @@ describe('provider execution plan', () => {
       platform: 'linux',
     });
     const claudeAttachmentPlan = buildClaudeExecutionPlan({
-      source: TEST_CLAUDE_SOURCE,
+      access: TEST_CLAUDE_ACCESS,
       request,
       baseEnv: { PATH: '/bin' },
       storage: { existsSync: () => false },
@@ -439,7 +439,7 @@ describe('provider execution plan', () => {
   it('reuses a Codex host for one profile and splits hosts across profiles', () => {
     const prepare = (home: string, sessionId: string, handle: string) =>
       buildCodexExecutionPlan({
-        source: { home },
+        access: { home },
         request: {
           action: 'exec',
           sessionId,
@@ -478,7 +478,7 @@ describe('provider execution plan', () => {
   ])('treats Codex process setting %s as stable host identity, never turn state', (key, firstValue, secondValue) => {
     const prepare = (value: string) =>
       buildCodexExecutionPlan({
-        source: TEST_CODEX_SOURCE,
+        access: TEST_CODEX_ACCESS,
         request: {
           action: 'exec',
           sessionId: 'session-1',
@@ -507,7 +507,7 @@ describe('provider execution plan', () => {
     (key, firstValue, secondValue) => {
       const prepare = (value: string) =>
         buildCodexExecutionPlan({
-          source: TEST_CODEX_SOURCE,
+          access: TEST_CODEX_ACCESS,
           request: {
             action: 'exec',
             sessionId: 'session-1',
@@ -535,7 +535,7 @@ describe('provider execution plan', () => {
   ])('keeps Claude controller process setting %s out of shared broker identity', (key, firstValue, secondValue) => {
     const prepare = (value: string) =>
       buildClaudeExecutionPlan({
-        source: TEST_CLAUDE_SOURCE,
+        access: TEST_CLAUDE_ACCESS,
         request: {
           action: 'exec',
           sessionId: 'session-1',
@@ -569,7 +569,7 @@ describe('provider execution plan', () => {
     (key, firstValue, secondValue) => {
       const prepare = (value: string) =>
         buildClaudeExecutionPlan({
-          source: TEST_CLAUDE_SOURCE,
+          access: TEST_CLAUDE_ACCESS,
           request: {
             action: 'exec',
             sessionId: 'session-1',
@@ -605,13 +605,13 @@ describe('provider execution plan', () => {
       coralEnv: { CORAL_OWNER: 'reviewer', CORAL_EFFORT: 'high' },
     };
     const codex = buildCodexExecutionPlan({
-      source: TEST_CODEX_SOURCE,
+      access: TEST_CODEX_ACCESS,
       request,
       baseEnv: { PATH: '/bin' },
       platform: 'linux',
     });
     const claude = buildClaudeExecutionPlan({
-      source: TEST_CLAUDE_SOURCE,
+      access: TEST_CLAUDE_ACCESS,
       request,
       baseEnv: { PATH: '/bin' },
       storage: { existsSync: () => false },
@@ -631,7 +631,7 @@ describe('provider execution plan', () => {
 
   it('removes inherited secrets, request credentials, and cross-provider settings before storing any plan layer', () => {
     const claude = buildClaudeExecutionPlan({
-      source: TEST_CLAUDE_SOURCE,
+      access: TEST_CLAUDE_ACCESS,
       request: {
         action: 'exec',
         sessionId: 'session-1',
@@ -656,7 +656,7 @@ describe('provider execution plan', () => {
       platform: 'linux',
     });
     const codex = buildCodexExecutionPlan({
-      source: TEST_CODEX_SOURCE,
+      access: TEST_CODEX_ACCESS,
       request: {
         action: 'exec',
         sessionId: 'session-1',
@@ -703,7 +703,7 @@ describe('provider execution plan', () => {
 
   it('keeps Codex shared while callback authority remains thread scoped', () => {
     const prepared = buildCodexExecutionPlan({
-      source: TEST_CODEX_SOURCE,
+      access: TEST_CODEX_ACCESS,
       request: {
         action: 'exec',
         sessionId: 'session-1',
@@ -742,7 +742,7 @@ describe('provider execution plan', () => {
       coralEnv: {},
     };
     const normalClaude = buildClaudeExecutionPlan({
-      source: TEST_CLAUDE_SOURCE,
+      access: TEST_CLAUDE_ACCESS,
       request,
       baseEnv: { PATH: '/bin' },
       storage: { existsSync: () => false },
@@ -750,7 +750,7 @@ describe('provider execution plan', () => {
       platform: 'linux',
     });
     const recoveryClaude = buildClaudeExecutionPlan({
-      source: TEST_CLAUDE_SOURCE,
+      access: TEST_CLAUDE_ACCESS,
       request,
       baseEnv: { PATH: '/bin' },
       storage: { existsSync: () => false },
@@ -758,14 +758,14 @@ describe('provider execution plan', () => {
       platform: 'linux',
     });
     const normalCodex = buildCodexExecutionPlan({
-      source: TEST_CODEX_SOURCE,
+      access: TEST_CODEX_ACCESS,
       request,
       baseEnv: { PATH: '/bin' },
       protectedEnv: { CORAL_CHILD_PRINCIPAL_HANDLE: 'normal-handle' },
       platform: 'linux',
     });
     const recoveryCodex = buildCodexExecutionPlan({
-      source: TEST_CODEX_SOURCE,
+      access: TEST_CODEX_ACCESS,
       request,
       baseEnv: { PATH: '/bin' },
       protectedEnv: { CORAL_CHILD_PRINCIPAL_HANDLE: 'recovery-handle' },
@@ -794,7 +794,7 @@ describe('provider execution plan', () => {
       storage: runtime.storage,
       env: runtime.env,
       time: runtime.time,
-      credentialSource: { ...TEST_CODEX_SOURCE, home: '/accounts/codex-a' },
+      access: { ...TEST_CODEX_ACCESS, home: '/accounts/codex-a' },
       cwd: '/workspace/project',
       baseEnv: runtime.env.fullSnapshot(),
       requestEnv: { CORAL_CODEX_EFFORT: 'high', CORAL_CLAUDE_MODEL_CAP: 'must-not-leak' },
@@ -823,7 +823,7 @@ describe('provider execution plan', () => {
       storage: runtime.storage,
       env: runtime.env,
       time: runtime.time,
-      credentialSource: {
+      access: {
         configDir: 'C:\\Users\\operator\\.claude-work',
         projectsRoot: 'C:\\Users\\operator\\.claude-work\\projects',
         routing: { kind: 'config-dir' },
@@ -856,7 +856,7 @@ describe('provider execution plan', () => {
       storage: runtime.storage,
       env: runtime.env,
       time: runtime.time,
-      credentialSource: { home: 'C:\\Users\\operator\\.codex-work' },
+      access: { home: 'C:\\Users\\operator\\.codex-work' },
       cwd: 'C:\\workspace',
       baseEnv: { PATH: 'C:\\Windows\\System32' },
       requestEnv: {},

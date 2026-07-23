@@ -8,34 +8,37 @@ import type { ReadonlyDatabase } from '../../store/read-port.js';
 
 const DEFAULT_RETRY_REASON = 'pending-repair';
 
-const retryRowSchema = z.object({
-  entry_id: kbEntryIdSchema,
-  entry_seq: z.number().int().positive().nullable(),
-  reason: z.string().min(1),
-  observed_at: z.string().datetime({ offset: true }),
-  observed_content_hash: z.string().min(1).nullable(),
-  locus: z.string().nullable(),
-  canonical_incident: z.string().nullable(),
-  signals_json: z
-    .string()
-    .nullable()
-    .superRefine((value, ctx) => {
-      if (value === null) {
-        return;
-      }
-      try {
-        JSON.parse(value);
-      } catch {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'signals_json must be valid JSON',
-        });
-      }
-    }),
-  repair_hint: z.string().nullable(),
-  retry_not_before: z.string().datetime({ offset: true }),
-  retry_count: z.number().int().nonnegative(),
-});
+export const retryRowSchema = z
+  .object({
+    entry_id: kbEntryIdSchema,
+    entry_seq: z.number().int().positive().nullable(),
+    reason: z.string().min(1),
+    observed_at: z.string().datetime({ offset: true }),
+    observed_content_hash: z.string().min(1).nullable(),
+    locus: z.string().nullable(),
+    canonical_incident: z.string().nullable(),
+    signals_json: z
+      .string()
+      .nullable()
+      .superRefine((value, ctx) => {
+        if (value === null) {
+          return;
+        }
+        try {
+          JSON.parse(value);
+        } catch {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'signals_json must be valid JSON',
+          });
+        }
+      })
+      .describe('valid-json-or-null-retry-signals'),
+    repair_hint: z.string().nullable(),
+    retry_not_before: z.string().datetime({ offset: true }),
+    retry_count: z.number().int().nonnegative(),
+  })
+  .strict();
 
 function rowToPendingRepair(row: KbCurateRetryQueueRow): PendingRepair {
   const parsed = retryRowSchema.parse(row);

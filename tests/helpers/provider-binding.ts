@@ -8,7 +8,7 @@ import {
 } from '#src/providers/contracts/binding.js';
 import { zodPersistedParser, zodValueParser } from '#src/providers/binding-parser.js';
 
-export type FixtureProviderSource = {
+export type FixtureProviderAccess = {
   readonly root: string;
   readonly routingEnv: Readonly<Record<string, string>>;
 };
@@ -56,10 +56,11 @@ export function fixtureProviderBindingCodec(
       readonly subject: string;
     };
   } = {},
-): ProviderBindingCodec<FixtureSelection, FixtureProfile, FixtureAccountSubject, FixtureProviderSource> {
+): ProviderBindingCodec<FixtureSelection, FixtureProfile, FixtureAccountSubject, FixtureProviderAccess> {
   const base = {
     parseSelection: zodValueParser(createSelectionSchema),
-    parseProfile: zodValueParser(createProfileSchema),
+    persistedProfile: zodPersistedParser(createProfileSchema),
+    persistedContinuity: zodPersistedParser(() => z.record(z.string(), z.unknown())),
     captureSelection: () => bindingSuccess({ key: provider }),
     async canonicalizeProfile(selection: FixtureSelection) {
       return bindingSuccess({ canonicalLocation: `/${selection.key}`, routing: {} });
@@ -67,7 +68,7 @@ export function fixtureProviderBindingCodec(
     selectorLabel: () => `${provider} fixture selector`,
     renderFailure: (failure: ProviderBindingFailure) => `${provider} fixture binding failed: ${failure.reason}`,
   };
-  const credentialSource = (binding: { profile: FixtureProfile }): FixtureProviderSource => {
+  const access = (binding: { profile: FixtureProfile }): FixtureProviderAccess => {
     const routingEnv: Record<string, string> =
       provider === 'claude'
         ? { CLAUDE_CONFIG_DIR: binding.profile.canonicalLocation }
@@ -99,7 +100,7 @@ export function fixtureProviderBindingCodec(
           ? bindingSuccess({ ready: true, use })
           : bindingFailure({ reason: 'subject-mismatch', provider });
       },
-      credentialSource,
+      access,
       compareBinding(left, right) {
         if (left.profile.canonicalLocation !== right.profile.canonicalLocation) {
           return bindingFailure({ reason: 'profile-mismatch', provider });
@@ -123,7 +124,7 @@ export function fixtureProviderBindingCodec(
         ? bindingSuccess({ ready: true, use })
         : bindingFailure(options.readinessFailure);
     },
-    credentialSource,
+    access,
     compareBinding: (left, right) =>
       left.profile.canonicalLocation === right.profile.canonicalLocation
         ? bindingSuccess(true)

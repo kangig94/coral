@@ -43,7 +43,7 @@ describe('hook stubs no-op', () => {
     const logLine = JSON.parse(result.stderr.trim()) as { hook?: unknown; message?: unknown };
     expect(logLine).toMatchObject({
       hook: 'pre-compact',
-      message: 'no relevant jobs to snapshot',
+      message: 'compact snapshot skipped',
     });
   });
 });

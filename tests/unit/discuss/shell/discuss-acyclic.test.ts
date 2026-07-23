@@ -73,6 +73,9 @@ const ALLOWED_PROVIDER_SESSION_RUNTIME_EDGES = new Set([
 
 function classifyDomainBucket(canonicalPath: string): DomainBucket {
   const sourceRelativePath = canonicalPath.slice('src/'.length);
+  if (sourceRelativePath === 'store-format.ts') {
+    return 'coordinator';
+  }
   if (sourceRelativePath === 'engines' || sourceRelativePath.startsWith('engines/')) {
     return 'kb';
   }
@@ -237,6 +240,10 @@ function isAllowedProviderSessionRuntimeEdge(edge: ParsedEdge): boolean {
   return isProviderSessionRuntimeEdge(edge) && ALLOWED_PROVIDER_SESSION_RUNTIME_EDGES.has(edgeKey(edge));
 }
 
+function isStoreFormatCompositionEdge(edge: ParsedEdge): boolean {
+  return edge.source === 'src/store-format.ts' || edge.target === 'src/store-format.ts';
+}
+
 describe('discuss architecture guard', () => {
   it('enforces discuss domain boundary (runtime + type-only) with a TypeScript-aware component graph', () => {
     const productionFilePaths = listProductionSourceFiles(SRC_ROOT);
@@ -250,7 +257,9 @@ describe('discuss architecture guard', () => {
     });
     const runtimeDomainGraph = buildRuntimeDomainGraph(
       domainBucketNodes,
-      crossDomainEdges.filter((edge) => !isAllowedProviderSessionRuntimeEdge(edge)),
+      crossDomainEdges.filter(
+        (edge) => !isAllowedProviderSessionRuntimeEdge(edge) && !isStoreFormatCompositionEdge(edge),
+      ),
     );
     const runtimeDomainSccs = findStronglyConnectedComponents(runtimeDomainGraph).filter((scc) => scc.length > 1);
 

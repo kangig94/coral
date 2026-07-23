@@ -5,6 +5,7 @@ import {
 } from '../../../infra/immutable-snapshot.js';
 import type { ProviderSession } from '../../../sessions/entry.js';
 import type { BoundProvider } from '../../../providers/bound-provider-contract.js';
+import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import type {
   ProviderRecoveryAuthority,
   ProviderRecoveryLaunch,
@@ -15,10 +16,11 @@ export function snapshotProviderRecoveryAuthority(
   launchRecord: ProviderRecoveryLaunch,
   session: ProviderSession,
   boundProvider: BoundProvider,
+  providerContinuity: ProviderContinuityBlob | undefined,
 ): ProviderRecoveryAuthority {
   return Object.freeze({
     launchRecord: snapshotRecoveryLaunch(launchRecord),
-    session: snapshotRecoverySession(session),
+    session: snapshotRecoverySession(session, providerContinuity),
     boundProvider,
   });
 }
@@ -76,7 +78,10 @@ function snapshotRecoveryLaunch(launchRecord: ProviderRecoveryLaunch): ProviderR
   );
 }
 
-function snapshotRecoverySession(session: ProviderSession): ProviderRecoverySession {
+function snapshotRecoverySession(
+  session: ProviderSession,
+  providerContinuity: ProviderContinuityBlob | undefined,
+): ProviderRecoverySession {
   const label = 'Provider recovery session';
   const conversationRef = readOptionalOwnDataProperty(session, 'conversationRef', label);
   const artifactHandles = immutablePlainSnapshot(
@@ -94,7 +99,7 @@ function snapshotRecoverySession(session: ProviderSession): ProviderRecoverySess
       sessionId: readOwnDataProperty(session, 'sessionId', label),
       projectRoot: readOwnDataProperty(session, 'projectRoot', label),
       ...(conversationRef === undefined ? {} : { conversationRef }),
-      providerContinuity: readOwnDataProperty(session, 'providerContinuity', label),
+      providerContinuity: providerContinuity ?? null,
       artifactHandles: minimalArtifactHandles,
       version: readOwnDataProperty(session, 'version', label),
     },

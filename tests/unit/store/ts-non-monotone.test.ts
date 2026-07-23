@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -19,7 +20,7 @@ const NOW = new Date('2026-04-19T00:00:00.000Z');
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -64,7 +65,6 @@ describe('ts non-monotone policy (S5)', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: 'session-live' },
             refs: { sessionId: 'session-live' },
-            bodyVersion: 1,
             body: {
               entry: sessionEntry('session-live'),
               controller: 'default',
@@ -77,7 +77,6 @@ describe('ts non-monotone policy (S5)', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: 'session-archived' },
             refs: { sessionId: 'session-archived' },
-            bodyVersion: 1,
             tsOverride: past,
             body: {
               entry: sessionEntry('session-archived'),

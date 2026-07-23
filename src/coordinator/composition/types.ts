@@ -29,6 +29,7 @@ import type { CoordinatorStoreServices, StoreServicesRef } from './store-service
 import type { HealthSnapshot } from '../../transport/server-ports.js';
 import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
 import type { ProviderScope } from '../../infra/provider-scope.js';
+import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
 
 type CoordinatorBootSnapshot = {
   version?: string;
@@ -50,6 +51,7 @@ export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
 export type CoordinatorCoreOptions = {
   runtime: Runtime;
+  storeFormat: StoreFormatDescription;
   bootSnapshot?: CoordinatorBootSnapshot;
   pluginRoot?: string;
   backendNamespace?: string;

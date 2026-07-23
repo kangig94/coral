@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -24,7 +25,7 @@ const TS_OVERRIDE = '2026-04-18T12:00:00.000Z';
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -75,7 +76,6 @@ function launchInput(jobId: string, sessionId = `session-${jobId}`): CoralEventI
     type: 'job.launch.requested',
     stream: { kind: 'job', id: jobId },
     refs: { jobId, sessionId },
-    bodyVersion: 1,
     body: launchBody(jobId, sessionId),
   };
 }
@@ -110,7 +110,6 @@ function claimInput(entry: ProviderSession, jobId: string): CoralEventInput<Sess
     type: 'session.claimed',
     stream: { kind: 'session', id: entry.sessionId },
     refs: { sessionId: entry.sessionId, jobId },
-    bodyVersion: 1,
     body: { entry: claimed, jobId },
   };
 }
@@ -120,7 +119,6 @@ function workflowPlanInput(workflowId: string): CoralEventInput<WorkflowDeclared
     type: 'workflow.plan.declared',
     stream: { kind: 'workflow', id: workflowId },
     refs: { workflowId },
-    bodyVersion: 1,
     body: {
       plan: {
         slots: [
@@ -158,7 +156,6 @@ describe('journal commit primitive', () => {
             type: 'job.terminal.recorded',
             stream: { kind: 'job', id: 'job-b' },
             refs: { jobId: 'job-b', sessionId: 'session-b' },
-            bodyVersion: 1,
             body: {
               terminal: {
                 outcome: { kind: 'failed', causeRef: jobACause },
@@ -207,7 +204,6 @@ describe('journal commit primitive', () => {
               type: 'job.progress.emitted',
               stream: { kind: 'job', id: 'job-hidden-token' },
               refs: { jobId: 'job-hidden-token' },
-              bodyVersion: 1,
               body: {
                 kind: 'domain',
                 stage: 'hosted_kb_operation_failed',
@@ -247,7 +243,6 @@ describe('journal commit primitive', () => {
               type: 'job.progress.emitted',
               stream: { kind: 'job', id: 'job-any-hidden-token' },
               refs: { jobId: 'job-any-hidden-token' },
-              bodyVersion: 1,
               body,
             });
             return undefined;
@@ -272,7 +267,6 @@ describe('journal commit primitive', () => {
             c.append({
               type: 'test.non_finite',
               stream: { kind: 'job', id: 'job-non-finite' },
-              bodyVersion: 1,
               body: {
                 nested: {
                   value: Infinity,
@@ -367,7 +361,6 @@ describe('journal commit primitive', () => {
               type: 'workflow.completed',
               stream: { kind: 'workflow', id: 'workflow-forward' },
               refs: { workflowId: 'workflow-forward' },
-              bodyVersion: 1,
               body,
             });
             const later = c.append(workflowPlanInput('workflow-forward-cause'));
@@ -395,7 +388,6 @@ describe('journal commit primitive', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: 'session-chain' },
             refs: { sessionId: 'session-chain' },
-            bodyVersion: 1,
             body: {
               entry,
               controller: 'default',
@@ -406,7 +398,6 @@ describe('journal commit primitive', () => {
             type: 'session.provider_failed',
             stream: { kind: 'session', id: 'session-chain' },
             refs: { sessionId: 'session-chain' },
-            bodyVersion: 1,
             body: {
               provider: 'codex',
               reason: 'request_failed',
@@ -418,7 +409,6 @@ describe('journal commit primitive', () => {
             type: 'workflow.completed',
             stream: { kind: 'workflow', id: 'workflow-chain' },
             refs: { workflowId: 'workflow-chain' },
-            bodyVersion: 1,
             body: {
               outcome: 'failed',
               causeRef: providerFailure,
@@ -431,7 +421,6 @@ describe('journal commit primitive', () => {
             type: 'job.terminal.recorded',
             stream: { kind: 'job', id: 'job-chain' },
             refs: { jobId: 'job-chain', sessionId: 'session-chain' },
-            bodyVersion: 1,
             body: {
               terminal: {
                 outcome: { kind: 'failed', causeRef: workflowCompleted },
@@ -490,7 +479,6 @@ describe('journal commit primitive', () => {
       type: 'session.opened' as const,
       stream: { kind: 'session' as const, id: entry.sessionId },
       refs: { sessionId: entry.sessionId },
-      bodyVersion: 1 as const,
       body: { entry, controller: 'default', scope_key: 'tests' },
     };
     try {
@@ -533,7 +521,6 @@ describe('journal commit primitive', () => {
         type: 'session.opened' as const,
         stream: { kind: 'session' as const, id: entry.sessionId },
         refs: { sessionId: entry.sessionId },
-        bodyVersion: 1 as const,
         body: { entry, controller: 'default', scope_key: 'tests' },
       };
       expect(() =>
@@ -588,7 +575,6 @@ describe('journal commit primitive', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: mismatchedEntry.sessionId },
             refs: { sessionId: mismatchedEntry.sessionId },
-            bodyVersion: 1,
             body: { entry: mismatchedEntry, controller: 'default', scope_key: 'tests' },
           });
         },

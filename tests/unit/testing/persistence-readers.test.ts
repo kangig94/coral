@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -25,6 +26,7 @@ const nodeStoreStorage = createRealRuntime('prod').storage;
 
 function withWritableStore(write: (db: ReturnType<typeof openStoreDatabase>) => void): void {
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: storePaths(resolveBuildFlavor(process.env)).dbFile,
     storage: nodeStoreStorage,
   });
@@ -83,9 +85,8 @@ function insertJobEvent(
          namespace,
          project,
          refs,
-         body_version,
          body
-       ) VALUES (?, ?, 'job', ?, 'ns', '/tmp/project', ?, 1, ?)`,
+       ) VALUES (?, ?, 'job', ?, 'ns', '/tmp/project', ?, ?)`,
     )
     .run(ts, type, jobId, JSON.stringify({ jobId }), payload);
   return Number(result.lastInsertRowid);
@@ -136,7 +137,7 @@ function seedJobProjection(
          workflow_slot,
          created_at,
          last_seq
-       ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
+       ) VALUES (?, ?, ?, NULL, '{"progressFaults":[]}', ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
     ).run(
       jobId,
       JSON.stringify(

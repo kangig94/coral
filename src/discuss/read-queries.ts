@@ -1,4 +1,4 @@
-import type { Database } from '../store/db.js';
+import { sqlPlaceholders, type Database } from '../store/db.js';
 
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from './events.js';
 import { listProjectionDiscussSnapshots, readProjectionDiscuss } from './projections.js';
@@ -88,15 +88,17 @@ export function readDiscussSnapshot(db: Database, ref: DiscussReadRef): Persiste
 export function readDiscussEventLog(db: Database, ref: DiscussReadRef, ctx: StoreReadContext): DiscussDomainEvent[] {
   const discussId = discussIdFromRef(ref);
   const snapshot = readProjectionDiscuss(db, discussId)?.state ?? null;
+  const eventTypes = [...ctx.streamKinds].filter(([, streamKind]) => streamKind === 'discuss').map(([type]) => type);
+  if (eventTypes.length === 0) return [];
   const rows = db
     .prepare(
       `SELECT *
          FROM events
-        WHERE stream_kind = 'discuss'
-          AND stream_id = ?
+        WHERE stream_id = ?
+          AND type IN (${sqlPlaceholders(eventTypes.length)})
         ORDER BY seq ASC`,
     )
-    .all(discussId) as EventsRow[];
+    .all(discussId, ...eventTypes) as EventsRow[];
 
   const events: DiscussDomainEvent[] = [];
   for (const row of rows) {

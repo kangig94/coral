@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { TEST_PROVIDER_SCOPE, withTestProfileLocation } from '#tests/helpers/provider-credentials.js';
 import { describe, expect, it, vi } from 'vitest';
@@ -99,12 +100,13 @@ function createHarness(options: {
   slotStates?: Partial<Record<number, SlotRecoveryState>>;
 }) {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
 
   const runtime = new SimulationRuntime();
   const progressStore = new JobStore(BACKEND_NAMESPACE, runtime, createEventBodyCodec(), {
     db,
     providers: permissiveProviderLookupPort,
+    reducers: composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry),
   });
   const plan = createWorkflowPlan(options.expression);
   commitWorkflowEvents(
@@ -142,7 +144,6 @@ function createHarness(options: {
       namespace: BACKEND_NAMESPACE,
       project: PROJECT_ROOT,
       refs: { jobId: 'workflow-1', workflowId: 'workflow-1' },
-      bodyVersion: 1,
       body: { transport: 'workflow', startedAt: new Date(runtime.time.now()).toISOString() },
     });
     return undefined;
@@ -195,13 +196,14 @@ function createHarness(options: {
     if (projectionPhase !== null) {
       db.prepare(
         `INSERT INTO projection_jobs (
-           job_id, execution_owner, phase, session_id, provider, project_root, backend_namespace,
+           job_id, execution_owner, phase, diagnostics, session_id, provider, project_root, backend_namespace,
            job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
 	         )
-	         VALUES (?, ?, ?, ?, ?, ?, ?, 'provider', ?, ?, '2026-04-20T00:00:00.000Z', ?)
+	         VALUES (?, ?, ?, '{"progressFaults":[]}', ?, ?, ?, ?, 'provider', ?, ?, '2026-04-20T00:00:00.000Z', ?)
 	         ON CONFLICT(job_id) DO UPDATE SET
 	           execution_owner = excluded.execution_owner,
 	           phase = excluded.phase,
+	           diagnostics = excluded.diagnostics,
 	           session_id = excluded.session_id,
 	           provider = excluded.provider,
 	           project_root = excluded.project_root,
@@ -345,6 +347,14 @@ describe('workflow recovery branch rules', () => {
         lastUsedAt: claimedAt,
         version: pendingEntry.version + 1,
       };
+      const persistedBeforeClaim = JSON.parse(
+        (
+          harness.db
+            .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
+            .get(sessionId) as { entry: string }
+        ).entry,
+      ) as ProviderSession;
+      expect(claimedEntry.version).toBe(persistedBeforeClaim.version + 1);
       const launch = {
         jobId: 'replacement-1',
         owner: { kind: 'workflow', id: 'workflow-1' },
@@ -455,7 +465,6 @@ describe('workflow recovery branch rules', () => {
           type: 'session.interrupted',
           stream: { kind: 'session', id: sessionId },
           refs: { sessionId, jobId: slot.slotId },
-          bodyVersion: 1,
           body: { trigger: 'restart', continuity: 'pre_checkpoint_preserved' },
         },
       ],
@@ -539,10 +548,10 @@ describe('workflow recovery branch rules', () => {
     harness.db
       .prepare(
         `INSERT INTO projection_jobs (
-         job_id, execution_owner, phase, session_id, provider, project_root, backend_namespace,
+         job_id, execution_owner, phase, diagnostics, session_id, provider, project_root, backend_namespace,
          job_kind, parent_workflow_job_id, workflow_slot, workflow_slot_generation,
          replaces_workflow_job_id, created_at, last_seq
-       ) VALUES (?, ?, 'completed', ?, ?, ?, ?, 'provider', ?, ?, 2, ?, ?, 999)`,
+       ) VALUES (?, ?, 'completed', '{"progressFaults":[]}', ?, ?, ?, ?, 'provider', ?, ?, 2, ?, ?, 999)`,
       )
       .run(
         'invalid-generation-2',

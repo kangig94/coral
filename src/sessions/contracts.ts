@@ -1,5 +1,5 @@
-import type { ProviderContinuityBlob, ContinuitySnapshot } from './continuity.js';
-import type { SessionContinuityMutation } from './continuity-mutation.js';
+import type { ProviderValidatedContinuitySnapshot } from './continuity.js';
+import type { ProviderValidatedSessionContinuityMutation } from './continuity-mutation.js';
 import type { CommitContext } from '../store/append.js';
 import type { ProviderInstruction } from '../providers/contract.js';
 import type { ProviderArtifactIdentity } from '../providers/artifact-identity.js';
@@ -49,7 +49,7 @@ export interface SessionJobClaimPort extends SessionJobReadPort {
     options: {
       expectedActiveJobId: string;
       expectedVersion: number;
-      snapshot: ContinuitySnapshot;
+      snapshot: ProviderValidatedContinuitySnapshot;
     },
   ): Promise<SessionJobContinuityCheckpointResult>;
   recordArtifactHandleAtomic(
@@ -99,19 +99,13 @@ export interface SessionExecutionPort extends SessionInitialLaunchPort {
 export interface SessionRecoveryPort {
   get(provider: string, sessionId: string): ProviderSession | null;
   readById(sessionId: string, options?: { forceFresh?: boolean }): ProviderSession | null;
-  checkpointProviderContinuity(
-    sessionId: string,
-    update: { providerContinuity: ProviderContinuityBlob; conversationRef?: string },
-  ): void;
-  setConversationRef(sessionId: string, conversationRef: string): void;
-  setNonResumable(sessionId: string): void;
   releaseJob(sessionId: string, jobId: string): void;
   finalizeJobContinuityAtomic(
     sessionId: string,
     options: {
       expectedActiveJobId: string;
       expectedVersion: number;
-      mutation: SessionContinuityMutation;
+      mutation: ProviderValidatedSessionContinuityMutation;
       appendBeforeRelease?: <Scope>(commit: CommitContext<Scope>) => void;
     },
   ): Promise<boolean>;

@@ -16,7 +16,6 @@ import {
   CLAUDE_BROKER_CHILD_EXIT_RPC_CODE,
   CLAUDE_BROKER_STATE_RPC_CODE,
   ClaudeBrokerRpcError,
-  TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION,
   readSessionId,
   systemProgressMessage,
   toBootstrapSignature,
@@ -1385,7 +1384,6 @@ export class SingleSessionController {
   ): TurnFailureDiagnostic {
     const childOutputTail = this.outputRing;
     return {
-      schemaVersion: TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION,
       reason: this.turnFailureReason(message, phase, childOutputTail),
       phase,
       idleMs: this.turnFailureIdleMs(turn, phase, failedAt),

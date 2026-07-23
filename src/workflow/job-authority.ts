@@ -4,6 +4,7 @@ import { decodeBody } from '../store/body-codec.js';
 import type { DomainAppendValidator } from '../store/reducers.js';
 import { jobLaunchRequestBodySchema } from '../jobs/launch.js';
 import { workflowLifecycleSchema, workflowTerminalLifecycleSchema } from './lifecycle.js';
+import { readProjectionJobRows } from '../jobs/projection-row.js';
 
 const TERMINAL_LIFECYCLES: ReadonlySet<string> = new Set(workflowTerminalLifecycleSchema.options);
 
@@ -48,17 +49,9 @@ export const validateWorkflowJobAuthority: DomainAppendValidator = (ctx, inputs)
   const readHead = (workflowId: string, slotId: string): WorkflowSlotHead | null => {
     const key = `${workflowId}\0${slotId}`;
     if (heads.has(key)) return heads.get(key) ?? null;
-    const rows = ctx.db
-      .prepare<
-        [string, string],
-        { job_id: string; session_id: string | null; workflow_slot_generation: number | null; terminal: string | null }
-      >(
-        `SELECT job_id, session_id, workflow_slot_generation, terminal
-           FROM projection_jobs
-          WHERE parent_workflow_job_id = ? AND workflow_slot = ?
-          ORDER BY workflow_slot_generation ASC`,
-      )
-      .all(workflowId, slotId);
+    const rows = readProjectionJobRows(ctx.db)
+      .filter((row) => row.parent_workflow_job_id === workflowId && row.workflow_slot === slotId)
+      .sort((left, right) => (left.workflow_slot_generation ?? 0) - (right.workflow_slot_generation ?? 0));
     let expectedGeneration = 0;
     let predecessor: string | null = null;
     let head: WorkflowSlotHead | null = null;
@@ -72,9 +65,9 @@ export const validateWorkflowJobAuthority: DomainAppendValidator = (ctx, inputs)
         });
       }
       const launchRow = ctx.db
-        .prepare<[string], { type: string; body_version: number; body: Uint8Array | Buffer }>(
-          `SELECT type, body_version, body FROM events
-            WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested' LIMIT 1`,
+        .prepare<[string], { type: string; stream_kind: 'job'; body: Uint8Array | Buffer }>(
+          `SELECT type, stream_kind, body FROM events
+            WHERE stream_id = ? AND type = 'job.launch.requested' LIMIT 1`,
         )
         .get(row.job_id);
       if (launchRow === undefined)

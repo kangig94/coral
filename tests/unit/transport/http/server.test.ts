@@ -1,9 +1,10 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allocateTestSession } from '../../../helpers/session.js';
 import {
   TEST_CODEX_BINDING,
-  TEST_CODEX_SOURCE,
-  TEST_CLAUDE_SOURCE,
+  TEST_CODEX_ACCESS,
+  TEST_CLAUDE_ACCESS,
   TEST_PROVIDER_SCOPE,
   TEST_SYSTEM_PROVIDER_SCOPE,
   withTestBindingLocation,
@@ -605,7 +606,7 @@ describe('execution backend server', () => {
       }),
     ).rejects.toMatchObject({
       code: 'system_provider_scope_invalid',
-      remediation: expect.stringContaining('duplicate codex credential profile'),
+      remediation: expect.stringContaining('remove the duplicate or invalid provider entry'),
     });
   });
 
@@ -680,8 +681,8 @@ describe('execution backend server', () => {
       systemProviderScope: { name: 'test-system', providers: ['claude', 'codex'] },
     });
     const serializedHealth = JSON.stringify(body);
-    expect(serializedHealth).not.toContain(TEST_CODEX_SOURCE.home);
-    expect(serializedHealth).not.toContain(TEST_CLAUDE_SOURCE.configDir);
+    expect(serializedHealth).not.toContain(TEST_CODEX_ACCESS.home);
+    expect(serializedHealth).not.toContain(TEST_CLAUDE_ACCESS.configDir);
     expect(serializedHealth).not.toContain('test-account');
     expect(typeof body.uptimeMs).toBe('number');
     expect(Array.isArray(body.components)).toBe(true);
@@ -5888,6 +5889,7 @@ describe('execution backend server', () => {
 
       const kbDaemonSupervisor = createMockKbDaemonSupervisor();
       const controller = lifecycleModule.createLifecycle({
+        storeFormat: currentCoralStoreFormat(),
         identity: {
           pluginRoot,
           namespace,

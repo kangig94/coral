@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -23,7 +24,7 @@ afterEach(() => {
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   openDbs.add(db);
   return db;
 }
@@ -99,7 +100,6 @@ function terminalInput(jobId: string, sessionId: string): CoralEventInput {
     namespace: 'test-ns',
     project: `/workspace/${jobId}`,
     refs: { jobId, sessionId },
-    bodyVersion: 1,
     body: {
       terminal: {
         content: 'done',
@@ -117,7 +117,6 @@ function progressInput(jobId: string, sessionId: string): CoralEventInput {
     namespace: 'test-ns',
     project: `/workspace/${jobId}`,
     refs: { jobId, sessionId },
-    bodyVersion: 1,
     body: {
       kind: 'message',
       message: 'late progress',
@@ -166,7 +165,6 @@ describe('JobStore', () => {
       namespace: 'test-ns',
       project: '/workspace/progress-tail',
       refs: { jobId, sessionId },
-      bodyVersion: 1,
       body: {
         kind: 'recovery_parse_failed',
         cause: { message: 'partial stderr' },
@@ -347,7 +345,6 @@ describe('JobStore', () => {
         namespace: 'test-ns',
         project: `/workspace/${jobId}`,
         refs: { jobId, sessionId },
-        bodyVersion: 1,
         body: {
           reason: 'busy',
           message: 'busy',
@@ -389,7 +386,6 @@ describe('JobStore', () => {
         namespace: 'test-ns',
         project: `/workspace/${jobId}`,
         refs: { jobId, sessionId },
-        bodyVersion: 1,
         body: { reason: 'user_abort' },
       },
     ]);

@@ -100,6 +100,14 @@ await esbuild.build({
 });
 
 const backendBundle = readFileSync('clients/build/coral-backend.cjs', 'utf8');
+const storeFormatFingerprint = execFileSync(
+  process.execPath,
+  ['clients/build/coral-backend.cjs', '--print-store-format-fingerprint'],
+  { encoding: 'utf8' },
+).trim();
+if (!/^sha256:[a-f0-9]{64}$/.test(storeFormatFingerprint)) {
+  throw new Error(`Built backend reported an invalid store format fingerprint: ${storeFormatFingerprint}`);
+}
 for (const fragmentPath of ['core.md', 'tools.md', 'kb/common.md', 'kb/session.md']) {
   if (!backendBundle.includes(JSON.stringify(fragmentPath))) {
     throw new Error(`Built backend does not reference inject fragment: ${fragmentPath}`);
@@ -136,6 +144,7 @@ writeFileSync(
   JSON.stringify({
     bundleHash: backendHash,
     flavor,
+    storeFormatFingerprint,
   }) + '\n',
 );
 renameSync(manifestTmp, manifestPath);

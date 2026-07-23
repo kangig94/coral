@@ -9,7 +9,7 @@ import type { CauseRef } from '../causality/cause-ref.js';
 import { phaseForOutcome, type TerminalOutcome } from '../jobs/outcome.js';
 import type { JobStore } from '../jobs/store.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
-import { readLatestEvent } from '../store/event-queries.js';
+import { getEvent, readLatestEvent } from '../store/event-queries.js';
 import type { JobProjectionDetail } from '../jobs/read-queries.js';
 import { readProjectionJob, readWorkflowProjection } from './read-queries.js';
 import {
@@ -38,15 +38,9 @@ import { waitForAtoms } from './wait.js';
 import type { WorkflowFinalizationIntent } from './finalization.js';
 import { providerSessionProvider } from '../sessions/entry.js';
 import { readProviderSessionById } from '../sessions/read-queries.js';
+import { readProjectionJobRows, type ProjectionJobStoredRow } from '../jobs/projection-row.js';
 
-type WorkflowSlotJobRow = {
-  job_id: string;
-  workflow_slot: string;
-  workflow_slot_generation: number | null;
-  replaces_workflow_job_id: string | null;
-  terminal: string | null;
-  last_seq: number;
-};
+type WorkflowSlotJobRow = ProjectionJobStoredRow & { workflow_slot: string };
 
 type RecoveredWorkflowFinalization = {
   intent: WorkflowFinalizationIntent;
@@ -120,15 +114,13 @@ function readSlotJobIds(db: Database, workflowId: string, plan: WorkflowPlan): M
   for (const slot of plan.slots) {
     slotIds.add(slot.slotId);
   }
-  const rows = db
-    .prepare(
-      `SELECT job_id, workflow_slot, workflow_slot_generation, replaces_workflow_job_id, terminal, last_seq
-         FROM projection_jobs
-        WHERE parent_workflow_job_id = ?
-          AND workflow_slot IS NOT NULL
-        ORDER BY workflow_slot ASC, workflow_slot_generation ASC`,
-    )
-    .all(workflowId) as WorkflowSlotJobRow[];
+  const rows = readProjectionJobRows(db)
+    .filter((row): row is WorkflowSlotJobRow => row.parent_workflow_job_id === workflowId && row.workflow_slot !== null)
+    .sort(
+      (left, right) =>
+        left.workflow_slot.localeCompare(right.workflow_slot) ||
+        (left.workflow_slot_generation ?? 0) - (right.workflow_slot_generation ?? 0),
+    );
   const selected = new Map<string, string>();
   const expectedGeneration = new Map<string, number>();
   const previousJob = new Map<string, string>();
@@ -259,12 +251,7 @@ function isRecoverableReplacementCrash(deps: ResumeWorkflowDeps, outcome: Termin
   }
   if (outcome.kind !== 'failed') return false;
 
-  const cause = deps.db
-    .prepare<
-      [string, string, number],
-      { type: string }
-    >('SELECT type FROM events WHERE stream_kind = ? AND stream_id = ? AND seq = ?')
-    .get(outcome.causeRef.stream.kind, outcome.causeRef.stream.id, outcome.causeRef.seq);
+  const cause = getEvent(deps.db, outcome.causeRef.stream, outcome.causeRef.seq, deps.progressStore);
   return cause?.type === 'session.interrupted';
 }
 
@@ -523,7 +510,7 @@ function recoveryIntentFromError(workflowId: string, error: unknown): WorkflowFi
 }
 
 function detectExistingCompletion(deps: ResumeWorkflowDeps): boolean {
-  const completionRow = readLatestEvent(deps.db, 'workflow', deps.workflowId, 'workflow.completed');
+  const completionRow = readLatestEvent(deps.db, deps.workflowId, 'workflow.completed');
   const completion = completionRow ? decodeBody(completionRow, workflowCompletedBodySchema, deps.progressStore) : null;
   return completion !== null;
 }
@@ -700,7 +687,7 @@ async function assembleRelaunch(
 function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot): WaitRecoveryPlan {
   const completedOutputs = new Map<string, string>();
   let pendingCursorSeq: number | null = null;
-  const drainRow = readLatestEvent(deps.db, 'workflow', deps.workflowId, 'workflow.drain.entered');
+  const drainRow = readLatestEvent(deps.db, deps.workflowId, 'workflow.drain.entered');
   const drain = drainRow ? decodeBody(drainRow, workflowDrainEnteredBodySchema, snapshot.readCtx) : null;
 
   for (const slot of snapshot.stepSlots) {

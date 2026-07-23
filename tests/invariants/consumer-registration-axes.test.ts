@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 // Phase 7 of apply-contract-reform plan.
 //
 // AC3 declared per-arm `kind` and `registrationKind` literals on all four arms
@@ -24,7 +25,7 @@ import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpe
 import type { ConsumerRegistration } from '#src/store/consumer-contract.js';
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 

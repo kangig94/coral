@@ -90,7 +90,11 @@ describe('drift signal split', () => {
     const store = createCorpusAuthorityBaselineStore(db, () => `test-id-${(id += 1)}`);
     const before = [...store.rebuild(scan).entries()].sort();
 
-    db.prepare('DELETE FROM kb_corpus_authority_baseline').run();
+    store.applyDelta({
+      deletes: before.map(([entryId]) => entryId),
+      upserts: [],
+    });
+    expect(store.read().size).toBe(0);
     const after = [...store.rebuild(scan).entries()].sort();
 
     expect(after).toEqual(before);

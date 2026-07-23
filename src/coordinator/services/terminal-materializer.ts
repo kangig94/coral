@@ -94,7 +94,6 @@ function baseEvent(
     project: options.project,
     correlationId: options.correlationId,
     refs: baseRefs(options),
-    bodyVersion: 1,
     body,
   };
 }

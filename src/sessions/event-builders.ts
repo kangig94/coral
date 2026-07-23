@@ -32,7 +32,6 @@ function sessionFaultEvent(
     project: options.project,
     correlationId: options.correlationId,
     refs: sessionFaultRefs(options),
-    bodyVersion: 1,
     body: fault,
   };
 }

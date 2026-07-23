@@ -32,7 +32,7 @@ const BOUNDARIES = [
     table: 'projection_jobs',
     column: 'terminal',
     evidence: [
-      ['src/jobs/projections.ts', 'jobTerminalSchema.parse(JSON.parse(row.terminal))'],
+      ['src/jobs/projection-row.ts', "jobTerminalSchema.parse(parseJson(row.terminal, 'terminal', row.job_id))"],
       ['src/jobs/projections.ts', 'JSON.stringify(next.terminal)'],
     ],
   },
@@ -41,7 +41,10 @@ const BOUNDARIES = [
     table: 'projection_jobs',
     column: 'diagnostics',
     evidence: [
-      ['src/jobs/projections.ts', 'jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics))'],
+      [
+        'src/jobs/projection-row.ts',
+        "jobDiagnosticsSchema.parse(parseJson(row.diagnostics, 'diagnostics', row.job_id))",
+      ],
       ['src/jobs/projections.ts', 'JSON.stringify(next.diagnostics)'],
     ],
   },
@@ -50,7 +53,10 @@ const BOUNDARIES = [
     table: 'projection_jobs',
     column: 'execution_owner',
     evidence: [
-      ['src/jobs/projections.ts', 'executionOwnerSchema.parse(JSON.parse(row.execution_owner))'],
+      [
+        'src/jobs/projection-row.ts',
+        "executionOwnerSchema.parse(parseJson(row.execution_owner, 'execution_owner', row.job_id))",
+      ],
       ['src/jobs/projections.ts', 'JSON.stringify(next.owner)'],
     ],
   },

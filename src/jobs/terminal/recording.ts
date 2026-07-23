@@ -28,7 +28,6 @@ function jobTerminalRecordedEvent<Scope = never>(
 ): ResolvableCoralEventInput<Scope, JobTerminalRecordedInputBody<Scope>> {
   return {
     type: 'job.terminal.recorded',
-    bodyVersion: 1,
     body: {
       terminal: normalizeJobTerminal(options.terminal as JobTerminalInput<Scope>),
       diagnostics: options.diagnostics,

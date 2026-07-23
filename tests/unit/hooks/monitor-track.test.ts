@@ -1,5 +1,4 @@
 import { readdirSync } from 'node:fs';
-import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -7,6 +6,7 @@ import {
   cleanupFixtures,
   createFixture,
   expectBashRewriteOutput,
+  liveWorkBackgroundDir,
   runHook,
   type HookFixture,
 } from '#tests/unit/hooks/_helpers.js';
@@ -16,8 +16,7 @@ afterEach(cleanupFixtures);
 const SESSION = 'sess-monitor-01';
 
 function bgDir(fixture: HookFixture): string {
-  const slug = fixture.projectRoot.replace(/\//g, '-');
-  return join(fixture.workRoot, 'coral-work', slug, SESSION, 'bg');
+  return liveWorkBackgroundDir(fixture, SESSION);
 }
 
 function runMonitor(fixture: HookFixture, toolInput: Record<string, unknown>) {

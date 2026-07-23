@@ -5,6 +5,7 @@ import type { BackendDefaultsPlan } from '#src/coordinator/composition/defaults.
 import { CoralSetupError } from '#src/runtime/errors.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
 
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
 const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
@@ -80,6 +81,7 @@ function createWorld(env: Readonly<Record<string, string | undefined>>): ReturnT
   return createCoordinatorWorld(
     {
       runtime,
+      storeFormat: currentCoralStoreFormat(),
       bootSnapshot: {
         version: 'world-test-version',
         bundleHash: 'world-test-bundle',

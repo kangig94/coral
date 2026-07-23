@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '../../src/store/db.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -149,6 +150,7 @@ export function createTestRuntime(options: CreateTestRuntimeOptions = {}): {
     options.kb ??
     (() => {
       const db = openStoreDatabase({
+        storeFormat: currentCoralStoreFormat(),
         path: ':memory:',
         storage: runtime.storage,
       });

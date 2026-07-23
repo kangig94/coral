@@ -12,6 +12,7 @@ let defaultReadCtx: StoreReadContext | null = null;
 export function createDefaultStoreReadContext(): StoreReadContext {
   defaultReadCtx ??= {
     schemas: defaultReducers.schemas,
+    streamKinds: defaultReducers.streamKinds,
     bodyCodec: createEventBodyCodec(),
   };
   return defaultReadCtx;

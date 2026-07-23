@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it } from 'vitest';
 
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -48,7 +49,7 @@ describe('workflow lifecycle transitions', () => {
   it('projects declaration as active and permits only failed completion after a lifecycle fault', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       commit(
         db,
         (c) => {
@@ -74,7 +75,7 @@ describe('workflow lifecycle transitions', () => {
   it('rejects drain and fault transitions after completion', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       commit(
         db,
         (c) => {
@@ -118,7 +119,7 @@ describe('workflow lifecycle transitions', () => {
   it('projects drain entry as draining and rejects re-entry', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       commit(
         db,
         (c) => {
@@ -157,7 +158,7 @@ describe('workflow lifecycle transitions', () => {
   it('rejects a completion outcome that contradicts an earlier lifecycle fault', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       expect(() =>
         commit(
           db,
@@ -179,7 +180,7 @@ describe('workflow lifecycle transitions', () => {
   it('applies the same monotonic guard while reducers replay projection events', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(workflowRegistry);
       commit(
         db,
@@ -200,7 +201,6 @@ describe('workflow lifecycle transitions', () => {
             type: 'workflow.drain.entered',
             stream: { kind: 'workflow', id: 'workflow-rebuild' },
             refs: { workflowId: 'workflow-rebuild' },
-            bodyVersion: 1,
             body: { firstFailureSlotId: 'workflow-rebuild:0:0', drainDeadline: 1 },
           },
           reducers,

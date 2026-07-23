@@ -24,8 +24,7 @@ function readRetentionDiscardEvents(db: ReadonlyDatabase, readCtx: StoreReadCont
   return db
     .prepare<[string], EventsRow>(
       `SELECT * FROM events
-        WHERE stream_kind = 'session'
-          AND stream_id = ?
+        WHERE stream_id = ?
           AND type IN (
             'session.retention.discard.requested',
             'session.retention.discard.completed',
@@ -74,7 +73,6 @@ export function appendRetentionDiscardRequested(
           type: 'session.retention.discard.requested',
           stream: { kind: 'session', id: body.sessionId },
           refs: { sessionId: body.sessionId },
-          bodyVersion: 1,
           body: {
             sessionId: body.sessionId,
             attempt: body.attempt,
@@ -104,7 +102,6 @@ export function appendRetentionDiscardCompleted(
         type: 'session.retention.discard.completed',
         stream: { kind: 'session', id: body.sessionId },
         refs: { sessionId: body.sessionId },
-        bodyVersion: 1,
         body: {
           sessionId: body.sessionId,
           attempt: body.attempt,
@@ -127,7 +124,6 @@ export function appendRetentionDiscardFailed(
         type: 'session.retention.discard.failed',
         stream: { kind: 'session', id: body.sessionId },
         refs: { sessionId: body.sessionId },
-        bodyVersion: 1,
         body: {
           sessionId: body.sessionId,
           attempt: body.attempt,

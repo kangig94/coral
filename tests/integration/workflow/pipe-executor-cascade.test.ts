@@ -132,7 +132,7 @@ describe('pipe executor coral cascade invariant', () => {
       const coordinatorCommit: CommitEventsFn = (cb) => progressStore.commit(cb);
       reactorRef.current = createLifecycleReactor({
         db: () => db,
-        readCtx: { schemas: reducers.schemas, bodyCodec },
+        readCtx: { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec },
         providers: providerRegistry,
         runtime,
         time: runtime.time,
@@ -272,7 +272,7 @@ describe('pipe executor coral cascade invariant', () => {
       const coordinatorCommit: CommitEventsFn = (cb) => progressStore.commit(cb);
       const reactor = createLifecycleReactor({
         db: () => db,
-        readCtx: { schemas: reducers.schemas, bodyCodec },
+        readCtx: { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec },
         providers: providerRegistry,
         runtime,
         time: runtime.time,

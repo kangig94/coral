@@ -17,9 +17,9 @@ import type { ProviderExecutionPlan } from '../execution-plan.js';
 import { wrapAppServerTransport } from './server-lease-boundary.js';
 import { snapshotBoundaryData, snapshotPlainReceiver, snapshotProviderResult } from './snapshot.js';
 
-function snapshotAppServer<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
-  capability: ProviderAppServerCapability<Plan, Source> | undefined,
-): ProviderAppServerCapability<Plan, Source> | undefined {
+function snapshotAppServer<Plan extends ProviderExecutionPlan, Access extends JsonValue>(
+  capability: ProviderAppServerCapability<Plan, Access> | undefined,
+): ProviderAppServerCapability<Plan, Access> | undefined {
   if (capability === undefined) return undefined;
   const receiver = snapshotPlainReceiver(capability, 'Provider app-server capability');
   const planHost = receiver.planHost;
@@ -35,19 +35,19 @@ function snapshotAppServer<Plan extends ProviderExecutionPlan, Source extends Js
   const onNotification = receiver.onNotification;
   return Object.freeze({
     name: receiver.name,
-    planHost: (input: ProviderHostPlanningInput<Source>) => {
+    planHost: (input: ProviderHostPlanningInput<Access>) => {
       const canonicalInput = snapshotPlainReceiver(
         input,
         'Provider host planning input',
         new Set(['storage', 'request']),
       );
       const common = {
-        source: snapshotBoundaryData(canonicalInput.source, 'Provider host credential source'),
+        access: snapshotBoundaryData(canonicalInput.access, 'Provider host credential access'),
         baseEnv: snapshotBoundaryData(canonicalInput.baseEnv, 'Provider host base environment'),
         platform: canonicalInput.platform,
         storage: canonicalInput.storage,
       };
-      const providerInput: ProviderHostPlanningInput<Source> =
+      const providerInput: ProviderHostPlanningInput<Access> =
         canonicalInput.purpose === 'execution'
           ? {
               ...common,
@@ -81,7 +81,7 @@ function snapshotAppServer<Plan extends ProviderExecutionPlan, Source extends Js
     ...(interrupt === undefined
       ? {}
       : {
-          interrupt: (...args: Parameters<NonNullable<ProviderAppServerCapability<Plan, Source>['interrupt']>>) =>
+          interrupt: (...args: Parameters<NonNullable<ProviderAppServerCapability<Plan, Access>['interrupt']>>) =>
             interrupt.call(
               receiver,
               wrapAppServerTransport(args[0], 'Provider interrupt session'),
@@ -91,7 +91,7 @@ function snapshotAppServer<Plan extends ProviderExecutionPlan, Source extends Js
     ...(probe === undefined
       ? {}
       : {
-          probe: (...args: Parameters<NonNullable<ProviderAppServerCapability<Plan, Source>['probe']>>) =>
+          probe: (...args: Parameters<NonNullable<ProviderAppServerCapability<Plan, Access>['probe']>>) =>
             probe
               .call(
                 receiver,
@@ -105,22 +105,22 @@ function snapshotAppServer<Plan extends ProviderExecutionPlan, Source extends Js
       ? {}
       : {
           onNotification: (
-            ...args: Parameters<NonNullable<ProviderAppServerCapability<Plan, Source>['onNotification']>>
+            ...args: Parameters<NonNullable<ProviderAppServerCapability<Plan, Access>['onNotification']>>
           ) => onNotification.call(receiver, snapshotBoundaryData(args[0], 'Provider app-server notification')),
         }),
   });
 }
 
-function snapshotRecovery<Source extends JsonValue>(
-  capability: ProviderRecoveryContract<Source> | undefined,
-): ProviderRecoveryContract<Source> | undefined {
+function snapshotRecovery<Access extends JsonValue>(
+  capability: ProviderRecoveryContract<Access> | undefined,
+): ProviderRecoveryContract<Access> | undefined {
   if (capability === undefined) return undefined;
   const receiver = snapshotPlainReceiver(capability, 'Provider recovery capability');
   const finalizeInterrupted = receiver.finalizeInterrupted;
   const finalizeFromArtifacts = receiver.finalizeFromArtifacts;
   const extractProgress = receiver.extractProgress;
   return Object.freeze({
-    finalizeInterrupted: (...args: Parameters<ProviderRecoveryContract<Source>['finalizeInterrupted']>) =>
+    finalizeInterrupted: (...args: Parameters<ProviderRecoveryContract<Access>['finalizeInterrupted']>) =>
       snapshotProviderResult(
         finalizeInterrupted.call(
           receiver,
@@ -130,7 +130,7 @@ function snapshotRecovery<Source extends JsonValue>(
         ),
         'Provider interrupted recovery outcome',
       ),
-    finalizeFromArtifacts: (...args: Parameters<ProviderRecoveryContract<Source>['finalizeFromArtifacts']>) =>
+    finalizeFromArtifacts: (...args: Parameters<ProviderRecoveryContract<Access>['finalizeFromArtifacts']>) =>
       finalizeFromArtifacts
         .call(
           receiver,
@@ -140,7 +140,7 @@ function snapshotRecovery<Source extends JsonValue>(
     ...(extractProgress === undefined
       ? {}
       : {
-          extractProgress: (...args: Parameters<NonNullable<ProviderRecoveryContract<Source>['extractProgress']>>) =>
+          extractProgress: (...args: Parameters<NonNullable<ProviderRecoveryContract<Access>['extractProgress']>>) =>
             snapshotProviderResult(
               extractProgress.call(receiver, snapshotBoundaryData(args[0], 'Provider recovery progress input')),
               'Provider recovery progress outcome',
@@ -149,15 +149,15 @@ function snapshotRecovery<Source extends JsonValue>(
   });
 }
 
-function snapshotCuration<Source extends JsonValue>(
-  capability: ProviderCurationCapability<Source> | undefined,
-): ProviderCurationCapability<Source> | undefined {
+function snapshotCuration<Access extends JsonValue>(
+  capability: ProviderCurationCapability<Access> | undefined,
+): ProviderCurationCapability<Access> | undefined {
   if (capability === undefined) return undefined;
   const receiver = snapshotPlainReceiver(capability, 'Provider curation capability');
   const prepare = receiver.prepare;
   const isUsageBudgetExhausted = receiver.isUsageBudgetExhausted;
   return Object.freeze({
-    prepare: (...args: Parameters<ProviderCurationCapability<Source>['prepare']>) => {
+    prepare: (...args: Parameters<ProviderCurationCapability<Access>['prepare']>) => {
       const prepared = snapshotPlainReceiver(prepare.call(receiver, ...args), 'Prepared provider curation');
       const complete = prepared.complete;
       return Object.freeze({
@@ -167,14 +167,14 @@ function snapshotCuration<Source extends JsonValue>(
             .then((result) => snapshotProviderResult(result, 'Provider curation outcome')),
       });
     },
-    isUsageBudgetExhausted: (...args: Parameters<ProviderCurationCapability<Source>['isUsageBudgetExhausted']>) =>
+    isUsageBudgetExhausted: (...args: Parameters<ProviderCurationCapability<Access>['isUsageBudgetExhausted']>) =>
       isUsageBudgetExhausted.call(receiver, ...args),
   });
 }
 
-export function snapshotArtifacts<Source extends JsonValue>(
-  capability: ProviderArtifactCapability<Source>,
-): ProviderArtifactCapability<Source> {
+export function snapshotArtifacts<Access extends JsonValue>(
+  capability: ProviderArtifactCapability<Access>,
+): ProviderArtifactCapability<Access> {
   const receiver = snapshotPlainReceiver(capability, 'Provider artifact capability');
   if (receiver.kind === 'none') return Object.freeze({ kind: 'none', reason: receiver.reason });
   const discardArtifacts = receiver.discardArtifacts;
@@ -182,7 +182,7 @@ export function snapshotArtifacts<Source extends JsonValue>(
   return Object.freeze({
     kind: 'managed',
     discardArtifacts: (
-      ...args: Parameters<Extract<ProviderArtifactCapability<Source>, { kind: 'managed' }>['discardArtifacts']>
+      ...args: Parameters<Extract<ProviderArtifactCapability<Access>, { kind: 'managed' }>['discardArtifacts']>
     ) =>
       discardArtifacts
         .call(receiver, ...args)
@@ -196,9 +196,9 @@ export function snapshotArtifacts<Source extends JsonValue>(
   });
 }
 
-export function snapshotImplementation<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
-  spec: ProviderImplementation<Plan, Source>,
-): ProviderImplementation<Plan, Source> {
+export function snapshotImplementation<Plan extends ProviderExecutionPlan, Access extends JsonValue>(
+  spec: ProviderImplementation<Plan, Access>,
+): ProviderImplementation<Plan, Access> {
   const receiver = snapshotPlainReceiver(spec, 'Provider implementation');
   const preflight = receiver.preflight;
   const recovery = snapshotRecovery(receiver.recovery);
@@ -206,11 +206,11 @@ export function snapshotImplementation<Plan extends ProviderExecutionPlan, Sourc
     name: receiver.name,
     ...(preflight === undefined
       ? {}
-      : { preflight: (input: ProviderPreflightInput<Source>) => preflight.call(receiver, input) }),
+      : { preflight: (input: ProviderPreflightInput<Access>) => preflight.call(receiver, input) }),
     ...(recovery === undefined ? {} : { recovery }),
   };
   if (receiver.transport === 'standalone') {
-    const standalone = receiver as ProviderStandaloneImplementation<Plan, Source>;
+    const standalone = receiver as ProviderStandaloneImplementation<Plan, Access>;
     const run = standalone.run;
     const prepareExecutionPlan = standalone.prepareExecutionPlan;
     return Object.freeze({
@@ -226,7 +226,7 @@ export function snapshotImplementation<Plan extends ProviderExecutionPlan, Sourc
     throw new TypeError('Provider implementation has an invalid transport discriminator.');
   }
 
-  const appServerImplementation = receiver as ProviderAppServerImplementation<Plan, Source>;
+  const appServerImplementation = receiver as ProviderAppServerImplementation<Plan, Access>;
   const appServer = snapshotAppServer(appServerImplementation.appServer);
   if (appServer === undefined) throw new TypeError(`Provider '${receiver.name}' requires an app-server capability.`);
   const curation = snapshotCuration(appServerImplementation.curation);

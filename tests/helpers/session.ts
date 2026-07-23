@@ -10,8 +10,40 @@ import type { CoralEvent } from '#src/store/envelope.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import type { InitJobOptions } from '#src/jobs/contracts/job-store.js';
 import type { JobStore } from '#src/jobs/store.js';
+import type {
+  ContinuitySnapshot,
+  ProviderContinuityBlob,
+  ProviderValidatedContinuityBlob,
+  ProviderValidatedContinuitySnapshot,
+} from '#src/sessions/continuity.js';
+import type {
+  ProviderValidatedSessionContinuityMutation,
+  SessionContinuityMutation,
+} from '#src/sessions/continuity-mutation.js';
 
 import { TEST_CLAUDE_BINDING, TEST_CODEX_BINDING } from './provider-credentials.js';
+
+/** Test-only stand-in for a successful BoundProvider continuity decode. */
+export function validatedTestContinuityBlob(value: ProviderContinuityBlob): ProviderValidatedContinuityBlob {
+  return value as ProviderValidatedContinuityBlob;
+}
+
+/** Test-only stand-in for a snapshot assembled from a BoundProvider decode. */
+export function validatedTestContinuitySnapshot(snapshot: ContinuitySnapshot): ProviderValidatedContinuitySnapshot {
+  return {
+    ...snapshot,
+    providerContinuity:
+      snapshot.providerContinuity === null ? null : validatedTestContinuityBlob(snapshot.providerContinuity),
+  };
+}
+
+/** Test-only stand-in for a recovery mutation returned by BoundProvider. */
+export function validatedTestContinuityMutation(
+  mutation: SessionContinuityMutation,
+): ProviderValidatedSessionContinuityMutation {
+  if (mutation.providerContinuity === undefined) return mutation as ProviderValidatedSessionContinuityMutation;
+  return { ...mutation, providerContinuity: validatedTestContinuityBlob(mutation.providerContinuity) };
+}
 
 export function allocateTestSession(
   manager: Pick<SessionManager, 'allocate'>,
@@ -38,6 +70,54 @@ export function allocateTestSession(
     projectRoot,
     backendNamespace,
   });
+}
+
+/** Test-only fixture writer. Production continuity reaches this atomic port only after BoundProvider decoding. */
+export async function seedTestProviderContinuity(
+  manager: Pick<SessionManager, 'claimForJobSync' | 'readById' | 'checkpointJobContinuityAtomic' | 'releaseJob'>,
+  sessionId: string,
+  update: { providerContinuity: ProviderContinuityBlob; conversationRef: string },
+): Promise<void> {
+  await seedTestSessionContinuity(manager, sessionId, {
+    conversationRef: update.conversationRef,
+    resumable: true,
+    providerContinuity: update.providerContinuity,
+  });
+}
+
+/** Test-only fixture writer for an unclaimed session. */
+export async function seedTestSessionContinuity(
+  manager: Pick<SessionManager, 'claimForJobSync' | 'readById' | 'checkpointJobContinuityAtomic' | 'releaseJob'>,
+  sessionId: string,
+  snapshot: ContinuitySnapshot,
+): Promise<void> {
+  const fixtureJobId = `continuity-fixture-${sessionId}`;
+  manager.claimForJobSync(sessionId, fixtureJobId);
+  try {
+    await checkpointClaimedTestContinuity(manager, sessionId, fixtureJobId, snapshot);
+  } finally {
+    manager.releaseJob(sessionId, fixtureJobId);
+  }
+}
+
+/** Test-only fixture writer for a session whose job claim is intentionally retained. */
+export async function checkpointClaimedTestContinuity(
+  manager: Pick<SessionManager, 'readById' | 'checkpointJobContinuityAtomic'>,
+  sessionId: string,
+  jobId: string,
+  snapshot: ContinuitySnapshot,
+): Promise<void> {
+  const claimed = manager.readById(sessionId, { forceFresh: true });
+  if (claimed === null) throw new Error(`Missing test session '${sessionId}'.`);
+  if (claimed.activeJobId !== jobId) {
+    throw new Error(`Test session '${sessionId}' is not claimed by '${jobId}'.`);
+  }
+  const result = await manager.checkpointJobContinuityAtomic(sessionId, {
+    expectedActiveJobId: jobId,
+    expectedVersion: claimed.version,
+    snapshot: validatedTestContinuitySnapshot(snapshot),
+  });
+  if (!result.ok) throw new Error(`Could not seed test continuity for '${sessionId}'.`);
 }
 
 function testSessionScopeKey(projectRoot: string): string {
@@ -73,7 +153,6 @@ export function seedTestSessionProjection(
         namespace: options.backendNamespace,
         project: options.projectRoot,
         refs: { sessionId: options.sessionId, jobId: options.activeJobId },
-        bodyVersion: 1,
         body: { entry: claimed, jobId: options.activeJobId },
       });
       return claimed;
@@ -91,7 +170,7 @@ export function seedTestSessionProjection(
     sessionId: options.sessionId,
     binding,
     name: options.sessionId,
-    state: 'ready',
+    state: 'pending',
     retention: 'retain',
     artifactHandles: [],
     retentionDiscard: { attempts: [] },
@@ -116,7 +195,6 @@ export function seedTestSessionProjection(
     namespace: options.backendNamespace,
     project: options.projectRoot,
     refs: { sessionId: options.sessionId },
-    bodyVersion: 1,
     body,
   };
   reduceSessionOpened(db, event);

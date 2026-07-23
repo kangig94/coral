@@ -10,6 +10,5 @@ export interface EventsRow {
   correlation_id: string | null;
   causation_seq: number | null;
   refs: string | null;
-  body_version: number;
   body: Uint8Array;
 }

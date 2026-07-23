@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createHash } from 'node:crypto';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -91,7 +92,7 @@ describe('sessions reducer equivalence', () => {
   it('projects session.opened retention and recorded artifact handles through entry JSON', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(sessionsRegistry);
       const bodyCodec = createEventBodyCodec();
       const openedEntry = sessionEntry({
@@ -122,7 +123,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: 'session-artifact' },
             refs: { sessionId: 'session-artifact' },
-            bodyVersion: 1,
             body: {
               entry: openedEntry,
               controller: 'default',
@@ -133,7 +133,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.artifact.handle.recorded',
             stream: { kind: 'session', id: 'session-artifact' },
             refs: { sessionId: 'session-artifact', jobId: 'job-artifact' },
-            bodyVersion: 1,
             body: {
               entry: artifactEntry,
               handle: '/tmp/codex/rollout.jsonl',
@@ -182,7 +181,7 @@ describe('sessions reducer equivalence', () => {
   it('projects retention discard outbox events through entry JSON and rebuilds the same state', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(sessionsRegistry);
       const bodyCodec = createEventBodyCodec();
       const openedEntry = sessionEntry({
@@ -198,7 +197,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: openedEntry.sessionId },
             refs: { sessionId: openedEntry.sessionId },
-            bodyVersion: 1,
             body: {
               entry: openedEntry,
               controller: 'default',
@@ -209,7 +207,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.retention.discard.requested',
             stream: { kind: 'session', id: openedEntry.sessionId },
             refs: { sessionId: openedEntry.sessionId },
-            bodyVersion: 1,
             body: {
               sessionId: openedEntry.sessionId,
               attempt: 1,
@@ -220,7 +217,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.retention.discard.completed',
             stream: { kind: 'session', id: openedEntry.sessionId },
             refs: { sessionId: openedEntry.sessionId },
-            bodyVersion: 1,
             body: {
               sessionId: openedEntry.sessionId,
               attempt: 1,
@@ -262,7 +258,7 @@ describe('sessions reducer equivalence', () => {
   it('parses reducer-written projection_sessions.entry JSON with retention discard state', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const projectedEntry = {
         sessionId: 'session-reducer-written-row',
         binding: TEST_CODEX_BINDING,
@@ -314,7 +310,7 @@ describe('sessions reducer equivalence', () => {
   it('rebuilds projection_sessions rows byte-identically from a canonical event sequence', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(sessionsRegistry);
       const bodyCodec = createEventBodyCodec();
       const scopeKey = createHash('sha1').update('session-1').digest('hex').slice(0, 12);
@@ -344,7 +340,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: 'session-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               entry: openedEntry,
               controller: 'team-a',
@@ -355,7 +350,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.continuity.checkpointed',
             stream: { kind: 'session', id: 'session-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               entry: readyEntry,
               snapshot: {
@@ -369,7 +363,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.interrupted',
             stream: { kind: 'session', id: 'session-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               trigger: 'handoff',
               continuity: 'pre_checkpoint_preserved',
@@ -379,7 +372,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.provider_failed',
             stream: { kind: 'session', id: 'session-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               provider: 'codex',
               reason: 'request_failed',
@@ -390,7 +382,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.adapter_unparseable',
             stream: { kind: 'session', id: 'session-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               provider: 'codex',
               exitCode: null,
@@ -403,7 +394,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.continuity.checkpointed',
             stream: { kind: 'session', id: 'session-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               entry: sealedEntry,
               snapshot: {
@@ -416,18 +406,6 @@ describe('sessions reducer equivalence', () => {
         ],
         { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
-
-      const v1OpenEvent = db
-        .prepare(
-          `SELECT body_version
-           FROM events
-          WHERE stream_kind = 'session'
-            AND stream_id = ?
-            AND type = 'session.opened'
-          ORDER BY seq ASC
-          LIMIT 1`,
-        )
-        .get('session-1') as { body_version: number } | undefined;
 
       const before = db
         .prepare(
@@ -446,7 +424,6 @@ describe('sessions reducer equivalence', () => {
         scope_key: scopeKey,
         last_seq: appended.at(-1)?.seq,
       });
-      expect(v1OpenEvent?.body_version).toBe(1);
 
       rebuildProjections({
         db,
@@ -470,10 +447,10 @@ describe('sessions reducer equivalence', () => {
     }
   });
 
-  it('round-trips canonical session.opened rows without rewriting scope_key or body_version', () => {
+  it('round-trips canonical session.opened rows without rewriting scope_key', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(sessionsRegistry);
       const bodyCodec = createEventBodyCodec();
       const scopeKey = 'canonical-scope';
@@ -497,7 +474,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: 'session-2' },
             refs: { sessionId: 'session-2' },
-            bodyVersion: 1,
             body: {
               entry: openedEntry,
               controller: 'team-b',
@@ -508,7 +484,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.continuity.checkpointed',
             stream: { kind: 'session', id: 'session-2' },
             refs: { sessionId: 'session-2' },
-            bodyVersion: 1,
             body: {
               entry: readyEntry,
               snapshot: {
@@ -521,18 +496,6 @@ describe('sessions reducer equivalence', () => {
         ],
         { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
-
-      const openedEvent = db
-        .prepare(
-          `SELECT body_version
-           FROM events
-          WHERE stream_kind = 'session'
-            AND stream_id = ?
-            AND type = 'session.opened'
-          ORDER BY seq ASC
-          LIMIT 1`,
-        )
-        .get('session-2') as { body_version: number } | undefined;
 
       const before = db
         .prepare(
@@ -551,7 +514,6 @@ describe('sessions reducer equivalence', () => {
         scope_key: scopeKey,
         last_seq: appended.at(-1)?.seq,
       });
-      expect(openedEvent?.body_version).toBe(1);
 
       rebuildProjections({
         db,

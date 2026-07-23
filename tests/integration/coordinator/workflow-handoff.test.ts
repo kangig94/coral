@@ -105,7 +105,6 @@ describe('workflow handoff (cross-domain integration)', () => {
         namespace: incumbent.core.identity.namespace,
         project: PROJECT_ROOT,
         refs: { jobId: WORKFLOW_ID, workflowId: WORKFLOW_ID },
-        bodyVersion: 1,
         body: { transport: 'workflow', startedAt: new Date(harness.runtime.time.now()).toISOString() },
       });
       return undefined;
@@ -152,7 +151,6 @@ describe('workflow handoff (cross-domain integration)', () => {
           workflowId: WORKFLOW_ID,
           workflowSlotId: slotJobId,
         },
-        bodyVersion: 1,
         body: { transport: 'workflow', startedAt: new Date(harness.runtime.time.now()).toISOString() },
       });
       return undefined;

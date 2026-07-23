@@ -232,6 +232,6 @@ describe('coordinator topology invariants', () => {
 
     expect(violations).toEqual([]);
     const source = readFileSync(join(REPO_ROOT, 'src/coordinator/services/kb-curate-assistant.ts'), 'utf8');
-    expect(source).not.toMatch(/\bcredentialSource\s*\(/u);
+    expect(source).not.toMatch(/\baccess\s*\(/u);
   });
 });

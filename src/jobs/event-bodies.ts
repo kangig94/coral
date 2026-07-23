@@ -103,7 +103,7 @@ export const jobRuntimeStartedBodySchema = z
     internalRuntimeStartedBodySchema,
     workflowRuntimeStartedBodySchema,
   ])
-  .describe('current-job-runtime-variants-v1');
+  .describe('validate-current-job-runtime-variant-consistency');
 
 export const jobProgressTimingSchema = z
   .object({

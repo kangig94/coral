@@ -25,7 +25,7 @@ import type {
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export type ProviderAction = 'exec' | 'resume';
 /** Provider-private account authority represented as canonical snapshot-safe data. */
-export type ProviderSource = JsonValue;
+export type ProviderAccess = JsonValue;
 
 export const providerInstructionSchema = z
   .object({
@@ -158,12 +158,12 @@ export type ProviderCurationUsageRuntime = {
 };
 
 /** Provider-owned daemon-internal assistant work exposed only through a bound provider. */
-export interface ProviderCurationCapability<Source extends ProviderSource> {
+export interface ProviderCurationCapability<Access extends ProviderAccess> {
   prepare(
     request: ProviderCurationRequest,
-    runtime: ProviderCurationPreparationRuntime & { readonly source: Source },
+    runtime: ProviderCurationPreparationRuntime & { readonly access: Access },
   ): ProviderPreparedCuration;
-  isUsageBudgetExhausted(runtime: ProviderCurationUsageRuntime & { readonly source: Source }): boolean;
+  isUsageBudgetExhausted(runtime: ProviderCurationUsageRuntime & { readonly access: Access }): boolean;
 }
 
 // Provider-side terminal outcome: the slice of `TerminalOutcome` that the
@@ -444,21 +444,21 @@ export type ProviderMiddleware<
   ExecutionRuntime extends ProviderRuntime<Plan> = ProviderRuntime<Plan>,
 > = (next: Provider<Plan, ExecutionRuntime>) => Provider<Plan, ExecutionRuntime>;
 
-type ProviderHostPlanningContext<Source extends ProviderSource> = Readonly<{
-  source: Source;
+type ProviderHostPlanningContext<Access extends ProviderAccess> = Readonly<{
+  access: Access;
   baseEnv: Readonly<Record<string, string>>;
   platform: string;
   storage: Pick<StoragePort, 'existsSync'>;
 }>;
 
-export type ProviderHostPlanningInput<Source extends ProviderSource = ProviderSource> =
-  | (ProviderHostPlanningContext<Source> &
+export type ProviderHostPlanningInput<Access extends ProviderAccess = ProviderAccess> =
+  | (ProviderHostPlanningContext<Access> &
       Readonly<{
         purpose: 'execution';
         request: ProviderRequest;
         persistedContinuity?: ProviderContinuityBlob;
       }>)
-  | (ProviderHostPlanningContext<Source> &
+  | (ProviderHostPlanningContext<Access> &
       Readonly<{
         purpose: 'curation';
         request: ProviderCurationRequest;
@@ -466,10 +466,10 @@ export type ProviderHostPlanningInput<Source extends ProviderSource = ProviderSo
 
 export interface ProviderAppServerCapability<
   Plan extends ProviderExecutionPlan = ProviderExecutionPlan,
-  Source extends ProviderSource = ProviderSource,
+  Access extends ProviderAccess = ProviderAccess,
 > {
   readonly name: string;
-  planHost(input: ProviderHostPlanningInput<Source>): Plan['host'];
+  planHost(input: ProviderHostPlanningInput<Access>): Plan['host'];
   compileStableHost(host: Plan['host']): ProviderServerSpec;
   interrupt?(session: AppServerTransport, continuity: ProviderContinuityBlob): Promise<boolean>;
   probe?(
@@ -480,7 +480,7 @@ export interface ProviderAppServerCapability<
   onNotification?(message: AppServerNotificationMessage): void;
 }
 
-export interface ProviderRecoveryContract<Source extends ProviderSource = ProviderSource> {
+export interface ProviderRecoveryContract<Access extends ProviderAccess = ProviderAccess> {
   /**
    * Provider-owned interpretation of an interrupted app-server turn.
    *
@@ -494,7 +494,7 @@ export interface ProviderRecoveryContract<Source extends ProviderSource = Provid
     context: { preservedConversationRef?: string },
   ): SessionContinuityMutation;
   finalizeFromArtifacts(options: {
-    source: Source;
+    access: Access;
     stdoutPath: string;
     stderrPath: string;
     exitCode: number | null;
@@ -519,13 +519,13 @@ export interface ProviderRecoveryContract<Source extends ProviderSource = Provid
 }
 
 export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env' | 'time'>;
-export type ProviderPreflightRuntime<Source extends ProviderSource = ProviderSource> = PreflightRuntime & {
-  credentialSource: Source;
+export type ProviderPreflightRuntime<Access extends ProviderAccess = ProviderAccess> = PreflightRuntime & {
+  access: Access;
   cwd: string;
   runExact(command: string, args: string[], options?: { timeout?: number; encoding?: 'utf-8' }): Promise<ExecResult>;
 };
-export type ProviderPreflightInput<Source extends ProviderSource = ProviderSource> = PreflightRuntime & {
-  credentialSource: Source;
+export type ProviderPreflightInput<Access extends ProviderAccess = ProviderAccess> = PreflightRuntime & {
+  access: Access;
   cwd: string;
   baseEnv: Readonly<Record<string, string>>;
   requestEnv: Readonly<Record<string, string>>;
@@ -546,11 +546,11 @@ export type DiscardOutcome =
   | { readonly kind: 'skipped_no_handles'; readonly details?: Record<string, unknown> }
   | { readonly kind: 'provider_declares_none'; readonly details?: Record<string, unknown> };
 
-export interface ProviderManagedArtifactCapability<Source extends ProviderSource = ProviderSource> {
+export interface ProviderManagedArtifactCapability<Access extends ProviderAccess = ProviderAccess> {
   readonly kind: 'managed';
   discardArtifacts(options: {
     handles: readonly ProviderArtifactHandle[];
-    source: Source;
+    access: Access;
     runtime: ArtifactCleanupRuntime;
   }): Promise<DiscardOutcome>;
   /**
@@ -562,7 +562,7 @@ export interface ProviderManagedArtifactCapability<Source extends ProviderSource
    */
   locateArtifact?(options: {
     conversationRef: string;
-    source: Source;
+    access: Access;
     runtime: ArtifactCleanupRuntime;
   }): ProviderArtifactHandle | null;
 }
@@ -572,12 +572,12 @@ export interface ProviderNoArtifactCapability {
   readonly reason: string;
 }
 
-export type ProviderArtifactCapability<Source extends ProviderSource = ProviderSource> =
-  | ProviderManagedArtifactCapability<Source>
+export type ProviderArtifactCapability<Access extends ProviderAccess = ProviderAccess> =
+  | ProviderManagedArtifactCapability<Access>
   | ProviderNoArtifactCapability;
 
-type ProviderExecutionPreparationContext<Source extends ProviderSource> = {
-  source: Source;
+type ProviderExecutionPreparationContext<Access extends ProviderAccess> = {
+  access: Access;
   request: ProviderRequest;
   persistedContinuity?: ProviderContinuityBlob;
   baseEnv: Readonly<Record<string, string>>;
@@ -586,50 +586,50 @@ type ProviderExecutionPreparationContext<Source extends ProviderSource> = {
   storage: Pick<StoragePort, 'existsSync'>;
 };
 
-type ProviderAppServerPlanPreparation<Plan extends ProviderExecutionPlan, Source extends ProviderSource> = (
-  input: ProviderExecutionPreparationContext<Source> & { hostPlan: Plan['host'] },
+type ProviderAppServerPlanPreparation<Plan extends ProviderExecutionPlan, Access extends ProviderAccess> = (
+  input: ProviderExecutionPreparationContext<Access> & { hostPlan: Plan['host'] },
 ) => {
   readonly session: Plan['session'];
   readonly turn: Plan['turn'];
 };
 
-type ProviderStandalonePlanPreparation<Plan extends ProviderExecutionPlan, Source extends ProviderSource> = (
-  input: ProviderExecutionPreparationContext<Source>,
+type ProviderStandalonePlanPreparation<Plan extends ProviderExecutionPlan, Access extends ProviderAccess> = (
+  input: ProviderExecutionPreparationContext<Access>,
 ) => {
   readonly plan: Plan;
   prepareCliRequest(request: ProviderCliRequest): ProviderCliRequest;
 };
 
-type ProviderImplementationCommon<Source extends ProviderSource> = {
+type ProviderImplementationCommon<Access extends ProviderAccess> = {
   readonly name: string;
-  readonly preflight?: (input: ProviderPreflightInput<Source>) => Promise<void>;
-  readonly recovery?: ProviderRecoveryContract<Source>;
+  readonly preflight?: (input: ProviderPreflightInput<Access>) => Promise<void>;
+  readonly recovery?: ProviderRecoveryContract<Access>;
 };
 
 export type ProviderAppServerImplementation<
   Plan extends ProviderExecutionPlan,
-  Source extends ProviderSource = ProviderSource,
-> = ProviderImplementationCommon<Source> & {
+  Access extends ProviderAccess = ProviderAccess,
+> = ProviderImplementationCommon<Access> & {
   readonly transport: 'app-server';
   readonly run: ProviderAppServer<Plan>;
-  readonly appServer: ProviderAppServerCapability<Plan, Source>;
-  readonly prepareExecutionPlan: ProviderAppServerPlanPreparation<Plan, Source>;
-  readonly curation?: ProviderCurationCapability<Source>;
+  readonly appServer: ProviderAppServerCapability<Plan, Access>;
+  readonly prepareExecutionPlan: ProviderAppServerPlanPreparation<Plan, Access>;
+  readonly curation?: ProviderCurationCapability<Access>;
 };
 
 export type ProviderStandaloneImplementation<
   Plan extends ProviderExecutionPlan,
-  Source extends ProviderSource = ProviderSource,
-> = ProviderImplementationCommon<Source> & {
+  Access extends ProviderAccess = ProviderAccess,
+> = ProviderImplementationCommon<Access> & {
   readonly transport: 'standalone';
   readonly run: ProviderStandalone<Plan>;
-  readonly prepareExecutionPlan: ProviderStandalonePlanPreparation<Plan, Source>;
+  readonly prepareExecutionPlan: ProviderStandalonePlanPreparation<Plan, Access>;
 };
 
 export type ProviderImplementation<
   Plan extends ProviderExecutionPlan,
-  Source extends ProviderSource = ProviderSource,
-> = ProviderAppServerImplementation<Plan, Source> | ProviderStandaloneImplementation<Plan, Source>;
+  Access extends ProviderAccess = ProviderAccess,
+> = ProviderAppServerImplementation<Plan, Access> | ProviderStandaloneImplementation<Plan, Access>;
 
 export function compose<Plan extends ProviderExecutionPlan, ExecutionRuntime extends ProviderRuntime<Plan>>(
   middleware: readonly ProviderMiddleware<Plan, ExecutionRuntime>[],

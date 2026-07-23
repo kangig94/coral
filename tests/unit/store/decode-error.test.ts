@@ -16,7 +16,6 @@ function eventRow(overrides: Partial<EventsRow> = {}): EventsRow {
     correlation_id: null,
     causation_seq: null,
     refs: null,
-    body_version: 1,
     body: Buffer.from('{}', 'utf-8'),
     ...overrides,
   };
@@ -41,7 +40,6 @@ describe('store decode errors', () => {
         type: row.type,
         streamKind: row.stream_kind,
         streamId: row.stream_id,
-        bodyVersion: row.body_version,
       }),
     );
 
@@ -56,7 +54,6 @@ describe('store decode errors', () => {
         type: 'test.event',
         streamKind: 'job',
         streamId: 'job-1',
-        bodyVersion: 1,
       }),
     });
   });

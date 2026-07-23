@@ -1,8 +1,9 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Database } from '#src/store/db.js';
-import { newRawDatabase, pragmaSimple, totalChanges } from '#tests/helpers/test-db.js';
+import { newRawDatabase, totalChanges } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -20,30 +21,31 @@ describe('store schema idempotency', () => {
     const db = newRawDatabase(join(tempDir, 'store.db'));
 
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const firstChanges = totalChanges(db);
-      const firstSchemaVersion = pragmaSimple(db, 'schema_version');
-      const firstUserVersion = pragmaSimple(db, 'user_version');
+      const firstFingerprint = db
+        .prepare<[], { value: string }>("SELECT value FROM meta WHERE key = 'store_format_fingerprint'")
+        .get()?.value;
 
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const secondChanges = totalChanges(db);
-      const secondSchemaVersion = pragmaSimple(db, 'schema_version');
-      const secondUserVersion = pragmaSimple(db, 'user_version');
+      const secondFingerprint = db
+        .prepare<[], { value: string }>("SELECT value FROM meta WHERE key = 'store_format_fingerprint'")
+        .get()?.value;
 
       expect(secondChanges).toBe(firstChanges);
-      expect(secondSchemaVersion).toBe(firstSchemaVersion);
-      expect(secondUserVersion).toBe(firstUserVersion);
+      expect(secondFingerprint).toBe(firstFingerprint);
     } finally {
       db.close();
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
-  it('store schema migrations create the expected baseline schema state', () => {
+  it('creates the complete current schema state', () => {
     const db = newRawDatabase(':memory:');
 
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
 
       const objects = (
         db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table','index') ORDER BY name").all() as Array<{
@@ -57,6 +59,9 @@ describe('store schema idempotency', () => {
       expect(objects).toContain('consumer_cursors');
       expect(objects).toContain('kb_curate_scheduler');
       expect(objects).toContain('kb_curate_conflict_quarantine');
+      expect(objects).toContain('kb_corpus_authority_baseline_generations');
+      expect(objects).toContain('kb_corpus_authority_baseline_records');
+      expect(objects).toContain('kb_corpus_authority_baseline_active');
       expect(objects).toContain('expansion_manifest_catalog');
 
       const meta = (
@@ -65,8 +70,8 @@ describe('store schema idempotency', () => {
         key,
         value: key === 'coordinator_id' || key === 'created_ts' ? '<dynamic>' : value,
       }));
-      expect(meta.map((row) => row.key)).toEqual(['coordinator_id', 'created_ts', 'journal_version']);
-      expect(pragmaSimple(db, 'user_version')).not.toBe(0);
+      expect(meta).toContainEqual({ key: 'store_format_fingerprint', value: currentCoralStoreFormat().fingerprint });
+      expect(meta.map((row) => row.key)).toEqual(['coordinator_id', 'created_ts', 'store_format_fingerprint']);
 
       expect(
         db
@@ -132,8 +137,8 @@ describe('store schema idempotency', () => {
         processed_through_seq: null,
         processed_through_entry_id: null,
         processed_through_entry_kind: null,
-        discovery_high_seq: null,
-        discovery_offset: null,
+        discovery_high_seq: 0,
+        discovery_offset: 0,
         last_run_day: null,
         last_attempted_through_seq: null,
         last_attempted_through_entry_id: null,

@@ -30,6 +30,7 @@ import type { JobProgressTiming, JobRuntimeStartedBody } from './event-bodies.js
 import { type JobLaunch, type JobRuntime, type JobStatus, type JobTerminal } from './records.js';
 import { progressTimingFromProjection } from './progress-timing.js';
 import { buildJobEventRefs } from './refs.js';
+import { countProjectedLiveJobRows } from './projection-row.js';
 
 export type JobStoreOptions = {
   eventBus?: JobEventBus;
@@ -171,7 +172,6 @@ export function jobLaunchRequestedEvent(jobId: string, launch: JobLaunch) {
     namespace: launch.backendNamespace,
     project: launch.projectRoot,
     refs,
-    bodyVersion: 1,
     body,
   };
 }
@@ -187,6 +187,7 @@ export class JobStore implements JobProgressStore {
   private enqueueSequence = 0;
 
   public readonly schemas: ComposedReducers['schemas'];
+  public readonly streamKinds: ComposedReducers['streamKinds'];
   public readonly bodyCodec: EventBodyCodec;
 
   private readonly namespace: string;
@@ -204,6 +205,7 @@ export class JobStore implements JobProgressStore {
     this.eventBus = eventBus;
     this.observer = options.observer;
     this.schemas = reducers.schemas;
+    this.streamKinds = reducers.streamKinds;
     this.bodyCodec = bodyCodec;
     this.db = db;
     this.commitEvents = (cb) =>
@@ -438,7 +440,6 @@ export class JobStore implements JobProgressStore {
           namespace: opts.backendNamespace,
           project: opts.projectRoot,
           refs: buildJobEventRefs({ jobId: opts.jobId, sessionId: opts.sessionId }),
-          bodyVersion: 1,
           body: {
             queuePosition: 0,
             runningJobIds: [],
@@ -457,7 +458,6 @@ export class JobStore implements JobProgressStore {
           namespace: opts.backendNamespace,
           project: opts.projectRoot,
           refs: buildJobEventRefs({ jobId: opts.jobId, sessionId: opts.sessionId }),
-          bodyVersion: 1,
           body: {
             transport: 'app-server',
             startedAt: createdAt,
@@ -519,7 +519,6 @@ export class JobStore implements JobProgressStore {
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
         refs: buildJobEventRefs({ jobId, sessionId: status?.sessionId ?? null }),
-        bodyVersion: 1,
         body: jobRuntimeStartedBody(runtime),
       });
       return undefined;
@@ -596,7 +595,6 @@ export class JobStore implements JobProgressStore {
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
         refs: buildJobEventRefs({ jobId, sessionId }),
-        bodyVersion: 1,
         body: {
           kind: 'message',
           message,
@@ -623,50 +621,11 @@ export class JobStore implements JobProgressStore {
 
   private countProjectedLiveJobs(bundleHash?: string): number {
     const excludedJobIds = [...this.namespaceOverrides.keys()];
-    const phasePlaceholders = ['queued', 'launching', 'running'];
-    const clauses = [`phase IN (${phasePlaceholders.map(() => '?').join(', ')})`];
-    const params: unknown[] = [...phasePlaceholders];
-
-    if (excludedJobIds.length > 0) {
-      clauses.push(`job_id NOT IN (${excludedJobIds.map(() => '?').join(', ')})`);
-      params.push(...excludedJobIds);
-    }
-
-    if (bundleHash !== undefined) {
-      clauses.push(`bundle_hash = ?`);
-      params.push(bundleHash);
-    }
-
-    const row = this.db
-      .prepare(
-        `SELECT COUNT(*) AS count
-           FROM projection_jobs
-          WHERE ${clauses.join('\n            AND ')}`,
-      )
-      .get(...params) as { count: number } | undefined;
-
-    return row?.count ?? 0;
+    return countProjectedLiveJobRows(this.db, { bundleHash, excludedJobIds });
   }
 
   private countProjectedLiveJobsByNamespace(namespace: string): number {
     const excludedJobIds = [...this.namespaceOverrides.keys()];
-    const phasePlaceholders = ['queued', 'launching', 'running'];
-    const clauses = [`phase IN (${phasePlaceholders.map(() => '?').join(', ')})`, `backend_namespace = ?`];
-    const params: unknown[] = [...phasePlaceholders, namespace];
-
-    if (excludedJobIds.length > 0) {
-      clauses.push(`job_id NOT IN (${excludedJobIds.map(() => '?').join(', ')})`);
-      params.push(...excludedJobIds);
-    }
-
-    const row = this.db
-      .prepare(
-        `SELECT COUNT(*) AS count
-           FROM projection_jobs
-          WHERE ${clauses.join('\n            AND ')}`,
-      )
-      .get(...params) as { count: number } | undefined;
-
-    return row?.count ?? 0;
+    return countProjectedLiveJobRows(this.db, { namespace, excludedJobIds });
   }
 }

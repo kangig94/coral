@@ -9,7 +9,7 @@ import {
 } from '#src/providers/claude/request-mapping.js';
 import { buildClaudeExecutionPlan } from '#src/providers/claude/execution-plan.js';
 import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
-import { TEST_CLAUDE_SOURCE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CLAUDE_ACCESS } from '#tests/helpers/provider-credentials.js';
 import type { ClaudeBootstrapSignature } from '#src/providers/claude/request-prep.js';
 import { CORAL_CLAUDE_TRANSPORT_ENV } from '#src/providers/claude/transport-mode.js';
 
@@ -42,7 +42,7 @@ function prepareBroker(options: {
   existsSync?: (path: string) => boolean;
 }) {
   const input = {
-    source: TEST_CLAUDE_SOURCE,
+    access: TEST_CLAUDE_ACCESS,
     request: {
       action: 'exec',
       sessionId: 'session',
@@ -61,19 +61,23 @@ function prepareBroker(options: {
 }
 
 describe('Claude continuity refs', () => {
-  it('drops empty persisted refs at the provider boundary', () => {
-    expect(
+  it('rejects an empty persisted payload instead of treating it as absent continuity', () => {
+    expect(() => readClaudePersistedContinuity({})).toThrow('Invalid persisted Claude continuity');
+  });
+
+  it('rejects empty or unexpected persisted refs at the provider boundary', () => {
+    expect(() =>
       readClaudePersistedContinuity({
         brokerSessionKey: '',
         envHash: '',
         conversationRef: '',
         brokerTurnId: '',
       }),
-    ).toEqual({});
+    ).toThrow('Invalid persisted Claude continuity');
   });
 
-  it('drops persisted bootstrap signatures with unknown permission modes', () => {
-    expect(
+  it('rejects persisted bootstrap signatures with unknown permission modes', () => {
+    expect(() =>
       readClaudePersistedContinuity({
         bootstrapSignature: {
           cwd: '/workspace',
@@ -83,7 +87,7 @@ describe('Claude continuity refs', () => {
           permissionMode: 'unknown',
         },
       }),
-    ).toEqual({});
+    ).toThrow('Invalid persisted Claude continuity');
   });
 
   it('preserves persisted bootstrap signatures with auto permission mode', () => {
@@ -122,8 +126,6 @@ describe('Claude continuity refs', () => {
         {
           brokerSessionKey: 'broker-1',
           bootstrapSignature: BOOTSTRAP_SIGNATURE,
-          envHash: 'env-1',
-          conversationRef: 'conversation-1',
           brokerTurnId: 'turn-1',
         },
         {},

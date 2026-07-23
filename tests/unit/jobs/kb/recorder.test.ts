@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
@@ -14,7 +15,7 @@ function createRecorder(): {
   progressStore: JobStore;
 } {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   const runtime = new SimulationRuntime();
   const progressStore = new JobStore('test-ns', runtime, createEventBodyCodec(), {
     db,
@@ -93,7 +94,7 @@ describe('KbJobRecorder.startInternalJob', () => {
 
   it('persists the configured internal job owner in the runtime record', () => {
     const db = newRawDatabase(':memory:');
-    applyBundledStoreSchema(db);
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
     const runtime = new SimulationRuntime();
     const progressStore = new JobStore('test-ns', runtime, createEventBodyCodec(), {
       db,

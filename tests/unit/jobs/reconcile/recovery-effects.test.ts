@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it, vi } from 'vitest';
@@ -17,7 +18,7 @@ const NOW = new Date('2026-04-28T00:00:00.000Z');
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -92,7 +93,6 @@ describe('recovery effects', () => {
           namespace: status.backendNamespace,
           project: status.projectRoot,
           refs: { jobId: status.jobId, sessionId },
-          bodyVersion: 1,
           body: {
             owner: { kind: 'provider-session', id: sessionId },
             sessionId,

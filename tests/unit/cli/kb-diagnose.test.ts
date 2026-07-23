@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -37,6 +38,7 @@ function seedRetryQueue(
 ): void {
   const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: runtime.paths.coral.store.dbFile,
     storage: runtime.storage,
   });

@@ -10,7 +10,7 @@ import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registr
 import type { Runtime } from '../../../runtime/ports.js';
 import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
 import type { SessionInterruptedFault } from '../../../sessions/fault.js';
-import type { SessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
+import type { ProviderValidatedSessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
 import type { CommitContext } from '../../../store/append.js';
 import { buildInterruptedAppServerReport } from '../execution-policies.js';
 import {
@@ -76,7 +76,7 @@ async function recordArtifactHandlesExact(
 async function finalizeSessionExact(
   plan: RecoveryCommitPlan,
   expectedVersion: number,
-  mutation: SessionContinuityMutation,
+  mutation: ProviderValidatedSessionContinuityMutation,
   appendBeforeRelease: TerminalAppender | undefined,
   deps: InterruptedFinalizerDeps,
 ): Promise<void> {
@@ -114,7 +114,7 @@ function exportResultAndReleaseOwnership(
 
 function continuityState(
   probeOutcome: InterruptedProbeOutcome,
-  mutation: SessionContinuityMutation,
+  mutation: ProviderValidatedSessionContinuityMutation,
 ): SessionInterruptedFault['continuity'] {
   switch (probeOutcome) {
     case 'verified':
@@ -153,7 +153,7 @@ export async function finalizeInterruptedAppServerRecovery(
     `job ${plan.launchRecord.jobId}`,
   );
   let content: string;
-  let mutation: SessionContinuityMutation;
+  let mutation: ProviderValidatedSessionContinuityMutation;
   let appendTerminal: TerminalAppender;
   if (performed.kind === 'unsupported') {
     content = '';

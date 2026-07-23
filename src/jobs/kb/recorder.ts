@@ -142,7 +142,6 @@ export class KbJobRecorder {
       namespace: this.deps.backendNamespace,
       project: params.projectRoot,
       refs: buildJobEventRefs({ jobId: params.jobId }),
-      bodyVersion: 1,
       body: {
         kind: 'domain',
         stage: 'kb_operation_failed',
@@ -184,7 +183,6 @@ export class KbJobRecorder {
         namespace: params.namespace,
         project: params.projectRoot,
         refs: buildJobEventRefs({ jobId: params.jobId, sessionId: params.sessionId }),
-        bodyVersion: 1,
         body: {
           kind: 'domain',
           stage: 'hosted_kb_operation_failed',

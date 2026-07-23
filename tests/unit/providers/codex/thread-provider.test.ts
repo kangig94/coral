@@ -15,7 +15,7 @@ import {
   type CodexExecutionPlan,
 } from '#src/providers/codex/execution-plan.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { TEST_CODEX_SOURCE } from '../../../helpers/provider-credentials.js';
+import { TEST_CODEX_ACCESS } from '../../../helpers/provider-credentials.js';
 
 function buildCodexExecutionPlan(options: Omit<Parameters<typeof buildCodexExecutionPlanWithHost>[0], 'hostPlan'>) {
   const host = buildCodexHost(options);
@@ -87,7 +87,7 @@ function makeRuntime(
   overrides: Partial<Pick<CodexRuntime, 'signal' | 'storage' | 'env' | 'continuityBridge'>> = {},
 ): CodexRuntime {
   const prepared = buildCodexExecutionPlan({
-    source: TEST_CODEX_SOURCE,
+    access: TEST_CODEX_ACCESS,
     request: makeRequest(),
     ...(persistedContinuity === undefined ? {} : { persistedContinuity }),
     baseEnv: {},
@@ -130,7 +130,7 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
 
 describe('codexThreadProvider', () => {
   it.each([
-    ['start', { action: 'exec' as const, conversationRef: undefined }, {}],
+    ['start', { action: 'exec' as const, conversationRef: undefined }, undefined],
     ['resume', { action: 'resume' as const, conversationRef: 'thread-1' }, { cwd: '/workspace', threadId: 'thread-1' }],
   ])('rejects hostile effective config before %s RPCs and releases the lease', async (_mode, request, continuity) => {
     const downstreamRpc = vi.fn(async (method: string) => {
@@ -251,14 +251,14 @@ describe('codexThreadProvider', () => {
     const runtimeA = makeRuntime(lease, { cwd: '/workspace', threadId: 'thread-a' });
     const runtimeB = makeRuntime(lease, { cwd: '/workspace', threadId: 'thread-b' }, { signal: controllerB.signal });
     runtimeA.executionPlan = buildCodexExecutionPlan({
-      source: TEST_CODEX_SOURCE,
+      access: TEST_CODEX_ACCESS,
       request: requestA,
       baseEnv: {},
       protectedEnv: { CORAL_CHILD_PRINCIPAL_HANDLE: 'handle-a' },
       platform: 'linux',
     }).plan;
     runtimeB.executionPlan = buildCodexExecutionPlan({
-      source: TEST_CODEX_SOURCE,
+      access: TEST_CODEX_ACCESS,
       request: requestB,
       baseEnv: {},
       protectedEnv: { CORAL_CHILD_PRINCIPAL_HANDLE: 'handle-b' },

@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import type { KbCorpusSnapshot } from '../kb/contract.js';
 import { normalizeCorpusCursor } from '../kb/state/corpus-state.js';
 import type { Database, Statement } from '../store/db.js';
@@ -14,33 +16,69 @@ import {
   consumerAuthorityMismatchError,
   consumerInterestMismatchError,
   consumerRegistrationKindMismatchError,
-  isRegistrationKind,
   laneHintFromInterest,
-  parseStoredCorpusInterest,
 } from './state.js';
-import { documentedCoralSetupError } from '../runtime/errors.js';
 
-export interface CursorMetadataRow {
+const persistedRegistrationKindSchema = z.enum(['base', 'expansion']);
+
+export const consumerCursorMetadataSchema = z.union([
+  z
+    .object({
+      authority: z.literal('journal'),
+      lane: z.null(),
+      corpus_interest: z.null(),
+      registration_kind: persistedRegistrationKindSchema,
+    })
+    .strict(),
+  z
+    .object({
+      authority: z.literal('corpus'),
+      lane: z.literal('content'),
+      corpus_interest: z.literal('content'),
+      registration_kind: persistedRegistrationKindSchema,
+    })
+    .strict(),
+  z
+    .object({
+      authority: z.literal('corpus'),
+      lane: z.literal('metadata'),
+      corpus_interest: z.literal('metadata'),
+      registration_kind: persistedRegistrationKindSchema,
+    })
+    .strict(),
+  z
+    .object({
+      authority: z.literal('corpus'),
+      lane: z.null(),
+      corpus_interest: z.literal('both'),
+      registration_kind: persistedRegistrationKindSchema,
+    })
+    .strict(),
+]);
+export type CursorMetadataRow = z.infer<typeof consumerCursorMetadataSchema>;
+type RawCursorMetadataRow = {
   authority: string;
   lane: string | null;
   corpus_interest: string | null;
   registration_kind: string | null;
-}
+};
 
-interface JournalCursorRow {
-  cursor: number | null;
-}
+export const journalConsumerCursorSchema = z.object({ cursor: z.number().int().nonnegative() }).strict();
+type JournalCursorRow = z.infer<typeof journalConsumerCursorSchema>;
 
-interface CorpusCursorRow {
-  snapshot_id: string | null;
-  content_seq: number | null;
-  metadata_seq: number | null;
-  content_manifest_hash: string | null;
-  metadata_manifest_hash: string | null;
-}
+export const corpusConsumerCursorSchema = z
+  .object({
+    snapshot_id: z.string(),
+    content_seq: z.number().int().nonnegative(),
+    metadata_seq: z.number().int().nonnegative(),
+    content_manifest_hash: z.string(),
+    metadata_manifest_hash: z.string(),
+  })
+  .strict();
+type CorpusCursorRow = z.infer<typeof corpusConsumerCursorSchema>;
 
 export class ConsumerCursorRepository {
-  private readonly selectCursorMetadataStmt: Statement<[string], CursorMetadataRow>;
+  private readonly selectCursorMetadataStmt: Statement<[string], RawCursorMetadataRow>;
   private readonly insertJournalCursorRowStmt: Statement<[string, Authority, string, ConsumerRegistrationKind]>;
   private readonly insertCorpusCursorRowStmt: Statement<
     [string, Authority, CorpusLaneHint | null, CorpusInterest, string, ConsumerRegistrationKind]
@@ -164,39 +202,35 @@ export class ConsumerCursorRepository {
     );
   }
 
-  readCursorMetadata(consumerId: string): CursorMetadataRow | undefined {
-    return this.selectCursorMetadataStmt.get(consumerId);
-  }
-
   ensureCursorRow(
     reg: ConsumerRegistration,
     allowMetadataUpdate = true,
-    preloadedRow?: CursorMetadataRow,
+    registrationKindIfMissing?: ConsumerRegistrationKind,
   ): ConsumerRegistrationKind {
     if (reg.kind === 'stateless') {
-      const row = preloadedRow ?? this.selectCursorMetadataStmt.get(reg.id);
+      const row = this.selectCursorMetadataStmt.get(reg.id);
       if (row !== undefined) {
         this.deleteCursorRowStmt.run(reg.id);
       }
       return 'stateless';
     }
 
-    const row = preloadedRow ?? this.selectCursorMetadataStmt.get(reg.id);
+    const rawRow = this.selectCursorMetadataStmt.get(reg.id);
+    if (rawRow !== undefined && rawRow.authority !== reg.authority) {
+      throw consumerAuthorityMismatchError(reg.id, reg.authority, rawRow.authority);
+    }
+    const row = rawRow === undefined ? undefined : consumerCursorMetadataSchema.parse(rawRow);
     const requestedKind = reg.registrationKind;
 
     if (row) {
-      if (row.authority !== reg.authority) {
-        throw consumerAuthorityMismatchError(reg.id, reg.authority, row.authority);
-      }
       if (reg.authority === 'corpus') {
-        const storedInterest = parseStoredCorpusInterest(row);
+        if (row.authority !== 'corpus') {
+          throw consumerAuthorityMismatchError(reg.id, reg.authority, row.authority);
+        }
+        const storedInterest = row.corpus_interest;
         if (storedInterest !== reg.corpusInterest) {
-          // Stored interest came from a previous coral version. The interest
-          // is declared in code (bundled engines or expansion adapters), not
-          // user state, so a fresh registration may legitimately widen or
-          // narrow it across version bumps. Update in place; cursor counters
-          // (snapshot_id, content_seq, metadata_seq) reset on next apply when
-          // the consumer rebuilds against the current corpus snapshot.
+          // Registration declarations are executable configuration. Reconcile
+          // a current declaration change while preserving its current cursor.
           if (!allowMetadataUpdate) {
             throw consumerInterestMismatchError(reg.id);
           }
@@ -204,7 +238,7 @@ export class ConsumerCursorRepository {
         }
       }
 
-      const storedKind = this.parseStoredRegistrationKind(reg.id, row.registration_kind);
+      const storedKind = row.registration_kind;
       if (requestedKind !== undefined && storedKind !== requestedKind) {
         if (!allowMetadataUpdate) {
           throw consumerRegistrationKindMismatchError(reg.id, requestedKind, storedKind);
@@ -216,7 +250,7 @@ export class ConsumerCursorRepository {
       return storedKind;
     }
 
-    const registrationKind = requestedKind ?? 'base';
+    const registrationKind = requestedKind ?? registrationKindIfMissing ?? 'base';
     this.insertCursorRow(reg, registrationKind);
     return registrationKind;
   }
@@ -241,25 +275,14 @@ export class ConsumerCursorRepository {
     );
   }
 
-  parseStoredRegistrationKind(
-    consumerId: string,
-    registrationKind: string | null | undefined,
-  ): ConsumerRegistrationKind {
-    const value = registrationKind ?? 'base';
-    if (isRegistrationKind(value)) {
-      return value;
-    }
-
-    throw documentedCoralSetupError('consumer_registration_kind_invalid', { id: consumerId });
-  }
-
   readJournalCursor(consumerId: string): number {
     const row = this.readJournalCursorStmt.get(consumerId);
-    return row?.cursor ?? 0;
+    return row === undefined ? 0 : journalConsumerCursorSchema.parse(row).cursor;
   }
 
   readCorpusCursor(consumerId: string): KbCorpusSnapshot {
-    return normalizeCorpusCursor(this.readCorpusCursorStmt.get(consumerId));
+    const row = this.readCorpusCursorStmt.get(consumerId);
+    return normalizeCorpusCursor(row === undefined ? undefined : corpusConsumerCursorSchema.parse(row));
   }
 
   advanceJournalCursor(reg: JournalConsumerRegistration, newCursor: number): void {

@@ -20,7 +20,7 @@ import { verifyCodexEffectiveTransport } from './transport-policy.js';
 import {
   buildCodexHost,
   compileCodexHostEnvironment,
-  type CodexCredentialSource,
+  type CodexProviderAccess,
   type CodexExecutionPlan,
 } from './execution-plan.js';
 import { windowsCommandName } from '../../infra/windows-shell.js';
@@ -64,12 +64,12 @@ function sanitizeCodexProviderContinuity(
   return hasCodexContinuity(parsed) ? parsed : undefined;
 }
 
-export async function codexPreflight(runtime: ProviderPreflightRuntime<CodexCredentialSource>): Promise<void> {
+export async function codexPreflight(runtime: ProviderPreflightRuntime<CodexProviderAccess>): Promise<void> {
   await assertCodexAppServerAvailable(runtime);
   await assertCodexAuthTokens(runtime);
 }
 
-async function assertCodexAppServerAvailable(runtime: ProviderPreflightRuntime<CodexCredentialSource>): Promise<void> {
+async function assertCodexAppServerAvailable(runtime: ProviderPreflightRuntime<CodexProviderAccess>): Promise<void> {
   const now = runtime.time.now();
   if (
     codexAppServerAvailabilityCache &&
@@ -92,9 +92,9 @@ async function assertCodexAppServerAvailable(runtime: ProviderPreflightRuntime<C
   }
 }
 
-async function assertCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexCredentialSource>): Promise<void> {
+async function assertCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexProviderAccess>): Promise<void> {
   const now = runtime.time.now();
-  const cacheKey = runtime.credentialSource.home;
+  const cacheKey = runtime.access.home;
   const cached = codexAuthTokensCache.get(cacheKey);
   if (cached && now - cached.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS) {
     if (!cached.available) {
@@ -103,7 +103,7 @@ async function assertCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexCred
     return;
   }
 
-  const authPath = join(runtime.credentialSource.home, 'auth.json');
+  const authPath = join(runtime.access.home, 'auth.json');
   let parsed: unknown;
 
   try {
@@ -136,12 +136,12 @@ function hasCodexAuthTokens(value: unknown): boolean {
   });
 }
 
-export const codexAppServerLifecycle: ProviderAppServerCapability<CodexExecutionPlan, CodexCredentialSource> = {
+export const codexAppServerLifecycle: ProviderAppServerCapability<CodexExecutionPlan, CodexProviderAccess> = {
   name: 'codex',
   planHost: (input) => {
     if (input.purpose !== 'execution') throw new Error('Codex does not support curation hosts.');
     return buildCodexHost({
-      source: input.source,
+      access: input.access,
       request: input.request,
       persistedContinuity: input.persistedContinuity,
       baseEnv: input.baseEnv,
@@ -216,7 +216,7 @@ export const codexRecoveryLifecycle = {
     const nextContinuity = sanitizeCodexProviderContinuity(
       probeResult.updatedContinuity ?? (continuity === undefined ? undefined : clearCodexTurnContinuity(continuity)),
     );
-    const parsed = readCodexPersistedContinuity(nextContinuity ?? continuity ?? {});
+    const parsed = readCodexPersistedContinuity(nextContinuity ?? continuity);
     const effectiveConversationRef = parsed.threadId ?? context.preservedConversationRef;
     if (probeResult.resumable && effectiveConversationRef !== undefined) {
       return {

@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -31,7 +32,7 @@ const PROVIDER_FAILURE_CASES = [
 
 function createStore(): { db: Database; store: CoralStore } {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return { db, store: new CoralStore(db, createDefaultStoreReadContext()) };
 }
 
@@ -46,15 +47,14 @@ function insertEvent(
 ): void {
   db.prepare(
     `INSERT INTO events (
-      seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body_version, body
-    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+      seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body
+    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?)`,
   ).run(
     input.seq,
     NOW.toISOString(),
     input.type,
     input.stream.kind,
     input.stream.id,
-    1,
     Buffer.from(JSON.stringify(input.body), 'utf-8'),
   );
 }

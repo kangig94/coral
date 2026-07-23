@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
@@ -29,7 +30,7 @@ function providerSessionInputs(sessionId: string, jobId: string): CoralEventInpu
     sessionId,
     binding: TEST_CODEX_BINDING,
     name: sessionId,
-    state: 'ready',
+    state: 'pending',
     retention: 'retain',
     artifactHandles: [],
     retentionDiscard: { attempts: [] },
@@ -47,14 +48,12 @@ function providerSessionInputs(sessionId: string, jobId: string): CoralEventInpu
       type: 'session.opened',
       stream: { kind: 'session', id: sessionId },
       refs: { sessionId },
-      bodyVersion: 1,
       body: { entry: opened, controller: 'default', scope_key: `${sessionId}-scope` },
     },
     {
       type: 'session.claimed',
       stream: { kind: 'session', id: sessionId },
       refs: { sessionId, jobId },
-      bodyVersion: 1,
       body: { entry: claimed, jobId },
     },
   ];
@@ -64,7 +63,7 @@ describe('workflow reducer equivalence', () => {
   it('rebuilds projection_workflows.plan rows byte-identically from workflow domain events', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(workflowRegistry);
       const bodyCodec = createEventBodyCodec();
 
@@ -131,7 +130,7 @@ describe('workflow reducer equivalence', () => {
   it('builds WorkflowView slot outcomes from child job projections', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
       const plan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
@@ -159,7 +158,6 @@ describe('workflow reducer equivalence', () => {
                 workflowId: 'workflow-1',
                 workflowSlotId: slot.slotId,
               },
-              bodyVersion: 1,
               body: {
                 owner: { kind: 'workflow' as const, id: 'workflow-1' },
                 sessionId: `session-${slot.jobId}`,
@@ -192,7 +190,6 @@ describe('workflow reducer equivalence', () => {
             type: 'job.terminal.recorded',
             stream: { kind: 'job' as const, id: 'job-1' },
             refs: { sessionId: 'session-job-1', parentJobId: 'workflow-1', workflowSlotId: plan.slots[0].slotId },
-            bodyVersion: 1,
             body: {
               terminal: {
                 outcome: { kind: 'completed' as const },
@@ -205,7 +202,6 @@ describe('workflow reducer equivalence', () => {
             type: 'job.terminal.recorded',
             stream: { kind: 'job' as const, id: 'job-2' },
             refs: { sessionId: 'session-job-2', parentJobId: 'workflow-1', workflowSlotId: plan.slots[1].slotId },
-            bodyVersion: 1,
             body: {
               terminal: {
                 outcome: { kind: 'failed' as const, causeRef },
@@ -219,7 +215,13 @@ describe('workflow reducer equivalence', () => {
         { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
-      expect(readWorkflowView(db, 'workflow-1', { schemas: reducers.schemas, bodyCodec })).toMatchObject({
+      expect(
+        readWorkflowView(db, 'workflow-1', {
+          schemas: reducers.schemas,
+          streamKinds: reducers.streamKinds,
+          bodyCodec,
+        }),
+      ).toMatchObject({
         workflowId: 'workflow-1',
         outcome: 'failed',
         causeRef,

@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -290,6 +291,7 @@ function createCauseRenderFixture(): { home: string; cleanup(): void } {
   const home = mkdtempSync(join(tmpdir(), 'coral-wait-home-'));
   const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
     storage: runtime.storage,
   });
@@ -297,8 +299,8 @@ function createCauseRenderFixture(): { home: string; cleanup(): void } {
   try {
     const insertEvent = db.prepare(
       `INSERT INTO events (
-        seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body_version, body
-      ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+        seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body
+      ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?)`,
     );
     insertEvent.run(
       1,
@@ -306,7 +308,6 @@ function createCauseRenderFixture(): { home: string; cleanup(): void } {
       'workflow.completed',
       'workflow',
       'workflow-1',
-      1,
       Buffer.from(
         JSON.stringify({
           outcome: 'failed',
@@ -322,7 +323,6 @@ function createCauseRenderFixture(): { home: string; cleanup(): void } {
       'workflow.lifecycle_fault',
       'workflow',
       'workflow-1',
-      1,
       Buffer.from(JSON.stringify({ kind: 'unknown', message: 'workflow failure' }), 'utf-8'),
     );
   } finally {

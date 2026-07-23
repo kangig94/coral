@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -15,7 +16,7 @@ const NOW = new Date('2026-04-19T00:00:00.000Z');
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -47,7 +48,6 @@ describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consume
             type: 'job.launch.requested',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               owner: { kind: 'provider-session', id: 'session-1' },
               sessionId: 'session-1',
@@ -72,21 +72,18 @@ describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consume
             type: 'job.queue.queued',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: { queuePosition: 2, runningJobIds: ['job-live'] },
           },
           {
             type: 'job.queue.admitted',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: { queuePosition: 0 },
           },
           {
             type: 'job.runtime.started',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               transport: 'durable-cli',
               pid: 4242,
@@ -99,7 +96,6 @@ describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consume
             type: 'job.progress.emitted',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               kind: 'domain',
               stage: 'hosted_kb_operation_failed',
@@ -111,14 +107,12 @@ describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consume
             type: 'job.progress.emitted',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: { kind: 'recovery_parse_failed', cause: { message: 'partial stderr' } },
           },
           {
             type: 'job.terminal.recorded',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               terminal: {
                 outcome: { kind: 'provider_exit', code: 17, note: 'forced timeout' },

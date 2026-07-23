@@ -4,28 +4,28 @@ import {
   claudeBaseLayer,
   claudeBrokerSettingsLayer,
   claudeRoutingLayer,
-  type ClaudeCredentialSource,
+  type ClaudeProviderAccess,
   type ClaudeExecutionPlan,
 } from '#src/providers/claude/execution-plan.js';
-import { buildCodexExecutionPlan, type CodexCredentialSource } from '#src/providers/codex/execution-plan.js';
+import { buildCodexExecutionPlan, type CodexProviderAccess } from '#src/providers/codex/execution-plan.js';
 import { codexAppServerLifecycle } from '#src/providers/codex/provider-facets.js';
 import type { ProviderBindingEnvelope } from '#src/infra/provider-binding-envelope.js';
 
-export const TEST_CODEX_SOURCE = {
+export const TEST_CODEX_ACCESS = {
   home: '/home/user/.codex',
-} as const satisfies CodexCredentialSource;
+} as const satisfies CodexProviderAccess;
 
-export const TEST_CLAUDE_SOURCE = {
+export const TEST_CLAUDE_ACCESS = {
   configDir: '/home/user/.claude',
   projectsRoot: '/home/user/.claude/projects',
   routing: { kind: 'config-dir' },
-} as const satisfies ClaudeCredentialSource;
+} as const satisfies ClaudeProviderAccess;
 
 export const TEST_CODEX_BINDING = {
   provider: 'codex',
   kind: 'account',
   binding: {
-    profile: { canonicalLocation: TEST_CODEX_SOURCE.home, routing: { kind: 'home' } },
+    profile: { canonicalLocation: TEST_CODEX_ACCESS.home, routing: { kind: 'home' } },
     subject: { issuer: 'https://api.openai.com/chatgpt-account', subject: 'test-account' },
   },
 } as const satisfies ProviderBindingEnvelope;
@@ -35,7 +35,7 @@ export const TEST_CLAUDE_BINDING = {
   kind: 'profile',
   binding: {
     profile: {
-      canonicalLocation: TEST_CLAUDE_SOURCE.configDir,
+      canonicalLocation: TEST_CLAUDE_ACCESS.configDir,
       routing: { kind: 'config-dir', emitConfigDir: true },
     },
     guarantee: 'profile-only',
@@ -47,12 +47,12 @@ export const TEST_PROVIDER_SCOPE = {
   profiles: [
     {
       provider: 'codex',
-      profile: { canonicalLocation: TEST_CODEX_SOURCE.home, routing: { kind: 'home' } },
+      profile: { canonicalLocation: TEST_CODEX_ACCESS.home, routing: { kind: 'home' } },
     },
     {
       provider: 'claude',
       profile: {
-        canonicalLocation: TEST_CLAUDE_SOURCE.configDir,
+        canonicalLocation: TEST_CLAUDE_ACCESS.configDir,
         routing: { kind: 'config-dir', emitConfigDir: true },
       },
     },
@@ -114,10 +114,10 @@ const TEST_EXECUTION_REQUEST = {
 } as const;
 
 const TEST_CODEX_PREPARED = buildCodexExecutionPlan({
-  source: TEST_CODEX_SOURCE,
+  access: TEST_CODEX_ACCESS,
   hostPlan: codexAppServerLifecycle.planHost({
     purpose: 'execution',
-    source: TEST_CODEX_SOURCE,
+    access: TEST_CODEX_ACCESS,
     request: TEST_EXECUTION_REQUEST,
     baseEnv: {},
     platform: 'linux',
@@ -130,7 +130,7 @@ const TEST_CODEX_PREPARED = buildCodexExecutionPlan({
 export const TEST_CODEX_PLAN = Object.freeze({
   host: codexAppServerLifecycle.planHost({
     purpose: 'execution',
-    source: TEST_CODEX_SOURCE,
+    access: TEST_CODEX_ACCESS,
     request: TEST_EXECUTION_REQUEST,
     baseEnv: {},
     platform: 'linux',
@@ -141,7 +141,7 @@ export const TEST_CODEX_PLAN = Object.freeze({
 });
 
 const TEST_CLAUDE_PREPARED = buildClaudeExecutionPlan({
-  source: TEST_CLAUDE_SOURCE,
+  access: TEST_CLAUDE_ACCESS,
   hostPlan: Object.freeze({
     platform: 'linux',
     broker: Object.freeze({
@@ -152,8 +152,8 @@ const TEST_CLAUDE_PREPARED = buildClaudeExecutionPlan({
       environment: Object.freeze([claudeBaseLayer({}, 'linux'), claudeBrokerSettingsLayer('print', 'linux')]),
     }),
     controller: Object.freeze({
-      source: TEST_CLAUDE_SOURCE,
-      environment: Object.freeze([claudeBaseLayer({}, 'linux'), claudeRoutingLayer(TEST_CLAUDE_SOURCE, 'linux')]),
+      access: TEST_CLAUDE_ACCESS,
+      environment: Object.freeze([claudeBaseLayer({}, 'linux'), claudeRoutingLayer(TEST_CLAUDE_ACCESS, 'linux')]),
     }),
   }) satisfies ClaudeExecutionPlan['host'],
   request: TEST_EXECUTION_REQUEST,
@@ -172,8 +172,8 @@ export const TEST_CLAUDE_PLAN = Object.freeze({
       environment: Object.freeze([claudeBaseLayer({}, 'linux'), claudeBrokerSettingsLayer('print', 'linux')]),
     }),
     controller: Object.freeze({
-      source: TEST_CLAUDE_SOURCE,
-      environment: Object.freeze([claudeBaseLayer({}, 'linux'), claudeRoutingLayer(TEST_CLAUDE_SOURCE, 'linux')]),
+      access: TEST_CLAUDE_ACCESS,
+      environment: Object.freeze([claudeBaseLayer({}, 'linux'), claudeRoutingLayer(TEST_CLAUDE_ACCESS, 'linux')]),
     }),
   }),
   session: TEST_CLAUDE_PREPARED.session,
@@ -186,7 +186,7 @@ export function prepareTestCodexAppServer(
 ) {
   const hostPlan = codexAppServerLifecycle.planHost({
     purpose: 'execution',
-    source: TEST_CODEX_SOURCE,
+    access: TEST_CODEX_ACCESS,
     request: {
       ...TEST_EXECUTION_REQUEST,
       cwd: request.cwd,
@@ -198,7 +198,7 @@ export function prepareTestCodexAppServer(
     storage: { existsSync: () => false },
   });
   buildCodexExecutionPlan({
-    source: TEST_CODEX_SOURCE,
+    access: TEST_CODEX_ACCESS,
     hostPlan,
     request: {
       ...TEST_EXECUTION_REQUEST,

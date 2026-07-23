@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allocateTestSession } from '../../../helpers/session.js';
 import { TEST_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
@@ -376,7 +377,7 @@ function ensureTestSession(
     sessionId: options.sessionId,
     binding: TEST_CODEX_BINDING,
     name: options.sessionId,
-    state: 'ready',
+    state: 'pending',
     retention: 'retain',
     artifactHandles: [],
     retentionDiscard: { attempts: [] },
@@ -401,7 +402,6 @@ function ensureTestSession(
     namespace: options.backendNamespace,
     project: options.projectRoot,
     refs: { sessionId: options.sessionId },
-    bodyVersion: 1,
     body,
   };
   reduceSessionOpened(progressStore.getDb(), event);
@@ -432,7 +432,6 @@ function appendQueuedEvent(
     namespace: backendNamespace,
     project: projectRoot,
     refs: { jobId, sessionId },
-    bodyVersion: 1,
     body: {
       queuePosition,
       runningJobIds: [],
@@ -498,7 +497,6 @@ function commitTerminalEvent(
     namespace: overrides.backendNamespace,
     project: overrides.projectRoot,
     refs: { jobId: overrides.jobId, sessionId: overrides.sessionId },
-    bodyVersion: 1,
     body: {
       terminal: {
         outcome: overrides.outcome,
@@ -545,6 +543,7 @@ function createLifecycleHarness(
 
   const kbDaemonSupervisor = createMockKbDaemonSupervisor();
   const controller = modules.lifecycleModule.createLifecycle({
+    storeFormat: currentCoralStoreFormat(),
     identity: {
       pluginRoot: options.pluginRoot,
       namespace,

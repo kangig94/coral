@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import type { AppendedEvent } from '#src/store/append.js';
 import type { JobTerminalEvent } from '#src/jobs/records.js';
@@ -25,7 +26,7 @@ const usage = {
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -50,7 +51,6 @@ function terminalAppendedEvent(jobId: string, options: { usage?: UsageSummary } 
     project: '/tmp/wait-usage-project',
     correlationId: 'wait-usage-correlation',
     refs: { sessionId: 'wait-usage-session' },
-    bodyVersion: 1,
     body: terminalBody(options),
   };
 }
@@ -66,7 +66,6 @@ function commitRecordedTerminal(db: Database, jobId: string, options: { usage?: 
         project: '/tmp/wait-usage-project',
         correlationId: 'wait-usage-correlation',
         refs: { sessionId: 'wait-usage-session' },
-        bodyVersion: 1,
         body: {
           owner: { kind: 'provider-session', id: 'wait-usage-session' },
           sessionId: 'wait-usage-session',
@@ -94,7 +93,6 @@ function commitRecordedTerminal(db: Database, jobId: string, options: { usage?: 
         project: '/tmp/wait-usage-project',
         correlationId: 'wait-usage-correlation',
         refs: { sessionId: 'wait-usage-session' },
-        bodyVersion: 1,
         body: terminalBody(options),
       },
     ],

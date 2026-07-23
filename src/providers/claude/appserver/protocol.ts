@@ -11,7 +11,6 @@ import {
 import { isRecord } from '../../../infra/json.js';
 import type { EffortLevel } from '../../contract.js';
 import {
-  TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION as PROVIDER_TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION,
   turnFailureDiagnosticPhaseSchema as providerTurnFailureDiagnosticPhaseSchema,
   turnFailureDiagnosticReasonSchema as providerTurnFailureDiagnosticReasonSchema,
   type TurnFailureDiagnostic as ProviderTurnFailureDiagnostic,
@@ -137,8 +136,6 @@ export interface TurnCompletedParams {
   subtype: string | null;
   errors?: string[];
 }
-
-export const TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION = PROVIDER_TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION;
 
 export const turnFailureDiagnosticReasonSchema = providerTurnFailureDiagnosticReasonSchema;
 export type TurnFailureDiagnosticReason = ProviderTurnFailureDiagnosticReason;

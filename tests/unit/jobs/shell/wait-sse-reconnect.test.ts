@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import type { UsageSummary } from '#src/providers/contract.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -38,7 +39,7 @@ afterEach(() => {
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -84,7 +85,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-sse-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             owner: { kind: 'provider-session', id: sessionId },
             sessionId,
@@ -116,7 +116,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-sse-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             transport: 'durable-cli',
             pid: 123,
@@ -136,7 +135,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-sse-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             kind: 'message',
             message,
@@ -159,7 +157,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-sse-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             terminal: {
               outcome: { kind: 'completed' },
@@ -277,7 +274,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-race-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             owner: { kind: 'provider-session', id: sessionId },
             sessionId,
@@ -309,7 +305,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-race-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             transport: 'durable-cli',
             pid: 123,
@@ -329,7 +324,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-race-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             kind: 'message',
             message: 'progress-before-race',
@@ -352,7 +346,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-race-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             terminal: {
               outcome: { kind: 'completed' },

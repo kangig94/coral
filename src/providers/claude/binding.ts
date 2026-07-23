@@ -11,10 +11,11 @@ import {
   type ProviderBindingResult,
 } from '../contracts/binding.js';
 import type { JsonValue } from '../../infra/json-value.js';
-import type { ClaudeCredentialSource } from './execution-plan.js';
+import type { ClaudeProviderAccess } from './execution-plan.js';
 import { absoluteProfilePathSchema, canonicalProfileDirectory } from '../contracts/profile.js';
 import { isClaudeCredentialEnvKey } from './credential-policy.js';
 import { zodPersistedParser, zodValueParser } from '../binding-parser.js';
+import { claudePersistedContinuityParser } from './request-mapping.js';
 
 function createClaudeSelectionSchema() {
   return z.union([
@@ -109,10 +110,11 @@ export const claudeBindingCodec: ProviderBindingCodec<
   ClaudeSelection,
   ClaudeCredentialProfile,
   AccountSubject & JsonValue,
-  ClaudeCredentialSource
+  ClaudeProviderAccess
 > = {
   parseSelection: zodValueParser(createClaudeSelectionSchema),
-  parseProfile: zodValueParser(createClaudeCredentialProfileSchema),
+  persistedProfile: zodPersistedParser(createClaudeCredentialProfileSchema),
+  persistedContinuity: claudePersistedContinuityParser,
   persistedBinding: zodPersistedParser(createClaudeBindingSchema),
   bindingKind: 'profile',
   captureSelection: ({ env, homeDir }) => captureClaudeSelection(env, homeDir),
@@ -161,7 +163,7 @@ export const claudeBindingCodec: ProviderBindingCodec<
         })
       : bindingSuccess({ ready: true, use });
   },
-  credentialSource(binding) {
+  access(binding) {
     if (!binding.profile.routing.emitConfigDir) {
       return {
         configDir: binding.profile.canonicalLocation,

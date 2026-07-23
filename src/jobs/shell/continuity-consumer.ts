@@ -1,4 +1,6 @@
 import type { ProviderEventBody, ProviderTerminalEventBody } from '../../providers/contract.js';
+import type { ProviderBindingResult } from '../../providers/contracts/binding.js';
+import type { ProviderValidatedContinuityBlob } from '../../sessions/continuity.js';
 import type { SessionJobClaimPort } from '../../sessions/contracts.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { isRecord } from '../../infra/json.js';
@@ -9,6 +11,7 @@ export async function consumeJobStream(options: {
   sessionId: string;
   initialVersion: number;
   stream: AsyncIterable<ProviderEventBody>;
+  decodeContinuity(rawContinuity: unknown): ProviderBindingResult<ProviderValidatedContinuityBlob | undefined>;
   sessionApi: Pick<SessionJobClaimPort, 'checkpointJobContinuityAtomic' | 'recordArtifactHandleAtomic'>;
   appendProgress(message: string): void;
 }): Promise<
@@ -25,6 +28,15 @@ export async function consumeJobStream(options: {
     }
 
     if (event.kind === 'continuity') {
+      const continuity = options.decodeContinuity(event.providerContinuity);
+      if (!continuity.ok) {
+        const error = new Error(`Provider emitted invalid continuity for claimed job ${options.jobId}.`);
+        rejectContinuityEvent(event, error);
+        backendLog.warn(
+          `Provider continuity validation failed for claimed job ${options.jobId} on session ${sessionId}; preserving durable ownership.`,
+        );
+        return { kind: 'suspended', reason: 'durable_state_uncommitted' };
+      }
       let result: Awaited<ReturnType<SessionJobClaimPort['checkpointJobContinuityAtomic']>>;
       try {
         result = await sessionApi.checkpointJobContinuityAtomic(sessionId, {
@@ -33,7 +45,7 @@ export async function consumeJobStream(options: {
           snapshot: {
             conversationRef: event.conversationRef,
             resumable: event.resumable,
-            providerContinuity: isRecord(event.providerContinuity) ? event.providerContinuity : null,
+            providerContinuity: isRecord(continuity.value) ? continuity.value : null,
           },
         });
       } catch (error) {

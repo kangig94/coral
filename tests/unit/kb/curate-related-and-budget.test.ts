@@ -473,7 +473,7 @@ describe('curate related-resolution and budget guards', () => {
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line !== '')
-      .filter((line) => !['?? store.db', '?? store.db-shm', '?? store.db-wal'].includes(line));
+      .filter((line) => !['?? store.db', '?? store.db-shm', '?? store.db-wal', '?? store.db.format'].includes(line));
 
     expect(nonRuntimeStatus).toEqual([]);
     expect(lastCommit).toContain('curate:');

@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 // Phase 7 of apply-contract-reform plan.
 //
 // AC3/AC4 made the four base journal consumers cursor-only: spec §3.3 commit
@@ -134,7 +135,6 @@ function discussionJobLaunchInput(
     type: 'job.launch.requested',
     stream: { kind: 'job', id: jobId },
     refs: { sessionId: DISCUSS_EXECUTION_SESSION_ID },
-    bodyVersion: 1,
     body: {
       owner: { kind: 'discussion', id: 'discuss-golden' },
       discussionRun: { agent: 'alpha', purpose, attempt },
@@ -165,7 +165,6 @@ function sessionClaimInput(entry: ProviderSession, jobId: string): { input: Cora
       type: 'session.claimed',
       stream: { kind: 'session', id: entry.sessionId },
       refs: { sessionId: entry.sessionId, jobId },
-      bodyVersion: 1,
       body: { entry: claimed, jobId },
     },
     entry: claimed,
@@ -183,7 +182,6 @@ function sessionReleaseInput(
       type: 'session.claim.released',
       stream: { kind: 'session', id: entry.sessionId },
       refs: { sessionId: entry.sessionId, jobId },
-      bodyVersion: 1,
       body: { entry: released, jobId },
     },
     entry: released,
@@ -225,7 +223,7 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
   it('commit-time reducer state == rebuildProjections state, row by row, for jobs/sessions/discuss/workflow', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
 
@@ -261,7 +259,6 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           type: 'session.opened' as const,
           stream: { kind: 'session' as const, id: 'session-parity' },
           refs: { sessionId: 'session-parity' },
-          bodyVersion: 1,
           body: {
             entry: sessionOpen,
             controller: 'team-invariant',
@@ -274,7 +271,6 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           type: 'job.launch.requested' as const,
           stream: { kind: 'job' as const, id: 'job-parity-1' },
           refs: { sessionId: 'session-parity' },
-          bodyVersion: 1,
           body: {
             owner: { kind: 'provider-session' as const, id: 'session-parity' },
             sessionId: 'session-parity',
@@ -299,21 +295,18 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           type: 'job.queue.queued' as const,
           stream: { kind: 'job' as const, id: 'job-parity-1' },
           refs: { sessionId: 'session-parity' },
-          bodyVersion: 1,
           body: { queuePosition: 0, runningJobIds: [] },
         },
         {
           type: 'job.queue.admitted' as const,
           stream: { kind: 'job' as const, id: 'job-parity-1' },
           refs: { sessionId: 'session-parity' },
-          bodyVersion: 1,
           body: { queuePosition: 0 },
         },
         {
           type: 'job.runtime.started' as const,
           stream: { kind: 'job' as const, id: 'job-parity-1' },
           refs: { sessionId: 'session-parity' },
-          bodyVersion: 1,
           body: {
             transport: 'durable-cli' as const,
             pid: 9001,
@@ -326,7 +319,6 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           type: 'job.terminal.recorded' as const,
           stream: { kind: 'job' as const, id: 'job-parity-1' },
           refs: { sessionId: 'session-parity' },
-          bodyVersion: 1,
           body: {
             terminal: {
               outcome: { kind: 'provider_exit' as const, code: 0 },
@@ -340,7 +332,6 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           type: 'session.continuity.checkpointed' as const,
           stream: { kind: 'session' as const, id: 'session-parity' },
           refs: { sessionId: 'session-parity' },
-          bodyVersion: 1,
           body: {
             entry: sessionReady,
             snapshot: {
@@ -365,7 +356,6 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           type: 'session.opened' as const,
           stream: { kind: 'session' as const, id: DISCUSS_EXECUTION_SESSION_ID },
           refs: { sessionId: DISCUSS_EXECUTION_SESSION_ID },
-          bodyVersion: 1,
           body: {
             entry: discussSessionOpen,
             controller: 'team-invariant',

@@ -30,19 +30,23 @@ export type StoreFormatManifest = {
 export type StoreFormatDescription = {
   readonly manifest: StoreFormatManifest;
   readonly canonicalManifest: string;
-  readonly fingerprint: string;
+  readonly fingerprint: StoreFormatFingerprint;
 };
 
+export type StoreFormatFingerprint = `sha256:${string}`;
+
 export type StoreFormatFingerprintComparison =
-  | { readonly kind: 'missing'; readonly current: string }
-  | { readonly kind: 'current'; readonly current: string; readonly stored: string }
-  | { readonly kind: 'mismatch'; readonly current: string; readonly stored: string };
+  | { readonly kind: 'missing'; readonly current: StoreFormatFingerprint }
+  | {
+      readonly kind: 'current';
+      readonly current: StoreFormatFingerprint;
+      readonly stored: StoreFormatFingerprint;
+    }
+  | { readonly kind: 'mismatch'; readonly current: StoreFormatFingerprint; readonly stored: string };
 
 const CODEC_NAME = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 const PERSISTED_CODEC_ANNOTATION = /@persisted-codec\s+([a-z][a-z0-9]*(?:[._-][a-z0-9]+)*)/g;
 const JSON_BOUNDARY_COMMENT = /--[^\r\n]*\bJSON\b/i;
-const ANNOTATION_ONLY_COMMENT = /[ \t]+-- (?:JSON )?@persisted-codec\s+[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*(?=\r?$)/gm;
-const INLINE_ANNOTATION = /[ \t]+@persisted-codec\s+[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*/g;
 
 type ZodDefinition = Readonly<Record<string, unknown>> & { readonly typeName?: unknown };
 
@@ -427,15 +431,6 @@ export function persistedCodecNamesFromDdl(ddl: string): readonly string[] {
   return names.sort(compareText);
 }
 
-/**
- * B01 annotations are shadow metadata. The active pre-B09 PRAGMA marker must
- * continue hashing the exact pre-annotation DDL source so adding coverage
- * declarations alone cannot reset a store.
- */
-export function ddlWithoutPersistedCodecAnnotations(ddl: string): string {
-  return ddl.replace(ANNOTATION_ONLY_COMMENT, '').replace(INLINE_ANNOTATION, '');
-}
-
 function assertCodecCoverage(ddl: string, entries: readonly PersistedCodecManifestEntry[]): void {
   const declared = persistedCodecNamesFromDdl(ddl);
   const registered = entries.filter((entry) => entry.persistence === 'boundary').map((entry) => entry.name);
@@ -492,10 +487,9 @@ export function describeStoreFormat(
   });
 }
 
-/** Pure B09 reset decision input; B01 does not read or write this marker. */
 export function compareStoreFormatFingerprint(
   stored: string | null,
-  current: string,
+  current: StoreFormatFingerprint,
 ): StoreFormatFingerprintComparison {
   if (stored === null) return { kind: 'missing', current };
   if (stored === current) return { kind: 'current', current, stored };

@@ -10,6 +10,7 @@ import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
 import { errorMessage } from '../infra/error-format.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
+import { currentCoralStoreFormat } from '../store-format.js';
 
 async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   const pathIdx = argv.indexOf('--path');
@@ -24,6 +25,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
     const runtime = createRealRuntime(resolveBuildFlavor(process.env));
     const db = openWritableStoreDbNoReset(runtime, {
       path: storePath,
+      storeFormat: currentCoralStoreFormat(),
     });
 
     try {
@@ -53,6 +55,11 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
 export async function main(): Promise<number> {
   // Before any child spawn, shed the Claude Code identity inherited from the daemon's launcher.
   shedInheritedClaudeCodeEnv(process.env);
+
+  if (process.argv.includes('--print-store-format-fingerprint')) {
+    process.stdout.write(`${currentCoralStoreFormat().fingerprint}\n`);
+    return 0;
+  }
 
   if (process.env.CORAL_KB_DAEMON === '1') {
     return runKbDaemonMain({

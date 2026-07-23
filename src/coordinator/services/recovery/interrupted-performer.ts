@@ -10,14 +10,14 @@ import type { BoundProvider, BoundProviderHostPreparationInput } from '../../../
 import type { Runtime } from '../../../runtime/ports.js';
 import { readContinuityRef } from '../../../sessions/continuity.js';
 import type { ContinuitySnapshot } from '../../../sessions/continuity.js';
-import type { SessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
+import type { ProviderValidatedSessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
 import type { AppServerInterruptedRecoveryPlan, DurableInterruptedRecoveryPlan } from './interrupted-plan.js';
 
 export type PerformedInterruptedRecovery =
   | Readonly<{ kind: 'unsupported' }>
   | Readonly<{
       kind: 'resolved';
-      mutation: SessionContinuityMutation;
+      mutation: ProviderValidatedSessionContinuityMutation;
       probeOutcome: InterruptedProbeOutcome;
       recoveryConversationRef: string | undefined;
       artifactHandles: readonly ProviderArtifactHandleInput[];
@@ -30,7 +30,7 @@ export type PerformedDurableRecovery = Readonly<{
     | Readonly<{ kind: 'provider'; value: ProviderTerminalEventBody }>
     | Readonly<{ kind: 'recovery-fault'; message: string }>
     | Readonly<{ kind: 'direct'; value: JobTerminalInput }>;
-  mutation: SessionContinuityMutation;
+  mutation: ProviderValidatedSessionContinuityMutation;
   artifactHandles: readonly ProviderArtifactHandleInput[];
 }>;
 
@@ -170,9 +170,12 @@ function durableContinuityMutation(
         providerContinuity?: ContinuitySnapshot['providerContinuity'];
       })
     | undefined,
-): SessionContinuityMutation {
+  boundProvider: BoundProvider,
+): ProviderValidatedSessionContinuityMutation {
   if (continuity === undefined) return { kind: 'preserve' };
-  const providerContinuity = continuity.providerContinuity ?? undefined;
+  const decoded = boundProvider.decodeContinuity(continuity.providerContinuity);
+  if (!decoded.ok) throw new TypeError(`Provider '${boundProvider.name}' produced invalid durable continuity.`);
+  const providerContinuity = decoded.value;
   const conversationRef = readContinuityRef(continuity.conversationRef);
   if (!continuity.resumable) {
     return providerContinuity === undefined
@@ -267,7 +270,7 @@ export async function performInterruptedDurableRecovery(
     return Object.freeze({
       kind: 'durable-resolved',
       terminal: Object.freeze({ kind: 'provider', value: result.terminal }),
-      mutation: Object.freeze(durableContinuityMutation(result.continuity)),
+      mutation: Object.freeze(durableContinuityMutation(result.continuity, boundProvider)),
       artifactHandles: Object.freeze([...(result.artifactHandles ?? [])]),
     });
   } catch (error: unknown) {

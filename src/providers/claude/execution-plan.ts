@@ -18,7 +18,7 @@ import { resolveClaudeBrokerEntrypoint, type ClaudeBrokerHostPlan } from './requ
 import { claudeTransportEnv } from './transport-mode.js';
 import type { resolveClaudeTransportMode } from './transport-mode.js';
 
-export type ClaudeCredentialSource =
+export type ClaudeProviderAccess =
   | {
       readonly configDir: string;
       readonly projectsRoot: string;
@@ -30,10 +30,10 @@ export type ClaudeCredentialSource =
       readonly routing: { readonly kind: 'default-home'; readonly homeDir: string };
     };
 
-export function claudeRoutingEnv(source: ClaudeCredentialSource): Readonly<Record<string, string>> {
-  return source.routing.kind === 'config-dir'
-    ? Object.freeze({ CLAUDE_CONFIG_DIR: source.configDir })
-    : Object.freeze({ HOME: source.routing.homeDir });
+export function claudeRoutingEnv(access: ClaudeProviderAccess): Readonly<Record<string, string>> {
+  return access.routing.kind === 'config-dir'
+    ? Object.freeze({ CLAUDE_CONFIG_DIR: access.configDir })
+    : Object.freeze({ HOME: access.routing.homeDir });
 }
 
 export type ClaudeExecutionPlan = ProviderExecutionPlan<
@@ -46,7 +46,7 @@ export type ClaudeExecutionPlan = ProviderExecutionPlan<
       transportMode: ReturnType<typeof resolveClaudeTransportMode>;
       environment: readonly EnvironmentLayer[];
     }>;
-    controller: Readonly<{ source: ClaudeCredentialSource; environment: readonly EnvironmentLayer[] }>;
+    controller: Readonly<{ access: ClaudeProviderAccess; environment: readonly EnvironmentLayer[] }>;
   }>,
   Readonly<{ sessionId: string; projectsRoot: string }>,
   Readonly<{ controllerEnvironment: readonly EnvironmentLayer[] }>
@@ -66,8 +66,8 @@ export function claudeBaseLayer(values: Readonly<Record<string, string>>, platfo
   );
 }
 
-export function claudeRoutingLayer(source: ClaudeCredentialSource, platform: string): EnvironmentLayer {
-  const values = claudeRoutingEnv(source);
+export function claudeRoutingLayer(access: ClaudeProviderAccess, platform: string): EnvironmentLayer {
+  const values = claudeRoutingEnv(access);
   return environmentLayer(
     {
       name: 'claude-account-routing',
@@ -191,7 +191,7 @@ export function createClaudeBrokerHost(options: {
 }
 
 export function buildClaudeHost(options: {
-  readonly source: ClaudeCredentialSource;
+  readonly access: ClaudeProviderAccess;
   readonly request: Pick<ProviderRequest, 'cwd' | 'coralEnv'>;
   readonly baseEnv: Readonly<Record<string, string>>;
   readonly platform: string;
@@ -208,7 +208,7 @@ export function buildClaudeHost(options: {
       transportMode: options.transportMode,
     }),
     controller: buildClaudeControllerHost({
-      source: options.source,
+      access: options.access,
       coralEnv: options.request.coralEnv,
       baseEnv: options.baseEnv,
       platform: options.platform,
@@ -217,16 +217,16 @@ export function buildClaudeHost(options: {
 }
 
 export function buildClaudeControllerHost(options: {
-  readonly source: ClaudeCredentialSource;
+  readonly access: ClaudeProviderAccess;
   readonly coralEnv: Readonly<Record<string, string>>;
   readonly baseEnv: Readonly<Record<string, string>>;
   readonly platform: string;
 }): ClaudeExecutionPlan['host']['controller'] {
   return Object.freeze({
-    source: options.source,
+    access: options.access,
     environment: Object.freeze([
       claudeBaseLayer(options.baseEnv, options.platform),
-      claudeRoutingLayer(options.source, options.platform),
+      claudeRoutingLayer(options.access, options.platform),
       processSettingsLayer(options.coralEnv, options.platform),
     ]),
   });
@@ -240,7 +240,7 @@ export function compileClaudeControllerEnvironment(plan: ClaudeExecutionPlan): R
 }
 
 export function buildClaudeExecutionPlan(options: {
-  source: ClaudeCredentialSource;
+  access: ClaudeProviderAccess;
   hostPlan: ClaudeExecutionPlan['host'];
   request: ProviderRequest;
   baseEnv: Readonly<Record<string, string>>;
@@ -253,7 +253,7 @@ export function buildClaudeExecutionPlan(options: {
 } {
   const plan: ClaudeExecutionPlan = Object.freeze({
     host: options.hostPlan,
-    session: Object.freeze({ sessionId: options.request.sessionId, projectsRoot: options.source.projectsRoot }),
+    session: Object.freeze({ sessionId: options.request.sessionId, projectsRoot: options.access.projectsRoot }),
     turn: Object.freeze({
       controllerEnvironment: Object.freeze([
         turnAuthorityLayer(options.request, options.protectedEnv ?? {}, options.platform),
@@ -268,11 +268,11 @@ export function buildClaudeExecutionPlan(options: {
 }
 
 export function buildClaudePreflightRuntime(
-  input: ProviderPreflightInput<ClaudeCredentialSource>,
-): ProviderPreflightRuntime<ClaudeCredentialSource> {
+  input: ProviderPreflightInput<ClaudeProviderAccess>,
+): ProviderPreflightRuntime<ClaudeProviderAccess> {
   const layers = [
     claudeBaseLayer(input.baseEnv, input.platform),
-    claudeRoutingLayer(input.credentialSource, input.platform),
+    claudeRoutingLayer(input.access, input.platform),
     processSettingsLayer(input.requestEnv, input.platform),
     requestLayer(input.requestEnv, input.platform),
   ];
@@ -285,7 +285,7 @@ export function buildClaudePreflightRuntime(
     storage: input.storage,
     env: input.env,
     time: input.time,
-    credentialSource: input.credentialSource,
+    access: input.access,
     cwd: input.cwd,
     runExact: (command, args, options = {}) => {
       const compiledCommand = windowsCommandName(command, input.platform);

@@ -1,7 +1,5 @@
 import { z } from 'zod';
 
-export const TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION = 1 as const;
-
 export const turnFailureDiagnosticReasonSchema = z.enum([
   'silent-hang',
   'api-error',
@@ -17,7 +15,6 @@ export type TurnFailureDiagnosticPhase = z.infer<typeof turnFailureDiagnosticPha
 
 export const turnFailureDiagnosticSchema = z
   .object({
-    schemaVersion: z.literal(TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION),
     reason: turnFailureDiagnosticReasonSchema,
     phase: turnFailureDiagnosticPhaseSchema,
     idleMs: z.number().int().nonnegative(),

@@ -8,7 +8,7 @@ import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registr
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
-import { fixtureProviderBindingCodec, type FixtureProviderSource } from '#tests/helpers/provider-binding.js';
+import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
 import { prepareFixtureExecutionPlan, type FixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import {
@@ -48,8 +48,8 @@ const GENERIC_EXECUTION_FILES = [
 describe('bound-provider execution architecture', () => {
   it('keeps provider-name interpretation out of generic execution code', () => {
     const violations = GENERIC_EXECUTION_FILES.flatMap((path) => {
-      const source = readFileSync(new URL(path, ROOT), 'utf-8');
-      return /['"](?:claude|codex)['"]/u.test(source) ? [path] : [];
+      const access = readFileSync(new URL(path, ROOT), 'utf-8');
+      return /['"](?:claude|codex)['"]/u.test(access) ? [path] : [];
     });
 
     expect(violations).toEqual([]);
@@ -99,8 +99,8 @@ describe('bound-provider execution architecture', () => {
     const violations = PRODUCTION_FILES.flatMap((file) => {
       const path = toCanonicalSrcPath(REPO_ROOT, file);
       if (!/^src\/(?:coordinator|jobs|sessions|workflow|discuss)\//u.test(path)) return [];
-      const source = readFileSync(file, 'utf-8');
-      return /\.credentialSource\s*\(\)/u.test(source) || /providers\/(?:claude|codex)\/execution-plan/u.test(source)
+      const access = readFileSync(file, 'utf-8');
+      return /\.access\s*\(\)/u.test(access) || /providers\/(?:claude|codex)\/execution-plan/u.test(access)
         ? [path]
         : [];
     });
@@ -136,13 +136,13 @@ describe('bound-provider execution architecture', () => {
     expect(registry).not.toMatch(/export type ProviderDefinition[^;]+readonly run:/su);
   });
 
-  it('does not restore removed credential-source modules, imports, or execution aliases', () => {
+  it('does not restore removed credential-access modules, imports, or execution aliases', () => {
     const removedCredentialSources = new URL('src/infra/provider-credential-sources.ts', ROOT);
     const obsoleteAuthorityNames =
       /\b(?:ProviderCredentialSourceRef|RehydratedProviderBinding|ProviderSpec|ProviderExecutionContext|providerCredentialDefaults|providerCredentialSourceForRecovery)\b/u;
     const violations = PRODUCTION_FILES.flatMap((file) => {
-      const source = readFileSync(file, 'utf-8');
-      return /provider-credential-sources/u.test(source) || obsoleteAuthorityNames.test(source)
+      const access = readFileSync(file, 'utf-8');
+      return /provider-credential-sources/u.test(access) || obsoleteAuthorityNames.test(access)
         ? [toCanonicalSrcPath(REPO_ROOT, file)]
         : [];
     });
@@ -151,7 +151,7 @@ describe('bound-provider execution architecture', () => {
     expect(violations).toEqual([]);
   });
 
-  it('keeps opaque provider sources and process compilation outside shared execution infrastructure', () => {
+  it('keeps opaque provider access and process compilation outside shared execution infrastructure', () => {
     const bindingContract = readFileSync(new URL('src/providers/contracts/binding.ts', ROOT), 'utf-8');
     const providerContract = readFileSync(new URL('src/providers/contract.ts', ROOT), 'utf-8');
     const runtimePorts = readFileSync(new URL('src/infra/port-types.ts', ROOT), 'utf-8');
@@ -203,7 +203,7 @@ describe('bound-provider execution architecture', () => {
     expect(contract).not.toContain('appServerLaunch');
     expect(contract).not.toContain('prepareAppServerAttachment');
     expect(contract).toContain("compileStableHost(host: Plan['host'])");
-    expect(contract).toContain('planHost(input: ProviderHostPlanningInput<Source>)');
+    expect(contract).toContain('planHost(input: ProviderHostPlanningInput<Access>)');
     expect(appServer).not.toContain('ProviderRequest');
     expect(appServer).not.toContain('ProviderContinuityBlob');
     expect(appServer).not.toContain('buildServerSpec');
@@ -247,17 +247,26 @@ describe('bound-provider execution architecture', () => {
     expect(executionService).not.toContain('providerCredentialSourceForRecovery');
   });
 
+  it('does not expose a generic raw provider-continuity persistence API', () => {
+    const sessionContracts = readFileSync(new URL('src/sessions/contracts.ts', ROOT), 'utf-8');
+    const sessionManager = readFileSync(new URL('src/sessions/shell.ts', ROOT), 'utf-8');
+
+    expect(sessionContracts).not.toContain('checkpointProviderContinuity');
+    expect(sessionManager).not.toContain('checkpointProviderContinuity');
+    expect(sessionManager).not.toMatch(/\n\s*checkpoint\(sessionId:\s*string,\s*snapshot:\s*ContinuitySnapshot\)/u);
+  });
+
   it('launches a newly registered fixture provider through generic job launch and orchestration', async () => {
     let dispatched = false;
     let prepared = false;
-    let observedSource: FixtureProviderSource | undefined;
+    let observedSource: FixtureProviderAccess | undefined;
     let observedCliEnv: Readonly<Record<string, string>> | undefined;
-    const definition = defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
+    const definition = defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
       name: 'fixture',
       transport: 'standalone',
       prepareExecutionPlan: (input) => {
         prepared = true;
-        observedSource = input.source;
+        observedSource = input.access;
         return prepareFixtureExecutionPlan(input);
       },
       run: async function* (_request, runtime) {

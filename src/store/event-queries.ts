@@ -22,11 +22,10 @@ export function getEvent(
   seq: number,
   ctx: StoreReadContext,
 ): CoralEvent | undefined {
-  const row = prepareCached<[string, string, number], EventsRow | undefined>(
-    db,
-    `SELECT * FROM events WHERE stream_kind = ? AND stream_id = ? AND seq = ?`,
-  ).get(stream.kind, stream.id, seq);
-  return row ? rowToCoralEvent(row, decodeStoredBody(row, ctx)) : undefined;
+  const row = prepareCached<[number], EventsRow | undefined>(db, `SELECT * FROM events WHERE seq = ?`).get(seq);
+  if (!row) return undefined;
+  const event = rowToCoralEvent(row, decodeStoredBody(row, ctx));
+  return event.stream.kind === stream.kind && event.stream.id === stream.id ? event : undefined;
 }
 
 export function getEventsSince(
@@ -40,8 +39,14 @@ export function getEventsSince(
   const params: unknown[] = [afterSeq];
 
   if (filter.streamKind) {
-    clauses.push('stream_kind = ?');
-    params.push(filter.streamKind);
+    const eventTypes = [...ctx.streamKinds]
+      .filter(([, streamKind]) => streamKind === filter.streamKind)
+      .map(([type]) => type);
+    if (eventTypes.length === 0) {
+      return { events: [], nextCursor: afterSeq };
+    }
+    clauses.push(`type IN (${eventTypes.map(() => '?').join(', ')})`);
+    params.push(...eventTypes);
   }
   if (filter.type) {
     clauses.push('type = ?');
@@ -63,20 +68,17 @@ export function getEventsSince(
   return { events, nextCursor };
 }
 
-export function readLatestEvent(
-  db: Database,
-  streamKind: StreamKind,
-  streamId: string,
-  type: string,
-): EventsRow | null {
-  const row = prepareCached<[StreamKind, string, string], EventsRow | undefined>(
+export function readLatestEvent(db: Database, streamId: string, type: string): EventsRow | null {
+  const row = prepareCached<[string, string], EventsRow | undefined>(
     db,
     `SELECT *
        FROM events
-      WHERE stream_kind = ? AND stream_id = ? AND type = ?
+      WHERE stream_id = ? AND type = ?
       ORDER BY seq DESC
       LIMIT 1`,
-  ).get(streamKind, streamId, type);
+  ).get(streamId, type);
 
-  return row ?? null;
+  if (row === undefined) return null;
+  rowToCoralEvent(row, null);
+  return row;
 }

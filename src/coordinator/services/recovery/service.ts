@@ -1,9 +1,5 @@
 import type { ProviderRequest } from '../../../providers/contract.js';
-import {
-  readContinuityRef,
-  type ContinuitySnapshot,
-  type ProviderContinuityBlob,
-} from '../../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal, JobTerminalInput } from '../../../jobs/records.js';
 import { isTerminalPhase, type JobPhase } from '../../../jobs/phase.js';
@@ -101,10 +97,14 @@ export class RecoveryService {
     });
   }
 
-  private async readProviderSession(
-    launchRecord: JobLaunch,
-  ): Promise<
-    { ok: true; session: ProviderSession; bound: BoundProvider } | { ok: false; failure: ProviderBindingFailure }
+  private async readProviderSession(launchRecord: JobLaunch): Promise<
+    | {
+        ok: true;
+        session: ProviderSession;
+        bound: BoundProvider;
+        continuity: ProviderContinuityBlob | undefined;
+      }
+    | { ok: false; failure: ProviderBindingFailure }
   > {
     const provider = launchRecord.provider;
     if (provider === null || launchRecord.sessionId === null) {
@@ -125,9 +125,11 @@ export class RecoveryService {
     if (binding.value.name !== provider) {
       return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
     }
+    const continuity = binding.value.decodeContinuity(session.providerContinuity);
+    if (!continuity.ok) return { ok: false, failure: continuity.failure };
     const readiness = await binding.value.readiness('recovery', this.deps.runtime.storage);
     if (!readiness.ok) return { ok: false, failure: readiness.failure };
-    return { ok: true, session, bound: binding.value };
+    return { ok: true, session, bound: binding.value, continuity: continuity.value };
   }
 
   finalizeProviderRecoveryBindingFailure(launchRecord: JobLaunch, failure: ProviderBindingFailure): void {
@@ -158,7 +160,10 @@ export class RecoveryService {
     requireProviderLaunchRecord(launchRecord, 'captureProviderRecoveryAuthority');
     const result = await this.readProviderSession(launchRecord);
     if (result.ok) {
-      return { ok: true, authority: snapshotProviderRecoveryAuthority(launchRecord, result.session, result.bound) };
+      return {
+        ok: true,
+        authority: snapshotProviderRecoveryAuthority(launchRecord, result.session, result.bound, result.continuity),
+      };
     }
     return result;
   }
@@ -337,7 +342,7 @@ export class RecoveryService {
     sessionId: string,
     result: JobTerminalInput,
     phase: JobPhase,
-    options: TerminalWriteOptions & { pool: LaunchPool; sessionContinuity?: ContinuitySnapshot | null },
+    options: TerminalWriteOptions & { pool: LaunchPool },
   ): void {
     const currentStatus = this.deps.progressStore.readStatus(jobId);
     if (!currentStatus || !isTerminalPhase(currentStatus.phase)) {
@@ -354,19 +359,6 @@ export class RecoveryService {
       );
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${String(error)}`);
-    }
-    const continuity = options.sessionContinuity ?? null;
-    const continuityConversationRef = readContinuityRef(continuity?.conversationRef);
-    if (continuity?.providerContinuity) {
-      this.deps.sessionManager.checkpointProviderContinuity(sessionId, {
-        providerContinuity: continuity.providerContinuity,
-        ...(continuityConversationRef !== undefined ? { conversationRef: continuityConversationRef } : {}),
-      });
-    } else if (continuityConversationRef !== undefined) {
-      this.deps.sessionManager.setConversationRef(sessionId, continuityConversationRef);
-    }
-    if (continuity && !continuity.resumable) {
-      this.deps.sessionManager.setNonResumable(sessionId);
     }
     this.deps.sessionManager.releaseJob(sessionId, jobId);
 

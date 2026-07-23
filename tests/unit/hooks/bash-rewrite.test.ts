@@ -8,6 +8,7 @@ import {
   createFixture,
   expectBashRewriteOutput,
   extractTempInputPaths,
+  liveWorkBackgroundDir,
   parseJsonOutput,
   runHook,
   type HookFixture,
@@ -428,8 +429,7 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
   const SESSION = 'sess-bgwrap-01';
 
   function bgDir(fixture: HookFixture): string {
-    const slug = fixture.projectRoot.replace(/\//g, '-');
-    return join(fixture.workRoot, 'coral-work', slug, SESSION, 'bg');
+    return liveWorkBackgroundDir(fixture, SESSION);
   }
 
   function runBg(fixture: HookFixture, toolInput: Record<string, unknown>) {

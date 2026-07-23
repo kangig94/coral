@@ -91,7 +91,6 @@ export class WorkflowExecutionService {
           namespace: this.deps.backendNamespace,
           project: ctx.projectRoot,
           refs: { jobId, workflowId: jobId },
-          bodyVersion: 1,
           body: {
             owner: { kind: 'workflow', id: jobId },
             projectRoot: boundCtx.projectRoot,
@@ -115,7 +114,6 @@ export class WorkflowExecutionService {
           namespace: this.deps.backendNamespace,
           project: ctx.projectRoot,
           refs: { jobId, workflowId: jobId },
-          bodyVersion: 1,
           body: {
             transport: 'workflow',
             startedAt: nowIsoString(this.deps.runtime.time),

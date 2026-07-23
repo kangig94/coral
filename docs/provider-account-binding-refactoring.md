@@ -1,6 +1,6 @@
 # Provider multi-account execution: most-elegant target design
 
-Status: implementation complete through B08; B09 is next
+Status: B09 implementation, tier-review remediation, and full verification complete; temporary-document cleanup remains
 
 Scope: provider multi-account execution merged by PR #275 and the provider/session/app-server/recovery boundaries it exposes
 
@@ -10,7 +10,7 @@ Audience: Coral maintainers implementing the provider-account refactoring
 
 Adopt the complete fresh-context Pioneer design as the target architecture.
 
-Coral remains one shared, account-neutral daemon. Provider account choice enters at an explicit invocation boundary, becomes a verified durable provider binding, and is then owned by one provider module through normal execution and recovery. Coral security authority remains independent of provider identity.
+Coral remains one shared, account-neutral daemon. Provider profile choice enters at an explicit invocation boundary, becomes a strict durable provider binding with whatever identity guarantee that provider can prove, and is then owned by one provider module through normal execution and recovery. Coral security authority remains independent of provider identity.
 
 The target flow is:
 
@@ -21,7 +21,7 @@ Coral Principal
 ProviderScope(origin)
   -> ProviderSelection
   -> CredentialProfile
-  -> ProviderBinding(profile + verified subject)
+  -> ProviderBinding(profile + provider-specific identity guarantee)
   -> BoundProvider
   -> ProviderExecutionPlan(host / session / turn)
   -> AppServerSession
@@ -456,9 +456,9 @@ Each turn snapshots one `threadConfig`. New and resumed threads reuse that captu
 Each app-server provider exposes one declarative capability. Rehydration binds it once to the registry-captured host authority, producing the only operational lifecycle used by execution, curation, and recovery:
 
 ```ts
-interface ProviderAppServerCapability<Plan extends ProviderExecutionPlan, Source extends ProviderSource> {
+interface ProviderAppServerCapability<Plan extends ProviderExecutionPlan, Access extends ProviderAccess> {
   readonly name: string;
-  planHost(input: ProviderHostPlanningInput<Source>): Plan['host'];
+  planHost(input: ProviderHostPlanningInput<Access>): Plan['host'];
   compileStableHost(host: Plan['host']): ProviderServerSpec;
   interrupt?(transport: AppServerTransport, continuity: ProviderContinuityBlob): Promise<boolean>;
   probe?(
@@ -705,7 +705,7 @@ Recovery and adoption
 |     6 | B06 — lifetime-scoped execution plans               | complete | B05          | host/session/turn plans and lifetime-safe environments            | internal behavior correction                          |
 |     7 | B07 — unified app-server and Codex turn capability  | complete | B06          | explicit app-server sessions, host references, real Codex sharing | yes                                                   |
 |     8 | B08 — bound-provider recovery pipeline              | complete | B07          | `plan -> perform -> finalize` recovery                            | behavior-preserving except corrected failure handling |
-|     9 | B09 — superseded-surface cleanup and adoption reset | next     | B08          | one store-format authority and no superseded surfaces             | one intentional store reset                           |
+|     9 | B09 — superseded-surface cleanup and adoption reset | complete | B08          | one store-format authority and no superseded surfaces             | one intentional store reset                           |
 
 ### Batch execution contract
 
@@ -1073,6 +1073,16 @@ Remove every superseded old-model and execution surface after the final persiste
 **Exit gate**
 
 One store-format authority, one provider binding vocabulary, one provider execution path, and one app-server/recovery lifecycle remain.
+
+**Implemented result**
+
+- `src/store-format.ts` is the application composition root for one immutable format description. Every coordinator, CLI, KB-daemon, read-only, simulation, and test opener receives that complete description rather than an independently supplied marker string. The standalone `pre-compact` hook verifies the same fingerprint exported by the built backend into its bundle manifest before its direct read-only query.
+- The canonical manifest contains the exact DDL executed for a fresh or reset store, including registered auxiliary DDL. It fingerprints every event's canonical `type → streamKind → body → materializer` mapping, append-validation semantics, the exact Journal envelope decoder, complete projection-job and projection-session rows, strict consumer-cursor metadata/cursors, the singleton corpus-state row, and every strict KB active-claim/scheduler/retry/quarantine/backlog SQL row decoder used outside JSON columns. Registered semantic components cover the imperative cross-column relationships those decoders enforce. Actual reads use those same contracts: event decoding always checks the canonical stream kind, projection rows are audited before indexed hot-path filtering, and inconsistent scalar/JSON relationships fail closed. The database marker is written only in the same transaction after that complete DDL succeeds; a same-directory fingerprint sidecar lets direct hooks reject an incompatible store without opening SQLite. Fresh-schema tests prove every registered corpus-baseline table exists.
+- The runtime provider registry is sealed and compared with the built-in canonical manifest before it may own the production store. A registry whose private persisted contracts differ is rejected, so independently launched Coral processes cannot select divergent format authorities.
+- Provider registration contributes separate canonical profile, binding, and continuity contracts. The continuity parser remains attached to the rehydrated `BoundProvider`; launch/resume and recovery authority capture admit only its decoded value, while provider stream checkpoints, probes, and recovery outputs pass through the same parser before a durable write. Claude and Codex use that registered parser for provider-local inputs and outputs; unknown, empty, or malformed payloads fail closed instead of entering the Journal or being normalized as an older shape. Sessions expose no generic raw-continuity checkpoint API: production persistence is reachable only through claim/version-checked ports after the bound provider has decoded the payload.
+- `meta.store_format_fingerprint` is the sole database adoption authority. A missing or different value follows the existing authority-gated DB/WAL/SHM/format-sidecar quarantine and fresh-store path; no migration, compatibility reader, default fill, or old-format translation exists. The sidecar is a redundant hook-safety witness, never an adoption decision source.
+- Provider source/bundle versions and key helpers, Journal/body/projection migration markers, the unused singular corpus-baseline table, old credential/source vocabulary, raw generic continuity writers, and superseded recovery preparation surfaces are removed. Retained versions identify external artifacts/protocols or optimistic session CAS rather than database codecs.
+- Permanent architecture/configuration documentation now describes strict current-codec reads and destructive fingerprint adoption. The temporary design and Pioneer review remain only until the final cleanup commit required by this workflow.
 
 ## Required invariants and tests
 

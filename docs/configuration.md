@@ -106,7 +106,7 @@ Provider-routing failures are intentionally distinct so the operator can repair 
 
 See [CLI Errors](./cli-errors.md) for the wire envelope and exit-code behavior.
 
-`ProviderBindingEnvelope` and `ProviderScope` carry no migration versions. Event `bodyVersion` and snapshot `schemaVersion` identify strict current codecs; they are not compatibility switches. Coral provides no upcaster, dual reader, default fill, or old-format decoder. Through B04, the active destructive reset marker remains the DDL-only `schema.sql` hash. The complete fingerprint over `schema.sql` plus registered persisted codecs is a shadow assertion: it detects coverage drift in development but does not yet control reset behavior. B09 promotes that complete fingerprint to the active store marker; until then, only a DDL hash mismatch quarantines the DB/WAL/SHM and creates a fresh store.
+`ProviderBindingEnvelope`, `ProviderScope`, journal events, and projections carry no migration versions. Coral provides no upcaster, dual reader, default fill, or old-format decoder. The active `StoreFormatFingerprint` covers the executable SQL manifest, explicit event body/materializer and append-validator semantic contracts, persisted decoder contracts, and each provider's profile, binding, and continuity codecs. Startup quarantines the DB/WAL/SHM plus the redundant hook-safety format sidecar and creates a fresh store whenever the database fingerprint is missing or differs; it never translates old durable state.
 
 #### Upgrade cutover
 
@@ -226,11 +226,12 @@ Build manifest written by `scripts/build-server.mjs`:
 ```json
 {
   "bundleHash": "<backend-bundle-hash>",
-  "flavor": "prod"
+  "flavor": "prod",
+  "storeFormatFingerprint": "sha256:<canonical-store-format-hash>"
 }
 ```
 
-`bundleHash` tracks backend bundle bytes. `flavor` is the intrinsic build identity used by the backend and hooks to distinguish prod from dev.
+`bundleHash` tracks backend bundle bytes. `flavor` is the intrinsic build identity used by the backend and hooks to distinguish prod from dev. `storeFormatFingerprint` is emitted by that exact backend bundle; standalone read-only hooks verify it before reading Coral's SQL projections.
 
 ### `clients/hooks/claude.json` and `clients/hooks/codex.json`
 

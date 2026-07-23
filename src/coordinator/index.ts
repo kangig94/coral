@@ -25,23 +25,13 @@ import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { readJobEvents, loadJobProjectionDetail, loadJobProjectionDetails } from '../jobs/read-queries.js';
 import { createProjectionSessionLookup } from '../sessions/lookup.js';
 import { composeReducers } from '../store/reducers.js';
-import { assertCurrentStoreFormat } from '../store/current-format.js';
-import { journalEventRefsSchema } from '../store/envelope.js';
+import { sealCoralStoreFormat } from '../store-format.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
 import { jobsReconcile } from '../jobs/startup.js';
 import { jobsRegistry } from '../jobs/events.js';
-import { jobDiagnosticsSchema, jobTerminalSchema } from '../jobs/terminal/result.js';
 import { sessionsRegistry } from '../sessions/events.js';
-import { providerSessionSchema } from '../sessions/entry.js';
-import { executionOwnerSchema } from '../runtime/execution-owner.js';
-import { providerScopeSchema } from '../infra/provider-scope.js';
 import { discussRegistry } from '../discuss/event-registry.js';
-import { persistedDiscussSnapshotSchema } from '../discuss/projections.js';
 import { workflowRegistry } from '../workflow/events.js';
-import { workflowLifecycleSchema } from '../workflow/lifecycle.js';
-import { workflowPlanSchema } from '../workflow/plan.js';
-import { declarativeEngineManifestSchema } from '../expansion/manifest/schema.js';
-import { corpusAuthorityBaselineDdl } from '../kb/corpus/rescan/authority-baseline.js';
 import { workflowRecover } from '../workflow/recover.js';
 import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
@@ -65,7 +55,12 @@ import { createKbCurateAssistantHandler, createKbCurateUsageBudgetHandler } from
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
-  'runtime' | 'runStartupRecoveryFn' | 'getConsumerStuck' | 'createStoreServicesFromDbFn' | 'kbDaemonSupervisor'
+  | 'runtime'
+  | 'storeFormat'
+  | 'runStartupRecoveryFn'
+  | 'getConsumerStuck'
+  | 'createStoreServicesFromDbFn'
+  | 'kbDaemonSupervisor'
 > & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
@@ -230,30 +225,14 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
   const providerRegistry = coreOptions.providerRegistry ?? new ProviderRegistry();
   (registerBuiltInProvidersFn ?? registerBuiltInProviders)(providerRegistry);
-  assertCurrentStoreFormat(
-    reducers,
-    {
-      eventRefs: journalEventRefsSchema,
-      jobTerminal: jobTerminalSchema,
-      jobDiagnostics: jobDiagnosticsSchema,
-      executionOwner: executionOwnerSchema,
-      providerSession: providerSessionSchema,
-      discussState: persistedDiscussSnapshotSchema,
-      workflowPlan: workflowPlanSchema,
-      providerScope: providerScopeSchema,
-      workflowLifecycle: workflowLifecycleSchema,
-      expansionManifest: declarativeEngineManifestSchema,
-    },
-    [corpusAuthorityBaselineDdl],
-    providerRegistry.sealPersistedBindingCodecComponents(),
-  );
+  const storeFormat = sealCoralStoreFormat(providerRegistry);
   const eventBus = coreOptions.eventBus ?? new TypedEventBus();
   // Spec §7.1: every Journal event type can be a causeRef target. Verify
   // describer coverage at boot so missing describers fail loudly instead of
   // rendering causeRef chains as bare type names.
   assertDescriberCoverage(reducers.describerKeys);
   const bodyCodec = createEventBodyCodec();
-  const readCtx = { schemas: reducers.schemas, bodyCodec };
+  const readCtx = { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec };
   let core: CoordinatorCoreResult | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const textProjectionHealth = createTextProjectionHealthTracker();
@@ -415,6 +394,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     providerRegistry,
     eventBus,
     runtime,
+    storeFormat,
     discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId),
     disposeLifecycleReactor: () => lifecycleReactor.dispose(),
     createStoreServicesFromDbFn,

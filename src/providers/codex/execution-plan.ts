@@ -16,16 +16,16 @@ import { CODEX_ALLOWED_REQUEST_ENV_KEYS, CODEX_PROTECTED_REQUEST_ENV_KEYS } from
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { resolveCodexHostCwd } from './request-mapping.js';
 
-export type CodexCredentialSource = { readonly home: string };
+export type CodexProviderAccess = { readonly home: string };
 
-export function codexRoutingEnv(source: CodexCredentialSource): Readonly<Record<string, string>> {
-  return Object.freeze({ CODEX_HOME: source.home });
+export function codexRoutingEnv(access: CodexProviderAccess): Readonly<Record<string, string>> {
+  return Object.freeze({ CODEX_HOME: access.home });
 }
 
 export type CodexExecutionPlan = ProviderExecutionPlan<
   Readonly<{
     platform: string;
-    source: CodexCredentialSource;
+    access: CodexProviderAccess;
     command: string;
     args: readonly string[];
     cwd: string;
@@ -52,8 +52,8 @@ function baseLayer(values: Readonly<Record<string, string>>, platform: string): 
   );
 }
 
-function routingLayer(source: CodexCredentialSource, platform: string): EnvironmentLayer {
-  const values = codexRoutingEnv(source);
+function routingLayer(access: CodexProviderAccess, platform: string): EnvironmentLayer {
+  const values = codexRoutingEnv(access);
   return environmentLayer(
     {
       name: 'codex-account-routing',
@@ -124,7 +124,7 @@ export function compileCodexHostEnvironment(host: CodexExecutionPlan['host']): R
 }
 
 export function buildCodexHost(options: {
-  source: CodexCredentialSource;
+  access: CodexProviderAccess;
   request: ProviderRequest;
   persistedContinuity?: ProviderContinuityBlob;
   baseEnv: Readonly<Record<string, string>>;
@@ -132,13 +132,13 @@ export function buildCodexHost(options: {
 }): CodexExecutionPlan['host'] {
   return Object.freeze({
     platform: options.platform,
-    source: options.source,
+    access: options.access,
     command: 'codex',
     args: Object.freeze(['app-server']),
     cwd: resolveCodexHostCwd(options.request.cwd, options.persistedContinuity),
     environment: Object.freeze([
       baseLayer(options.baseEnv, options.platform),
-      routingLayer(options.source, options.platform),
+      routingLayer(options.access, options.platform),
       processSettingsLayer(options.request.coralEnv, options.platform),
     ]),
     leaseMode: 'shared' as const,
@@ -146,7 +146,7 @@ export function buildCodexHost(options: {
 }
 
 export function buildCodexExecutionPlan(options: {
-  source: CodexCredentialSource;
+  access: CodexProviderAccess;
   hostPlan: CodexExecutionPlan['host'];
   request: ProviderRequest;
   persistedContinuity?: ProviderContinuityBlob;
@@ -184,12 +184,12 @@ export function buildCodexExecutionPlan(options: {
 }
 
 export function buildCodexPreflightRuntime(
-  input: ProviderPreflightInput<CodexCredentialSource>,
-): ProviderPreflightRuntime<CodexCredentialSource> {
+  input: ProviderPreflightInput<CodexProviderAccess>,
+): ProviderPreflightRuntime<CodexProviderAccess> {
   const exactEnv = compileEnvironmentLayers(
     [
       baseLayer(input.baseEnv, input.platform),
-      routingLayer(input.credentialSource, input.platform),
+      routingLayer(input.access, input.platform),
       processSettingsLayer(input.requestEnv, input.platform),
       requestLayer(input.requestEnv, input.platform),
     ],
@@ -200,7 +200,7 @@ export function buildCodexPreflightRuntime(
     storage: input.storage,
     env: input.env,
     time: input.time,
-    credentialSource: input.credentialSource,
+    access: input.access,
     cwd: input.cwd,
     runExact: (command, args, options = {}) => {
       const compiledCommand = windowsCommandName(command, input.platform);

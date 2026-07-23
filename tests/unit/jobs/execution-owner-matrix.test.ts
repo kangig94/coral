@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it } from 'vitest';
 
 import { discussRegistry } from '#src/discuss/event-registry.js';
@@ -20,7 +21,7 @@ const PROJECT_ROOT = '/tmp/coral-execution-owner-matrix';
 
 function createHarness() {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   const runtime = new SimulationRuntime();
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
   const store = new JobStore('tests', runtime, createEventBodyCodec(), {

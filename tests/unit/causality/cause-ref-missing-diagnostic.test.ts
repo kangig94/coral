@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -14,12 +15,13 @@ const renderer = createCauseRefRenderer(defaultEventDescribers);
 
 const RAW_EVENT_READ_CTX: StoreReadContext = {
   schemas: new Map(),
+  streamKinds: new Map(),
   bodyCodec: createEventBodyCodec(),
 };
 
 function createStore(): { db: Database; store: CoralStore } {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return { db, store: new CoralStore(db, RAW_EVENT_READ_CTX) };
 }
 

@@ -660,7 +660,7 @@ describe('ExecutionService launch', () => {
     const seenHomes: string[] = [];
     const { provider } = makeProvider({
       execute: async (_request, providerRuntime) => {
-        seenHomes.push(providerRuntime.executionPlan.host.source.root);
+        seenHomes.push(providerRuntime.executionPlan.host.access.root);
         return { content: 'ok', durationMs: 0 };
       },
     });
@@ -807,43 +807,6 @@ describe('ExecutionService launch', () => {
     expect(runtimeRecord?.tailWatermark).toBeGreaterThan(0);
     expect(history.some((event) => event.type === 'progress' && event.message?.includes('step-1'))).toBe(true);
     expect(history.some((event) => event.type === 'progress' && event.message?.includes('step-2'))).toBe(true);
-  });
-
-  it('releases the session claim when provider session finalization throws after completion', async () => {
-    const { provider } = makeProvider({
-      execute: async (): Promise<ProviderTurnResult> => ({
-        content: 'ok',
-        continuity: {
-          conversationRef: 'thread-1',
-          resumable: true,
-        },
-        outcome: { kind: 'completed' },
-        durationMs: 0,
-      }),
-    });
-    mockState.getNewProvider.mockReturnValue(provider);
-    const service = createService(ctx);
-    const { progressStore, sessionManager } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    vi.spyOn(sessionManager, 'setConversationRef').mockImplementation(() => {
-      throw new Error('finalize failed');
-    });
-
-    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
-
-    expect(decision.status).toBe('running');
-    if (decision.status !== 'running') {
-      throw new Error('expected running launch');
-    }
-    trackJob(decision.jobId);
-
-    const terminal = await waitForTerminalEvent(service, decision.jobId);
-    expect(terminal.result.content).toBe('ok');
-    expect(progressStore.readStatus(decision.jobId)).toMatchObject({ phase: 'completed' });
-    await vi.waitFor(() => {
-      expect(sessionManager.get('codex', decision.sessionId)?.activeJobId).toBeUndefined();
-    });
   });
 
   it('records provider artifact handle events through the launch session API before continuity checkpoints', async () => {

@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 // AC9 / Phase 6: KB pipeline checkpoint honor through the real `jobs.abort`
 // path. Cases:
 //
@@ -96,7 +97,7 @@ function makeWorld(): ServiceWorld {
   // JobStore + AbortRegistry composed against the same DB.
   const jobsDb = newRawDatabase(':memory:');
   openDbs.push(jobsDb);
-  applyBundledStoreSchema(jobsDb);
+  applyBundledStoreSchema(jobsDb, currentCoralStoreFormat());
   const runtime = new SimulationRuntime();
   // Mirror the on-disk runtime/markdown roots into the in-memory storage so
   // `runtime.storage.*` can read/write the staged source file the test

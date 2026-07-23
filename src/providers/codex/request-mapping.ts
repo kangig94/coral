@@ -1,17 +1,32 @@
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { z } from 'zod';
 import type { EffortLevel, ProviderContinuityUpdate, ProviderRequest, ProviderRuntime } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import { pickProviderContinuityKeys } from '../middleware/session-continuity.js';
 import { resolveModelTier, resolveProviderEffort } from '../request-policy.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
-import { isRecord, readString } from '../../infra/json.js';
+import { readString } from '../../infra/json.js';
 import type { ProviderTransportClose } from '../protocol.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 import type { RecoverableTurnFailure } from './turn-recovery.js';
 import type { CodexExecutionPlan } from './execution-plan.js';
+import { zodPersistedParser } from '../binding-parser.js';
 
-const CODEX_CONTINUITY_KEYS = ['cwd', 'threadId', 'turnId'] as const;
+const codexPersistedContinuitySchema = z
+  .object({
+    cwd: z.string().min(1).optional(),
+    threadId: z.string().min(1).optional(),
+    turnId: z.string().min(1).optional(),
+  })
+  .strict()
+  .refine(
+    (continuity) =>
+      continuity.cwd !== undefined || continuity.threadId !== undefined || continuity.turnId !== undefined,
+    'Codex persisted continuity must contain at least one provider field.',
+  )
+  .describe('non-empty-codex-persisted-continuity');
+
+export const codexPersistedContinuityParser = zodPersistedParser(() => codexPersistedContinuitySchema);
 
 export interface CodexPersistedContinuity extends ProviderContinuityBlob {
   cwd?: string;
@@ -122,11 +137,10 @@ export function readCodexPersistedContinuity(
   persistedContinuity: ProviderContinuityBlob | undefined,
   options: CodexContinuityReadOptions = {},
 ): CodexPersistedContinuity {
-  if (!isRecord(persistedContinuity)) {
-    return {};
-  }
-
-  const continuity = pickProviderContinuityKeys(persistedContinuity, CODEX_CONTINUITY_KEYS);
+  if (persistedContinuity === undefined) return {};
+  const decoded = codexPersistedContinuityParser.parse(persistedContinuity);
+  if (!decoded.success) throw new TypeError('Invalid persisted Codex continuity.');
+  const continuity = decoded.data;
   const cwdScope = readString(options.cwdScope);
   const cwd = readString(continuity.cwd);
   const parsed = {
@@ -189,12 +203,16 @@ export function hasCodexContinuity(continuity: CodexPersistedContinuity): boolea
   return continuity.cwd !== undefined || continuity.threadId !== undefined || continuity.turnId !== undefined;
 }
 
-export function snapshotCodexPersistedContinuity(persistedContinuity: ProviderContinuityBlob | undefined): {
+export function snapshotCodexPersistedContinuity(persistedContinuity: CodexPersistedContinuity | undefined): {
   conversationRef: string | null;
   resumable: boolean;
   providerContinuity: CodexPersistedContinuity | null;
 } {
-  const continuity = readCodexPersistedContinuity(persistedContinuity);
+  const continuity = buildCodexContinuity({
+    cwd: persistedContinuity?.cwd,
+    threadId: persistedContinuity?.threadId,
+    turnId: persistedContinuity?.turnId,
+  });
   return {
     conversationRef: continuity.threadId ?? null,
     resumable: Boolean(continuity.threadId),
@@ -219,14 +237,14 @@ export function applyCodexContinuityUpdate(
     return withCodexContinuity(persistedContinuity, { threadId: conversationRef });
   }
 
-  return readCodexPersistedContinuity(persistedContinuity);
+  return persistedContinuity;
 }
 
 export function applyCodexTransportClosed(
   persistedContinuity: CodexPersistedContinuity,
   _closed: ProviderTransportClose,
 ): CodexPersistedContinuity {
-  return readCodexPersistedContinuity(persistedContinuity);
+  return persistedContinuity;
 }
 
 export function isCodexSessionUnavailable(error: unknown): boolean {
@@ -332,7 +350,7 @@ function readCodexConfigServiceTier(
   if (!runtime.storage) {
     return undefined;
   }
-  const configPath = join(runtime.executionPlan.host.source.home, 'config.toml');
+  const configPath = join(runtime.executionPlan.host.access.home, 'config.toml');
   // Set only when statSync succeeds; stays undefined when stat throws a
   // non-ENOENT/EACCES error but readFileSync still works, so both cache-write
   // sites below fall back to `?? 0` (treated as always-stale).

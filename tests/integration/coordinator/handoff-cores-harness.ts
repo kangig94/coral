@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 // Sequential dual-core handoff harness for cross-domain integration tests.
 //
 // Composes two `createCoordinatorCore` instances against a SHARED real-fs runtime
@@ -52,6 +53,7 @@ export interface HandoffCoresHarness {
 export interface BootCoreOptions {
   instanceId: string;
   bundleHash?: string;
+  backendNamespace?: string;
   createExecutionService?: CoordinatorCoreOptions['createExecutionService'];
   /**
    * Override the post-discuss-recovery startup phase. Called with the same
@@ -100,6 +102,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
   }
 
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: ':memory:',
     storage: runtime.storage,
   });
@@ -108,11 +111,13 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
   const liveCores: BootedCore[] = [];
 
   async function bootCore(opts: BootCoreOptions): Promise<BootedCore> {
-    const storeServices = createHarnessStoreServices(runtime, db, backendNamespace);
+    const coreNamespace = opts.backendNamespace ?? backendNamespace;
+    const storeServices = createHarnessStoreServices(runtime, db, coreNamespace);
 
     const core = createCoordinatorCore({
+      storeFormat: currentCoralStoreFormat(),
       runtime,
-      backendNamespace,
+      backendNamespace: coreNamespace,
       bootSnapshot: {
         version: 'test-version',
         bundleHash: opts.bundleHash ?? 'test-bundle',

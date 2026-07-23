@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it } from 'vitest';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -56,7 +57,7 @@ type Harness = {
 
 function newHarness(): Harness {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   const reducers = composeReducers(sessionsRegistry);
   const bodyCodec = createEventBodyCodec();
   return {
@@ -76,7 +77,6 @@ function openedInput(entry: ProviderSession, scopeKey: string): CoralEventInput 
     type: 'session.opened',
     stream: sessionStream(entry.sessionId),
     refs: { sessionId: entry.sessionId },
-    bodyVersion: 1,
     body: { entry, controller: 'default', scope_key: scopeKey },
   };
 }
@@ -89,7 +89,6 @@ function checkpointedInput(
     type: 'session.continuity.checkpointed',
     stream: sessionStream(entry.sessionId),
     refs: { sessionId: entry.sessionId },
-    bodyVersion: 1,
     body: { entry, snapshot: { ...snapshot, providerContinuity: null } },
   };
 }
@@ -107,7 +106,6 @@ function discardEventInput(
     type,
     stream: sessionStream(sessionId),
     refs: { sessionId },
-    bodyVersion: 1,
     body: { sessionId, attempt, handles: ['/tmp/handle.jsonl'], ...extra },
   };
 }
@@ -229,7 +227,6 @@ describe('sessions projections', () => {
           type: 'session.claimed',
           stream: sessionStream('session-claim'),
           refs: { sessionId: 'session-claim', jobId: 'job-1' },
-          bodyVersion: 1,
           body: { entry: claimed, jobId: 'job-1' },
         },
       ]);
@@ -244,7 +241,6 @@ describe('sessions projections', () => {
           type: 'session.claim.released',
           stream: sessionStream('session-claim'),
           refs: { sessionId: 'session-claim', jobId: 'job-1' },
-          bodyVersion: 1,
           body: { entry: released, jobId: 'job-1' },
         },
       ]);
@@ -310,7 +306,6 @@ describe('sessions projections', () => {
               type: 'session.provider_failed',
               stream: sessionStream('session-premature'),
               refs: { sessionId: 'session-premature' },
-              bodyVersion: 1,
               body: { provider: 'codex', reason: 'request_failed', message: 'transport reset' },
             },
           ]),
@@ -337,7 +332,6 @@ describe('sessions projections', () => {
               type: 'session.opened',
               stream: sessionStream('session-mismatch'),
               refs: { sessionId: 'session-mismatch' },
-              bodyVersion: 1,
               body: { entry, controller: 'default', scope_key: 'scope-mismatch' },
             },
           ]),
@@ -358,7 +352,6 @@ describe('sessions projections', () => {
           type: 'session.provider_failed',
           stream: sessionStream('session-fault'),
           refs: { sessionId: 'session-fault' },
-          bodyVersion: 1,
           body: { provider: 'codex-alt', reason: 'session_unavailable', message: 'gone' },
         },
       ]);
@@ -372,7 +365,6 @@ describe('sessions projections', () => {
           type: 'session.adapter_unparseable',
           stream: sessionStream('session-fault'),
           refs: { sessionId: 'session-fault' },
-          bodyVersion: 1,
           body: { provider: 'codex-raw', exitCode: null, stdout: '', stderr: '', parseError: 'unexpected EOF' },
         },
       ]);
@@ -393,7 +385,6 @@ describe('sessions projections', () => {
           type: 'session.interrupted',
           stream: sessionStream('session-interrupt'),
           refs: { sessionId: 'session-interrupt' },
-          bodyVersion: 1,
           body: { trigger: 'handoff', continuity: 'pre_checkpoint_preserved' },
         },
       ]);

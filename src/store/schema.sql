@@ -18,10 +18,9 @@ CREATE TABLE IF NOT EXISTS events (
   correlation_id TEXT,
   causation_seq  INTEGER,                            -- FK to events(seq), loose
   refs           TEXT,                               -- JSON: { jobId?, sessionId?, parentJobId?, ... } @persisted-codec store.events.refs
-  body_version   INTEGER NOT NULL DEFAULT 1,         -- per-type schema version
   body           BLOB    NOT NULL                    -- JSON payload @persisted-codec store.events.body
 );
-CREATE INDEX IF NOT EXISTS events_stream ON events(stream_kind, stream_id, seq);
+CREATE INDEX IF NOT EXISTS events_logical_stream ON events(type, stream_id, seq);
 CREATE INDEX IF NOT EXISTS events_type ON events(type, seq);
 CREATE INDEX IF NOT EXISTS events_refs_parent ON events(json_extract(refs, '$.parentJobId'), seq);
 
@@ -35,7 +34,7 @@ CREATE TABLE IF NOT EXISTS projection_jobs (
   execution_owner         TEXT NOT NULL,       -- JSON ExecutionOwner @persisted-codec store.projection_jobs.execution_owner
   phase                   TEXT NOT NULL,
   terminal                TEXT,            -- JSON { outcome, durationMs } or NULL @persisted-codec store.projection_jobs.terminal
-  diagnostics             TEXT,            -- JSON @persisted-codec store.projection_jobs.diagnostics
+  diagnostics             TEXT NOT NULL,   -- JSON @persisted-codec store.projection_jobs.diagnostics
   session_id              TEXT,
   provider                TEXT,
   project_root            TEXT NOT NULL,
@@ -87,7 +86,7 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
--- Rows: journal_version, coordinator_id, created_ts
+-- Rows: store_format_fingerprint, coordinator_id, created_ts
 
 -- Corpus version state (owned by KB authority).
 -- Single row. contentSeq/metadataSeq are monotonic counters on the Corpus.
@@ -99,12 +98,6 @@ CREATE TABLE IF NOT EXISTS kb_corpus_state (
   content_manifest_hash  TEXT,
   metadata_manifest_hash TEXT,
   last_mutation          TEXT    NOT NULL    -- ISO 8601
-);
-
-CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline (
-  entry_id      TEXT PRIMARY KEY,
-  content_hash  TEXT NOT NULL,
-  metadata_hash TEXT NOT NULL
 );
 
 -- Consumer cursor table — tracks every registered consumer (default and expansion-owned) per authority.
@@ -147,8 +140,8 @@ CREATE TABLE IF NOT EXISTS kb_curate_scheduler (
   processed_through_seq      INTEGER,
   processed_through_entry_id TEXT,
   processed_through_entry_kind TEXT,
-  discovery_high_seq         INTEGER,
-  discovery_offset           INTEGER,
+  discovery_high_seq         INTEGER NOT NULL,
+  discovery_offset           INTEGER NOT NULL,
   last_run_day               TEXT,
   last_attempted_through_seq INTEGER,
   last_attempted_through_entry_id TEXT,
@@ -219,7 +212,6 @@ CREATE TABLE IF NOT EXISTS kb_curate_discovery_backlog_notes (
 );
 
 INSERT OR IGNORE INTO meta (key, value) VALUES
-  ('journal_version', '2'), -- provider credential-authority store epoch
   ('coordinator_id', lower(hex(randomblob(16)))),
   ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 
@@ -253,7 +245,7 @@ INSERT OR IGNORE INTO kb_curate_scheduler (
   community_summary_topology_hash,
   initialized
 ) VALUES
-  (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, 0);
+  (1, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, 0);
 
 CREATE TABLE IF NOT EXISTS expansion_manifest_catalog (
   id            TEXT PRIMARY KEY,

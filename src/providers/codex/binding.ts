@@ -13,12 +13,13 @@ import {
   type ProviderBindingRuntime,
   type ProviderBindingResult,
 } from '../contracts/binding.js';
-import type { CodexCredentialSource } from './execution-plan.js';
+import type { CodexProviderAccess } from './execution-plan.js';
 import type { JsonValue } from '../../infra/json-value.js';
 import { absoluteProfilePathSchema, canonicalProfileDirectory } from '../contracts/profile.js';
 import { isCodexCredentialEnvKey } from './credential-policy.js';
 import { unsupportedCodexTransportSetting } from './transport-policy.js';
 import { zodPersistedParser, zodValueParser } from '../binding-parser.js';
+import { codexPersistedContinuityParser } from './request-mapping.js';
 
 function createCodexSelectionSchema() {
   return z.object({ kind: z.literal('home'), home: absoluteProfilePathSchema }).strict();
@@ -195,10 +196,11 @@ export const codexBindingCodec: ProviderBindingCodec<
   CodexSelection,
   CodexCredentialProfile,
   AccountSubject & JsonValue,
-  CodexCredentialSource
+  CodexProviderAccess
 > = {
   parseSelection: zodValueParser(createCodexSelectionSchema),
-  parseProfile: zodValueParser(createCodexCredentialProfileSchema),
+  persistedProfile: zodPersistedParser(createCodexCredentialProfileSchema),
+  persistedContinuity: codexPersistedContinuityParser,
   persistedBinding: zodPersistedParser(createCodexBindingSchema),
   bindingKind: 'account',
   captureSelection: ({ env, homeDir }) => captureCodexSelection(env, homeDir),
@@ -239,7 +241,7 @@ export const codexBindingCodec: ProviderBindingCodec<
       ? bindingSuccess({ ready: true, use })
       : bindingFailure({ reason: 'subject-mismatch', provider: 'codex' });
   },
-  credentialSource(binding) {
+  access(binding) {
     return {
       home: binding.profile.canonicalLocation,
     };

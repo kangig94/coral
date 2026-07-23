@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
@@ -32,7 +33,7 @@ const STALE_JOB_ID = `${WORKFLOW_ID}:0:0`;
 describe('workflow replacement launch atomicity', () => {
   it('rolls back the claim, job, admission, and cache together and can recover by retrying', () => {
     const db = newRawDatabase(':memory:');
-    applyBundledStoreSchema(db);
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
     const runtime = new SimulationRuntime();
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
     const bodyCodec = createEventBodyCodec();

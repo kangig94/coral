@@ -319,7 +319,7 @@ KB runtime
 
 Foundation layer
   -> Infra/runtime/causality primitives consumed by higher layers
-  -> Domain upcasters own read-time body transforms
+  -> Strict current-codec decoding; incompatible durable state is reset at boot
 ```
 
 ## Runtime State
@@ -358,7 +358,7 @@ Terminal results carry a typed outcome (`TerminalOutcome`) — a discriminated u
 - `failed { causeRef }` — upstream cause resolvable via the Journal (`CauseRef = { stream, seq }`).
 - `job_fault { fault }` — typed job-lifecycle fault (ghost launch, wrapper loss, wrapper crash).
 
-Read-time body evolution lives in per-domain upcasters at the Journal boundary. Runtime job ingestion emits canonical domain events directly.
+Journal reads use only the strict current domain codecs. Runtime job ingestion emits canonical domain events directly; incompatible persisted shapes change the application-wide store fingerprint and trigger destructive reset rather than translation.
 Domain registries own event schemas, append validators, and reducers. `store/` runs composed validators transactionally before insert, but does not hardcode domain vocabulary.
 `job.terminal.recorded` stores `{ terminal, diagnostics?, continuity? }`: output and outcome stay under `terminal`, provider warnings and canonical `diagnostics.usage` stay under `diagnostics`, and session continuity stays in the explicit continuity snapshot. `diagnostics.usage` is the durable home for provider usage; renderers derive total token counts from its additive buckets instead of storing a separate total.
 Raw `job.terminal.recorded` object construction is owned by `jobs/store.ts`; providers, workflows, KB internal jobs, and recovery code finalize through jobs-owned append/materialization APIs.

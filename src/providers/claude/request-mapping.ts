@@ -2,8 +2,8 @@ declare const __PLUGIN_ROOT__: string;
 declare const __BUNDLE_DIR__: string | undefined;
 
 import { join } from 'node:path';
+import { z } from 'zod';
 
-import { isRecord, readString } from '../../infra/json.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { IdPort } from '../../runtime/ports.js';
 import type { ProviderRequest, ProviderServerSpec } from '../contract.js';
@@ -13,10 +13,11 @@ import {
   hashSortedEnv,
   hashClaudeBootstrapConfiguration,
   normalizeControllerEnv,
-  readBootstrapSignature,
+  claudeBootstrapSignatureSchema,
   type ClaudeBootstrapSignature,
   type PermissionMode,
 } from './request-prep.js';
+import { zodPersistedParser } from '../binding-parser.js';
 import type { resolveClaudeTransportMode } from './transport-mode.js';
 
 export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
@@ -24,6 +25,19 @@ export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
   brokerSessionKey?: string;
   brokerTurnId?: string;
 }
+
+const claudePersistedContinuitySchema = z.union([
+  z
+    .object({
+      bootstrapSignature: claudeBootstrapSignatureSchema.optional(),
+      brokerSessionKey: z.string().min(1),
+      brokerTurnId: z.string().min(1),
+    })
+    .strict(),
+  z.object({ bootstrapSignature: claudeBootstrapSignatureSchema }).strict(),
+]);
+
+export const claudePersistedContinuityParser = zodPersistedParser(() => claudePersistedContinuitySchema);
 
 export type ClaudeBrokerHostPlan = Readonly<{
   command: string;
@@ -42,17 +56,10 @@ let envHashCache: {
 export function readClaudePersistedContinuity(
   persistedContinuity: ProviderContinuityBlob | undefined,
 ): ClaudePersistedContinuity {
-  if (!isRecord(persistedContinuity)) {
-    return {};
-  }
-
-  const bootstrapSignature = readBootstrapSignature(persistedContinuity.bootstrapSignature);
-  const brokerSessionKey = readString(persistedContinuity.brokerSessionKey);
-  const brokerTurnId = readString(persistedContinuity.brokerTurnId);
-  return {
-    ...(bootstrapSignature === undefined ? {} : { bootstrapSignature }),
-    ...(brokerSessionKey === undefined || brokerTurnId === undefined ? {} : { brokerSessionKey, brokerTurnId }),
-  };
+  if (persistedContinuity === undefined) return {};
+  const parsed = claudePersistedContinuityParser.parse(persistedContinuity);
+  if (!parsed.success) throw new TypeError('Invalid persisted Claude continuity.');
+  return parsed.data;
 }
 
 export function buildClaudeBootstrapSignature(
@@ -159,6 +166,20 @@ export function buildClaudeContinuity(update: {
       ? {}
       : { brokerSessionKey: update.brokerSessionKey, brokerTurnId: update.brokerTurnId }),
   };
+}
+
+export function snapshotClaudePersistedContinuity(state: {
+  bootstrapSignature?: ClaudeBootstrapSignature;
+  brokerSessionKey?: string;
+  brokerTurnId?: string;
+}): ClaudePersistedContinuity | null {
+  const candidate = {
+    ...(state.bootstrapSignature === undefined ? {} : { bootstrapSignature: state.bootstrapSignature }),
+    ...(state.brokerSessionKey === undefined || state.brokerTurnId === undefined
+      ? {}
+      : { brokerSessionKey: state.brokerSessionKey, brokerTurnId: state.brokerTurnId }),
+  };
+  return Object.keys(candidate).length === 0 ? null : readClaudePersistedContinuity(candidate);
 }
 
 export function withClaudeContinuity(

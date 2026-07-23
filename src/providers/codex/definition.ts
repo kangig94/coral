@@ -10,13 +10,13 @@ import { codexBindingCodec } from './binding.js';
 import {
   buildCodexExecutionPlan,
   buildCodexPreflightRuntime,
-  type CodexCredentialSource,
+  type CodexProviderAccess,
   type CodexExecutionPlan,
 } from './execution-plan.js';
 import { codexAppServerLifecycle, codexPreflight, codexRecoveryLifecycle } from './provider-facets.js';
 import { codexThreadProvider } from './thread-provider.js';
 
-type ArtifactRecoveryOptions = Parameters<ProviderRecoveryContract<CodexCredentialSource>['finalizeFromArtifacts']>[0];
+type ArtifactRecoveryOptions = Parameters<ProviderRecoveryContract<CodexProviderAccess>['finalizeFromArtifacts']>[0];
 
 function readArtifact(storage: Pick<StoragePort, 'readFileSync'>, path: string): string {
   try {
@@ -44,7 +44,7 @@ function locateArtifactsForRecovery(
   return artifactHandlesFromLocator(
     locateCodexRolloutArtifact({
       threadId,
-      sessionsRoot: join(options.source.home, 'sessions'),
+      sessionsRoot: join(options.access.home, 'sessions'),
       storage: options.storage,
     }),
   );
@@ -85,12 +85,12 @@ async function finalizeFromArtifacts(
   };
 }
 
-const recovery: ProviderRecoveryContract<CodexCredentialSource> = {
+const recovery: ProviderRecoveryContract<CodexProviderAccess> = {
   finalizeInterrupted: codexRecoveryLifecycle.finalizeInterrupted.bind(codexRecoveryLifecycle),
   finalizeFromArtifacts,
 };
 
-export const codexProviderDefinition: ProviderDefinition = defineProvider<CodexExecutionPlan, CodexCredentialSource>({
+export const codexProviderDefinition: ProviderDefinition = defineProvider<CodexExecutionPlan, CodexProviderAccess>({
   name: 'codex',
   transport: 'app-server',
   run: codexThreadProvider,

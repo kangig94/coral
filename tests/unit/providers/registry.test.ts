@@ -15,7 +15,7 @@ import type {
 } from '#src/providers/contract.js';
 import { defineProvider, ProviderRegistry, type ProviderDefinition } from '#src/providers/registry.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
-import { fixtureProviderBindingCodec, type FixtureProviderSource } from '#tests/helpers/provider-binding.js';
+import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
 import type { ProviderExecutionPlan } from '#src/providers/execution-plan.js';
 
 type EmptyPlan = ProviderExecutionPlan<undefined, undefined, undefined>;
@@ -56,7 +56,7 @@ function makeSpec(name: string, overrides: ProviderFacetOverrides = {}): Provide
   const artifacts = overrides.artifacts ?? none(`Test provider ${name} declares no provider artifacts.`);
 
   if (overrides.appServer !== undefined) {
-    return defineProvider<EmptyPlan, FixtureProviderSource>({
+    return defineProvider<EmptyPlan, FixtureProviderAccess>({
       name,
       transport: 'app-server',
       prepareExecutionPlan: () => ({
@@ -80,7 +80,7 @@ function makeSpec(name: string, overrides: ProviderFacetOverrides = {}): Provide
   }
 
   if (overrides.curation !== undefined) {
-    return defineProvider<EmptyPlan, FixtureProviderSource>({
+    return defineProvider<EmptyPlan, FixtureProviderAccess>({
       name,
       transport: 'app-server',
       prepareExecutionPlan: () => ({
@@ -96,7 +96,7 @@ function makeSpec(name: string, overrides: ProviderFacetOverrides = {}): Provide
       .build();
   }
 
-  return defineProvider<EmptyPlan, FixtureProviderSource>({
+  return defineProvider<EmptyPlan, FixtureProviderAccess>({
     name,
     transport: 'standalone',
     prepareExecutionPlan: () => ({
@@ -200,7 +200,7 @@ async function invokeInterruptLeaseBoundary(
 describe('ProviderRegistry', () => {
   it('rejects an app-server provider without provider-owned recovery interpretation', () => {
     expect(() =>
-      defineProvider<EmptyPlan, FixtureProviderSource>({
+      defineProvider<EmptyPlan, FixtureProviderAccess>({
         name: 'uninterpreted',
         transport: 'app-server',
         prepareExecutionPlan: () => ({
@@ -257,9 +257,11 @@ describe('ProviderRegistry', () => {
     const registry = new ProviderRegistry();
     registry.register(makeSpec('fixture'));
 
-    expect(registry.sealPersistedBindingCodecComponents().map((entry) => entry.name)).toEqual([
+    expect(registry.sealPersistedCodecComponents().map((entry) => entry.name)).toEqual([
       'provider.binding-envelope',
+      'provider.fixture.profile',
       'provider.fixture.binding',
+      'provider.fixture.continuity',
     ]);
     expect(() => registry.register(makeSpec('late'))).toThrow("registry is sealed; cannot register 'late'");
     expect(registry.get('fixture')).toBeDefined();
@@ -295,23 +297,23 @@ describe('ProviderRegistry', () => {
     ).toThrow("Provider 'orphan-curation' requires an app-server capability.");
   });
 
-  it('closes the verified credential source inside bound curation', async () => {
+  it('closes the verified credential access inside bound curation', async () => {
     let observedSource: unknown;
     let observedRequest: unknown;
     let observedBaseEnv: unknown;
     const curation = {
       state: { result: 'curated' },
-      prepare(request: unknown, runtime: { source: unknown; baseEnv: unknown }) {
+      prepare(request: unknown, runtime: { access: unknown; baseEnv: unknown }) {
         observedRequest = request;
         observedBaseEnv = runtime.baseEnv;
-        observedSource = runtime.source;
+        observedSource = runtime.access;
         const result = this.state.result;
         return {
           complete: async () => result,
         };
       },
-      isUsageBudgetExhausted(runtime: { source: unknown }) {
-        observedSource = runtime.source;
+      isUsageBudgetExhausted(runtime: { access: unknown }) {
+        observedSource = runtime.access;
         return false;
       },
     };
@@ -352,7 +354,7 @@ describe('ProviderRegistry', () => {
       routingEnv: { CLAUDE_CONFIG_DIR: '/claude' },
     });
     expect(Object.isFrozen(observedSource)).toBe(true);
-    expect(bound).not.toHaveProperty('credentialSource');
+    expect(bound).not.toHaveProperty('access');
     expect(observedRequest).not.toBe(request);
     expect(Object.isFrozen(observedRequest)).toBe(true);
     expect(observedBaseEnv).not.toBe(baseEnv);
@@ -430,7 +432,7 @@ describe('ProviderRegistry', () => {
         },
       },
     };
-    const definition = defineProvider<EmptyPlan, FixtureProviderSource>({
+    const definition = defineProvider<EmptyPlan, FixtureProviderAccess>({
       name: 'normalized-binding',
       transport: 'standalone',
       prepareExecutionPlan: () => ({
@@ -534,7 +536,8 @@ describe('ProviderRegistry', () => {
 
     const codec = {
       parseSelection: zodValueParser(createSelectionSchema),
-      parseProfile: zodValueParser(createProfileSchema),
+      persistedProfile: zodPersistedParser(createProfileSchema),
+      persistedContinuity: zodPersistedParser(() => z.record(z.string(), z.unknown())),
       persistedBinding: zodPersistedParser(createBindingSchema),
       bindingKind: 'profile' as const,
       state: { marker: 'captured' },
@@ -559,14 +562,11 @@ describe('ProviderRegistry', () => {
       async readiness(_binding: Binding, use: 'launch' | 'resume' | 'recovery') {
         return bindingSuccess({ ready: true as const, use });
       },
-      credentialSource(binding: Binding) {
+      access(binding: Binding) {
         return {
-          version: 1 as const,
-          provider: 'claude' as const,
-          kind: 'config-dir' as const,
           configDir: binding.profile.canonicalLocation,
           projectsRoot: `${binding.profile.canonicalLocation}/projects`,
-          emitConfigDir: true,
+          routing: { kind: 'config-dir' as const },
         };
       },
       compareBinding(left: Binding, right: Binding) {
@@ -579,14 +579,14 @@ describe('ProviderRegistry', () => {
       },
     };
 
-    let preparedSource: unknown;
+    let preparedAccess: unknown;
     const registry = new ProviderRegistry();
     registry.register(
       defineProvider({
         name: 'class-codec',
         transport: 'standalone',
         prepareExecutionPlan: (input) => {
-          preparedSource = input.source;
+          preparedAccess = input.access;
           return {
             plan: { host: undefined, session: undefined, turn: undefined },
             prepareCliRequest: (request) => request,
@@ -633,14 +633,11 @@ describe('ProviderRegistry', () => {
       async readiness() {
         return bindingFailure({ reason: 'identity-unavailable', provider: 'class-codec' });
       },
-      credentialSource() {
+      access() {
         return {
-          version: 1 as const,
-          provider: 'claude' as const,
-          kind: 'config-dir' as const,
           configDir: '/accounts/drifted',
           projectsRoot: '/accounts/drifted/projects',
-          emitConfigDir: true,
+          routing: { kind: 'config-dir' as const },
         };
       },
       compareBinding() {
@@ -694,27 +691,26 @@ describe('ProviderRegistry', () => {
         storage: TEST_PREPARATION_STORAGE,
         platform: 'linux',
       });
-      expect(preparedSource).toEqual(expect.objectContaining({ provider: 'claude', configDir: '/accounts/captured' }));
+      expect(preparedAccess).toEqual(
+        expect.objectContaining({ configDir: '/accounts/captured', routing: { kind: 'config-dir' } }),
+      );
     }
   });
 
   it('canonicalizes and deeply freezes credential authority independently from codec-owned values', () => {
-    const source = {
-      version: 1 as const,
-      provider: 'codex' as const,
-      kind: 'home' as const,
-      home: '/sealed-source',
+    const access = {
+      home: '/sealed-access',
     };
     const codec = {
-      ...fixtureProviderBindingCodec('sealed-source'),
-      credentialSource: () => source,
+      ...fixtureProviderBindingCodec('sealed-access'),
+      access: () => access,
     };
-    let preparedSource: unknown;
+    let preparedAccess: unknown;
     const definition = defineProvider({
-      name: 'sealed-source',
+      name: 'sealed-access',
       transport: 'standalone',
       prepareExecutionPlan: (input) => {
-        preparedSource = input.source;
+        preparedAccess = input.access;
         return {
           plan: { host: undefined, session: undefined, turn: undefined },
           prepareCliRequest: (request) => request,
@@ -727,34 +723,34 @@ describe('ProviderRegistry', () => {
       .build();
     const registry = new ProviderRegistry();
     registry.register(definition);
-    const bound = successfulBinding(registry, 'sealed-source');
+    const bound = successfulBinding(registry, 'sealed-access');
 
-    source.home = '/mutated-source';
+    access.home = '/mutated-access';
     bound.prepareExecution({
       request: {} as never,
       baseEnv: {},
       storage: TEST_PREPARATION_STORAGE,
       platform: 'linux',
     });
-    expect(preparedSource).toEqual({ version: 1, provider: 'codex', kind: 'home', home: '/sealed-source' });
-    expect(Object.isFrozen(preparedSource)).toBe(true);
-    expect(Reflect.set(preparedSource as object, 'home', '/caller-mutation')).toBe(false);
-    expect(bound).not.toHaveProperty('credentialSource');
+    expect(preparedAccess).toEqual({ home: '/sealed-access' });
+    expect(Object.isFrozen(preparedAccess)).toBe(true);
+    expect(Reflect.set(preparedAccess as object, 'home', '/caller-mutation')).toBe(false);
+    expect(bound).not.toHaveProperty('access');
     expect(Object.isFrozen(bound.envelope.binding)).toBe(true);
     const binding = bound.envelope.binding as { profile: { routing: object } };
     expect(Object.isFrozen(binding.profile)).toBe(true);
     expect(Object.isFrozen(binding.profile.routing)).toBe(true);
   });
 
-  it('rejects provider sources that cannot be represented as immutable JSON data', () => {
-    class PrivateSource {
+  it('rejects provider access values that cannot be represented as immutable JSON data', () => {
+    class PrivateAccess {
       readonly root = '/private';
     }
 
-    for (const [name, source] of [
-      ['map-source', new Map([['root', '/map']])],
-      ['set-source', { roots: new Set(['/set']) }],
-      ['class-source', new PrivateSource()],
+    for (const [name, access] of [
+      ['map-access', new Map([['root', '/map']])],
+      ['set-access', { roots: new Set(['/set']) }],
+      ['class-access', new PrivateAccess()],
     ] as const) {
       const base = fixtureProviderBindingCodec(name);
       const registry = new ProviderRegistry();
@@ -768,7 +764,7 @@ describe('ProviderRegistry', () => {
           }),
           run: async function* () {},
         })
-          .binding({ ...base, credentialSource: () => source as never })
+          .binding({ ...base, access: () => access as never })
           .artifacts(none('no artifacts'))
           .build(),
       );
@@ -1294,11 +1290,11 @@ describe('ProviderRegistry', () => {
     let preparedRequest: ProviderRequest | undefined;
     let executedRequest: ProviderRequest | undefined;
     let appServerRequest: ProviderRequest | undefined;
-    const definition = defineProvider<EmptyPlan, FixtureProviderSource>({
+    const definition = defineProvider<EmptyPlan, FixtureProviderAccess>({
       name: 'single-request',
       transport: 'app-server',
       prepareExecutionPlan: (
-        input: Parameters<ProviderAppServerImplementation<EmptyPlan, FixtureProviderSource>['prepareExecutionPlan']>[0],
+        input: Parameters<ProviderAppServerImplementation<EmptyPlan, FixtureProviderAccess>['prepareExecutionPlan']>[0],
       ) => {
         preparedRequest = input.request;
         appServerRequest = input.request;
@@ -1423,7 +1419,8 @@ describe('ProviderRegistry', () => {
         .transform((profile) => {
           transformCalls += 1;
           return profile;
-        });
+        })
+        .describe('immutable-profile-transform');
     const createLazyBindingSchema = () =>
       z.lazy(() => {
         lazyGetterCalls += 1;
@@ -1435,7 +1432,8 @@ describe('ProviderRegistry', () => {
     const codec = {
       ...base,
       parseSelection: zodValueParser(createSelectionSchema),
-      parseProfile: zodValueParser(createProfileSchema),
+      persistedProfile: zodPersistedParser(createProfileSchema),
+      persistedContinuity: zodPersistedParser(() => z.record(z.string(), z.unknown())),
       persistedBinding: {
         parse: zodValueParser(createLazyBindingSchema),
         contract: { kind: 'lazy-effectful-binding-test' },
@@ -1515,7 +1513,7 @@ describe('ProviderRegistry', () => {
       }).ok,
     ).toBe(false);
     expect(lazyGetterCalls).toBeGreaterThan(0);
-    const components = registry.sealPersistedBindingCodecComponents();
+    const components = registry.sealPersistedCodecComponents();
     expect(components.every((component) => !Object.hasOwn(component, 'schema'))).toBe(true);
     expect(components.every((component) => Object.isFrozen(component.contract))).toBe(true);
   });
@@ -1616,15 +1614,20 @@ describe('ProviderRegistry', () => {
     const registry = new ProviderRegistry();
     const spec = makeSpec('stable');
     registry.register(spec);
-    const components = registry.sealPersistedBindingCodecComponents();
+    const components = registry.sealPersistedCodecComponents();
 
     expect(() => Object.assign(spec, { name: 'drifted' })).toThrow();
     expect(() => Object.assign(spec, { run: async function* () {} })).toThrow();
     expect(registry.get('stable')?.name).toBe('stable');
     expect(registry.get('stable')).not.toHaveProperty('run');
     expect(registry.get('drifted')).toBeUndefined();
-    expect(registry.sealPersistedBindingCodecComponents()).toBe(components);
-    expect(components.map((entry) => entry.name)).toEqual(['provider.binding-envelope', 'provider.stable.binding']);
+    expect(registry.sealPersistedCodecComponents()).toBe(components);
+    expect(components.map((entry) => entry.name)).toEqual([
+      'provider.binding-envelope',
+      'provider.stable.profile',
+      'provider.stable.binding',
+      'provider.stable.continuity',
+    ]);
     expect(Object.isFrozen(components)).toBe(true);
   });
 

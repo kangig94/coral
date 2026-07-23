@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it } from 'vitest';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -61,12 +62,12 @@ type Harness = {
 
 function newHarness(): Harness {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   const reducers = composeReducers(retentionQueryEventRegistry, sessionsRegistry);
   const bodyCodec = createEventBodyCodec();
   return {
     db,
-    readCtx: { schemas: reducers.schemas, bodyCodec },
+    readCtx: { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec },
     commit: (inputs) => {
       commitInputs(db, inputs, { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort });
     },
@@ -79,7 +80,6 @@ function openedInput(entry: ProviderSession): CoralEventInput {
     type: 'session.opened',
     stream: { kind: 'session', id: entry.sessionId },
     refs: { sessionId: entry.sessionId },
-    bodyVersion: 1,
     body: { entry, controller: 'default', scope_key: `scope-${entry.sessionId}` },
   };
 }
@@ -99,7 +99,6 @@ function claimInput(entry: ProviderSession, jobId: string): CoralEventInput {
     type: 'session.claimed',
     stream: { kind: 'session', id: entry.sessionId },
     refs: { sessionId: entry.sessionId, jobId },
-    bodyVersion: 1,
     body: { entry: nextEntry, jobId },
   };
 }
@@ -122,7 +121,6 @@ function claimReleasedInput(entry: ProviderSession, jobId: string): CoralEventIn
     type: 'session.claim.released',
     stream: { kind: 'session', id: entry.sessionId },
     refs: { sessionId: entry.sessionId, jobId },
-    bodyVersion: 1,
     body: { entry: nextEntry, jobId },
   };
 }
@@ -133,7 +131,6 @@ function jobTerminalInput(jobId: string, sessionId: string): CoralEventInput {
     type: 'job.terminal.recorded',
     stream: { kind: 'job', id: jobId },
     refs: { jobId, sessionId },
-    bodyVersion: 1,
     body: { jobId },
   };
 }
@@ -145,7 +142,6 @@ function discardOutcomeInputs(sessionId: string, outcome: 'completed' | 'failed'
       type: 'session.retention.discard.requested',
       stream: { kind: 'session', id: sessionId },
       refs: { sessionId },
-      bodyVersion: 1,
       body: base,
     },
     outcome === 'completed'
@@ -153,14 +149,12 @@ function discardOutcomeInputs(sessionId: string, outcome: 'completed' | 'failed'
           type: 'session.retention.discard.completed',
           stream: { kind: 'session', id: sessionId },
           refs: { sessionId },
-          bodyVersion: 1,
           body: { ...base, outcome: 'discarded' },
         }
       : {
           type: 'session.retention.discard.failed',
           stream: { kind: 'session', id: sessionId },
           refs: { sessionId },
-          bodyVersion: 1,
           body: { ...base, reason: 'provider unreachable' },
         },
   ];
@@ -186,7 +180,6 @@ function continuationLeaseRecordedInput(entry: ProviderSession, expiresAt: strin
     type: 'session.continuation_lease.recorded',
     stream: { kind: 'session', id: entry.sessionId },
     refs: { sessionId: entry.sessionId, jobId: 'job-stale' },
-    bodyVersion: 1,
     body: { entry: nextEntry, sessionId: entry.sessionId, lease },
   };
 }
@@ -319,7 +312,6 @@ describe('sessions retention-work', () => {
             type: 'session.retention.discard.requested',
             stream: { kind: 'session', id: 'session-requested' },
             refs: { sessionId: 'session-requested' },
-            bodyVersion: 1,
             body: { sessionId: 'session-requested', attempt: 1, handles: [] },
           },
         ]);

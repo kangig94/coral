@@ -14,10 +14,6 @@ import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-superviso
 import { LifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
 import { sessionContinuationLeaseRecordedEvent } from '#src/sessions/continuation-lease-events.js';
 import { providerSessionSchema } from '#src/sessions/entry.js';
-import { defineProvider } from '#src/providers/registry.js';
-import { none } from '#src/providers/capability.js';
-import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
-import { prepareFixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import type { Database } from '#src/store/db.js';
 
@@ -76,7 +72,6 @@ describe('coordinator startup ordering', () => {
       createServerFn: (handler) => createServer(handler),
       listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
       closeServerFn: async () => {},
-      registerBuiltInProvidersFn: () => {},
     });
 
     try {
@@ -173,7 +168,6 @@ describe('coordinator startup ordering', () => {
         return { port: 0, host: '127.0.0.1' };
       },
       closeServerFn: async () => {},
-      registerBuiltInProvidersFn: () => {},
     });
 
     try {
@@ -239,15 +233,6 @@ describe('coordinator startup ordering', () => {
     const order: string[] = [];
     let startupDb: Database | null = null;
     let recoveryObservedPending = false;
-    const provider = defineProvider({
-      name: 'codex',
-      transport: 'standalone',
-      run: async function* noop() {},
-      prepareExecutionPlan: prepareFixtureExecutionPlan,
-    })
-      .binding(fixtureProviderBindingCodec('codex'))
-      .artifacts(none('startup ordering fixture has no artifacts'))
-      .build();
     const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async (options) => {
       order.push('jobsReconcile.runStartup');
       startupDb = options.progressStore.getDb();
@@ -255,7 +240,7 @@ describe('coordinator startup ordering', () => {
         sessionId: 'pending-replacement-session',
         binding: TEST_CODEX_BINDING,
         name: 'pending-replacement-session',
-        state: 'ready',
+        state: 'pending',
         retention: 'retain',
         artifactHandles: [],
         retentionDiscard: { attempts: [] },
@@ -272,7 +257,6 @@ describe('coordinator startup ordering', () => {
           type: 'session.opened',
           stream: { kind: 'session', id: opened.sessionId },
           refs: { sessionId: opened.sessionId },
-          bodyVersion: 1,
           body: { entry: opened, controller: 'default', scope_key: 'startup-ordering' },
         });
         return undefined;
@@ -329,7 +313,6 @@ describe('coordinator startup ordering', () => {
       createServerFn: (handler) => createServer(handler),
       listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
       closeServerFn: async () => {},
-      registerBuiltInProvidersFn: (registry) => registry.register(provider),
     });
 
     try {
@@ -388,7 +371,6 @@ describe('coordinator startup ordering', () => {
         return { port: 0, host: '127.0.0.1' };
       },
       closeServerFn: async () => {},
-      registerBuiltInProvidersFn: () => {},
     });
 
     try {

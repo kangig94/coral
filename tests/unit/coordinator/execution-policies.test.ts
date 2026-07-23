@@ -45,7 +45,7 @@ describe('execution policies', () => {
       requestEnv: { CORAL_OWNER: 'reviewer' },
       platform: runtime.env.platform(),
     });
-    expect(preflight).not.toHaveProperty('credentialSource');
+    expect(preflight).not.toHaveProperty('access');
     expect(preflight).not.toHaveProperty('runExact');
   });
 

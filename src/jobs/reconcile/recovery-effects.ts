@@ -72,7 +72,6 @@ function recoveryFaultOutcome<Scope>(
         namespace: status.backendNamespace,
         project: status.projectRoot,
         refs: buildJobEventRefs({ jobId: status.jobId, sessionId: status.sessionId }),
-        bodyVersion: 1,
         body: fault,
       });
       return failedTerminalOutcome(cause);

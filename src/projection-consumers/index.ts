@@ -145,14 +145,9 @@ export class ConsumerDriver {
     const existing = this.consumers.get(reg.id);
     if (existing) {
       assertExistingRegistrationMatches(existing, reg);
-      const row = this.repository.readCursorMetadata(reg.id);
-      if (row) {
-        const storedKind = this.repository.ensureCursorRow(reg, false, row);
-        if (storedKind !== existing.registrationKind) {
-          throw consumerRegistrationKindMismatchError(reg.id, existing.registrationKind, storedKind);
-        }
-      } else if (existing.registrationKind !== 'stateless') {
-        this.repository.insertCursorRow(reg, existing.registrationKind);
+      const storedKind = this.repository.ensureCursorRow(reg, false, existing.registrationKind);
+      if (storedKind !== existing.registrationKind) {
+        throw consumerRegistrationKindMismatchError(reg.id, existing.registrationKind, storedKind);
       }
       return existing.handle;
     }

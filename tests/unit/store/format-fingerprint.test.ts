@@ -5,16 +5,19 @@ import { discussRegistry } from '#src/discuss/event-registry.js';
 import { persistedDiscussSnapshotSchema } from '#src/discuss/projections.js';
 import { declarativeEngineManifestSchema } from '#src/expansion/manifest/schema.js';
 import { jobsRegistry } from '#src/jobs/events.js';
+import { jobPhaseSchema } from '#src/jobs/phase.js';
+import { jobKindSchema } from '#src/jobs/records.js';
+import { projectionJobStoredRowSchema } from '#src/jobs/projection-row.js';
 import { jobDiagnosticsSchema, jobTerminalSchema } from '#src/jobs/terminal/result.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { providerSessionSchema } from '#src/sessions/entry.js';
+import { projectionSessionStoredRowSchema } from '#src/sessions/projections.js';
 import { executionOwnerSchema } from '#src/runtime/execution-owner.js';
 import { providerScopeSchema } from '#src/infra/provider-scope.js';
 import { createCurrentStoreFormat } from '#src/store/current-format.js';
-import { journalEventRefsSchema } from '#src/store/envelope.js';
+import { journalEventEnvelopeSchema, journalEventRefsSchema } from '#src/store/envelope.js';
 import {
   compareStoreFormatFingerprint,
-  ddlWithoutPersistedCodecAnnotations,
   describeStoreFormat,
   persistedCodecNamesFromDdl,
   PersistedCodecRegistry,
@@ -25,6 +28,22 @@ import { workflowLifecycleSchema } from '#src/workflow/lifecycle.js';
 import { workflowPlanSchema } from '#src/workflow/plan.js';
 import { corpusAuthorityBaselineDdl } from '#src/kb/corpus/rescan/authority-baseline.js';
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
+import { ProviderRegistry } from '#src/providers/registry.js';
+import { currentCoralStoreFormat, sealCoralStoreFormat } from '#src/store-format.js';
+import { schedulerRowSchema } from '#src/kb/curate/state-scheduler.js';
+import { retryRowSchema } from '#src/kb/curate/retry.js';
+import { quarantineRowSchema } from '#src/kb/curate/conflict-quarantine.js';
+import { backlogNoteRowSchema, backlogRowSchema } from '#src/kb/curate/discovery-backlog.js';
+import { activeClaimRowSchema } from '#src/kb/curate/state/store.js';
+import { corpusStateRowSchema } from '#src/kb/state/corpus-state.js';
+import {
+  consumerCursorMetadataSchema,
+  corpusConsumerCursorSchema,
+  journalConsumerCursorSchema,
+} from '#src/projection-consumers/persistence.js';
+
+const CURRENT_CORAL_STORE_FORMAT_FINGERPRINT =
+  'sha256:f14ec2988abbf0fe125a6b0c9b50cbece7104d8a82a96da149392e2f44e53f52';
 
 const CURRENT_BOUNDARY_CODEC_NAMES = [
   'store.events.body',
@@ -43,7 +62,31 @@ const CURRENT_BOUNDARY_CODEC_NAMES = [
 const CURRENT_COMPONENT_CODEC_NAMES = [
   'provider.binding-envelope',
   'provider.claude.binding',
+  'provider.claude.continuity',
+  'provider.claude.profile',
   'provider.codex.binding',
+  'provider.codex.continuity',
+  'provider.codex.profile',
+  'store.events.append-validation',
+  'store.events.envelope',
+  'store.consumer_cursors.corpus-cursor',
+  'store.consumer_cursors.journal-cursor',
+  'store.consumer_cursors.metadata',
+  'store.kb_curate_active_claim.row',
+  'store.kb_curate_conflict_quarantine.row',
+  'store.kb_curate_discovery_backlog.row',
+  'store.kb_curate_discovery_backlog_notes.row',
+  'store.kb_curate_retry_queue.row',
+  'store.kb_curate_scheduler.row',
+  'store.kb_corpus_state.row',
+  'store.external-format-marker',
+  'store.kb_curate_scheduler.decoder-semantics',
+  'store.projection_jobs.decoder-semantics',
+  'store.projection_jobs.job-kind',
+  'store.projection_jobs.phase',
+  'store.projection_jobs.row',
+  'store.projection_sessions.row',
+  'store.projection_sessions.decoder-semantics',
   'workflow.lifecycle',
 ] as const;
 
@@ -52,29 +95,45 @@ function ddlFor(...codecNames: readonly string[]): string {
 }
 
 const currentCodecSchemas = {
+  eventEnvelope: journalEventEnvelopeSchema,
   eventRefs: journalEventRefsSchema,
+  jobPhase: jobPhaseSchema,
+  jobKind: jobKindSchema,
+  projectionJobRow: projectionJobStoredRowSchema,
   jobTerminal: jobTerminalSchema,
   jobDiagnostics: jobDiagnosticsSchema,
   executionOwner: executionOwnerSchema,
   providerSession: providerSessionSchema,
+  projectionSessionRow: projectionSessionStoredRowSchema,
   discussState: persistedDiscussSnapshotSchema,
   workflowPlan: workflowPlanSchema,
   providerScope: providerScopeSchema,
   workflowLifecycle: workflowLifecycleSchema,
   expansionManifest: declarativeEngineManifestSchema,
+  consumerCursorMetadata: consumerCursorMetadataSchema,
+  journalConsumerCursor: journalConsumerCursorSchema,
+  corpusConsumerCursor: corpusConsumerCursorSchema,
+  kbCurateActiveClaimRow: activeClaimRowSchema,
+  kbCorpusStateRow: corpusStateRowSchema,
+  kbCurateSchedulerRow: schedulerRowSchema,
+  kbCurateRetryRow: retryRowSchema,
+  kbCurateConflictQuarantineRow: quarantineRowSchema,
+  kbCurateDiscoveryBacklogRow: backlogRowSchema,
+  kbCurateDiscoveryBacklogNoteRow: backlogNoteRowSchema,
 };
 
 describe('StoreFormatFingerprint', () => {
+  it('rejects a provider registry that independent Coral processes cannot decode', () => {
+    expect(() => sealCoralStoreFormat(new ProviderRegistry())).toThrow(
+      'Provider registry does not match the canonical Coral store format',
+    );
+  });
+
   it('describes every current persisted JSON boundary and every Journal event codec', () => {
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-    const format = createCurrentStoreFormat(
-      reducers,
-      currentCodecSchemas,
-      [corpusAuthorityBaselineDdl],
-      createBuiltInProviderRegistry().sealPersistedBindingCodecComponents(),
-    );
+    const format = currentCoralStoreFormat();
 
-    expect(format.fingerprint).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(format.fingerprint).toBe(CURRENT_CORAL_STORE_FORMAT_FINGERPRINT);
     expect(format.manifest.codecs.map((entry) => entry.name)).toEqual(
       [...CURRENT_BOUNDARY_CODEC_NAMES, ...CURRENT_COMPONENT_CODEC_NAMES].sort(),
     );
@@ -83,9 +142,71 @@ describe('StoreFormatFingerprint', () => {
     expect(format.manifest.ddl).toContain('CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline_records');
 
     const eventCodec = format.manifest.codecs.find((entry) => entry.name === 'store.events.body');
-    const eventContract = eventCodec?.contract as { events?: readonly { type?: unknown }[] } | undefined;
+    const eventContract = eventCodec?.contract as
+      | { events?: readonly { type?: unknown; streamKind?: unknown }[] }
+      | undefined;
     expect(eventContract?.events?.map((entry) => entry.type)).toEqual([...reducers.schemas.keys()].sort());
+    expect(eventContract?.events?.every((entry) => typeof entry.streamKind === 'string')).toBe(true);
   });
+
+  it('changes when an event type moves to another canonical stream without changing its body', () => {
+    const currentReducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+    const movedReducers = composeReducers(
+      { ...jobsRegistry, streamKind: 'session' },
+      sessionsRegistry,
+      discussRegistry,
+      workflowRegistry,
+    );
+
+    expect(
+      createCurrentStoreFormat(currentReducers, currentCodecSchemas, [corpusAuthorityBaselineDdl]).fingerprint,
+    ).not.toBe(createCurrentStoreFormat(movedReducers, currentCodecSchemas, [corpusAuthorityBaselineDdl]).fingerprint);
+  });
+
+  it('changes when only an event materializer semantic contract changes', () => {
+    const currentReducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+    const [first, ...rest] = jobsRegistry.entries;
+    if (first === undefined) throw new Error('jobs registry is empty');
+    if (first.reducer === undefined) throw new Error('first jobs registry entry has no materializer');
+    const changedReducers = composeReducers(
+      {
+        ...jobsRegistry,
+        entries: [{ ...first, materializerContract: `${first.materializerContract}:changed` }, ...rest],
+      },
+      sessionsRegistry,
+      discussRegistry,
+      workflowRegistry,
+    );
+
+    expect(
+      createCurrentStoreFormat(currentReducers, currentCodecSchemas, [corpusAuthorityBaselineDdl]).fingerprint,
+    ).not.toBe(
+      createCurrentStoreFormat(changedReducers, currentCodecSchemas, [corpusAuthorityBaselineDdl]).fingerprint,
+    );
+  });
+
+  it.each(['provider.codex.profile', 'provider.codex.continuity'] as const)(
+    'changes when the provider-private %s contract changes',
+    (componentName) => {
+      const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+      const components = createBuiltInProviderRegistry().sealPersistedCodecComponents();
+      const changedComponents = components.map((component) =>
+        component.name === componentName
+          ? { ...component, contract: { kind: 'intentionally-changed-provider-contract' } }
+          : component,
+      );
+
+      const current = createCurrentStoreFormat(reducers, currentCodecSchemas, [corpusAuthorityBaselineDdl], components);
+      const changed = createCurrentStoreFormat(
+        reducers,
+        currentCodecSchemas,
+        [corpusAuthorityBaselineDdl],
+        changedComponents,
+      );
+
+      expect(changed.fingerprint).not.toBe(current.fingerprint);
+    },
+  );
 
   it('is independent of codec registration order', () => {
     const left = new PersistedCodecRegistry();
@@ -237,16 +358,7 @@ describe('StoreFormatFingerprint', () => {
     );
   });
 
-  it('keeps shadow codec annotations out of the active pre-B09 DDL marker input', () => {
-    const original = 'value TEXT, -- JSON payload\nother TEXT,\n';
-    const annotated =
-      'value TEXT, -- JSON payload @persisted-codec store.value\n' +
-      'other TEXT, -- JSON @persisted-codec store.other\n';
-
-    expect(ddlWithoutPersistedCodecAnnotations(annotated)).toBe(original);
-  });
-
-  it('provides the pure fingerprint decision B09 will connect to reset authority', () => {
+  it('classifies the persisted fingerprint for startup reset authority', () => {
     const current = 'sha256:current';
     expect(compareStoreFormatFingerprint(null, current)).toEqual({ kind: 'missing', current });
     expect(compareStoreFormatFingerprint(current, current)).toEqual({ kind: 'current', current, stored: current });

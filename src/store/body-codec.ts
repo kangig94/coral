@@ -2,6 +2,7 @@ import type { z } from 'zod';
 
 import type { EventsRow } from './schema.js';
 import type { EventBodyCodec } from './event-body-codec.js';
+import type { StreamKind } from './envelope.js';
 
 const BODY_DECODER = new TextDecoder();
 
@@ -12,7 +13,6 @@ export interface StoreDecodeContext {
   readonly type?: string;
   readonly streamKind?: string;
   readonly streamId?: string;
-  readonly bodyVersion?: number;
   readonly column?: StoreDecodeColumn;
 }
 
@@ -70,45 +70,49 @@ export function encodeEventBody(body: unknown): Buffer {
 
 export interface StoreReadContext {
   readonly schemas: ReadonlyMap<string, z.ZodType>;
+  /** Canonical stream kind for every registered event type. */
+  readonly streamKinds: ReadonlyMap<string, StreamKind>;
   readonly bodyCodec: EventBodyCodec;
 }
 
 function codecContext(
-  row: Pick<EventsRow, 'type'> & Partial<Pick<EventsRow, 'seq' | 'stream_kind' | 'stream_id' | 'body_version'>>,
+  row: Pick<EventsRow, 'type' | 'stream_kind'> & Partial<Pick<EventsRow, 'seq' | 'stream_id'>>,
 ): StoreDecodeContext {
   return {
     seq: row.seq,
     type: row.type,
     streamKind: row.stream_kind,
     streamId: row.stream_id,
-    bodyVersion: row.body_version,
     column: 'body',
   };
 }
 
 function registeredSchemaFor(
-  row: Pick<EventsRow, 'type'> & Partial<Pick<EventsRow, 'seq' | 'stream_kind' | 'stream_id' | 'body_version'>>,
+  row: Pick<EventsRow, 'type' | 'stream_kind'> & Partial<Pick<EventsRow, 'seq' | 'stream_id'>>,
   ctx: StoreReadContext,
 ): z.ZodType {
   const schema = ctx.schemas.get(row.type);
   if (schema === undefined) {
     throw new StoreCodecError(`No registered event body codec for stored type '${row.type}'`, codecContext(row));
   }
+  const expectedStreamKind = ctx.streamKinds.get(row.type);
+  if (expectedStreamKind === undefined) {
+    throw new StoreCodecError(`No registered stream kind for stored type '${row.type}'`, codecContext(row));
+  }
+  if (row.stream_kind !== expectedStreamKind) {
+    throw new StoreCodecError(
+      `Stored event type '${row.type}' belongs to stream kind '${expectedStreamKind}', not '${row.stream_kind}'`,
+      codecContext(row),
+    );
+  }
   return schema;
 }
 
 export function decodeBody<T>(
-  row: Pick<EventsRow, 'type' | 'body' | 'body_version'> &
-    Partial<Pick<EventsRow, 'seq' | 'stream_kind' | 'stream_id'>>,
+  row: Pick<EventsRow, 'type' | 'stream_kind' | 'body'> & Partial<Pick<EventsRow, 'seq' | 'stream_id'>>,
   schema: z.ZodType<T>,
   ctx: StoreReadContext,
 ): T {
-  if (row.body_version !== 1) {
-    throw new StoreCodecError(
-      `Stored event type '${row.type}' has body_version ${row.body_version}; the current codec accepts only 1`,
-      codecContext(row),
-    );
-  }
   if (registeredSchemaFor(row, ctx) !== schema) {
     throw new StoreCodecError(
       `Read schema for stored event type '${row.type}' is not its registered current codec`,
@@ -125,7 +129,7 @@ export function decodeBody<T>(
 }
 
 export function decodeStoredBody(
-  row: Pick<EventsRow, 'type' | 'body' | 'body_version'> & Partial<Pick<EventsRow, 'seq'>>,
+  row: Pick<EventsRow, 'type' | 'stream_kind' | 'body'> & Partial<Pick<EventsRow, 'seq' | 'stream_id'>>,
   ctx: StoreReadContext,
 ): unknown {
   const schema = registeredSchemaFor(row, ctx);

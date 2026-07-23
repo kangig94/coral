@@ -80,11 +80,11 @@ export function snapshotBoundaryData<Value>(value: Value, label: string): Value 
   return snapshotPlainValue(value, label, { allowFunctions: false }) as Value;
 }
 
-export function snapshotSource<Source extends JsonValue>(value: Source): Source {
+export function snapshotAccess<Access extends JsonValue>(value: Access): Access {
   return snapshotBoundaryData(
-    jsonValueSchema.parse(snapshotBoundaryData(value, 'Provider source')),
-    'Provider source',
-  ) as Source;
+    jsonValueSchema.parse(snapshotBoundaryData(value, 'Provider access')),
+    'Provider access',
+  ) as Access;
 }
 
 export function snapshotRequest(request: ProviderRequest): ProviderRequest {

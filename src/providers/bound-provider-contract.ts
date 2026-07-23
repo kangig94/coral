@@ -21,10 +21,15 @@ import type {
   ProviderReadiness,
 } from './contracts/binding.js';
 import type { ProviderBindingEnvelope } from '../infra/provider-binding-envelope.js';
+import type { ProviderValidatedContinuityBlob } from '../sessions/continuity.js';
+import type { ProviderValidatedSessionContinuityMutation } from '../sessions/continuity-mutation.js';
 
-export type BoundProviderRecovery = Omit<ProviderRecoveryContract, 'finalizeFromArtifacts'> & {
+export type BoundProviderRecovery = Omit<ProviderRecoveryContract, 'finalizeInterrupted' | 'finalizeFromArtifacts'> & {
+  finalizeInterrupted(
+    ...args: Parameters<ProviderRecoveryContract['finalizeInterrupted']>
+  ): ProviderValidatedSessionContinuityMutation;
   finalizeFromArtifacts(
-    options: Omit<Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0], 'source'>,
+    options: Omit<Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0], 'access'>,
   ): ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']>;
 };
 
@@ -129,7 +134,8 @@ export interface BoundProvider {
     runtime: ProviderBindingRuntime,
   ): Promise<ProviderBindingResult<ProviderReadiness>>;
   compareIdentity(otherEnvelope: unknown): ProviderBindingResult<true>;
-  preflight(input: Omit<ProviderPreflightInput, 'credentialSource'>): Promise<void>;
+  decodeContinuity(rawContinuity: unknown): ProviderBindingResult<ProviderValidatedContinuityBlob | undefined>;
+  preflight(input: Omit<ProviderPreflightInput, 'access'>): Promise<void>;
   prepareExecution(input: BoundProviderExecutionPreparationInput): BoundProviderPreparedExecution;
   readonly appServer?: BoundProviderAppServerCapability;
   readonly recovery?: BoundProviderRecovery;

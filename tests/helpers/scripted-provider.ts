@@ -29,13 +29,13 @@ import { defineProvider, type ProviderDefinition } from '#src/providers/registry
 import type { ProviderContinuityBlob } from '#src/sessions/continuity.js';
 import type { ProviderCliRequest } from '#src/providers/protocol.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
-import type { FixtureProviderSource } from '#tests/helpers/provider-binding.js';
+import type { FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
 
 const FIXTURE_ALLOWED_REQUEST_ENV_KEYS = Object.freeze(new Set(['FIXTURE_TUNING']));
 
 export type FixtureExecutionPlan = ProviderExecutionPlan<
   Readonly<{
-    source: FixtureProviderSource;
+    access: FixtureProviderAccess;
     platform: string;
     environment: readonly EnvironmentLayer[];
     serverSpec: ProviderServerSpec;
@@ -101,7 +101,7 @@ export type StandaloneTestProvider = Extract<Provider, { appServerLifecycle?: un
 export type AppServerTestProvider = Extract<Provider, { appServerLifecycle: TestAppServerLifecycle }>;
 
 export function prepareFixtureAppServerExecutionPlan(input: {
-  source: FixtureProviderSource;
+  access: FixtureProviderAccess;
   hostPlan: FixtureExecutionPlan['host'];
   request: ProviderRequest;
   baseEnv: Readonly<Record<string, string>>;
@@ -176,7 +176,7 @@ export function defineFakeProvider(
     ? {
         name: provider.name,
         planHost: (
-          input: Parameters<ProviderAppServerCapability<FixtureExecutionPlan, FixtureProviderSource>['planHost']>[0],
+          input: Parameters<ProviderAppServerCapability<FixtureExecutionPlan, FixtureProviderAccess>['planHost']>[0],
         ) => {
           if (input.purpose !== 'execution') throw new Error('Fixture provider does not support curation hosts.');
           const host =
@@ -231,13 +231,13 @@ export function defineFakeProvider(
   };
   const builder =
     provider.appServerLifecycle === undefined
-      ? defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
+      ? defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
           ...common,
           transport: 'standalone',
           run: provider.execute,
           prepareExecutionPlan: (input) => prepareFixtureExecutionPlan(input),
         })
-      : defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
+      : defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
           ...common,
           transport: 'app-server',
           run: provider.execute,
@@ -281,7 +281,7 @@ export function prepareFixtureExecutionPlan(
 }
 
 export function prepareFixtureHost(
-  input: Parameters<ProviderAppServerCapability<FixtureExecutionPlan, FixtureProviderSource>['planHost']>[0],
+  input: Parameters<ProviderAppServerCapability<FixtureExecutionPlan, FixtureProviderAccess>['planHost']>[0],
   serverSpec: ProviderServerSpec,
 ): FixtureExecutionPlan['host'] {
   const environment = Object.freeze([
@@ -301,9 +301,9 @@ export function prepareFixtureHost(
         name: 'fixture-routing',
         lifetime: 'host',
         provenance: 'fixture-binding',
-        values: input.source.routingEnv,
-        writes: new Set(Object.keys(input.source.routingEnv)),
-        protects: new Set(Object.keys(input.source.routingEnv)),
+        values: input.access.routingEnv,
+        writes: new Set(Object.keys(input.access.routingEnv)),
+        protects: new Set(Object.keys(input.access.routingEnv)),
       },
       input.platform,
     ),
@@ -330,7 +330,7 @@ export function prepareFixtureHost(
       lifetimes: new Set(['host']),
     }),
   });
-  return Object.freeze({ source: input.source, platform: input.platform, environment, serverSpec: compiledSpec });
+  return Object.freeze({ access: input.access, platform: input.platform, environment, serverSpec: compiledSpec });
 }
 
 export function toProviderDefinition(

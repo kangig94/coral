@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
@@ -21,7 +22,7 @@ function claimedSessionInputs(sessionId: string, activeJobId: string): CoralEven
     sessionId,
     binding: TEST_CODEX_BINDING,
     name: sessionId,
-    state: 'ready',
+    state: 'pending',
     retention: 'retain',
     artifactHandles: [],
     retentionDiscard: { attempts: [] },
@@ -39,14 +40,12 @@ function claimedSessionInputs(sessionId: string, activeJobId: string): CoralEven
       type: 'session.opened',
       stream: { kind: 'session', id: sessionId },
       refs: { sessionId },
-      bodyVersion: 1,
       body: { entry: opened, controller: 'default', scope_key: `/workspace/coral\u0000codex\u0000default` },
     },
     {
       type: 'session.claimed',
       stream: { kind: 'session', id: sessionId },
       refs: { sessionId, jobId: activeJobId },
-      bodyVersion: 1,
       body: { entry: claimed, jobId: activeJobId },
     },
   ];
@@ -56,7 +55,7 @@ describe('jobs reducer equivalence', () => {
   it('rebuilds projection_jobs rows byte-identically from a historical event sequence', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(jobsRegistry, sessionsRegistry);
       const bodyCodec = createEventBodyCodec();
 
@@ -68,7 +67,6 @@ describe('jobs reducer equivalence', () => {
             type: 'job.launch.requested',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               owner: { kind: 'provider-session', id: 'session-1' },
               sessionId: 'session-1',
@@ -93,21 +91,18 @@ describe('jobs reducer equivalence', () => {
             type: 'job.queue.queued',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: { queuePosition: 2, runningJobIds: ['job-live'] },
           },
           {
             type: 'job.queue.admitted',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: { queuePosition: 0 },
           },
           {
             type: 'job.runtime.started',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               transport: 'durable-cli',
               pid: 4242,
@@ -120,7 +115,6 @@ describe('jobs reducer equivalence', () => {
             type: 'job.progress.emitted',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               kind: 'domain',
               stage: 'hosted_kb_operation_failed',
@@ -132,14 +126,12 @@ describe('jobs reducer equivalence', () => {
             type: 'job.progress.emitted',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: { kind: 'recovery_parse_failed', cause: { message: 'partial stderr' } },
           },
           {
             type: 'job.terminal.recorded',
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               terminal: {
                 outcome: { kind: 'provider_exit', code: 17, note: 'forced timeout' },
@@ -218,7 +210,7 @@ describe('jobs reducer equivalence', () => {
   it('job.launch.rejected byte-identical after rebuild', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
 
@@ -243,7 +235,6 @@ describe('jobs reducer equivalence', () => {
             type: 'job.launch.requested',
             stream: { kind: 'job', id: 'job-rejected' },
             refs: { workflowId: 'job-rejected' },
-            bodyVersion: 1,
             body: {
               owner: { kind: 'workflow', id: 'job-rejected' },
               projectRoot: '/workspace/coral',
@@ -264,7 +255,6 @@ describe('jobs reducer equivalence', () => {
             type: 'job.launch.rejected',
             stream: { kind: 'job', id: 'job-rejected' },
             refs: { sessionId: 'session-rejected' },
-            bodyVersion: 1,
             body: {
               reason: 'busy',
               message: 'Provider queue is full.',
@@ -337,7 +327,7 @@ describe('jobs reducer equivalence', () => {
   it('job.aborted byte-identical after rebuild', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(jobsRegistry, sessionsRegistry);
       const bodyCodec = createEventBodyCodec();
 
@@ -349,7 +339,6 @@ describe('jobs reducer equivalence', () => {
             type: 'job.launch.requested',
             stream: { kind: 'job', id: 'job-aborted' },
             refs: { sessionId: 'session-aborted' },
-            bodyVersion: 1,
             body: {
               owner: { kind: 'provider-session', id: 'session-aborted' },
               sessionId: 'session-aborted',
@@ -373,7 +362,6 @@ describe('jobs reducer equivalence', () => {
             type: 'job.runtime.started',
             stream: { kind: 'job', id: 'job-aborted' },
             refs: { sessionId: 'session-aborted' },
-            bodyVersion: 1,
             body: {
               transport: 'durable-cli',
               pid: 4242,
@@ -386,7 +374,6 @@ describe('jobs reducer equivalence', () => {
             type: 'job.aborted',
             stream: { kind: 'job', id: 'job-aborted' },
             refs: { sessionId: 'session-aborted' },
-            bodyVersion: 1,
             body: { reason: 'user_abort' },
           },
         ],

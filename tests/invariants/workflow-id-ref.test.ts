@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 // Spec §6.1 line 813 + §13.1 worked example: workflow children carry
 // `refs.workflowId` on their `job.launch.requested` envelope. The producer is
 // `src/jobs/store.ts:appendLaunchRequested`. This test exercises the
@@ -45,7 +46,7 @@ afterEach(() => {
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   openDbs.add(db);
   return db;
 }
@@ -115,7 +116,7 @@ function providerSessionInputs(sessionId: string, jobId: string, projectRoot: st
     sessionId,
     binding: TEST_CODEX_BINDING,
     name: sessionId,
-    state: 'ready',
+    state: 'pending',
     retention: 'retain',
     artifactHandles: [],
     retentionDiscard: { attempts: [] },
@@ -133,14 +134,12 @@ function providerSessionInputs(sessionId: string, jobId: string, projectRoot: st
       type: 'session.opened',
       stream: { kind: 'session', id: sessionId },
       refs: { sessionId },
-      bodyVersion: 1,
       body: { entry: opened, controller: 'default', scope_key: `${sessionId}-scope` },
     },
     {
       type: 'session.claimed',
       stream: { kind: 'session', id: sessionId },
       refs: { sessionId, jobId },
-      bodyVersion: 1,
       body: { entry: claimed, jobId },
     },
   ];

@@ -9,28 +9,15 @@ import type { StoragePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { ReadonlyDatabase, ReadonlyStatement } from './read-port.js';
-import { ddlWithoutPersistedCodecAnnotations } from './format-fingerprint.js';
-import schemaSource from './schema.sql';
+import {
+  compareStoreFormatFingerprint,
+  type StoreFormatDescription,
+  type StoreFormatFingerprint,
+  type StoreFormatFingerprintComparison,
+} from './format-fingerprint.js';
 
-// Signed 32-bit djb2-style hash of the bundled executable DDL, stored as
-// `PRAGMA user_version` after schema application. Any meaningful edit to
-// `schema.sql` is overwhelmingly likely to produce a different marker on
-// disk (32-bit collisions are theoretically possible but irrelevant at
-// real-world schema-iteration counts). Boot-time mismatch detection is a
-// single integer compare; the value itself has no meaning beyond "this DB
-// matches this build's schema". SQLite's `user_version` is a signed 32-bit
-// field — the hash is kept signed (no `>>> 0`) so the value round-trips
-// through the PRAGMA without truncation. B01's @persisted-codec annotations
-// are shadow metadata and are excluded until B09 replaces this marker with
-// the complete StoreFormatFingerprint.
-function schemaMarkerHash(input: string): number {
-  let h = 5381;
-  for (let i = 0; i < input.length; i++) {
-    h = ((h << 5) + h + input.charCodeAt(i)) | 0;
-  }
-  return h;
-}
-const EXPECTED_SCHEMA_MARKER = schemaMarkerHash(ddlWithoutPersistedCodecAnnotations(schemaSource));
+const STORE_FORMAT_FINGERPRINT_KEY = 'store_format_fingerprint';
+const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 
 /**
  * Result of a `Statement.run(...)` invocation.
@@ -71,6 +58,7 @@ export interface Database extends Omit<DatabaseSync, 'prepare'> {
 type ReadonlyStoreOptions = {
   readonly path: string;
   readonly storage: StoragePort;
+  readonly storeFormat: StoreFormatDescription;
   readonly readonly: true;
   readonly busyTimeoutMs?: number;
 };
@@ -78,6 +66,7 @@ type ReadonlyStoreOptions = {
 type WritableStoreOptions = {
   readonly path: string;
   readonly storage: StoragePort;
+  readonly storeFormat: StoreFormatDescription;
   readonly readonly?: false;
   readonly busyTimeoutMs?: number;
 };
@@ -126,53 +115,23 @@ export function applyJournalPragmas(db: Database, mode: JournalPragmaMode): void
  */
 const STEADY_STATE_BUSY_TIMEOUT_MS = 5000;
 
-type StoreSchemaClassification =
-  | { kind: 'fresh'; userVersion: 0; storedVersion: 0 }
-  | { kind: 'retired'; userVersion: 0; storedVersion: number }
-  | { kind: 'current'; userVersion: number; storedVersion: number }
-  | { kind: 'mismatch'; userVersion: number; storedVersion: number };
+type StoreFormatClassification = StoreFormatFingerprintComparison | { readonly kind: 'fresh' };
 
 const USER_TABLE_EXISTS_SQL = "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1";
-
-const CORAL_RETIRED_TABLES = [
-  'events',
-  'projection_jobs',
-  'projection_sessions',
-  'projection_discuss',
-  'projection_workflows',
-  'meta',
-  'kb_corpus_state',
-  'kb_corpus_authority_baseline',
-  'consumer_cursors',
-  'expansion_state',
-  'kb_curate_scheduler',
-  'kb_curate_active_claim',
-  'kb_curate_retry_queue',
-  'kb_curate_conflict_quarantine',
-  'kb_curate_discovery_backlog',
-  'kb_curate_discovery_backlog_notes',
-  'expansion_manifest_catalog',
-] as const;
-
-function readUserVersion(db: Database): number {
-  const row = db.prepare<[], { user_version?: unknown }>('PRAGMA user_version').get();
-  return typeof row?.user_version === 'number' ? row.user_version : 0;
-}
 
 function hasUserTable(db: Database): boolean {
   return db.prepare(USER_TABLE_EXISTS_SQL).get() !== undefined;
 }
 
-function readRetiredMetaSchemaVersion(db: Database): number | null {
+function readStoredFormatFingerprint(db: Database): string | null {
   try {
     const row = db
-      .prepare<[], { value?: unknown }>("SELECT value FROM meta WHERE key = 'schema_version' LIMIT 1")
-      .get();
+      .prepare<[string], { value?: unknown }>('SELECT value FROM meta WHERE key = ? LIMIT 1')
+      .get(STORE_FORMAT_FINGERPRINT_KEY);
     if (typeof row?.value !== 'string') {
       return null;
     }
-    const parsed = Number(row.value);
-    return Number.isFinite(parsed) ? parsed : 0;
+    return row.value;
   } catch (error: unknown) {
     if (error instanceof Error && /no such table: meta/i.test(error.message)) {
       return null;
@@ -181,52 +140,51 @@ function readRetiredMetaSchemaVersion(db: Database): number | null {
   }
 }
 
-function hasCoralRetiredTable(db: Database): boolean {
-  const quotedNames = CORAL_RETIRED_TABLES.map((name) => `'${name}'`).join(', ');
-  return (
-    db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name IN (${quotedNames}) LIMIT 1`).get() !==
-    undefined
-  );
+function classifyStoreFormat(db: Database, current: StoreFormatFingerprint): StoreFormatClassification {
+  if (!hasUserTable(db)) return { kind: 'fresh' };
+  return compareStoreFormatFingerprint(readStoredFormatFingerprint(db), current);
 }
 
-function classifyStoreSchema(db: Database): StoreSchemaClassification {
-  const userVersion = readUserVersion(db);
-  if (userVersion === EXPECTED_SCHEMA_MARKER) {
-    return {
-      kind: 'current',
-      userVersion: EXPECTED_SCHEMA_MARKER,
-      storedVersion: EXPECTED_SCHEMA_MARKER,
-    };
+function writeStoreFormatSidecar(options: WritableStoreOptions): void {
+  if (options.path === ':memory:') return;
+  const sidecarPath = `${options.path}${STORE_FORMAT_SIDECAR_SUFFIX}`;
+  if (
+    !options.storage.writeAtomicDurableSync(sidecarPath, `${options.storeFormat.fingerprint}\n`, {
+      encoding: 'utf-8',
+      mode: 0o600,
+    })
+  ) {
+    throw new Error(`Failed to publish store format sidecar '${sidecarPath}'.`);
   }
-
-  if (userVersion === 0) {
-    if (!hasUserTable(db)) {
-      return { kind: 'fresh', userVersion: 0, storedVersion: 0 };
-    }
-    const retiredMetaVersion = readRetiredMetaSchemaVersion(db);
-    if (retiredMetaVersion !== null || hasCoralRetiredTable(db)) {
-      return { kind: 'retired', userVersion: 0, storedVersion: retiredMetaVersion ?? 0 };
-    }
-  }
-
-  return { kind: 'mismatch', userVersion, storedVersion: userVersion };
 }
 
-function storeSchemaOutdatedError(path: string, classification: StoreSchemaClassification): Error {
+function storeSchemaOutdatedError(
+  path: string,
+  classification: StoreFormatClassification,
+  current: StoreFormatFingerprint,
+): Error {
   return documentedCoralSetupError({
     code: 'store_schema_outdated',
     path,
-    storedVersion: classification.storedVersion,
-    currentVersion: EXPECTED_SCHEMA_MARKER,
+    storedFingerprint:
+      classification.kind === 'current' || classification.kind === 'mismatch' ? classification.stored : null,
+    currentFingerprint: current,
     classification: classification.kind,
   });
 }
 
-export function applyBundledStoreSchema(db: Database): void {
+export function applyBundledStoreSchema(db: Database, storeFormat: StoreFormatDescription): void {
   db.exec('BEGIN IMMEDIATE');
   try {
-    db.exec(schemaSource);
-    db.exec(`PRAGMA user_version = ${EXPECTED_SCHEMA_MARKER}`);
+    db.exec(storeFormat.manifest.ddl);
+    const existing = readStoredFormatFingerprint(db);
+    if (existing !== null && existing !== storeFormat.fingerprint) {
+      throw new Error(`Refusing to apply schema over store format '${existing}'.`);
+    }
+    db.prepare<[string, string]>(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)`).run(
+      STORE_FORMAT_FINGERPRINT_KEY,
+      storeFormat.fingerprint,
+    );
     db.exec('COMMIT');
   } catch (error) {
     try {
@@ -255,7 +213,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
       });
     }
 
-    const classification = classifyStoreSchema(db);
+    const classification = classifyStoreFormat(db, options.storeFormat.fingerprint);
     if (classification.kind === 'current') {
       if (!readonly) {
         applyJournalPragmas(db, {
@@ -263,11 +221,12 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
           busyTimeoutMs: options.busyTimeoutMs,
         });
       }
+      if (options.readonly !== true) writeStoreFormatSidecar(options);
       return db;
     }
 
     if (readonly) {
-      throw storeSchemaOutdatedError(options.path, classification);
+      throw storeSchemaOutdatedError(options.path, classification, options.storeFormat.fingerprint);
     }
 
     if (classification.kind === 'fresh') {
@@ -275,11 +234,12 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
         kind: 'writable',
         busyTimeoutMs: options.busyTimeoutMs,
       });
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, options.storeFormat);
+      writeStoreFormatSidecar(options as WritableStoreOptions);
       return db;
     }
 
-    throw storeSchemaOutdatedError(options.path, classification);
+    throw storeSchemaOutdatedError(options.path, classification, options.storeFormat.fingerprint);
   } catch (error) {
     db.close();
     throw error;
@@ -294,6 +254,7 @@ export type BackendStoreResetAuthority = Readonly<{
   bundleHash: string;
   flavor: Runtime['flavor'];
   namespace: string;
+  storeFormatFingerprint: StoreFormatFingerprint;
   acquiredViaHandoff: boolean;
   issuedAt: number;
   [BACKEND_STORE_RESET_AUTHORITY_BRAND]: true;
@@ -302,6 +263,7 @@ export type BackendStoreResetAuthority = Readonly<{
 type BackendStorePathOptions = {
   readonly path?: string;
   readonly busyTimeoutMs?: number;
+  readonly storeFormat: StoreFormatDescription;
 };
 
 type BackendStoreIdentityOptions = {
@@ -322,6 +284,7 @@ type StoreFileSet = {
   readonly dbFile: string;
   readonly walFile: string;
   readonly shmFile: string;
+  readonly formatFile: string;
 };
 
 type StoreResetQuarantineFile = {
@@ -337,10 +300,9 @@ type StoreResetQuarantineManifest = {
   readonly schemaVersion: 1;
   readonly resetAt: string;
   readonly pid: number;
-  readonly reason: StoreSchemaClassification['kind'];
-  readonly userVersion: number;
-  readonly storedVersion: number;
-  readonly expectedVersion: number;
+  readonly reason: Exclude<StoreFormatClassification['kind'], 'fresh' | 'current'>;
+  readonly storedFingerprint: string | null;
+  readonly expectedFingerprint: StoreFormatFingerprint;
   readonly dbFile: string;
   readonly quarantineDir: string;
   readonly files: StoreResetQuarantineFile[];
@@ -350,14 +312,14 @@ const STORE_RESET_QUARANTINE_MANIFEST = 'reset-manifest.json';
 const QUARANTINE_RENAME_BACKOFF_MS = [0, 10, 25, 50, 100] as const;
 const quarantineRenameWaitState = new Int32Array(new SharedArrayBuffer(4));
 
-function resolveStoreDbPath(runtime: Pick<Runtime, 'paths'>, options: BackendStorePathOptions = {}): string {
+function resolveStoreDbPath(runtime: Pick<Runtime, 'paths'>, options: BackendStorePathOptions): string {
   if (options.path === ':memory:') {
     return ':memory:';
   }
   return resolve(options.path ?? runtime.paths.coral.store.dbFile);
 }
 
-function resolveStoreFileSet(runtime: Pick<Runtime, 'paths'>, options: BackendStorePathOptions = {}): StoreFileSet {
+function resolveStoreFileSet(runtime: Pick<Runtime, 'paths'>, options: BackendStorePathOptions): StoreFileSet {
   if (options.path === undefined) {
     const store = runtime.paths.coral.store;
     return {
@@ -365,6 +327,7 @@ function resolveStoreFileSet(runtime: Pick<Runtime, 'paths'>, options: BackendSt
       dbFile: store.dbFile,
       walFile: store.walFile,
       shmFile: store.shmFile,
+      formatFile: `${store.dbFile}${STORE_FORMAT_SIDECAR_SUFFIX}`,
     };
   }
 
@@ -374,6 +337,7 @@ function resolveStoreFileSet(runtime: Pick<Runtime, 'paths'>, options: BackendSt
     dbFile,
     walFile: `${dbFile}-wal`,
     shmFile: `${dbFile}-shm`,
+    formatFile: `${dbFile}${STORE_FORMAT_SIDECAR_SUFFIX}`,
   };
 }
 
@@ -388,6 +352,7 @@ export function createBackendStoreResetAuthority(
     bundleHash: options.bundleHash,
     flavor: runtime.flavor,
     namespace: options.namespace,
+    storeFormatFingerprint: options.storeFormat.fingerprint,
     acquiredViaHandoff: handoff.acquiredViaHandoff,
     issuedAt: runtime.time.now(),
     [BACKEND_STORE_RESET_AUTHORITY_BRAND]: true,
@@ -408,6 +373,7 @@ function assertResetAuthority(
     bundleHash: expectedBundleHash,
     flavor: runtime.flavor,
     namespace: expectedNamespace,
+    storeFormatFingerprint: options.storeFormat.fingerprint,
   };
 
   const mismatches: string[] = [];
@@ -426,6 +392,9 @@ function assertResetAuthority(
   if (authority.namespace !== expected.namespace) {
     mismatches.push('namespace');
   }
+  if (authority.storeFormatFingerprint !== expected.storeFormatFingerprint) {
+    mismatches.push('storeFormatFingerprint');
+  }
 
   if (mismatches.length > 0) {
     throw documentedCoralSetupError({
@@ -439,6 +408,7 @@ function assertResetAuthority(
         bundleHash: authority.bundleHash,
         flavor: authority.flavor,
         namespace: authority.namespace,
+        storeFormatFingerprint: authority.storeFormatFingerprint,
         acquiredViaHandoff: authority.acquiredViaHandoff,
         issuedAt: authority.issuedAt,
       },
@@ -446,13 +416,23 @@ function assertResetAuthority(
   }
 }
 
-function warnBackendStoreReset(classification: StoreSchemaClassification, quarantineDir: string | undefined): void {
+function storedFingerprint(
+  classification: Exclude<StoreFormatClassification, { kind: 'fresh' | 'current' }>,
+): string | null {
+  return classification.kind === 'missing' ? null : classification.stored;
+}
+
+function warnBackendStoreReset(
+  classification: Exclude<StoreFormatClassification, { kind: 'fresh' | 'current' }>,
+  quarantineDir: string | undefined,
+): void {
   backendLog.warn(
-    `Backend store schema mismatch (stored marker ${classification.storedVersion}, expected ${EXPECTED_SCHEMA_MARKER}); ` +
+    `Backend store format mismatch (stored fingerprint ${storedFingerprint(classification) ?? 'missing'}, ` +
+      `expected ${classification.current}); ` +
       'resetting backend store. ' +
       (quarantineDir === undefined ? '' : `Previous store files were quarantined at ${quarantineDir}. `) +
-      'In-flight job, discuss, and workflow state will be ' +
-      'lost (KB markdown corpus is unaffected).',
+      'All Coral job, discussion, and workflow history/state will be unavailable in the new store ' +
+      '(KB markdown corpus is unaffected). Recover old Journal data only from the quarantine copy.',
   );
 }
 
@@ -533,13 +513,14 @@ function renameStoreFileForQuarantine(storage: StoragePort, source: string, dest
 function quarantineStoreFiles(
   storage: StoragePort,
   files: StoreFileSet,
-  classification: StoreSchemaClassification,
+  classification: Exclude<StoreFormatClassification, { kind: 'fresh' | 'current' }>,
   identity: { nowMs: number; pid: number },
 ): string | undefined {
   const candidates = [
     { source: files.dbFile, name: basename(files.dbFile) },
     { source: files.walFile, name: basename(files.walFile) },
     { source: files.shmFile, name: basename(files.shmFile) },
+    { source: files.formatFile, name: basename(files.formatFile) },
   ].filter((entry) => storage.existsSync(entry.source));
 
   if (candidates.length === 0) {
@@ -551,7 +532,7 @@ function quarantineStoreFiles(
   const quarantineDir = join(
     files.dbDir,
     'store-reset-quarantine',
-    `${stamp}-pid-${identity.pid}-stored-${classification.storedVersion}-expected-${EXPECTED_SCHEMA_MARKER}`,
+    `${stamp}-pid-${identity.pid}-format-${classification.kind}`,
   );
 
   try {
@@ -567,9 +548,8 @@ function quarantineStoreFiles(
       resetAt,
       pid: identity.pid,
       reason: classification.kind,
-      userVersion: classification.userVersion,
-      storedVersion: classification.storedVersion,
-      expectedVersion: EXPECTED_SCHEMA_MARKER,
+      storedFingerprint: storedFingerprint(classification),
+      expectedFingerprint: classification.current,
       dbFile: files.dbFile,
       quarantineDir,
       files: manifestFiles,
@@ -580,9 +560,8 @@ function quarantineStoreFiles(
         resetAt,
         pid: identity.pid,
         reason: classification.kind,
-        userVersion: classification.userVersion,
-        storedVersion: classification.storedVersion,
-        expectedVersion: EXPECTED_SCHEMA_MARKER,
+        storedFingerprint: storedFingerprint(classification),
+        expectedFingerprint: classification.current,
         dbFile: files.dbFile,
         quarantineDir,
         fileCount: manifestFiles.length,
@@ -602,16 +581,20 @@ function quarantineStoreFiles(
   return quarantineDir;
 }
 
-function classifyStoreFile(path: string, storage: Pick<StoragePort, 'existsSync'>): StoreSchemaClassification {
+function classifyStoreFile(
+  path: string,
+  storage: Pick<StoragePort, 'existsSync'>,
+  storeFormat: StoreFormatDescription,
+): StoreFormatClassification {
   // Fresh case: file doesn't exist. Skip the open entirely — opening
   // readonly would error, and opening writable would create the file as a
   // side effect of classification.
   if (path !== ':memory:' && !storage.existsSync(path)) {
-    return { kind: 'fresh', userVersion: 0, storedVersion: 0 };
+    return { kind: 'fresh' };
   }
   const db = new DatabaseSync(path, { readOnly: true }) as unknown as Database;
   try {
-    return classifyStoreSchema(db);
+    return classifyStoreFormat(db, storeFormat.fingerprint);
   } finally {
     db.close();
   }
@@ -620,7 +603,7 @@ function classifyStoreFile(path: string, storage: Pick<StoragePort, 'existsSync'
 export function openOrResetBackendStoreDb(
   runtime: Pick<Runtime, 'env' | 'flavor' | 'paths' | 'storage' | 'time'>,
   authority: BackendStoreResetAuthority,
-  options: OpenOrResetBackendStoreOptions = {},
+  options: OpenOrResetBackendStoreOptions,
 ): Database {
   const files = resolveStoreFileSet(runtime, options);
   const startupBusyTimeoutMs = options.startupBusyTimeoutMs ?? options.busyTimeoutMs;
@@ -648,8 +631,8 @@ export function openOrResetBackendStoreDb(
       throw error;
     }
 
-    const classification = classifyStoreFile(files.dbFile, runtime.storage);
-    if (classification.kind === 'retired' || classification.kind === 'mismatch') {
+    const classification = classifyStoreFile(files.dbFile, runtime.storage, options.storeFormat);
+    if (classification.kind === 'missing' || classification.kind === 'mismatch') {
       const quarantineDir = quarantineStoreFiles(runtime.storage, files, classification, {
         nowMs: runtime.time.now(),
         pid: runtime.env.pid(),
@@ -660,10 +643,11 @@ export function openOrResetBackendStoreDb(
     const db = openStoreDatabase({
       path: files.dbFile,
       storage: runtime.storage,
+      storeFormat: options.storeFormat,
       busyTimeoutMs: startupBusyTimeoutMs,
     });
-    // Startup and steady-state contention are separate budgets. Keep the legacy
-    // busyTimeoutMs option as a startup alias, then restore the long-lived
+    // Startup and steady-state contention are separate budgets. The general
+    // busyTimeoutMs option supplies the startup budget, then the long-lived
     // handle to its steady-state budget after the reset window closes.
     db.exec(`PRAGMA busy_timeout = ${steadyStateBusyTimeoutMs}`);
     return db;
@@ -674,13 +658,14 @@ export function openOrResetBackendStoreDb(
 
 export function openWritableStoreDbNoReset(
   runtime: Pick<Runtime, 'paths' | 'storage'>,
-  options: BackendStorePathOptions = {},
+  options: BackendStorePathOptions,
 ): Database {
   const storeDbPath = resolveStoreDbPath(runtime, options);
   if (storeDbPath === ':memory:') {
     return openStoreDatabase({
       path: ':memory:',
       storage: runtime.storage,
+      storeFormat: options.storeFormat,
       busyTimeoutMs: options.busyTimeoutMs,
     });
   }
@@ -689,6 +674,7 @@ export function openWritableStoreDbNoReset(
   return openStoreDatabase({
     path: storeDbPath,
     storage: runtime.storage,
+    storeFormat: options.storeFormat,
     busyTimeoutMs: options.busyTimeoutMs,
   });
 }

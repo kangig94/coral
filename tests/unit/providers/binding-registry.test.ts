@@ -13,7 +13,7 @@ import {
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
-import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 
 const CLAUDE_BINDING_ENVELOPE = {
   provider: 'claude',
@@ -34,6 +34,97 @@ function successfulBinding(result: ProviderBindingResult<BoundProvider>): BoundP
 }
 
 describe('provider binding registry boundary', () => {
+  it('retains each built-in provider continuity decoder on the bound authority', () => {
+    const registry = createBuiltInProviderRegistry();
+    const claude = successfulBinding(registry.rehydrateBinding(CLAUDE_BINDING_ENVELOPE));
+    const codex = successfulBinding(registry.rehydrateBinding(TEST_CODEX_BINDING));
+
+    expect(claude.decodeContinuity(null)).toEqual({ ok: true, value: undefined });
+    expect(claude.decodeContinuity({ brokerSessionKey: 'broker-1', brokerTurnId: 'turn-1' })).toEqual({
+      ok: true,
+      value: { brokerSessionKey: 'broker-1', brokerTurnId: 'turn-1' },
+    });
+    expect(claude.decodeContinuity({})).toEqual({
+      ok: false,
+      failure: { reason: 'invalid-persisted-binding', provider: 'claude' },
+    });
+    expect(codex.decodeContinuity({ threadId: 'thread-1' })).toEqual({
+      ok: true,
+      value: { threadId: 'thread-1' },
+    });
+    expect(codex.decodeContinuity({ threadId: 'thread-1', attacker: true })).toEqual({
+      ok: false,
+      failure: { reason: 'invalid-persisted-binding', provider: 'codex' },
+    });
+  });
+
+  it('rejects provider-produced recovery continuity before it reaches durable state', async () => {
+    const codec = {
+      ...fixtureProviderBindingCodec('strict-recovery'),
+      persistedContinuity: zodPersistedParser(() => z.object({ token: z.string().min(1) }).strict()),
+    };
+    const registry = new ProviderRegistry();
+    registry.register(
+      defineProvider({
+        name: 'strict-recovery',
+        transport: 'standalone',
+        run: async function* () {},
+        prepareExecutionPlan: () => ({
+          plan: { host: undefined, session: undefined, turn: undefined },
+          prepareCliRequest: (request) => request,
+        }),
+        recovery: {
+          finalizeInterrupted: () => ({ kind: 'preserve', providerContinuity: { unknown: true } }) as never,
+          finalizeFromArtifacts: async () =>
+            ({
+              terminal: {
+                kind: 'terminal',
+                terminal: { content: '', durationMs: 0, outcome: { kind: 'completed' } },
+                diagnostics: {},
+              },
+              continuity: {
+                conversationRef: null,
+                resumable: false,
+                providerContinuity: { unknown: true },
+              },
+            }) as never,
+        },
+      })
+        .binding(codec)
+        .artifacts(none('fixture'))
+        .build(),
+    );
+    const provider = successfulBinding(
+      registry.rehydrateBinding({
+        provider: 'strict-recovery',
+        kind: 'profile',
+        binding: {
+          profile: { canonicalLocation: '/strict-recovery', routing: {} },
+          guarantee: 'profile-only',
+        },
+      }),
+    );
+
+    expect(() => provider.recovery?.finalizeInterrupted({ resumable: false }, undefined, {})).toThrow(
+      'invalid recovery continuity mutation',
+    );
+    await expect(
+      provider.recovery?.finalizeFromArtifacts({
+        stdoutPath: '/tmp/stdout',
+        stderrPath: '/tmp/stderr',
+        exitCode: 0,
+        signal: null,
+        durationMs: 0,
+        storage: {
+          readFileSync: () => '',
+          existsSync: () => false,
+          readdirSync: () => [],
+          statSync: () => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true }),
+        } as never,
+      }),
+    ).rejects.toThrow('invalid artifact recovery continuity');
+  });
+
   it('rehydrates a provider-private binding without exposing its typed value', () => {
     const registry = createBuiltInProviderRegistry();
 
@@ -43,7 +134,7 @@ describe('provider binding registry boundary', () => {
     expect(binding.present()).toBe('Claude credential profile');
     expect(binding.present()).not.toContain('/accounts/claude-a');
     expect(Object.isFrozen(binding)).toBe(true);
-    expect(binding).not.toHaveProperty('credentialSource');
+    expect(binding).not.toHaveProperty('access');
     const execution = binding.prepareExecution({
       request: {
         action: 'exec',
@@ -62,7 +153,7 @@ describe('provider binding registry boundary', () => {
     expect(binding.compareIdentity(binding.envelope)).toEqual({ ok: true, value: true });
     expectTypeOf(binding).not.toHaveProperty('profile');
     expectTypeOf(binding).not.toHaveProperty('subject');
-    expectTypeOf(binding).not.toHaveProperty('credentialSource');
+    expectTypeOf(binding).not.toHaveProperty('access');
   });
 
   it('rejects unknown providers, foreign payloads, and mismatched binding kinds', () => {
@@ -181,12 +272,16 @@ describe('provider binding registry boundary', () => {
     });
   });
 
-  it('exports one stable persisted component per provider plus the envelope', () => {
+  it('exports every provider-private persisted component plus the envelope', () => {
     const registry = createBuiltInProviderRegistry();
-    expect(registry.sealPersistedBindingCodecComponents().map((entry) => entry.name)).toEqual([
+    expect(registry.sealPersistedCodecComponents().map((entry) => entry.name)).toEqual([
       'provider.binding-envelope',
+      'provider.codex.profile',
       'provider.codex.binding',
+      'provider.codex.continuity',
+      'provider.claude.profile',
       'provider.claude.binding',
+      'provider.claude.continuity',
     ]);
   });
 
@@ -204,7 +299,8 @@ describe('provider binding registry boundary', () => {
     type Subject = z.infer<ReturnType<typeof createSubjectSchema>>;
     const codec: ProviderBindingCodec<Selection, Profile, Subject> = {
       parseSelection: zodValueParser(createSelectionSchema),
-      parseProfile: zodValueParser(createProfileSchema),
+      persistedProfile: zodPersistedParser(createProfileSchema),
+      persistedContinuity: zodPersistedParser(() => z.record(z.string(), z.unknown())),
       persistedBinding: zodPersistedParser(createBindingSchema),
       bindingKind: 'account',
       captureSelection: () => bindingSuccess({ account: 'fixture' }),
@@ -222,7 +318,7 @@ describe('provider binding registry boundary', () => {
       async readiness(_binding, use) {
         return bindingSuccess({ ready: true, use });
       },
-      credentialSource: (binding) => ({
+      access: (binding) => ({
         version: 1,
         provider: 'codex',
         kind: 'home',
@@ -275,7 +371,7 @@ describe('provider binding registry boundary', () => {
       ok: false,
       failure: { reason: 'invalid-persisted-binding', provider: 'account-fixture' },
     });
-    expect(registry.sealPersistedBindingCodecComponents().map((entry) => entry.name)).toContain(
+    expect(registry.sealPersistedCodecComponents().map((entry) => entry.name)).toContain(
       'provider.account-fixture.binding',
     );
   });

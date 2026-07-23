@@ -44,7 +44,6 @@ const REQUEST: ProviderRequest = {
 };
 
 const DIAGNOSTIC = {
-  schemaVersion: 1,
   reason: 'silent-hang',
   phase: 'registered',
   idleMs: 90_000,

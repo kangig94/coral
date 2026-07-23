@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { TEST_CODEX_SOURCE } from '../../../helpers/provider-credentials.js';
+import { TEST_CODEX_ACCESS } from '../../../helpers/provider-credentials.js';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
 import { codexAppServerLifecycle, codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
@@ -113,7 +113,6 @@ describe('codexAppServerLifecycle.probe', () => {
       cwd: '/workspace/project/subdir',
       threadId: 'thread-1',
       turnId: 'turn-1',
-      attacker: 'drop-me',
     };
     const rpc = vi.fn(async () => ({ thread: { id: 'thread-1' } }));
 
@@ -234,7 +233,7 @@ describe('codexArtifactCapability', () => {
     await expect(
       codexArtifactCapability.discardArtifacts({
         handles: ['/tmp/one.jsonl', '/tmp/two.jsonl'],
-        source: TEST_CODEX_SOURCE,
+        access: TEST_CODEX_ACCESS,
         runtime,
       }),
     ).resolves.toEqual({ kind: 'discarded' });
@@ -256,12 +255,12 @@ describe('codexArtifactCapability', () => {
     } as unknown as ArtifactCleanupRuntime;
 
     expect(
-      codexArtifactCapability.locateArtifact?.({ conversationRef: 'thread-1', source: TEST_CODEX_SOURCE, runtime }),
+      codexArtifactCapability.locateArtifact?.({ conversationRef: 'thread-1', access: TEST_CODEX_ACCESS, runtime }),
     ).toBe(`${day}/rollout-2026-05-04T00-00-00-thread-1.jsonl`);
     expect(
       codexArtifactCapability.locateArtifact?.({
         conversationRef: 'missing-thread',
-        source: TEST_CODEX_SOURCE,
+        access: TEST_CODEX_ACCESS,
         runtime,
       }),
     ).toBeNull();

@@ -483,7 +483,6 @@ export const persistedDiscussRuntimeSchema: z.ZodType<PersistedDiscussRuntime> =
   .strict();
 
 export interface PersistedDiscussSnapshot {
-  schemaVersion: 3;
   providerScope: ProviderScope;
   sessionId: string;
   projectRoot: string;

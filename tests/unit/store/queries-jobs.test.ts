@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,12 +20,13 @@ describe('jobs queries', () => {
 
   beforeEach(() => {
     db = newRawDatabase(':memory:');
-    applyBundledStoreSchema(db);
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
 
     const reducers = composeReducers(jobsRegistry);
     const bodyCodec = createEventBodyCodec();
     readCtx = {
       schemas: reducers.schemas,
+      streamKinds: reducers.streamKinds,
       bodyCodec,
     };
 
@@ -47,7 +49,6 @@ describe('jobs queries', () => {
         type: 'job.launch.requested',
         stream: { kind: 'job', id: 'job-completed' },
         refs: { sessionId: 'session-completed' },
-        bodyVersion: 1,
         body: {
           owner: { kind: 'provider-session', id: 'session-completed' },
           sessionId: 'session-completed',
@@ -80,7 +81,6 @@ describe('jobs queries', () => {
         type: 'job.runtime.started',
         stream: { kind: 'job', id: 'job-completed' },
         refs: { sessionId: 'session-completed' },
-        bodyVersion: 1,
         body: {
           transport: 'app-server',
           startedAt: '2026-04-20T00:00:05.000Z',
@@ -100,7 +100,6 @@ describe('jobs queries', () => {
         type: 'job.terminal.recorded',
         stream: { kind: 'job', id: 'job-completed' },
         refs: { sessionId: 'session-completed' },
-        bodyVersion: 1,
         body: {
           terminal: {
             outcome: { kind: 'completed' },
@@ -121,7 +120,6 @@ describe('jobs queries', () => {
         type: 'job.launch.requested',
         stream: { kind: 'job', id: 'job-rejected' },
         refs: { sessionId: 'session-rejected' },
-        bodyVersion: 1,
         body: {
           owner: { kind: 'provider-session', id: 'session-rejected' },
           sessionId: 'session-rejected',
@@ -145,7 +143,6 @@ describe('jobs queries', () => {
         type: 'job.launch.rejected',
         stream: { kind: 'job', id: 'job-rejected' },
         refs: { sessionId: 'session-rejected' },
-        bodyVersion: 1,
         body: {
           reason: 'busy',
           message: 'Provider queue is full.',
@@ -158,7 +155,6 @@ describe('jobs queries', () => {
         type: 'job.launch.requested',
         stream: { kind: 'job', id: 'job-queued' },
         refs: { sessionId: 'session-queued' },
-        bodyVersion: 1,
         body: {
           owner: { kind: 'provider-session', id: 'session-queued' },
           sessionId: 'session-queued',
@@ -182,7 +178,6 @@ describe('jobs queries', () => {
         type: 'job.queue.queued',
         stream: { kind: 'job', id: 'job-queued' },
         refs: { sessionId: 'session-queued' },
-        bodyVersion: 1,
         body: {
           queuePosition: 1,
           runningJobIds: ['job-completed'],
@@ -192,7 +187,6 @@ describe('jobs queries', () => {
         type: 'job.launch.requested',
         stream: { kind: 'job', id: 'job-kb-global' },
         refs: {},
-        bodyVersion: 1,
         body: {
           owner: { kind: 'system-task', id: 'kb.reindex:job-kb-global' },
           projectRoot: '/workspace/other-project',
@@ -210,7 +204,6 @@ describe('jobs queries', () => {
         type: 'job.launch.requested',
         stream: { kind: 'job', id: 'job-other-project' },
         refs: { sessionId: 'session-other' },
-        bodyVersion: 1,
         body: {
           owner: { kind: 'provider-session', id: 'session-other' },
           sessionId: 'session-other',
@@ -304,7 +297,7 @@ describe('jobs queries', () => {
     expect(prepareCallCount).toBeLessThanOrEqual(4);
   });
 
-  it('pushes list filters into the projection query', () => {
+  it('decodes complete projection rows before applying list filters', () => {
     const prepareSpy = vi.spyOn(db, 'prepare');
 
     const jobs = listJobs(
@@ -324,11 +317,9 @@ describe('jobs queries', () => {
       .map(([sql]) => sql)
       .find((sql) => sql.includes('FROM projection_jobs'));
 
-    expect(projectionQuery).toContain('backend_namespace = ?');
-    expect(projectionQuery).toContain('phase IN (?, ?, ?)');
-    expect(projectionQuery).toContain("(project_root = ? OR job_kind = 'kb')");
-    expect(projectionQuery).toContain('phase = ?');
-    expect(projectionQuery).toContain('provider = ?');
+    expect(projectionQuery).not.toContain('WHERE');
+    expect(projectionQuery).toContain('execution_owner');
+    expect(projectionQuery).toContain('workflow_slot_generation');
   });
 
   it('keeps KB jobs visible from any project while scoping other projects out', () => {

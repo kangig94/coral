@@ -2,7 +2,6 @@ import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal, JobTerminalI
 import type { JobPhase } from '../phase.js';
 import type { TerminalWriteOptions } from '../contracts/job-store.js';
 import type { ProviderArtifactIdentity } from '../../providers/artifact-identity.js';
-import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type { LaunchPool } from '../contracts/admission.js';
 import type { BoundProvider } from '../../providers/bound-provider-contract.js';
@@ -73,6 +72,6 @@ export interface RecoveryCapableService {
     sessionId: string,
     result: JobTerminalInput,
     phase: JobPhase,
-    options: TerminalWriteOptions & { pool: LaunchPool; sessionContinuity?: ContinuitySnapshot | null },
+    options: TerminalWriteOptions & { pool: LaunchPool },
   ): void;
 }

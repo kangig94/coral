@@ -19,7 +19,7 @@ import { defineProvider } from '#src/providers/registry.js';
 import { managed, none } from '#src/providers/capability.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
-import { fixtureProviderBindingCodec, type FixtureProviderSource } from '#tests/helpers/provider-binding.js';
+import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import {
@@ -99,7 +99,7 @@ function createHarness(
   const providerRegistry = new ProviderRegistry();
   const discardCalls: Array<readonly string[]> = [];
   const providerBuilder = options.interruptedRecovery
-    ? defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
+    ? defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
         name: 'codex',
         transport: 'app-server',
         run: noopProvider,
@@ -129,7 +129,7 @@ function createHarness(
           },
         },
       })
-    : defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
+    : defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
         name: 'codex',
         transport: 'standalone',
         run: noopProvider,
@@ -177,7 +177,7 @@ function createHarness(
   };
   const reactor = createLifecycleReactor({
     db: () => db,
-    readCtx: { schemas: reducers.schemas, bodyCodec },
+    readCtx: { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec },
     providers: providerRegistry,
     runtime,
     time: runtime.time,
@@ -286,7 +286,6 @@ function appendContinuationLeaseRecord(
       type: 'session.continuation_lease.recorded',
       stream: { kind: 'session', id: entry.sessionId },
       refs: { sessionId: entry.sessionId, jobId: staleJobId },
-      bodyVersion: 1,
       body: {
         entry: nextEntry,
         sessionId: entry.sessionId,
@@ -736,7 +735,7 @@ describe('LifecycleReactor retention enforcement', () => {
 
   it('ignores synthetic releases that have no matching terminal for the same job', async () => {
     const harness = createHarness();
-    const sourceClaimId = 'synthetic-source-claim';
+    const sourceClaimId = 'synthetic-access-claim';
     const sessionId = await openClaimedSession(harness, sourceClaimId);
 
     harness.sessionManager.releaseJob(sessionId, sourceClaimId);
@@ -793,7 +792,11 @@ describe('LifecycleReactor retention enforcement', () => {
     });
     const jobId = 'job-locate-fallback';
     const sessionId = await openClaimedSession(harness, jobId);
-    harness.sessionManager.setConversationRef(sessionId, 'thread-fallback');
+    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
+      conversationRef: 'thread-fallback',
+      resumable: true,
+      providerContinuity: { threadId: 'thread-fallback' },
+    });
     initRunningJob(harness, jobId, sessionId);
 
     completeJob(harness, jobId, sessionId);
@@ -819,7 +822,11 @@ describe('LifecycleReactor retention enforcement', () => {
     const harness = createHarness({ locateArtifact: () => null });
     const jobId = 'job-locate-miss';
     const sessionId = await openClaimedSession(harness, jobId);
-    harness.sessionManager.setConversationRef(sessionId, 'thread-missing');
+    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
+      conversationRef: 'thread-missing',
+      resumable: true,
+      providerContinuity: { threadId: 'thread-missing' },
+    });
     initRunningJob(harness, jobId, sessionId);
 
     completeJob(harness, jobId, sessionId);
@@ -842,7 +849,11 @@ describe('LifecycleReactor retention enforcement', () => {
     const harness = createHarness({ locateArtifact: locateSpy });
     const jobId = 'job-handle-precedence';
     const sessionId = await openClaimedSession(harness, jobId);
-    harness.sessionManager.setConversationRef(sessionId, 'thread-precedence');
+    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
+      conversationRef: 'thread-precedence',
+      resumable: true,
+      providerContinuity: { threadId: 'thread-precedence' },
+    });
     await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-recorded.jsonl');
     initRunningJob(harness, jobId, sessionId);
 
@@ -880,7 +891,11 @@ describe('LifecycleReactor retention enforcement', () => {
     });
     const jobId = 'job-ondemand-locate';
     const sessionId = await openClaimedSession(harness, jobId, 'retain');
-    harness.sessionManager.setConversationRef(sessionId, 'thread-ondemand');
+    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
+      conversationRef: 'thread-ondemand',
+      resumable: true,
+      providerContinuity: { threadId: 'thread-ondemand' },
+    });
 
     await harness.reactor.discardSessionArtifacts(sessionId);
 
@@ -1185,7 +1200,11 @@ describe('LifecycleReactor retention enforcement', () => {
     const harness = createHarness({ interruptedRecovery: true });
     const jobId = 'job-finalize-interrupted';
     const sessionId = await openClaimedSession(harness, jobId);
-    harness.sessionManager.setConversationRef(sessionId, 'thread-finalize-interrupted');
+    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
+      conversationRef: 'thread-finalize-interrupted',
+      resumable: true,
+      providerContinuity: { threadId: 'thread-finalize-interrupted' },
+    });
     initRunningJob(harness, jobId, sessionId);
 
     const launchRecord: JobLaunch = {
@@ -1285,4 +1304,4 @@ describe('LifecycleReactor retention enforcement', () => {
     ]);
   });
 });
-import { initTestJob } from '#tests/helpers/session.js';
+import { checkpointClaimedTestContinuity, initTestJob } from '#tests/helpers/session.js';

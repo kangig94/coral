@@ -469,8 +469,7 @@ const validateWorkflowPlanDeclaredOnce: DomainAppendValidator = (ctx, inputs) =>
       .prepare(
         `SELECT seq
            FROM events
-          WHERE stream_kind = 'workflow'
-            AND stream_id = ?
+          WHERE stream_id = ?
             AND type = 'workflow.plan.declared'
           LIMIT 1`,
       )
@@ -515,8 +514,7 @@ const validateWorkflowCompletedOnce: DomainAppendValidator = (ctx, inputs) => {
       .prepare(
         `SELECT seq
            FROM events
-          WHERE stream_kind = 'workflow'
-            AND stream_id = ?
+          WHERE stream_id = ?
             AND type = 'workflow.completed'
           LIMIT 1`,
       )
@@ -571,29 +569,33 @@ export const workflowRegistry: DomainEventRegistry = {
       type: 'workflow.plan.declared',
       schema: workflowDeclaredBodySchema,
       reducer: (db, event) => upsertProjectionWorkflow(db, event, event.body),
+      materializerContract: 'projection_workflows:initialize-declared-plan-and-scope',
     }),
     defineDomainEvent({
       type: 'workflow.drain.entered',
       schema: workflowDrainEnteredBodySchema,
       reducer: (db, event) => upsertProjectionWorkflow(db, event),
+      materializerContract: 'projection_workflows:apply-draining-lifecycle',
     }),
     defineDomainEvent({
       type: 'workflow.completed',
       schema: workflowCompletedBodySchema,
       reducer: (db, event) => upsertProjectionWorkflow(db, event),
+      materializerContract: 'projection_workflows:apply-completed-lifecycle',
     }),
     defineDomainEvent({
       type: 'workflow.lifecycle_fault',
       schema: workflowLifecycleFaultBodySchema,
       reducer: (db, event) => upsertProjectionWorkflow(db, event),
+      materializerContract: 'projection_workflows:apply-faulted-lifecycle',
     }),
   ],
   appendValidators: [
-    validateWorkflowPlanDeclaredOnce,
-    validateWorkflowPlanValidity,
-    validateWorkflowCompletedOnce,
-    validateWorkflowLifecycle,
-    validateWorkflowJobAuthority,
+    { contract: 'workflow:plan-declared-once', validate: validateWorkflowPlanDeclaredOnce },
+    { contract: 'workflow:plan-structural-validity', validate: validateWorkflowPlanValidity },
+    { contract: 'workflow:completed-once', validate: validateWorkflowCompletedOnce },
+    { contract: 'workflow:lifecycle-transition-state-machine', validate: validateWorkflowLifecycle },
+    { contract: 'workflow:job-owner-slot-generation-authority', validate: validateWorkflowJobAuthority },
   ],
 };
 
@@ -606,7 +608,6 @@ export function workflowPlanDeclaredEvent(
     type: 'workflow.plan.declared',
     stream: { kind: 'workflow', id: workflowId },
     refs: { workflowId },
-    bodyVersion: 1,
     body: { plan, providerScope },
   };
 }
@@ -619,7 +620,6 @@ export function workflowDrainEnteredEvent(
     type: 'workflow.drain.entered',
     stream: { kind: 'workflow', id: workflowId },
     refs: { workflowId },
-    bodyVersion: 1,
     body,
   };
 }
@@ -640,7 +640,6 @@ export function workflowCompletedEvent<Scope>(
     type: 'workflow.completed',
     stream: { kind: 'workflow', id: workflowId },
     refs: { workflowId },
-    bodyVersion: 1,
     body,
   };
 }
@@ -653,7 +652,6 @@ export function workflowLifecycleFaultEvent(
     type: 'workflow.lifecycle_fault',
     stream: { kind: 'workflow', id: workflowId },
     refs: { workflowId },
-    bodyVersion: 1,
     body,
   };
 }

@@ -1,5 +1,6 @@
+import { z } from 'zod';
+
 import type { KbCurateActiveClaimRow } from '../../state/schema.js';
-import { parsePositiveInteger } from '../../validation.js';
 import { prepareCached, withImmediate, type Database } from '../../../store/db.js';
 import type { ReadonlyDatabase } from '../../../store/read-port.js';
 import { readCurateDiscoveryBacklog, syncCurateDiscoveryBacklog } from '../discovery-backlog.js';
@@ -20,6 +21,31 @@ import {
 import { readCurateSchedulerState, writeCurateSchedulerState } from '../state-scheduler.js';
 
 type ReadHandle = Database | ReadonlyDatabase;
+
+export const activeClaimRowSchema = z
+  .object({
+    id: z.literal(1),
+    through_seq: z.number().int().positive(),
+    through_entry_id: kbEntryIdSchema,
+    through_entry_kind: z.enum(['note', 'source']),
+    started_at: z.string(),
+  })
+  .strict()
+  .superRefine((row, ctx) => {
+    const expectedKind = row.through_entry_id.startsWith('note:')
+      ? 'note'
+      : row.through_entry_id.startsWith('source:')
+        ? 'source'
+        : undefined;
+    if (expectedKind !== row.through_entry_kind) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['through_entry_kind'],
+        message: 'must match the stored note or source entry ID',
+      });
+    }
+  })
+  .describe('active-claim-entry-kind-matches-entry-id');
 
 function comparePendingRepair(left: PendingRepair, right: PendingRepair): number {
   if (left.entrySeq === null || right.entrySeq === null) {
@@ -98,19 +124,16 @@ function readActiveClaim(db: ReadHandle): CurateState['activeClaim'] {
     return null;
   }
 
-  const throughEntryId = kbEntryIdSchema.parse(row.through_entry_id);
+  const parsed = activeClaimRowSchema.parse(row);
   const through = cursorFromEntryId(
-    cursorTimestampFromStorageSeq(parsePositiveInteger(row.through_seq, 'kb_curate_active_claim.through_seq')),
-    throughEntryId,
+    cursorTimestampFromStorageSeq(parsed.through_seq),
+    parsed.through_entry_id,
     'kb_curate_active_claim',
   );
-  if (cursorEntryKind(through) !== row.through_entry_kind) {
-    throw new Error('kb_curate_active_claim through_entry_kind must match the stored entry ID');
-  }
 
   return {
     through,
-    startedAt: row.started_at,
+    startedAt: parsed.started_at,
   };
 }
 

@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { allocateTestSession } from '../../helpers/session.js';
+import { allocateTestSession, seedTestProviderContinuity } from '../../helpers/session.js';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -45,7 +45,7 @@ import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
 import { registerBuiltInProviders } from '#src/providers/bootstrap.js';
-import { fixtureProviderBindingCodec, type FixtureProviderSource } from '#tests/helpers/provider-binding.js';
+import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
 import { none } from '#src/providers/capability.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -171,7 +171,7 @@ describe('coordinator continuity lifecycle integration', () => {
     const providerRegistry = new ProviderRegistry();
     for (const provider of providers) {
       providerRegistry.register(
-        defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
+        defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
           name: provider.name,
           transport: 'standalone',
           run: provider.run,
@@ -451,58 +451,9 @@ describe('coordinator continuity lifecycle integration', () => {
     });
   });
 
-  it('uses recovered continuity separately from terminal content and preserves persisted continuity when omitted', async () => {
+  it('preserves persisted continuity when generic recovered completion releases the job', async () => {
     const { service, progressStore } = createService([]);
     const { sessionManager } = getInternals(service);
-
-    const explicitSession = allocateTestSession(
-      sessionManager,
-      'codex',
-      'alpha',
-      'gpt-5',
-      ctx.projectRoot,
-      ctx.projectRoot,
-      TEST_BACKEND_NAMESPACE,
-    );
-    const explicitJobId = `recovered-${randomUUID()}`;
-    sessionManager.claimForJobSync(explicitSession.sessionId, explicitJobId);
-    progressStore.initJob({
-      jobId: explicitJobId,
-      sessionId: explicitSession.sessionId,
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      initialPhase: 'running',
-    });
-
-    const recoveredSnapshot = continuitySnapshot('thread-recovered', true, {
-      threadId: 'thread-recovered',
-      checkpoint: 'artifact',
-    });
-    service.completeRecoveredJob(
-      explicitJobId,
-      explicitSession.sessionId,
-      {
-        content: 'artifact completion',
-        durationMs: 0,
-        outcome: { kind: 'completed' },
-      },
-      'completed',
-      { pool: 'default', sessionContinuity: recoveredSnapshot },
-    );
-
-    // Recovery continuity flows to session state; terminal bodies never
-    // carry conversationRef / resumable. The session assertion below is the
-    // load-bearing check that recovered continuity is projected from
-    // journal-owned session state.
-    expect(sessionManager.get('codex', explicitSession.sessionId)).toMatchObject({
-      conversationRef: 'thread-recovered',
-      state: 'ready',
-      providerContinuity: {
-        threadId: 'thread-recovered',
-        checkpoint: 'artifact',
-      },
-    });
 
     const preservedSession = allocateTestSession(
       sessionManager,
@@ -513,9 +464,9 @@ describe('coordinator continuity lifecycle integration', () => {
       ctx.projectRoot,
       TEST_BACKEND_NAMESPACE,
     );
-    sessionManager.checkpointProviderContinuity(preservedSession.sessionId, {
+    await seedTestProviderContinuity(sessionManager, preservedSession.sessionId, {
       conversationRef: 'thread-kept',
-      providerContinuity: { threadId: 'thread-kept', preserved: true },
+      providerContinuity: { threadId: 'thread-kept' },
     });
     const preserveJobId = `recovered-${randomUUID()}`;
     sessionManager.claimForJobSync(preservedSession.sessionId, preserveJobId);
@@ -543,7 +494,7 @@ describe('coordinator continuity lifecycle integration', () => {
     expect(sessionManager.get('codex', preservedSession.sessionId)).toMatchObject({
       conversationRef: 'thread-kept',
       state: 'ready',
-      providerContinuity: { threadId: 'thread-kept', preserved: true },
+      providerContinuity: { threadId: 'thread-kept' },
     });
   });
 
@@ -574,8 +525,8 @@ describe('coordinator continuity lifecycle integration', () => {
     });
     expect(progressStore.loadJobProjectionDetail(directDecision.jobId).exit).not.toHaveProperty('continuity');
 
-    const source = runtime.paths.projectSource(ctx.projectRoot);
-    const store = new DiscussSessionStore(source, {
+    const access = runtime.paths.projectSource(ctx.projectRoot);
+    const store = new DiscussSessionStore(access, {
       journal: createProgressStoreDiscussJournal(runtime.paths.projectSource.bind(runtime.paths), progressStore),
     });
     const registry = createDiscussContextRegistry();

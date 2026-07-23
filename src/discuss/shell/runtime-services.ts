@@ -71,8 +71,10 @@ export function createDiscussRuntime({
   discussStores: Map<string, DiscussSessionStore>;
 } {
   const discussStores = new Map<string, DiscussSessionStore>();
+  const discussReducers = composeReducers(discussRegistry);
   const readCtx: StoreReadContext = {
-    schemas: composeReducers(discussRegistry).schemas,
+    schemas: discussReducers.schemas,
+    streamKinds: discussReducers.streamKinds,
     bodyCodec: createEventBodyCodec(),
   };
 

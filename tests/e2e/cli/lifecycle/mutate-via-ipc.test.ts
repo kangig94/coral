@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
@@ -68,6 +69,9 @@ rl.on('line', (line) => {
   switch (message.method) {
     case 'initialize':
       send({ id: message.id, result: {} });
+      break;
+    case 'config/read':
+      send({ id: message.id, result: { config: {} } });
       break;
     case 'thread/start':
       send({
@@ -258,11 +262,16 @@ describe('mutating commands via IPC', () => {
         throw result.error;
       }
 
-      expect(result.status, result.stderr).toBe(0);
+      if (result.status !== 0) {
+        throw new Error(
+          `coral-cli exited with status ${String(result.status)}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+        );
+      }
+
       expect(result.stderr).toBe('');
       expect(result.stdout).toContain('Thread ready (scripted-codex-session).');
 
-      const launchMatch = result.stdout.match(/^Job (\S+) (running|queued) \(session (\S+)\)$/m);
+      const launchMatch = result.stdout.match(/^Provider job (\S+) (running|queued) \(provider session (\S+)\)$/m);
       expect(launchMatch).not.toBeNull();
 
       const terminalMatch = result.stdout.match(/^Job (\S+) completed$/m);
@@ -280,6 +289,7 @@ describe('mutating commands via IPC', () => {
 
       const runtime = createRealRuntime('prod');
       const db = openStoreDatabase({
+        storeFormat: currentCoralStoreFormat(),
         path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
         storage: runtime.storage,
         readonly: true,

@@ -45,21 +45,21 @@ export type ProviderDefinition = {
 
 export type ProviderDefinitionInput<
   Plan extends ProviderExecutionPlan,
-  Source extends JsonValue,
-> = ProviderImplementation<Plan, Source>;
+  Access extends JsonValue,
+> = ProviderImplementation<Plan, Access>;
 
-export interface ProviderBindingBuilder<Source extends JsonValue> {
+export interface ProviderBindingBuilder<Access extends JsonValue> {
   binding<
     Selection extends JsonValue,
     Profile extends CredentialProfile & JsonValue,
     Subject extends AccountSubject & JsonValue = AccountSubject & JsonValue,
   >(
-    codec: ProviderBindingCodec<Selection, Profile, Subject, Source>,
-  ): ProviderArtifactBuilder<Source>;
+    codec: ProviderBindingCodec<Selection, Profile, Subject, Access>,
+  ): ProviderArtifactBuilder<Access>;
 }
 
-export interface ProviderArtifactBuilder<Source extends JsonValue> {
-  artifacts(capability: ProviderArtifactCapability<Source>): ProviderBuildBuilder;
+export interface ProviderArtifactBuilder<Access extends JsonValue> {
+  artifacts(capability: ProviderArtifactCapability<Access>): ProviderBuildBuilder;
 }
 
 interface ProviderBuildBuilder {
@@ -74,15 +74,15 @@ function registeredBindingBoundary(definition: ProviderDefinition): ErasedProvid
   return boundary;
 }
 
-export function defineProvider<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
-  spec: ProviderAppServerImplementation<Plan, Source>,
-): ProviderBindingBuilder<Source>;
-export function defineProvider<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
-  spec: ProviderStandaloneImplementation<Plan, Source>,
-): ProviderBindingBuilder<Source>;
-export function defineProvider<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
-  spec: ProviderDefinitionInput<Plan, Source>,
-): ProviderBindingBuilder<Source> {
+export function defineProvider<Plan extends ProviderExecutionPlan, Access extends JsonValue>(
+  spec: ProviderAppServerImplementation<Plan, Access>,
+): ProviderBindingBuilder<Access>;
+export function defineProvider<Plan extends ProviderExecutionPlan, Access extends JsonValue>(
+  spec: ProviderStandaloneImplementation<Plan, Access>,
+): ProviderBindingBuilder<Access>;
+export function defineProvider<Plan extends ProviderExecutionPlan, Access extends JsonValue>(
+  spec: ProviderDefinitionInput<Plan, Access>,
+): ProviderBindingBuilder<Access> {
   const definitionInput = snapshotImplementation(spec);
   if (
     definitionInput.transport === 'app-server' &&
@@ -367,7 +367,7 @@ export class ProviderRegistry implements ProviderCatalog {
     return registration.binding.selectorLabel(rawSelection);
   }
 
-  sealPersistedBindingCodecComponents(): readonly ProviderPersistedCodecComponent[] {
+  sealPersistedCodecComponents(): readonly ProviderPersistedCodecComponent[] {
     if (this.sealedComponents !== undefined) return this.sealedComponents;
     this.sealed = true;
     this.sealedComponents = Object.freeze([
@@ -378,12 +378,20 @@ export class ProviderRegistry implements ProviderCatalog {
           'Provider binding envelope persisted contract',
         ),
       }),
-      ...[...this.providers.entries()].map(([providerName, { binding }]) =>
+      ...[...this.providers.entries()].flatMap(([providerName, { binding }]) => [
+        Object.freeze({
+          name: `provider.${providerName}.profile`,
+          contract: binding.profileContract,
+        }),
         Object.freeze({
           name: `provider.${providerName}.binding`,
           contract: binding.bindingContract,
         }),
-      ),
+        Object.freeze({
+          name: `provider.${providerName}.continuity`,
+          contract: binding.continuityContract,
+        }),
+      ]),
     ]);
     return this.sealedComponents;
   }

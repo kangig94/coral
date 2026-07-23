@@ -6,6 +6,7 @@ import { openWritableStoreDbNoReset, type Database } from '../store/db.js';
 import { openReadOnlyStoreDatabase } from '../store/read-port.js';
 import { createDefaultStoreReadContext } from '../read-model/read-context.js';
 import { resolvePluginRoot } from './plugin-root.js';
+import { currentCoralStoreFormat } from '../store-format.js';
 
 export type ReadCoralStoreHandle = {
   store: CoralStore;
@@ -120,8 +121,13 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
     : undefined;
 
   const db = hasStore
-    ? (openReadOnlyStoreDatabase(runtime) as unknown as Database)
-    : openWritableStoreDbNoReset(runtime, { path: ':memory:' });
+    ? (openReadOnlyStoreDatabase(runtime, {
+        storeFormat: currentCoralStoreFormat(),
+      }) as unknown as Database)
+    : openWritableStoreDbNoReset(runtime, {
+        path: ':memory:',
+        storeFormat: currentCoralStoreFormat(),
+      });
 
   return {
     store: new CoralStore(db, createDefaultStoreReadContext(), {

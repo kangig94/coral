@@ -377,7 +377,6 @@ function seedTailJobLinks(
         namespace: harness.progressStore.getNamespace(),
         project: harness.projectRoot,
         refs: { jobId, sessionId },
-        bodyVersion: 1,
         body: { reason: 'busy', message: 'synthetic unavailable test job', provider, globalActive: 1, globalLimit: 1 },
         tsOverride: ts,
       },

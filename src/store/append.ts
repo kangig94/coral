@@ -333,7 +333,11 @@ export function commit(
     const validationCtx: DomainAppendValidationContext = {
       db,
       providers: ctx.providers,
-      readCtx: { schemas: ctx.reducers.schemas, bodyCodec: ctx.bodyCodec },
+      readCtx: {
+        schemas: ctx.reducers.schemas,
+        streamKinds: ctx.reducers.streamKinds,
+        bodyCodec: ctx.bodyCodec,
+      },
     };
 
     for (const validateAppend of ctx.reducers.appendValidators) {
@@ -352,13 +356,12 @@ export function commit(
         string | null,
         number | null,
         string | null,
-        number,
         Buffer,
       ],
       { seq: number }
     >(
-      `INSERT INTO events (seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body_version, body)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO events (seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING seq`,
     );
 
@@ -381,7 +384,6 @@ export function commit(
         input.correlationId ?? null,
         input.causationSeq ?? null,
         input.refs ? JSON.stringify(input.refs) : null,
-        input.bodyVersion,
         bodyBytes,
       );
 
@@ -399,7 +401,6 @@ export function commit(
         correlationId: input.correlationId,
         causationSeq: input.causationSeq,
         refs: input.refs,
-        bodyVersion: input.bodyVersion,
         body: parsedBody,
       };
 

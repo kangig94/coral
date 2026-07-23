@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,7 +27,7 @@ describe('discussion launch serialization across store connections', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-discuss-competing-launch-'));
     const dbPath = join(root, 'store.sqlite');
     const firstDb = newRawDatabase(dbPath);
-    applyBundledStoreSchema(firstDb);
+    applyBundledStoreSchema(firstDb, currentCoralStoreFormat());
     const secondDb = newRawDatabase(dbPath);
     const runtime = new SimulationRuntime();
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);

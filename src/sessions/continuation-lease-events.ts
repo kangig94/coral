@@ -23,7 +23,6 @@ export function sessionContinuationLeaseRecordedEvent(
     type: 'session.continuation_lease.recorded',
     stream: { kind: 'session', id: normalizedEntry.sessionId },
     refs: { sessionId: normalizedEntry.sessionId, jobId: lease.staleJobId },
-    bodyVersion: 1,
     body: {
       entry: normalizedEntry,
       sessionId: normalizedEntry.sessionId,
@@ -44,7 +43,6 @@ export function sessionContinuationLeaseClaimedEvent(
       sessionId: normalizedEntry.sessionId,
       jobId: lease.resumedJobId,
     },
-    bodyVersion: 1,
     body: {
       entry: normalizedEntry,
       sessionId: normalizedEntry.sessionId,
@@ -65,7 +63,6 @@ export function sessionContinuationLeaseClearedEvent(
       sessionId: normalizedEntry.sessionId,
       jobId: lease.clearedByJobId,
     },
-    bodyVersion: 1,
     body: {
       entry: normalizedEntry,
       sessionId: normalizedEntry.sessionId,
@@ -83,7 +80,6 @@ export function sessionContinuationLeaseExpiredEvent(
     type: 'session.continuation_lease.expired',
     stream: { kind: 'session', id: normalizedEntry.sessionId },
     refs: { sessionId: normalizedEntry.sessionId, jobId: lease.staleJobId },
-    bodyVersion: 1,
     body: {
       entry: normalizedEntry,
       sessionId: normalizedEntry.sessionId,

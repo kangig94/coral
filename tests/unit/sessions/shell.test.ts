@@ -1,5 +1,11 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { allocateTestSession } from '../../helpers/session.js';
+import {
+  allocateTestSession,
+  seedTestProviderContinuity,
+  validatedTestContinuityMutation,
+  validatedTestContinuitySnapshot,
+} from '../../helpers/session.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -39,6 +45,7 @@ function resolveScopeKey(projectRoot: string): string {
 
 function openSessionDb(): ReturnType<typeof openStoreDatabase> {
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: ':memory:',
     storage: runtime.storage,
   });
@@ -136,7 +143,7 @@ describe('sessions shell store', () => {
     });
   });
 
-  it('allocate appends session.opened and continuity checkpoints append to the journal', () => {
+  it('allocate appends session.opened and continuity checkpoints append to the journal', async () => {
     const { db, mgr, workDir } = setupWithJournal('journal-events');
     const entry = mgr.allocate({
       binding: TEST_CODEX_BINDING,
@@ -148,20 +155,27 @@ describe('sessions shell store', () => {
       controllerProfile: { owner: 'team-a' },
     });
 
-    mgr.setConversationRef(entry.sessionId, 'thread-1');
+    await seedTestProviderContinuity(mgr, entry.sessionId, {
+      conversationRef: 'thread-1',
+      providerContinuity: { threadId: 'thread-1' },
+    });
 
     try {
       const rows = db
         .prepare(
-          `SELECT type, body_version, body
+          `SELECT type, body
              FROM events
             WHERE stream_kind = 'session' AND stream_id = ?
             ORDER BY seq ASC`,
         )
-        .all(entry.sessionId) as Array<{ type: string; body_version: number; body: Uint8Array | Buffer }>;
+        .all(entry.sessionId) as Array<{ type: string; body: Uint8Array | Buffer }>;
 
-      expect(rows.map((row) => row.type)).toEqual(['session.opened', 'session.continuity.checkpointed']);
-      expect(rows[0]?.body_version).toBe(1);
+      expect(rows.map((row) => row.type)).toEqual([
+        'session.opened',
+        'session.claimed',
+        'session.continuity.checkpointed',
+        'session.claim.released',
+      ]);
       expect(JSON.parse(new TextDecoder().decode(rows[0].body))).toMatchObject({
         controller: 'team-a',
         entry: {
@@ -175,23 +189,23 @@ describe('sessions shell store', () => {
         },
         scope_key: resolveScopeKey(workDir),
       });
-      expect(JSON.parse(new TextDecoder().decode(rows[1].body))).toMatchObject({
+      expect(JSON.parse(new TextDecoder().decode(rows[2].body))).toMatchObject({
         entry: {
           sessionId: entry.sessionId,
           state: 'ready',
           conversationRef: 'thread-1',
-          version: 2,
+          version: 3,
         },
         snapshot: {
           conversationRef: 'thread-1',
           resumable: true,
-          providerContinuity: null,
+          providerContinuity: { threadId: 'thread-1' },
         },
       });
-      expect(JSON.parse(new TextDecoder().decode(rows[1].body)).snapshot).toEqual({
+      expect(JSON.parse(new TextDecoder().decode(rows[2].body)).snapshot).toEqual({
         conversationRef: 'thread-1',
         resumable: true,
-        providerContinuity: null,
+        providerContinuity: { threadId: 'thread-1' },
       });
     } finally {
       db.close();
@@ -387,65 +401,6 @@ describe('sessions shell store', () => {
     expect(mgr.get('claude', entry.sessionId)).toBeNull();
   });
 
-  it('setConversationRef transitions state to ready', () => {
-    const { mgr, workDir } = setup('conversation-ref');
-    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
-
-    mgr.setConversationRef(entry.sessionId, 'thread-1');
-
-    expect(mgr.get('codex', entry.sessionId)).toMatchObject({
-      sessionId: entry.sessionId,
-      state: 'ready',
-      conversationRef: 'thread-1',
-    });
-  });
-
-  it('setNonResumable transitions state to non_resumable', () => {
-    const { mgr, workDir } = setup('non-resumable');
-    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
-
-    mgr.setNonResumable(entry.sessionId);
-
-    expect(mgr.get('codex', entry.sessionId)?.state).toBe('non_resumable');
-  });
-
-  it('keeps the previous Journal-backed entry after append failure', () => {
-    const workDir = join(tmpHome, 'rollback-after-append-failure');
-    mkdirSync(workDir, { recursive: true });
-
-    const appendFailure = new Error('append failed');
-    let shouldThrow = false;
-    const mgr = new SessionManager(
-      workDir,
-      runtime,
-      () => {
-        if (shouldThrow) {
-          throw appendFailure;
-        }
-      },
-      undefined,
-      openSessionDb(),
-    );
-    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
-    const entryBeforeFailure = mgr.readById(entry.sessionId);
-
-    if (!entryBeforeFailure) {
-      throw new Error('Expected stored session before append failure');
-    }
-
-    shouldThrow = true;
-
-    expect(() =>
-      mgr.checkpoint(entry.sessionId, {
-        conversationRef: 'thread-rollback',
-        resumable: true,
-        providerContinuity: { threadId: 'thread-rollback' },
-      }),
-    ).toThrow('append failed');
-
-    expect(mgr.readById(entry.sessionId)).toEqual(entryBeforeFailure);
-  });
-
   it('finalizeJobContinuityAtomic releases the claim and stores a resumable conversationRef', async () => {
     const { mgr, workDir } = setup('finalize-resumable');
     const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
@@ -460,10 +415,10 @@ describe('sessions shell store', () => {
       mgr.finalizeJobContinuityAtomic(entry.sessionId, {
         expectedActiveJobId: 'job-1',
         expectedVersion: claimed.version,
-        mutation: {
+        mutation: validatedTestContinuityMutation({
           kind: 'set_resumable',
           conversationRef: 'thread-1',
-        },
+        }),
       }),
     ).resolves.toBe(true);
 
@@ -490,16 +445,15 @@ describe('sessions shell store', () => {
       mgr.finalizeJobContinuityAtomic(entry.sessionId, {
         expectedActiveJobId: 'job-1',
         expectedVersion: claimed.version,
-        mutation: {
+        mutation: validatedTestContinuityMutation({
           kind: 'set_resumable',
           conversationRef: 'thread-1',
-        },
+        }),
         appendBeforeRelease: (commit) => {
           commit.append({
             type: 'session.retention.discard.requested',
             stream: { kind: 'session', id: entry.sessionId },
             refs: { sessionId: entry.sessionId },
-            bodyVersion: 1,
             body: { sessionId: entry.sessionId, attempt: 1, handles: [] },
           });
         },
@@ -538,10 +492,13 @@ describe('sessions shell store', () => {
     expect(Object.hasOwn(updated ?? {}, 'activeJobId')).toBe(false);
   });
 
-  it('clearConversationRefAndMarkNonResumableAtomic clears conversationRef and releases the claim', async () => {
+  it('a provider-validated non-resumable finalization clears conversationRef and releases the claim', async () => {
     const { mgr, workDir } = setup('finalize-non-resumable');
     const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
-    mgr.setConversationRef(entry.sessionId, 'thread-stale');
+    await seedTestProviderContinuity(mgr, entry.sessionId, {
+      conversationRef: 'thread-stale',
+      providerContinuity: { threadId: 'thread-stale' },
+    });
     mgr.claimForJobSync(entry.sessionId, 'job-1');
 
     const claimed = mgr.get('codex', entry.sessionId);
@@ -550,7 +507,11 @@ describe('sessions shell store', () => {
     }
 
     await expect(
-      mgr.clearConversationRefAndMarkNonResumableAtomic(entry.sessionId, 'job-1', claimed.version),
+      mgr.finalizeJobContinuityAtomic(entry.sessionId, {
+        expectedActiveJobId: 'job-1',
+        expectedVersion: claimed.version,
+        mutation: validatedTestContinuityMutation({ kind: 'clear_non_resumable' }),
+      }),
     ).resolves.toBe(true);
 
     const updated = mgr.get('codex', entry.sessionId);
@@ -576,10 +537,10 @@ describe('sessions shell store', () => {
       mgr.finalizeJobContinuityAtomic(entry.sessionId, {
         expectedActiveJobId: 'job-1',
         expectedVersion: claimed.version - 1,
-        mutation: {
+        mutation: validatedTestContinuityMutation({
           kind: 'set_resumable',
           conversationRef: 'thread-1',
-        },
+        }),
         appendBeforeRelease,
       }),
     ).resolves.toBe(false);
@@ -604,11 +565,11 @@ describe('sessions shell store', () => {
         mgr.checkpointJobContinuityAtomic(entry.sessionId, {
           expectedActiveJobId: 'job-1',
           expectedVersion: claimed.version,
-          snapshot: {
+          snapshot: validatedTestContinuitySnapshot({
             conversationRef: 'thread-1',
             resumable: true,
             providerContinuity: { threadId: 'thread-1' },
-          },
+          }),
         }),
       ).resolves.toEqual({
         ok: true,
@@ -660,11 +621,11 @@ describe('sessions shell store', () => {
       mgr.checkpointJobContinuityAtomic(entry.sessionId, {
         expectedActiveJobId: 'job-1',
         expectedVersion: claimed.version + 1,
-        snapshot: {
+        snapshot: validatedTestContinuitySnapshot({
           conversationRef: 'thread-stale',
           resumable: true,
           providerContinuity: { threadId: 'thread-stale' },
-        },
+        }),
       }),
     ).resolves.toEqual({ ok: false });
 
@@ -674,6 +635,70 @@ describe('sessions shell store', () => {
       version: claimed.version,
     });
     expect(current?.conversationRef).toBeUndefined();
+  });
+
+  it('checks continuity CAS after acquiring the database write transaction', async () => {
+    const workDir = join(tmpHome, 'checkpoint-cross-connection-cas');
+    mkdirSync(workDir, { recursive: true });
+    const dbPath = join(tmpHome, 'checkpoint-cross-connection-cas.db');
+    const dbA = openStoreDatabase({
+      storeFormat: currentCoralStoreFormat(),
+      path: dbPath,
+      storage: runtime.storage,
+    });
+    const dbB = openStoreDatabase({
+      storeFormat: currentCoralStoreFormat(),
+      path: dbPath,
+      storage: runtime.storage,
+    });
+    openDbs.push(dbA, dbB);
+    const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+    const bodyCodec = createEventBodyCodec();
+    const commitWith = (db: typeof dbA, cb: Parameters<CommitEventsFn>[0]) =>
+      commit(db, cb, {
+        now: () => new Date('2026-04-19T00:00:00.000Z'),
+        reducers,
+        bodyCodec,
+        providers: permissiveProviderLookupPort,
+      });
+    let beforeNextACommit: (() => void) | undefined;
+    const commitA: CommitEventsFn = (cb) => {
+      const before = beforeNextACommit;
+      beforeNextACommit = undefined;
+      before?.();
+      return commitWith(dbA, cb);
+    };
+    const commitB: CommitEventsFn = (cb) => commitWith(dbB, cb);
+    const managerA = new SessionManager(workDir, runtime, commitA, undefined, dbA);
+    const managerB = new SessionManager(workDir, runtime, commitB, undefined, dbB);
+    const entry = allocateTestSession(managerA, 'codex', 'alpha', 'gpt-5', workDir);
+    managerA.claimForJobSync(entry.sessionId, 'job-1');
+    const claimed = managerA.readById(entry.sessionId, { forceFresh: true });
+    if (claimed === null) throw new Error('Expected claimed session');
+    managerB.readById(entry.sessionId, { forceFresh: true });
+    beforeNextACommit = () => {
+      void managerB.releaseJobClaimAtomic(entry.sessionId, {
+        expectedActiveJobId: 'job-1',
+        expectedVersion: claimed.version,
+      });
+    };
+
+    await expect(
+      managerA.checkpointJobContinuityAtomic(entry.sessionId, {
+        expectedActiveJobId: 'job-1',
+        expectedVersion: claimed.version,
+        snapshot: validatedTestContinuitySnapshot({
+          conversationRef: 'thread-racy',
+          resumable: true,
+          providerContinuity: { threadId: 'thread-racy' },
+        }),
+      }),
+    ).resolves.toEqual({ ok: false });
+
+    const current = managerA.readById(entry.sessionId, { forceFresh: true });
+    expect(current?.activeJobId).toBeUndefined();
+    expect(current?.conversationRef).toBeUndefined();
+    expect(current?.state).toBe('pending');
   });
 
   it('recordArtifactHandleAtomic appends a lifecycle event and advances the expected version', async () => {

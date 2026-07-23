@@ -19,7 +19,7 @@ import {
   buildClaudeHost,
   claudeRoutingEnv,
   compileClaudeBrokerHost,
-  type ClaudeCredentialSource,
+  type ClaudeProviderAccess,
   type ClaudeExecutionPlan,
 } from './execution-plan.js';
 import { isClaudeCredentialEnvKey } from './credential-policy.js';
@@ -31,11 +31,11 @@ const UNSUPPORTED_CLAUDE_HELPER_SETTINGS: ReadonlySet<string> = new Set([
   'awsCredentialExport',
 ]);
 
-function claudeConfigRoot(runtime: ProviderPreflightRuntime<ClaudeCredentialSource>): string {
-  return runtime.credentialSource.configDir;
+function claudeConfigRoot(runtime: ProviderPreflightRuntime<ClaudeProviderAccess>): string {
+  return runtime.access.configDir;
 }
 
-function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime<ClaudeCredentialSource>): void {
+function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime<ClaudeProviderAccess>): void {
   const settingsPaths = new Map<string, 'selected-profile' | 'project'>([
     [join(claudeConfigRoot(runtime), 'settings.json'), 'selected-profile'],
   ]);
@@ -96,9 +96,9 @@ function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime<ClaudeC
   }
 }
 
-export async function claudePreflight(runtime: ProviderPreflightRuntime<ClaudeCredentialSource>): Promise<void> {
+export async function claudePreflight(runtime: ProviderPreflightRuntime<ClaudeProviderAccess>): Promise<void> {
   assertSupportedClaudeSettings(runtime);
-  const routingEnv = claudeRoutingEnv(runtime.credentialSource);
+  const routingEnv = claudeRoutingEnv(runtime.access);
   const cli = await detectClaudeCli(
     { exec: (command, args, options) => runtime.runExact(command, args, options) },
     { get: (key) => routingEnv[key] },
@@ -111,11 +111,11 @@ export async function claudePreflight(runtime: ProviderPreflightRuntime<ClaudeCr
   }
 }
 
-export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecutionPlan, ClaudeCredentialSource> = {
+export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecutionPlan, ClaudeProviderAccess> = {
   name: 'claude',
   planHost: (input) =>
     buildClaudeHost({
-      source: input.source,
+      access: input.access,
       request:
         input.purpose === 'execution'
           ? input.request
@@ -128,9 +128,10 @@ export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecuti
   compileStableHost: (host) =>
     buildClaudeProviderServerSpec(compileClaudeBrokerHost({ platform: host.platform, broker: host.broker })),
   async interrupt(transport: AppServerTransport, continuity: ProviderContinuityBlob): Promise<boolean> {
-    const brokerSessionKey = readString(continuity.brokerSessionKey);
+    const persistedContinuity = readClaudePersistedContinuity(continuity);
+    const brokerSessionKey = persistedContinuity.brokerSessionKey;
     if (brokerSessionKey === undefined) return false;
-    const brokerTurnId = readString(continuity.brokerTurnId);
+    const brokerTurnId = persistedContinuity.brokerTurnId;
     if (brokerTurnId === undefined) return false;
     const result = await transport.rpc<unknown>(
       'turn/interrupt',
@@ -142,7 +143,7 @@ export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecuti
 
 export const claudeRecoveryLifecycle = {
   finalizeInterrupted(probeResult, continuity, context) {
-    const persistedContinuity = readClaudePersistedContinuity(probeResult.updatedContinuity ?? continuity ?? {});
+    const persistedContinuity = readClaudePersistedContinuity(probeResult.updatedContinuity ?? continuity);
     const providerContinuity = persistedContinuity.bootstrapSignature
       ? buildClaudeContinuity({
           bootstrapSignature: persistedContinuity.bootstrapSignature,

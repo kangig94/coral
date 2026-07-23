@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
-import { fixtureProviderBindingCodec, type FixtureProviderSource } from '#tests/helpers/provider-binding.js';
+import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
 import { none } from '#src/providers/capability.js';
 import type { ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
 import type { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
@@ -125,7 +125,7 @@ function fakeRuntime(): Pick<Runtime, 'time' | 'ids' | 'storage' | 'env' | 'path
       coral: {
         exports: { jobsRoot: '/tmp/coral/exports/jobs' },
         corpus: { kbRoot: '/tmp/coral/kb' },
-        projects: { root: '/tmp/coral/projects', dataDir: (source: string) => `/tmp/coral/projects/${source}` },
+        projects: { root: '/tmp/coral/projects', dataDir: (access: string) => `/tmp/coral/projects/${access}` },
       },
       projectSource: (projectRoot: string) => projectRoot,
       projectData: (projectRoot: string) => `/tmp/coral/projects/${projectRoot}`,
@@ -331,7 +331,7 @@ async function buildOrchestratorAroundProviderStream(
 
   // Provider acquisition is owned by the bound app-server capability.
   const providerRunSpy = vi.fn(() => providerStream.iterable);
-  const provider = defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
+  const provider = defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
     name: 'codex',
     transport: 'app-server',
     run: providerRunSpy as never,
@@ -378,6 +378,7 @@ async function buildOrchestratorAroundProviderStream(
             return boundProvider.readiness(...args);
           },
           compareIdentity: boundProvider.compareIdentity,
+          decodeContinuity: boundProvider.decodeContinuity,
           preflight: boundProvider.preflight,
           prepareExecution: boundProvider.prepareExecution,
           appServer: boundProvider.appServer,

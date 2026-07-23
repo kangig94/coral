@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -19,7 +20,7 @@ const NOW = new Date('2026-04-19T00:00:00.000Z');
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -58,7 +59,6 @@ function launchInput(jobId: string): CoralEventInput<JobLaunchRequestBody> {
     type: 'job.launch.requested',
     stream: { kind: 'job', id: jobId },
     refs: { jobId, sessionId: `session-${jobId}` },
-    bodyVersion: 1,
     body: launchBody(jobId),
   };
 }
@@ -68,7 +68,6 @@ function terminalInput(jobId: string, content = 'done'): CoralEventInput {
     type: 'job.terminal.recorded',
     stream: { kind: 'job', id: jobId },
     refs: { jobId, sessionId: `session-${jobId}` },
-    bodyVersion: 1,
     body: {
       terminal: {
         outcome: { kind: 'completed' },
@@ -118,7 +117,6 @@ function workflowChildInput(options: {
       workflowId: options.workflowId,
       workflowSlotId: options.slotId,
     },
-    bodyVersion: 1,
     body: {
       ...launchBody(options.jobId),
       owner: { kind: 'workflow', id: options.workflowId },
@@ -136,7 +134,6 @@ function progressInput(jobId: string): CoralEventInput {
     type: 'job.progress.emitted',
     stream: { kind: 'job', id: jobId },
     refs: { jobId, sessionId: `session-${jobId}` },
-    bodyVersion: 1,
     body: {
       kind: 'message',
       message: 'late progress',
@@ -283,7 +280,6 @@ describe('jobs append invariants', () => {
               type: 'workflow.completed',
               stream: { kind: 'workflow', id: 'workflow-same-batch-terminal' },
               refs: { workflowId: 'workflow-same-batch-terminal' },
-              bodyVersion: 1,
               body: { outcome: 'completed', stepDetails: [] },
             },
           ],
@@ -508,7 +504,6 @@ describe('jobs append invariants', () => {
           type: 'job.launch.rejected',
           stream: { kind: 'job', id: jobId },
           refs: { jobId, sessionId: `session-${jobId}` },
-          bodyVersion: 1,
           body: {
             reason: 'busy',
             message: 'busy',
@@ -524,7 +519,6 @@ describe('jobs append invariants', () => {
           type: 'job.terminal.recorded',
           stream: { kind: 'job', id: jobId },
           refs: { jobId, sessionId: `session-${jobId}` },
-          bodyVersion: 1,
           body: {
             terminal: {
               outcome: {
@@ -557,7 +551,6 @@ describe('jobs append invariants', () => {
           type: 'job.aborted',
           stream: { kind: 'job', id: jobId },
           refs: { jobId, sessionId: `session-${jobId}` },
-          bodyVersion: 1,
           body: { reason: 'user_abort' },
         },
       ]);
@@ -567,7 +560,6 @@ describe('jobs append invariants', () => {
           type: 'job.terminal.recorded',
           stream: { kind: 'job', id: jobId },
           refs: { jobId, sessionId: `session-${jobId}` },
-          bodyVersion: 1,
           body: {
             terminal: {
               outcome: { kind: 'aborted', reason: 'user_abort' },

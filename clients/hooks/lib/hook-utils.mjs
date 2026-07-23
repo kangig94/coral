@@ -16,6 +16,16 @@ export function parseManifestFlavor(manifestPath) {
   }
 }
 
+export function currentStoreFormatFingerprint() {
+  try {
+    const manifestPath = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bridge', 'manifest.json');
+    const fingerprint = JSON.parse(readFileSync(manifestPath, 'utf8')).storeFormatFingerprint;
+    return typeof fingerprint === 'string' && /^sha256:[a-f0-9]{64}$/.test(fingerprint) ? fingerprint : null;
+  } catch {
+    return null;
+  }
+}
+
 let _cachedFlavor;
 let _cachedFlavorSource;
 

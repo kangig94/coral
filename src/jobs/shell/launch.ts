@@ -40,6 +40,7 @@ import type { CommitEventsFn } from '../../store/append.js';
 import { consumeJobStream } from './continuity-consumer.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
 import { SessionClaimError } from '../../sessions/claim-error.js';
+import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { toProviderRequest } from '../provider-request.js';
 import { TerminalWriteError } from '../terminal/write-error.js';
 import { buildJobEventRefs } from '../refs.js';
@@ -212,7 +213,6 @@ export class LaunchOrchestrator {
           parentJobId: options.parentJobId,
           workflowSlotId: options.workflowSlotId,
         }),
-        bodyVersion: 1,
         body,
       });
       return undefined;
@@ -252,7 +252,6 @@ export class LaunchOrchestrator {
             workflowId,
             workflowSlotId: options.workflowSlotId,
           }),
-          bodyVersion: 1,
           body,
         });
         appendJobTerminalRecorded(c, {
@@ -316,7 +315,6 @@ export class LaunchOrchestrator {
           project: metadata.project,
           correlationId: metadata.correlationId,
           refs: buildJobEventRefs({ jobId, sessionId: preparedSession.sessionId }),
-          bodyVersion: 1,
           body:
             admission.type === 'queued'
               ? { queuePosition: admission.queuePosition, runningJobIds: [] }
@@ -472,7 +470,6 @@ export class LaunchOrchestrator {
             workflowId: opts.parentWorkflowJobId,
             workflowSlotId: opts.workflowSlotId,
           }),
-          bodyVersion: 1,
           body:
             admission.type === 'queued'
               ? { queuePosition: admission.queuePosition, runningJobIds: [] }
@@ -565,7 +562,6 @@ export class LaunchOrchestrator {
             workflowId: opts.parentWorkflowJobId,
             workflowSlotId: opts.workflowSlotId,
           }),
-          bodyVersion: 1,
           body:
             admission.type === 'queued'
               ? { queuePosition: admission.queuePosition, runningJobIds: [] }
@@ -912,6 +908,13 @@ export class LaunchOrchestrator {
       const failure = identity.failure;
       throw new ProviderBindingRuntimeError(failure, this.deps.providerRegistry.renderBindingFailure(failure));
     }
+    const continuity = provider.decodeContinuity(session.providerContinuity);
+    if (!continuity.ok) {
+      throw new ProviderBindingRuntimeError(
+        continuity.failure,
+        this.deps.providerRegistry.renderBindingFailure(continuity.failure),
+      );
+    }
     const readiness = await provider.readiness('launch', this.deps.runtime.storage);
     if (this.preserveAppServerJobForHandoff(provider, jobId)) return 'preserved';
     if (!readiness.ok) {
@@ -934,19 +937,28 @@ export class LaunchOrchestrator {
     });
     const prepared = provider.prepareExecution({
       request: requestWithInject,
-      persistedContinuity: session.providerContinuity ?? undefined,
+      persistedContinuity: continuity.value,
       baseEnv: this.deps.runtime.env.fullSnapshot(),
       protectedEnv,
       platform: this.deps.runtime.env.platform(),
       storage: this.deps.runtime.storage,
     });
-    const runtime = this.createProviderRuntime(provider, requestWithInject, sessionId, jobId, signal, equippedTools);
+    const runtime = this.createProviderRuntime(
+      provider,
+      requestWithInject,
+      sessionId,
+      jobId,
+      signal,
+      continuity.value,
+      equippedTools,
+    );
     const initialVersion = this.readClaimVersion(provider.name, sessionId, jobId);
     try {
       const consumed = await consumeJobStream({
         jobId,
         sessionId,
         initialVersion,
+        decodeContinuity: (rawContinuity) => provider.decodeContinuity(rawContinuity),
         stream: this.executePreparedProvider(provider, prepared, runtime, jobId, signal, pool),
         sessionApi: {
           checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
@@ -1113,6 +1125,7 @@ export class LaunchOrchestrator {
     sessionId: string,
     jobId: string,
     signal: AbortSignal,
+    persistedContinuity: ProviderContinuityBlob | undefined,
     equippedTools: ReturnType<typeof resolveEquippedTools>,
   ): BoundProviderExecutionRuntimeCommon {
     return {
@@ -1122,7 +1135,7 @@ export class LaunchOrchestrator {
       env: this.deps.runtime.env,
       ids: this.deps.runtime.ids,
       jobId,
-      persistedContinuity: this.deps.sessionManager.get(provider.name, sessionId)?.providerContinuity ?? undefined,
+      persistedContinuity,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,
       kbRoot: this.deps.runtime.paths.coral.corpus.kbRoot,
       equippedTools,

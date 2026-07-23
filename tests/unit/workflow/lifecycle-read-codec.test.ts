@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it } from 'vitest';
 
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -14,7 +15,7 @@ describe('workflow lifecycle projection codec', () => {
   it('rejects lifecycle text outside the shared strict schema on singular and list reads', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       db.prepare(
         `INSERT INTO projection_workflows (workflow_id, plan, provider_scope, lifecycle, last_seq)
          VALUES (?, ?, ?, ?, ?)`,

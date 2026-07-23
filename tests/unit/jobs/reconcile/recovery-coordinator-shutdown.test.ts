@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -302,6 +303,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   const kbDaemonSupervisor = createMockKbDaemonSupervisor();
 
   const controller = modules.lifecycleModule.createLifecycle({
+    storeFormat: currentCoralStoreFormat(),
     identity: {
       pluginRoot,
       namespace,

@@ -7,7 +7,8 @@ import type { ProviderBindingCatalog } from '../providers/catalog.js';
 import type { BoundProvider } from '../providers/bound-provider-contract.js';
 import type { AppendedEvent, CommitEventsFn, PostCommitObserver } from '../store/append.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
-import type { StoreReadContext } from '../store/body-codec.js';
+import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
+import type { EventsRow } from '../store/schema.js';
 import { collectArtifactHandles } from './artifact-discard.js';
 import { sessionContinuationLeaseExpiredEvent } from './continuation-lease-events.js';
 import { archiveProviderArtifactsForJob } from './provider-artifact-archive.js';
@@ -353,11 +354,10 @@ export class LifecycleReactor {
   private readTerminalCauseRef(sessionId: string, jobId: string): CauseRef | undefined {
     const row = this.options
       .db()
-      .prepare<[string, string], { seq: number }>(
-        `SELECT seq
+      .prepare<[string, string], EventsRow>(
+        `SELECT *
            FROM events
           WHERE type = 'job.terminal.recorded'
-            AND stream_kind = 'job'
             AND stream_id = ?
             AND json_extract(refs, '$.sessionId') = ?
           ORDER BY seq ASC
@@ -367,6 +367,7 @@ export class LifecycleReactor {
     if (row === undefined) {
       return undefined;
     }
+    decodeStoredBody(row, this.options.readCtx);
     return {
       stream: { kind: 'job', id: jobId },
       seq: row.seq,

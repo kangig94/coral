@@ -2,6 +2,7 @@ import { dirname } from 'node:path';
 
 import type { Runtime } from '../runtime/ports.js';
 import { openStoreDatabase, type Database } from './db.js';
+import type { StoreFormatDescription } from './format-fingerprint.js';
 
 /**
  * Generic read-only SQLite primitives owned by the store layer. Domain-
@@ -24,6 +25,7 @@ export interface ReadonlyDatabase {
 }
 
 type OpenReadOnlyStoreOptions = {
+  readonly storeFormat: StoreFormatDescription;
   readonly path?: string;
   readonly busyTimeoutMs?: number;
 };
@@ -34,7 +36,7 @@ export function asReadonlyDatabase(db: Database): ReadonlyDatabase {
 
 export function openReadOnlyStoreDatabase(
   runtime: Pick<Runtime, 'paths' | 'storage'>,
-  options: OpenReadOnlyStoreOptions = {},
+  options: OpenReadOnlyStoreOptions,
 ): ReadonlyDatabase {
   const path = options.path ?? runtime.paths.coral.store.dbFile;
   if (path !== ':memory:') {
@@ -44,6 +46,7 @@ export function openReadOnlyStoreDatabase(
   return openStoreDatabase({
     path: path,
     storage: runtime.storage,
+    storeFormat: options.storeFormat,
     readonly: true,
     busyTimeoutMs: options.busyTimeoutMs,
   });

@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -15,7 +16,7 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 function setupDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   applyTestCounterSchema(db);
   return db;
 }
@@ -31,7 +32,6 @@ describe('commitInputs + in-transaction projection reduction', () => {
           {
             type: 'test.counter.ticked',
             stream: { kind: 'job', id: 'a' },
-            bodyVersion: 1,
             body: { id: 'a', delta: 5 },
           },
         ],
@@ -70,6 +70,7 @@ describe('commitInputs + in-transaction projection reduction', () => {
             reducer: () => {
               throw new Error('reducer failure');
             },
+            materializerContract: 'projection_test_counter:throw-for-atomic-rollback-test',
           }),
         ],
       });
@@ -81,7 +82,6 @@ describe('commitInputs + in-transaction projection reduction', () => {
             {
               type: 'test.counter.ticked',
               stream: { kind: 'job', id: 'a' },
-              bodyVersion: 1,
               body: { id: 'a', delta: 5 },
             },
           ],
@@ -121,11 +121,15 @@ describe('commitInputs + in-transaction projection reduction', () => {
                 )
                 .run(event.body.id, event.body.delta, event.seq);
             },
+            materializerContract: 'test:increment-projection-counter',
           }),
         ],
         appendValidators: [
-          () => {
-            throw new Error('append validator failure');
+          {
+            contract: 'test:always-reject',
+            validate: () => {
+              throw new Error('append validator failure');
+            },
           },
         ],
       };
@@ -137,7 +141,6 @@ describe('commitInputs + in-transaction projection reduction', () => {
             {
               type: 'test.counter.ticked',
               stream: { kind: 'job', id: 'a' },
-              bodyVersion: 1,
               body: { id: 'a', delta: 5 },
             },
           ],
@@ -169,13 +172,11 @@ describe('commitInputs + in-transaction projection reduction', () => {
             {
               type: 'test.counter.ticked',
               stream: { kind: 'job', id: 'valid-first' },
-              bodyVersion: 1,
               body: { id: 'valid-first', delta: 1 },
             },
             {
               type: 'test.counter.ticked',
               stream: { kind: 'session', id: 'wrong-kind' },
-              bodyVersion: 1,
               body: { id: 'wrong-kind', delta: 1 },
             },
           ],
@@ -211,7 +212,6 @@ describe('commitInputs + in-transaction projection reduction', () => {
             {
               type: 'job.terminal.recorded',
               stream: { kind: 'job', id: 'closed-registry' },
-              bodyVersion: 1,
               body: { intentionally: 'not a job terminal body' },
             },
           ],
@@ -240,7 +240,6 @@ describe('commitInputs + in-transaction projection reduction', () => {
             {
               type: 'test.counter.ticked',
               stream: { kind: 'job', id: 'invalid-current-body' },
-              bodyVersion: 1,
               body: { id: 'invalid-current-body', delta: 'bad' },
             },
           ],

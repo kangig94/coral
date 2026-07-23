@@ -32,9 +32,8 @@ export const journalEventEnvelopeSchema = z
     namespace: z.string().optional(),
     project: z.string().optional(),
     correlationId: z.string().optional(),
-    causationSeq: z.number().optional(),
+    causationSeq: z.number().int().positive().optional(),
     refs: journalEventRefsSchema.optional(),
-    bodyVersion: z.number().int().min(1).max(1),
     body: z.unknown(),
   })
   .strict();
@@ -80,22 +79,6 @@ export type ResolvableCoralEventInput<Scope, T = never> = CoralEventInput<T> & {
   };
 };
 
-const STREAM_KINDS: ReadonlySet<StreamKind> = new Set(['job', 'session', 'discuss', 'workflow']);
-
-function assertStreamKind(value: string): StreamKind {
-  if (!STREAM_KINDS.has(value as StreamKind)) {
-    throw new CoralSetupError({
-      code: 'event_stream_kind_invalid',
-      userMessage: `Unknown stream.kind in events row: '${value}'`,
-      remediation:
-        'A schema update likely introduced a new stream kind. Update the enum in src/store/envelope.ts and the assertStreamKind guard.',
-      context: { streamKind: value },
-    });
-  }
-
-  return value as StreamKind;
-}
-
 export function decodeEventRefs(row: Pick<EventsRow, 'seq' | 'refs'>): CoralEvent['refs'] {
   if (!row.refs) {
     return undefined;
@@ -105,17 +88,28 @@ export function decodeEventRefs(row: Pick<EventsRow, 'seq' | 'refs'>): CoralEven
 }
 
 export function rowToCoralEvent<T = unknown>(row: EventsRow, body: T): CoralEvent<T> {
-  return {
+  const decoded = journalEventEnvelopeSchema.safeParse({
     seq: row.seq,
     ts: row.ts,
     type: row.type,
-    stream: { kind: assertStreamKind(row.stream_kind), id: row.stream_id },
+    stream: { kind: row.stream_kind, id: row.stream_id },
     namespace: row.namespace ?? undefined,
     project: row.project ?? undefined,
     correlationId: row.correlation_id ?? undefined,
     causationSeq: row.causation_seq ?? undefined,
     refs: decodeEventRefs(row),
-    bodyVersion: row.body_version,
     body,
-  };
+  });
+  if (!decoded.success) {
+    if (decoded.error.issues.some((issue) => issue.path[0] === 'stream' && issue.path[1] === 'kind')) {
+      throw new CoralSetupError({
+        code: 'event_stream_kind_invalid',
+        userMessage: `Unknown stream.kind in events row: '${row.stream_kind}'`,
+        remediation: 'The persisted event envelope does not match this Coral store format.',
+        context: { streamKind: row.stream_kind },
+      });
+    }
+    throw decoded.error;
+  }
+  return decoded.data as CoralEvent<T>;
 }

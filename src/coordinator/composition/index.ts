@@ -75,7 +75,7 @@ import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import { type KbDaemonHealthSnapshot, type KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
 import type { KbDaemonRequestContextWire } from '../../kb-daemon/protocol.js';
 import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-component.js';
-import type { KbCorpusSnapshot } from '../../kb/contract.js';
+import { readCorpusState } from '../../kb/state/corpus-state.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 
@@ -110,46 +110,6 @@ const TERMINAL_DISCUSS_STATUSES = new Set(['ended', 'completed', 'aborted', 'err
 
 function isTerminalDiscussStatus(status: string): boolean {
   return TERMINAL_DISCUSS_STATUSES.has(status);
-}
-
-const EMPTY_CORPUS_SNAPSHOT: KbCorpusSnapshot = {
-  snapshotId: '',
-  contentSeq: 0,
-  metadataSeq: 0,
-  contentManifestHash: '',
-  metadataManifestHash: '',
-};
-
-type CorpusSnapshotCursorRow = {
-  snapshot_id: string | null;
-  content_seq: number | null;
-  metadata_seq: number | null;
-  content_manifest_hash: string | null;
-  metadata_manifest_hash: string | null;
-};
-
-function readPersistedCorpusSnapshot(db: {
-  prepare(sql: string): { get(): CorpusSnapshotCursorRow | undefined };
-}): KbCorpusSnapshot {
-  const row = db
-    .prepare(
-      `
-        SELECT snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash
-          FROM kb_corpus_state
-         WHERE id = 1
-      `,
-    )
-    .get();
-  if (row === undefined) {
-    return { ...EMPTY_CORPUS_SNAPSHOT };
-  }
-  return {
-    snapshotId: row.snapshot_id ?? '',
-    contentSeq: row.content_seq ?? 0,
-    metadataSeq: row.metadata_seq ?? 0,
-    contentManifestHash: row.content_manifest_hash ?? '',
-    metadataManifestHash: row.metadata_manifest_hash ?? '',
-  };
 }
 
 let eventLoopDelayMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
@@ -565,7 +525,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   const notifyHostedCorpusMutation = (): void => {
     try {
       const storeServices = getStoreServices();
-      const snapshot = readPersistedCorpusSnapshot(storeServices.storeDb);
+      const snapshot = readCorpusState(storeServices.storeDb);
       storeServices.consumerDriver?.notifyCorpus(snapshot);
     } catch (error) {
       world.log(`[kb-daemon] failed to publish hosted corpus mutation: ${formatError(error)}\n`);
@@ -1015,6 +975,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
   const lifecycleDeps: LifecycleDeps = {
     identity,
+    storeFormat: options.storeFormat,
     runtime,
     backendPid: world.backendPid,
     runtimeState,

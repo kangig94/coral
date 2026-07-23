@@ -93,7 +93,8 @@ export class ProviderBindingRuntimeError extends Error {
 
 type ProviderBindingCodecBase<Selection extends JsonValue, Profile extends CredentialProfile & JsonValue> = {
   readonly parseSelection: ProviderValueParser<Selection>;
-  readonly parseProfile: ProviderValueParser<Profile>;
+  readonly persistedProfile: ProviderPersistedParser<Profile>;
+  readonly persistedContinuity: ProviderPersistedParser<Record<string, unknown>>;
   captureSelection(context: ProviderSelectionCaptureContext): ProviderBindingResult<Selection>;
   canonicalizeProfile(selection: Selection, runtime: ProviderBindingRuntime): Promise<ProviderBindingResult<Profile>>;
   selectorLabel(selection: Selection): string;
@@ -104,7 +105,7 @@ export type ProviderBindingCodec<
   Selection extends JsonValue,
   Profile extends CredentialProfile & JsonValue,
   Subject extends AccountSubject & JsonValue = AccountSubject & JsonValue,
-  Source extends JsonValue = JsonValue,
+  Access extends JsonValue = JsonValue,
 > = ProviderBindingCodecBase<Selection, Profile> &
   (
     | {
@@ -119,7 +120,7 @@ export type ProviderBindingCodec<
           use: ProviderBindingUse,
           runtime: ProviderBindingRuntime,
         ): Promise<ProviderBindingResult<ProviderReadiness>>;
-        credentialSource(binding: ProviderBinding<Profile, Subject>): Source;
+        access(binding: ProviderBinding<Profile, Subject>): Access;
         compareBinding(
           left: ProviderBinding<Profile, Subject>,
           right: ProviderBinding<Profile, Subject>,
@@ -138,7 +139,7 @@ export type ProviderBindingCodec<
           use: ProviderBindingUse,
           runtime: ProviderBindingRuntime,
         ): Promise<ProviderBindingResult<ProviderReadiness>>;
-        credentialSource(binding: ProfileBinding<Profile>): Source;
+        access(binding: ProfileBinding<Profile>): Access;
         compareBinding(left: ProfileBinding<Profile>, right: ProfileBinding<Profile>): ProviderBindingResult<true>;
         presentBinding(binding: ProfileBinding<Profile>): string;
       }

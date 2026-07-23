@@ -153,14 +153,6 @@ export function laneHintFromInterest(interest: CorpusInterest): CorpusLaneHint |
   return interest === 'both' ? null : interest;
 }
 
-export function parseStoredCorpusInterest(row: {
-  readonly corpus_interest: string | null;
-  readonly lane: string | null;
-}): CorpusInterest | null {
-  const raw = row.corpus_interest ?? row.lane;
-  return isCorpusInterest(raw) ? raw : null;
-}
-
 export function shouldNotifyCorpusConsumer(interest: CorpusInterest, laneHint: CorpusLaneHint | undefined): boolean {
   return laneHint === undefined || interest === 'both' || interest === laneHint;
 }

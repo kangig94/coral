@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -19,7 +20,7 @@ const NOW = new Date('2026-04-30T00:00:00.000Z');
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -83,7 +84,6 @@ function launchInput(workflowId: string, slotId: string) {
     type: 'job.launch.requested' as const,
     stream: { kind: 'job' as const, id: jobId },
     refs: { jobId, sessionId, parentJobId: workflowId, workflowId, workflowSlotId: slotId },
-    bodyVersion: 1,
     body,
   };
 }

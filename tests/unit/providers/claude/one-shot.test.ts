@@ -14,7 +14,7 @@ type BrokerNotificationHandler = (msg: { method: string; params?: Record<string,
 
 function systemContext(configDir: string) {
   return {
-    source: {
+    access: {
       configDir,
       projectsRoot: join(configDir, 'projects'),
       routing: { kind: 'config-dir' as const },
@@ -36,7 +36,7 @@ async function runClaudeOneShotTurn(
 ) {
   const hostPlan = claudeAppServerLifecycle.planHost({
     purpose: 'curation',
-    source: deps.executionPlan.source,
+    access: deps.executionPlan.access,
     request,
     baseEnv: deps.executionPlan.brokerEnv,
     platform: 'linux',
@@ -45,7 +45,7 @@ async function runClaudeOneShotTurn(
   const prepared = claudeCurationCapability.prepare(request, {
     storage: deps.storage,
     ids: deps.ids,
-    source: deps.executionPlan.source,
+    access: deps.executionPlan.access,
     baseEnv: deps.executionPlan.brokerEnv,
     platform: 'linux',
   });

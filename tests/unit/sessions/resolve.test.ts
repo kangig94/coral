@@ -1,5 +1,6 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { allocateTestSession } from '../../helpers/session.js';
+import { allocateTestSession, seedTestSessionContinuity } from '../../helpers/session.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -52,6 +53,7 @@ describe('sessions shell resolve', () => {
 
   function createSessionDb() {
     return openStoreDatabase({
+      storeFormat: currentCoralStoreFormat(),
       path: storePaths(resolveBuildFlavor(process.env)).dbFile,
       storage: runtime.storage,
     });
@@ -75,7 +77,7 @@ describe('sessions shell resolve', () => {
     });
   });
 
-  it('getSessionById finds a session across shards and refreshes cached reads after writes', () => {
+  it('getSessionById finds a session across shards and refreshes cached reads after writes', async () => {
     const alpha = setup('lookup-shard-a');
     const beta = setup('lookup-shard-b');
     const sessionLookup = createProjectionSessionLookup(db);
@@ -107,7 +109,11 @@ describe('sessions shell resolve', () => {
       backendNamespace: 'ns-b',
     });
 
-    beta.mgr.setConversationRef(sessionB.sessionId, 'thread-2');
+    await seedTestSessionContinuity(beta.mgr, sessionB.sessionId, {
+      conversationRef: 'thread-2',
+      resumable: true,
+      providerContinuity: null,
+    });
 
     expect(getSessionById(sessionB.sessionId, sessionLookup)).toMatchObject({
       sessionId: sessionB.sessionId,

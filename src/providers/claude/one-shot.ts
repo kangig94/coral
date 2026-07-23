@@ -20,7 +20,7 @@ import {
 import { buildClaudeBootstrapSignature } from './request-mapping.js';
 import { readBootstrapSignature, sameBootstrapSignature, type PermissionMode } from './request-prep.js';
 import { isClaudeCurationUsageBudgetExhausted } from './usage-budget.js';
-import { buildClaudeControllerHost, type ClaudeCredentialSource } from './execution-plan.js';
+import { buildClaudeControllerHost, type ClaudeProviderAccess } from './execution-plan.js';
 
 type ClaudeOneShotRequest = {
   readonly cwd: string;
@@ -33,7 +33,7 @@ type ClaudeOneShotRequest = {
 };
 
 type ClaudeSystemExecutionPlan = {
-  readonly source: ClaudeCredentialSource;
+  readonly access: ClaudeProviderAccess;
   readonly controllerEnv: Readonly<Record<string, string>>;
   readonly projectsRoot: string;
 };
@@ -194,7 +194,7 @@ async function startOneShotBrokerTurn(
 export const claudeCurationCapability = Object.freeze({
   prepare(
     request: ProviderCurationRequest,
-    runtime: Parameters<ProviderCurationCapability<ClaudeCredentialSource>['prepare']>[1],
+    runtime: Parameters<ProviderCurationCapability<ClaudeProviderAccess>['prepare']>[1],
   ) {
     const executionPlan = buildClaudeSystemExecutionPlan(runtime);
     return Object.freeze({
@@ -211,31 +211,31 @@ export const claudeCurationCapability = Object.freeze({
     });
   },
   isUsageBudgetExhausted(
-    runtime: Parameters<ProviderCurationCapability<ClaudeCredentialSource>['isUsageBudgetExhausted']>[0],
+    runtime: Parameters<ProviderCurationCapability<ClaudeProviderAccess>['isUsageBudgetExhausted']>[0],
   ) {
     return isClaudeCurationUsageBudgetExhausted({
-      configDir: runtime.source.configDir,
+      configDir: runtime.access.configDir,
       runtime,
     });
   },
-}) satisfies ProviderCurationCapability<ClaudeCredentialSource>;
+}) satisfies ProviderCurationCapability<ClaudeProviderAccess>;
 
 function buildClaudeSystemExecutionPlan(
-  runtime: Parameters<ProviderCurationCapability<ClaudeCredentialSource>['prepare']>[1],
+  runtime: Parameters<ProviderCurationCapability<ClaudeProviderAccess>['prepare']>[1],
 ): ClaudeSystemExecutionPlan {
   const controller = buildClaudeControllerHost({
-    source: runtime.source,
+    access: runtime.access,
     coralEnv: { CORAL_CLAUDE_TRANSPORT: 'print' },
     baseEnv: runtime.baseEnv,
     platform: runtime.platform,
   });
   return Object.freeze({
-    source: runtime.source,
+    access: runtime.access,
     controllerEnv: compileEnvironmentLayers(controller.environment, {
       platform: runtime.platform,
       lifetimes: hostExecutionLifetime(),
     }),
-    projectsRoot: runtime.source.projectsRoot,
+    projectsRoot: runtime.access.projectsRoot,
   });
 }
 

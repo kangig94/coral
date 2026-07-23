@@ -11,10 +11,18 @@ export function commitInputs(db: Database, inputs: readonly CoralEventInput[], c
   const openedInBatch = new Set(
     inputs.filter((input) => input.type === 'session.opened').map((input) => input.stream.id),
   );
+  const sessionSnapshotsInBatch = new Set(
+    inputs.filter((input) => input.stream.kind === 'session').map((input) => input.stream.id),
+  );
   for (const input of inputs) {
     if (input.type !== 'job.launch.requested') continue;
     const launch = jobLaunchRequestBodySchema.parse(input.body);
-    if (launch.jobKind !== 'provider' || openedInBatch.has(launch.sessionId)) continue;
+    if (
+      launch.jobKind !== 'provider' ||
+      openedInBatch.has(launch.sessionId) ||
+      sessionSnapshotsInBatch.has(launch.sessionId)
+    )
+      continue;
     seedTestSessionProjection(db, {
       sessionId: launch.sessionId,
       provider: launch.provider,

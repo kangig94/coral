@@ -91,15 +91,14 @@ function describeResolvedCauseRef(db: Database, ctx: StoreReadContext, ref: Caus
 function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadContext): string {
   const event = db
     .prepare(
-      `SELECT type, body, body_version, stream_kind, stream_id
+      `SELECT type, body, stream_kind, stream_id
          FROM events
-        WHERE stream_kind = 'job'
-          AND stream_id = ?
+        WHERE stream_id = ?
           AND type = 'job.terminal.recorded'
         ORDER BY seq DESC
         LIMIT 1`,
     )
-    .get(jobId) as Pick<EventsRow, 'type' | 'body' | 'body_version' | 'stream_kind' | 'stream_id'> | undefined;
+    .get(jobId) as Pick<EventsRow, 'type' | 'body' | 'stream_kind' | 'stream_id'> | undefined;
   const body = event ? decodeBody(event, jobTerminalRecordedBodySchema, ctx) : null;
 
   const content = body?.terminal.content.trimEnd();

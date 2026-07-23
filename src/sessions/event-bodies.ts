@@ -18,6 +18,7 @@ import {
   retentionDiscardCompletedOutcomeSchema,
   providerSessionSchema,
   providerSessionProvider,
+  sessionControllerFromProfile,
 } from './entry.js';
 import {
   sessionAdapterUnparseableFaultSchema,
@@ -31,14 +32,51 @@ export const sessionOpenedBodySchema = z
     controller: z.string().min(1),
     scope_key: z.string().min(1),
   })
-  .strict();
+  .strict()
+  .superRefine((body, ctx) => {
+    if (
+      body.entry.state !== 'pending' ||
+      body.entry.activeJobId !== undefined ||
+      body.entry.conversationRef !== undefined ||
+      body.entry.providerContinuity !== null
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['entry'],
+        message: 'A newly opened provider session must have empty pending continuity and no active job.',
+      });
+    }
+    if (body.controller !== sessionControllerFromProfile(body.entry.controllerProfile)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['controller'],
+        message: 'Session controller must be derived from entry.controllerProfile.',
+      });
+    }
+  })
+  .describe('validate-session-opened-authority');
 
 export const sessionContinuityCheckpointedBodySchema = z
   .object({
     entry: providerSessionSchema,
     snapshot: continuitySnapshotSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((body, ctx) => {
+    const expected = {
+      conversationRef: body.entry.conversationRef ?? null,
+      resumable: body.entry.state === 'ready',
+      providerContinuity: body.entry.providerContinuity ?? null,
+    };
+    if (!isDeepStrictEqual(body.snapshot, expected)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['snapshot'],
+        message: 'Continuity snapshot must exactly describe the persisted ProviderSession entry.',
+      });
+    }
+  })
+  .describe('validate-session-continuity-snapshot');
 
 export const sessionArtifactHandleRecordedBodySchema = z
   .object({

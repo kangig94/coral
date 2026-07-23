@@ -1,5 +1,6 @@
 import { CoralSetupError } from '../runtime/errors.js';
 import { providerSessionProvider, providerSessionSchema, type ProviderSession } from '../sessions/entry.js';
+import { readProjectionProviderSession } from '../sessions/projections.js';
 import { defineDomainEvent, type DomainAppendValidator, type DomainEventRegistry } from '../store/reducers.js';
 import {
   jobProgressBodySchema,
@@ -33,11 +34,8 @@ const validateLaunchOwner: DomainAppendValidator = (ctx, inputs) => {
 
   const loadSession = (sessionId: string): ProviderSession | undefined => {
     if (sessions.has(sessionId)) return sessions.get(sessionId);
-    const row = ctx.db
-      .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
-      .get(sessionId);
-    if (row === undefined) return undefined;
-    const entry = providerSessionSchema.parse(JSON.parse(row.entry));
+    const entry = readProjectionProviderSession(ctx.db, sessionId) ?? undefined;
+    if (entry === undefined) return undefined;
     sessions.set(sessionId, entry);
     return entry;
   };
@@ -55,7 +53,7 @@ const validateLaunchOwner: DomainAppendValidator = (ctx, inputs) => {
       ctx.db
         .prepare<[string], { found: number }>(
           `SELECT 1 AS found FROM events
-            WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested'
+            WHERE stream_id = ? AND type = 'job.launch.requested'
             LIMIT 1`,
         )
         .get(input.stream.id) !== undefined;
@@ -154,30 +152,53 @@ export const jobsRegistry: DomainEventRegistry = {
       type: 'job.launch.requested',
       schema: jobLaunchRequestBodySchema,
       reducer: reduceJobLaunchRequested,
+      materializerContract: 'projection_jobs:initialize-authoritative-launch-row',
     }),
     defineDomainEvent({
       type: 'job.launch.rejected',
       schema: jobLaunchRejectedSchema,
       reducer: reduceJobLaunchRejected,
+      materializerContract: 'projection_jobs:apply-launch-rejection',
     }),
-    defineDomainEvent({ type: 'job.queue.queued', schema: jobQueueQueuedBodySchema, reducer: reduceJobQueueQueued }),
+    defineDomainEvent({
+      type: 'job.queue.queued',
+      schema: jobQueueQueuedBodySchema,
+      reducer: reduceJobQueueQueued,
+      materializerContract: 'projection_jobs:apply-queued-phase',
+    }),
     defineDomainEvent({
       type: 'job.queue.admitted',
       schema: jobQueueAdmittedBodySchema,
       reducer: reduceJobQueueAdmitted,
+      materializerContract: 'projection_jobs:apply-admitted-phase',
     }),
     defineDomainEvent({
       type: 'job.runtime.started',
       schema: jobRuntimeStartedBodySchema,
       reducer: reduceJobRuntimeStarted,
+      materializerContract: 'projection_jobs:apply-running-phase',
     }),
-    defineDomainEvent({ type: 'job.progress.emitted', schema: jobProgressBodySchema, reducer: reduceJobProgress }),
+    defineDomainEvent({
+      type: 'job.progress.emitted',
+      schema: jobProgressBodySchema,
+      reducer: reduceJobProgress,
+      materializerContract: 'projection_jobs:merge-progress-diagnostics',
+    }),
     defineDomainEvent({
       type: 'job.terminal.recorded',
       schema: jobTerminalRecordedBodySchema,
       reducer: reduceJobTerminal,
+      materializerContract: 'projection_jobs:apply-terminal-outcome-and-diagnostics',
     }),
-    defineDomainEvent({ type: 'job.aborted', schema: jobAbortedBodySchema, reducer: reduceJobAborted }),
+    defineDomainEvent({
+      type: 'job.aborted',
+      schema: jobAbortedBodySchema,
+      reducer: reduceJobAborted,
+      materializerContract: 'projection_jobs:apply-aborted-terminal',
+    }),
   ],
-  appendValidators: [validateJobTerminalOrder, validateLaunchOwner],
+  appendValidators: [
+    { contract: 'jobs:terminal-order-and-single-terminal', validate: validateJobTerminalOrder },
+    { contract: 'jobs:launch-owner-session-workflow-discussion-authority', validate: validateLaunchOwner },
+  ],
 };

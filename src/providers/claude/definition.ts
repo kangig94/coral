@@ -8,14 +8,14 @@ import { claudeBindingCodec } from './binding.js';
 import {
   buildClaudeExecutionPlan,
   buildClaudePreflightRuntime,
-  type ClaudeCredentialSource,
+  type ClaudeProviderAccess,
   type ClaudeExecutionPlan,
 } from './execution-plan.js';
 import { claudeCurationCapability } from './one-shot.js';
 import { claudeProvider } from './provider.js';
 import { claudeAppServerLifecycle, claudePreflight, claudeRecoveryLifecycle } from './provider-facets.js';
 
-type ArtifactRecoveryOptions = Parameters<ProviderRecoveryContract<ClaudeCredentialSource>['finalizeFromArtifacts']>[0];
+type ArtifactRecoveryOptions = Parameters<ProviderRecoveryContract<ClaudeProviderAccess>['finalizeFromArtifacts']>[0];
 
 function readArtifact(storage: Pick<StoragePort, 'readFileSync'>, path: string): string {
   try {
@@ -45,7 +45,7 @@ function locateArtifactsForRecovery(
   return artifactHandlesFromLocator(
     locateClaudeJsonlArtifact({
       conversationRef,
-      projectsRoot: options.source.projectsRoot,
+      projectsRoot: options.access.projectsRoot,
       storage: options.storage,
     }),
   );
@@ -97,23 +97,21 @@ async function finalizeFromArtifacts(
   };
 }
 
-const recovery: ProviderRecoveryContract<ClaudeCredentialSource> = {
+const recovery: ProviderRecoveryContract<ClaudeProviderAccess> = {
   finalizeInterrupted: claudeRecoveryLifecycle.finalizeInterrupted.bind(claudeRecoveryLifecycle),
   finalizeFromArtifacts,
 };
 
-export const claudeProviderDefinition: ProviderDefinition = defineProvider<ClaudeExecutionPlan, ClaudeCredentialSource>(
-  {
-    name: 'claude',
-    transport: 'app-server',
-    run: claudeProvider,
-    prepareExecutionPlan: buildClaudeExecutionPlan,
-    preflight: (input) => claudePreflight(buildClaudePreflightRuntime(input)),
-    appServer: claudeAppServerLifecycle,
-    recovery,
-    curation: claudeCurationCapability,
-  },
-)
+export const claudeProviderDefinition: ProviderDefinition = defineProvider<ClaudeExecutionPlan, ClaudeProviderAccess>({
+  name: 'claude',
+  transport: 'app-server',
+  run: claudeProvider,
+  prepareExecutionPlan: buildClaudeExecutionPlan,
+  preflight: (input) => claudePreflight(buildClaudePreflightRuntime(input)),
+  appServer: claudeAppServerLifecycle,
+  recovery,
+  curation: claudeCurationCapability,
+})
   .binding(claudeBindingCodec)
   .artifacts(claudeArtifactCapability)
   .build();

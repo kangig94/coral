@@ -56,7 +56,6 @@ function diagnostic(
   phase: SessionProviderFailureDiagnosticPhase,
 ): SessionProviderFailureDiagnostic {
   return {
-    schemaVersion: 1,
     reason,
     phase,
     idleMs: phase === 'sent' ? 2_500 : 90_000,
@@ -75,7 +74,6 @@ function asSessionProviderFailedEvent(input: ResolvableCoralEventInput<unknown, 
     type: 'session.provider_failed',
     stream: { kind: 'session', id: 'session-1' },
     refs: input.refs,
-    bodyVersion: 1,
     body: sessionProviderFailedBodySchema.parse(input.body),
   };
 }

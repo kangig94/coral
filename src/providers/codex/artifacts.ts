@@ -4,7 +4,7 @@ import { discardRecordedArtifacts, managed } from '../capability.js';
 import type { ProviderArtifactHandleInput, ProviderRuntime } from '../contract.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { ProviderArtifactIdentity } from '../artifact-identity.js';
-import type { CodexCredentialSource, CodexExecutionPlan } from './execution-plan.js';
+import type { CodexProviderAccess, CodexExecutionPlan } from './execution-plan.js';
 
 const CODEX_ROLLOUT_SCAN_DEPTH = 4;
 
@@ -66,7 +66,7 @@ export function locateCodexRolloutArtifactFromRuntime(
 ): ProviderArtifactLocatorResult | null {
   return locateCodexRolloutArtifact({
     threadId,
-    sessionsRoot: join(runtime.executionPlan.host.source.home, 'sessions'),
+    sessionsRoot: join(runtime.executionPlan.host.access.home, 'sessions'),
     storage: runtime.storage,
   });
 }
@@ -147,12 +147,12 @@ function safeReadDir(storage: CodexArtifactLocatorStorage, path: string) {
   }
 }
 
-export const codexArtifactCapability = managed<CodexCredentialSource>({
+export const codexArtifactCapability = managed<CodexProviderAccess>({
   discardArtifacts: ({ handles, runtime }) => discardRecordedArtifacts(handles, runtime),
-  locateArtifact: ({ conversationRef, source, runtime }) => {
+  locateArtifact: ({ conversationRef, access, runtime }) => {
     const result = locateCodexRolloutArtifact({
       threadId: conversationRef,
-      sessionsRoot: join(source.home, 'sessions'),
+      sessionsRoot: join(access.home, 'sessions'),
       storage: runtime.storage,
     });
     return result.kind === 'match' ? result.artifact.handle : null;

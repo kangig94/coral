@@ -6,19 +6,16 @@
 import type { Database } from '../store/db.js';
 
 import { CoralSetupError } from '../runtime/errors.js';
+import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
 import type { CoralEvent, CoralEventInput } from '../store/envelope.js';
+import type { EventsRow } from '../store/schema.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { DomainAppendValidator, Reducer } from '../store/reducers.js';
 import type { JobLaunchRequestBody } from './launch.js';
-import { executionOwnerSchema, type ExecutionOwner } from '../runtime/execution-owner.js';
+import type { ExecutionOwner } from '../runtime/execution-owner.js';
 import type { JobPhase } from './phase.js';
 import { phaseForOutcome, type JobAbortedBody, type JobLaunchRejected, type JobProgressFault } from './outcome.js';
-import {
-  jobDiagnosticsSchema,
-  jobTerminalSchema,
-  normalizeJobTerminal,
-  type JobTerminaledBody,
-} from './terminal/result.js';
+import { jobDiagnosticsSchema, normalizeJobTerminal, type JobTerminaledBody } from './terminal/result.js';
 import { emptyJobDiagnostics, type JobDiagnostics, type JobTerminal, type JobTerminalDiagnostics } from './records.js';
 import type {
   JobProgressBody,
@@ -26,6 +23,12 @@ import type {
   JobQueueQueuedBody,
   JobRuntimeStartedBody,
 } from './event-bodies.js';
+import {
+  decodeProjectionJobExecutionOwner,
+  decodeProjectionJobStoredRow,
+  decodeProjectionJobTerminal,
+  readProjectionJobRow,
+} from './projection-row.js';
 
 type ProjectedJobState = {
   owner: ExecutionOwner;
@@ -94,20 +97,21 @@ function jobTerminalOrderViolation(input: CoralEventInput, state: JobTerminalOrd
   });
 }
 
-function readLatestTerminalSeq(db: Database, jobId: string): number | null {
+function readLatestTerminalSeq(db: Database, jobId: string, readCtx: StoreReadContext): number | null {
   const row = db
-    .prepare(
-      `SELECT seq
+    .prepare<[string], EventsRow>(
+      `SELECT *
          FROM events
-        WHERE stream_kind = 'job'
-          AND stream_id = ?
+        WHERE stream_id = ?
           AND type = 'job.terminal.recorded'
         ORDER BY seq DESC
         LIMIT 1`,
     )
-    .get(jobId) as { seq: number } | undefined;
+    .get(jobId);
 
-  return row?.seq ?? null;
+  if (row === undefined) return null;
+  decodeStoredBody(row, readCtx);
+  return row.seq;
 }
 
 export const validateJobTerminalOrder: DomainAppendValidator = (ctx, inputs) => {
@@ -121,7 +125,7 @@ export const validateJobTerminalOrder: DomainAppendValidator = (ctx, inputs) => 
     const jobId = input.stream.id;
     let terminalState = terminalByJob.get(jobId);
     if (terminalState === undefined) {
-      const seq = readLatestTerminalSeq(ctx.db, jobId);
+      const seq = readLatestTerminalSeq(ctx.db, jobId, ctx.readCtx);
       terminalState = seq === null ? null : { kind: 'existing', seq };
       terminalByJob.set(jobId, terminalState);
     }
@@ -167,51 +171,22 @@ function createInitialProjectionJobState(event: CoralEvent, patch: Partial<Proje
 }
 
 function readProjectionJob(db: Database, jobId: string): ProjectedJobState | null {
-  const row = db
-    .prepare(
-      `SELECT execution_owner, phase, terminal, diagnostics,
-              session_id, provider, project_root, backend_namespace, bundle_hash,
-              job_kind, parent_workflow_job_id, workflow_slot, workflow_slot_generation,
-              replaces_workflow_job_id, created_at
-         FROM projection_jobs
-        WHERE job_id = ?`,
-    )
-    .get(jobId) as
-    | {
-        execution_owner: string;
-        phase: string;
-        terminal: string | null;
-        diagnostics: string | null;
-        session_id: string | null;
-        provider: string | null;
-        project_root: string;
-        backend_namespace: string;
-        bundle_hash: string | null;
-        job_kind: string;
-        parent_workflow_job_id: string | null;
-        workflow_slot: string | null;
-        workflow_slot_generation: number | null;
-        replaces_workflow_job_id: string | null;
-        created_at: string;
-      }
-    | undefined;
-
-  if (!row) {
+  const row = readProjectionJobRow(db, jobId);
+  if (row === null) {
     return null;
   }
 
   return {
-    owner: executionOwnerSchema.parse(JSON.parse(row.execution_owner)),
-    phase: row.phase as JobPhase,
-    terminal: row.terminal === null ? null : jobTerminalSchema.parse(JSON.parse(row.terminal)),
-    diagnostics:
-      row.diagnostics === null ? emptyJobDiagnostics() : jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics)),
+    owner: decodeProjectionJobExecutionOwner(row),
+    phase: row.phase,
+    terminal: decodeProjectionJobTerminal(row),
+    diagnostics: jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics)),
     sessionId: row.session_id,
     provider: row.provider,
     projectRoot: row.project_root,
     backendNamespace: row.backend_namespace,
     bundleHash: row.bundle_hash,
-    jobKind: row.job_kind as 'provider' | 'workflow' | 'kb',
+    jobKind: row.job_kind,
     parentWorkflowJobId: row.parent_workflow_job_id,
     workflowSlot: row.workflow_slot,
     workflowSlotGeneration: row.workflow_slot_generation,
@@ -251,6 +226,26 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
     replacesWorkflowJobId: patch.replacesWorkflowJobId ?? base.replacesWorkflowJobId,
     createdAt: patch.createdAt ?? base.createdAt,
   };
+
+  decodeProjectionJobStoredRow({
+    job_id: event.stream.id,
+    execution_owner: JSON.stringify(next.owner),
+    phase: next.phase,
+    terminal: next.terminal === null ? null : JSON.stringify(next.terminal),
+    diagnostics: JSON.stringify(next.diagnostics),
+    session_id: next.sessionId,
+    provider: next.provider,
+    project_root: next.projectRoot,
+    backend_namespace: next.backendNamespace,
+    bundle_hash: next.bundleHash,
+    job_kind: next.jobKind,
+    parent_workflow_job_id: next.parentWorkflowJobId,
+    workflow_slot: next.workflowSlot,
+    workflow_slot_generation: next.workflowSlotGeneration,
+    replaces_workflow_job_id: next.replacesWorkflowJobId,
+    created_at: next.createdAt,
+    last_seq: event.seq,
+  });
 
   upsertProjection(db, {
     table: 'projection_jobs',

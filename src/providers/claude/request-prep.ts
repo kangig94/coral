@@ -19,12 +19,15 @@ export type PreparedClaudeRequest = {
 export const permissionModeSchema = z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk']);
 export type PermissionMode = z.infer<typeof permissionModeSchema>;
 
-export interface ClaudeBootstrapSignature {
-  cwd: string;
-  systemPromptHash: string;
-  permissionMode: PermissionMode;
-  bootstrapConfigHash: string;
-}
+export const claudeBootstrapSignatureSchema = z
+  .object({
+    cwd: z.string(),
+    systemPromptHash: z.string(),
+    permissionMode: permissionModeSchema,
+    bootstrapConfigHash: z.string(),
+  })
+  .strict();
+export type ClaudeBootstrapSignature = z.infer<typeof claudeBootstrapSignatureSchema>;
 
 export type ClaudeBootstrapConfiguration = Readonly<{
   conversationRef?: string;
@@ -67,23 +70,8 @@ export function readTurnConversationRef(value: unknown): string | undefined {
 }
 
 export function readBootstrapSignature(value: unknown): ClaudeBootstrapSignature | undefined {
-  const permissionMode = isRecord(value) ? permissionModeSchema.safeParse(value.permissionMode) : null;
-  if (
-    !isRecord(value) ||
-    typeof value.cwd !== 'string' ||
-    typeof value.systemPromptHash !== 'string' ||
-    typeof value.bootstrapConfigHash !== 'string' ||
-    !permissionMode?.success
-  ) {
-    return undefined;
-  }
-
-  return {
-    cwd: value.cwd,
-    systemPromptHash: value.systemPromptHash,
-    permissionMode: permissionMode.data,
-    bootstrapConfigHash: value.bootstrapConfigHash,
-  };
+  const parsed = claudeBootstrapSignatureSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 export function sameBootstrapSignature(a: ClaudeBootstrapSignature, b: ClaudeBootstrapSignature): boolean {

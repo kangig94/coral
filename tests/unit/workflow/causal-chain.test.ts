@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 // Pinning regression test for the canonical worked example
 // "[A] | [B, C] where C fails" — the demonstration that the causal-graph
 // fault model replaces wrapped fault unions: a child job exits non-zero,
@@ -104,7 +105,6 @@ function transactionLaunchAndStart(args: {
       type: 'job.launch.requested',
       stream: { kind: 'job', id: args.jobId },
       refs,
-      bodyVersion: 1,
       body: {
         ...providerLaunchBody({
           sessionId: args.sessionId,
@@ -117,14 +117,12 @@ function transactionLaunchAndStart(args: {
       type: 'job.queue.admitted',
       stream: { kind: 'job', id: args.jobId },
       refs,
-      bodyVersion: 1,
       body: { queuePosition: 0 },
     },
     {
       type: 'job.runtime.started',
       stream: { kind: 'job', id: args.jobId },
       refs,
-      bodyVersion: 1,
       body: {
         transport: 'durable-cli',
         pid: 1234,
@@ -143,7 +141,6 @@ function workflowLaunchAndStart(): CoralEventInput[] {
       type: 'job.launch.requested',
       stream: { kind: 'job', id: WORKFLOW_ID },
       refs,
-      bodyVersion: 1,
       body: {
         owner: { kind: 'workflow', id: WORKFLOW_ID },
         projectRoot: PROJECT_ROOT,
@@ -165,14 +162,12 @@ function workflowLaunchAndStart(): CoralEventInput[] {
       type: 'job.queue.admitted',
       stream: { kind: 'job', id: WORKFLOW_ID },
       refs,
-      bodyVersion: 1,
       body: { queuePosition: 0 },
     },
     {
       type: 'job.runtime.started',
       stream: { kind: 'job', id: WORKFLOW_ID },
       refs,
-      bodyVersion: 1,
       body: { transport: 'workflow', startedAt: NOW.toISOString() },
     },
   ];
@@ -184,7 +179,7 @@ function setup(): {
   store: CoralStore;
 } {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => NOW });
   // Cursor-only base consumers; commit-time reducer writes projections.
   driver.register({ id: 'jobs', authority: 'journal', kind: 'cursor', registrationKind: 'base' });
@@ -219,7 +214,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
       type: 'workflow.plan.declared',
       stream: { kind: 'workflow', id: WORKFLOW_ID },
       refs: { workflowId: WORKFLOW_ID },
-      bodyVersion: 1,
       body: { plan: workflowPlan(), providerScope: TEST_PROVIDER_SCOPE },
     },
     ...workflowLaunchAndStart(),
@@ -238,7 +232,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
       type: 'job.terminal.recorded',
       stream: { kind: 'job', id: 'a-1' },
       refs: { sessionId: 'session-a-1', parentJobId: WORKFLOW_ID, workflowId: WORKFLOW_ID, workflowSlotId: SLOT_A },
-      bodyVersion: 1,
       body: {
         terminal: {
           outcome: { kind: 'completed' },
@@ -273,7 +266,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
       type: 'job.terminal.recorded',
       stream: { kind: 'job', id: 'b-1' },
       refs: { sessionId: 'session-b-1', parentJobId: WORKFLOW_ID, workflowId: WORKFLOW_ID, workflowSlotId: SLOT_B },
-      bodyVersion: 1,
       body: {
         terminal: {
           outcome: { kind: 'completed' },
@@ -294,7 +286,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
           type: 'job.terminal.recorded',
           stream: { kind: 'job', id: 'c-1' },
           refs: { sessionId: 'session-c-1', parentJobId: WORKFLOW_ID, workflowId: WORKFLOW_ID, workflowSlotId: SLOT_C },
-          bodyVersion: 1,
           body: {
             terminal: {
               outcome: { kind: 'provider_exit', code: 1 },
@@ -319,7 +310,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
           type: 'workflow.completed',
           stream: { kind: 'workflow', id: WORKFLOW_ID },
           refs: { workflowId: WORKFLOW_ID },
-          bodyVersion: 1,
           body: {
             outcome: 'failed',
             causeRef: { stream: { kind: 'job', id: 'c-1' }, seq: cTerminalSeq },
@@ -342,7 +332,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
           type: 'job.terminal.recorded',
           stream: { kind: 'job', id: WORKFLOW_ID },
           refs: { jobId: WORKFLOW_ID, workflowId: WORKFLOW_ID },
-          bodyVersion: 1,
           body: {
             terminal: {
               outcome: {

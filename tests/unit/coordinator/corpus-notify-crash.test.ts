@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -201,7 +202,7 @@ describe('Corpus notify crash replay', () => {
 
     const primaryDb = newRawDatabase(dbPath);
     createProjectionTable(primaryDb);
-    applyBundledStoreSchema(primaryDb);
+    applyBundledStoreSchema(primaryDb, currentCoralStoreFormat());
 
     const primaryDriver = new ConsumerDriver({
       db: primaryDb,
