@@ -2,7 +2,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../infra/bundle-manifest.js';
-import { storePaths } from '../infra/path/store.js';
+import { composeCoralPaths } from '../infra/path/index.js';
 import { createNodeStoreResetDiagnosticSupervisor } from '../infra/store-reset-diagnostic-supervisor.js';
 import { createStoreResetInspectionFs } from '../infra/store-reset-inspection-fs.js';
 import {
@@ -42,7 +42,8 @@ function defaultDependencies(): StoreResetCliDependencies {
         executable: process.execPath,
         supervisor: createNodeStoreResetDiagnosticSupervisor(),
       }),
-    quarantineRoot: (manifest) => join(storePaths(manifest.flavor).dbDir, STORE_RESET_QUARANTINE_DIRECTORY),
+    quarantineRoot: (manifest) =>
+      join(composeCoralPaths(manifest.flavor).store.dbDir, STORE_RESET_QUARANTINE_DIRECTORY),
   };
 }
 

@@ -1,0 +1,44 @@
+name: Store-reset incident
+description: Report an unexpected Coral store reset using the public-safe generated report.
+title: "[store-reset] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Run `coral-cli backend store-reset report <incident-id>` and paste its complete output below.
+        The generated Markdown is allowlisted for public sharing. Do not attach database files or raw local diagnostics.
+  - type: textarea
+    id: report
+    attributes:
+      label: Generated store-reset report
+      description: Paste the complete output of the store-reset report command.
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: What happened immediately before the reset?
+      description: Describe the command, update, restart, or crash sequence without including secrets or private content.
+    validations:
+      required: true
+  - type: textarea
+    id: update_context
+    attributes:
+      label: Installation and update context
+      description: State how Coral was installed or updated and which version transition you observed.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safe_disclosure
+    attributes:
+      label: Safe disclosure confirmation
+      options:
+        - label: I did not attach DB, WAL, or SHM files.
+          required: true
+        - label: I did not include `.env`, settings files, credentials, tokens, or account identifiers.
+          required: true
+        - label: I removed unredacted logs and other private local content.
+          required: true

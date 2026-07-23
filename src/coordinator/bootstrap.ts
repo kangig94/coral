@@ -10,6 +10,7 @@ import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
 import { errorMessage } from '../infra/error-format.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
+import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 
 async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
@@ -58,6 +59,13 @@ export async function main(): Promise<number> {
 
   if (process.argv.includes('--print-store-format-fingerprint')) {
     process.stdout.write(`${currentCoralStoreFormat().fingerprint}\n`);
+    return 0;
+  }
+
+  if (process.argv.includes('--print-store-reset-build-identity')) {
+    const identity = resolveStrictBundleIdentity();
+    if (!identity.ok) return 70;
+    process.stdout.write(`${JSON.stringify(identity.manifest)}\n`);
     return 0;
   }
 

@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, normalize, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
@@ -32,9 +32,15 @@ function listSourceFiles(dir: string): string[] {
     .sort();
 }
 
+const sourceFileCache = new Map<string, ts.SourceFile>();
+
 function sourceFile(relativePath: string): ts.SourceFile {
+  const cached = sourceFileCache.get(relativePath);
+  if (cached !== undefined) return cached;
   const absolutePath = join(REPO_ROOT, relativePath);
-  return ts.createSourceFile(absolutePath, readFileSync(absolutePath, 'utf8'), ts.ScriptTarget.Latest, true);
+  const parsed = ts.createSourceFile(absolutePath, readFileSync(absolutePath, 'utf8'), ts.ScriptTarget.Latest, true);
+  sourceFileCache.set(relativePath, parsed);
+  return parsed;
 }
 
 function propertyNameText(name: ts.PropertyName | ts.BindingName): string | null {
@@ -122,8 +128,55 @@ function findFunction(relativePath: string, name: string): ts.FunctionDeclaratio
   return match;
 }
 
+let allSourcePathsCache: string[] | null = null;
+let allSourcePathSetCache: Set<string> | null = null;
+
 function allSourcePaths(): string[] {
-  return listSourceFiles(SRC_ROOT).map(toRepoPath);
+  allSourcePathsCache ??= listSourceFiles(SRC_ROOT).map(toRepoPath);
+  return allSourcePathsCache;
+}
+
+function allSourcePathSet(): Set<string> {
+  allSourcePathSetCache ??= new Set(allSourcePaths());
+  return allSourcePathSetCache;
+}
+
+function resolveSourceImport(from: string, specifier: string): string | null {
+  let candidate: string;
+  if (specifier.startsWith('#src/')) {
+    candidate = join(REPO_ROOT, 'src', specifier.slice('#src/'.length));
+  } else if (specifier.startsWith('.')) {
+    candidate = resolve(REPO_ROOT, dirname(from), specifier);
+  } else {
+    return null;
+  }
+  const normalized = normalize(candidate).replace(/\.js$/u, '.ts').replaceAll('\\', '/');
+  const repoPath = toRepoPath(normalized);
+  const sourcePaths = allSourcePathSet();
+  if (repoPath.startsWith('src/') && sourcePaths.has(repoPath)) return repoPath;
+  const indexPath = repoPath.replace(/\/?$/u, '/index.ts');
+  return sourcePaths.has(indexPath) ? indexPath : null;
+}
+
+function sourceImports(relativePath: string): string[] {
+  const source = sourceFile(relativePath);
+  return source.statements.filter(ts.isImportDeclaration).flatMap((statement) => {
+    const specifier = ts.isStringLiteral(statement.moduleSpecifier) ? statement.moduleSpecifier.text : '';
+    const resolved = resolveSourceImport(relativePath, specifier);
+    return resolved === null ? [] : [resolved];
+  });
+}
+
+function importClosure(roots: readonly string[]): Set<string> {
+  const visited = new Set<string>();
+  const pending = [...roots];
+  while (pending.length > 0) {
+    const next = pending.pop();
+    if (next === undefined || visited.has(next)) continue;
+    visited.add(next);
+    pending.push(...sourceImports(next));
+  }
+  return visited;
 }
 
 describe('store reset discipline invariants', () => {
@@ -196,5 +249,39 @@ describe('store reset discipline invariants', () => {
 
     expect(lockIndex).toBeGreaterThanOrEqual(0);
     expect(quarantineIndex).toBeGreaterThan(lockIndex);
+  });
+
+  it('keeps every store-reset support import closure outside reset authority and generic DB openers', () => {
+    const supportRoots = [
+      'src/cli/store-reset.ts',
+      'src/cli/format/store-reset.ts',
+      'src/store/reset-incident-reader.ts',
+      'src/store/reset-incident-diagnostic.ts',
+      'src/store/reset-incident-inspection-fs.ts',
+      'src/infra/store-reset-inspection-fs.ts',
+      'src/infra/store-reset-diagnostic-supervisor.ts',
+    ];
+    const supportClosure = importClosure(supportRoots);
+    const cliClosure = importClosure(['src/cli/bootstrap.ts']);
+
+    expect(supportClosure.has(BACKEND_STORE_RESET_PATH)).toBe(false);
+    expect(supportClosure.has('src/store/db.ts')).toBe(false);
+    expect(cliClosure.has(BACKEND_STORE_RESET_PATH)).toBe(false);
+  });
+
+  it('keeps lifecycle as the sole production importer of the backend reset boundary', () => {
+    const importers = allSourcePaths()
+      .filter((path) => sourceImports(path).includes(BACKEND_STORE_RESET_PATH))
+      .sort();
+    expect(importers).toEqual(['src/coordinator/lifecycle.ts']);
+
+    const symbolAllowlist = new Set([BACKEND_STORE_RESET_PATH, 'src/coordinator/lifecycle.ts']);
+    const forbiddenReferences = allSourcePaths()
+      .filter((path) => !symbolAllowlist.has(path))
+      .flatMap((path) => {
+        const source = readFileSync(join(REPO_ROOT, path), 'utf8');
+        return /createBackendStoreResetAuthority|openOrResetBackendStoreDb|publishIncident/u.test(source) ? [path] : [];
+      });
+    expect(forbiddenReferences).toEqual([]);
   });
 });
