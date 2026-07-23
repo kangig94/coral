@@ -199,6 +199,10 @@ function fail(code: StoreResetManifestDecodeErrorCode): never {
   throw new StoreResetManifestDecodeError(code);
 }
 
+export function isCanonicalStoreResetIncidentId(value: string): boolean {
+  return UUID_PATTERN.test(value);
+}
+
 class BoundedJsonReader {
   readonly #text: string;
   #offset = 0;

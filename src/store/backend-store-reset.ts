@@ -348,7 +348,7 @@ function warnBackendStoreReset(
   backendLog.warn(
     `Backend store format mismatch (stored fingerprint ${storedFingerprint(classification) ?? 'missing'}, ` +
       `expected ${classification.current}); resetting backend store. ` +
-      'All Coral job, discussion, and workflow history/state is unavailable in the new store; ' +
+      'Active Coral history/state is unavailable in the new store; ' +
       'KB Markdown is unaffected. ' +
       (incident === undefined
         ? ''

@@ -430,12 +430,24 @@ describe('openOrResetBackendStoreDb', () => {
     db.close();
 
     const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+    const incidentId = readdirSync(join(dirname(dbPath), 'store-reset-quarantine'))[0];
     expect(
-      messages.some((message) => message.includes('resetting backend store') && message.includes('is unavailable')),
+      messages.some(
+        (message) =>
+          message.includes('resetting backend store') &&
+          message.includes('Active Coral history/state is unavailable') &&
+          message.includes('KB Markdown is unaffected') &&
+          message.includes(`coral-cli backend store-reset report ${incidentId}`),
+      ),
     ).toBe(true);
-    expect(
-      messages.some((message) => message.startsWith('audit ') && message.includes('"event":"store_reset_quarantine"')),
-    ).toBe(true);
+    const audit = messages.find(
+      (message) => message.startsWith('audit ') && message.includes('"event":"store_reset_quarantine"'),
+    );
+    expect(audit).toBeDefined();
+    expect(audit).not.toContain(dbPath);
+    expect(audit).not.toContain('quarantineDir');
+    expect(audit).not.toContain('"files"');
+    expect(messages.join('\n')).not.toContain('Recover');
   });
 
   it('cleans up stale WAL and SHM siblings during mismatch reset', () => {
