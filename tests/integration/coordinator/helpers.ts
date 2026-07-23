@@ -1,5 +1,15 @@
 import { spawn } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  appendFileSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,8 +20,16 @@ import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { storePaths } from '#src/infra/path/store.js';
 
 const sourceBackendBundle = join(process.cwd(), 'clients', 'build', 'coral-backend.cjs');
+const sourceCliBundle = join(process.cwd(), 'clients', 'build', 'coral-cli.cjs');
+const sourceClaudeAppserverBundle = join(process.cwd(), 'clients', 'build', 'coral-claude-appserver.cjs');
 const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'clients', 'build', 'manifest.json'), 'utf-8')) as {
+  version: string;
+  buildSetId: string;
   bundleHash: string;
+  cliBundleHash: string;
+  claudeAppserverBundleHash: string;
+  flavor: BuildFlavor;
+  storeFormatFingerprint: string;
 };
 
 export type PluginFixture = {
@@ -42,12 +60,24 @@ export function createPluginFixture(
   tempRoots.push(root);
 
   mkdirSync(join(root, 'bridge'), { recursive: true });
-  copyFileSync(sourceBackendBundle, join(root, 'bridge', 'coral-backend.cjs'));
+  const backendPath = join(root, 'bridge', 'coral-backend.cjs');
+  copyFileSync(sourceBackendBundle, backendPath);
+  if (options.bundleHash !== undefined) {
+    appendFileSync(backendPath, `\n// fixture ${options.bundleHash}\n`);
+  }
+  const bundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);
+  copyFileSync(sourceCliBundle, join(root, 'bridge', 'coral-cli.cjs'));
+  copyFileSync(sourceClaudeAppserverBundle, join(root, 'bridge', 'coral-claude-appserver.cjs'));
   writeFileSync(
     join(root, 'bridge', 'manifest.json'),
     JSON.stringify({
-      bundleHash: options.bundleHash ?? sourceManifest.bundleHash,
+      version: sourceManifest.version,
+      buildSetId: sourceManifest.buildSetId,
+      bundleHash,
+      cliBundleHash: sourceManifest.cliBundleHash,
+      claudeAppserverBundleHash: sourceManifest.claudeAppserverBundleHash,
       flavor: options.flavor,
+      storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
     }) + '\n',
     'utf-8',
   );
@@ -62,17 +92,28 @@ export function createPluginFixture(
   return {
     root,
     flavor: options.flavor,
-    bundleHash: options.bundleHash ?? sourceManifest.bundleHash,
+    bundleHash,
   };
 }
 
 export function updatePluginFixtureBundleHash(fixture: PluginFixture, bundleHash: string): PluginFixture {
+  const backendPath = join(fixture.root, 'bridge', 'coral-backend.cjs');
+  appendFileSync(backendPath, `\n// fixture ${bundleHash}\n`);
+  const effectiveBundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);
   writeFileSync(
     join(fixture.root, 'bridge', 'manifest.json'),
-    `${JSON.stringify({ bundleHash, flavor: fixture.flavor })}\n`,
+    `${JSON.stringify({
+      version: sourceManifest.version,
+      buildSetId: sourceManifest.buildSetId,
+      bundleHash: effectiveBundleHash,
+      cliBundleHash: sourceManifest.cliBundleHash,
+      claudeAppserverBundleHash: sourceManifest.claudeAppserverBundleHash,
+      flavor: fixture.flavor,
+      storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
+    })}\n`,
     'utf-8',
   );
-  return { ...fixture, bundleHash };
+  return { ...fixture, bundleHash: effectiveBundleHash };
 }
 
 export function coordinatorFilesForHome(home: string, flavor: BuildFlavor) {

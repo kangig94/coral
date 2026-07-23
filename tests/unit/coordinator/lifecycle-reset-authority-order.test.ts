@@ -9,7 +9,7 @@ import { createLifecycle, STARTUP_STORE_BUSY_TIMEOUT_MS, type LifecycleDeps } fr
 import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as HandoffMod from '#src/coordinator/handoff.js';
-import type * as StoreDbMod from '#src/store/db.js';
+import type * as BackendStoreResetMod from '#src/store/backend-store-reset.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 
 const mockState = vi.hoisted(() => {
@@ -36,8 +36,8 @@ vi.mock('#src/coordinator/handoff.js', async (importOriginal) => {
   };
 });
 
-vi.mock('#src/store/db.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof StoreDbMod>();
+vi.mock('#src/store/backend-store-reset.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof BackendStoreResetMod>();
   return {
     ...actual,
     createBackendStoreResetAuthority: vi.fn((runtime, handoff, options) => {
@@ -45,7 +45,9 @@ vi.mock('#src/store/db.js', async (importOriginal) => {
       return {
         socketPath: runtime.paths.coral.coordinator.socketPath,
         storeDbPath: runtime.paths.coral.store.dbFile,
-        bundleHash: options.bundleHash,
+        version: options.build.version,
+        buildSetId: options.build.buildSetId,
+        bundleHash: options.build.bundleHash,
         flavor: runtime.flavor,
         namespace: options.namespace,
         acquiredViaHandoff: handoff.acquiredViaHandoff,
@@ -169,7 +171,10 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
         pluginRoot: '/tmp/plugin',
         namespace: 'test-ns',
         version: 'test-version',
+        buildSetId: '00000000-0000-4000-8000-000000000000',
         bundleHash: 'test-bundle',
+        cliBundleHash: 'test-cli-bundle',
+        claudeAppserverBundleHash: 'test-claude-appserver-bundle',
         flavor: 'prod',
         instanceId: 'test-instance',
         token: 'test-token',
@@ -326,6 +331,42 @@ describe('lifecycle reset authority and finalizer order', () => {
     );
   });
 
+  it('propagates actual incumbent handoff provenance into reset authority', async () => {
+    const { deps } = makeLifecycleDeps();
+    const handoff = await import('#src/coordinator/handoff.js');
+    const storeReset = await import('#src/store/backend-store-reset.js');
+    vi.mocked(handoff.bindWithHandoff).mockResolvedValueOnce({ acquiredViaHandoff: true });
+
+    await createLifecycle(deps).start();
+
+    expect(storeReset.createBackendStoreResetAuthority).toHaveBeenCalledWith(
+      expect.anything(),
+      { acquiredViaHandoff: true },
+      expect.anything(),
+    );
+  });
+
+  it('uses false handoff provenance when startup has no IPC listener', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    const deps: LifecycleDeps = {
+      ...baseDeps,
+      ipcServer: undefined,
+      listenIpcFn: undefined,
+      closeIpcServerFn: undefined,
+    };
+    const handoff = await import('#src/coordinator/handoff.js');
+    const storeReset = await import('#src/store/backend-store-reset.js');
+
+    await createLifecycle(deps).start();
+
+    expect(handoff.bindWithHandoff).not.toHaveBeenCalled();
+    expect(storeReset.createBackendStoreResetAuthority).toHaveBeenCalledWith(
+      expect.anything(),
+      { acquiredViaHandoff: false },
+      expect.anything(),
+    );
+  });
+
   it('threads the startup abort signal into handoff binding', async () => {
     const { deps } = makeLifecycleDeps();
     const lifecycle = createLifecycle(deps);
@@ -342,7 +383,7 @@ describe('lifecycle reset authority and finalizer order', () => {
   it('opens the startup store with a short busy timeout', async () => {
     const { deps } = makeLifecycleDeps();
     const lifecycle = createLifecycle(deps);
-    const storeDb = await import('#src/store/db.js');
+    const storeDb = await import('#src/store/backend-store-reset.js');
 
     await lifecycle.start();
 

@@ -3,7 +3,7 @@
 exports[`cli main routing > preserves help output for 'backend' via snapshot 1`] = `
 "Usage: coral-cli backend [options] [command]
 
-Backend daemon control
+Backend administration and local incident inspection
 
 Options:
   -h, --help      display help for command
@@ -11,6 +11,7 @@ Options:
 Commands:
   status          Show backend daemon status
   shutdown        Gracefully shut down backend daemon
+  store-reset     Inspect retained store-reset incidents
   help [command]  display help for command
 "
 `;
@@ -187,7 +188,7 @@ Commands:
   abort [options]           Abort running jobs
   workflow [options]        Execute a workflow; binds every provider profile
                             referenced by the workflow for its full lifetime
-  backend                   Backend daemon control
+  backend                   Backend administration and local incident inspection
   discuss                   Discussion operations
   kb                        Knowledge base operations
   expansion                 Manage expansion packages

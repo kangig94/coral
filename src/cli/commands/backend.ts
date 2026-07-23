@@ -5,9 +5,26 @@ import { shutdownBackend } from '../../transport/http/backend/shutdown.js';
 import { getPluginRoot } from '../dispatch.js';
 import { emitError } from '../emit.js';
 import { formatBackendStatus, formatShutdown } from '../format/backend.js';
+import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
+import {
+  boundStoreResetCliError,
+  listStoreResetIncidentsLocal,
+  reportStoreResetIncidentLocal,
+} from '../store-reset.js';
 
-export function registerBackendCommands(program: Command): void {
-  const backend = program.command('backend').description('Backend daemon control');
+export interface StoreResetCommandOperations {
+  list(): ReturnType<typeof listStoreResetIncidentsLocal>;
+  report(incidentId: string): ReturnType<typeof reportStoreResetIncidentLocal>;
+}
+
+export function registerBackendCommands(
+  program: Command,
+  storeReset: StoreResetCommandOperations = {
+    list: listStoreResetIncidentsLocal,
+    report: reportStoreResetIncidentLocal,
+  },
+): void {
+  const backend = program.command('backend').description('Backend administration and local incident inspection');
 
   const statusCommand = backend.command('status');
   statusCommand.description('Show backend daemon status').action(async () => {
@@ -36,4 +53,27 @@ export function registerBackendCommands(program: Command): void {
       emitError(error);
     }
   });
+
+  const storeResetCommand = backend.command('store-reset').description('Inspect retained store-reset incidents');
+  storeResetCommand
+    .command('list')
+    .description('List retained store-reset incidents and reportability')
+    .action(() => {
+      try {
+        process.stdout.write(`${formatStoreResetList(storeReset.list())}\n`);
+      } catch (error: unknown) {
+        emitError(boundStoreResetCliError(error));
+      }
+    });
+  storeResetCommand
+    .command('report')
+    .description('Generate a public-safe store-reset incident report')
+    .argument('<incident-id>', 'Canonical lowercase UUID shown by backend store-reset list')
+    .action(async (incidentId: string) => {
+      try {
+        process.stdout.write(formatStoreResetReport(await storeReset.report(incidentId)));
+      } catch (error: unknown) {
+        emitError(boundStoreResetCliError(error));
+      }
+    });
 }

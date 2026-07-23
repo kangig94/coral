@@ -6,7 +6,7 @@ import { ProviderRegistry } from '../../providers/registry.js';
 import { providerScopeSchema, type ProviderScope } from '../../infra/provider-scope.js';
 import { writeAuditEvent } from '../../infra/audit-log.js';
 import { backendLog } from '../../infra/backend-log.js';
-import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
+import { readBuildFlavor, readBundleHash, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { assertRemoteAddressLiteral } from '../../infra/remote-address.js';
 import type { RemoteHttpAccessPolicy } from '../../transport/server-ports.js';
 import type { CoordinatorIdentity } from '../lifecycle.js';
@@ -173,11 +173,25 @@ export function createCoordinatorWorld(
   const namespace = options.backendNamespace ?? pluginRootNamespace(pluginRoot);
   const resolveProjectSource =
     options.resolveProjectSourceFn ?? ((projectRoot: string) => runtime.paths.projectSource(projectRoot));
+  const strictBuild = resolveStrictBundleIdentity();
+  if (!strictBuild.ok && strictBuild.reason !== 'embedded_identity_unavailable') {
+    throw new Error('Coordinator build identity does not match its adjacent manifest.');
+  }
+  if (strictBuild.ok && strictBuild.manifest.storeFormatFingerprint !== options.storeFormat.fingerprint) {
+    throw new Error('Coordinator store format does not match its adjacent manifest.');
+  }
   const bundledVersion = typeof __VERSION__ === 'string' ? __VERSION__ : '0.1.0';
-  const version = bootSnapshot.version ?? bundledVersion;
-  const bundleHash = bootSnapshot.bundleHash ?? readBundleHash(pluginRoot);
+  const version = strictBuild.ok ? strictBuild.manifest.version : (bootSnapshot.version ?? bundledVersion);
+  const buildSetId = strictBuild.ok
+    ? strictBuild.manifest.buildSetId
+    : (bootSnapshot.buildSetId ?? '00000000-0000-4000-8000-000000000000');
+  const bundleHash = strictBuild.ok
+    ? strictBuild.manifest.bundleHash
+    : (bootSnapshot.bundleHash ?? readBundleHash(pluginRoot));
+  const cliBundleHash = strictBuild.ok ? strictBuild.manifest.cliBundleHash : bundleHash;
+  const claudeAppserverBundleHash = strictBuild.ok ? strictBuild.manifest.claudeAppserverBundleHash : bundleHash;
   backendLog.init({ version, bundleHash });
-  const flavor = bootSnapshot.flavor ?? readBuildFlavor(pluginRoot);
+  const flavor = strictBuild.ok ? strictBuild.manifest.flavor : (bootSnapshot.flavor ?? readBuildFlavor(pluginRoot));
   const instanceId = bootSnapshot.instanceId ?? runtime.ids.uuid();
   const token = bootSnapshot.token ?? runtime.ids.randomBytes(32).toString('hex');
   const bootToken = bootSnapshot.bootToken ?? runtime.ids.randomBytes(32).toString('hex');
@@ -238,7 +252,10 @@ export function createCoordinatorWorld(
     pluginRoot,
     namespace,
     version,
+    buildSetId,
     bundleHash,
+    cliBundleHash,
+    claudeAppserverBundleHash,
     flavor,
     instanceId,
     token,

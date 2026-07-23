@@ -23,6 +23,16 @@ export interface DirentLike {
 
 export type StorageData = string | Uint8Array;
 
+export type StorageBigIntStat = {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly mode: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+  isDirectory(): boolean;
+  isFile(): boolean;
+};
+
 export interface StoragePort {
   readFile(path: string, encoding: 'utf-8'): Promise<string>;
   readFileSync(path: string, encoding: 'utf-8'): string;
@@ -32,16 +42,20 @@ export interface StoragePort {
   rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
   readdirSync(path: string): string[];
   readdirSync(path: string, options: { withFileTypes: true }): DirentLike[];
-  statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
-  statSync(
+  readDirectoryBoundedSync(
     path: string,
-    options: { bigint: true },
-  ): { size: bigint; mtimeNs: bigint; isDirectory(): boolean; isFile(): boolean };
+    limit: number,
+  ): { readonly entries: readonly string[]; readonly overflow: boolean };
+  statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
+  statSync(path: string, options: { bigint: true }): StorageBigIntStat;
+  fstatSync(fd: number, options: { bigint: true }): StorageBigIntStat;
   lstatSync(path: string): { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
   realpathSync(path: string): string;
   existsSync(path: string): boolean;
-  openSync(path: string, flags: string): number;
+  openSync(path: string, flags: string, mode?: number): number;
   readSync(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number;
+  writeSync(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number;
+  fdatasyncSync(fd: number): void;
   closeSync(fd: number): void;
   appendFileSync(path: string, data: string): void;
   appendFileDurableSync(path: string, data: string): boolean;
@@ -63,6 +77,7 @@ export interface StoragePort {
     data: StorageData,
     options?: { encoding?: BufferEncoding; mode?: number },
   ): boolean;
+  syncDirectoryDurableSync(path: string): boolean;
   chmodSync(path: string, mode: number): void;
 }
 

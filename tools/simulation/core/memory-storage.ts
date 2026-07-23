@@ -25,7 +25,7 @@ type DirectoryNode = FileIdentity & {
 type OpenFile = {
   path: string;
   position: number;
-  mode: 'r' | 'a';
+  mode: 'r' | 'a' | 'wx';
   identity: FileIdentity;
 };
 
@@ -407,6 +407,20 @@ export class InMemoryStorage implements StoragePort {
     return sortedNames;
   }
 
+  readDirectoryBoundedSync(
+    path: string,
+    limit: number,
+  ): { readonly entries: readonly string[]; readonly overflow: boolean } {
+    if (!Number.isSafeInteger(limit) || limit < 0) {
+      throw new TypeError('Directory entry limit must be a non-negative safe integer.');
+    }
+    const entries = this.readdirSync(path);
+    return {
+      entries: entries.slice(0, limit),
+      overflow: entries.length > limit,
+    };
+  }
+
   lstatSync(path: string): { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean } {
     const normalized = normalizePathForStorage(path);
     if (this.files.has(normalized)) {
@@ -438,18 +452,37 @@ export class InMemoryStorage implements StoragePort {
   statSync(
     path: string,
     options: { bigint: true },
-  ): { size: bigint; mtimeNs: bigint; isDirectory(): boolean; isFile(): boolean };
+  ): {
+    dev: bigint;
+    ino: bigint;
+    mode: bigint;
+    size: bigint;
+    mtimeNs: bigint;
+    isDirectory(): boolean;
+    isFile(): boolean;
+  };
   statSync(
     path: string,
     options?: { bigint: true },
   ):
     | { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean }
-    | { size: bigint; mtimeNs: bigint; isDirectory(): boolean; isFile(): boolean } {
+    | {
+        dev: bigint;
+        ino: bigint;
+        mode: bigint;
+        size: bigint;
+        mtimeNs: bigint;
+        isDirectory(): boolean;
+        isFile(): boolean;
+      } {
     const normalized = normalizePathForStorage(path);
     const file = this.files.get(normalized);
     if (file) {
       if (options?.bigint === true) {
         return {
+          dev: BigInt(file.dev),
+          ino: BigInt(file.ino),
+          mode: BigInt(file.mode ?? 0o600),
           size: BigInt(file.content.length),
           mtimeNs: file.mtimeNs,
           isDirectory: () => false,
@@ -469,6 +502,9 @@ export class InMemoryStorage implements StoragePort {
     }
     if (options?.bigint === true) {
       return {
+        dev: BigInt(directory.dev),
+        ino: BigInt(directory.ino),
+        mode: BigInt(directory.mode ?? 0o700),
         size: 0n,
         mtimeNs: directory.mtimeNs,
         isDirectory: () => true,
@@ -483,17 +519,48 @@ export class InMemoryStorage implements StoragePort {
     };
   }
 
+  fstatSync(
+    fd: number,
+    _options: { bigint: true },
+  ): {
+    dev: bigint;
+    ino: bigint;
+    mode: bigint;
+    size: bigint;
+    mtimeNs: bigint;
+    isDirectory(): boolean;
+    isFile(): boolean;
+  } {
+    const open = this.openFiles.get(fd);
+    if (!open) {
+      throw createErrnoError('EBADF', String(fd));
+    }
+    const file = this.requireOpenFileNode(open);
+    return {
+      dev: BigInt(file.dev),
+      ino: BigInt(file.ino),
+      mode: BigInt(file.mode ?? 0o600),
+      size: BigInt(file.content.length),
+      mtimeNs: file.mtimeNs,
+      isDirectory: () => false,
+      isFile: () => true,
+    };
+  }
+
   existsSync(path: string): boolean {
     const normalized = normalizePathForStorage(path);
     return this.files.has(normalized) || this.directories.has(normalized);
   }
 
-  openSync(path: string, flags: string): number {
+  openSync(path: string, flags: string, mode?: number): number {
     const normalized = normalizePathForStorage(path);
-    if (flags !== 'r' && flags !== 'a') {
-      throw new Error(`InMemoryStorage.openSync only supports 'r' and 'a' (received ${flags})`);
+    if (flags !== 'r' && flags !== 'a' && flags !== 'wx') {
+      throw new Error(`InMemoryStorage.openSync only supports 'r', 'a', and 'wx' (received ${flags})`);
     }
     let file = this.files.get(normalized);
+    if (flags === 'wx' && (file !== undefined || this.directories.has(normalized))) {
+      throw createErrnoError('EEXIST', normalized);
+    }
     if (!file) {
       if (this.directories.has(normalized)) {
         throw createErrnoError('EISDIR', normalized);
@@ -506,6 +573,7 @@ export class InMemoryStorage implements StoragePort {
       file = {
         kind: 'file',
         content: Buffer.alloc(0),
+        mode,
         ...this.nextIdentity(),
         ...this.nextStamps(),
       };
@@ -538,6 +606,36 @@ export class InMemoryStorage implements StoragePort {
     slice.copy(buffer, offset, 0, slice.length);
     open.position = end;
     return slice.length;
+  }
+
+  writeSync(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number {
+    const open = this.openFiles.get(fd);
+    if (!open) {
+      throw createErrnoError('EBADF', String(fd));
+    }
+    if (open.mode !== 'a' && open.mode !== 'wx') {
+      throw createErrnoError('EBADF', String(fd));
+    }
+    const file = this.requireOpenFileNode(open);
+    const start = open.mode === 'a' ? file.content.length : (position ?? open.position);
+    const end = start + length;
+    if (end > file.content.length) {
+      const expanded = Buffer.alloc(end);
+      file.content.copy(expanded);
+      file.content = expanded;
+    }
+    buffer.copy(file.content, start, offset, offset + length);
+    open.position = end;
+    const stamps = this.nextStamps();
+    file.mtimeMs = stamps.mtimeMs;
+    file.mtimeNs = stamps.mtimeNs;
+    return length;
+  }
+
+  fdatasyncSync(fd: number): void {
+    if (!this.openFiles.has(fd)) {
+      throw createErrnoError('EBADF', String(fd));
+    }
   }
 
   closeSync(fd: number): void {
@@ -678,6 +776,10 @@ export class InMemoryStorage implements StoragePort {
     options?: { encoding?: BufferEncoding; mode?: number },
   ): boolean {
     return this.writeAtomicSync(path, data, options);
+  }
+
+  syncDirectoryDurableSync(path: string): boolean {
+    return this.directories.has(normalizePathForStorage(path));
   }
 
   chmodSync(path: string, mode: number): void {

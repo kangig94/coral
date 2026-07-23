@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
-import { UsageError, buildErrorEnvelope, errorCodeToExit } from '#src/cli/errors.js';
+import { StoreResetCliError, UsageError, buildErrorEnvelope, errorCodeToExit } from '#src/cli/errors.js';
 
 describe('cli errors', () => {
   describe('buildErrorEnvelope', () => {
@@ -86,6 +86,58 @@ describe('cli errors', () => {
         exitCode: 70,
       });
     });
+
+    it.each([
+      [
+        'invalid_store_reset_incident_id',
+        'Incident ID must be a canonical lowercase UUID.',
+        'Run `coral-cli backend store-reset list` and use the ID of an incident in the `ready` state.',
+        2,
+      ],
+      [
+        'store_reset_incident_not_found',
+        'Store-reset incident not found.',
+        'Run `coral-cli backend store-reset list`. If no incident is retained, file a Store-reset incident issue with this complete fixed error output; do not attach DB, WAL, SHM, or raw logs.',
+        1,
+      ],
+      [
+        'store_reset_incident_limit_exceeded',
+        'Too many retained store-reset entries to list safely; report a known incident ID directly.',
+        'Use an incident ID from the reset warning. If none is available, file a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
+        1,
+      ],
+      [
+        'store_reset_build_mismatch',
+        'Store-reset reporting is unavailable because the installed build artifacts do not match.',
+        'Reinstall or update Coral through the same install method without deleting Coral data, then retry. If it persists, file a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
+        70,
+      ],
+      [
+        'store_reset_incident_build_mismatch',
+        'The retained incident belongs to a different Coral build set and cannot be reported by this build.',
+        'Keep the incident in place and file a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
+        70,
+      ],
+      [
+        'store_reset_reporting_failed',
+        'Store-reset reporting failed.',
+        'Retry once. If it still fails, file a Store-reset incident issue with this fixed error output; do not move, restore, delete, or attach DB, WAL, SHM, or raw logs.',
+        70,
+      ],
+    ] as const)(
+      'maps the closed store-reset error %s without private detail',
+      (code, message, remediation, exitCode) => {
+        expect(buildErrorEnvelope(new StoreResetCliError(code))).toEqual({
+          envelope: {
+            error: true,
+            code,
+            message,
+            remediation,
+          },
+          exitCode,
+        });
+      },
+    );
 
     it.each([
       [{ code: 'backend_shutting_down', message: 'Backend shutting down' }, 503, 75],

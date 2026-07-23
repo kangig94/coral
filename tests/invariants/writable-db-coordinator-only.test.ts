@@ -16,6 +16,9 @@ type DbOpenCall = {
 const EXPLICIT_ALLOWLIST = new Set([
   // Store factory internals are the source of truth for opening backend-store DBs.
   'src/store/db.ts:openStoreDatabase',
+  // The branded reset boundary opens the freshly recreated active store only
+  // after the coordinator-owned lifecycle supplies reset authority.
+  'src/store/backend-store-reset.ts:openStoreDatabase',
   // CLI install path persists the installed-expansion manifest catalog after
   // installer success using the no-reset catalog writer.
   'src/cli/expansion/install.ts:openWritableStoreDbNoReset',

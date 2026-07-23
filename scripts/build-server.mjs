@@ -1,6 +1,6 @@
 import * as esbuild from 'esbuild';
 import { execFileSync } from 'child_process';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { chmodSync, copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
@@ -26,11 +26,22 @@ function parseArgs(argv) {
 }
 
 const { flavor, release } = parseArgs(process.argv.slice(2));
+const buildSetId = randomUUID();
 // Debug-only simulation must keep compiling against production source and must
 // stay sealed from concrete provider/bootstrap implementations.
 execFileSync('node', ['scripts/check-simulation.mjs'], { stdio: 'inherit' });
 
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+const placeholderStoreFormatFingerprint = `sha256:${'0'.repeat(64)}`;
+
+function bundleBanner(storeFormatFingerprint) {
+  return (
+    `var __CORAL_BUILD_IDENTITY__=${JSON.stringify({ version, buildSetId, flavor, storeFormatFingerprint })};` +
+    'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' +
+    'var __BUNDLE_DIR__=__dirname;' +
+    'var __importMetaUrl=require("url").pathToFileURL(__filename).href;'
+  );
+}
 
 // Sync manifest versions (single source of truth: package.json). The plugin
 // manifests live under clients/ (the plugin root); marketplace.json stays at
@@ -78,13 +89,13 @@ const sharedOpts = {
   loader: { '.sql': 'text' },
   minify: true,
   banner: {
-    js:
-      'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' +
-      'var __BUNDLE_DIR__=__dirname;' +
-      'var __importMetaUrl=require("url").pathToFileURL(__filename).href;',
+    js: bundleBanner(placeholderStoreFormatFingerprint),
   },
   define: {
     __VERSION__: JSON.stringify(version),
+    __BUILD_SET_ID__: JSON.stringify(buildSetId),
+    __BUILD_FLAVOR__: JSON.stringify(flavor),
+    __STORE_FORMAT_FINGERPRINT__: JSON.stringify(placeholderStoreFormatFingerprint),
     // esbuild empties `import.meta` in CJS output, so `import.meta.url` would be
     // `undefined`; redirect it to a banner-injected file URL of the bundle file
     // so `createRequire(import.meta.url)` (e.g. engines/kiwi/paths.ts) resolves.
@@ -99,7 +110,6 @@ await esbuild.build({
   define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
 });
 
-const backendBundle = readFileSync('clients/build/coral-backend.cjs', 'utf8');
 const storeFormatFingerprint = execFileSync(
   process.execPath,
   ['clients/build/coral-backend.cjs', '--print-store-format-fingerprint'],
@@ -108,13 +118,23 @@ const storeFormatFingerprint = execFileSync(
 if (!/^sha256:[a-f0-9]{64}$/.test(storeFormatFingerprint)) {
   throw new Error(`Built backend reported an invalid store format fingerprint: ${storeFormatFingerprint}`);
 }
+sharedOpts.banner.js = bundleBanner(storeFormatFingerprint);
+sharedOpts.define.__STORE_FORMAT_FINGERPRINT__ = JSON.stringify(storeFormatFingerprint);
+await esbuild.build({
+  ...sharedOpts,
+  entryPoints: ['src/coordinator/bootstrap.ts'],
+  outfile: 'clients/build/coral-backend.cjs',
+  define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
+});
+
+const backendBundle = readFileSync('clients/build/coral-backend.cjs');
 for (const fragmentPath of ['core.md', 'tools.md', 'kb/common.md', 'kb/session.md']) {
-  if (!backendBundle.includes(JSON.stringify(fragmentPath))) {
+  if (!backendBundle.includes(Buffer.from(JSON.stringify(fragmentPath)))) {
     throw new Error(`Built backend does not reference inject fragment: ${fragmentPath}`);
   }
 }
 const legacyInjectMonolith = 'INJECT.md';
-if (backendBundle.includes(JSON.stringify(legacyInjectMonolith))) {
+if (backendBundle.includes(Buffer.from(JSON.stringify(legacyInjectMonolith)))) {
   throw new Error('Built backend still references the removed monolithic inject file');
 }
 console.log('Built clients/build/coral-backend.cjs');
@@ -136,13 +156,22 @@ console.log('Built clients/build/coral-claude-appserver.cjs');
 
 // Write bundle manifest with content hash for version-independent change detection
 const backendHash = createHash('sha256').update(backendBundle).digest('hex').slice(0, 16);
+const cliHash = createHash('sha256').update(readFileSync('clients/build/coral-cli.cjs')).digest('hex').slice(0, 16);
+const claudeAppserverHash = createHash('sha256')
+  .update(readFileSync('clients/build/coral-claude-appserver.cjs'))
+  .digest('hex')
+  .slice(0, 16);
 const manifestPath = 'clients/build/manifest.json';
 const manifestTmp = manifestPath + '.tmp';
 
 writeFileSync(
   manifestTmp,
   JSON.stringify({
+    version,
+    buildSetId,
     bundleHash: backendHash,
+    cliBundleHash: cliHash,
+    claudeAppserverBundleHash: claudeAppserverHash,
     flavor,
     storeFormatFingerprint,
   }) + '\n',

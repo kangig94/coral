@@ -225,19 +225,40 @@ Build manifest written by `scripts/build-server.mjs`:
 
 ```json
 {
+  "version": "0.9.16",
+  "buildSetId": "<build-set-uuid>",
   "bundleHash": "<backend-bundle-hash>",
+  "cliBundleHash": "<cli-bundle-hash>",
+  "claudeAppserverBundleHash": "<claude-helper-bundle-hash>",
   "flavor": "prod",
   "storeFormatFingerprint": "sha256:<canonical-store-format-hash>"
 }
 ```
 
-`bundleHash` tracks backend bundle bytes. `flavor` is the intrinsic build identity used by the backend and hooks to distinguish prod from dev. `storeFormatFingerprint` is emitted by that exact backend bundle; standalone read-only hooks verify it before reading Coral's SQL projections.
+`version`, `buildSetId`, `flavor`, and `storeFormatFingerprint` are embedded into the bundles and repeated here. The three hash fields bind the backend, CLI, and Claude helper bytes. Strict startup and local reporting reject missing, stale, symlinked, or mixed adjacent artifacts.
 
 ### `clients/hooks/claude.json` and `clients/hooks/codex.json`
 
 Per-client hook registration, each referenced by its own `plugin.json` (`.claude-plugin` → `./hooks/claude.json`, `.codex-plugin` → `./hooks/codex.json`). `claude.json` is the full set (SessionStart, compact recovery, SubagentStart, PreCompact, PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, Stop); `codex.json` is the same minus the Claude-only hooks (`hud-auto-update`, the `SubagentStart`/`SubagentStop` scripts, and the `PreToolUse(Monitor)` guard). See [Hooks](./hooks.md) for behavior details.
 
 ## Runtime State Files
+
+### Store-reset incidents
+
+A reset is unconditional and needs no confirmation. Active Coral history and state from the previous store are unavailable after the reset; KB Markdown is unaffected. The backend copies and durably verifies DB/WAL/SHM/format evidence under the private `store-reset-quarantine/.staging/<incident-id>/` transaction, durably publishes its manifest, removes the matching active files, then publishes `store-reset-quarantine/<incident-id>/`. An ordinary CLI command that starts this backend prints the reset notice on stderr before continuing. A completed incident is retained indefinitely as support evidence, not recoverable product state. Coral provides no restore, migration, compatibility reader, upload, telemetry, pruning, or automatic issue creation.
+
+Use the daemon-independent local commands:
+
+```bash
+coral-cli backend store-reset list
+coral-cli backend store-reset report <incident-id>
+```
+
+They work whether the daemon is stopped, unhealthy, or running. Reports are accepted only when the incident and the embedded/adjacent identities and hashes of the backend, CLI, and Claude helper belong to the exact current build set. Upgrading may therefore make an older retained incident unreadable by design.
+
+The generated Markdown contains only allowlisted build/reset metadata, recorded file sizes and hashes, fixed verification states, and a fixed SQLite integrity state. It excludes paths, namespace and process identifiers, rows, prompts, event bodies, environment values, credentials, account/workspace identifiers, child output, and raw exception or SQLite text. If a report cannot be generated, the fixed CLI error includes a public-safe next step and the issue form accepts that complete error output instead. Never attach DB/WAL/SHM files, `.env` or settings files, credentials, tokens, or unredacted logs.
+
+Inspection is intentionally bounded: list reads at most 4,097 root entries and rejects overflow; an incident may contain only the manifest plus four canonical evidence names; the manifest is limited to 64 KiB and JSON depth 8; report hashing is capped at 1 GiB cumulatively; SQLite staging is capped at 256 MiB cumulatively. SQLite runs only against a private temporary copy with a 5-second execution deadline, 1-second graceful termination window, 1-second forced-close window, 64-byte stdout cap, and 4 KiB stderr cap. Only the `backend store-reset report` invocation translates CLI SIGINT/SIGTERM into the diagnostic child shutdown sequence; unrelated commands keep Node's default signal behavior. Limit, cleanup, and termination failures become fixed statuses rather than partial or raw output.
 
 ### Backend state
 
@@ -311,7 +332,7 @@ clients/hooks/codex.json                        -> hook registration (Codex, sub
 clients/bridge/coral-backend.cjs                -> backend daemon bundle
 clients/bridge/coral-cli.cjs                    -> CLI bundle
 clients/bridge/coral-claude-appserver.cjs       -> Claude broker helper bundle
-clients/bridge/manifest.json                    -> backend bundle hash + build flavor
+clients/bridge/manifest.json                    -> embedded build identity + hashes for backend, CLI, and Claude helper
 
 ~/.coral/run*/coordinator.json                 -> active coordinator discovery record
 ~/.coral/run*/coordinator.lock                 -> per-flavor coordinator singleton lock

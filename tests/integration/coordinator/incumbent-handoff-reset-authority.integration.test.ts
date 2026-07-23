@@ -283,8 +283,9 @@ describe('incumbent handoff reset authority', () => {
       runtime,
       backendNamespace: 'ns',
       bootSnapshot: {
-        version: 'test-version',
-        bundleHash: 'new-bundle',
+        version: '0.0.0-test',
+        buildSetId: '00000000-0000-4000-8000-000000000000',
+        bundleHash: '1111111111111111',
         flavor: 'prod',
         instanceId: 'replacement',
         token,

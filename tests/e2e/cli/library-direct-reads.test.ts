@@ -27,8 +27,9 @@ import { formatJobsList, renderJobsList } from '#src/cli/format/jobs.js';
 import { formatKbMemoList, formatKbPrinciples, formatKbRead, formatKbSourceList } from '#src/cli/format/kb.js';
 
 const REPO_ROOT = process.cwd();
-const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-cli.cjs');
-const SOURCE_MANIFEST = join(REPO_ROOT, 'clients', 'build', 'manifest.json');
+const SOURCE_BUNDLE_DIR = process.env.CORAL_E2E_BUNDLE_DIR ?? join(REPO_ROOT, 'clients', 'build');
+const SOURCE_CLI_BUNDLE = join(SOURCE_BUNDLE_DIR, 'coral-cli.cjs');
+const SOURCE_MANIFEST = join(SOURCE_BUNDLE_DIR, 'manifest.json');
 const SOURCE_SQLITE3_DIR = join(REPO_ROOT, 'node_modules', 'better-sqlite3');
 const FIXED_NOW = new Date('2026-03-22T00:00:00.000Z');
 
@@ -385,7 +386,7 @@ afterEach(() => {
 describe('cli library-direct reads', () => {
   it.each(READ_COMMANDS)('runs %s without a coordinator and never opens IPC', async (testCase) => {
     if (!existsSync(SOURCE_CLI_BUNDLE) || !existsSync(SOURCE_MANIFEST)) {
-      throw new Error('Expected clients/build/coral-cli.cjs and clients/build/manifest.json to exist.');
+      throw new Error(`Expected coral-cli.cjs and manifest.json in ${SOURCE_BUNDLE_DIR}.`);
     }
 
     const fixture = createFixture();
@@ -414,7 +415,7 @@ describe('cli library-direct reads', () => {
 
   it('prints an informational note when the CoralStore database does not exist yet', () => {
     if (!existsSync(SOURCE_CLI_BUNDLE) || !existsSync(SOURCE_MANIFEST)) {
-      throw new Error('Expected clients/build/coral-cli.cjs and clients/build/manifest.json to exist.');
+      throw new Error(`Expected coral-cli.cjs and manifest.json in ${SOURCE_BUNDLE_DIR}.`);
     }
 
     const fixture = createFixture();

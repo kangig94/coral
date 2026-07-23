@@ -4,7 +4,17 @@ declare const __VERSION__: string;
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
+import {
+  closeSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+} from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
@@ -87,6 +97,7 @@ type SpawnedCoordinator = {
   readonly pid: number;
   readonly attemptId: string;
   readonly spawnedAt: number;
+  readonly logOffset: number | null;
 };
 
 type BackendReadyWaitContext =
@@ -362,11 +373,13 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
   const attemptId = randomUUID();
   const spawnedAt = Date.now();
   let stderr: 'ignore' | number = 'ignore';
+  let logOffset: number | null = null;
   try {
     mkdirSync(paths.runDir, { recursive: true });
     clearStartupErrorSentinel(paths);
     rotateLogIfLarge(paths.runDir);
     stderr = openSync(join(paths.runDir, 'coordinator.log'), 'a');
+    logOffset = fstatSync(stderr).size;
   } catch {
     // fail-open: spawn without log if dir creation fails
   }
@@ -385,10 +398,40 @@ function spawnCoordinator(backendBin: string, paths: CoordinatorPaths): SpawnedC
       throw new Error('Spawned coordinator pid was unavailable.');
     }
     child.unref();
-    return { pid: child.pid, attemptId, spawnedAt };
+    return { pid: child.pid, attemptId, spawnedAt, logOffset };
   } finally {
     if (typeof stderr === 'number') {
       closeSync(stderr);
+    }
+  }
+}
+
+function emitStoreResetStartupNotice(paths: CoordinatorPaths, logOffset: number | null): void {
+  if (logOffset === null) return;
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(join(paths.runDir, 'coordinator.log'), 'r');
+    const available = Math.max(0, Math.min(64 * 1024, fstatSync(descriptor).size - logOffset));
+    if (available === 0) return;
+    const bytes = Buffer.allocUnsafe(available);
+    const read = readSync(descriptor, bytes, 0, available, logOffset);
+    const marker = 'Backend store format reset required';
+    const line = bytes
+      .subarray(0, read)
+      .toString('utf-8')
+      .split(/\r?\n/u)
+      .find((entry) => entry.includes(marker));
+    if (line === undefined) return;
+    process.stderr.write(`Coral startup notice: ${line.slice(line.indexOf(marker))}\n`);
+  } catch {
+    // Startup remains successful if the optional public-safe notice cannot be recovered.
+  } finally {
+    if (descriptor !== null) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        // The notice path is best-effort and never owns coordinator startup.
+      }
     }
   }
 }
@@ -619,12 +662,11 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
   // else: health unreachable → fall through to spawn
 
   const spawned = spawnCoordinator(backendBin, paths);
-  return summarizeBackend(
-    await waitForBackendReady(paths, desired, KERNEL_READY_DEADLINE_MS, ipcTime, {
-      kind: 'current-attempt',
-      attemptId: spawned.attemptId,
-      spawnedAt: spawned.spawnedAt,
-    }),
-    ipcTime,
-  );
+  const ready = await waitForBackendReady(paths, desired, KERNEL_READY_DEADLINE_MS, ipcTime, {
+    kind: 'current-attempt',
+    attemptId: spawned.attemptId,
+    spawnedAt: spawned.spawnedAt,
+  });
+  emitStoreResetStartupNotice(paths, spawned.logOffset);
+  return summarizeBackend(ready, ipcTime);
 }
