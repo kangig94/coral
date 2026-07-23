@@ -252,6 +252,16 @@ describe('bundled store-reset CLI', () => {
     });
   });
 
+  it('does not treat the hidden identity probe as an ordinary command argument', () => {
+    const home = root('coral-store-reset-e2e-probe-argument-');
+    const result = runCli(home, ['backend', 'store-reset', 'report', '--', '--print-store-reset-build-identity']);
+    expect(result).toEqual({
+      stdout: '',
+      stderr: 'Incident ID must be a canonical lowercase UUID. [code=invalid_store_reset_incident_id]\n',
+      status: 2,
+    });
+  });
+
   it('reports corrupt SQLite through fixed diagnostic states without exposing child or database content', () => {
     const home = root('coral-store-reset-e2e-corrupt-');
     mkdirSync(join(home, 'tmp'));
@@ -270,6 +280,7 @@ describe('bundled store-reset CLI', () => {
     const mixedBundle = root('coral-store-reset-e2e-mixed-bundle-');
     mkdirSync(join(home, 'tmp'));
     copyFileSync(CLI_BUNDLE, join(mixedBundle, 'coral-cli.cjs'));
+    copyFileSync(BACKEND_BUNDLE, join(mixedBundle, 'coral-backend.cjs'));
     const manifest = readBuildManifest();
     writeFileSync(
       join(mixedBundle, 'manifest.json'),

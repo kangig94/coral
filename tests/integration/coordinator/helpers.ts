@@ -1,5 +1,15 @@
 import { spawn } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  appendFileSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -46,13 +56,18 @@ export function createPluginFixture(
   tempRoots.push(root);
 
   mkdirSync(join(root, 'bridge'), { recursive: true });
-  copyFileSync(sourceBackendBundle, join(root, 'bridge', 'coral-backend.cjs'));
+  const backendPath = join(root, 'bridge', 'coral-backend.cjs');
+  copyFileSync(sourceBackendBundle, backendPath);
+  if (options.bundleHash !== undefined) {
+    appendFileSync(backendPath, `\n// fixture ${options.bundleHash}\n`);
+  }
+  const bundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);
   writeFileSync(
     join(root, 'bridge', 'manifest.json'),
     JSON.stringify({
       version: sourceManifest.version,
       buildSetId: sourceManifest.buildSetId,
-      bundleHash: options.bundleHash ?? sourceManifest.bundleHash,
+      bundleHash,
       flavor: options.flavor,
       storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
     }) + '\n',
@@ -69,23 +84,26 @@ export function createPluginFixture(
   return {
     root,
     flavor: options.flavor,
-    bundleHash: options.bundleHash ?? sourceManifest.bundleHash,
+    bundleHash,
   };
 }
 
 export function updatePluginFixtureBundleHash(fixture: PluginFixture, bundleHash: string): PluginFixture {
+  const backendPath = join(fixture.root, 'bridge', 'coral-backend.cjs');
+  appendFileSync(backendPath, `\n// fixture ${bundleHash}\n`);
+  const effectiveBundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);
   writeFileSync(
     join(fixture.root, 'bridge', 'manifest.json'),
     `${JSON.stringify({
       version: sourceManifest.version,
       buildSetId: sourceManifest.buildSetId,
-      bundleHash,
+      bundleHash: effectiveBundleHash,
       flavor: fixture.flavor,
       storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
     })}\n`,
     'utf-8',
   );
-  return { ...fixture, bundleHash };
+  return { ...fixture, bundleHash: effectiveBundleHash };
 }
 
 export function coordinatorFilesForHome(home: string, flavor: BuildFlavor) {

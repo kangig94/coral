@@ -79,6 +79,11 @@ jobs:
           npm version "$VERSION" --no-git-tag-version
           npm run build:release
 
+      - name: Verify store-reset release contract
+        run: |
+          npm run verify:store-reset-release
+          npm run test:e2e:store-reset:release
+
       - name: Resolve App committer identity
         id: committer
         env:

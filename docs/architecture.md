@@ -193,7 +193,7 @@ Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin ro
 
 1. Backend startup classifies the active store fingerprint; missing or mismatched fingerprints always enter the reset path.
 2. Under the reset lock, the backend moves the canonical DB/WAL/SHM/format set into a UUID staging directory, writes the exact current-build manifest, and atomically publishes the final incident directory before creating the fresh active store.
-3. The warning exposes only the incident ID and the local report command. KB Markdown remains unaffected; prior active Coral history/state is unavailable.
+3. The warning exposes the fingerprint comparison, reset impact, incident ID, and local report command. KB Markdown remains unaffected; prior active Coral history/state is unavailable.
 4. `coral-cli backend store-reset list` performs a bounded current-flavor directory read. `report <incident-id>` validates containment and descriptor identity, recomputes bounded hashes, optionally diagnoses a private SQLite copy, then renders deterministic public-safe Markdown.
 5. Incidents remain indefinitely, but only the exact current build schema/build set is readable. There is no restore, compatibility, upload, or automatic issue path.
 
@@ -351,7 +351,7 @@ The core architectural boundary is simple: the CLI is the only local command sur
 
 Store-reset reporting is a deliberate local operational carveout. Backend startup alone owns reset authority and atomic incident publication under the reset lock. `backend store-reset list|report` does not call daemon discovery, `ensure()`, IPC, HTTP, or the active-store opener; it resolves the current flavor locally, validates the executing CLI against its adjacent build manifest, and traverses the quarantine through a narrow read-only filesystem port. The public renderer accepts only a branded allowlisted projection. SQLite diagnosis copies verified DB/WAL/SHM evidence to a private temp directory and supervises a fixed read-only child protocol; active and quarantined files are never opened by SQLite.
 
-Ordinary builds generate one build-set UUID shared by backend and CLI and write the authoritative adjacent `clients/build/manifest.json`. Releases copy those exact manifest bytes with the three bundles into `clients/bridge`; they do not regenerate identity. Hidden package probes and CI verify both executing bundles against that adjacent manifest, the backend content hash, release/build manifest byte equality, and the package file allowlist.
+Ordinary builds generate one build-set UUID shared by backend and CLI and write the authoritative adjacent `clients/build/manifest.json`. Releases copy those exact manifest bytes with the three bundles into `clients/bridge`; they do not regenerate identity. Hidden package probes and the build/release contract verifiers check both executing bundles against that adjacent manifest, the backend content hash, release/build manifest byte equality, and the package file allowlist.
 
 ## Design Rationale
 

@@ -58,7 +58,7 @@ This only affects malformed or truncated backend responses. In normal operation 
 | `store_reset_incident_not_found` | No retained incident exists for the requested canonical UUID |
 | `store_reset_incident_limit_exceeded` | The retained root exceeded the bounded list-entry limit; direct report by known UUID remains available |
 | `store_reset_build_mismatch` | The executing bundles, adjacent manifest, or incident do not belong to the same current build set |
-| `store_reset_reporting_failed` | A malformed, unsafe, over-limit, I/O, diagnostic, or cleanup condition prevented a safe public report |
+| `store_reset_reporting_failed` | A malformed, unsafe, over-limit, I/O, or orchestration condition prevented a safe public report |
 
 ## Exit Codes
 

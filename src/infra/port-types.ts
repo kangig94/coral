@@ -63,6 +63,7 @@ export interface StoragePort {
     data: StorageData,
     options?: { encoding?: BufferEncoding; mode?: number },
   ): boolean;
+  syncDirectoryDurableSync(path: string): boolean;
   chmodSync(path: string, mode: number): void;
 }
 

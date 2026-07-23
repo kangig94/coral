@@ -313,9 +313,30 @@ describe('openOrResetBackendStoreDb', () => {
     const originalDbBytes = readFileSync(dbPath);
     writeFileSync(`${dbPath}-wal`, 'dummy wal', 'utf-8');
     writeFileSync(`${dbPath}-shm`, 'dummy shm', 'utf-8');
+    const syncDirectoryDurableSync = runtime.storage.syncDirectoryDurableSync;
+    const syncedDirectories = new Set<string>();
+    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) => {
+      syncedDirectories.add(path);
+      return syncDirectoryDurableSync(path);
+    });
+    const renameSync = runtime.storage.renameSync;
+    let finalPublicationObserved = false;
+    vi.spyOn(runtime.storage, 'renameSync').mockImplementation((oldPath, newPath) => {
+      if (oldPath.endsWith('.tmp') && dirname(oldPath) === join(dbDir, 'store-reset-quarantine')) {
+        finalPublicationObserved = true;
+        expect(existsSync(dbPath)).toBe(false);
+        expect(existsSync(join(oldPath, 'reset-manifest.json'))).toBe(true);
+        expect(existsSync(join(oldPath, 'store.db'))).toBe(true);
+      }
+      if (oldPath === dbPath) {
+        expect([...syncedDirectories]).toEqual(expect.arrayContaining([dbDir, join(dbDir, 'store-reset-quarantine')]));
+      }
+      renameSync(oldPath, newPath);
+    });
 
     const db = openReset(runtime, dbPath);
     db.close();
+    expect(finalPublicationObserved).toBe(true);
 
     const quarantineRoot = join(dbDir, 'store-reset-quarantine');
     const quarantineEntries = readdirSync(quarantineRoot);
@@ -373,6 +394,72 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(join(quarantineDir, 'store.db'), 'sentinel_before_reset')).toBe(true);
     expect(tableExists(dbPath, 'events')).toBe(true);
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+  });
+
+  it('resumes an interrupted durable quarantine before creating the replacement store', () => {
+    const runtime = createRuntime();
+    const dbDir = makeTempRoot('coral-store-interrupted-quarantine-');
+    const dbPath = join(dbDir, 'store.db');
+    createMismatchStore(dbPath);
+    writeFileSync(`${dbPath}-wal`, 'durable wal evidence', 'utf-8');
+    const renameSync = runtime.storage.renameSync;
+    let interrupted = false;
+    const renameSpy = vi.spyOn(runtime.storage, 'renameSync').mockImplementation((oldPath, newPath) => {
+      if (oldPath === `${dbPath}-wal` && !interrupted) {
+        interrupted = true;
+        throw errno('EIO');
+      }
+      renameSync(oldPath, newPath);
+    });
+
+    const firstError = captureError(() => openReset(runtime, dbPath));
+    expectSetupCode(firstError, 'store_reset_quarantine_failed');
+    expect(interrupted).toBe(true);
+    expect(existsSync(dbPath)).toBe(false);
+    const quarantineRoot = join(dbDir, 'store-reset-quarantine');
+    expect(readdirSync(quarantineRoot).some((name) => name.endsWith('.tmp'))).toBe(true);
+
+    renameSpy.mockRestore();
+    const db = openReset(runtime, dbPath);
+    db.close();
+
+    const entries = readdirSync(quarantineRoot);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).not.toMatch(/\.tmp$/);
+    expect(readFileSync(join(quarantineRoot, entries[0], 'store.db-wal'), 'utf-8')).toBe('durable wal evidence');
+    expect(tableExists(dbPath, 'events')).toBe(true);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+  });
+
+  it('does not move active evidence when durable manifest publication fails', () => {
+    const runtime = createRuntime();
+    const dbDir = makeTempRoot('coral-store-manifest-publication-failure-');
+    const dbPath = join(dbDir, 'store.db');
+    createMismatchStore(dbPath);
+    const original = readFileSync(dbPath);
+    vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockReturnValue(false);
+
+    const error = captureError(() => openReset(runtime, dbPath));
+
+    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expect(readFileSync(dbPath)).toEqual(original);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
+    expect(readdirSync(join(dbDir, 'store-reset-quarantine'))).toEqual([]);
+  });
+
+  it('does not move active evidence when quarantine directory metadata cannot be synchronized', () => {
+    const runtime = createRuntime();
+    const dbDir = makeTempRoot('coral-store-directory-sync-failure-');
+    const dbPath = join(dbDir, 'store.db');
+    createMismatchStore(dbPath);
+    const original = readFileSync(dbPath);
+    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockReturnValue(false);
+
+    const error = captureError(() => openReset(runtime, dbPath));
+
+    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expect(readFileSync(dbPath)).toEqual(original);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
   });
 
   it('retries a busy quarantine rename during handoff-acquired reset', () => {

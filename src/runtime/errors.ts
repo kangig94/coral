@@ -108,7 +108,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   store_reset_quarantine_failed: {
     userMessage: 'Coral could not quarantine the old backend store before reset.',
     remediation:
-      'Check permissions and free disk space in the Coral store directory, then retry after preserving or removing the old store files manually.',
+      'Check permissions and free disk space in the Coral store directory, then retry. Do not move, delete, restore, or upload DB, WAL, or SHM evidence.',
   },
   expansion_binary_corrupt: {
     userMessage: (context) =>

@@ -59,7 +59,7 @@ describe('coordinator warm-start integration', () => {
     coordinators.push(first);
 
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
-    expect(initial.bundleHash).toBe('aaaaaaaaaaaaaaaa');
+    expect(initial.bundleHash).toBe(firstFixture.bundleHash);
     expect(isProcessAlive(initial.pid)).toBe(true);
 
     const secondFixture = updatePluginFixtureBundleHash(firstFixture, 'bbbbbbbbbbbbbbbb');
@@ -96,7 +96,7 @@ describe('coordinator warm-start integration', () => {
     // EXPECTED_HANDOFF_MAX_MS is the steady-state handoff bound; the polling
     // budget above is just a safety ceiling.
     expect(elapsedMs).toBeLessThan(EXPECTED_HANDOFF_MAX_MS);
-    expect(replacement.bundleHash).toBe('bbbbbbbbbbbbbbbb');
+    expect(replacement.bundleHash).toBe(secondFixture.bundleHash);
     expect(replacement.pid).not.toBe(initial.pid);
     expect(firstExit.code).toBe(0);
     expect(isProcessAlive(initial.pid)).toBe(false);

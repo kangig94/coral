@@ -190,6 +190,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       tryExclusiveWriteSyncNode(path, data, capturedEnv.platform, options),
     writeAtomicSync: (path, data, options) => writeAtomicSyncNode(path, data, options),
     writeAtomicDurableSync: (path, data, options) => writeAtomicDurableSyncNode(path, data, options),
+    syncDirectoryDurableSync: (path) => (capturedEnv.platform === 'win32' ? true : syncParentDirectoryBestEffort(path)),
     chmodSync: (path, mode) => chmodSync(path, mode),
   };
 
@@ -902,13 +903,14 @@ function writeAllSync(fd: number, buffer: Buffer): void {
 }
 
 // Directory fsync after rename is best-effort because not every platform/filesystem supports opening directories.
-function syncParentDirectoryBestEffort(parent: string): void {
+function syncParentDirectoryBestEffort(parent: string): boolean {
   let dirFd: number | null = null;
   try {
     dirFd = openSync(parent, 'r');
     fsyncSync(dirFd);
+    return true;
   } catch {
-    /* best effort */
+    return false;
   } finally {
     if (dirFd !== null) {
       try {

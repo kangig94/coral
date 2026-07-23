@@ -1,4 +1,5 @@
-import { closeSync, fstatSync, openSync, readFileSync, readSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { BuildFlavor } from './build-flavor.js';
@@ -10,6 +11,7 @@ declare const __BUILD_SET_ID__: string | undefined;
 declare const __BUILD_FLAVOR__: string | undefined;
 
 const MAX_STRICT_BUNDLE_MANIFEST_BYTES = 16 * 1024;
+const MAX_STRICT_BACKEND_BUNDLE_BYTES = 256 * 1024 * 1024;
 const BUILD_SET_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const BUNDLE_HASH_PATTERN = /^[0-9a-f]{16}$/;
 const STORE_FORMAT_FINGERPRINT_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -161,6 +163,69 @@ function parseStrictManifest(value: unknown): StrictBundleManifest | null {
   };
 }
 
+function hashStableAdjacentBackend(activeBundleDir: string): string | null {
+  const path = join(activeBundleDir, 'coral-backend.cjs');
+  let descriptor: number | null = null;
+  let digest: string | undefined;
+  let closeFailed = false;
+  try {
+    const pathBefore = lstatSync(path, { bigint: true });
+    if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) return null;
+    descriptor = openSync(path, 'r');
+    const before = fstatSync(descriptor, { bigint: true });
+    if (
+      !before.isFile() ||
+      before.size < 0n ||
+      before.size > BigInt(MAX_STRICT_BACKEND_BUNDLE_BYTES) ||
+      before.dev !== pathBefore.dev ||
+      before.ino !== pathBefore.ino
+    ) {
+      return null;
+    }
+
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let total = 0n;
+    while (true) {
+      const bytesRead = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      total += BigInt(bytesRead);
+      if (total > before.size) return null;
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+
+    const after = fstatSync(descriptor, { bigint: true });
+    const pathAfter = lstatSync(path, { bigint: true });
+    if (
+      total !== before.size ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      after.size !== before.size ||
+      after.mtimeNs !== before.mtimeNs ||
+      !pathAfter.isFile() ||
+      pathAfter.isSymbolicLink() ||
+      pathAfter.dev !== before.dev ||
+      pathAfter.ino !== before.ino ||
+      pathAfter.size !== before.size ||
+      pathAfter.mtimeNs !== before.mtimeNs
+    ) {
+      return null;
+    }
+    digest = hash.digest('hex').slice(0, 16);
+  } catch {
+    return null;
+  } finally {
+    if (descriptor !== null) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        closeFailed = true;
+      }
+    }
+  }
+  return closeFailed ? null : (digest ?? null);
+}
+
 export function resolveStrictBundleIdentity(options?: {
   readonly bundleDir?: string;
   readonly embedded?: EmbeddedBundleIdentity;
@@ -195,7 +260,8 @@ export function resolveStrictBundleIdentity(options?: {
   if (
     manifest.version !== embedded.version ||
     manifest.buildSetId !== embedded.buildSetId ||
-    manifest.flavor !== embedded.flavor
+    manifest.flavor !== embedded.flavor ||
+    hashStableAdjacentBackend(activeBundleDir) !== manifest.bundleHash
   ) {
     return { ok: false, reason: 'adjacent_manifest_mismatch' };
   }

@@ -7,7 +7,7 @@ import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 // Keep the process alive while async command handlers are still awaiting
 // unref'ed runtime timers such as coordinator startup polling.
 function runBootstrap(): Promise<unknown> {
-  if (process.argv.includes('--print-store-reset-build-identity')) {
+  if (process.argv.length === 3 && process.argv[2] === '--print-store-reset-build-identity') {
     const identity = resolveStrictBundleIdentity();
     if (!identity.ok) {
       process.exitCode = 70;

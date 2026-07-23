@@ -62,7 +62,7 @@ export async function main(): Promise<number> {
     return 0;
   }
 
-  if (process.argv.includes('--print-store-reset-build-identity')) {
+  if (process.argv.length === 3 && process.argv[2] === '--print-store-reset-build-identity') {
     const identity = resolveStrictBundleIdentity();
     if (!identity.ok) return 70;
     process.stdout.write(`${JSON.stringify(identity.manifest)}\n`);

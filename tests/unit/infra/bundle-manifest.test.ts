@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,9 +16,10 @@ const embedded: EmbeddedBundleIdentity = {
   buildSetId: '123e4567-e89b-12d3-a456-426614174000',
   flavor: 'prod',
 };
+const backendBundle = 'strict backend fixture';
 const manifest: StrictBundleManifest = {
   ...embedded,
-  bundleHash: '0123456789abcdef',
+  bundleHash: createHash('sha256').update(backendBundle).digest('hex').slice(0, 16),
   storeFormatFingerprint: `sha256:${'a'.repeat(64)}`,
 };
 
@@ -25,6 +27,7 @@ function bundleDir(contents: unknown = manifest): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-strict-bundle-'));
   roots.push(root);
   mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, 'coral-backend.cjs'), backendBundle, 'utf-8');
   writeFileSync(join(root, 'manifest.json'), `${JSON.stringify(contents)}\n`, 'utf-8');
   return root;
 }
@@ -60,6 +63,15 @@ describe('strict bundle identity', () => {
     expect(resolveStrictBundleIdentity({ bundleDir: root, embedded })).toEqual({
       ok: false,
       reason: 'adjacent_manifest_unavailable',
+    });
+  });
+
+  it('rejects an adjacent backend whose content does not match the manifest', () => {
+    const root = bundleDir();
+    writeFileSync(join(root, 'coral-backend.cjs'), 'tampered backend', 'utf-8');
+    expect(resolveStrictBundleIdentity({ bundleDir: root, embedded })).toEqual({
+      ok: false,
+      reason: 'adjacent_manifest_mismatch',
     });
   });
 

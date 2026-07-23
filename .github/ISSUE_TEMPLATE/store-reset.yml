@@ -7,14 +7,14 @@ body:
   - type: markdown
     attributes:
       value: |
-        Run `coral-cli backend store-reset report <incident-id>` and paste its complete output below.
+        Run `coral-cli backend store-reset list` if you need the incident ID, then run
+        `coral-cli backend store-reset report <incident-id>` and paste its complete output below.
         The generated Markdown is allowlisted for public sharing. Do not attach database files or raw local diagnostics.
   - type: textarea
     id: report
     attributes:
       label: Generated store-reset report
       description: Paste the complete output of the store-reset report command.
-      render: markdown
     validations:
       required: true
   - type: textarea

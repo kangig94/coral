@@ -57,7 +57,7 @@ export function registerBackendCommands(
   const storeResetCommand = backend.command('store-reset').description('Inspect retained store-reset incidents');
   storeResetCommand
     .command('list')
-    .description('List current-build store-reset incidents')
+    .description('List retained store-reset incidents and reportability')
     .action(() => {
       try {
         process.stdout.write(`${formatStoreResetList(storeReset.list())}\n`);

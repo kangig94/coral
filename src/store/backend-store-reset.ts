@@ -12,6 +12,8 @@ import type { Runtime } from '../runtime/ports.js';
 import { classifyStoreFormat, openStoreDatabase, type Database, type StoreFormatClassification } from './db.js';
 import type { StoreFormatDescription, StoreFormatFingerprint } from './format-fingerprint.js';
 import {
+  isCanonicalStoreResetIncidentId,
+  parseStoreResetIncidentManifest,
   serializeStoreResetIncidentManifest,
   STORE_RESET_EVIDENCE_FILE_NAMES,
   STORE_RESET_MANIFEST_FILE_NAME,
@@ -150,6 +152,7 @@ function assertResetAuthority(
   };
 
   const mismatches: string[] = [];
+  if (authority[BACKEND_STORE_RESET_AUTHORITY_BRAND] !== true) mismatches.push('brand');
   if (authority.socketPath !== expected.socketPath) mismatches.push('socketPath');
   if (authority.storeDbPath !== expected.storeDbPath) mismatches.push('storeDbPath');
   if (authority.flavor !== expected.flavor) mismatches.push('flavor');
@@ -241,6 +244,101 @@ function ensureQuarantineRoot(storage: StoragePort, root: string, platform: stri
   }
 }
 
+function requireDirectorySync(storage: StoragePort, ...directories: readonly string[]): void {
+  for (const directory of new Set(directories)) {
+    if (!storage.syncDirectoryDurableSync(directory)) {
+      throw new Error('Store-reset directory metadata could not be synchronized.');
+    }
+  }
+}
+
+function candidateForEvidence(files: StoreFileSet, name: StoreResetEvidenceFileName): StoreFileCandidate {
+  const source =
+    name === 'store.db'
+      ? files.dbFile
+      : name === 'store.db-wal'
+        ? files.walFile
+        : name === 'store.db-shm'
+          ? files.shmFile
+          : files.formatFile;
+  return { source, name };
+}
+
+function evidenceMatches(
+  storage: StoragePort,
+  candidate: StoreFileCandidate,
+  expected: StoreResetIncidentFile,
+): boolean {
+  if (!storage.existsSync(candidate.source)) return false;
+  const actual = describeCandidate(storage, candidate);
+  return actual.sizeBytes === expected.sizeBytes && actual.sha256 === expected.sha256;
+}
+
+function resumeInterruptedIncident(
+  runtime: Pick<Runtime, 'env' | 'storage'>,
+  files: StoreFileSet,
+): { readonly incident: BackendStoreResetIncident; readonly manifest: StoreResetIncidentManifestV2 } | null {
+  const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
+  if (!runtime.storage.existsSync(quarantineRoot)) return null;
+  ensureQuarantineRoot(runtime.storage, quarantineRoot, runtime.env.platform());
+  const stagingNames = runtime.storage
+    .readdirSync(quarantineRoot)
+    .filter((name) => name.endsWith('.tmp') && isCanonicalStoreResetIncidentId(name.slice(0, -4)));
+  if (stagingNames.length === 0) return null;
+  if (stagingNames.length !== 1) throw new Error('Multiple interrupted store-reset publications exist.');
+
+  const stagingName = stagingNames[0];
+  const stagingDirectory = join(quarantineRoot, stagingName);
+  const manifestPath = join(stagingDirectory, STORE_RESET_MANIFEST_FILE_NAME);
+  if (!runtime.storage.existsSync(manifestPath)) {
+    const entries = runtime.storage.readdirSync(stagingDirectory);
+    if (!entries.some((name) => STORE_RESET_EVIDENCE_FILE_NAMES.includes(name as StoreResetEvidenceFileName))) {
+      runtime.storage.rmSync(stagingDirectory, { recursive: true, force: true });
+      requireDirectorySync(runtime.storage, quarantineRoot);
+      return null;
+    }
+    throw new Error('Interrupted store-reset publication moved evidence without a durable manifest.');
+  }
+  const manifest = parseStoreResetIncidentManifest(Buffer.from(runtime.storage.readFileSync(manifestPath, 'utf-8')));
+  if (`${manifest.incidentId}.tmp` !== stagingName) {
+    throw new Error('Interrupted store-reset publication identity does not match its directory.');
+  }
+
+  for (const expected of manifest.files) {
+    const active = candidateForEvidence(files, expected.name);
+    const staged = { source: join(stagingDirectory, expected.name), name: expected.name };
+    if (evidenceMatches(runtime.storage, staged, expected)) {
+      if (runtime.storage.existsSync(active.source)) {
+        throw new Error('Interrupted store-reset publication has both active and staged evidence.');
+      }
+      continue;
+    }
+    if (!evidenceMatches(runtime.storage, active, expected)) {
+      throw new Error('Interrupted store-reset publication evidence is missing or changed.');
+    }
+    renameStoreFileForQuarantine(runtime.storage, active.source, staged.source);
+    requireDirectorySync(runtime.storage, files.dbDir, stagingDirectory);
+  }
+  const recordedNames = new Set(manifest.files.map((file) => file.name));
+  for (const name of STORE_RESET_EVIDENCE_FILE_NAMES) {
+    if (!recordedNames.has(name) && runtime.storage.existsSync(candidateForEvidence(files, name).source)) {
+      throw new Error('Interrupted store-reset publication found unrecorded active evidence.');
+    }
+  }
+
+  runtime.storage.renameSync(stagingDirectory, join(quarantineRoot, manifest.incidentId));
+  requireDirectorySync(runtime.storage, quarantineRoot);
+  return {
+    incident: {
+      incidentId: manifest.incidentId,
+      resetAt: manifest.resetAt,
+      reason: manifest.reason,
+      fileCount: manifest.files.length,
+    },
+    manifest,
+  };
+}
+
 function publishIncident(
   runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'storage' | 'time'>,
   authority: BackendStoreResetAuthority,
@@ -262,6 +360,7 @@ function publishIncident(
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
   const stagingDirectory = join(quarantineRoot, `${incidentId}.tmp`);
   const finalDirectory = join(quarantineRoot, incidentId);
+  let destructiveMoveStarted = false;
 
   try {
     ensureQuarantineRoot(runtime.storage, quarantineRoot, runtime.env.platform());
@@ -269,12 +368,9 @@ function publishIncident(
     if (runtime.env.platform() !== 'win32') {
       runtime.storage.chmodSync(stagingDirectory, 0o700);
     }
+    requireDirectorySync(runtime.storage, files.dbDir, quarantineRoot);
 
     const manifestFiles = candidates.map((candidate) => describeCandidate(runtime.storage, candidate));
-    for (const candidate of candidates) {
-      renameStoreFileForQuarantine(runtime.storage, candidate.source, join(stagingDirectory, candidate.name));
-    }
-
     const manifest: StoreResetIncidentManifestV2 = {
       schemaVersion: 2,
       incidentId,
@@ -300,7 +396,7 @@ function publishIncident(
       },
       files: manifestFiles,
     };
-    const published = runtime.storage.tryExclusiveWriteSync(
+    const published = runtime.storage.writeAtomicDurableSync(
       join(stagingDirectory, STORE_RESET_MANIFEST_FILE_NAME),
       serializeStoreResetIncidentManifest(manifest),
       { encoding: 'utf-8', mode: 0o600 },
@@ -308,7 +404,13 @@ function publishIncident(
     if (!published) {
       throw new Error('Store reset incident manifest already exists.');
     }
+    for (const candidate of candidates) {
+      destructiveMoveStarted = true;
+      renameStoreFileForQuarantine(runtime.storage, candidate.source, join(stagingDirectory, candidate.name));
+      requireDirectorySync(runtime.storage, files.dbDir, stagingDirectory);
+    }
     runtime.storage.renameSync(stagingDirectory, finalDirectory);
+    requireDirectorySync(runtime.storage, quarantineRoot);
 
     writeAuditEvent(
       'store_reset_quarantine',
@@ -333,6 +435,14 @@ function publishIncident(
       fileCount: manifestFiles.length,
     };
   } catch (error: unknown) {
+    if (!destructiveMoveStarted) {
+      runtime.storage.rmSync(stagingDirectory, { recursive: true, force: true });
+      try {
+        requireDirectorySync(runtime.storage, quarantineRoot);
+      } catch {
+        // Preserve the fixed quarantine failure envelope from the primary failure.
+      }
+    }
     throw documentedCoralSetupError({
       code: 'store_reset_quarantine_failed',
       incidentId,
@@ -402,6 +512,30 @@ export function openOrResetBackendStoreDb(
         });
       }
       throw error;
+    }
+
+    let resumed: ReturnType<typeof resumeInterruptedIncident>;
+    try {
+      resumed = resumeInterruptedIncident(runtime, files);
+    } catch (error: unknown) {
+      throw documentedCoralSetupError({
+        code: 'store_reset_quarantine_failed',
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+    if (resumed !== null) {
+      const classification =
+        resumed.manifest.reason === 'missing'
+          ? ({
+              kind: 'missing',
+              current: resumed.manifest.expectedFingerprint as StoreFormatFingerprint,
+            } as const)
+          : ({
+              kind: 'mismatch',
+              current: resumed.manifest.expectedFingerprint as StoreFormatFingerprint,
+              stored: resumed.manifest.storedFingerprint ?? 'missing',
+            } as const);
+      warnBackendStoreReset(classification, resumed.incident);
     }
 
     const classification = classifyStoreFile(files.dbFile, runtime.storage, options.storeFormat);

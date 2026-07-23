@@ -680,6 +680,10 @@ export class InMemoryStorage implements StoragePort {
     return this.writeAtomicSync(path, data, options);
   }
 
+  syncDirectoryDurableSync(path: string): boolean {
+    return this.directories.has(normalizePathForStorage(path));
+  }
+
   chmodSync(path: string, mode: number): void {
     const normalized = normalizePathForStorage(path);
     const file = this.files.get(normalized);
