@@ -108,6 +108,23 @@ See [CLI Errors](./cli-errors.md) for the wire envelope and exit-code behavior.
 
 `ProviderBindingEnvelope`, `ProviderScope`, journal events, and projections carry no migration versions. Coral provides no upcaster, dual reader, default fill, or old-format decoder. The active `StoreFormatFingerprint` covers the executable SQL manifest, explicit event body/materializer and append-validator semantic contracts, persisted decoder contracts, and each provider's profile, binding, and continuity codecs. Startup quarantines the DB/WAL/SHM plus the redundant hook-safety format sidecar and creates a fresh store whenever the database fingerprint is missing or differs; it never translates old durable state.
 
+#### Store-reset incidents
+
+A reset is unconditional and needs no confirmation. Active Coral history and state from the previous store are unavailable after the reset; KB Markdown is unaffected. A completed quarantine is retained indefinitely as a **store-reset incident** under the current flavor's `store-reset-quarantine/<incident-id>/` directory. It is support evidence, not recoverable product state: Coral provides no restore, migration, compatibility reader, upload, telemetry, pruning, or automatic issue creation.
+
+Use the daemon-independent local commands:
+
+```bash
+coral-cli backend store-reset list
+coral-cli backend store-reset report <incident-id>
+```
+
+They work whether the daemon is stopped, unhealthy, or running. Reports are accepted only when the incident, backend bundle, CLI bundle, and adjacent package manifest belong to the same current build set. Upgrading may therefore make an older retained incident unreadable by design.
+
+The generated Markdown contains only allowlisted build/reset metadata, recorded file sizes and hashes, fixed verification states, and a fixed SQLite integrity state. It excludes paths, namespace and process identifiers, rows, prompts, event bodies, environment values, credentials, account/workspace identifiers, child output, and raw exception or SQLite text. If a reset was unexpected, paste that generated report into the **Store-reset incident** GitHub issue form and describe the preceding command/update sequence. Never attach DB/WAL/SHM files, `.env` or settings files, credentials, tokens, or unredacted logs.
+
+Inspection is intentionally bounded: list reads at most 4,097 root entries and rejects overflow; an incident may contain only the manifest plus four canonical evidence names; the manifest is limited to 64 KiB and JSON depth 8; report hashing is capped at 1 GiB; SQLite staging is capped at 256 MiB. SQLite runs only against a private temporary copy with a 5-second execution deadline, 1-second graceful termination window, 1-second forced-close window, 64-byte stdout cap, and 4 KiB stderr cap. Limit, cleanup, and termination failures become fixed statuses rather than partial or raw output.
+
 #### Upgrade cutover
 
 This release does not support old and new daemon generations running together. Treat upgrade as an operator-owned gate:

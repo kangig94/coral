@@ -35,7 +35,7 @@ Claude Code
 clients/bridge/coral-cli.cjs
   ├── Provider commands (`codex`, `claude`)
   ├── Workflow commands (`workflow`, `jobs`, `wait`, `abort`)
-  ├── Admin commands (`backend status|shutdown`)
+  ├── Admin commands (`backend status|shutdown`, `backend store-reset list|report`)
   ├── Discuss commands (`discuss *`)
   └── KB commands (`kb *`)
       │
@@ -189,6 +189,14 @@ Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin ro
 3. `coral-cli abort jobs <id...>` dispatches `jobs.abort` over IPC for local calls
 4. `coral-cli abort --all` or `coral-cli abort --phase <phase> [--provider <name>]` first resolves matching live jobs through the same read surface, then aborts the resulting job IDs
 
+### Store-reset incident inspection
+
+1. Backend startup classifies the active store fingerprint; missing or mismatched fingerprints always enter the reset path.
+2. Under the reset lock, the backend moves the canonical DB/WAL/SHM/format set into a UUID staging directory, writes the exact current-build manifest, and atomically publishes the final incident directory before creating the fresh active store.
+3. The warning exposes only the incident ID and the local report command. KB Markdown remains unaffected; prior active Coral history/state is unavailable.
+4. `coral-cli backend store-reset list` performs a bounded current-flavor directory read. `report <incident-id>` validates containment and descriptor identity, recomputes bounded hashes, optionally diagnoses a private SQLite copy, then renders deterministic public-safe Markdown.
+5. Incidents remain indefinitely, but only the exact current build schema/build set is readable. There is no restore, compatibility, upload, or automatic issue path.
+
 ### Workflow
 
 1. `coral-cli workflow ...` posts to `POST /workflow`
@@ -329,6 +337,7 @@ Foundation layer
 | `~/.coral/run/coordinator.json` or `~/.coral/run-dev/coordinator.json`                     | Active coordinator discovery record                                                                           |
 | `~/.coral/run/coordinator.lock` or `~/.coral/run-dev/coordinator.lock`                     | Per-flavor singleton coordinator lock                                                                         |
 | `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db`                       | Journal authority and projection tables                                                                       |
+| `~/.coral/data/store/store-reset-quarantine/<uuid>/` (or the `data-dev` equivalent)        | Indefinitely retained current-build reset evidence; support-only, never restored as active state               |
 | `projection_sessions` in `store.db`                                                        | Projected provider sessions, continuation profiles, and project `scope_key`                                   |
 | `projection_discuss` in `store.db`                                                         | Projected discuss snapshots and source-scoped discovery/summary state                                         |
 | `~/.coral/exports/jobs/<jobId>/result.md` or `~/.coral/exports-dev/jobs/<jobId>/result.md` | Durable wait/follow result artifact                                                                           |
@@ -339,6 +348,10 @@ Foundation layer
 Daemon-owned state is account-neutral. The `store`, `coordinator`, `exports`, `engine`, `projects`, and KB runtime families use one canonical tree per flavor; `CODEX_HOME` and `CLAUDE_CONFIG_DIR` never participate in path composition. Account selection crosses the transport boundary as validated request context. A real `ProviderSession` stores the immutable binding for one provider conversation; workflow and discussion roots persist the complete provider scope used to create future children. Recovery rehydrates those durable values and never lets the daemon boot environment choose later requests. See design-rationale §5.4.
 
 The core architectural boundary is simple: the CLI is the only local command surface, the backend is the only daemon surface, and all long-running or resumable work is tracked as backend jobs.
+
+Store-reset reporting is a deliberate local operational carveout. Backend startup alone owns reset authority and atomic incident publication under the reset lock. `backend store-reset list|report` does not call daemon discovery, `ensure()`, IPC, HTTP, or the active-store opener; it resolves the current flavor locally, validates the executing CLI against its adjacent build manifest, and traverses the quarantine through a narrow read-only filesystem port. The public renderer accepts only a branded allowlisted projection. SQLite diagnosis copies verified DB/WAL/SHM evidence to a private temp directory and supervises a fixed read-only child protocol; active and quarantined files are never opened by SQLite.
+
+Ordinary builds generate one build-set UUID shared by backend and CLI and write the authoritative adjacent `clients/build/manifest.json`. Releases copy those exact manifest bytes with the three bundles into `clients/bridge`; they do not regenerate identity. Hidden package probes and CI verify both executing bundles against that adjacent manifest, the backend content hash, release/build manifest byte equality, and the package file allowlist.
 
 ## Design Rationale
 

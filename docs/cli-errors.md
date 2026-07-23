@@ -54,16 +54,23 @@ This only affects malformed or truncated backend responses. In normal operation 
 | `kb_offline` | The KB daemon runtime is offline or failed. The daemon is otherwise healthy. Maps to HTTP `503` and exit `75`; the `remediation` hint asks the operator to restart the daemon |
 | `backend_error` | Fallback for a backend error response that did not provide a recognized `code` |
 | `internal` / `internal_error` | Unhandled CLI-side failure (`internal`) or backend `500` contract response (`internal_error`) |
+| `invalid_store_reset_incident_id` | `backend store-reset report` received anything other than a canonical lowercase UUID |
+| `store_reset_incident_not_found` | No retained incident exists for the requested canonical UUID |
+| `store_reset_incident_limit_exceeded` | The retained root exceeded the bounded list-entry limit; direct report by known UUID remains available |
+| `store_reset_build_mismatch` | The executing bundles, adjacent manifest, or incident do not belong to the same current build set |
+| `store_reset_reporting_failed` | A malformed, unsafe, over-limit, I/O, diagnostic, or cleanup condition prevented a safe public report |
 
 ## Exit Codes
 
 | Exit | When used |
 | --- | --- |
-| `2` | `invalid_usage` |
-| `1` | User-correctable backend/domain errors such as `invalid_request`, `not_found`, `session_not_found`, `audit_requires_ended_session`, `scope_mismatch`, `unauthorized`, and default `backend_error` cases |
+| `2` | `invalid_usage`, `invalid_store_reset_incident_id` |
+| `1` | User-correctable backend/domain errors such as `invalid_request`, `not_found`, `session_not_found`, `audit_requires_ended_session`, `scope_mismatch`, `unauthorized`, `store_reset_incident_not_found`, `store_reset_incident_limit_exceeded`, and default `backend_error` cases |
 | `75` | Retry-later failures: `transient`, `backend_shutting_down`, and generic HTTP `503` fallback |
 | `69` | `backend_unreachable` |
-| `70` | `internal`, `internal_error`, and generic HTTP `500` fallback |
+| `70` | `internal`, `internal_error`, `store_reset_build_mismatch`, `store_reset_reporting_failed`, and generic HTTP `500` fallback |
+
+Store-reset errors never carry `http`, `remediation`, or `detail`, and they never interpolate the supplied incident argument or a low-level filesystem/SQLite/child-process message. The successful report is written only to `stdout`; Coral creates no report file and performs no upload.
 
 Provider-routing errors retain one stable code per failed authority check:
 
