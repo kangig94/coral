@@ -5,6 +5,7 @@ import { basename } from 'node:path';
 import process, { env as processEnv } from 'node:process';
 import type * as ClaudePty from '@lydell/node-pty';
 
+import { resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
 import { shouldUseWindowsCommandShell, windowsCommandName } from '../../../infra/windows-shell.js';
 import {
   CLAUDE_BROKER_BUSY_RPC_CODE,
@@ -432,6 +433,15 @@ export function buildClaudePrintChildArgs(options: SpawnClaudePrintChildOptions)
 }
 
 function main(): void {
+  if (process.argv.length === 3 && process.argv[2] === '--print-store-reset-build-identity') {
+    const identity = resolveStrictBundleIdentity();
+    if (!identity.ok) {
+      process.exitCode = 70;
+      return;
+    }
+    process.stdout.write(`${JSON.stringify(identity.manifest)}\n`);
+    return;
+  }
   createClaudeBrokerServer().start();
 }
 

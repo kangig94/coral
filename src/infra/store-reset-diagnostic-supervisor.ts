@@ -75,8 +75,11 @@ function adaptChild(child: ChildProcess): StoreResetDiagnosticChild {
   };
 }
 
-export function createNodeStoreResetDiagnosticSupervisor(): StoreResetDiagnosticSupervisorPort {
+export function createNodeStoreResetDiagnosticSupervisor(options?: {
+  readonly signal?: AbortSignal;
+}): StoreResetDiagnosticSupervisorPort {
   return {
+    ...(options?.signal === undefined ? {} : { signal: options.signal }),
     spawn(executable, args) {
       return adaptChild(
         spawn(executable, [...args], {

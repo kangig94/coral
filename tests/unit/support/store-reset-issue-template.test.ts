@@ -18,7 +18,7 @@ type IssueForm = {
 };
 
 describe('store-reset GitHub issue template', () => {
-  it('requires the generated report and reproduction/update context with explicit disclosure prohibitions', () => {
+  it('accepts a generated report or fixed error and requires context with explicit disclosure prohibitions', () => {
     const template = parse(
       readFileSync(join(process.cwd(), '.github', 'ISSUE_TEMPLATE', 'store-reset.yml'), 'utf8'),
     ) as IssueForm;
@@ -35,6 +35,7 @@ describe('store-reset GitHub issue template', () => {
 
     expect(requiredTextareas).toEqual(['report', 'reproduction', 'update_context']);
     expect(allText).toContain('coral-cli backend store-reset report <incident-id>');
+    expect(allText).toContain('fixed text error output');
     expect(confirmations).toContain('DB, WAL, or SHM');
     expect(confirmations).toContain('.env');
     expect(confirmations).toContain('credentials');

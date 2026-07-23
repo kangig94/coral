@@ -76,6 +76,12 @@ describe('store reset public report', () => {
       - Integrity: \`ok\`
       - Termination: \`completed\`
       - Cleanup: \`removed\`
+
+      ## Next step
+
+      Paste this complete output into the Store-reset incident issue form in the Coral GitHub repository.
+      No file was uploaded. Do not attach DB, WAL, SHM, raw logs, credentials, settings, or environment files.
+      The retained evidence is diagnostic only and cannot be restored as active Coral state.
       "
     `);
   });

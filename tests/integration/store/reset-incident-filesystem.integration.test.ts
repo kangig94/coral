@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { createNodeStoreResetDiagnosticSupervisor } from '#src/infra/store-reset-diagnostic-supervisor.js';
@@ -22,6 +22,8 @@ const BUILD: StrictBundleManifest = {
   version: '0.9.16',
   buildSetId: '123e4567-e89b-42d3-a456-426614174000',
   bundleHash: '0123456789abcdef',
+  cliBundleHash: '123456789abcdef0',
+  claudeAppserverBundleHash: '23456789abcdef01',
   flavor: 'prod',
   storeFormatFingerprint: `sha256:${'f'.repeat(64)}`,
 };
@@ -145,6 +147,34 @@ describe('real store reset inspection filesystem', () => {
         expectedBuild: BUILD,
       }),
     ).toEqual({ ok: false, state: 'unsafe' });
+
+    const manifestLink = fixture();
+    const externalManifest = join(dirname(manifestLink.quarantineRoot), 'external-manifest.json');
+    writeFileSync(externalManifest, readFileSync(manifestLink.manifestPath));
+    rmSync(manifestLink.manifestPath);
+    symlinkSync(externalManifest, manifestLink.manifestPath, 'file');
+    expect(
+      await readStoreResetIncidentReport({
+        fs: createStoreResetInspectionFs(),
+        quarantineRoot: manifestLink.quarantineRoot,
+        incidentId: INCIDENT_ID,
+        expectedBuild: BUILD,
+      }),
+    ).toEqual({ ok: false, state: 'unsafe' });
+
+    const evidenceLink = fixture();
+    const externalEvidence = join(dirname(evidenceLink.quarantineRoot), 'external-store.db');
+    writeFileSync(externalEvidence, readFileSync(evidenceLink.evidencePath));
+    rmSync(evidenceLink.evidencePath);
+    symlinkSync(externalEvidence, evidenceLink.evidencePath, 'file');
+    expect(
+      await readStoreResetIncidentReport({
+        fs: createStoreResetInspectionFs(),
+        quarantineRoot: evidenceLink.quarantineRoot,
+        incidentId: INCIDENT_ID,
+        expectedBuild: BUILD,
+      }),
+    ).toEqual({ ok: false, state: 'unsafe' });
   });
 
   it('detects ordinary manifest identity replacement and close failure without leaking errors', async () => {
@@ -226,6 +256,93 @@ describe('real store reset inspection filesystem', () => {
       ok: true,
       report: { files: [{ name: 'store.db', verification: 'unavailable_limit' }] },
     });
+
+    const cumulative = fixture();
+    const walPath = join(cumulative.incidentPath, 'store.db-wal');
+    writeFileSync(walPath, 'small wal');
+    const originalManifest = parseStoreResetIncidentManifest(readFileSync(cumulative.manifestPath));
+    const perFile = 600 * 1024 * 1024;
+    const cumulativeManifest: StoreResetIncidentManifestV2 = {
+      ...originalManifest,
+      files: [
+        { ...originalManifest.files[0], sizeBytes: perFile },
+        {
+          name: 'store.db-wal',
+          sizeBytes: perFile,
+          mtimeMs: Date.now(),
+          sha256: sha256('small wal'),
+        },
+      ],
+    };
+    writeFileSync(cumulative.manifestPath, serializeStoreResetIncidentManifest(cumulativeManifest));
+    let walOpens = 0;
+    const cumulativeFs = scriptedStoreResetInspectionFs(createStoreResetInspectionFs(), {
+      open(path) {
+        if (path === walPath) walOpens += 1;
+      },
+    });
+    expect(
+      await readStoreResetIncidentReport({
+        fs: cumulativeFs,
+        quarantineRoot: cumulative.quarantineRoot,
+        incidentId: INCIDENT_ID,
+        expectedBuild: BUILD,
+      }),
+    ).toMatchObject({
+      ok: true,
+      report: {
+        files: [
+          { name: 'store.db', verification: 'mismatch' },
+          { name: 'store.db-wal', verification: 'unavailable_limit' },
+        ],
+      },
+    });
+    expect(walOpens).toBe(0);
+  });
+
+  it('stops incident traversal at cap plus one and never diagnoses after an identity race', async () => {
+    const overflowing = fixture();
+    for (let index = 0; index < 5; index += 1) {
+      writeFileSync(join(overflowing.incidentPath, `unexpected-${index}`), 'x');
+    }
+    let directoryReads = 0;
+    const overflowFs = scriptedStoreResetInspectionFs(createStoreResetInspectionFs(), {
+      readDirectory(_cursor, _call, current) {
+        directoryReads += 1;
+        return current;
+      },
+    });
+    expect(
+      await readStoreResetIncidentReport({
+        fs: overflowFs,
+        quarantineRoot: overflowing.quarantineRoot,
+        incidentId: INCIDENT_ID,
+        expectedBuild: BUILD,
+      }),
+    ).toEqual({ ok: false, state: 'unsafe' });
+    expect(directoryReads).toBe(6);
+
+    const raced = fixture();
+    let evidenceOpened = false;
+    const diagnose = vi.fn();
+    const racedFs = scriptedStoreResetInspectionFs(createStoreResetInspectionFs(), {
+      open(path) {
+        if (path === raced.evidencePath) evidenceOpened = true;
+      },
+      fstat(_descriptor, _call, current) {
+        return evidenceOpened ? { ...current, ino: current.ino + 1n } : current;
+      },
+    });
+    expect(
+      await readStoreResetIncidentReport({
+        fs: racedFs,
+        quarantineRoot: raced.quarantineRoot,
+        incidentId: INCIDENT_ID,
+        expectedBuild: BUILD,
+        diagnose,
+      }),
+    ).toEqual({ ok: false, state: 'unsafe' });
+    expect(diagnose).not.toHaveBeenCalled();
   });
 
   it('creates files exclusively and removes only the recorded directory identity', () => {

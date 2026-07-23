@@ -20,10 +20,14 @@ import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { storePaths } from '#src/infra/path/store.js';
 
 const sourceBackendBundle = join(process.cwd(), 'clients', 'build', 'coral-backend.cjs');
+const sourceCliBundle = join(process.cwd(), 'clients', 'build', 'coral-cli.cjs');
+const sourceClaudeAppserverBundle = join(process.cwd(), 'clients', 'build', 'coral-claude-appserver.cjs');
 const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'clients', 'build', 'manifest.json'), 'utf-8')) as {
   version: string;
   buildSetId: string;
   bundleHash: string;
+  cliBundleHash: string;
+  claudeAppserverBundleHash: string;
   flavor: BuildFlavor;
   storeFormatFingerprint: string;
 };
@@ -62,12 +66,16 @@ export function createPluginFixture(
     appendFileSync(backendPath, `\n// fixture ${options.bundleHash}\n`);
   }
   const bundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);
+  copyFileSync(sourceCliBundle, join(root, 'bridge', 'coral-cli.cjs'));
+  copyFileSync(sourceClaudeAppserverBundle, join(root, 'bridge', 'coral-claude-appserver.cjs'));
   writeFileSync(
     join(root, 'bridge', 'manifest.json'),
     JSON.stringify({
       version: sourceManifest.version,
       buildSetId: sourceManifest.buildSetId,
       bundleHash,
+      cliBundleHash: sourceManifest.cliBundleHash,
+      claudeAppserverBundleHash: sourceManifest.claudeAppserverBundleHash,
       flavor: options.flavor,
       storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
     }) + '\n',
@@ -98,6 +106,8 @@ export function updatePluginFixtureBundleHash(fixture: PluginFixture, bundleHash
       version: sourceManifest.version,
       buildSetId: sourceManifest.buildSetId,
       bundleHash: effectiveBundleHash,
+      cliBundleHash: sourceManifest.cliBundleHash,
+      claudeAppserverBundleHash: sourceManifest.claudeAppserverBundleHash,
       flavor: fixture.flavor,
       storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
     })}\n`,

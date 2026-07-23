@@ -1,6 +1,6 @@
 name: Store-reset incident
 description: Report an unexpected Coral store reset using the public-safe generated report.
-title: "[store-reset] "
+title: '[store-reset] '
 labels:
   - bug
 body:
@@ -9,12 +9,13 @@ body:
       value: |
         Run `coral-cli backend store-reset list` if you need the incident ID, then run
         `coral-cli backend store-reset report <incident-id>` and paste its complete output below.
+        If report generation fails, paste the complete fixed text error output instead.
         The generated Markdown is allowlisted for public sharing. Do not attach database files or raw local diagnostics.
   - type: textarea
     id: report
     attributes:
-      label: Generated store-reset report
-      description: Paste the complete output of the store-reset report command.
+      label: Generated report or fixed error output
+      description: Paste either the complete generated report or the complete fixed text error output.
     validations:
       required: true
   - type: textarea

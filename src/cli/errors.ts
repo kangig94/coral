@@ -12,34 +12,53 @@ export type StoreResetCliErrorCode =
   | 'store_reset_incident_not_found'
   | 'store_reset_incident_limit_exceeded'
   | 'store_reset_build_mismatch'
+  | 'store_reset_incident_build_mismatch'
   | 'store_reset_reporting_failed';
 
 const STORE_RESET_ERRORS = {
   invalid_store_reset_incident_id: {
     message: 'Incident ID must be a canonical lowercase UUID.',
+    remediation: 'Run `coral-cli backend store-reset list` and use the ID of an incident in the `ready` state.',
     exitCode: 2,
   },
   store_reset_incident_not_found: {
     message: 'Store-reset incident not found.',
+    remediation:
+      'Run `coral-cli backend store-reset list`. If no incident is retained, file a Store-reset incident issue with this complete fixed error output; do not attach DB, WAL, SHM, or raw logs.',
     exitCode: 1,
   },
   store_reset_incident_limit_exceeded: {
     message: 'Too many retained store-reset entries to list safely; report a known incident ID directly.',
+    remediation:
+      'Use an incident ID from the reset warning. If none is available, file a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
     exitCode: 1,
   },
   store_reset_build_mismatch: {
     message: 'Store-reset reporting is unavailable because the installed build artifacts do not match.',
+    remediation:
+      'Reinstall or update Coral through the same install method without deleting Coral data, then retry. If it persists, file a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
+    exitCode: 70,
+  },
+  store_reset_incident_build_mismatch: {
+    message: 'The retained incident belongs to a different Coral build set and cannot be reported by this build.',
+    remediation:
+      'Keep the incident in place and file a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
     exitCode: 70,
   },
   store_reset_reporting_failed: {
     message: 'Store-reset reporting failed.',
+    remediation:
+      'Retry once. If it still fails, file a Store-reset incident issue with this fixed error output; do not move, restore, delete, or attach DB, WAL, SHM, or raw logs.',
     exitCode: 70,
   },
-} as const satisfies Readonly<Record<StoreResetCliErrorCode, { readonly message: string; readonly exitCode: number }>>;
+} as const satisfies Readonly<
+  Record<StoreResetCliErrorCode, { readonly message: string; readonly remediation: string; readonly exitCode: number }>
+>;
 
 export class StoreResetCliError extends Error {
   readonly code: StoreResetCliErrorCode;
   readonly exitCode: number;
+  readonly remediation: string;
 
   constructor(code: StoreResetCliErrorCode) {
     const definition = STORE_RESET_ERRORS[code];
@@ -47,6 +66,7 @@ export class StoreResetCliError extends Error {
     this.name = 'StoreResetCliError';
     this.code = code;
     this.exitCode = definition.exitCode;
+    this.remediation = definition.remediation;
   }
 }
 
@@ -127,6 +147,7 @@ export function buildErrorEnvelope(error: unknown): { envelope: CliErrorEnvelope
         error: true,
         code: error.code,
         message: error.message,
+        remediation: error.remediation,
       },
       error.exitCode,
     );

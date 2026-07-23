@@ -20,6 +20,8 @@ const BUILD: StrictBundleManifest = {
   version: '0.9.16',
   buildSetId: '123e4567-e89b-42d3-a456-426614174000',
   bundleHash: '0123456789abcdef',
+  cliBundleHash: '123456789abcdef0',
+  claudeAppserverBundleHash: '23456789abcdef01',
   flavor: 'prod',
   storeFormatFingerprint: `sha256:${'f'.repeat(64)}`,
 };
@@ -174,6 +176,18 @@ describe('store reset incident listing', () => {
       StoreResetIncidentLimitError,
     );
   });
+
+  it.each([MAX_INCIDENT_ROOT_ENTRIES - 1, MAX_INCIDENT_ROOT_ENTRIES])(
+    'accepts a bounded root containing %i non-incident entries',
+    (entryCount) => {
+      const fs = new MemoryInspectionFs();
+      fs.addRoot(Array.from({ length: entryCount }, (_, index) => `ignored-${index}`));
+
+      expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toEqual({
+        incidents: [],
+      });
+    },
+  );
 
   it('sorts current-build incidents newest-first and ignores non-UUID staging entries', () => {
     const older = '123e4567-e89b-42d3-a456-426614174000';

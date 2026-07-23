@@ -38,7 +38,7 @@
     "test:integration": "vitest run --config vitest/integration.ts",
     "test:e2e": "vitest run --config vitest/e2e.ts",
     "test:e2e:lifecycle": "vitest run --config vitest/e2e-lifecycle.ts",
-    "test:store-reset": "vitest run --config vitest/default.ts tests/unit/store/open-or-reset.test.ts tests/unit/store/reset-incident-parser.test.ts tests/unit/store/reset-incident-reader.test.ts tests/unit/store/reset-incident-diagnostic.test.ts tests/unit/store/reset-incident-report.test.ts tests/unit/coordinator/lifecycle-reset-authority-order.test.ts tests/unit/cli/store-reset.test.ts tests/unit/cli/errors.test.ts tests/unit/cli/emit.test.ts tests/unit/support/store-reset-issue-template.test.ts tests/invariants/store-reset-discipline.test.ts tests/invariants/architecture-boundary.test.ts",
+    "test:store-reset": "vitest run --config vitest/default.ts tests/unit/store/open-or-reset.test.ts tests/unit/store/reset-incident-parser.test.ts tests/unit/store/reset-incident-reader.test.ts tests/unit/store/reset-incident-diagnostic.test.ts tests/unit/store/reset-incident-report.test.ts tests/unit/coordinator/lifecycle-reset-authority-order.test.ts tests/unit/cli/store-reset.test.ts tests/unit/cli/store-reset-signal.test.ts tests/unit/cli/errors.test.ts tests/unit/cli/emit.test.ts tests/unit/support/store-reset-issue-template.test.ts tests/invariants/store-reset-discipline.test.ts tests/invariants/architecture-boundary.test.ts",
     "test:store-reset:integration": "vitest run --config vitest/integration.ts tests/integration/store/reset-incident-filesystem.integration.test.ts",
     "test:e2e:store-reset:build": "node scripts/run-store-reset-e2e.mjs clients/build",
     "test:e2e:store-reset:release": "node scripts/run-store-reset-e2e.mjs clients/bridge",

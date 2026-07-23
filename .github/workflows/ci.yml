@@ -27,6 +27,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      - run: npm run test:store-reset:integration
       - run: npm run verify:store-reset-build
       - run: npm run test:e2e:store-reset:build
 

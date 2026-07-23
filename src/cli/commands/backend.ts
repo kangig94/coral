@@ -24,7 +24,7 @@ export function registerBackendCommands(
     report: reportStoreResetIncidentLocal,
   },
 ): void {
-  const backend = program.command('backend').description('Backend daemon control');
+  const backend = program.command('backend').description('Backend administration and local incident inspection');
 
   const statusCommand = backend.command('status');
   statusCommand.description('Show backend daemon status').action(async () => {
@@ -68,7 +68,7 @@ export function registerBackendCommands(
   storeResetCommand
     .command('report')
     .description('Generate a public-safe store-reset incident report')
-    .argument('<incident-id>')
+    .argument('<incident-id>', 'Canonical lowercase UUID shown by backend store-reset list')
     .action(async (incidentId: string) => {
       try {
         process.stdout.write(formatStoreResetReport(await storeReset.report(incidentId)));

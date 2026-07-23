@@ -31,7 +31,7 @@ export interface StoreResetCliDependencies {
   quarantineRoot(manifest: StrictBundleManifest): string;
 }
 
-function defaultDependencies(): StoreResetCliDependencies {
+function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDependencies {
   return {
     resolveIdentity: () => resolveStrictBundleIdentity(),
     createInspectionFs: createStoreResetInspectionFs,
@@ -40,10 +40,20 @@ function defaultDependencies(): StoreResetCliDependencies {
         tempRoot: tmpdir(),
         platform: process.platform,
         executable: process.execPath,
-        supervisor: createNodeStoreResetDiagnosticSupervisor(),
+        supervisor: createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
       }),
     quarantineRoot: (manifest) =>
       join(composeCoralPaths(manifest.flavor).store.dbDir, STORE_RESET_QUARANTINE_DIRECTORY),
+  };
+}
+
+export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal): {
+  readonly list: () => StoreResetIncidentListResult;
+  readonly report: (incidentId: string) => Promise<StoreResetPublicReport>;
+} {
+  return {
+    list: () => listStoreResetIncidentsLocal(defaultDependencies(shutdownSignal)),
+    report: (incidentId) => reportStoreResetIncidentLocal(incidentId, defaultDependencies(shutdownSignal)),
   };
 }
 
@@ -56,7 +66,7 @@ function requireCurrentBuild(dependencies: StoreResetCliDependencies): StrictBun
 function mapReportFailure(result: Exclude<StoreResetIncidentReportResult, { readonly ok: true }>): never {
   if (result.state === 'invalid_id') throw new StoreResetCliError('invalid_store_reset_incident_id');
   if (result.state === 'not_found') throw new StoreResetCliError('store_reset_incident_not_found');
-  if (result.state === 'build_mismatch') throw new StoreResetCliError('store_reset_build_mismatch');
+  if (result.state === 'build_mismatch') throw new StoreResetCliError('store_reset_incident_build_mismatch');
   throw new StoreResetCliError('store_reset_reporting_failed');
 }
 

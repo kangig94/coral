@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
@@ -15,6 +15,7 @@ import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
 import {
   projectStoreResetPublicReport,
+  serializeStoreResetIncidentManifest,
   type StoreResetIncidentLocalReport,
   type StoreResetIncidentManifestV2,
 } from '#src/store/reset-incident.js';
@@ -23,6 +24,8 @@ const BUILD: StrictBundleManifest = {
   version: '0.9.16',
   buildSetId: '123e4567-e89b-42d3-a456-426614174000',
   bundleHash: '0123456789abcdef',
+  cliBundleHash: '123456789abcdef0',
+  claudeAppserverBundleHash: '23456789abcdef01',
   flavor: 'prod',
   storeFormatFingerprint: `sha256:${'f'.repeat(64)}`,
 };
@@ -149,6 +152,45 @@ describe('local store-reset operations', () => {
         resolveIdentity: () => ({ ok: false }),
       }),
     ).rejects.toMatchObject({ code: 'store_reset_build_mismatch' });
+
+    const quarantineRoot = root();
+    const incidentPath = join(quarantineRoot, INCIDENT_ID);
+    mkdirSync(incidentPath);
+    const report = publicReport();
+    const mismatchedManifest: StoreResetIncidentManifestV2 = {
+      schemaVersion: 2,
+      incidentId: report.incidentId,
+      resetAt: report.resetAt,
+      reason: report.reason,
+      storedFingerprint: report.storedFingerprint,
+      expectedFingerprint: report.expectedFingerprint,
+      build: {
+        version: report.build.version,
+        buildSetId: '323e4567-e89b-42d3-a456-426614174000',
+        backendBundleHash: report.build.backendBundleHash,
+        flavor: report.build.flavor,
+      },
+      runtime: {
+        namespace: 'unit',
+        nodeVersion: process.version,
+        platform: process.platform,
+        architecture: process.arch,
+        processId: process.pid,
+      },
+      handoff: report.handoff,
+      files: [
+        {
+          name: 'store.db',
+          sizeBytes: 1,
+          mtimeMs: 1_754_000_000_000,
+          sha256: 'a'.repeat(64),
+        },
+      ],
+    };
+    writeFileSync(join(incidentPath, 'reset-manifest.json'), serializeStoreResetIncidentManifest(mismatchedManifest));
+    await expect(reportStoreResetIncidentLocal(INCIDENT_ID, dependencies(quarantineRoot))).rejects.toMatchObject({
+      code: 'store_reset_incident_build_mismatch',
+    });
   });
 });
 
@@ -172,7 +214,11 @@ describe('backend store-reset commands', () => {
 
     await runCommand(['backend', 'store-reset', 'list'], operations);
     expect(stdout).toBe(
-      `Incident ID | Reset at | Reason | State | Files\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | mismatch | ready | 0\n`,
+      `Incident ID | Reset at | Reason | State | Files\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | mismatch | ready | 0\n\n` +
+        'States: ready produces a Markdown report; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.\n' +
+        'Next: coral-cli backend store-reset report <ready-incident-id>\n' +
+        'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.\n' +
+        'Non-ready evidence remains retained. Do not move, restore, delete, or upload DB, WAL, or SHM files.\n',
     );
     expect(stderr).toBe('');
 
@@ -192,7 +238,10 @@ describe('backend store-reset commands', () => {
       },
     });
     expect(stdout).toBe('');
-    expect(stderr).toBe('Incident ID must be a canonical lowercase UUID. [code=invalid_store_reset_incident_id]\n');
+    expect(stderr).toBe(
+      'Incident ID must be a canonical lowercase UUID. [code=invalid_store_reset_incident_id]\n' +
+        'remediation: Run `coral-cli backend store-reset list` and use the ID of an incident in the `ready` state.\n',
+    );
     expect(`${stdout}${stderr}`).not.toContain(sentinel);
     expect(process.exitCode).toBe(2);
 
@@ -205,8 +254,25 @@ describe('backend store-reset commands', () => {
       report: async () => publicReport(),
     });
     expect(stdout).toBe('');
-    expect(stderr).toBe('Store-reset reporting failed. [code=store_reset_reporting_failed]\n');
+    expect(stderr).toBe(
+      'Store-reset reporting failed. [code=store_reset_reporting_failed]\n' +
+        'remediation: Retry once. If it still fails, file a Store-reset incident issue with this fixed error output; do not move, restore, delete, or attach DB, WAL, SHM, or raw logs.\n',
+    );
     expect(stderr).not.toContain('PRIVATE_CHILD_OR_PATH_SENTINEL');
     expect(process.exitCode).toBe(70);
+  });
+
+  it('maps retained-entry overflow through the real command envelope', async () => {
+    await runCommand(['backend', 'store-reset', 'list'], {
+      list: () => {
+        throw new StoreResetCliError('store_reset_incident_limit_exceeded');
+      },
+      report: async () => publicReport(),
+    });
+
+    expect(stdout).toBe('');
+    expect(stderr).toContain('[code=store_reset_incident_limit_exceeded]');
+    expect(stderr).toContain('Use an incident ID from the reset warning.');
+    expect(process.exitCode).toBe(1);
   });
 });

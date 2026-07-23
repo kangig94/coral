@@ -7,6 +7,20 @@ export type StoreResetInspectionStat = {
   readonly kind: 'file' | 'directory' | 'symbolic-link' | 'other';
 };
 
+export function sameStoreResetInspectionIdentity(
+  left: StoreResetInspectionStat,
+  right: StoreResetInspectionStat,
+): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.mode === right.mode &&
+    left.kind === right.kind
+  );
+}
+
 export type StoreResetDirectoryEntry = {
   readonly name: string;
 };

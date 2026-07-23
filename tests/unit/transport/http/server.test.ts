@@ -5896,6 +5896,8 @@ describe('execution backend server', () => {
           version: '9.9.9',
           buildSetId: '00000000-0000-4000-8000-000000000000',
           bundleHash: 'testhash1234',
+          cliBundleHash: 'testclihash1234',
+          claudeAppserverBundleHash: 'testclaudehash12',
           flavor: 'prod',
           instanceId: 'handoff-instance-1',
           token: 'test-token',

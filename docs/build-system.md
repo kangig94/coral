@@ -19,7 +19,7 @@ TypeScript compilation plus esbuild bundling for the current Coral runtime, with
 
 `scripts/build-server.mjs` accepts `--flavor prod|dev` and `--release`. `npm run build` passes `--flavor prod`, `npm run build:dev` passes `--flavor dev`, and `npm run build:release` passes `--flavor prod --release`. Omitting `--flavor` defaults to `prod`. Flavor is selected explicitly by the build command, not inferred from `NODE_ENV`.
 
-The bundle code is identical across flavors; the distinction lives in `manifest.json`, which carries `bundleHash`, `flavor`, and the canonical `storeFormatFingerprint` reported by the built backend. See `docs/dev-setup.md` for parallel dev/prod daemon usage.
+Flavor is injected into every bundle together with `version`, `buildSetId`, and the canonical `storeFormatFingerprint`. The adjacent `manifest.json` repeats that embedded identity and carries content hashes for the backend, CLI, and Claude helper. A bundle set is accepted only when the embedded and adjacent identities agree and all three hashes match. See `docs/dev-setup.md` for parallel dev/prod daemon usage.
 
 ## Build Output and Bridge
 
@@ -49,7 +49,7 @@ dist/**/*.js + dist/**/*.d.ts
 clients/build/coral-backend.cjs
 clients/build/coral-cli.cjs
 clients/build/coral-claude-appserver.cjs
-clients/build/manifest.json (`{ "bundleHash", "flavor", "storeFormatFingerprint" }`)
+clients/build/manifest.json (`{ "version", "buildSetId", "bundleHash", "cliBundleHash", "claudeAppserverBundleHash", "flavor", "storeFormatFingerprint" }`)
   │
   ▼  --release (copy to clients/bridge/)
 clients/bridge/*
@@ -77,36 +77,42 @@ the current `src/` tree.
 2. Reads `package.json` as the single source of truth for the version.
 3. Syncs that version into `clients/.claude-plugin/plugin.json`, `clients/.codex-plugin/plugin.json`, and the root `.claude-plugin/marketplace.json`.
 4. Bundles the backend, CLI, and Claude broker helper to `clients/build/`.
-5. Asks the built backend for its canonical store-format fingerprint, then rewrites `clients/build/manifest.json` atomically with `{ bundleHash, flavor, storeFormatFingerprint }` for change detection, flavor identity, and independent hook read validation.
+5. Builds a probe backend to obtain the canonical store-format fingerprint, rebuilds with that fingerprint embedded, and atomically writes `clients/build/manifest.json` with the shared identity plus hashes for the backend, CLI, and Claude helper.
 
 When `--release` is passed, it additionally copies all artifacts from `clients/build/` to `clients/bridge/`.
 
-`bundleHash` remains the content hash of `clients/build/coral-backend.cjs`. Flavor is stored and compared separately, so a same-byte prod/dev pair still forces replacement when the flavor changes.
+`bundleHash`, `cliBundleHash`, and `claudeAppserverBundleHash` bind the complete executable set. `version`, `buildSetId`, `flavor`, and `storeFormatFingerprint` are embedded and compared separately, so a mixed or stale artifact set fails closed even when one file happens to have unchanged bytes.
 
 ## esbuild Settings
 
-| Setting                            | Value                            | Reason                                                                                                              |
-| ---------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `bundle`                           | `true`                           | Single-file deployable bundles                                                                                      |
-| `platform`                         | `node`                           | Node.js runtime target                                                                                              |
-| `target`                           | `node22`                         | Matches the supported runtime floor                                                                                 |
-| `format`                           | `cjs`                            | Bundles are committed as `.cjs`                                                                                     |
-| `external`                         | `['node:*', '@lydell/node-pty']` | Keep Node built-ins and native modules external (the store uses the built-in `node:sqlite`, so no `better-sqlite3`) |
-| `minify`                           | `true`                           | Smaller committed bundles                                                                                           |
-| `banner`                           | `var __PLUGIN_ROOT__=...`        | Runtime plugin-root discovery                                                                                       |
-| `define.__VERSION__`               | `package.json` version           | Shared build-time version injection                                                                                 |
-| `define.__IS_CORAL_BACKEND_MAIN__` | backend bundle only              | Guards backend auto-start behavior                                                                                  |
+| Setting                               | Value                            | Reason                                                                                                              |
+| ------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `bundle`                              | `true`                           | Single-file deployable bundles                                                                                      |
+| `platform`                            | `node`                           | Node.js runtime target                                                                                              |
+| `target`                              | `node22`                         | Conservative transpilation target below the supported Node 24 runtime floor                                         |
+| `format`                              | `cjs`                            | Bundles are committed as `.cjs`                                                                                     |
+| `external`                            | `['node:*', '@lydell/node-pty']` | Keep Node built-ins and native modules external (the store uses the built-in `node:sqlite`, so no `better-sqlite3`) |
+| `minify`                              | `true`                           | Smaller committed bundles                                                                                           |
+| `banner`                              | plugin root + embedded identity  | Runtime plugin-root discovery and human-inspectable build-set identity                                              |
+| `define.__VERSION__`                  | `package.json` version           | Shared build-time version injection                                                                                 |
+| `define.__BUILD_SET_ID__`             | generated UUID                   | Exact build-set binding                                                                                             |
+| `define.__BUILD_FLAVOR__`             | explicit build flavor            | Intrinsic prod/dev identity                                                                                         |
+| `define.__STORE_FORMAT_FINGERPRINT__` | built backend fingerprint        | Bind reporting and store format to the executable set                                                               |
+| `define.__IS_CORAL_BACKEND_MAIN__`    | backend bundle only              | Guards backend auto-start behavior                                                                                  |
 
 ## Build-time Injections
 
-| Constant                    | Source                        | Usage                                                   |
-| --------------------------- | ----------------------------- | ------------------------------------------------------- |
-| `__VERSION__`               | `package.json`                | Backend health/version output and CLI version reporting |
-| `__PLUGIN_ROOT__`           | CJS banner using `__dirname`  | Resolve plugin-relative assets at runtime               |
-| `__IS_CORAL_BACKEND_MAIN__` | build script                  | Backend main-entry guard                                |
-| `CORAL_VEC_ADDON_VERSION`   | coral-needle release metadata | KB addon reporting                                      |
+| Constant                       | Source                        | Usage                                                   |
+| ------------------------------ | ----------------------------- | ------------------------------------------------------- |
+| `__VERSION__`                  | `package.json`                | Backend health/version output and CLI version reporting |
+| `__BUILD_SET_ID__`             | generated once per build      | Reject mixed artifacts and cross-build incident reads   |
+| `__BUILD_FLAVOR__`             | `--flavor prod` or `dev`      | Bind executables to the prod/dev state tree             |
+| `__STORE_FORMAT_FINGERPRINT__` | probe backend output          | Bind executable identity to the exact store contract    |
+| `__PLUGIN_ROOT__`              | CJS banner using `__dirname`  | Resolve plugin-relative assets at runtime               |
+| `__IS_CORAL_BACKEND_MAIN__`    | build script                  | Backend main-entry guard                                |
+| `CORAL_VEC_ADDON_VERSION`      | coral-needle release metadata | KB addon reporting                                      |
 
-Build flavor is intentionally not injected through an esbuild define. Hooks are unbundled ESM files, so the shared carrier is `clients/bridge/manifest.json`.
+Unbundled hooks read the adjacent manifest; bundled runtimes compare that same manifest with their injected identity and the hashes of all three adjacent executables.
 
 ## Dependencies
 
@@ -121,6 +127,16 @@ npm test
 ```
 
 The suites cover CLI routing, client helpers, backend handlers, providers, workflow execution, KB behavior, discuss behavior, shared contracts, and the debug-only simulation harness. `npm run test:simulation` is only a narrower single-batch shortcut for that harness.
+
+Store-reset contract changes can be reproduced locally with:
+
+```bash
+npm run test:store-reset
+npm run test:store-reset:integration
+npm run build
+npm run verify:store-reset-build
+npm run test:e2e:store-reset:build
+```
 
 ## Release Notes
 

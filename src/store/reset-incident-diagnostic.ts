@@ -11,10 +11,11 @@ import {
   type StoreResetIncidentLocalReport,
   type StoreResetIncidentManifestV2,
 } from './reset-incident.js';
-import type {
-  StoreResetFileDescriptor,
-  StoreResetInspectionFs,
-  StoreResetInspectionStat,
+import {
+  sameStoreResetInspectionIdentity,
+  type StoreResetFileDescriptor,
+  type StoreResetInspectionFs,
+  type StoreResetInspectionStat,
 } from './reset-incident-inspection-fs.js';
 
 const DIAGNOSTIC_SOURCE_NAMES = ['store.db', 'store.db-wal', 'store.db-shm'] as const;
@@ -53,6 +54,7 @@ export interface StoreResetDiagnosticChild {
 }
 
 export interface StoreResetDiagnosticSupervisorPort {
+  readonly signal?: AbortSignal;
   spawn(executable: string, args: readonly string[]): StoreResetDiagnosticChild;
   setTimeout(callback: () => void, milliseconds: number): unknown;
   clearTimeout(handle: unknown): void;
@@ -110,6 +112,10 @@ export function superviseStoreResetDiagnosticChild(
       finished = true;
       for (const timer of timers) supervisor.clearTimeout(timer);
       timers.clear();
+      if (abortListener !== null) {
+        supervisor.signal?.removeEventListener('abort', abortListener);
+        abortListener = null;
+      }
       child.dispose();
       if (detach) {
         child.destroyPipes();
@@ -130,6 +136,7 @@ export function superviseStoreResetDiagnosticChild(
       child.terminate(false);
       schedule(forceTermination, SQLITE_TERMINATION_GRACE_MS);
     };
+    let abortListener: (() => void) | null = () => beginTermination();
 
     child.onStdout((chunk) => {
       if (finished) return;
@@ -169,19 +176,13 @@ export function superviseStoreResetDiagnosticChild(
       }
       finish('unavailable', 'completed');
     });
+    if (supervisor.signal?.aborted) {
+      beginTermination();
+    } else if (supervisor.signal !== undefined) {
+      supervisor.signal.addEventListener('abort', abortListener, { once: true });
+    }
     schedule(beginTermination, SQLITE_EXECUTION_DEADLINE_MS);
   });
-}
-
-function sameIdentity(left: StoreResetInspectionStat, right: StoreResetInspectionStat): boolean {
-  return (
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.size === right.size &&
-    left.mtimeNs === right.mtimeNs &&
-    left.mode === right.mode &&
-    left.kind === right.kind
-  );
 }
 
 function closeDescriptors(fs: StoreResetInspectionFs, descriptors: readonly (StoreResetFileDescriptor | null)[]): void {
@@ -215,7 +216,7 @@ function copyEvidence(options: {
   try {
     sourceDescriptor = options.fs.open(options.source, options.fs.openFlags.readOnly);
     const opened = options.fs.fstat(sourceDescriptor);
-    if (!sameIdentity(before, opened) || opened.kind !== 'file') {
+    if (!sameStoreResetInspectionIdentity(before, opened) || opened.kind !== 'file') {
       throw new Error('source identity changed');
     }
     destinationDescriptor = options.fs.open(options.destination, options.fs.openFlags.createExclusiveWrite, 0o600);
@@ -250,7 +251,7 @@ function copyEvidence(options: {
       throw new Error('source grew during copy');
     }
     const after = options.fs.lstat(options.source);
-    if (after === null || !sameIdentity(opened, after)) {
+    if (after === null || !sameStoreResetInspectionIdentity(opened, after)) {
       throw new Error('source identity changed');
     }
     result = { bytes: readOffset, sha256: hash.digest('hex') };
@@ -281,7 +282,7 @@ function hashEvidence(
   try {
     descriptor = fs.open(path, fs.openFlags.readOnly);
     const opened = fs.fstat(descriptor);
-    if (!sameIdentity(before, opened)) throw new Error('source identity changed');
+    if (!sameStoreResetInspectionIdentity(before, opened)) throw new Error('source identity changed');
     const expectedBytes = Number(opened.size);
     const buffer = new Uint8Array(COPY_BUFFER_BYTES);
     const hash = createHash('sha256');
@@ -295,7 +296,9 @@ function hashEvidence(
     }
     if (fs.read(descriptor, buffer, 0, 1, offset) !== 0) throw new Error('source grew');
     const after = fs.lstat(path);
-    if (after === null || !sameIdentity(opened, after)) throw new Error('source identity changed');
+    if (after === null || !sameStoreResetInspectionIdentity(opened, after)) {
+      throw new Error('source identity changed');
+    }
     result = { bytes: offset, sha256: hash.digest('hex') };
   } catch (error: unknown) {
     failure = error;
@@ -321,6 +324,13 @@ export function createStoreResetIncidentDiagnosticRunner(options: {
       return entry === undefined ? [] : [{ name, entry }];
     });
     if (evidence.length === 0 || evidence[0]?.name !== 'store.db') {
+      return {
+        integrity: 'unavailable',
+        termination: 'not_started',
+        cleanup: 'not_required',
+      };
+    }
+    if (evidence.reduce((total, item) => total + item.entry.sizeBytes, 0) > MAX_SQLITE_DIAGNOSTIC_BYTES) {
       return {
         integrity: 'unavailable',
         termination: 'not_started',

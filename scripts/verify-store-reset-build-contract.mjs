@@ -9,12 +9,7 @@ if (!targetArgument) {
 }
 
 const targetDir = resolve(targetArgument);
-const requiredBundleFiles = [
-  'coral-backend.cjs',
-  'coral-cli.cjs',
-  'coral-claude-appserver.cjs',
-  'manifest.json',
-];
+const requiredBundleFiles = ['coral-backend.cjs', 'coral-cli.cjs', 'coral-claude-appserver.cjs', 'manifest.json'];
 
 function parseJson(bytes, label) {
   try {
@@ -41,26 +36,40 @@ for (const file of requiredBundleFiles) {
 
 const manifestBytes = readFileSync(join(targetDir, 'manifest.json'));
 const manifest = parseJson(manifestBytes, `${basename(targetDir)}/manifest.json`);
-const backendIdentity = runIdentityProbe('coral-backend.cjs');
-const cliIdentity = runIdentityProbe('coral-cli.cjs');
-for (const identity of [backendIdentity, cliIdentity]) {
+const identities = [
+  runIdentityProbe('coral-backend.cjs'),
+  runIdentityProbe('coral-cli.cjs'),
+  runIdentityProbe('coral-claude-appserver.cjs'),
+];
+for (const identity of identities) {
   if (JSON.stringify(identity) !== JSON.stringify(manifest)) {
     throw new Error('Executing bundle identity does not equal its adjacent manifest.');
   }
 }
 
-const backendHash = createHash('sha256')
-  .update(readFileSync(join(targetDir, 'coral-backend.cjs')))
-  .digest('hex')
-  .slice(0, 16);
-if (manifest.bundleHash !== backendHash) {
-  throw new Error('Adjacent manifest backend hash does not match the executing backend bundle.');
+function bundleHash(file) {
+  return createHash('sha256')
+    .update(readFileSync(join(targetDir, file)))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+for (const [file, field] of [
+  ['coral-backend.cjs', 'bundleHash'],
+  ['coral-cli.cjs', 'cliBundleHash'],
+  ['coral-claude-appserver.cjs', 'claudeAppserverBundleHash'],
+]) {
+  if (manifest[field] !== bundleHash(file)) {
+    throw new Error(`Adjacent manifest ${field} does not match ${file}.`);
+  }
 }
 
 if (sourceArgument) {
-  const sourceManifest = readFileSync(join(resolve(sourceArgument), 'manifest.json'));
-  if (!manifestBytes.equals(sourceManifest)) {
-    throw new Error('Release manifest is not byte-for-byte identical to the ordinary build manifest.');
+  const sourceDir = resolve(sourceArgument);
+  for (const file of requiredBundleFiles) {
+    if (!readFileSync(join(targetDir, file)).equals(readFileSync(join(sourceDir, file)))) {
+      throw new Error(`Release ${file} is not byte-for-byte identical to the ordinary build artifact.`);
+    }
   }
 }
 

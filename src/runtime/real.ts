@@ -11,6 +11,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  opendirSync,
   readFileSync,
   readSync,
   readdirSync,
@@ -149,6 +150,28 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       }
       return readdirSync(path);
     }) as StoragePort['readdirSync'],
+    readDirectoryBoundedSync: (path, limit) => {
+      if (!Number.isSafeInteger(limit) || limit < 0) {
+        throw new TypeError('Directory entry limit must be a non-negative safe integer.');
+      }
+      const directory = opendirSync(path);
+      const entries: string[] = [];
+      let overflow = false;
+      try {
+        while (true) {
+          const entry = directory.readSync();
+          if (entry === null) break;
+          if (entries.length === limit) {
+            overflow = true;
+            break;
+          }
+          entries.push(entry.name);
+        }
+      } finally {
+        directory.closeSync();
+      }
+      return { entries, overflow };
+    },
     lstatSync: (path) => {
       const stats = lstatSync(path);
       return {
@@ -162,6 +185,9 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       if (options?.bigint === true) {
         const stats = statSync(path, { bigint: true });
         return {
+          dev: stats.dev,
+          ino: stats.ino,
+          mode: stats.mode,
           size: stats.size,
           mtimeNs: stats.mtimeNs,
           isDirectory: () => stats.isDirectory(),
@@ -176,9 +202,23 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         isFile: () => stats.isFile(),
       };
     }) as StoragePort['statSync'],
+    fstatSync: (fd, options) => {
+      const stats = fstatSync(fd, options);
+      return {
+        dev: stats.dev,
+        ino: stats.ino,
+        mode: stats.mode,
+        size: stats.size,
+        mtimeNs: stats.mtimeNs,
+        isDirectory: () => stats.isDirectory(),
+        isFile: () => stats.isFile(),
+      };
+    },
     existsSync: (path) => existsSync(path),
-    openSync: (path, flags) => openSync(path, flags),
+    openSync: (path, flags, mode) => (mode === undefined ? openSync(path, flags) : openSync(path, flags, mode)),
     readSync: (fd, buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
+    writeSync: (fd, buffer, offset, length, position) => writeSync(fd, buffer, offset, length, position),
+    fdatasyncSync: (fd) => fdatasyncSync(fd),
     closeSync: (fd) => closeSync(fd),
     appendFileSync: (path, data) => appendFileSync(path, data),
     appendFileDurableSync: (path, data) => appendFileDurableSyncNode(path, data),
@@ -190,7 +230,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       tryExclusiveWriteSyncNode(path, data, capturedEnv.platform, options),
     writeAtomicSync: (path, data, options) => writeAtomicSyncNode(path, data, options),
     writeAtomicDurableSync: (path, data, options) => writeAtomicDurableSyncNode(path, data, options),
-    syncDirectoryDurableSync: (path) => (capturedEnv.platform === 'win32' ? true : syncParentDirectoryBestEffort(path)),
+    syncDirectoryDurableSync: (path) => syncDirectoryDurable(path),
     chmodSync: (path, mode) => chmodSync(path, mode),
   };
 
@@ -738,8 +778,7 @@ function writeAtomicDurableSyncNode(
     closeSync(fd);
     fd = null;
     renameSync(tempPath, path);
-    syncParentDirectoryBestEffort(parent);
-    return true;
+    return syncDirectoryDurable(parent);
   } catch (error: unknown) {
     if (fd !== null) {
       closeSync(fd);
@@ -902,11 +941,12 @@ function writeAllSync(fd: number, buffer: Buffer): void {
   }
 }
 
-// Directory fsync after rename is best-effort because not every platform/filesystem supports opening directories.
-function syncParentDirectoryBestEffort(parent: string): boolean {
+// A caller that requests durable publication must observe an unsupported or
+// failed directory fsync and fail closed before it mutates dependent state.
+function syncDirectoryDurable(path: string): boolean {
   let dirFd: number | null = null;
   try {
-    dirFd = openSync(parent, 'r');
+    dirFd = openSync(path, 'r');
     fsyncSync(dirFd);
     return true;
   } catch {

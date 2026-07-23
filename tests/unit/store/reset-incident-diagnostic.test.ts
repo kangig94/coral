@@ -86,8 +86,10 @@ class FakeDiagnosticChild implements StoreResetDiagnosticChild {
 function supervisor(
   child: FakeDiagnosticChild,
   onSpawn?: (executable: string, args: readonly string[]) => void,
+  signal?: AbortSignal,
 ): StoreResetDiagnosticSupervisorPort {
   return {
+    ...(signal === undefined ? {} : { signal }),
     spawn(executable, args) {
       onSpawn?.(executable, args);
       return child;
@@ -223,6 +225,23 @@ describe('store-reset SQLite child supervision', () => {
     await expect(stderrResult).resolves.toEqual({ integrity: 'unavailable', termination: 'terminated' });
   });
 
+  it('owns shutdown of the diagnostic child when the CLI abort signal fires', async () => {
+    const controller = new AbortController();
+    const child = new FakeDiagnosticChild();
+    const result = superviseStoreResetDiagnosticChild(
+      supervisor(child, undefined, controller.signal),
+      '/node',
+      '/private/store.db',
+    );
+
+    controller.abort();
+    expect(child.kills).toEqual([false]);
+    child.close(null, 'SIGTERM');
+
+    await expect(result).resolves.toEqual({ integrity: 'unavailable', termination: 'terminated' });
+    expect(child.disposed).toBe(1);
+  });
+
   it('detaches a child that never closes after the terminal seven-second bound', async () => {
     vi.useFakeTimers();
     const child = new FakeDiagnosticChild();
@@ -308,6 +327,46 @@ describe('store-reset SQLite evidence staging', () => {
       integrity: 'unavailable',
       termination: 'not_started',
     });
+  });
+
+  it('rejects a cumulative diagnostic budget before copying or spawning', async () => {
+    const fixture = diagnosticFixture();
+    const child = new FakeDiagnosticChild();
+    let spawns = 0;
+    const runner = createStoreResetIncidentDiagnosticRunner({
+      tempRoot: fixture.tempRoot,
+      platform: process.platform,
+      executable: '/node',
+      supervisor: supervisor(child, () => {
+        spawns += 1;
+      }),
+    });
+    const perFile = 130 * 1024 * 1024;
+    const manifest: StoreResetIncidentManifestV2 = {
+      ...fixture.manifest,
+      files: [
+        { ...fixture.manifest.files[0], sizeBytes: perFile },
+        {
+          name: 'store.db-wal',
+          sizeBytes: perFile,
+          mtimeMs: Date.now(),
+          sha256: 'b'.repeat(64),
+        },
+      ],
+    };
+
+    await expect(
+      runner({
+        fs: createStoreResetInspectionFs(),
+        incidentPath: fixture.incidentPath,
+        manifest,
+      }),
+    ).resolves.toEqual({
+      integrity: 'unavailable',
+      termination: 'not_started',
+      cleanup: 'not_required',
+    });
+    expect(spawns).toBe(0);
   });
 
   it('never recursively cleans a temp directory still possibly held by an unconfirmed child', async () => {

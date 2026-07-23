@@ -173,6 +173,8 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
         version: 'test-version',
         buildSetId: '00000000-0000-4000-8000-000000000000',
         bundleHash: 'test-bundle',
+        cliBundleHash: 'test-cli-bundle',
+        claudeAppserverBundleHash: 'test-claude-appserver-bundle',
         flavor: 'prod',
         instanceId: 'test-instance',
         token: 'test-token',

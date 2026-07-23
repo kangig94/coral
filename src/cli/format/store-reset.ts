@@ -33,12 +33,24 @@ export function formatStoreResetReport(report: StoreResetPublicReport): string {
     `- Termination: ${code(report.diagnostic.termination)}`,
     `- Cleanup: ${code(report.diagnostic.cleanup)}`,
     '',
+    '## Next step',
+    '',
+    'Paste this complete output into the Store-reset incident issue form in the Coral GitHub repository.',
+    'No file was uploaded. Do not attach DB, WAL, SHM, raw logs, credentials, settings, or environment files.',
+    'The retained evidence is diagnostic only and cannot be restored as active Coral state.',
+    '',
   ];
   return lines.join('\n');
 }
 
 export function formatStoreResetList(result: StoreResetIncidentListResult): string {
-  if (result.incidents.length === 0) return 'No store-reset incidents.';
+  if (result.incidents.length === 0) {
+    return [
+      'No store-reset incidents.',
+      'If an unexpected reset warning included an incident ID, report that ID directly.',
+      'Otherwise, file a Store-reset incident issue with this complete output; do not attach DB, WAL, SHM, or raw logs.',
+    ].join('\n');
+  }
   return [
     'Incident ID | Reset at | Reason | State | Files',
     ...result.incidents.map((incident) =>
@@ -46,5 +58,10 @@ export function formatStoreResetList(result: StoreResetIncidentListResult): stri
         ? `${incident.incidentId} | ${incident.resetAt} | ${incident.reason} | ${incident.state} | ${incident.fileCount}`
         : `${incident.incidentId} | - | - | ${incident.state} | -`,
     ),
+    '',
+    'States: ready produces a Markdown report; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.',
+    'Next: coral-cli backend store-reset report <ready-incident-id>',
+    'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.',
+    'Non-ready evidence remains retained. Do not move, restore, delete, or upload DB, WAL, or SHM files.',
   ].join('\n');
 }

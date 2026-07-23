@@ -19,10 +19,11 @@ import {
   type StoreResetIncidentManifestV2,
   type StoreResetPublicReport,
 } from './reset-incident.js';
-import type {
-  StoreResetFileDescriptor,
-  StoreResetInspectionFs,
-  StoreResetInspectionStat,
+import {
+  sameStoreResetInspectionIdentity,
+  type StoreResetFileDescriptor,
+  type StoreResetInspectionFs,
+  type StoreResetInspectionStat,
 } from './reset-incident-inspection-fs.js';
 import type { StoreResetIncidentDiagnosticRunner } from './reset-incident-diagnostic.js';
 
@@ -56,17 +57,6 @@ class StoreResetIncidentReadError extends Error {
   }
 }
 
-function sameIdentity(left: StoreResetInspectionStat, right: StoreResetInspectionStat): boolean {
-  return (
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.size === right.size &&
-    left.mtimeNs === right.mtimeNs &&
-    left.mode === right.mode &&
-    left.kind === right.kind
-  );
-}
-
 function readManifestBytes(
   fs: StoreResetInspectionFs,
   manifestPath: string,
@@ -79,7 +69,7 @@ function readManifestBytes(
   try {
     descriptor = fs.open(manifestPath, fs.openFlags.readOnly);
     const opened = fs.fstat(descriptor);
-    if (opened.kind !== 'file' || !sameIdentity(before, opened)) {
+    if (opened.kind !== 'file' || !sameStoreResetInspectionIdentity(before, opened)) {
       throw new StoreResetIncidentReadError('unsafe');
     }
 
@@ -104,7 +94,7 @@ function readManifestBytes(
       throw new StoreResetIncidentReadError('unavailable');
     }
     const after = fs.lstat(manifestPath);
-    if (after === null || !sameIdentity(opened, after)) {
+    if (after === null || !sameStoreResetInspectionIdentity(opened, after)) {
       throw new StoreResetIncidentReadError('unsafe');
     }
     contents = buffer;
@@ -332,7 +322,7 @@ function hashEvidenceFile(options: {
   try {
     descriptor = options.fs.open(options.path, options.fs.openFlags.readOnly);
     const opened = options.fs.fstat(descriptor);
-    if (opened.kind !== 'file' || !sameIdentity(before, opened)) {
+    if (opened.kind !== 'file' || !sameStoreResetInspectionIdentity(before, opened)) {
       throw new StoreResetIncidentReadError('unsafe');
     }
 
@@ -352,7 +342,7 @@ function hashEvidenceFile(options: {
       throw new StoreResetIncidentReadError('unavailable');
     }
     const after = options.fs.lstat(options.path);
-    if (after === null || !sameIdentity(opened, after)) {
+    if (after === null || !sameStoreResetInspectionIdentity(opened, after)) {
       throw new StoreResetIncidentReadError('unsafe');
     }
     digest = hash.digest('hex');
@@ -446,8 +436,14 @@ export async function readStoreResetIncidentReport(options: {
     }
 
     let remainingBudget = MAX_REPORT_HASH_BYTES;
+    let remainingDeclaredBudget = MAX_REPORT_HASH_BYTES;
     const fileVerification: StoreResetIncidentLocalReport['fileVerification'][number][] = [];
     for (const file of manifest.files) {
+      if (file.sizeBytes > remainingDeclaredBudget) {
+        fileVerification.push({ name: file.name, status: 'unavailable_limit' });
+        continue;
+      }
+      remainingDeclaredBudget -= file.sizeBytes;
       const evidencePath = join(incidentPath, file.name);
       const evidenceRealPath = options.fs.lstat(evidencePath) === null ? null : options.fs.realpath(evidencePath);
       if (evidenceRealPath !== null && !isContained(incidentRealPath, evidenceRealPath)) {
@@ -486,8 +482,8 @@ export async function readStoreResetIncidentReport(options: {
     if (
       incidentAfter === null ||
       rootAfter === null ||
-      !sameIdentity(incidentStat, incidentAfter) ||
-      !sameIdentity(rootStat, rootAfter)
+      !sameStoreResetInspectionIdentity(incidentStat, incidentAfter) ||
+      !sameStoreResetInspectionIdentity(rootStat, rootAfter)
     ) {
       return { ok: false, state: 'unsafe' };
     }

@@ -9,6 +9,7 @@ declare const __BUNDLE_DIR__: string | undefined;
 declare const __VERSION__: string | undefined;
 declare const __BUILD_SET_ID__: string | undefined;
 declare const __BUILD_FLAVOR__: string | undefined;
+declare const __STORE_FORMAT_FINGERPRINT__: string | undefined;
 
 const MAX_STRICT_BUNDLE_MANIFEST_BYTES = 16 * 1024;
 const MAX_STRICT_BACKEND_BUNDLE_BYTES = 256 * 1024 * 1024;
@@ -22,11 +23,13 @@ export type EmbeddedBundleIdentity = {
   readonly version: string;
   readonly buildSetId: string;
   readonly flavor: BuildFlavor;
+  readonly storeFormatFingerprint: string;
 };
 
 export type StrictBundleManifest = EmbeddedBundleIdentity & {
   readonly bundleHash: string;
-  readonly storeFormatFingerprint: string;
+  readonly cliBundleHash: string;
+  readonly claudeAppserverBundleHash: string;
 };
 
 export type StrictBundleIdentityFailure =
@@ -78,7 +81,8 @@ function embeddedBundleIdentity(): EmbeddedBundleIdentity | null {
   if (
     typeof __VERSION__ !== 'string' ||
     typeof __BUILD_SET_ID__ !== 'string' ||
-    (__BUILD_FLAVOR__ !== 'dev' && __BUILD_FLAVOR__ !== 'prod')
+    (__BUILD_FLAVOR__ !== 'dev' && __BUILD_FLAVOR__ !== 'prod') ||
+    typeof __STORE_FORMAT_FINGERPRINT__ !== 'string'
   ) {
     return null;
   }
@@ -86,19 +90,34 @@ function embeddedBundleIdentity(): EmbeddedBundleIdentity | null {
     version: __VERSION__,
     buildSetId: __BUILD_SET_ID__,
     flavor: __BUILD_FLAVOR__,
+    storeFormatFingerprint: __STORE_FORMAT_FINGERPRINT__,
   };
 }
 
 function readBoundedAdjacentManifest(
   activeBundleDir: string,
 ): { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly reason: 'unavailable' | 'invalid' } {
+  const path = join(activeBundleDir, 'manifest.json');
   let descriptor: number | null = null;
   let contents: Uint8Array;
   let closeFailed = false;
   try {
-    descriptor = openSync(join(activeBundleDir, 'manifest.json'), 'r');
-    const initialSize = fstatSync(descriptor).size;
-    if (!Number.isSafeInteger(initialSize) || initialSize < 0 || initialSize > MAX_STRICT_BUNDLE_MANIFEST_BYTES) {
+    const pathBefore = lstatSync(path, { bigint: true });
+    if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) {
+      return { ok: false, reason: 'unavailable' };
+    }
+    descriptor = openSync(path, 'r');
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.dev !== pathBefore.dev ||
+      opened.ino !== pathBefore.ino ||
+      opened.mode !== pathBefore.mode ||
+      opened.size !== pathBefore.size ||
+      opened.mtimeNs !== pathBefore.mtimeNs ||
+      opened.size < 0n ||
+      opened.size > BigInt(MAX_STRICT_BUNDLE_MANIFEST_BYTES)
+    ) {
       return { ok: false, reason: 'unavailable' };
     }
 
@@ -112,6 +131,24 @@ function readBoundedAdjacentManifest(
       offset += read;
     }
     if (offset > MAX_STRICT_BUNDLE_MANIFEST_BYTES) {
+      return { ok: false, reason: 'unavailable' };
+    }
+    const openedAfter = fstatSync(descriptor, { bigint: true });
+    const pathAfter = lstatSync(path, { bigint: true });
+    if (
+      openedAfter.dev !== opened.dev ||
+      openedAfter.ino !== opened.ino ||
+      openedAfter.mode !== opened.mode ||
+      openedAfter.size !== opened.size ||
+      openedAfter.mtimeNs !== opened.mtimeNs ||
+      !pathAfter.isFile() ||
+      pathAfter.isSymbolicLink() ||
+      pathAfter.dev !== opened.dev ||
+      pathAfter.ino !== opened.ino ||
+      pathAfter.mode !== opened.mode ||
+      pathAfter.size !== opened.size ||
+      pathAfter.mtimeNs !== opened.mtimeNs
+    ) {
       return { ok: false, reason: 'unavailable' };
     }
     contents = bytes.subarray(0, offset);
@@ -148,6 +185,10 @@ function parseStrictManifest(value: unknown): StrictBundleManifest | null {
     !BUILD_SET_ID_PATTERN.test(value.buildSetId) ||
     typeof value.bundleHash !== 'string' ||
     !BUNDLE_HASH_PATTERN.test(value.bundleHash) ||
+    typeof value.cliBundleHash !== 'string' ||
+    !BUNDLE_HASH_PATTERN.test(value.cliBundleHash) ||
+    typeof value.claudeAppserverBundleHash !== 'string' ||
+    !BUNDLE_HASH_PATTERN.test(value.claudeAppserverBundleHash) ||
     (value.flavor !== 'dev' && value.flavor !== 'prod') ||
     typeof value.storeFormatFingerprint !== 'string' ||
     !STORE_FORMAT_FINGERPRINT_PATTERN.test(value.storeFormatFingerprint)
@@ -158,13 +199,15 @@ function parseStrictManifest(value: unknown): StrictBundleManifest | null {
     version: value.version,
     buildSetId: value.buildSetId,
     bundleHash: value.bundleHash,
+    cliBundleHash: value.cliBundleHash,
+    claudeAppserverBundleHash: value.claudeAppserverBundleHash,
     flavor: value.flavor,
     storeFormatFingerprint: value.storeFormatFingerprint,
   };
 }
 
-function hashStableAdjacentBackend(activeBundleDir: string): string | null {
-  const path = join(activeBundleDir, 'coral-backend.cjs');
+function hashStableAdjacentBundle(activeBundleDir: string, fileName: string): string | null {
+  const path = join(activeBundleDir, fileName);
   let descriptor: number | null = null;
   let digest: string | undefined;
   let closeFailed = false;
@@ -226,6 +269,10 @@ function hashStableAdjacentBackend(activeBundleDir: string): string | null {
   return closeFailed ? null : (digest ?? null);
 }
 
+/**
+ * Validate the executing three-artifact bundle set against its adjacent
+ * manifest, including embedded identity and stable content hashes.
+ */
 export function resolveStrictBundleIdentity(options?: {
   readonly bundleDir?: string;
   readonly embedded?: EmbeddedBundleIdentity;
@@ -237,7 +284,8 @@ export function resolveStrictBundleIdentity(options?: {
     embedded.version.length > 128 ||
     !VERSION_PATTERN.test(embedded.version) ||
     !BUILD_SET_ID_PATTERN.test(embedded.buildSetId) ||
-    (embedded.flavor !== 'dev' && embedded.flavor !== 'prod')
+    (embedded.flavor !== 'dev' && embedded.flavor !== 'prod') ||
+    !STORE_FORMAT_FINGERPRINT_PATTERN.test(embedded.storeFormatFingerprint)
   ) {
     return { ok: false, reason: 'embedded_identity_unavailable' };
   }
@@ -261,7 +309,10 @@ export function resolveStrictBundleIdentity(options?: {
     manifest.version !== embedded.version ||
     manifest.buildSetId !== embedded.buildSetId ||
     manifest.flavor !== embedded.flavor ||
-    hashStableAdjacentBackend(activeBundleDir) !== manifest.bundleHash
+    manifest.storeFormatFingerprint !== embedded.storeFormatFingerprint ||
+    hashStableAdjacentBundle(activeBundleDir, 'coral-backend.cjs') !== manifest.bundleHash ||
+    hashStableAdjacentBundle(activeBundleDir, 'coral-cli.cjs') !== manifest.cliBundleHash ||
+    hashStableAdjacentBundle(activeBundleDir, 'coral-claude-appserver.cjs') !== manifest.claudeAppserverBundleHash
   ) {
     return { ok: false, reason: 'adjacent_manifest_mismatch' };
   }

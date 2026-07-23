@@ -17,6 +17,18 @@ export type StoreResetInspectionFaultScript = {
     call: number,
     current: StoreResetInspectionStat | null,
   ) => StoreResetInspectionStat | null;
+  readonly fstat?: (
+    descriptor: StoreResetFileDescriptor,
+    call: number,
+    current: StoreResetInspectionStat,
+  ) => StoreResetInspectionStat;
+  readonly realpath?: (path: string, call: number, current: string) => string;
+  readonly open?: (path: string, flags: number, call: number) => void;
+  readonly readDirectory?: (
+    cursor: StoreResetDirectoryCursor,
+    call: number,
+    current: { readonly name: string } | null,
+  ) => { readonly name: string } | null;
 };
 
 export function scriptedStoreResetInspectionFs(
@@ -26,6 +38,10 @@ export function scriptedStoreResetInspectionFs(
   let readCalls = 0;
   let writeCalls = 0;
   let lstatCalls = 0;
+  let fstatCalls = 0;
+  let realpathCalls = 0;
+  let openCalls = 0;
+  let readDirectoryCalls = 0;
   return {
     openFlags: base.openFlags,
     lstat(path) {
@@ -34,22 +50,30 @@ export function scriptedStoreResetInspectionFs(
       return script.lstat === undefined ? current : script.lstat(path, lstatCalls, current);
     },
     fstat(descriptor) {
-      return base.fstat(descriptor);
+      fstatCalls += 1;
+      const current = base.fstat(descriptor);
+      return script.fstat === undefined ? current : script.fstat(descriptor, fstatCalls, current);
     },
     realpath(path) {
-      return base.realpath(path);
+      realpathCalls += 1;
+      const current = base.realpath(path);
+      return script.realpath === undefined ? current : script.realpath(path, realpathCalls, current);
     },
     openDirectory(path) {
       return base.openDirectory(path);
     },
     readDirectory(cursor) {
-      return base.readDirectory(cursor);
+      readDirectoryCalls += 1;
+      const current = base.readDirectory(cursor);
+      return script.readDirectory === undefined ? current : script.readDirectory(cursor, readDirectoryCalls, current);
     },
     closeDirectory(cursor: StoreResetDirectoryCursor) {
       base.closeDirectory(cursor);
       if (script.failDirectoryClose) throw new Error('scripted directory close failure');
     },
     open(path, flags, mode) {
+      openCalls += 1;
+      script.open?.(path, flags, openCalls);
       return base.open(path, flags, mode);
     },
     read(descriptor: StoreResetFileDescriptor, buffer, offset, length, position) {

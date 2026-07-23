@@ -76,6 +76,8 @@ export interface CoordinatorIdentity {
   readonly version: string;
   readonly buildSetId: string;
   readonly bundleHash: string;
+  readonly cliBundleHash: string;
+  readonly claudeAppserverBundleHash: string;
   readonly flavor: 'prod' | 'dev';
   readonly instanceId: string;
   readonly token: string;
@@ -442,7 +444,17 @@ async function runLifecycleStartup({
     closeIpcServerFn,
     listenIpcFn,
   } = deps;
-  const { namespace, version, buildSetId, bundleHash, flavor, instanceId, now } = identity;
+  const {
+    namespace,
+    version,
+    buildSetId,
+    bundleHash,
+    cliBundleHash,
+    claudeAppserverBundleHash,
+    flavor,
+    instanceId,
+    now,
+  } = identity;
 
   if (state.started || runtimeState.getLifecycle() !== 'starting') {
     throw new Error('Backend server already started');
@@ -556,6 +568,8 @@ async function runLifecycleStartup({
           version,
           buildSetId,
           bundleHash,
+          cliBundleHash,
+          claudeAppserverBundleHash,
           flavor,
           storeFormatFingerprint: deps.storeFormat.fingerprint,
         },

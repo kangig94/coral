@@ -1,6 +1,7 @@
 import { handleExpansionCommanderFailure, isCommanderDisplayOnlyError } from './commands/expansion.js';
 import { emitError } from './emit.js';
 import { buildProgram } from './program.js';
+import { isStoreResetReportInvocation } from './store-reset-signal.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 
 // The bundled CLI entrypoint is CommonJS, so top-level await is unavailable.
@@ -17,7 +18,21 @@ function runBootstrap(): Promise<unknown> {
     return Promise.resolve();
   }
 
-  const program = buildProgram();
+  const ownsDiagnosticSignals = isStoreResetReportInvocation(process.argv.slice(2));
+  const shutdownController = ownsDiagnosticSignals ? new AbortController() : null;
+  const onSigint = (): void => {
+    process.exitCode = 130;
+    shutdownController?.abort();
+  };
+  const onSigterm = (): void => {
+    process.exitCode = 143;
+    shutdownController?.abort();
+  };
+  if (ownsDiagnosticSignals) {
+    process.once('SIGINT', onSigint);
+    process.once('SIGTERM', onSigterm);
+  }
+  const program = buildProgram(undefined, { shutdownSignal: shutdownController?.signal });
   const parseKeepAlive = setInterval(() => undefined, 2 ** 31 - 1);
   return program
     .parseAsync(process.argv)
@@ -36,6 +51,10 @@ function runBootstrap(): Promise<unknown> {
     })
     .finally(() => {
       clearInterval(parseKeepAlive);
+      if (ownsDiagnosticSignals) {
+        process.off('SIGINT', onSigint);
+        process.off('SIGTERM', onSigterm);
+      }
     });
 }
 

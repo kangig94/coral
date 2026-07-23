@@ -81,7 +81,10 @@ describe('store-reset error emission', () => {
     emitError(new StoreResetCliError('store_reset_reporting_failed'));
 
     expect(stdout).toBe('');
-    expect(stderr).toBe('Store-reset reporting failed. [code=store_reset_reporting_failed]\n');
+    expect(stderr).toBe(
+      'Store-reset reporting failed. [code=store_reset_reporting_failed]\n' +
+        'remediation: Retry once. If it still fails, file a Store-reset incident issue with this fixed error output; do not move, restore, delete, or attach DB, WAL, SHM, or raw logs.\n',
+    );
     expect(process.exitCode).toBe(70);
   });
 });
