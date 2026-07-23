@@ -7,6 +7,49 @@ import { isRecord } from '../infra/json.js';
 import { DiscussWatchReadError } from '../discuss/watch.js';
 import { serializeCoralSetupError } from '../runtime/errors.js';
 
+export type StoreResetCliErrorCode =
+  | 'invalid_store_reset_incident_id'
+  | 'store_reset_incident_not_found'
+  | 'store_reset_incident_limit_exceeded'
+  | 'store_reset_build_mismatch'
+  | 'store_reset_reporting_failed';
+
+const STORE_RESET_ERRORS = {
+  invalid_store_reset_incident_id: {
+    message: 'Incident ID must be a canonical lowercase UUID.',
+    exitCode: 2,
+  },
+  store_reset_incident_not_found: {
+    message: 'Store-reset incident not found.',
+    exitCode: 1,
+  },
+  store_reset_incident_limit_exceeded: {
+    message: 'Too many retained store-reset entries to list safely; report a known incident ID directly.',
+    exitCode: 1,
+  },
+  store_reset_build_mismatch: {
+    message: 'Store-reset reporting is unavailable because the installed build artifacts do not match.',
+    exitCode: 70,
+  },
+  store_reset_reporting_failed: {
+    message: 'Store-reset reporting failed.',
+    exitCode: 70,
+  },
+} as const satisfies Readonly<Record<StoreResetCliErrorCode, { readonly message: string; readonly exitCode: number }>>;
+
+export class StoreResetCliError extends Error {
+  readonly code: StoreResetCliErrorCode;
+  readonly exitCode: number;
+
+  constructor(code: StoreResetCliErrorCode) {
+    const definition = STORE_RESET_ERRORS[code];
+    super(definition.message);
+    this.name = 'StoreResetCliError';
+    this.code = code;
+    this.exitCode = definition.exitCode;
+  }
+}
+
 export class UsageError extends Error {
   constructor(message: string) {
     super(message);
@@ -78,6 +121,17 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
 }
 
 export function buildErrorEnvelope(error: unknown): { envelope: CliErrorEnvelope; exitCode: number } {
+  if (error instanceof StoreResetCliError) {
+    return withExitCode(
+      {
+        error: true,
+        code: error.code,
+        message: error.message,
+      },
+      error.exitCode,
+    );
+  }
+
   if (error instanceof BackendToolHttpError) {
     const body = isRecord(error.body) ? error.body : null;
     const code = body && typeof body.code === 'string' ? body.code : 'backend_error';

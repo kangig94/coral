@@ -1,4 +1,4 @@
-import type { StoreResetPublicReport } from '../../store/reset-incident.js';
+import type { StoreResetIncidentListResult, StoreResetPublicReport } from '../../store/reset-incident.js';
 
 function code(value: string): string {
   return `\`${value}\``;
@@ -35,4 +35,16 @@ export function formatStoreResetReport(report: StoreResetPublicReport): string {
     '',
   ];
   return lines.join('\n');
+}
+
+export function formatStoreResetList(result: StoreResetIncidentListResult): string {
+  if (result.incidents.length === 0) return 'No store-reset incidents.';
+  return [
+    'Incident ID | Reset at | Reason | State | Files',
+    ...result.incidents.map((incident) =>
+      incident.state === 'ready'
+        ? `${incident.incidentId} | ${incident.resetAt} | ${incident.reason} | ${incident.state} | ${incident.fileCount}`
+        : `${incident.incidentId} | - | - | ${incident.state} | -`,
+    ),
+  ].join('\n');
 }

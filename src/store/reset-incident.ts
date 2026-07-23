@@ -1,4 +1,5 @@
 export const STORE_RESET_INCIDENT_SCHEMA_VERSION = 2 as const;
+export const STORE_RESET_QUARANTINE_DIRECTORY = 'store-reset-quarantine';
 export const STORE_RESET_MANIFEST_FILE_NAME = 'reset-manifest.json';
 
 export const MAX_RESET_MANIFEST_BYTES = 64 * 1024;

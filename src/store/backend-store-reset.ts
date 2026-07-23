@@ -15,13 +15,13 @@ import {
   serializeStoreResetIncidentManifest,
   STORE_RESET_EVIDENCE_FILE_NAMES,
   STORE_RESET_MANIFEST_FILE_NAME,
+  STORE_RESET_QUARANTINE_DIRECTORY,
   type StoreResetEvidenceFileName,
   type StoreResetIncidentFile,
   type StoreResetIncidentManifestV2,
 } from './reset-incident.js';
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
-const STORE_RESET_QUARANTINE_DIRECTORY = 'store-reset-quarantine';
 const STEADY_STATE_BUSY_TIMEOUT_MS = 5_000;
 const QUARANTINE_RENAME_BACKOFF_MS = [0, 10, 25, 50, 100] as const;
 const quarantineRenameWaitState = new Int32Array(new SharedArrayBuffer(4));

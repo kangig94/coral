@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
-import { UsageError, buildErrorEnvelope, errorCodeToExit } from '#src/cli/errors.js';
+import { StoreResetCliError, UsageError, buildErrorEnvelope, errorCodeToExit } from '#src/cli/errors.js';
 
 describe('cli errors', () => {
   describe('buildErrorEnvelope', () => {
@@ -84,6 +84,31 @@ describe('cli errors', () => {
           message: 'boom',
         },
         exitCode: 70,
+      });
+    });
+
+    it.each([
+      ['invalid_store_reset_incident_id', 'Incident ID must be a canonical lowercase UUID.', 2],
+      ['store_reset_incident_not_found', 'Store-reset incident not found.', 1],
+      [
+        'store_reset_incident_limit_exceeded',
+        'Too many retained store-reset entries to list safely; report a known incident ID directly.',
+        1,
+      ],
+      [
+        'store_reset_build_mismatch',
+        'Store-reset reporting is unavailable because the installed build artifacts do not match.',
+        70,
+      ],
+      ['store_reset_reporting_failed', 'Store-reset reporting failed.', 70],
+    ] as const)('maps the closed store-reset error %s without detail', (code, message, exitCode) => {
+      expect(buildErrorEnvelope(new StoreResetCliError(code))).toEqual({
+        envelope: {
+          error: true,
+          code,
+          message,
+        },
+        exitCode,
       });
     });
 
