@@ -131,7 +131,7 @@ const retiredResidueEntrySchema = z
     tier: z.literal('installed'),
     activation: z.literal('remove-catalog'),
     status: z.literal('installed-not-active'),
-    cleanupCommand: z.string().min(1),
+    cleanupCommand: z.string().min(1).optional(),
     lastError: z.string().min(1).optional(),
   })
   .strict();

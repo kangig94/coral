@@ -68,6 +68,7 @@ export async function cleanupRetiredExpansion(
       cursorLease.deleteCursor();
       releasePackageLock.assertOwned();
       options.finalizeState();
+      releasePackageLock.assertOwned();
       return 'removed';
     } finally {
       cursorLease.release();

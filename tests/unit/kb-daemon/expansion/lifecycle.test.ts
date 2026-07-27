@@ -496,6 +496,25 @@ describe('ExpansionLifecycleService', () => {
     );
   });
 
+  it('does not emit an executable cleanup command for an unsafe retired row id', async () => {
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    const unsafeId = 'bad; touch /tmp/injected';
+    const { state, lifecycle } = createLifecycleHarness({
+      rows: [{ id: unsafeId, version: '1.0.0', installed_at: FIXED_NOW }],
+    });
+
+    await lifecycle.recoverOnBoot();
+
+    expect(state.snapshot()).toEqual([{ id: unsafeId, version: '1.0.0', installed_at: FIXED_NOW }]);
+    expect(lifecycle.info(unsafeId)).toMatchObject({
+      id: unsafeId,
+      status: 'installed-not-active',
+      lastError: expect.stringContaining('cannot provide an executable cleanup command'),
+    });
+    expect(lifecycle.info(unsafeId)?.lastError).not.toContain(unsafeId);
+    expect(warn).toHaveBeenCalledWith(expect.not.stringContaining(unsafeId));
+  });
+
   it('preserves failed recovery rows and reports installed-not-active with lastError', async () => {
     const { kb, state, lifecycle } = createLifecycleHarness({
       manifest: [VECTOR_ENTRY] as unknown as readonly (typeof FAKE_EMBEDDER_ENTRY)[],

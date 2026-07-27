@@ -57,7 +57,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 |------------------------------|-----------------------------------------------------------------|
 | `equipped`                   | Active in the coordinator                                       |
 | `catching_up`                | Registered and replaying the corpus                             |
-| `installed-not-active`       | If `activation` is `remove-catalog`, this is residue from a retired expansion: show and recommend its exact `cleanupCommand`; otherwise boot recovery failed, so check the last error and satisfy missing dependencies before retrying `/equip <name>` |
+| `installed-not-active`       | If `activation` is `remove-catalog`, this is residue from a retired expansion: recommend its exact `cleanupCommand` only when that field is present; when absent, show `lastError` and do not construct or run a cleanup command. Otherwise boot recovery failed, so check the last error and satisfy missing dependencies before retrying `/equip <name>` |
 | `inactive`                   | Installed but not registered. Run `/equip <name>` to reactivate |
 | `unavailable`                | Required local artifact missing or coordinator unreachable. Run `/equip <name>` to repair or reactivate |
 | `disabled_pending_reinstall` | Load failed. Run `/equip <name>` to reinstall                   |
@@ -69,7 +69,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 5. When rendering `activation`, translate internally:
    - `activation: 'equip'` -> `Active in Coordinator`
    - `activation: 'none'` -> `Install-only (use directly via the installed path)`
-   - `activation: 'remove-catalog'` -> `Retired expansion residue (run the exact cleanupCommand shown)`
+   - `activation: 'remove-catalog'` -> `Retired expansion residue (run the exact cleanupCommand only when provided; otherwise follow lastError without constructing a command)`
 6. For bundled engines, do not suggest `/equip <name>` or `/equip uninstall <name>` as a repair action. These verbs return `expansion_bundled_immutable`; use `expansion list` to inspect status.
 7. Ask the user which package to install.
 

@@ -436,13 +436,9 @@ function tryCreateDirectoryLock(lockDir: string, deps: DirectoryLockDeps): Direc
   if (identity === null) {
     throw new DirectoryLockOwnershipLostError(lockDir);
   }
-  try {
-    writeLockOwnerMarker(lockDir, ownerToken, deps.storage);
-  } catch (error) {
-    // Leave a failed, markerless publication for stale recovery. Deleting by
-    // pathname here could race with another process replacing the directory.
-    throw error;
-  }
+  // If this write fails, leave the markerless publication for stale recovery.
+  // Deleting by pathname could race with another process replacing the directory.
+  writeLockOwnerMarker(lockDir, ownerToken, deps.storage);
 
   if (!ownsLockDirectory(lockDir, ownerToken, identity, deps)) {
     tryRemoveOwnedLockDirectory(lockDir, ownerToken, identity, deps.storage);

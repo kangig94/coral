@@ -10,7 +10,7 @@ import { AbortError, throwIfAborted } from '../../runtime/abort.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Disposable } from '../../runtime/ports.js';
 import { validateManifestCompleteness } from '../../expansion/manifest/completeness.js';
-import { assertExpansionPackageId } from '../../expansion/package-id.js';
+import { assertExpansionPackageId, validateExpansionPackageId } from '../../expansion/package-id.js';
 import type { EngineManifestProvides } from '../../expansion/contract.js';
 import type { ExpansionManifestCatalog } from '../../expansion/manifest/catalog.js';
 import { LIFECYCLE_BUNDLED_LOADERS } from './bundled-loaders.js';
@@ -311,6 +311,14 @@ export class ExpansionLifecycleService {
     for (const row of orderedRows) {
       const entry = manifestById.get(row.id);
       if (!entry) {
+        const packageId = validateExpansionPackageId(row.id);
+        if (!packageId.ok) {
+          const remediation =
+            'This retired expansion id is unsafe or reserved, so Coral cannot provide an executable cleanup command. Preserve Coral state and report this entry for repair; do not construct or run a cleanup command.';
+          this.failedRecovery.set(row.id, new Error(remediation));
+          backendLog.warn(`Retired expansion row with an unsafe or reserved id was preserved. ${remediation}`);
+          continue;
+        }
         const remediation = `Run 'coral-cli expansion remove-catalog ${row.id}' to remove retired expansion artifacts.`;
         this.failedRecovery.set(row.id, new Error(remediation));
         backendLog.warn(`Retired expansion row '${row.id}' preserved. ${remediation}`);

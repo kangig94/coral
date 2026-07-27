@@ -26,6 +26,7 @@ import {
   type RemoveExpansionCatalogResult,
 } from '../../expansion/rpc-contract.js';
 import { INSTALL_ONLY_PACKAGES, resolveInstallOnlyManifest } from '../../expansion/install-only.js';
+import { validateExpansionPackageId } from '../../expansion/package-id.js';
 import { encodeInstallError } from './contract.js';
 import { readExpansionCatalog, resolveCatalogManifest } from './catalog.js';
 import { inspectExpansionInstallState, installExpansion, resolveRuntime, uninstallExpansion } from './install.js';
@@ -142,6 +143,21 @@ function toInstallOnlyCatalogEntry(manifest: InstallOnlyManifest, runtime: Runti
 }
 
 function toRetiredResidueCatalogEntry(view: ExpansionView): CatalogEntry {
+  const packageId = validateExpansionPackageId(view.name);
+  if (!packageId.ok) {
+    return catalogEntrySchema.parse({
+      id: view.name,
+      name: view.name,
+      tier: 'installed',
+      description: 'Retired expansion artifacts requiring manual repair',
+      activation: 'remove-catalog',
+      status: 'installed-not-active',
+      version: view.version ?? 'unknown',
+      lastError:
+        'This retired expansion id is unsafe or reserved, so Coral cannot provide an executable cleanup command. Preserve Coral state and report this entry for repair; do not construct or run a cleanup command.',
+    });
+  }
+
   const cleanupCommand = `coral-cli expansion remove-catalog ${view.name}`;
   return catalogEntrySchema.parse({
     id: view.name,

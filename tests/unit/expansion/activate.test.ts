@@ -241,6 +241,45 @@ describe('expansion activation', () => {
     });
   });
 
+  it.each(['bad; touch /tmp/injected', 'corpus-projection'])(
+    'does not expose an executable cleanup command for unsafe or reserved residue %s',
+    async (name) => {
+      const activation = createCliExpansionActivation();
+      mockState.readDiscoveryRecord.mockReturnValue(makeDiscoveryRecord());
+      mockState.createIpcClient.mockReturnValue({
+        request: vi.fn().mockResolvedValue({
+          expansions: [
+            {
+              name,
+              version: '0.9.0',
+              tier: 'installed',
+              status: 'installed-not-active',
+              lastError: `Run 'coral-cli expansion remove-catalog ${name}' to remove retired expansion artifacts.`,
+            },
+          ],
+        }),
+      });
+
+      const result = await activation.list();
+      expect(result.status).toBe('catalog');
+      if (result.status !== 'catalog') {
+        throw new Error('expected catalog result');
+      }
+      const residue = result.packages.find((entry) => entry.id === name);
+      expect(residue).toMatchObject({
+        id: name,
+        activation: 'remove-catalog',
+        lastError: expect.stringContaining('cannot provide an executable cleanup command'),
+      });
+      expect(residue).not.toHaveProperty('cleanupCommand');
+      expect(residue?.activation).toBe('remove-catalog');
+      if (residue?.activation !== 'remove-catalog') {
+        throw new Error('expected retired residue');
+      }
+      expect(residue.lastError).not.toContain(name);
+    },
+  );
+
   it('maps immutable catalog removal without exposing the internal status string', async () => {
     const activation = createCliExpansionActivation();
     const request = vi.fn().mockResolvedValue({ status: 'immutable' });

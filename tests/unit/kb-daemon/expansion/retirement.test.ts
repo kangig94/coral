@@ -210,6 +210,30 @@ describe('retired expansion cleanup', () => {
     expect(fixture.state.get(id)).toBeUndefined();
   });
 
+  it('does not report success after lock ownership is displaced during finalization', async () => {
+    const fixture = createFixture();
+    const id = 'vector-fixture';
+    fixture.state.insert({
+      id,
+      version: '1.0.0',
+      installed_at: '2026-01-01T00:00:00.000Z',
+    });
+    const lockPath = fixture.runtime.paths.coral.engine.installLockPath(id);
+    const replacementOwner = join(lockPath, 'owner-replacement.lock');
+
+    await expect(
+      cleanup(fixture, id, fixture.runtime, () => {
+        fixture.state.delete(id);
+        rmSync(lockPath, { recursive: true, force: true });
+        mkdirSync(lockPath);
+        writeFileSync(replacementOwner, 'replacement');
+      }),
+    ).rejects.toThrow(/ownership lost/u);
+
+    expect(fixture.state.get(id)).toBeUndefined();
+    expect(readFileSync(replacementOwner, 'utf8')).toBe('replacement');
+  });
+
   it('finishes a rowless partial cleanup on an idempotent retry', async () => {
     const fixture = createFixture();
     const id = 'vector-fixture';
