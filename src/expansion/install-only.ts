@@ -19,6 +19,7 @@ export const INSTALL_ONLY_PACKAGES: readonly InstallOnlyManifest[] = [
     description:
       'Codebase Memory MCP — indexes your code into a graph for AI navigation; its install script installs the codebase-memory-mcp binary (with graph UI) and registers it as an MCP server (agent restart required to activate)',
     installer: createShellInstaller({
+      packageId: 'codebase-memory',
       binaryPath: (binDir) => join(binDir, CODEBASE_MEMORY_BINARY),
       buildInstallCommand: (binDir) =>
         `curl -fsSL ${CODEBASE_MEMORY_INSTALL_URL} | bash -s -- --ui --dir=${singleQuote(binDir)}`,

@@ -3,6 +3,7 @@ import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { CoralSetupErrorContext } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { EngineInstaller, EngineInstallerOptions, LocalExpansionInstallState } from './contract.js';
+import { assertExpansionPackageId } from './package-id.js';
 import type { InstallError } from './rpc-contract.js';
 import { acquirePackageOperationLock, PACKAGE_OPERATION_LOCK_TIMEOUT_MS } from './package-lock.js';
 
@@ -14,6 +15,8 @@ const INSTALL_TIMEOUT_MS = 300_000;
  * engine data directory so `unequip` can remove it by deleting that tree.
  */
 export interface ShellInstallerSpec {
+  /** Exact package id that owns this installer and its data directory. */
+  readonly packageId: string;
   /** Shell pipeline that installs the binary into `binDir`. */
   readonly buildInstallCommand: (binDir: string) => string;
   /** Absolute path to the binary that must exist after a successful install. */
@@ -101,7 +104,15 @@ async function withInstallLock<T>(opts: EngineInstallerOptions, run: () => Promi
  * uninstallation removes the package's engine data directory.
  */
 export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller {
+  const packageId = assertExpansionPackageId(spec.packageId);
+  function assertInstallerIdentity(name: string): void {
+    if (name !== packageId) {
+      throw new Error(`Shell installer identity mismatch: expected '${packageId}', got '${name}'`);
+    }
+  }
+
   function inspect(runtime: Runtime, name: string): LocalExpansionInstallState {
+    assertInstallerIdentity(name);
     const targetDir = dataDirOf(runtime, name);
     const installLockPath = runtime.paths.coral.engine.installLockPath(name);
     const binary = spec.binaryPath(targetDir);
@@ -122,6 +133,7 @@ export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller 
     inspect,
 
     async install(opts: EngineInstallerOptions): Promise<unknown> {
+      assertInstallerIdentity(opts.name);
       return withInstallLock(opts, async () => {
         const targetDir = dataDirOf(opts.runtime, opts.name);
         const binary = spec.binaryPath(targetDir);
@@ -167,6 +179,7 @@ export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller 
     },
 
     async uninstall(opts: EngineInstallerOptions): Promise<unknown> {
+      assertInstallerIdentity(opts.name);
       return withInstallLock(opts, async () => {
         const targetDir = dataDirOf(opts.runtime, opts.name);
         const binary = spec.binaryPath(targetDir);

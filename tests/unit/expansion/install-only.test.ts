@@ -295,6 +295,30 @@ describe('install-only codebase-memory', () => {
     expect(pathExists(dataDir(fixture.baseDir))).toBe(false);
   });
 
+  it.each(['install', 'uninstall'] as const)(
+    'rejects a foreign identity before direct %s can touch package storage',
+    async (operation) => {
+      const fixture = createFixture();
+      const runtime = createRuntimeForFixture(fixture);
+      const installer = resolveInstallOnlyManifest(PACKAGE)?.installer;
+      if (installer === undefined) {
+        throw new Error('expected install-only package');
+      }
+      const exec = vi.spyOn(runtime.process, 'exec');
+      const foreignDir = runtime.paths.coral.engine.dataDir('foreign-package');
+
+      await expect(
+        installer[operation]({
+          name: 'foreign-package',
+          version: 'latest',
+          runtime,
+        }),
+      ).rejects.toThrow(/identity mismatch/u);
+      expect(exec).not.toHaveBeenCalled();
+      expect(pathExists(foreignDir)).toBe(false);
+    },
+  );
+
   it('inspects installed state from the binary presence', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
