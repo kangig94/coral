@@ -1,4 +1,3 @@
-import { rmSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 
 import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
@@ -166,10 +165,6 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
   } finally {
     release();
   }
-}
-
-export async function removeInstallArtifacts(runtime: Runtime, name: string): Promise<void> {
-  rmSync(runtime.paths.coral.engine.dataDir(name), { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 }
 
 export async function uninstallExpansion(name: string, opts: UninstallExpansionOptions = {}): Promise<InstallResponse> {

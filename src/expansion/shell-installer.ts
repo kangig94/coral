@@ -122,20 +122,18 @@ export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller 
     inspect,
 
     async install(opts: EngineInstallerOptions): Promise<unknown> {
-      const targetDir = dataDirOf(opts.runtime, opts.name);
-      const binary = spec.binaryPath(targetDir);
-      const alreadyInstalled = isFile(opts.runtime, binary);
-
-      if (alreadyInstalled && opts.update !== true) {
-        return { status: 'already_installed', method: 'shell', version: opts.version, targetDir, command: binary };
-      }
-
-      // Update the installed binary in place when it can update itself; otherwise
-      // (fresh install, or update with no self-update) run the full install pipeline.
-      const selfUpdate = opts.update === true && alreadyInstalled ? spec.buildUpdateCommand : undefined;
-      const command = selfUpdate ? selfUpdate(binary) : spec.buildInstallCommand(targetDir);
-
       return withInstallLock(opts, async () => {
+        const targetDir = dataDirOf(opts.runtime, opts.name);
+        const binary = spec.binaryPath(targetDir);
+        const alreadyInstalled = isFile(opts.runtime, binary);
+        if (alreadyInstalled && opts.update !== true) {
+          return { status: 'already_installed', method: 'shell', version: opts.version, targetDir, command: binary };
+        }
+
+        // Update the installed binary in place when it can update itself; otherwise
+        // (fresh install, or update with no self-update) run the full install pipeline.
+        const selfUpdate = opts.update === true && alreadyInstalled ? spec.buildUpdateCommand : undefined;
+        const command = selfUpdate ? selfUpdate(binary) : spec.buildInstallCommand(targetDir);
         opts.runtime.storage.mkdirSync(targetDir, { recursive: true });
         const result = await opts.runtime.process.exec('bash', ['-c', command], {
           timeout: INSTALL_TIMEOUT_MS,
@@ -169,12 +167,12 @@ export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller 
     },
 
     async uninstall(opts: EngineInstallerOptions): Promise<unknown> {
-      const targetDir = dataDirOf(opts.runtime, opts.name);
-      const binary = spec.binaryPath(targetDir);
-      if (!isFile(opts.runtime, binary)) {
-        return { status: 'not_equipped' };
-      }
       return withInstallLock(opts, async () => {
+        const targetDir = dataDirOf(opts.runtime, opts.name);
+        const binary = spec.binaryPath(targetDir);
+        if (!isFile(opts.runtime, binary)) {
+          return { status: 'not_equipped' };
+        }
         // Let the binary tear down what it registered outside its own directory
         // (agent configs / MCP registration). Best-effort: its teardown is
         // advisory and we must still remove Coral's artifact regardless.

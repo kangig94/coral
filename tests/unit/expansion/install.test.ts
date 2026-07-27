@@ -12,7 +12,7 @@ import { enginePaths } from '#src/infra/path/engine.js';
 import { acquirePackageOperationLockAtPath } from '#src/infra/package-operation-lock.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { installExpansion, removeInstallArtifacts } from '#src/cli/expansion/install.js';
+import { installExpansion } from '#src/cli/expansion/install.js';
 
 const createdRoots: string[] = [];
 
@@ -182,20 +182,6 @@ describe('Kiwi direct installer boundary', () => {
         lockTimeoutMs: 50,
       }),
     ).resolves.toMatchObject({ status: 'uninstalled' });
-    expect(pathExists(targetDir)).toBe(false);
-  });
-});
-
-describe('removeInstallArtifacts', () => {
-  it('removes local expansion artifacts for uninstall cleanup', async () => {
-    const fixture = createFixture();
-    const runtime = createRuntimeForFixture(fixture);
-    const targetDir = runtime.paths.coral.engine.dataDir('fixture-engine');
-    mkdirSync(targetDir, { recursive: true });
-    writeFileSync(join(targetDir, 'fixture.bin'), Buffer.from('artifact'));
-
-    await removeInstallArtifacts(runtime, 'fixture-engine');
-
     expect(pathExists(targetDir)).toBe(false);
   });
 });
