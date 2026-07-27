@@ -26,6 +26,7 @@ import type { ExpansionLifecycleService } from './lifecycle.js';
 function toExpansionView(view: ReturnType<ExpansionLifecycleService['info']>): ExpansionView {
   return {
     name: view.id,
+    version: view.version,
     tier: view.tier,
     status: view.status === 'active' ? 'equipped' : view.status,
     ...(view.lastError === undefined ? {} : { lastError: view.lastError }),

@@ -12,18 +12,18 @@ describe('encodeInstallError', () => {
     const encoded = encodeInstallError(
       new CoralSetupError({
         code: 'expansion_binary_corrupt',
-        userMessage: 'Needle could not be activated.',
-        remediation: 'Unequip needle and retry.',
-        context: { name: 'needle' },
+        userMessage: 'Vector could not be activated.',
+        remediation: 'Unequip vector and retry.',
+        context: { name: 'vector' },
       }),
     );
 
     expect(encoded).toEqual({
       status: 'error',
       code: 'expansion_binary_corrupt',
-      userMessage: 'Needle could not be activated.',
-      remediation: 'Unequip needle and retry.',
-      context: { name: 'needle' },
+      userMessage: 'Vector could not be activated.',
+      remediation: 'Unequip vector and retry.',
+      context: { name: 'vector' },
     });
     expect(installErrorSchema.parse(encoded)).toEqual(encoded);
   });
@@ -83,7 +83,7 @@ describe('encodeInstallError', () => {
       status: 'error',
       code: 'unknown_error',
       userMessage: 'install blew up',
-      remediation: 'Retry with --verbose or check the coordinator logs.',
+      remediation: 'Retry once, then report the full JSON error and check the coordinator logs if it persists.',
     });
     expect(installErrorSchema.parse(encoded)).toEqual(encoded);
   });
@@ -109,7 +109,7 @@ describe('encodeInstallError', () => {
       status: 'error',
       code: 'unknown_error',
       userMessage: 'boom',
-      remediation: 'Retry with --verbose or check the coordinator logs.',
+      remediation: 'Retry once, then report the full JSON error and check the coordinator logs if it persists.',
     });
     expect(installErrorSchema.parse(encoded)).toEqual(encoded);
   });
@@ -119,7 +119,7 @@ describe('encodeInstallError', () => {
       code: 'expansion_runtime_unavailable',
       userMessage: 'Expansion runtime is unavailable.',
       remediation: 'Restart Coral and retry.',
-      context: { name: 'needle' },
+      context: { name: 'vector' },
     });
     const middle = new Error('mid-layer failure', { cause: inner });
     const outer = new Error('top-level failure', { cause: middle });
@@ -131,7 +131,7 @@ describe('encodeInstallError', () => {
       code: 'expansion_runtime_unavailable',
       userMessage: 'Expansion runtime is unavailable.',
       remediation: 'Restart Coral and retry.',
-      context: { name: 'needle' },
+      context: { name: 'vector' },
     });
     expect(installErrorSchema.parse(encoded)).toEqual(encoded);
   });

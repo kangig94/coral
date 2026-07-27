@@ -5,7 +5,6 @@ import { Worker } from 'node:worker_threads';
 import { gunzipSync } from 'node:zlib';
 
 import { downloadBuffer } from '#src/runtime/download.js';
-import { acquireDirectoryLock, isDirectoryLockTimeoutError } from '../../infra/fs-lock.js';
 import { sha256Hex } from '../../infra/hash.js';
 import { isRecord } from '../../infra/json.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
@@ -24,8 +23,8 @@ import {
   type KiwiModelFileName,
 } from './constants.js';
 import { kiwiDataDir, kiwiModelDir, kiwiModelFilePath, kiwiModelManifestPath } from './paths.js';
+import { withKiwiPackageOperationLock } from './operation-lock.js';
 
-const KIWI_INSTALL_LOCK_TIMEOUT_MS = 250;
 const TAR_BLOCK_SIZE = 512;
 const TAR_FILE_TYPES = new Set(['0', '']);
 const INSTALL_PATH_UNWRITABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOSPC']);
@@ -141,6 +140,7 @@ type KiwiModelInstallOptions = {
   readonly update?: boolean;
   readonly lockTimeoutMs?: number;
   readonly logger?: (event: { readonly kind: string; readonly message: string }) => void;
+  readonly operationLockHeld?: true;
 };
 
 type KiwiModelWriteWorkerFile = {
@@ -264,35 +264,6 @@ export function hasKiwiDurableState(runtime: Pick<Runtime, 'paths' | 'storage'>)
     return runtime.storage.readdirSync(dataDir, { withFileTypes: true }).some((entry) => entry.name !== 'install.lock');
   } catch {
     return false;
-  }
-}
-
-async function withInstallLock<T>(
-  runtime: Runtime,
-  opts: KiwiModelInstallOptions,
-  run: () => Promise<T>,
-): Promise<T | Extract<KiwiModelArtifactInstallResult, { status: 'error' }>> {
-  const dataDir = kiwiDataDir(runtime);
-  runtime.storage.mkdirSync(dataDir, { recursive: true });
-
-  let release: () => void;
-  try {
-    release = await acquireDirectoryLock(
-      runtime.paths.coral.engine.installLockPath(KIWI_INSTALL_ONLY_ID),
-      { storage: runtime.storage, time: runtime.time },
-      opts.lockTimeoutMs ?? KIWI_INSTALL_LOCK_TIMEOUT_MS,
-    );
-  } catch (error: unknown) {
-    if (isDirectoryLockTimeoutError(error)) {
-      return toInstallError('expansion_install_lock_contended', { name: KIWI_INSTALL_ONLY_ID });
-    }
-    throw error;
-  }
-
-  try {
-    return await run();
-  } finally {
-    release();
   }
 }
 
@@ -585,7 +556,7 @@ async function installDownloadedModel(
     status: opts.update === true ? 'updated' : 'installed',
     method: 'github-release',
     version: KIWI_MODEL_VERSION,
-    targetDir: kiwiModelDir(runtime),
+    targetDir: kiwiDataDir(runtime),
   };
 }
 
@@ -594,14 +565,14 @@ export async function ensureKiwiModelArtifact(
   opts: KiwiModelInstallOptions = {},
 ): Promise<KiwiModelArtifactInstallResult> {
   try {
-    return await withInstallLock(runtime, opts, async () => {
+    return await withKiwiPackageOperationLock(runtime, opts, async () => {
       const current = inspectKiwiModelArtifact(runtime);
       if (current.installed) {
         return {
           status: opts.update === true ? 'already_up_to_date' : 'already_installed',
           method: 'github-release',
           version: KIWI_MODEL_VERSION,
-          targetDir: current.targetDir,
+          targetDir: kiwiDataDir(runtime),
         };
       }
 

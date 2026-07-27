@@ -1,11 +1,12 @@
-import { acquireDirectoryLock, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
+import { isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { CoralSetupErrorContext } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { EngineInstaller, EngineInstallerOptions, LocalExpansionInstallState } from './contract.js';
+import { assertExpansionPackageId } from './package-id.js';
 import type { InstallError } from './rpc-contract.js';
+import { acquirePackageOperationLock, PACKAGE_OPERATION_LOCK_TIMEOUT_MS } from './package-lock.js';
 
-const INSTALL_LOCK_TIMEOUT_MS = 250;
 const INSTALL_TIMEOUT_MS = 300_000;
 
 /**
@@ -14,6 +15,8 @@ const INSTALL_TIMEOUT_MS = 300_000;
  * engine data directory so `unequip` can remove it by deleting that tree.
  */
 export interface ShellInstallerSpec {
+  /** Exact package id that owns this installer and its data directory. */
+  readonly packageId: string;
   /** Shell pipeline that installs the binary into `binDir`. */
   readonly buildInstallCommand: (binDir: string) => string;
   /** Absolute path to the binary that must exist after a successful install. */
@@ -31,8 +34,7 @@ export interface ShellInstallerSpec {
   readonly buildUninstallCommand?: (binary: string) => string;
 }
 
-// Mirrors the installer-level error construction in src/engines/needle/install.ts;
-// installExpansion re-validates the returned object against installResponseSchema.
+// installExpansion re-validates installer errors against installResponseSchema.
 function toInstallError(
   code: Parameters<typeof documentedCoralSetupError>[0],
   context: CoralSetupErrorContext,
@@ -67,19 +69,18 @@ function isLocked(runtime: Runtime, lockPath: string): boolean {
   }
 }
 
-// Serialize install/uninstall behind the per-package directory lock, routing all
-// lock I/O through the runtime ports (matching needle's withInstallLock).
+// Serialize direct installer calls behind the shared package-operation lock.
 async function withInstallLock<T>(opts: EngineInstallerOptions, run: () => Promise<T>): Promise<T | InstallError> {
-  // The lock lives inside targetDir, so the directory must exist before
-  // acquireDirectoryLock's non-recursive mkdir of the lock path.
-  opts.runtime.storage.mkdirSync(dataDirOf(opts.runtime, opts.name), { recursive: true });
+  if (opts.operationLockHeld === true) {
+    return run();
+  }
 
-  let release: () => void;
+  let release: Awaited<ReturnType<typeof acquirePackageOperationLock>>;
   try {
-    release = await acquireDirectoryLock(
-      opts.runtime.paths.coral.engine.installLockPath(opts.name),
-      { storage: opts.runtime.storage, time: opts.runtime.time },
-      opts.lockTimeoutMs ?? INSTALL_LOCK_TIMEOUT_MS,
+    release = await acquirePackageOperationLock(
+      opts.runtime,
+      opts.name,
+      opts.lockTimeoutMs ?? PACKAGE_OPERATION_LOCK_TIMEOUT_MS,
     );
   } catch (error) {
     if (isDirectoryLockTimeoutError(error)) {
@@ -89,7 +90,9 @@ async function withInstallLock<T>(opts: EngineInstallerOptions, run: () => Promi
   }
 
   try {
-    return await run();
+    const result = await run();
+    release.assertOwned();
+    return result;
   } finally {
     release();
   }
@@ -101,7 +104,15 @@ async function withInstallLock<T>(opts: EngineInstallerOptions, run: () => Promi
  * uninstallation removes the package's engine data directory.
  */
 export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller {
+  const packageId = assertExpansionPackageId(spec.packageId);
+  function assertInstallerIdentity(name: string): void {
+    if (name !== packageId) {
+      throw new Error(`Shell installer identity mismatch: expected '${packageId}', got '${name}'`);
+    }
+  }
+
   function inspect(runtime: Runtime, name: string): LocalExpansionInstallState {
+    assertInstallerIdentity(name);
     const targetDir = dataDirOf(runtime, name);
     const installLockPath = runtime.paths.coral.engine.installLockPath(name);
     const binary = spec.binaryPath(targetDir);
@@ -122,20 +133,20 @@ export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller 
     inspect,
 
     async install(opts: EngineInstallerOptions): Promise<unknown> {
-      const targetDir = dataDirOf(opts.runtime, opts.name);
-      const binary = spec.binaryPath(targetDir);
-      const alreadyInstalled = isFile(opts.runtime, binary);
-
-      if (alreadyInstalled && opts.update !== true) {
-        return { status: 'already_installed', method: 'shell', version: opts.version, targetDir, command: binary };
-      }
-
-      // Update the installed binary in place when it can update itself; otherwise
-      // (fresh install, or update with no self-update) run the full install pipeline.
-      const selfUpdate = opts.update === true && alreadyInstalled ? spec.buildUpdateCommand : undefined;
-      const command = selfUpdate ? selfUpdate(binary) : spec.buildInstallCommand(targetDir);
-
+      assertInstallerIdentity(opts.name);
       return withInstallLock(opts, async () => {
+        const targetDir = dataDirOf(opts.runtime, opts.name);
+        const binary = spec.binaryPath(targetDir);
+        const alreadyInstalled = isFile(opts.runtime, binary);
+        if (alreadyInstalled && opts.update !== true) {
+          return { status: 'already_installed', method: 'shell', version: opts.version, targetDir, command: binary };
+        }
+
+        // Update the installed binary in place when it can update itself; otherwise
+        // (fresh install, or update with no self-update) run the full install pipeline.
+        const selfUpdate = opts.update === true && alreadyInstalled ? spec.buildUpdateCommand : undefined;
+        const command = selfUpdate ? selfUpdate(binary) : spec.buildInstallCommand(targetDir);
+        opts.runtime.storage.mkdirSync(targetDir, { recursive: true });
         const result = await opts.runtime.process.exec('bash', ['-c', command], {
           timeout: INSTALL_TIMEOUT_MS,
           inheritEnv: true,
@@ -168,12 +179,13 @@ export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller 
     },
 
     async uninstall(opts: EngineInstallerOptions): Promise<unknown> {
-      const targetDir = dataDirOf(opts.runtime, opts.name);
-      const binary = spec.binaryPath(targetDir);
-      if (!isFile(opts.runtime, binary)) {
-        return { status: 'not_equipped' };
-      }
+      assertInstallerIdentity(opts.name);
       return withInstallLock(opts, async () => {
+        const targetDir = dataDirOf(opts.runtime, opts.name);
+        const binary = spec.binaryPath(targetDir);
+        if (!isFile(opts.runtime, binary)) {
+          return { status: 'not_equipped' };
+        }
         // Let the binary tear down what it registered outside its own directory
         // (agent configs / MCP registration). Best-effort: its teardown is
         // advisory and we must still remove Coral's artifact regardless.

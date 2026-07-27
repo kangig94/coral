@@ -27,8 +27,8 @@ function makeSocketPath(): string {
 }
 
 const ADDED_DOCUMENTED_SETUP_ERRORS = [
-  { code: 'unknown_expansion', context: { name: 'needle' } },
-  { code: 'expansion_runtime_unavailable', context: { name: 'needle' } },
+  { code: 'unknown_expansion', context: { name: 'vector' } },
+  { code: 'expansion_runtime_unavailable', context: { name: 'vector' } },
   { code: 'engine_env_var_missing', context: { engine: 'gemini', envVar: 'GEMINI_API_KEY' } },
   { code: 'consumer_not_registered', context: { id: 'consumer-a' } },
   {
@@ -226,7 +226,7 @@ async function requestIpcErrorPayload(
     await requestIpcMethod(
       socketPath,
       'coordinator.equipExpansion',
-      { name: 'needle' },
+      { name: 'vector' },
       {
         auth: { kind: 'boot', token: 'test-boot-token' },
       },
@@ -253,7 +253,7 @@ async function requestHttpErrorPayload(
       'Content-Type': 'application/json',
       'X-Coral-Backend-Token': token,
     },
-    body: JSON.stringify({ name: 'needle' }),
+    body: JSON.stringify({ name: 'vector' }),
   });
 
   expect(response.status).toBe(500);

@@ -7,6 +7,7 @@ import type { ResourceBinding } from '../../../security/principal.js';
 import type { IdPort, ProcessPort } from '../../../runtime/ports.js';
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../../corpus/frontmatter.js';
 import { assertWithin, sourceImportStageDir } from '../../paths.js';
+import { KB_RUNTIME_AUTHORITY } from '../../../runtime/kb-runtime-authority.js';
 import type { KbSourceFrontmatter } from '../../entry-types.js';
 import { assertNonEmptyText, assertSourceSlug } from '../../validation.js';
 import { convertSourceInWorker } from './conversion-worker.js';
@@ -379,7 +380,7 @@ async function runCommand(
 }
 
 function createPdfOutputDir(ctx: SourceImportContext): string {
-  const pdfTempRoot = join(ctx.runtimeRoot, 'source-import-pdf');
+  const pdfTempRoot = join(ctx.runtimeRoot, KB_RUNTIME_AUTHORITY.sourceImportPdf);
   ctx.runtime.storage.mkdirSync(pdfTempRoot, { recursive: true });
   // Random suffix via runtime.ids.uuid(); UUID collision is effectively zero,
   // so a single mkdir suffices instead of mkdtemp's retry loop.
@@ -397,7 +398,7 @@ function stagePreparedSourceMarkdown(stageRoot: string, markdown: string, runtim
 
 export function cleanupSourceImportRuntimeArtifacts(runtimeRoot: string, runtime: SourceImportRuntime): void {
   runtime.storage.rmSync(sourceImportStageDir(runtimeRoot), { recursive: true, force: true });
-  runtime.storage.rmSync(join(runtimeRoot, 'source-import-pdf'), { recursive: true, force: true });
+  runtime.storage.rmSync(join(runtimeRoot, KB_RUNTIME_AUTHORITY.sourceImportPdf), { recursive: true, force: true });
 }
 
 function hasParentPathSegment(filePath: string): boolean {

@@ -45,6 +45,12 @@ export type DocumentedCoralSetupErrorCode =
   | 'consumer_registration_kind_invalid'
   | 'consumer_wait_fresh_invalid_target'
   | 'expansion_install_path_unwritable'
+  | 'retired_expansion_id_invalid'
+  | 'retired_expansion_cleanup_required'
+  | 'retired_expansion_consumer_active'
+  | 'retired_expansion_cleanup_in_progress'
+  | 'retired_expansion_cursor_unsafe'
+  | 'retired_expansion_cursor_changed'
   | 'binding_empty'
   | 'kb_unavailable'
   | 'kb_initializing'
@@ -79,8 +85,9 @@ function stringContextValue(context: CoralSetupErrorContext | undefined, key: st
 const DOCUMENTED_CORAL_SETUP_ERRORS = {
   expansion_install_lock_contended: {
     userMessage: (context) =>
-      `Another coral-cli expansion equip is in progress for ${stringContextValue(context, 'name', 'this expansion')}.`,
-    remediation: 'Wait for the in-flight install to complete or remove the stale lock file.',
+      `Another package operation is in progress for ${stringContextValue(context, 'name', 'this expansion')}.`,
+    remediation:
+      'Wait for the in-flight operation to complete, then retry. If this persists after ten minutes with no Coral process running, report the JSON error code and context; do not delete a live lock.',
   },
   expansion_install_command_failed: {
     userMessage: (context) =>
@@ -208,6 +215,42 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Cannot write to the Coral expansion install path for ${stringContextValue(context, 'name', 'this expansion')}.`,
     remediation: 'Check filesystem permissions and free space under ~/.coral/data/engines/, then retry.',
+  },
+  retired_expansion_id_invalid: {
+    userMessage: (context) =>
+      `Retired expansion id '${stringContextValue(context, 'name', 'unknown')}' is unsafe or reserved.`,
+    remediation:
+      "Use the exact id shown by 'coral-cli expansion list'. Valid ids use lowercase letters, digits, and single hyphens and must not name a Coral-owned KB path.",
+  },
+  retired_expansion_cleanup_required: {
+    userMessage: (context) =>
+      `Retired expansion '${stringContextValue(context, 'name', 'this expansion')}' requires catalog cleanup.`,
+    remediation: (context) =>
+      `Run 'coral-cli expansion remove-catalog ${stringContextValue(context, 'name', '<name>')}' so Coral can remove its artifacts and state transactionally.`,
+  },
+  retired_expansion_consumer_active: {
+    userMessage: (context) =>
+      `Retired expansion '${stringContextValue(context, 'name', 'this expansion')}' still has an active consumer.`,
+    remediation:
+      'Stop the process hosting that consumer or shut down the Coral backend, then retry the remove-catalog command.',
+  },
+  retired_expansion_cleanup_in_progress: {
+    userMessage: (context) =>
+      `Retired expansion cleanup is already in progress for '${stringContextValue(context, 'name', 'this expansion')}'.`,
+    remediation:
+      "Wait for the current cleanup to finish, then run 'coral-cli expansion list'; if the residue remains, retry its cleanupCommand.",
+  },
+  retired_expansion_cursor_unsafe: {
+    userMessage: (context) =>
+      `Retired expansion '${stringContextValue(context, 'name', 'this expansion')}' has cursor metadata Coral cannot safely remove.`,
+    remediation:
+      'Do not delete the cursor or projection files manually. Preserve the store and report the JSON error code and context for repair.',
+  },
+  retired_expansion_cursor_changed: {
+    userMessage: (context) =>
+      `Retired expansion '${stringContextValue(context, 'name', 'this expansion')}' changed cursor ownership during cleanup.`,
+    remediation:
+      'Stop other Coral processes and retry. If it happens again, preserve the store and report the JSON error code and context.',
   },
   expansion_not_equipped: {
     userMessage: (context) => `Expansion '${stringContextValue(context, 'name', 'this expansion')}' is not equipped.`,

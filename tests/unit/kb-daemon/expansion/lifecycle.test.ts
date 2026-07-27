@@ -50,7 +50,7 @@ const SYNTHETIC_VECTOR_SOURCE = `
         search: async () => ({ hits: [] }),
       }),
       consumer: {
-        id: 'needle-vector',
+        id: 'vector',
         authority: 'corpus',
         kind: 'apply',
         registrationKind: 'expansion',
@@ -157,12 +157,12 @@ const FAKE_EMBEDDER_ENTRY = {
   fills: [KB_EMBEDDING_CAPABILITY],
 } as const;
 
-const NEEDLE_ENTRY = {
-  id: 'needle',
+const VECTOR_ENTRY = {
+  id: 'vector',
   version: '0.2.0',
-  specifier: '#src/engines/needle/expansion.js',
+  specifier: javascriptDataUrl(SYNTHETIC_VECTOR_SOURCE),
   tier: 'installed',
-  description: 'Needle vector backend',
+  description: 'fixture vector backend',
   onboarding: [{ kind: 'require-binding', binding: KB_EMBEDDING_CAPABILITY }],
   fills: [KB_VECTOR_CAPABILITY],
 } as const;
@@ -176,8 +176,8 @@ const GEMINI_SYNTHETIC_ENTRY = {
   fills: [KB_EMBEDDING_CAPABILITY],
 } as const;
 
-const NEEDLE_SYNTHETIC_ENTRY = {
-  id: 'needle',
+const VECTOR_SYNTHETIC_ENTRY = {
+  id: 'vector',
   version: '0.0.0',
   specifier: javascriptDataUrl(SYNTHETIC_VECTOR_SOURCE),
   tier: 'installed',
@@ -233,6 +233,8 @@ function createLifecycleHarness(
     manifest?: readonly EngineManifest[];
     rows?: readonly ExpansionStateRow[];
     getLifecyclePhase?: () => 'starting' | 'running' | 'draining' | 'stopped';
+    protectedPackageIds?: ReadonlySet<string>;
+    retireCatalogAbsent?: (name: string, finalizeState: () => void) => Promise<'current' | 'removed'>;
   } = {},
 ) {
   const { kb, makeHost } = createTestRuntime();
@@ -245,6 +247,8 @@ function createLifecycleHarness(
     now: () => FIXED_NOW,
     resolveKbRuntime: () => kb,
     ...(options.getLifecyclePhase === undefined ? {} : { getLifecyclePhase: options.getLifecyclePhase }),
+    ...(options.protectedPackageIds === undefined ? {} : { protectedPackageIds: options.protectedPackageIds }),
+    ...(options.retireCatalogAbsent === undefined ? {} : { retireCatalogAbsent: options.retireCatalogAbsent }),
   });
   return { kb, state, lifecycle };
 }
@@ -317,7 +321,7 @@ describe('disposeExpansionScope ordering', () => {
     );
     const consumerHandle = host.registerConsumer(
       {
-        id: 'order-test-consumer',
+        id: 'order-test-engine',
         authority: 'corpus',
         kind: 'apply',
         corpusInterest: 'content',
@@ -340,8 +344,8 @@ describe('disposeExpansionScope ordering', () => {
     // host's registration helpers, not of `disposeExpansionScope` itself.
     // The boundary contract is the FIRST occurrence of each marker.
     const firstArtifact = trace.indexOf('artifact-unregister');
-    const firstConsumerStop = trace.indexOf('consumer-stop:order-test-consumer');
-    const firstConsumerUnregister = trace.indexOf('consumer-unregister:order-test-consumer');
+    const firstConsumerStop = trace.indexOf('consumer-stop:order-test-engine');
+    const firstConsumerUnregister = trace.indexOf('consumer-unregister:order-test-engine');
     const firstScopeDecorated = trace.indexOf('scope-decorated-dispose');
 
     expect(firstArtifact).toBeGreaterThanOrEqual(0);
@@ -367,6 +371,61 @@ describe('disposeExpansionScope ordering', () => {
 });
 
 describe('ExpansionLifecycleService', () => {
+  it('routes only catalog-absent, unprotected ids into retirement and finalizes state there', async () => {
+    const retireCatalogAbsent = vi.fn(async (_name: string, finalizeState: () => void): Promise<'removed'> => {
+      finalizeState();
+      return 'removed';
+    });
+    const { lifecycle, state } = createLifecycleHarness({
+      manifest: BUNDLED_ENGINES,
+      rows: [
+        {
+          id: 'retired-vector',
+          version: '0.9.0',
+          installed_at: FIXED_NOW,
+        },
+      ],
+      protectedPackageIds: new Set(['kiwi', 'codebase-memory']),
+      retireCatalogAbsent,
+    });
+
+    await expect(lifecycle.removeExpansionCatalog('retired-vector')).resolves.toEqual({
+      status: 'removed',
+    });
+    expect(retireCatalogAbsent).toHaveBeenCalledOnce();
+    expect(state.get('retired-vector')).toBeUndefined();
+
+    for (const id of ['gemini', 'onnx', 'orama']) {
+      await expect(lifecycle.removeExpansionCatalog(id)).resolves.toEqual({
+        status: 'immutable',
+      });
+    }
+    for (const id of ['kiwi', 'codebase-memory']) {
+      await expect(lifecycle.removeExpansionCatalog(id)).resolves.toEqual({
+        status: 'unknown',
+      });
+    }
+    expect(retireCatalogAbsent).toHaveBeenCalledOnce();
+  });
+
+  it('does not finalize state when a fresh catalog read reports current', async () => {
+    const retireCatalogAbsent = vi.fn(async (): Promise<'current'> => 'current');
+    const { lifecycle, state } = createLifecycleHarness({
+      manifest: [],
+      rows: [
+        {
+          id: 'registered-during-cleanup',
+          version: '1.0.0',
+          installed_at: FIXED_NOW,
+        },
+      ],
+      retireCatalogAbsent,
+    });
+
+    await expect(lifecycle.removeExpansionCatalog('registered-during-cleanup')).resolves.toEqual({ status: 'unknown' });
+    expect(state.get('registered-during-cleanup')).toBeDefined();
+  });
+
   it('equips and unequips an installed expansion through expansion_state', async () => {
     const { kb, state, lifecycle } = createLifecycleHarness();
 
@@ -397,6 +456,14 @@ describe('ExpansionLifecycleService', () => {
     });
   });
 
+  it('revalidates an injected installed manifest id at equip ingress', async () => {
+    const unsafe = { ...FAKE_EMBEDDER_ENTRY, id: '../escape' } as EngineManifest;
+    const { lifecycle, state } = createLifecycleHarness({ manifest: [unsafe] });
+
+    await expect(lifecycle.equip('../escape')).rejects.toThrow(/is unsafe/u);
+    expect(state.snapshot()).toEqual([]);
+  });
+
   it('rolls back bound state when writing the expansion row fails', async () => {
     const { kb, state, lifecycle } = createLifecycleHarness();
     vi.mocked(state.insert).mockImplementation(() => {
@@ -410,7 +477,7 @@ describe('ExpansionLifecycleService', () => {
     expect(lifecycle.has('test-embedder')).toBe(false);
   });
 
-  it('deletes orphan expansion rows during boot recovery and logs a warning', async () => {
+  it('preserves retired expansion rows during boot recovery and exposes cleanup remediation', async () => {
     const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
     const { state, lifecycle } = createLifecycleHarness({
       rows: [{ id: 'ghost', version: '1.0.0', installed_at: FIXED_NOW }],
@@ -418,24 +485,60 @@ describe('ExpansionLifecycleService', () => {
 
     await lifecycle.recoverOnBoot();
 
-    expect(state.snapshot()).toEqual([]);
+    expect(state.snapshot()).toEqual([{ id: 'ghost', version: '1.0.0', installed_at: FIXED_NOW }]);
+    expect(lifecycle.info('ghost')).toMatchObject({
+      id: 'ghost',
+      status: 'installed-not-active',
+      lastError: "Run 'coral-cli expansion remove-catalog ghost' to remove retired expansion artifacts.",
+    });
     expect(warn).toHaveBeenCalledWith(
-      "Orphan expansion row 'ghost' deleted; expansion no longer in the manifest catalog",
+      "Retired expansion row 'ghost' preserved. Run 'coral-cli expansion remove-catalog ghost' to remove retired expansion artifacts.",
     );
+    await expect(lifecycle.unequip('ghost')).rejects.toMatchObject({
+      code: 'retired_expansion_cleanup_required',
+      remediation:
+        "Run 'coral-cli expansion remove-catalog ghost' so Coral can remove its artifacts and state transactionally.",
+    });
+    expect(state.snapshot()).toEqual([{ id: 'ghost', version: '1.0.0', installed_at: FIXED_NOW }]);
+    expect(lifecycle.info('ghost')).toMatchObject({ status: 'installed-not-active' });
   });
 
-  it('preserves failed recovery rows and reports installed-not-active with lastError', async () => {
-    const { kb, state, lifecycle } = createLifecycleHarness({
-      manifest: [NEEDLE_ENTRY] as unknown as readonly (typeof FAKE_EMBEDDER_ENTRY)[],
-      rows: [{ id: 'needle', version: '0.2.0', installed_at: FIXED_NOW }],
+  it('does not emit an executable cleanup command for an unsafe retired row id', async () => {
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    const unsafeId = 'bad; touch /tmp/injected';
+    const { state, lifecycle } = createLifecycleHarness({
+      rows: [{ id: unsafeId, version: '1.0.0', installed_at: FIXED_NOW }],
     });
 
     await lifecycle.recoverOnBoot();
 
-    expect(state.snapshot()).toEqual([{ id: 'needle', version: '0.2.0', installed_at: FIXED_NOW }]);
+    expect(state.snapshot()).toEqual([{ id: unsafeId, version: '1.0.0', installed_at: FIXED_NOW }]);
+    expect(lifecycle.info(unsafeId)).toMatchObject({
+      id: unsafeId,
+      status: 'installed-not-active',
+      lastError: expect.stringContaining('cannot provide an executable cleanup command'),
+    });
+    expect(lifecycle.info(unsafeId)?.lastError).not.toContain(unsafeId);
+    expect(warn).toHaveBeenCalledWith(expect.not.stringContaining(unsafeId));
+    await expect(lifecycle.unequip(unsafeId)).rejects.toMatchObject({
+      code: 'retired_expansion_id_invalid',
+      remediation: expect.not.stringContaining(unsafeId),
+    });
+    expect(state.snapshot()).toEqual([{ id: unsafeId, version: '1.0.0', installed_at: FIXED_NOW }]);
+  });
+
+  it('preserves failed recovery rows and reports installed-not-active with lastError', async () => {
+    const { kb, state, lifecycle } = createLifecycleHarness({
+      manifest: [VECTOR_ENTRY] as unknown as readonly (typeof FAKE_EMBEDDER_ENTRY)[],
+      rows: [{ id: 'vector', version: '0.2.0', installed_at: FIXED_NOW }],
+    });
+
+    await lifecycle.recoverOnBoot();
+
+    expect(state.snapshot()).toEqual([{ id: 'vector', version: '0.2.0', installed_at: FIXED_NOW }]);
     expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBeUndefined();
-    expect(lifecycle.info('needle')).toMatchObject({
-      id: 'needle',
+    expect(lifecycle.info('vector')).toMatchObject({
+      id: 'vector',
       version: '0.2.0',
       status: 'installed-not-active',
       lastError: expect.stringContaining("Binding 'kb.embedding'"),
@@ -502,7 +605,7 @@ describe('ExpansionLifecycleService', () => {
           capability: KB_EMBEDDING_CAPABILITY,
           dependents: [
             {
-              expansion: 'needle',
+              expansion: 'vector',
               edgeKind: 'read',
               source: 'onboarding',
               state: 'active',
@@ -512,11 +615,11 @@ describe('ExpansionLifecycleService', () => {
       ],
     });
     const { kb, lifecycle } = createLifecycleHarness({
-      manifest: [GEMINI_SYNTHETIC_ENTRY, NEEDLE_SYNTHETIC_ENTRY],
+      manifest: [GEMINI_SYNTHETIC_ENTRY, VECTOR_SYNTHETIC_ENTRY],
     });
 
     await lifecycle.equip('gemini');
-    await lifecycle.equip('needle');
+    await lifecycle.equip('vector');
 
     await expect(lifecycle.unequip('gemini')).rejects.toMatchObject({
       code: expected.code,
@@ -524,31 +627,31 @@ describe('ExpansionLifecycleService', () => {
       context: expected.context,
     });
     expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBe('gemini');
-    expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBe('needle');
+    expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBe('vector');
   });
 
   it('re-runs bundled fallback after unequipping an installed engine and refills an empty slot', async () => {
     const { kb, state, lifecycle } = createLifecycleHarness({
       manifest: [
         GEMINI_SYNTHETIC_ENTRY,
-        NEEDLE_SYNTHETIC_ENTRY,
+        VECTOR_SYNTHETIC_ENTRY,
         BUNDLED_FTS_SYNTHETIC_ENTRY,
         BUNDLED_VECTOR_SYNTHETIC_ENTRY,
       ],
       rows: [
         { id: 'gemini', version: '0.0.0', installed_at: FIXED_NOW },
-        { id: 'needle', version: '0.0.0', installed_at: FIXED_NOW },
+        { id: 'vector', version: '0.0.0', installed_at: FIXED_NOW },
       ],
     });
 
     await lifecycle.recoverOnBoot();
 
     expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBe('gemini');
-    expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBe('needle');
+    expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBe('vector');
     expect(heldBy(kb, KB_FTS_CAPABILITY)).toBe('orama-fts-only');
     expect(lifecycleScopes(lifecycle).get('bundled-vector')).toBeUndefined();
 
-    await lifecycle.unequip('needle');
+    await lifecycle.unequip('vector');
 
     expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBe('gemini');
     expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBe('bundled-vector');
@@ -642,13 +745,13 @@ describe('ExpansionLifecycleService', () => {
     expect(expansionStatusSchema.parse('installed-not-active')).toBe('installed-not-active');
     expect(
       expansionViewSchema.parse({
-        name: 'needle',
+        name: 'vector',
         tier: 'installed',
         status: 'installed-not-active',
         lastError: 'binding missing',
       }),
     ).toEqual({
-      name: 'needle',
+      name: 'vector',
       tier: 'installed',
       status: 'installed-not-active',
       lastError: 'binding missing',
@@ -844,7 +947,7 @@ describe('ExpansionLifecycleService', () => {
   // `scopes.has(id) iff state.get(id)` is preserved on both engines.
   it('serializes user equip and bundled fallback that target the same binding', async () => {
     const USER_VECTOR_ENTRY = {
-      id: 'needle',
+      id: 'vector',
       version: '0.0.0',
       specifier: javascriptDataUrl(SYNTHETIC_VECTOR_SOURCE),
       tier: 'installed',
@@ -857,20 +960,20 @@ describe('ExpansionLifecycleService', () => {
       manifest: [GEMINI_SYNTHETIC_ENTRY, USER_VECTOR_ENTRY, BUNDLED_VECTOR_SYNTHETIC_ENTRY],
     });
 
-    // `needle` requires `kb.embedding` to be filled before binding `kb.vector`,
+    // `vector` requires `kb.embedding` to be filled before binding `kb.vector`,
     // so equip a synthetic embedder first. The race we exercise is on
-    // `kb.vector` — both `needle` (user) and `bundled-vector` (fallback)
+    // `kb.vector` — both `vector` (user) and `bundled-vector` (fallback)
     // declare `fills: ['kb.vector']`.
     await lifecycle.equip('gemini');
 
     // Fire user equip and bundled fallback concurrently. The two run on
-    // different engineMutex keys (`needle` vs `bundled-vector`), but they
+    // different engineMutex keys (`vector` vs `bundled-vector`), but they
     // both bind `kb.vector` — so the binding's structural single-occupancy
     // determines the winner. Whichever resolves first publishes the scope;
     // the other's body throws `binding_occupied` and the lifecycle disposes
     // the loser's scope without leaking state.
     const userEquipPromise = lifecycle
-      .equip('needle')
+      .equip('vector')
       .then(() => ({ kind: 'ok' as const }))
       .catch((error: unknown) => ({ kind: 'err' as const, error: error as Error }));
     const fallbackPromise = lifecycle.applyBundledFallback();
@@ -884,21 +987,21 @@ describe('ExpansionLifecycleService', () => {
     expect(userWon !== fallbackWon).toBe(true);
 
     if (userWon) {
-      expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBe('needle');
-      expect(lifecycleScopes(lifecycle).get('needle')).toHaveLength(1);
+      expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBe('vector');
+      expect(lifecycleScopes(lifecycle).get('vector')).toHaveLength(1);
       expect(lifecycleScopes(lifecycle).get('bundled-vector')).toBeUndefined();
-      expect(state.snapshot().some((row) => row.id === 'needle')).toBe(true);
+      expect(state.snapshot().some((row) => row.id === 'vector')).toBe(true);
     } else {
       expect(heldBy(kb, KB_VECTOR_CAPABILITY)).toBe('bundled-vector');
       expect(lifecycleScopes(lifecycle).get('bundled-vector')).toHaveLength(1);
-      expect(lifecycleScopes(lifecycle).get('needle')).toBeUndefined();
-      expect(state.snapshot().some((row) => row.id === 'needle')).toBe(false);
+      expect(lifecycleScopes(lifecycle).get('vector')).toBeUndefined();
+      expect(state.snapshot().some((row) => row.id === 'vector')).toBe(false);
       expect(userResult.kind === 'err' && userResult.error.message).toBeTruthy();
     }
 
     // Post-condition: `scopes.has(id) iff state.get(id)` on every installed
     // engine the test touched.
-    for (const id of ['gemini', 'needle']) {
+    for (const id of ['gemini', 'vector']) {
       const hasScope = (lifecycleScopes(lifecycle).get(id) ?? []).length > 0;
       const hasRow = state.snapshot().some((row) => row.id === id);
       expect(hasScope).toBe(hasRow);

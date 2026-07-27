@@ -12,6 +12,7 @@ import { coralStateRoot } from './root.js';
 
 export interface EnginePaths {
   readonly engineRoot: string;
+  readonly operationLockRoot: string;
   dataDir(name: string): string;
   installLockPath(name: string): string;
 }
@@ -23,10 +24,12 @@ export interface EnginePathOptions {
 export function enginePaths(flavor: BuildFlavor, opts?: EnginePathOptions): EnginePaths {
   const base = flavor === 'dev' ? 'data-dev/engines' : 'data/engines';
   const engineRoot = join(coralStateRoot(opts?.baseDir), base);
+  const operationLockRoot = join(engineRoot, '.locks');
   const dataDir = (name: string): string => join(engineRoot, name);
   return {
     engineRoot,
+    operationLockRoot,
     dataDir,
-    installLockPath: (name) => join(dataDir(name), 'install.lock'),
+    installLockPath: (name) => join(operationLockRoot, `${name}.lock`),
   };
 }

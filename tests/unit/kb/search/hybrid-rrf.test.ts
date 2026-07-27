@@ -20,7 +20,7 @@ import {
   bindOramaFtsForTest,
   createCorpusHandle,
   bindVectorBacked,
-  seedNeedleRouteState,
+  seedVectorRouteState,
 } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
@@ -70,8 +70,8 @@ function createRuntime(
   return kb;
 }
 
-function seedRouteState(kb: KbRuntime): ReturnType<typeof seedNeedleRouteState> {
-  return seedNeedleRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot());
+function seedRouteState(kb: KbRuntime): ReturnType<typeof seedVectorRouteState> {
+  return seedVectorRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot());
 }
 
 async function applyOramaProjection(kb: KbRuntime): Promise<void> {
@@ -118,8 +118,8 @@ async function installMockHybridSearch(
   kb: KbRuntime & {
     readIndex: () => { entries: Record<string, any> } | null;
   },
-  routeState: ReturnType<typeof seedNeedleRouteState>,
-  searchVector: (query: Float32Array, candidateK: number) => Promise<MockNeedleChunkHit[]>,
+  routeState: ReturnType<typeof seedVectorRouteState>,
+  searchVector: (query: Float32Array, candidateK: number) => Promise<MockVectorChunkHit[]>,
 ) {
   await bindEmbedding(kb, {
     embedDocuments: vi.fn(async () => []),
@@ -132,13 +132,13 @@ async function installMockHybridSearch(
         let candidateK = Math.max(topK, 1);
         const candidateCap = Math.max(topK, 10 * topK);
         let rawHits = await searchVector(Float32Array.from(embedding), candidateK);
-        let hits = aggregateMockNeedleHits(kb, rawHits, scope);
+        let hits = aggregateMockVectorHits(kb, rawHits, scope);
         let exhausted = rawHits.length < candidateK;
 
         while (hits.length < topK && !exhausted && candidateK < candidateCap) {
           candidateK = Math.min(candidateCap, candidateK * 2);
           rawHits = await searchVector(Float32Array.from(embedding), candidateK);
-          hits = aggregateMockNeedleHits(kb, rawHits, scope);
+          hits = aggregateMockVectorHits(kb, rawHits, scope);
           exhausted = rawHits.length < candidateK;
         }
 
@@ -159,7 +159,7 @@ function resultFor<T extends { note: string }>(results: T[], target: string): T 
   return result!;
 }
 
-type MockNeedleChunkHit = {
+type MockVectorChunkHit = {
   chunkId: string;
   entryId: KbEntryId;
   score: number;
@@ -181,11 +181,11 @@ function scopeAllowsVectorKind(
   return false;
 }
 
-function aggregateMockNeedleHits(
+function aggregateMockVectorHits(
   kb: {
     readIndex: () => { entries: Record<string, any> } | null;
   },
-  rawHits: MockNeedleChunkHit[],
+  rawHits: MockVectorChunkHit[],
   scope: 'all' | 'notes' | 'sources' | 'communities' | undefined,
 ) {
   const index = kb.readIndex();

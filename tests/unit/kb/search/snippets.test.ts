@@ -14,17 +14,17 @@ function createTokenizingFts(onTokenize: (text: string) => readonly string[]): F
 describe('KB snippets', () => {
   it('token-anchor scanning tokenizes lazily and stops at the first matching word', async () => {
     const fts = createTokenizingFts((text) => [text.toLowerCase()]);
-    const content = `needle ${'filler '.repeat(100_000)}`;
+    const content = `vector ${'filler '.repeat(100_000)}`;
 
     const snippet = await extractSnippet(content, {
       rawQuery: 'not a phrase',
       normalizedQuery: 'not a phrase',
-      queryTokens: ['needle'],
+      queryTokens: ['vector'],
       fts,
     });
 
-    expect(snippet).toContain('needle');
+    expect(snippet).toContain('vector');
     expect(fts.tokenize).toHaveBeenCalledTimes(1);
-    expect(fts.tokenize).toHaveBeenCalledWith('needle');
+    expect(fts.tokenize).toHaveBeenCalledWith('vector');
   });
 });

@@ -61,6 +61,8 @@ export interface EngineInstallerOptions {
   readonly logger?: (event: EngineInstallLoggerEvent) => void;
   readonly lockTimeoutMs?: number;
   readonly update?: boolean;
+  /** Internal fencing proof supplied by the package-operation orchestrator. */
+  readonly operationLockHeld?: true;
 }
 
 export interface EngineInstaller {

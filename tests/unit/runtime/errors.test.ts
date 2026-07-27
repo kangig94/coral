@@ -45,15 +45,15 @@ describe('CoralSetupError', () => {
   it.each([
     [
       'expansion_install_lock_contended',
-      { name: 'needle' },
-      'Another coral-cli expansion equip is in progress for needle.',
-      'Wait for the in-flight install to complete or remove the stale lock file.',
+      { name: 'vector' },
+      'Another package operation is in progress for vector.',
+      'Wait for the in-flight operation to complete, then retry. If this persists after ten minutes with no Coral process running, report the JSON error code and context; do not delete a live lock.',
     ],
     [
       'expansion_binary_corrupt',
-      { name: 'needle' },
-      'The installed binary for needle could not be activated.',
-      "Run 'coral-cli expansion unequip needle' before retrying 'coral-cli expansion equip needle'.",
+      { name: 'vector' },
+      'The installed binary for vector could not be activated.',
+      "Run 'coral-cli expansion unequip vector' before retrying 'coral-cli expansion equip vector'.",
     ],
     [
       'installer_payload_invalid',
@@ -63,8 +63,8 @@ describe('CoralSetupError', () => {
     ],
     [
       'unknown_expansion',
-      { name: 'needle' },
-      'The expansion needle is not registered in the Coral catalog.',
+      { name: 'vector' },
+      'The expansion vector is not registered in the Coral catalog.',
       "Run 'coral-cli expansion list' to see available expansions.",
     ],
     [
@@ -75,9 +75,9 @@ describe('CoralSetupError', () => {
     ],
     [
       'expansion_runtime_unavailable',
-      { name: 'needle' },
-      'Expansion runtime is not available for needle.',
-      "Restart Coral or run 'coral-cli expansion equip needle' to retry.",
+      { name: 'vector' },
+      'Expansion runtime is not available for vector.',
+      "Restart Coral or run 'coral-cli expansion equip vector' to retry.",
     ],
     [
       'engine_env_var_missing',
@@ -87,9 +87,9 @@ describe('CoralSetupError', () => {
     ],
     [
       'expansion_embedding_provider_missing',
-      { name: 'Needle' },
-      'Needle needs an embedding expansion before it can be equipped.',
-      "Equip an embedding expansion before retrying 'coral-cli expansion equip Needle'.",
+      { name: 'Vector' },
+      'Vector needs an embedding expansion before it can be equipped.',
+      "Equip an embedding expansion before retrying 'coral-cli expansion equip Vector'.",
     ],
     [
       'consumer_not_registered',
@@ -147,8 +147,8 @@ describe('CoralSetupError', () => {
     ],
     [
       'expansion_install_path_unwritable',
-      { name: 'needle' },
-      'Cannot write to the Coral expansion install path for needle.',
+      { name: 'vector' },
+      'Cannot write to the Coral expansion install path for vector.',
       'Check filesystem permissions and free space under ~/.coral/data/engines/, then retry.',
     ],
     [
@@ -158,7 +158,7 @@ describe('CoralSetupError', () => {
         capabilities: [
           {
             capability: 'kb.embedding',
-            dependents: [{ expansion: 'needle', edgeKind: 'read', source: 'onboarding', state: 'active' }],
+            dependents: [{ expansion: 'vector', edgeKind: 'read', source: 'onboarding', state: 'active' }],
           },
         ],
       },

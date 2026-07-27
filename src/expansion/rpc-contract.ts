@@ -83,15 +83,12 @@ const onboardingChoiceSchema = z
   .strict();
 
 const postInstallSchema = z.array(
-  z.union([
-    z.literal('register_expansion'),
-    z
-      .object({
-        action: z.literal('register_expansion'),
-        manifestPath: z.string().min(1),
-      })
-      .strict(),
-  ]),
+  z
+    .object({
+      action: z.literal('register_expansion'),
+      manifestPath: z.string().min(1),
+    })
+    .strict(),
 );
 
 const onboardingSchema = z
@@ -128,6 +125,17 @@ const installOnlyEntrySchema = z
   })
   .strict();
 
+const retiredResidueEntrySchema = z
+  .object({
+    ...catalogEntryCommonShape,
+    tier: z.literal('installed'),
+    activation: z.literal('remove-catalog'),
+    status: z.literal('installed-not-active'),
+    cleanupCommand: z.string().min(1).optional(),
+    lastError: z.string().min(1).optional(),
+  })
+  .strict();
+
 export const catalogEntryStatusSchema = z.union([
   z.literal('inactive'),
   z.literal('installed-not-active'),
@@ -141,7 +149,11 @@ export const catalogEntryStatusSchema = z.union([
   z.literal('installed'),
 ]);
 
-export const catalogEntrySchema = z.discriminatedUnion('activation', [expansionEntrySchema, installOnlyEntrySchema]);
+export const catalogEntrySchema = z.discriminatedUnion('activation', [
+  expansionEntrySchema,
+  installOnlyEntrySchema,
+  retiredResidueEntrySchema,
+]);
 export type CatalogEntry = z.infer<typeof catalogEntrySchema>;
 
 export const catalogResultSchema = z
@@ -172,6 +184,7 @@ type ExpansionStatus = z.infer<typeof expansionStatusSchema>;
 
 export interface ExpansionView {
   readonly name: string;
+  readonly version?: string;
   readonly tier: 'bundled' | 'installed';
   readonly status: ExpansionStatus;
   readonly lastError?: string;
@@ -182,6 +195,7 @@ export interface ExpansionView {
 export const expansionViewSchema = z
   .object({
     name: z.string().min(1),
+    version: z.string().min(1).optional(),
     tier: z.enum(['bundled', 'installed']),
     status: expansionStatusSchema,
     lastError: z.string().min(1).optional(),

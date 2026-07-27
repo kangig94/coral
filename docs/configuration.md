@@ -281,8 +281,16 @@ Discuss sessions are Journal events projected into `projection_discuss`. The sou
 - Runtime state defaults: `~/.coral/data/kb/` for prod, `~/.coral/data-dev/kb/` for dev
 - `CORAL_KB_PATH` still overrides the markdown root only
 - `<runtime-state>/orama/` stores the derived base retrieval snapshot when the Orama CorpusConsumer has applied the current Corpus snapshot
-- `<runtime-state>/needle/` and `<runtime-state>/needle-staging/` are optional Needle expansion artifacts, created only when the Needle expansion is equipped
+- `<runtime-state>/<engine-id>/` and `<runtime-state>/<engine-id>-staging/` are the canonical projection and staging locations exposed to an expansion as `host.kb.ownProjectionDir` and `host.kb.ownProjectionStagingDir`
 - Source import staging is machine-local runtime state; clients pass source `filePath`, not a staged markdown path
+
+Installed expansions are trusted local code, not filesystem-sandboxed plugins. They must keep rebuildable projection data within the two own-id paths above; Coral uses that ownership boundary when retiring a package.
+
+### Retired expansion cleanup
+
+When a previously installed expansion is no longer present in the current catalog, Coral preserves its durable row and artifacts instead of deleting them at boot. `coral-cli expansion list` reports the entry as `installed-not-active`. For a canonical, non-reserved id it also provides an exact `cleanupCommand`; inspect the same entry with `coral-cli expansion info <retired-id>`, then run that command exactly. Unsafe or reserved legacy ids intentionally omit `cleanupCommand`: follow `lastError`, preserve the state for repair, and do not construct a cleanup command.
+
+Cleanup is explicit and scoped to the selected build flavor. Current catalog entries, install-only package ids, active consumers, base-owned cursors, and malformed cursor metadata are protected and will fail closed with an actionable error.
 
 ### Job state
 
@@ -303,7 +311,7 @@ Live scratch artifacts:
 | Package                          | Purpose                                                           |
 | -------------------------------- | ----------------------------------------------------------------- |
 | `zod`                            | Schema validation                                                 |
-| `@orama/orama`                   | Base KB retrieval projection and fallback vector search           |
+| `@orama/orama`                   | Base KB full-text retrieval projection                            |
 | `graphology`                     | Graph data structures for KB community analysis                   |
 | `graphology-communities-louvain` | Community detection                                               |
 | `mammoth` / `turndown`           | Source import conversion                                          |
@@ -319,7 +327,6 @@ Live scratch artifacts:
 | Codex CLI   | Codex execution                            |
 | Claude CLI  | Claude execution through the broker helper |
 | Node.js 24+ | Runtime                                    |
-| `cmake`     | Native KB addon fallback builds            |
 
 ## File Role Summary
 
@@ -343,7 +350,7 @@ projection_jobs.diagnostics in store.db        -> projected job terminal diagnos
 ~/.coral/exports-dev/jobs/<jobId>/result.md    -> durable job result export (dev)
 <os-tmpdir>/coral-jobs/<jobId>/                -> live job scratch artifacts
 ~/.coral/kb/ or ~/.coral/kb-dev/               -> KB markdown storage by flavor
-~/.coral/data/kb/ or ~/.coral/data-dev/kb/     -> KB runtime artifacts, Orama/Needle projections, source-import staging
+~/.coral/data/kb/ or ~/.coral/data-dev/kb/     -> KB runtime artifacts, Orama and installed-engine projections, source-import staging
 ```
 
 The important config distinction is simple: Coral is configured as a plugin plus hooks plus CLI-accessible bundles, and flavor-bearing state keeps prod and dev runtimes from reusing the wrong backend or KB data.

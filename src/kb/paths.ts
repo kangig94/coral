@@ -1,6 +1,7 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { coralStateRoot, kbVaultRoot } from '../infra/path/root.js';
+import { KB_RUNTIME_AUTHORITY } from '../runtime/kb-runtime-authority.js';
 
 // eslint-disable-next-line no-control-regex -- rejects C0/C1 control chars (incl NUL) in KB slugs before they reach writeFileSync
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
@@ -96,7 +97,7 @@ export function sourcePathFromName(source: string, root: string): string {
 }
 
 export function sourceImportStageDir(runtimeRoot: string): string {
-  return join(runtimeRoot, 'source-import-staging');
+  return join(runtimeRoot, KB_RUNTIME_AUTHORITY.sourceImportStaging);
 }
 
 export type KbRuntimePaths = {

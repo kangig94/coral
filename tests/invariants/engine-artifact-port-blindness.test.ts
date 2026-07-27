@@ -7,13 +7,6 @@ import { createOramaDb } from '#src/engines/orama/document-builder.js';
 import { createOramaArtifactPort } from '#src/engines/orama/artifact-port.js';
 import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
-import { createNeedleArtifactPort } from '#src/engines/needle/artifact-port.js';
-import { needleIndexDir } from '#src/engines/needle/paths.js';
-import {
-  NEEDLE_STORE_MIN_NAPI_VERSION,
-  NEEDLE_STORE_SCHEMA_VERSION,
-  type NeedleStore,
-} from '#src/engines/needle/store.js';
 import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
 import type { EngineArtifactPort } from '#src/kb/corpus/artifact-port.js';
 import type { ConsumerHandle } from '#src/store/consumer-contract.js';
@@ -62,40 +55,6 @@ function consumerHandle(id: string): ConsumerHandle {
       pending: false,
       lastApplyError: null,
     }),
-  };
-}
-
-function fakeNeedleStore(specId: string): NeedleStore {
-  return {
-    async init() {},
-    async close() {},
-    async upsertChunks() {},
-    async removeByEntryId() {},
-    async searchVector() {
-      return [];
-    },
-    async buildIndex() {},
-    async getActiveSpec() {
-      return {
-        specId,
-        provider: 'provider',
-        model: 'model',
-        dims: 4,
-        normalization: 'l2',
-        createdAt: '2026-04-01T00:00:00.000Z',
-      };
-    },
-    async setActiveSpec() {},
-    async stats() {
-      return {
-        chunkCount: 0,
-        specId,
-        engineName: 'fake',
-        addonVersion: '0.0.0',
-        napiVersion: NEEDLE_STORE_MIN_NAPI_VERSION,
-        schemaVersion: NEEDLE_STORE_SCHEMA_VERSION,
-      };
-    },
   };
 }
 
@@ -198,62 +157,6 @@ describe('engine artifact port blindness', () => {
     expect(existsSync(oramaIndexPath(root))).toBe(true);
   });
 
-  it('Needle validates ACTIVE, manifest identity, and native store spec without KB parsing engine files', async () => {
-    const root = tempRoot();
-    const active = join(needleIndexDir(root), 'ACTIVE');
-    const snapshotDir = join(needleIndexDir(root), 'snapshots', 'snapshot-a');
-    const manifestPath = join(snapshotDir, 'manifest.json');
-    const storePath = join(snapshotDir, 'store.db');
-    mkdirSync(snapshotDir, { recursive: true });
-    writeFileSync(active, 'snapshot-a\n', 'utf-8');
-    writeFileSync(storePath, '', 'utf-8');
-    writeFileSync(
-      manifestPath,
-      `${JSON.stringify(
-        {
-          snapshot: {
-            snapshotId: 'snapshot-a',
-            contentSeq: 1,
-            metadataSeq: 1,
-            contentManifestHash: 'content-hash',
-            metadataManifestHash: 'metadata-hash',
-            projectionIdentityHash: 'persisted-projection',
-          },
-          specId: 'spec-a',
-          entryCount: 1,
-          chunkCount: 2,
-        },
-        null,
-        2,
-      )}\n`,
-      'utf-8',
-    );
-
-    const present = await createNeedleArtifactPort({ runtimeDir: root }, filesPort(), {
-      addonPath: resolve(root, 'addon.node'),
-      expectedProjectionIdentityHash: 'current-projection',
-      storeFactory: () => fakeNeedleStore('spec-a'),
-    }).describeArtifacts();
-    expect(present[0]?.freshness).toEqual({
-      status: 'present',
-      projected: expect.objectContaining({
-        snapshotId: 'snapshot-a',
-        projectionIdentityHash: 'persisted-projection',
-      }),
-    });
-    expect(present[0]?.expectedProjectionIdentityHash).toBe('current-projection');
-
-    const corrupt = await createNeedleArtifactPort({ runtimeDir: root }, filesPort(), {
-      addonPath: resolve(root, 'addon.node'),
-      expectedProjectionIdentityHash: 'current-projection',
-      storeFactory: () => fakeNeedleStore('other-spec'),
-    }).describeArtifacts();
-    expect(corrupt[0]?.freshness).toMatchObject({
-      status: 'corrupt',
-      diagnostic: expect.stringContaining('specId'),
-    });
-  });
-
   it('KB drift detection consumes registry descriptors without hardcoded engine artifact paths', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/kb/corpus/rescan/drift.ts'), 'utf-8');
 
@@ -268,7 +171,7 @@ describe('engine artifact port blindness', () => {
     // ambient node:fs. They consume the injected
     // KbProjectionArtifactFilePort so port replacement (e.g. test fixtures,
     // simulation runtime) lands cleanly without monkey-patching fs.
-    for (const relativePath of ['src/engines/orama/artifact-port.ts', 'src/engines/needle/artifact-port.ts']) {
+    for (const relativePath of ['src/engines/orama/artifact-port.ts']) {
       const source = readFileSync(resolve(process.cwd(), relativePath), 'utf-8');
       expect(source, `${relativePath} must not import from node:fs`).not.toMatch(/from\s+['"]node:fs['"]/);
       expect(source, `${relativePath} must not import from node:fs/promises`).not.toMatch(

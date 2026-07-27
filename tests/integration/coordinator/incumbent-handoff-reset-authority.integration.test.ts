@@ -329,7 +329,7 @@ describe('incumbent handoff reset authority', () => {
           'content-type': 'application/json',
           'x-coral-backend-token': token,
         },
-        body: JSON.stringify({ name: 'needle' }),
+        body: JSON.stringify({ name: 'vector' }),
       });
       const rpcBody = (await rpcResponse.json()) as Record<string, unknown>;
       expect(rpcResponse.status).toBe(200);

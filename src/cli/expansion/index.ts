@@ -26,6 +26,7 @@ import {
   type RemoveExpansionCatalogResult,
 } from '../../expansion/rpc-contract.js';
 import { INSTALL_ONLY_PACKAGES, resolveInstallOnlyManifest } from '../../expansion/install-only.js';
+import { validateExpansionPackageId } from '../../expansion/package-id.js';
 import { encodeInstallError } from './contract.js';
 import { readExpansionCatalog, resolveCatalogManifest } from './catalog.js';
 import { inspectExpansionInstallState, installExpansion, resolveRuntime, uninstallExpansion } from './install.js';
@@ -138,6 +139,36 @@ function toInstallOnlyCatalogEntry(manifest: InstallOnlyManifest, runtime: Runti
     status,
     version: manifest.version,
     ...(local.installed && typeof local.addonPath === 'string' ? { command: local.addonPath } : {}),
+  });
+}
+
+function toRetiredResidueCatalogEntry(view: ExpansionView): CatalogEntry {
+  const packageId = validateExpansionPackageId(view.name);
+  if (!packageId.ok) {
+    return catalogEntrySchema.parse({
+      id: view.name,
+      name: view.name,
+      tier: 'installed',
+      description: 'Retired expansion artifacts requiring manual repair',
+      activation: 'remove-catalog',
+      status: 'installed-not-active',
+      version: view.version ?? 'unknown',
+      lastError:
+        'This retired expansion id is unsafe or reserved, so Coral cannot provide an executable cleanup command. Preserve Coral state and report this entry for repair; do not construct or run a cleanup command.',
+    });
+  }
+
+  const cleanupCommand = `coral-cli expansion remove-catalog ${view.name}`;
+  return catalogEntrySchema.parse({
+    id: view.name,
+    name: view.name,
+    tier: 'installed',
+    description: 'Retired expansion artifacts awaiting operator cleanup',
+    activation: 'remove-catalog',
+    status: 'installed-not-active',
+    version: view.version ?? 'unknown',
+    cleanupCommand,
+    lastError: view.lastError ?? `Retired expansion artifacts remain. Run '${cleanupCommand}' to remove them.`,
   });
 }
 
@@ -265,12 +296,23 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const passive = await lowLevel.readExpansionStatus();
         const expansionByName =
           passive.status === 'available' ? new Map(passive.expansions.map((entry) => [entry.name, entry])) : new Map();
+        const currentIds = new Set([
+          ...catalog.map((entry) => entry.id),
+          ...INSTALL_ONLY_PACKAGES.map((entry) => entry.id),
+        ]);
+        const retiredResidue =
+          passive.status === 'available'
+            ? passive.expansions
+                .filter((entry) => !currentIds.has(entry.name))
+                .map((entry) => toRetiredResidueCatalogEntry(entry))
+            : [];
 
         return catalogResultSchema.parse({
           status: 'catalog',
           packages: [
             ...catalog.map((entry) => toCatalogEntry(entry, runtime, expansionByName.get(entry.id) ?? null)),
             ...INSTALL_ONLY_PACKAGES.map((manifest) => toInstallOnlyCatalogEntry(manifest, runtime)),
+            ...retiredResidue,
           ],
         });
       } catch (error: unknown) {
@@ -289,6 +331,15 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const catalog = readExpansionCatalog(runtime);
         const entry = resolveCatalogManifest(catalog, name);
         if (!entry) {
+          const passive = await lowLevel.readExpansionStatus(name);
+          const retired =
+            passive.status === 'available' ? passive.expansions.find((view) => view.name === name) : undefined;
+          if (retired !== undefined) {
+            return infoResultSchema.parse({
+              status: 'info',
+              package: toRetiredResidueCatalogEntry(retired),
+            });
+          }
           return unknownExpansionResponse(name);
         }
 

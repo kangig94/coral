@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { enginePaths } from '#src/infra/path/engine.js';
+import { resolveInstallOnlyManifest } from '#src/expansion/install-only.js';
 import { installResponseSchema } from '#src/expansion/rpc-contract.js';
 import { inspectExpansionInstallState, installExpansion, uninstallExpansion } from '#src/cli/expansion/install.js';
 import { createDeferred } from '#tools/testing/deferred.js';
@@ -236,6 +237,87 @@ describe('install-only codebase-memory', () => {
     });
     expect((await first).status).toBe('installed');
   });
+
+  it('rechecks installed state after a concurrent direct install releases the package lock', async () => {
+    const fixture = createFixture();
+    const runtime = createRuntimeForFixture(fixture);
+    const installer = resolveInstallOnlyManifest(PACKAGE)?.installer;
+    if (installer === undefined) {
+      throw new Error('expected install-only package');
+    }
+    const firstEntered = createDeferred<void>();
+    const finishFirst = createDeferred<void>();
+    const exec = vi.spyOn(runtime.process, 'exec').mockImplementation(async (_command, args) => {
+      firstEntered.resolve();
+      await finishFirst.promise;
+      writeFileSync(join(extractDir(args[1] ?? ''), BINARY), 'binary');
+      return { stdout: '', stderr: '', status: 0 };
+    });
+    const options = { name: PACKAGE, version: 'latest', runtime, lockTimeoutMs: 1000 };
+
+    const first = installer.install(options);
+    await firstEntered.promise;
+    const second = installer.install(options);
+    finishFirst.resolve();
+
+    await expect(first).resolves.toMatchObject({ status: 'installed' });
+    await expect(second).resolves.toMatchObject({ status: 'already_installed' });
+    expect(exec).toHaveBeenCalledOnce();
+  });
+
+  it('waits for a concurrent direct install before deciding whether to uninstall', async () => {
+    const fixture = createFixture();
+    const runtime = createRuntimeForFixture(fixture);
+    const installer = resolveInstallOnlyManifest(PACKAGE)?.installer;
+    if (installer === undefined) {
+      throw new Error('expected install-only package');
+    }
+    const installEntered = createDeferred<void>();
+    const finishInstall = createDeferred<void>();
+    vi.spyOn(runtime.process, 'exec').mockImplementation(async (_command, args) => {
+      const shellCommand = args[1] ?? '';
+      if (shellCommand.includes('install.sh')) {
+        installEntered.resolve();
+        await finishInstall.promise;
+        writeFileSync(join(extractDir(shellCommand), BINARY), 'binary');
+      }
+      return { stdout: '', stderr: '', status: 0 };
+    });
+    const options = { name: PACKAGE, version: 'latest', runtime, lockTimeoutMs: 1000 };
+
+    const installing = installer.install(options);
+    await installEntered.promise;
+    const uninstalling = installer.uninstall(options);
+    finishInstall.resolve();
+
+    await expect(installing).resolves.toMatchObject({ status: 'installed' });
+    await expect(uninstalling).resolves.toMatchObject({ status: 'uninstalled' });
+    expect(pathExists(dataDir(fixture.baseDir))).toBe(false);
+  });
+
+  it.each(['install', 'uninstall'] as const)(
+    'rejects a foreign identity before direct %s can touch package storage',
+    async (operation) => {
+      const fixture = createFixture();
+      const runtime = createRuntimeForFixture(fixture);
+      const installer = resolveInstallOnlyManifest(PACKAGE)?.installer;
+      if (installer === undefined) {
+        throw new Error('expected install-only package');
+      }
+      const exec = vi.spyOn(runtime.process, 'exec');
+      const foreignDir = runtime.paths.coral.engine.dataDir('foreign-package');
+
+      await expect(
+        installer[operation]({
+          name: 'foreign-package',
+          version: 'latest',
+          runtime,
+        }),
+      ).rejects.toThrow(/identity mismatch/u);
+      expect(exec).not.toHaveBeenCalled();
+      expect(pathExists(foreignDir)).toBe(false);
+    },
+  );
 
   it('inspects installed state from the binary presence', async () => {
     const fixture = createFixture();

@@ -43,7 +43,7 @@ describe('loadExpansions', () => {
         {
           id: 'alpha',
           version: '0.0.0',
-          specifier: toDataModule("export default (host) => { host.bind('kb.vector', 'needle'); }"),
+          specifier: toDataModule("export default (host) => { host.bind('kb.vector', 'vector'); }"),
           tier: 'installed',
           description: 'alpha',
           fills: [KB_VECTOR_CAPABILITY],
@@ -52,7 +52,7 @@ describe('loadExpansions', () => {
           id: 'beta',
           version: '0.0.0',
           specifier: toDataModule(
-            "export default (host) => { host.bind('kb.fts', 'needle-fts'); throw new Error('boom'); }",
+            "export default (host) => { host.bind('kb.fts', 'vector-fts'); throw new Error('boom'); }",
           ),
           tier: 'installed',
           description: 'beta',

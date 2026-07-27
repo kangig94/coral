@@ -44,7 +44,14 @@ function toDeclarativeManifest(manifest: EngineManifest): EngineManifest {
 
 function parsePersistedManifest(row: ManifestCatalogRow): EngineManifest {
   try {
-    return parseDeclarativeEngineManifest(JSON.parse(row.manifest_json) as unknown);
+    const manifest = parseDeclarativeEngineManifest(JSON.parse(row.manifest_json) as unknown);
+    if (manifest.id !== row.id) {
+      throw new Error(`row id '${row.id}' does not match manifest id '${manifest.id}'`);
+    }
+    if (manifest.tier !== 'installed') {
+      throw new Error(`persisted manifest '${row.id}' must have tier 'installed'`);
+    }
+    return manifest;
   } catch (error) {
     throw new Error(`Invalid expansion manifest catalog row '${row.id}'`, { cause: error });
   }
@@ -62,6 +69,7 @@ export class ExpansionManifestCatalog {
   private readonly installed = new Map<string, EngineManifest>();
   private readonly upsertStmt?: Statement<[string, string, string]>;
   private readonly deleteStmt?: Statement<[string]>;
+  private readonly selectInstalledByIdStmt?: Statement<[string], ManifestCatalogRow>;
   private readonly now: () => string;
 
   constructor(options: ExpansionManifestCatalogOptions = {}) {
@@ -84,15 +92,19 @@ export class ExpansionManifestCatalog {
         `,
       );
       this.deleteStmt = db.prepare<[string]>('DELETE FROM expansion_manifest_catalog WHERE id = ?');
+      this.selectInstalledByIdStmt = db.prepare<[string], ManifestCatalogRow>(
+        'SELECT id, manifest_json, updated_at FROM expansion_manifest_catalog WHERE id = ?',
+      );
     }
 
     const readDb = options.readDb ?? options.db;
     if (readDb !== undefined) {
       for (const row of readRows(readDb)) {
+        const manifest = parsePersistedManifest(row);
         if (this.staticIds.has(row.id)) {
-          continue;
+          throw new Error(`Persisted expansion manifest '${row.id}' collides with a static catalog entry`);
         }
-        this.installed.set(row.id, parsePersistedManifest(row));
+        this.installed.set(row.id, manifest);
       }
     }
   }
@@ -138,9 +150,24 @@ export class ExpansionManifestCatalog {
     return this.staticIds.has(id);
   }
 
+  hasCurrentEntry(id: string): boolean {
+    if (this.staticIds.has(id)) {
+      return true;
+    }
+    const row = this.selectInstalledByIdStmt?.get(id);
+    if (row === undefined) {
+      return this.selectInstalledByIdStmt === undefined && this.installed.has(id);
+    }
+    parsePersistedManifest(row);
+    return true;
+  }
+
   upsertInstalledEntry(manifest: EngineManifest): EngineManifest {
     if (this.staticIds.has(manifest.id)) {
-      return this.getManifest(manifest.id) ?? manifest;
+      throw new Error(`Installed expansion manifest '${manifest.id}' collides with a static catalog entry`);
+    }
+    if (manifest.tier !== 'installed') {
+      throw new Error(`Installed expansion manifest '${manifest.id}' must have tier 'installed'`);
     }
     const declarative = toDeclarativeManifest(manifest);
     this.installed.set(declarative.id, declarative);

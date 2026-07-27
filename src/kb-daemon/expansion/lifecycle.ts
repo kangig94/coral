@@ -10,6 +10,7 @@ import { AbortError, throwIfAborted } from '../../runtime/abort.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Disposable } from '../../runtime/ports.js';
 import { validateManifestCompleteness } from '../../expansion/manifest/completeness.js';
+import { assertExpansionPackageId, validateExpansionPackageId } from '../../expansion/package-id.js';
 import type { EngineManifestProvides } from '../../expansion/contract.js';
 import type { ExpansionManifestCatalog } from '../../expansion/manifest/catalog.js';
 import { LIFECYCLE_BUNDLED_LOADERS } from './bundled-loaders.js';
@@ -78,6 +79,9 @@ export interface ExpansionLifecycleServiceOptions {
    * disposing it.
    */
   readonly getLifecyclePhase?: () => CoordinatorLifecyclePhase;
+  /** Current non-manifest package ids that must never enter retirement. */
+  readonly protectedPackageIds?: ReadonlySet<string>;
+  readonly retireCatalogAbsent?: (name: string, finalizeState: () => void) => Promise<'current' | 'removed'>;
 }
 
 function asError(error: unknown): Error {
@@ -131,6 +135,7 @@ export class ExpansionLifecycleService {
     if (entry.tier === 'bundled') {
       throw documentedCoralSetupError('expansion_bundled_immutable', { name });
     }
+    assertExpansionPackageId(entry.id);
 
     // Phase fence BEFORE any async work — refuse new equips while the
     // coordinator is draining or stopped. Past the fence, the equip runs to
@@ -178,10 +183,15 @@ export class ExpansionLifecycleService {
     if (!scopes && !row && !failed) {
       throw documentedCoralSetupError('expansion_not_equipped', { name });
     }
-
-    if (entry !== undefined) {
-      this.assertNoActiveDependents(entry);
+    if (entry === undefined) {
+      const packageId = validateExpansionPackageId(name);
+      if (!packageId.ok) {
+        throw documentedCoralSetupError('retired_expansion_id_invalid', { name, reason: packageId.reason });
+      }
+      throw documentedCoralSetupError('retired_expansion_cleanup_required', { name });
     }
+
+    this.assertNoActiveDependents(entry);
 
     if (scopes && scopes.length > 0) {
       // LIFO disposal of chained scopes for this engine.
@@ -200,7 +210,17 @@ export class ExpansionLifecycleService {
   private async removeExpansionCatalogLocked(name: string): Promise<RemoveExpansionCatalogResult> {
     const entry = this.manifestEntries().find((candidate) => candidate.id === name);
     if (entry === undefined) {
-      throw documentedCoralSetupError('unknown_expansion', { name });
+      if (this.options.protectedPackageIds?.has(name) === true || this.options.retireCatalogAbsent === undefined) {
+        return { status: 'unknown' };
+      }
+      const retirement = await this.options.retireCatalogAbsent(name, () => {
+        this.options.state.delete(name);
+      });
+      if (retirement === 'current') {
+        return { status: 'unknown' };
+      }
+      this.failedRecovery.delete(name);
+      return { status: 'removed' };
     }
 
     const isStatic =
@@ -296,9 +316,17 @@ export class ExpansionLifecycleService {
     for (const row of orderedRows) {
       const entry = manifestById.get(row.id);
       if (!entry) {
-        this.options.state.delete(row.id);
-        this.failedRecovery.delete(row.id);
-        backendLog.warn(`Orphan expansion row '${row.id}' deleted; expansion no longer in the manifest catalog`);
+        const packageId = validateExpansionPackageId(row.id);
+        if (!packageId.ok) {
+          const remediation =
+            'This retired expansion id is unsafe or reserved, so Coral cannot provide an executable cleanup command. Preserve Coral state and report this entry for repair; do not construct or run a cleanup command.';
+          this.failedRecovery.set(row.id, new Error(remediation));
+          backendLog.warn(`Retired expansion row with an unsafe or reserved id was preserved. ${remediation}`);
+          continue;
+        }
+        const remediation = `Run 'coral-cli expansion remove-catalog ${row.id}' to remove retired expansion artifacts.`;
+        this.failedRecovery.set(row.id, new Error(remediation));
+        backendLog.warn(`Retired expansion row '${row.id}' preserved. ${remediation}`);
         continue;
       }
 

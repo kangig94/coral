@@ -10,7 +10,6 @@ import { type createKbRuntime } from '#src/kb/runtime.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { update } from '#src/kb/ops/update.js';
-import { NEEDLE_CONSUMER_ID } from '#src/engines/needle/contract.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
@@ -18,6 +17,8 @@ import type { KbCorpusSnapshot } from '#src/kb/contract.js';
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import type { CorpusConsumerRegistration } from '#src/store/consumer-contract.js';
+
+const VECTOR_FIXTURE_CONSUMER_ID = 'vector-fixture';
 
 function createNotifyCorpusMutation(driver: ConsumerDriver) {
   return async (publication: { snapshot: KbCorpusSnapshot; changedLanes: readonly ('content' | 'metadata')[] }) => {
@@ -107,7 +108,7 @@ function readCursor(db: Database, consumerId: string): KbCorpusSnapshot {
 
 function createProjectionTable(db: Database): void {
   db.exec(`
-    CREATE TABLE IF NOT EXISTS test_needle_projection (
+    CREATE TABLE IF NOT EXISTS test_vector_fixture_projection (
       snapshot_id TEXT PRIMARY KEY,
       content_seq INTEGER NOT NULL,
       metadata_seq INTEGER NOT NULL,
@@ -129,14 +130,14 @@ function listProjectionRows(db: Database): ProjectionRow[] {
           content_manifest_hash,
           metadata_manifest_hash,
           applied_by
-          FROM test_needle_projection
+          FROM test_vector_fixture_projection
          ORDER BY snapshot_id
       `,
     )
     .all() as ProjectionRow[];
 }
 
-function createNeedleConsumer(options: {
+function createVectorFixtureConsumer(options: {
   db: Database;
   appliedBy: string;
   applyCalls: Array<{ appliedBy: string; snapshotId: string }>;
@@ -144,7 +145,7 @@ function createNeedleConsumer(options: {
   gate?: Deferred<void>;
 }): CorpusConsumerRegistration {
   return {
-    id: NEEDLE_CONSUMER_ID,
+    id: VECTOR_FIXTURE_CONSUMER_ID,
     authority: 'corpus',
     kind: 'apply',
     registrationKind: 'expansion',
@@ -153,7 +154,7 @@ function createNeedleConsumer(options: {
       options.db
         .prepare(
           `
-          INSERT INTO test_needle_projection (
+          INSERT INTO test_vector_fixture_projection (
             snapshot_id,
             content_seq,
             metadata_seq,
@@ -218,7 +219,7 @@ describe('Corpus notify crash replay', () => {
 
     try {
       primaryDriver.register(
-        createNeedleConsumer({
+        createVectorFixtureConsumer({
           db: primaryDb,
           appliedBy: 'pre-crash',
           applyCalls,
@@ -255,7 +256,7 @@ describe('Corpus notify crash replay', () => {
       expect(latest.snapshotId).not.toBe('');
       expect(latest.contentSeq).toBe(1);
 
-      expect(readCursor(primaryDb, NEEDLE_CONSUMER_ID)).toEqual({
+      expect(readCursor(primaryDb, VECTOR_FIXTURE_CONSUMER_ID)).toEqual({
         snapshotId: '',
         contentSeq: 0,
         metadataSeq: 0,
@@ -280,21 +281,21 @@ describe('Corpus notify crash replay', () => {
         now: () => new Date(BASE_UPDATED_AT),
       });
       replayDriver.register(
-        createNeedleConsumer({
+        createVectorFixtureConsumer({
           db: replayDb,
           appliedBy: 'startup-replay',
           applyCalls,
         }),
       );
 
-      expect(readCursor(replayDb, NEEDLE_CONSUMER_ID)).toEqual({
+      expect(readCursor(replayDb, VECTOR_FIXTURE_CONSUMER_ID)).toEqual({
         snapshotId: '',
         contentSeq: 0,
         metadataSeq: 0,
         contentManifestHash: '',
         metadataManifestHash: '',
       });
-      expect(readCursor(replayDb, NEEDLE_CONSUMER_ID).snapshotId).not.toBe(latest.snapshotId);
+      expect(readCursor(replayDb, VECTOR_FIXTURE_CONSUMER_ID).snapshotId).not.toBe(latest.snapshotId);
 
       firstApplyGate.reject(new Error('simulated coordinator kill before apply completion'));
       await primaryDriver.drainAll();
@@ -302,7 +303,7 @@ describe('Corpus notify crash replay', () => {
       replayDriver.notifyCorpus(readCorpusState(replayDb));
       await replayDriver.drainAll();
 
-      expect(readCursor(replayDb, NEEDLE_CONSUMER_ID)).toEqual(latest);
+      expect(readCursor(replayDb, VECTOR_FIXTURE_CONSUMER_ID)).toEqual(latest);
       expect(listProjectionRows(replayDb)).toEqual([
         {
           snapshot_id: latest.snapshotId,
@@ -325,7 +326,10 @@ describe('Corpus notify crash replay', () => {
         { appliedBy: 'startup-replay', snapshotId: latest.snapshotId },
       ]);
 
-      expect(errorSpy).toHaveBeenCalledWith(`ConsumerDriver apply failed (${NEEDLE_CONSUMER_ID})`, expect.any(Error));
+      expect(errorSpy).toHaveBeenCalledWith(
+        `ConsumerDriver apply failed (${VECTOR_FIXTURE_CONSUMER_ID})`,
+        expect.any(Error),
+      );
     } finally {
       firstApplyGate.reject(new Error('test cleanup'));
       await replayDriver?.shutdown();

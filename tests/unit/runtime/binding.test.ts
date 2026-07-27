@@ -6,13 +6,13 @@ import type { Disposable } from '#src/runtime/ports.js';
 describe('createRuntimeBinding', () => {
   it('binds and reads the bound value', () => {
     const binding = createRuntimeBinding<string>('kb.vector');
-    binding.bind('needle', { [Symbol.dispose]() {} }, 'needle');
-    expect(binding.read()).toBe('needle');
+    binding.bind('vector', { [Symbol.dispose]() {} }, 'vector');
+    expect(binding.read()).toBe('vector');
   });
 
   it('throws binding_occupied with heldBy on double bind', () => {
     const binding = createRuntimeBinding<string>('kb.vector');
-    binding.bind('needle', { [Symbol.dispose]() {} }, 'needle');
+    binding.bind('vector', { [Symbol.dispose]() {} }, 'vector');
     let thrown: unknown;
     try {
       binding.bind('other', { [Symbol.dispose]() {} }, 'other');
@@ -22,7 +22,7 @@ describe('createRuntimeBinding', () => {
     expect(thrown).toBeInstanceOf(CoralSetupError);
     expect(thrown).toMatchObject({
       code: 'binding_occupied',
-      context: { binding: 'kb.vector', heldBy: 'needle' },
+      context: { binding: 'kb.vector', heldBy: 'vector' },
     });
   });
 
@@ -34,7 +34,7 @@ describe('createRuntimeBinding', () => {
         disposeCalls += 1;
       },
     };
-    binding.bind('needle', scope, 'needle');
+    binding.bind('vector', scope, 'vector');
     scope[Symbol.dispose]();
     expect(disposeCalls).toBe(1);
     expect(binding.heldBy).toBeUndefined();

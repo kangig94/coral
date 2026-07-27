@@ -52,7 +52,6 @@ const PROVIDERS_ROOT = 'src/providers';
 const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
 const STORE_QUERIES_ROOT = 'src/store/queries';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
-const NEEDLE_BACKEND_TARGET = 'src/engines/needle/backend.ts';
 const SESSION_FAULT_EVENTS = 'src/sessions/event-builders.ts';
 const COORDINATOR_TERMINAL_MATERIALIZER = 'src/coordinator/services/terminal-materializer.ts';
 const JOBS_TERMINAL_RECORDING = 'src/jobs/terminal/recording.ts';
@@ -524,18 +523,6 @@ describe('architecture boundary guard', () => {
 
     assertNoViolations(violations);
   });
-  it('needle backend is loaded only through the needle expansion module', () => {
-    expect(PARSED_IMPORT_EDGES.filter((edge) => edge.target === NEEDLE_BACKEND_TARGET)).toEqual([
-      {
-        source: 'src/engines/needle/expansion.ts',
-        specifier: './backend.js',
-        target: NEEDLE_BACKEND_TARGET,
-        via: 'ImportDeclaration',
-        runtime: true,
-        typeOnly: false,
-      },
-    ]);
-  });
   it('providers may not import jobs shell modules', () => {
     const violations = collectViolations(
       PROVIDERS_ROOT,
@@ -869,8 +856,8 @@ describe('architecture boundary guard', () => {
       })
       .sort();
     // Threshold guard: an empty match would silently pass the per-file loop
-    // below. The catalog ships at least three first-party expansions
-    // (gemini, onnx, needle) — if any are missing, the filter is broken.
+    // below. The catalog ships three first-party expansions (gemini, onnx,
+    // orama) — if any are missing, the filter is broken.
     expect(expansionFiles.length).toBeGreaterThanOrEqual(3);
     const violations: string[] = [];
 
@@ -958,47 +945,6 @@ describe('architecture boundary guard', () => {
     }
 
     expect(violations).toEqual([]);
-  });
-  it('needle expansion keeps embedder access structural and free of captured concrete fallbacks', () => {
-    const source = readFileSync(resolve(REPO_ROOT, 'src/engines/needle/expansion.ts'), 'utf8');
-    const sourceFile = ts.createSourceFile(
-      resolve(REPO_ROOT, 'src/engines/needle/expansion.ts'),
-      source,
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TS,
-    );
-    const importedNames = sourceFile.statements.filter(ts.isImportDeclaration).flatMap((statement) => {
-      const clause = statement.importClause;
-      if (!clause) {
-        return [];
-      }
-
-      const names: string[] = [];
-      if (clause.name) {
-        names.push(clause.name.text);
-      }
-      const bindings = clause.namedBindings;
-      if (bindings && ts.isNamedImports(bindings)) {
-        names.push(...bindings.elements.map((element) => element.name.text));
-      }
-      if (bindings && ts.isNamespaceImport(bindings)) {
-        names.push(bindings.name.text);
-      }
-      return names;
-    });
-
-    expect(importedNames).not.toContain('createEmbeddingProvider');
-    expect(importedNames).not.toContain('GeminiEmbeddingProvider');
-    expect(importedNames).not.toContain('OpenAICompatibleProvider');
-    expect(importedNames).not.toContain('LocalOnnxProvider');
-    expect(source).not.toMatch(/\bcreateEmbeddingProvider\b/u);
-    expect(source).not.toMatch(/\bGEMINI_API_KEY\b/u);
-    expect(source).not.toMatch(/\bGeminiEmbeddingProvider\b/u);
-    expect(source).not.toMatch(/\bOpenAICompatibleProvider\b/u);
-    expect(source).not.toMatch(/\bLocalOnnxProvider\b/u);
-    expect(source).not.toMatch(/['"]gemini['"]/u);
-    expect(source).toMatch(/host\.require\(KB_EMBEDDING_CAPABILITY\)/u);
   });
   it('kb domain modules do not compose runtimes or load engines', () => {
     // Composition (`createRealRuntime`, `createExpansionHost`, `createScope`)
@@ -1097,7 +1043,7 @@ describe('architecture boundary guard', () => {
       // Includes:
       //   - src/expansion/**         — the Expansion contract surface itself
       //   - src/**/expansion.ts      — every Expansion entry-point module
-      // Excludes the entry-point file's siblings (e.g., needle/backend.ts) —
+      // Excludes entry-point siblings (for example, an engine backend) —
       // those are projection internals, not the Expansion entry. The contract
       // is enforced at the entry; siblings inherit transitively.
       return canonical.startsWith('src/expansion/') || canonical.endsWith('/expansion.ts');
@@ -1168,12 +1114,12 @@ describe('architecture boundary guard', () => {
       collectEngineImportViolations([
         {
           source: 'src/engines/orama/foo.ts',
-          target: 'src/engines/needle/bar.ts',
+          target: 'src/engines/onnx/bar.ts',
           via: 'ImportDeclaration',
-          specifier: '../needle/bar.js',
+          specifier: '../onnx/bar.js',
         },
       ]),
-    ).toEqual(['src/engines/orama/foo.ts -> src/engines/needle/bar.ts (ImportDeclaration ../needle/bar.js)']);
+    ).toEqual(['src/engines/orama/foo.ts -> src/engines/onnx/bar.ts (ImportDeclaration ../onnx/bar.js)']);
     expect(
       collectEngineImportViolations([
         {
@@ -1189,7 +1135,7 @@ describe('architecture boundary guard', () => {
   });
 
   it('engine-blind domains carry no engine-id string literals (AC7.2)', () => {
-    // Engine-id literals (`'orama'`, `'needle'`, `'gemini'`, `'onnx'`) leaking
+    // Engine-id literals (`'orama'`, `'gemini'`, `'onnx'`) leaking
     // into KB, coordinator, CLI expansion, infra, or runtime code defeat
     // engine-blindness regardless of whether the leak is wired through an
     // import. Slot names
@@ -1197,13 +1143,18 @@ describe('architecture boundary guard', () => {
     // names (`'corpus'`, `'content'`, `'metadata'`, `'journal'`) remain
     // allowed — they are capability vocabulary, not engine identity.
     const engineBlindScopes = ['src/kb/', 'src/coordinator/', 'src/cli/expansion/', 'src/infra/', 'src/runtime/'];
-    const engineIds = new Set(['orama', 'needle', 'gemini', 'onnx', 'kb-scann']);
+    const engineIds = new Set(['orama', 'gemini', 'onnx', 'kb-scann']);
 
     const violations: string[] = [];
 
     for (const filePath of PRODUCTION_FILE_PATHS) {
       const canonical = toCanonicalSrcPath(REPO_ROOT, filePath);
       if (!engineBlindScopes.some((scope) => canonical.startsWith(scope))) {
+        continue;
+      }
+      // The top-level KB reservation authority intentionally records the
+      // exact Orama-owned directory so retirement can reject that path.
+      if (canonical === 'src/runtime/kb-runtime-authority.ts') {
         continue;
       }
 

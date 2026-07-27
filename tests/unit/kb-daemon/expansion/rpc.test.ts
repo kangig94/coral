@@ -9,7 +9,7 @@ describe('createExpansionRpc', () => {
     let active = false;
     const lifecycle = {
       isActive: vi.fn(() => active),
-      has: vi.fn((name: string) => name === 'needle' || name === 'failed'),
+      has: vi.fn((name: string) => name === 'vector' || name === 'failed'),
       equip: vi.fn(async () => {
         active = true;
       }),
@@ -41,38 +41,48 @@ describe('createExpansionRpc', () => {
           lastError: 'boom',
         },
       ]),
-      readBinding: vi.fn(() => ({ bound: true, heldBy: 'needle' })),
+      readBinding: vi.fn(() => ({ bound: true, heldBy: 'vector' })),
       removeExpansionCatalog: vi.fn(async () => ({ status: 'removed' as const })),
     } as unknown as ExpansionLifecycleService;
 
     const rpc = createExpansionRpc(lifecycle);
     const principal = testPrincipal({ transport: 'kb-daemon' });
 
-    await expect(rpc.equipExpansion({ name: 'needle' }, principal)).resolves.toEqual({
+    await expect(rpc.equipExpansion({ name: 'vector' }, principal)).resolves.toEqual({
       status: 'equipped',
       expansion: {
-        name: 'needle',
+        name: 'vector',
+        version: '0.2.0',
         tier: 'installed',
         status: 'equipped',
       },
     });
-    await expect(rpc.equipExpansion({ name: 'needle' }, principal)).resolves.toEqual({
+    await expect(rpc.equipExpansion({ name: 'vector' }, principal)).resolves.toEqual({
       status: 'already_equipped',
       expansion: {
-        name: 'needle',
+        name: 'vector',
+        version: '0.2.0',
         tier: 'installed',
         status: 'equipped',
       },
     });
-    await expect(rpc.unequipExpansion({ name: 'needle' }, principal)).resolves.toEqual({ status: 'uninstalled' });
+    await expect(rpc.unequipExpansion({ name: 'vector' }, principal)).resolves.toEqual({ status: 'uninstalled' });
     await expect(rpc.unequipExpansion({ name: 'missing' }, principal)).resolves.toEqual({ status: 'not_equipped' });
-    await expect(rpc.removeExpansionCatalog({ name: 'needle' }, principal)).resolves.toEqual({ status: 'removed' });
+    await expect(rpc.removeExpansionCatalog({ name: 'vector' }, principal)).resolves.toEqual({ status: 'removed' });
     await expect(rpc.listExpansion({}, principal)).resolves.toEqual({
-      expansions: [{ name: 'failed', tier: 'installed', status: 'installed-not-active', lastError: 'boom' }],
+      expansions: [
+        {
+          name: 'failed',
+          version: '0.2.0',
+          tier: 'installed',
+          status: 'installed-not-active',
+          lastError: 'boom',
+        },
+      ],
     });
     await expect(rpc.readBinding({ binding: 'kb.vector' }, principal)).resolves.toEqual({
       bound: true,
-      heldBy: 'needle',
+      heldBy: 'vector',
     });
   });
 });

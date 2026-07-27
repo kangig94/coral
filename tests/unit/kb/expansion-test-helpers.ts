@@ -183,7 +183,7 @@ export function createCorpusHandle(
   };
 
   return {
-    id: 'mock-needle-handle',
+    id: 'mock-vector-handle',
     registrationKind: 'expansion',
     get lastApplyError() {
       return status.lastApplyError;
@@ -207,7 +207,7 @@ export function bindVectorBacked(runtime: KbRuntime, retrieval: TaggedVectorRetr
     );
 }
 
-export function seedNeedleRouteState(
+export function seedVectorRouteState(
   db: { prepare: (...args: any[]) => { run: (...params: any[]) => unknown } },
   snapshot: {
     snapshotId: string;

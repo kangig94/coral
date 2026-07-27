@@ -15,7 +15,7 @@ Install and configure Coral companion tooling for Claude Code.
 - `/equip --update <pkg>` -> `coral-cli expansion update <pkg>`
 - `/equip uninstall <pkg>` -> `coral-cli expansion unequip <pkg>`
 - `/equip info <pkg>` -> `coral-cli expansion info <pkg>`
-- Internal catalog-removal diagnostics map to `coral-cli expansion remove-catalog <pkg>` when that CLI surface is exposed.
+- `/equip` retired-residue cleanup diagnostics map to the public `coral-cli expansion remove-catalog <pkg>` command.
 
 ## Runtime Model
 
@@ -47,7 +47,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 | status    | Action |
 |-----------|--------|
-| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, `provides` when present, translated `activation`, `status`, and `statusDescription` when present. Render `provides` as sibling collections: `provides.capabilities` as a comma-separated capability label/name list and `provides.retrievalRoles` as a comma-separated role label list, for example `provides: capabilities=[Text (FTS), Vector (Semantic)]; retrievalRoles=[Text, Vector, Graph]`. Do not group capabilities by `typeTag`; it is opaque metadata |
+| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, `provides` when present, translated `activation`, `status`, `statusDescription` when present, and `cleanupCommand` when present. Render `provides` as sibling collections: `provides.capabilities` as a comma-separated capability label/name list and `provides.retrievalRoles` as a comma-separated role label list, for example `provides: capabilities=[Text (FTS), Vector (Semantic)]; retrievalRoles=[Text, Vector, Graph]`. Do not group capabilities by `typeTag`; it is opaque metadata |
 | `info`    | Show the single package entry using the same package-status routing table below, including `tier`, `fills`/`slot` when present, `provides` when present using the same sibling collection rendering as catalog rows, and the translated `activation` label |
 | `error`   | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
@@ -57,7 +57,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 |------------------------------|-----------------------------------------------------------------|
 | `equipped`                   | Active in the coordinator                                       |
 | `catching_up`                | Registered and replaying the corpus                             |
-| `installed-not-active`       | Installed, but boot recovery failed. Check the last error and satisfy missing dependencies before retrying `/equip <name>` |
+| `installed-not-active`       | If `activation` is `remove-catalog`, this is residue from a retired expansion: recommend its exact `cleanupCommand` only when that field is present; when absent, show `lastError` and do not construct or run a cleanup command. Otherwise boot recovery failed, so check the last error and satisfy missing dependencies before retrying `/equip <name>` |
 | `inactive`                   | Installed but not registered. Run `/equip <name>` to reactivate |
 | `unavailable`                | Required local artifact missing or coordinator unreachable. Run `/equip <name>` to repair or reactivate |
 | `disabled_pending_reinstall` | Load failed. Run `/equip <name>` to reinstall                   |
@@ -69,15 +69,18 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 5. When rendering `activation`, translate internally:
    - `activation: 'equip'` -> `Active in Coordinator`
    - `activation: 'none'` -> `Install-only (use directly via the installed path)`
+   - `activation: 'remove-catalog'` -> `Retired expansion residue (run the exact cleanupCommand only when provided; otherwise follow lastError without constructing a command)`
 6. For bundled engines, do not suggest `/equip <name>` or `/equip uninstall <name>` as a repair action. These verbs return `expansion_bundled_immutable`; use `expansion list` to inspect status.
 7. Ask the user which package to install.
 
 ### `<package>`
 
-0. **Consent gate for install-only packages.** Unless you already know the package's `activation` from a prior `--list`/`info` in this session, run `coral-cli expansion info <package>` first. If `activation` is `'none'` (install-only), equipping it runs the package's own install script through your shell (typically `curl … | bash`) — code Coral fetches from a remote host and executes. Tell the user the package id and that equipping will download and run a remote install script, then ask them to confirm. If they decline, stop without running equip. (Engine packages — `activation: 'equip'` — need no extra prompt; proceed directly.) The install runs synchronously and its script output is not streamed back — only the final status returns — so tell the user it may take up to a minute before reporting.
-1. Bash(`coral-cli expansion equip <package>`)
-2. Parse the single-line JSON result.
-3. Route by `status`:
+0. Unless you already know the package's `activation` from a prior `--list`/`info` in this session, run `coral-cli expansion info <package>` first.
+1. **Retired residue gate.** If `activation` is `'remove-catalog'`, do not run `expansion equip`. When `cleanupCommand` is present, show that exact command, ask the user to confirm cleanup, and on confirmation run only Bash(`<exact cleanupCommand>`), parse its single-line JSON result, and stop. Never interpolate or reconstruct this command. When `cleanupCommand` is absent, show `lastError` and stop without running any command.
+2. **Consent gate for install-only packages.** If `activation` is `'none'`, equipping runs the package's own install script through your shell (typically `curl … | bash`) — code Coral fetches from a remote host and executes. Tell the user the package id and that equipping will download and run a remote install script, then ask them to confirm. If they decline, stop without running equip. (Engine packages — `activation: 'equip'` — need no extra prompt; proceed directly.) The install runs synchronously and its script output is not streamed back — only the final status returns — so tell the user it may take up to a minute before reporting.
+3. Bash(`coral-cli expansion equip <package>`)
+4. Parse the single-line JSON result.
+5. Route by `status`:
 
 | status               | Action                                                                                                           |
 |----------------------|------------------------------------------------------------------------------------------------------------------|
@@ -90,11 +93,11 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 | `already_equipped`   | Inform the user the expansion is already active                                                                  |
 | `error`              | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
-4. Onboarding runs inside `coral-cli expansion equip <package>` before install/activate:
+6. Onboarding runs inside `coral-cli expansion equip <package>` before install/activate:
    - `engine_env_var_missing`: show the missing `envVar` and remediation exactly. Do not suggest restart/retry loops.
    - `binding_required`: show `suggestions` when present; otherwise show candidate ids from `context.candidates` when present. The user should equip one engine that fills the missing binding, then retry the original package.
    - `user_cancelled`: stop without retrying automatically.
-5. Do not run `coral-cli expansion equip <package>` a second time unless the user has changed the missing setup state or equipped a required peer engine.
+7. Do not run `coral-cli expansion equip <package>` a second time unless the user has changed the missing setup state or equipped a required peer engine.
 
 ### `--update <package>`
 
@@ -117,7 +120,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 1. Bash(`coral-cli expansion info <package>`)
 2. Parse the single-line JSON result.
-3. Show the status and, when returned, the package `tier`, `provides.capabilities`, `addonPath`, installed `command`, `userMessage`, and `remediation`. Treat an error result as terminal.
+3. Show the status and, when returned, the package `tier`, `provides.capabilities`, `addonPath`, installed `command`, retired-residue `cleanupCommand`, `userMessage`, and `remediation`. Treat an error result as terminal.
 
 ### `uninstall <equipment-name>`
 

@@ -73,7 +73,8 @@ Commands:
   equip <name>           Install or activate an expansion
   unequip <name>         Remove an expansion from the coordinator catalog and
                          local install
-  remove-catalog <name>  Remove an installed expansion catalog entry
+  remove-catalog <name>  Remove a catalog entry or clean up artifacts from a
+                         retired expansion
   update <name>          Update an installed expansion
   info <name>            Show expansion metadata and install state
   help [command]         display help for command

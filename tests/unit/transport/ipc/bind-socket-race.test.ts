@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import type * as NodeFs from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 function errno(code: string): NodeJS.ErrnoException {
@@ -41,16 +42,43 @@ describe('bindSocket stale-clear race', () => {
     const lockDirs = new Set<string>();
     const lockFiles = new Set<string>();
     const mkdirSync = vi.fn((path: string) => {
-      if (path.endsWith('.clear.lock') && lockDirs.has(path)) {
+      if (path.includes('.clear.lock') && lockDirs.has(path)) {
         throw errno('EEXIST');
       }
-      if (path.endsWith('.clear.lock')) {
+      if (path.includes('.clear.lock')) {
         lockDirs.add(path);
       }
     });
     const unlinkSync = vi.fn();
     const writeFileSync = vi.fn((path: string) => {
       lockFiles.add(path);
+    });
+    const readdirSync = vi.fn((path: string) =>
+      [...lockFiles].filter((file) => file.startsWith(`${path}/`)).map((file) => file.slice(path.length + 1)),
+    );
+    const renameSync = vi.fn((oldPath: string, newPath: string) => {
+      if (lockFiles.delete(oldPath)) {
+        if (lockFiles.has(newPath)) {
+          lockFiles.add(oldPath);
+          throw errno('EEXIST');
+        }
+        lockFiles.add(newPath);
+        return;
+      }
+      if (!lockDirs.delete(oldPath)) {
+        throw errno('ENOENT');
+      }
+      if (lockDirs.has(newPath)) {
+        lockDirs.add(oldPath);
+        throw errno('EEXIST');
+      }
+      lockDirs.add(newPath);
+      for (const file of [...lockFiles]) {
+        if (file.startsWith(`${oldPath}/`)) {
+          lockFiles.delete(file);
+          lockFiles.add(`${newPath}${file.slice(oldPath.length)}`);
+        }
+      }
     });
     const rmSync = vi.fn((path: string) => {
       lockDirs.delete(path);
@@ -68,9 +96,20 @@ describe('bindSocket stale-clear race', () => {
         throw errno('ENOENT');
       }
     });
-    const statSync = vi.fn((path: string) => {
+    const statSync = vi.fn((path: string, options?: { bigint?: true }) => {
       if (!lockDirs.has(path)) {
         throw errno('ENOENT');
+      }
+      if (options?.bigint === true) {
+        return {
+          dev: 1n,
+          ino: 1n,
+          mode: 0n,
+          size: 0n,
+          mtimeNs: BigInt(Date.now()) * 1_000_000n,
+          isDirectory: () => true,
+          isFile: () => false,
+        };
       }
       return { size: 0, mtimeMs: Date.now(), isDirectory: () => true, isFile: () => false };
     });
@@ -81,9 +120,12 @@ describe('bindSocket stale-clear race', () => {
       return socket;
     });
 
-    vi.doMock('node:fs', () => ({
+    vi.doMock('node:fs', async (importOriginal) => ({
+      ...(await importOriginal<typeof NodeFs>()),
       chmodSync,
       mkdirSync,
+      readdirSync,
+      renameSync,
       rmSync,
       rmdirSync,
       statSync,
@@ -159,10 +201,10 @@ describe('bindSocket stale-clear race', () => {
 
     const chmodSync = vi.fn();
     const mkdirSync = vi.fn((path: string) => {
-      if (path.endsWith('.clear.lock') && lockDirs.has(path)) {
+      if (path.includes('.clear.lock') && lockDirs.has(path)) {
         throw errno('EEXIST');
       }
-      if (path.endsWith('.clear.lock')) {
+      if (path.includes('.clear.lock')) {
         lockDirs.add(path);
       }
     });
@@ -181,6 +223,33 @@ describe('bindSocket stale-clear race', () => {
     const writeFileSync = vi.fn((path: string) => {
       lockFiles.add(path);
     });
+    const readdirSync = vi.fn((path: string) =>
+      [...lockFiles].filter((file) => file.startsWith(`${path}/`)).map((file) => file.slice(path.length + 1)),
+    );
+    const renameSync = vi.fn((oldPath: string, newPath: string) => {
+      if (lockFiles.delete(oldPath)) {
+        if (lockFiles.has(newPath)) {
+          lockFiles.add(oldPath);
+          throw errno('EEXIST');
+        }
+        lockFiles.add(newPath);
+        return;
+      }
+      if (!lockDirs.delete(oldPath)) {
+        throw errno('ENOENT');
+      }
+      if (lockDirs.has(newPath)) {
+        lockDirs.add(oldPath);
+        throw errno('EEXIST');
+      }
+      lockDirs.add(newPath);
+      for (const file of [...lockFiles]) {
+        if (file.startsWith(`${oldPath}/`)) {
+          lockFiles.delete(file);
+          lockFiles.add(`${newPath}${file.slice(oldPath.length)}`);
+        }
+      }
+    });
     const rmSync = vi.fn((path: string) => {
       lockDirs.delete(path);
       for (const file of [...lockFiles]) {
@@ -197,9 +266,20 @@ describe('bindSocket stale-clear race', () => {
         throw errno('ENOENT');
       }
     });
-    const statSync = vi.fn((path: string) => {
+    const statSync = vi.fn((path: string, options?: { bigint?: true }) => {
       if (!lockDirs.has(path)) {
         throw errno('ENOENT');
+      }
+      if (options?.bigint === true) {
+        return {
+          dev: 1n,
+          ino: 1n,
+          mode: 0n,
+          size: 0n,
+          mtimeNs: BigInt(Date.now()) * 1_000_000n,
+          isDirectory: () => true,
+          isFile: () => false,
+        };
       }
       return { size: 0, mtimeMs: Date.now(), isDirectory: () => true, isFile: () => false };
     });
@@ -212,9 +292,12 @@ describe('bindSocket stale-clear race', () => {
       return socket;
     });
 
-    vi.doMock('node:fs', () => ({
+    vi.doMock('node:fs', async (importOriginal) => ({
+      ...(await importOriginal<typeof NodeFs>()),
       chmodSync,
       mkdirSync,
+      readdirSync,
+      renameSync,
       rmSync,
       rmdirSync,
       statSync,

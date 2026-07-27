@@ -36,7 +36,11 @@ export type StorageBigIntStat = {
 export interface StoragePort {
   readFile(path: string, encoding: 'utf-8'): Promise<string>;
   readFileSync(path: string, encoding: 'utf-8'): string;
-  writeFileSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): void;
+  writeFileSync(
+    path: string,
+    data: StorageData,
+    options?: { encoding?: BufferEncoding; mode?: number; flag?: string },
+  ): void;
   renameSync(oldPath: string, newPath: string): void;
   mkdirSync(path: string, options?: { recursive?: boolean }): void;
   rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;

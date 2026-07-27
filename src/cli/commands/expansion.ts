@@ -154,7 +154,7 @@ export function registerExpansionCommands(program: Command): void {
 
   expansion
     .command('remove-catalog <name>')
-    .description('Remove an installed expansion catalog entry')
+    .description('Remove a catalog entry or clean up artifacts from a retired expansion')
     .action(async (name: string) => {
       const activation = createCliExpansionActivation();
       await runExpansionCommand({ name }, namedExpansionArgsSchema, async ({ name: parsedName }: NamedExpansionArgs) =>
