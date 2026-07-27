@@ -169,9 +169,9 @@ The metaphor: Link's base sword always works. Finding the bow is exciting becaus
 Two terms describe distinct facets, not synonyms:
 
 - **Engine** = data/source identity, the noun: source under `src/engines/<id>/`, rebuildable local state under `~/.coral/data/engines/<id>/`.
-- **Expansion** = lifecycle pattern + user verb: the coordinator invokes an `Expansion` body under a scope, and users run `coral-cli expansion equip <name>` (or the `/equip <name>` skill).
+- **Expansion** = lifecycle pattern + user verb: the KB daemon invokes an `Expansion` body under a scope, and users run `coral-cli expansion equip <name>` (or the `/equip <name>` skill).
 
-One engine ships one Expansion.
+Expansion-backed engines ship one Expansion. Install-only packages such as tokenizer/model artifacts can support an engine without registering an Expansion body.
 
 ### 6.3 Expansion principles
 

@@ -86,7 +86,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Another package operation is in progress for ${stringContextValue(context, 'name', 'this expansion')}.`,
     remediation:
-      'Wait for the in-flight operation to complete, then retry. If this persists after ten minutes with no Coral process running, report the lock path shown by --verbose; do not delete a live lock.',
+      'Wait for the in-flight operation to complete, then retry. If this persists after ten minutes with no Coral process running, report the JSON error code and context; do not delete a live lock.',
   },
   expansion_install_command_failed: {
     userMessage: (context) =>
@@ -230,19 +230,20 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   retired_expansion_cleanup_in_progress: {
     userMessage: (context) =>
       `Retired expansion cleanup is already in progress for '${stringContextValue(context, 'name', 'this expansion')}'.`,
-    remediation: 'Wait for the current cleanup to finish, then run expansion list again.',
+    remediation:
+      "Wait for the current cleanup to finish, then run 'coral-cli expansion list'; if the residue remains, retry its cleanupCommand.",
   },
   retired_expansion_cursor_unsafe: {
     userMessage: (context) =>
       `Retired expansion '${stringContextValue(context, 'name', 'this expansion')}' has cursor metadata Coral cannot safely remove.`,
     remediation:
-      'Do not delete the cursor or projection files manually. Preserve the store and report this error code with --verbose output for repair.',
+      'Do not delete the cursor or projection files manually. Preserve the store and report the JSON error code and context for repair.',
   },
   retired_expansion_cursor_changed: {
     userMessage: (context) =>
       `Retired expansion '${stringContextValue(context, 'name', 'this expansion')}' changed cursor ownership during cleanup.`,
     remediation:
-      'Stop other Coral processes and retry. If it happens again, preserve the store and report this error code with --verbose output.',
+      'Stop other Coral processes and retry. If it happens again, preserve the store and report the JSON error code and context.',
   },
   expansion_not_equipped: {
     userMessage: (context) => `Expansion '${stringContextValue(context, 'name', 'this expansion')}' is not equipped.`,

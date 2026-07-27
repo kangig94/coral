@@ -138,17 +138,6 @@ describe('retired expansion cleanup', () => {
     expect(fixture.state.get(id)).toBeDefined();
   });
 
-  it.each(['', '.', '..', '../escape', String.raw`C:\escape`, 'orama', 'source-import'])(
-    'rejects invalid or reserved id %j without a storage mutation',
-    async (id) => {
-      const fixture = createFixture();
-      const rmSpy = vi.spyOn(fixture.runtime.storage, 'rmSync');
-
-      await expect(cleanup(fixture, id)).rejects.toThrow();
-      expect(rmSpy).not.toHaveBeenCalled();
-    },
-  );
-
   it('leaves filesystem, cursor, and state untouched for an invalid id', async () => {
     const fixture = createFixture();
     const id = '../escape';

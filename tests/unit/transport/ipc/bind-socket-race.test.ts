@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import type * as NodeFs from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 function errno(code: string): NodeJS.ErrnoException {
@@ -84,7 +85,8 @@ describe('bindSocket stale-clear race', () => {
       return socket;
     });
 
-    vi.doMock('node:fs', () => ({
+    vi.doMock('node:fs', async (importOriginal) => ({
+      ...(await importOriginal<typeof NodeFs>()),
       chmodSync,
       mkdirSync,
       readdirSync,
@@ -219,7 +221,8 @@ describe('bindSocket stale-clear race', () => {
       return socket;
     });
 
-    vi.doMock('node:fs', () => ({
+    vi.doMock('node:fs', async (importOriginal) => ({
+      ...(await importOriginal<typeof NodeFs>()),
       chmodSync,
       mkdirSync,
       readdirSync,

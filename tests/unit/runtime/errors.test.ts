@@ -46,8 +46,8 @@ describe('CoralSetupError', () => {
     [
       'expansion_install_lock_contended',
       { name: 'vector' },
-      'Another coral-cli expansion equip is in progress for vector.',
-      'Wait for the in-flight install to complete or remove the stale lock file.',
+      'Another package operation is in progress for vector.',
+      'Wait for the in-flight operation to complete, then retry. If this persists after ten minutes with no Coral process running, report the JSON error code and context; do not delete a live lock.',
     ],
     [
       'expansion_binary_corrupt',

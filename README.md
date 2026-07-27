@@ -215,7 +215,7 @@ gpt-5.6-sol  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8
 
 Coral learns from every session. Root causes, gotchas, and patterns stay searchable so the next session can check prior work before debugging from scratch.
 
-- **Text search by default**: bundled Orama provides full-text retrieval with no setup. Vector and hybrid modes remain extension points and require an external `kb.vector` provider; Gemini and ONNX provide embeddings only.
+- **Text search by default**: bundled Orama provides full-text retrieval with no setup. Coral currently ships no `kb.vector` provider, so vector and hybrid modes remain unavailable until a third-party provider is installed; Gemini and ONNX provide embeddings only.
 
 ## Configuration
 
