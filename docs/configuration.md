@@ -288,11 +288,7 @@ Installed expansions are trusted local code, not filesystem-sandboxed plugins. T
 
 ### Retired expansion cleanup
 
-When a previously installed expansion is no longer present in the current catalog, Coral preserves its durable row and artifacts instead of deleting them at boot. `coral-cli expansion list` reports the entry as `installed-not-active` with an explicit `cleanupCommand`. Inspect the same entry with `coral-cli expansion info <retired-id>`, then run:
-
-```bash
-coral-cli expansion remove-catalog <retired-id>
-```
+When a previously installed expansion is no longer present in the current catalog, Coral preserves its durable row and artifacts instead of deleting them at boot. `coral-cli expansion list` reports the entry as `installed-not-active`. For a canonical, non-reserved id it also provides an exact `cleanupCommand`; inspect the same entry with `coral-cli expansion info <retired-id>`, then run that command exactly. Unsafe or reserved legacy ids intentionally omit `cleanupCommand`: follow `lastError`, preserve the state for repair, and do not construct a cleanup command.
 
 Cleanup is explicit and scoped to the selected build flavor. Current catalog entries, install-only package ids, active consumers, base-owned cursors, and malformed cursor metadata are protected and will fail closed with an actionable error.
 
