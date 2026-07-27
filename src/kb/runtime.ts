@@ -68,6 +68,7 @@ import { createCorpusStorage, type CorpusStorage } from './corpus/rescan/storage
 import { type EntityGraph, type KbIndex } from './entry-types.js';
 import { createCorpusStateMirror } from './state/corpus-state.js';
 import { createKbRuntimePaths, type KbRuntimePaths } from './paths.js';
+import { KB_RUNTIME_AUTHORITY } from './runtime-authority.js';
 import { createKbProjectionInput } from './projection-input.js';
 import { EngineArtifactRegistry } from './corpus/artifact-registry.js';
 import { createCorpusAuthorityBaselineStore } from './corpus/rescan/authority-baseline.js';
@@ -104,7 +105,7 @@ export interface CreateKbRuntimeOptions {
    * `clearTimeout` back the mutation-lock deadline (§16 #50: ports only, no
    * ambient timers).
    */
-  time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
+  time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout' | 'setInterval' | 'clearInterval'>;
   ids: Pick<IdPort, 'uuid'>;
   envPort: EnvPort;
   storage: StoragePort;
@@ -116,11 +117,12 @@ export interface CreateKbRuntimeOptions {
   generatedCommunityProjectionCallbacks?: KbGeneratedCommunityProjectionCallbacks;
 }
 
-type KbRuntimeTimePort = Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'> & Partial<Pick<TimePort, 'sleep'>>;
+type KbRuntimeTimePort = Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout' | 'setInterval' | 'clearInterval'> &
+  Partial<Pick<TimePort, 'sleep'>>;
 
 const KB_MUTATION_DIRECTORY_LOCK_STALE_MIN_MS = 10 * 60 * 1000;
 const KB_MUTATION_DIRECTORY_LOCK_STALE_PADDING_MS = 60_000;
-const CORPUS_PROJECTION_DIR = 'corpus-projection';
+const CORPUS_PROJECTION_DIR = KB_RUNTIME_AUTHORITY.corpusProjection;
 const CORPUS_PROJECTION_COMMITS_DIR = 'commits';
 const CORPUS_PROJECTION_COMMIT_FILE = 'commit.json';
 const CORPUS_PROJECTION_COMMIT_SCHEMA_VERSION = 1;
@@ -190,7 +192,7 @@ class KbRuntimeImpl implements KbRuntime {
     this.runtimeDir = runtimeDir;
     this.db = db;
     this.time = time;
-    this.directoryMutationLockDir = join(this.runtimeDir, 'mutation.lock');
+    this.directoryMutationLockDir = join(this.runtimeDir, KB_RUNTIME_AUTHORITY.mutationLock);
     this.mutationLockDefaultTimeoutMs = mutationLockTimeoutMs ?? DEFAULT_MUTATION_LOCK_TIMEOUT_MS;
     this.ids = ids;
     this.storagePort = storage;
@@ -730,6 +732,8 @@ class KbRuntimeImpl implements KbRuntime {
         time: {
           now: () => this.time.now(),
           sleep: this.sleep.bind(this),
+          ['setInterval']: this.time.setInterval.bind(this.time),
+          ['clearInterval']: this.time.clearInterval.bind(this.time),
         },
         signal: options.signal,
         staleMs: Math.max(

@@ -12,6 +12,8 @@ import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { openWritableStoreDbNoReset } from '../../store/db.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
+import { isDirectoryLockTimeoutError } from '../../infra/fs-lock.js';
+import { acquirePackageOperationLock, PACKAGE_OPERATION_LOCK_TIMEOUT_MS } from '../../expansion/package-lock.js';
 import {
   installErrorSchema,
   installResponseSchema,
@@ -83,6 +85,9 @@ async function applyPostInstallCatalogActions(
   if (structuredActions.length === 0) {
     return result;
   }
+  if (structuredActions.length !== 1) {
+    throw new Error(`Expansion package '${name}' returned multiple catalog registrations`);
+  }
 
   const db = openWritableStoreDbNoReset(runtime, { storeFormat: currentCoralStoreFormat() });
   try {
@@ -91,6 +96,9 @@ async function applyPostInstallCatalogActions(
       const baseDir = result.targetDir ?? runtime.paths.coral.engine.dataDir(name);
       const manifestPath = isAbsolute(action.manifestPath) ? action.manifestPath : join(baseDir, action.manifestPath);
       const manifest = parseEngineManifest(JSON.parse(runtime.storage.readFileSync(manifestPath, 'utf-8')) as unknown);
+      if (manifest.id !== name) {
+        throw new Error(`Expansion package '${name}' cannot register manifest '${manifest.id}'`);
+      }
       catalog.upsertInstalledEntry(manifest);
     }
   } finally {
@@ -107,17 +115,31 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
   }
 
   const runtime = resolveRuntime(opts.runtime);
-  const result = installResponseSchema.parse(
-    await pkg.installer.install({
-      name,
-      version: pkg.version,
-      runtime,
-      logger: opts.logger,
-      lockTimeoutMs: opts.lockTimeoutMs,
-      update: opts.update,
-    }),
-  );
-  return applyPostInstallCatalogActions(result, runtime, name);
+  let release: () => void;
+  try {
+    release = await acquirePackageOperationLock(runtime, name, opts.lockTimeoutMs ?? PACKAGE_OPERATION_LOCK_TIMEOUT_MS);
+  } catch (error) {
+    if (isDirectoryLockTimeoutError(error)) {
+      return toInstallError('expansion_install_lock_contended', name);
+    }
+    throw error;
+  }
+  try {
+    const result = installResponseSchema.parse(
+      await pkg.installer.install({
+        name,
+        version: pkg.version,
+        runtime,
+        logger: opts.logger,
+        lockTimeoutMs: opts.lockTimeoutMs,
+        update: opts.update,
+        operationLockHeld: true,
+      }),
+    );
+    return await applyPostInstallCatalogActions(result, runtime, name);
+  } finally {
+    release();
+  }
 }
 
 export async function removeInstallArtifacts(runtime: Runtime, name: string): Promise<void> {
@@ -130,13 +152,28 @@ export async function uninstallExpansion(name: string, opts: UninstallExpansionO
     return toInstallError('unknown_expansion', name);
   }
 
-  return installResponseSchema.parse(
-    await pkg.installer.uninstall({
-      name,
-      version: pkg.version,
-      runtime: resolveRuntime(opts.runtime),
-      logger: opts.logger,
-      lockTimeoutMs: opts.lockTimeoutMs,
-    }),
-  );
+  const runtime = resolveRuntime(opts.runtime);
+  let release: () => void;
+  try {
+    release = await acquirePackageOperationLock(runtime, name, opts.lockTimeoutMs ?? PACKAGE_OPERATION_LOCK_TIMEOUT_MS);
+  } catch (error) {
+    if (isDirectoryLockTimeoutError(error)) {
+      return toInstallError('expansion_install_lock_contended', name);
+    }
+    throw error;
+  }
+  try {
+    return installResponseSchema.parse(
+      await pkg.installer.uninstall({
+        name,
+        version: pkg.version,
+        runtime,
+        logger: opts.logger,
+        lockTimeoutMs: opts.lockTimeoutMs,
+        operationLockHeld: true,
+      }),
+    );
+  } finally {
+    release();
+  }
 }

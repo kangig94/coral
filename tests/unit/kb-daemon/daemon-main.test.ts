@@ -146,12 +146,12 @@ describe('KB daemon main parent watchdog', () => {
 
 describe('KB daemon expansion RPC authorization', () => {
   it.each([
-    ['missing ctx', { method: 'equipExpansion', args: { name: 'needle' } }],
+    ['missing ctx', { method: 'equipExpansion', args: { name: 'vector' } }],
     [
       'unknown subject',
       {
         method: 'equipExpansion',
-        args: { name: 'needle' },
+        args: { name: 'vector' },
         ctx: { principal: { subject: 'admin', binding: { kind: 'unbound' } } },
       },
     ],
@@ -159,7 +159,7 @@ describe('KB daemon expansion RPC authorization', () => {
       'non-array attenuation',
       {
         method: 'equipExpansion',
-        args: { name: 'needle' },
+        args: { name: 'vector' },
         ctx: {
           principal: {
             subject: 'operator',
@@ -188,7 +188,7 @@ describe('KB daemon expansion RPC authorization', () => {
         handleKbDaemonExpansionRpcRequest(
           {
             method,
-            args: { name: 'needle' },
+            args: { name: 'vector' },
             ctx: {
               principal: {
                 subject: 'operator',
@@ -211,7 +211,7 @@ describe('KB daemon expansion RPC authorization', () => {
     const expansionRpc = vi.fn(async () => ({ ok: true as const, data: { status: 'equipped' } }));
     const request = {
       method: 'equipExpansion' as const,
-      args: { name: 'needle' },
+      args: { name: 'vector' },
       ctx: {
         principal: {
           subject: 'operator' as const,

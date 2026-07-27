@@ -141,6 +141,20 @@ function toInstallOnlyCatalogEntry(manifest: InstallOnlyManifest, runtime: Runti
   });
 }
 
+function toRetiredResidueCatalogEntry(view: ExpansionView): CatalogEntry {
+  return catalogEntrySchema.parse({
+    id: view.name,
+    name: view.name,
+    tier: 'installed',
+    description: 'Retired expansion artifacts awaiting operator cleanup',
+    activation: 'equip',
+    status: 'installed-not-active',
+    version: view.version ?? 'unknown',
+    lastError:
+      view.lastError ?? `Run 'coral-cli expansion remove-catalog ${view.name}' to remove retired expansion artifacts.`,
+  });
+}
+
 function createNonInteractiveOnboardingContext(
   lowLevel: Pick<CliExpansionActivation, 'readBinding'>,
   catalog: readonly EngineManifest[],
@@ -265,12 +279,23 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const passive = await lowLevel.readExpansionStatus();
         const expansionByName =
           passive.status === 'available' ? new Map(passive.expansions.map((entry) => [entry.name, entry])) : new Map();
+        const currentIds = new Set([
+          ...catalog.map((entry) => entry.id),
+          ...INSTALL_ONLY_PACKAGES.map((entry) => entry.id),
+        ]);
+        const retiredResidue =
+          passive.status === 'available'
+            ? passive.expansions
+                .filter((entry) => !currentIds.has(entry.name))
+                .map((entry) => toRetiredResidueCatalogEntry(entry))
+            : [];
 
         return catalogResultSchema.parse({
           status: 'catalog',
           packages: [
             ...catalog.map((entry) => toCatalogEntry(entry, runtime, expansionByName.get(entry.id) ?? null)),
             ...INSTALL_ONLY_PACKAGES.map((manifest) => toInstallOnlyCatalogEntry(manifest, runtime)),
+            ...retiredResidue,
           ],
         });
       } catch (error: unknown) {

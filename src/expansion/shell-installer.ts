@@ -1,11 +1,11 @@
-import { acquireDirectoryLock, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
+import { isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { CoralSetupErrorContext } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { EngineInstaller, EngineInstallerOptions, LocalExpansionInstallState } from './contract.js';
 import type { InstallError } from './rpc-contract.js';
+import { acquirePackageOperationLock, PACKAGE_OPERATION_LOCK_TIMEOUT_MS } from './package-lock.js';
 
-const INSTALL_LOCK_TIMEOUT_MS = 250;
 const INSTALL_TIMEOUT_MS = 300_000;
 
 /**
@@ -31,8 +31,7 @@ export interface ShellInstallerSpec {
   readonly buildUninstallCommand?: (binary: string) => string;
 }
 
-// Mirrors the installer-level error construction in src/engines/needle/install.ts;
-// installExpansion re-validates the returned object against installResponseSchema.
+// installExpansion re-validates installer errors against installResponseSchema.
 function toInstallError(
   code: Parameters<typeof documentedCoralSetupError>[0],
   context: CoralSetupErrorContext,
@@ -67,19 +66,18 @@ function isLocked(runtime: Runtime, lockPath: string): boolean {
   }
 }
 
-// Serialize install/uninstall behind the per-package directory lock, routing all
-// lock I/O through the runtime ports (matching needle's withInstallLock).
+// Serialize direct installer calls behind the shared package-operation lock.
 async function withInstallLock<T>(opts: EngineInstallerOptions, run: () => Promise<T>): Promise<T | InstallError> {
-  // The lock lives inside targetDir, so the directory must exist before
-  // acquireDirectoryLock's non-recursive mkdir of the lock path.
-  opts.runtime.storage.mkdirSync(dataDirOf(opts.runtime, opts.name), { recursive: true });
+  if (opts.operationLockHeld === true) {
+    return run();
+  }
 
   let release: () => void;
   try {
-    release = await acquireDirectoryLock(
-      opts.runtime.paths.coral.engine.installLockPath(opts.name),
-      { storage: opts.runtime.storage, time: opts.runtime.time },
-      opts.lockTimeoutMs ?? INSTALL_LOCK_TIMEOUT_MS,
+    release = await acquirePackageOperationLock(
+      opts.runtime,
+      opts.name,
+      opts.lockTimeoutMs ?? PACKAGE_OPERATION_LOCK_TIMEOUT_MS,
     );
   } catch (error) {
     if (isDirectoryLockTimeoutError(error)) {
@@ -136,6 +134,7 @@ export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller 
       const command = selfUpdate ? selfUpdate(binary) : spec.buildInstallCommand(targetDir);
 
       return withInstallLock(opts, async () => {
+        opts.runtime.storage.mkdirSync(targetDir, { recursive: true });
         const result = await opts.runtime.process.exec('bash', ['-c', command], {
           timeout: INSTALL_TIMEOUT_MS,
           inheritEnv: true,

@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 
 import type { KbEntryId } from '../entry-types.js';
+import { KB_RUNTIME_AUTHORITY } from '../runtime-authority.js';
 
 export const PROMOTE_MARKER_VERSION = 1 as const;
 
@@ -50,7 +51,7 @@ export interface PromoteRecoveryMarker {
 }
 
 export function promoteRecoveryDir(runtimeDir: string): string {
-  return join(runtimeDir, 'promote-recovery');
+  return join(runtimeDir, KB_RUNTIME_AUTHORITY.promoteRecovery);
 }
 
 export function promoteRecoveryMarkerPath(runtimeDir: string, promoteId: string): string {

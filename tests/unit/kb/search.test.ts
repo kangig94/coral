@@ -11,7 +11,7 @@ import {
   bindOramaFtsForTest,
   createCorpusHandle,
   bindVectorBacked,
-  seedNeedleRouteState,
+  seedVectorRouteState,
 } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
@@ -63,10 +63,10 @@ function createRuntime(
 
 function seedRouteState(
   kb: KbRuntime,
-  snapshot: Parameters<typeof seedNeedleRouteState>[1],
-  options?: Parameters<typeof seedNeedleRouteState>[2],
-): ReturnType<typeof seedNeedleRouteState> {
-  return seedNeedleRouteState(writableDbByRuntime.get(kb)!, snapshot, options);
+  snapshot: Parameters<typeof seedVectorRouteState>[1],
+  options?: Parameters<typeof seedVectorRouteState>[2],
+): ReturnType<typeof seedVectorRouteState> {
+  return seedVectorRouteState(writableDbByRuntime.get(kb)!, snapshot, options);
 }
 
 async function applyOramaProjection(kb: KbRuntime): Promise<void> {
@@ -290,7 +290,7 @@ function expectMigratedShape(response: KbSearchResponse): void {
   }
 }
 
-type MockNeedleChunkHit = {
+type MockVectorChunkHit = {
   chunkId: string;
   entryId: KbEntryId;
   score: number;
@@ -312,11 +312,11 @@ function scopeAllowsVectorKind(
   return false;
 }
 
-function aggregateMockNeedleHits(
+function aggregateMockVectorHits(
   kb: {
     readIndex: () => { entries: Record<string, any> } | null;
   },
-  rawHits: MockNeedleChunkHit[],
+  rawHits: MockVectorChunkHit[],
   scope: 'all' | 'notes' | 'sources' | 'communities' | undefined,
 ) {
   const index = kb.readIndex();
@@ -379,7 +379,7 @@ async function installMockHybridSearch(
     searchVector,
     embedQuery = vi.fn().mockResolvedValue(new Float32Array([0.25, 0.75])),
   }: {
-    searchVector: (query: Float32Array, candidateK: number) => Promise<MockNeedleChunkHit[]>;
+    searchVector: (query: Float32Array, candidateK: number) => Promise<MockVectorChunkHit[]>;
     embedQuery?: (query: string) => Promise<Float32Array>;
   },
 ) {
@@ -394,13 +394,13 @@ async function installMockHybridSearch(
         let candidateK = Math.max(topK, 1);
         const candidateCap = Math.max(topK, 10 * topK);
         let rawHits = await searchVector(Float32Array.from(embedding), candidateK);
-        let hits = aggregateMockNeedleHits(kb, rawHits, scope);
+        let hits = aggregateMockVectorHits(kb, rawHits, scope);
         let exhausted = rawHits.length < candidateK;
 
         while (hits.length < topK && !exhausted && candidateK < candidateCap) {
           candidateK = Math.min(candidateCap, candidateK * 2);
           rawHits = await searchVector(Float32Array.from(embedding), candidateK);
-          hits = aggregateMockNeedleHits(kb, rawHits, scope);
+          hits = aggregateMockVectorHits(kb, rawHits, scope);
           exhausted = rawHits.length < candidateK;
         }
 
@@ -832,17 +832,17 @@ describe('kb search', () => {
     expect(resultFor(response.results, 'gamma-reference').evidence.map((item) => item.roleId)).toEqual(['vector']);
   });
 
-  it('routes explicit vector search through needle when equipment content manifests match', async () => {
+  it('routes explicit vector search through vector when equipment content manifests match', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'needle-alpha', {
-      title: 'Needle Alpha',
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'vector-alpha', {
+      title: 'Vector Alpha',
       body: 'Archive only.',
     });
-    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'needle-beta', {
-      title: 'Needle Beta',
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'vector-beta', {
+      title: 'Vector Beta',
       body: 'Archive only.',
     });
 
@@ -850,8 +850,8 @@ describe('kb search', () => {
     await applyOramaProjection(kb);
     await installMockHybridSearch(kb, seedRouteState(kb, kb.captureCorpusSnapshot()), {
       searchVector: vi.fn().mockResolvedValue([
-        { chunkId: 'needle:0', entryId: 'note:needle-beta', score: 0.99 },
-        { chunkId: 'needle:1', entryId: 'note:needle-alpha', score: 0.97 },
+        { chunkId: 'vector:0', entryId: 'note:vector-beta', score: 0.99 },
+        { chunkId: 'vector:1', entryId: 'note:vector-alpha', score: 0.97 },
       ]),
     });
 
@@ -859,9 +859,9 @@ describe('kb search', () => {
 
     expect(response.mode).toBe('vector');
     expectMigratedShape(response);
-    expect(resultNotes(response.results)).toEqual(['needle-beta', 'needle-alpha']);
-    expect(resultFor(response.results, 'needle-beta').matchedBy).toEqual([]);
-    expect(resultFor(response.results, 'needle-beta').evidence.map((item) => item.roleId)).toEqual(['vector']);
+    expect(resultNotes(response.results)).toEqual(['vector-beta', 'vector-alpha']);
+    expect(resultFor(response.results, 'vector-beta').matchedBy).toEqual([]);
+    expect(resultFor(response.results, 'vector-beta').evidence.map((item) => item.roleId)).toEqual(['vector']);
   });
 
   it('reports kb.embedding remediation for explicit vector search without embedding binding', async () => {
@@ -869,8 +869,8 @@ describe('kb search', () => {
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'needle-alpha', {
-      title: 'Needle Alpha',
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'vector-alpha', {
+      title: 'Vector Alpha',
       body: 'Archive only.',
     });
 
@@ -890,8 +890,8 @@ describe('kb search', () => {
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
-    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'needle-alpha', {
-      title: 'Needle Alpha',
+    writeNote(paths.notesDir(process.env.CORAL_KB_PATH!), 'vector-alpha', {
+      title: 'Vector Alpha',
       body: 'Archive only.',
     });
 

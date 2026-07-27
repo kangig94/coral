@@ -146,7 +146,7 @@ describe('spawnNodeScript', () => {
     const { spawnNodeScript } = await import('#tests/helpers/multi-process-driver.js');
     const resultPromise = spawnNodeScript({
       scriptPath: '/tmp/worker.cjs',
-      args: ['needle'],
+      args: ['vector'],
       env: {
         ...process.env,
         PATH: '/custom/bin',
@@ -163,7 +163,7 @@ describe('spawnNodeScript', () => {
 
     expect(spawnMock).toHaveBeenCalledWith(
       process.execPath,
-      ['/tmp/worker.cjs', 'needle'],
+      ['/tmp/worker.cjs', 'vector'],
       expect.objectContaining({
         env: expect.objectContaining({
           PATH: expectedPath,

@@ -78,6 +78,9 @@ export interface ExpansionLifecycleServiceOptions {
    * disposing it.
    */
   readonly getLifecyclePhase?: () => CoordinatorLifecyclePhase;
+  /** Current non-manifest package ids that must never enter retirement. */
+  readonly protectedPackageIds?: ReadonlySet<string>;
+  readonly retireCatalogAbsent?: (name: string, finalizeState: () => void) => Promise<'current' | 'removed'>;
 }
 
 function asError(error: unknown): Error {
@@ -200,7 +203,17 @@ export class ExpansionLifecycleService {
   private async removeExpansionCatalogLocked(name: string): Promise<RemoveExpansionCatalogResult> {
     const entry = this.manifestEntries().find((candidate) => candidate.id === name);
     if (entry === undefined) {
-      throw documentedCoralSetupError('unknown_expansion', { name });
+      if (this.options.protectedPackageIds?.has(name) === true || this.options.retireCatalogAbsent === undefined) {
+        return { status: 'unknown' };
+      }
+      const retirement = await this.options.retireCatalogAbsent(name, () => {
+        this.options.state.delete(name);
+      });
+      if (retirement === 'current') {
+        return { status: 'unknown' };
+      }
+      this.failedRecovery.delete(name);
+      return { status: 'removed' };
     }
 
     const isStatic =
@@ -296,9 +309,9 @@ export class ExpansionLifecycleService {
     for (const row of orderedRows) {
       const entry = manifestById.get(row.id);
       if (!entry) {
-        this.options.state.delete(row.id);
-        this.failedRecovery.delete(row.id);
-        backendLog.warn(`Orphan expansion row '${row.id}' deleted; expansion no longer in the manifest catalog`);
+        const remediation = `Run 'coral-cli expansion remove-catalog ${row.id}' to remove retired expansion artifacts.`;
+        this.failedRecovery.set(row.id, new Error(remediation));
+        backendLog.warn(`Retired expansion row '${row.id}' preserved. ${remediation}`);
         continue;
       }
 

@@ -16,6 +16,7 @@ function createLockDeps(now: () => number): {
 } {
   const directories = new Map<string, number>();
   const files = new Set<string>();
+  const fileMtimes = new Map<string, number>();
   const removed: string[] = [];
   const deps: DirectoryLockDeps = {
     storage: {
@@ -30,11 +31,17 @@ function createLockDeps(now: () => number): {
           throw errno('ENOENT');
         }
         files.add(path);
+        fileMtimes.set(path, now());
       },
+      readdirSync: ((path: string) =>
+        [...files]
+          .filter((file) => dirname(file) === path)
+          .map((file) => file.slice(path.length + 1))) as DirectoryLockDeps['storage']['readdirSync'],
       unlinkSync: (path) => {
         if (!files.delete(path)) {
           throw errno('ENOENT');
         }
+        fileMtimes.delete(path);
         removed.push(path);
       },
       rmSync: (path) => {
@@ -43,6 +50,7 @@ function createLockDeps(now: () => number): {
         for (const file of [...files]) {
           if (file === path || file.startsWith(`${path}/`)) {
             files.delete(file);
+            fileMtimes.delete(file);
           }
         }
         for (const dir of [...directories.keys()]) {
@@ -69,20 +77,23 @@ function createLockDeps(now: () => number): {
       },
       statSync: ((path: string) => {
         const mtimeMs = directories.get(path);
-        if (mtimeMs === undefined) {
+        const fileMtimeMs = fileMtimes.get(path);
+        if (mtimeMs === undefined && fileMtimeMs === undefined) {
           throw errno('ENOENT');
         }
         return {
           size: 0,
-          mtimeMs,
-          isDirectory: () => true,
-          isFile: () => false,
+          mtimeMs: mtimeMs ?? fileMtimeMs!,
+          isDirectory: () => mtimeMs !== undefined,
+          isFile: () => fileMtimeMs !== undefined,
         };
       }) as DirectoryLockDeps['storage']['statSync'],
     },
     time: {
       now,
       sleep: vi.fn(async () => {}),
+      setInterval: vi.fn(() => ({})),
+      clearInterval: vi.fn(),
     },
   };
   return { deps, directories, files, removed };

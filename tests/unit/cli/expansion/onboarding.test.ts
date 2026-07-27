@@ -2,19 +2,31 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { runExpansionOnboarding } from '#src/cli/expansion/onboarding.js';
 import { BUNDLED_ENGINES } from '#src/expansion/bundled.js';
+import { KB_EMBEDDING_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
 
 const GEMINI_ENTRY = BUNDLED_ENGINES.find((entry) => entry.id === 'gemini');
 const ONNX_ENTRY = BUNDLED_ENGINES.find((entry) => entry.id === 'onnx');
+const VECTOR_ENTRY = {
+  id: 'vector',
+  version: '0.0.0',
+  specifier: '#fixture/vector.js',
+  tier: 'installed',
+  description: 'fixture vector provider',
+  onboarding: [{ kind: 'require-binding', binding: KB_EMBEDDING_CAPABILITY }],
+  fills: [KB_VECTOR_CAPABILITY],
+} as const;
+const CATALOG = [...BUNDLED_ENGINES, VECTOR_ENTRY];
 
 if (!GEMINI_ENTRY || !ONNX_ENTRY) {
   throw new Error('test requires gemini and onnx bundled engine entries');
 }
 
 describe('expansion onboarding', () => {
-  it('skips the choice prompt when kb.embedding is already bound and leaves needle equip to the outer caller', async () => {
+  it('skips the choice prompt when kb.embedding is already bound and leaves vector equip to the outer caller', async () => {
     const events: string[] = [];
     const choose = vi.fn(async () => GEMINI_ENTRY);
     const ctx = {
+      catalog: CATALOG,
       readBinding: vi.fn(async () => ({ bound: true })),
       prompt: { choose },
       runOnboarding: vi.fn(async (id: string) => {
@@ -25,17 +37,18 @@ describe('expansion onboarding', () => {
       }),
     };
 
-    await runExpansionOnboarding('needle', ctx as never);
-    await ctx.equip('needle');
+    await runExpansionOnboarding('vector', ctx as never);
+    await ctx.equip('vector');
 
     expect(choose).not.toHaveBeenCalled();
-    expect(events).toEqual(['equip:needle']);
+    expect(events).toEqual(['equip:vector']);
   });
 
-  it('chooses, onboards, and equips an embedder peer before the outer caller equips needle', async () => {
+  it('chooses, onboards, and equips an embedder peer before the outer caller equips vector', async () => {
     const events: string[] = [];
     const choose = vi.fn(async () => GEMINI_ENTRY);
     const ctx = {
+      catalog: CATALOG,
       readBinding: vi.fn(async () => ({ bound: false })),
       prompt: { choose },
       runOnboarding: vi.fn(async (id: string) => {
@@ -46,16 +59,17 @@ describe('expansion onboarding', () => {
       }),
     };
 
-    await runExpansionOnboarding('needle', ctx as never);
-    await ctx.equip('needle');
+    await runExpansionOnboarding('vector', ctx as never);
+    await ctx.equip('vector');
 
-    expect(choose).toHaveBeenCalledWith("Expansion 'needle' needs 'kb.embedding':", [GEMINI_ENTRY, ONNX_ENTRY]);
-    expect(events).toEqual(['onboard:gemini', 'equip:gemini', 'equip:needle']);
+    expect(choose).toHaveBeenCalledWith("Expansion 'vector' needs 'kb.embedding':", [GEMINI_ENTRY, ONNX_ENTRY]);
+    expect(events).toEqual(['onboard:gemini', 'equip:gemini', 'equip:vector']);
   });
 
   it('throws user-cancelled when the user backs out of the embedder choice', async () => {
     const events: string[] = [];
     const ctx = {
+      catalog: CATALOG,
       readBinding: vi.fn(async () => ({ bound: false })),
       prompt: {
         choose: vi.fn(async () => null),
@@ -68,9 +82,9 @@ describe('expansion onboarding', () => {
       }),
     };
 
-    await expect(runExpansionOnboarding('needle', ctx as never)).rejects.toMatchObject({
+    await expect(runExpansionOnboarding('vector', ctx as never)).rejects.toMatchObject({
       code: 'user_cancelled',
-      context: { during: 'needle-onboarding' },
+      context: { during: 'vector-onboarding' },
     });
     expect(events).toEqual([]);
   });
@@ -78,6 +92,7 @@ describe('expansion onboarding', () => {
   it('throws binding_required with candidates instead of prompting in non-interactive contexts', async () => {
     const choose = vi.fn(async () => GEMINI_ENTRY);
     const ctx = {
+      catalog: CATALOG,
       interactive: false,
       readBinding: vi.fn(async () => ({ bound: false })),
       prompt: { choose },
@@ -85,11 +100,11 @@ describe('expansion onboarding', () => {
       equip: vi.fn(async () => {}),
     };
 
-    await expect(runExpansionOnboarding('needle', ctx as never)).rejects.toMatchObject({
+    await expect(runExpansionOnboarding('vector', ctx as never)).rejects.toMatchObject({
       code: 'binding_required',
       context: {
         binding: 'kb.embedding',
-        requiredBy: 'needle',
+        requiredBy: 'vector',
         candidates: ['gemini', 'onnx'],
       },
     });
@@ -98,6 +113,7 @@ describe('expansion onboarding', () => {
 
   it('throws engine_env_var_missing when a declared env-var step is unset', async () => {
     const ctx = {
+      catalog: CATALOG,
       readBinding: vi.fn(async () => ({ bound: false })),
       env: { get: vi.fn(() => undefined) },
       prompt: { choose: vi.fn(async () => null) },
@@ -111,9 +127,10 @@ describe('expansion onboarding', () => {
     });
   });
 
-  it('leaves the chosen embedder equipped if outer cancellation happens before needle equip', async () => {
+  it('leaves the chosen embedder equipped if outer cancellation happens before vector equip', async () => {
     const equipped: string[] = [];
     const ctx = {
+      catalog: CATALOG,
       readBinding: vi.fn(async () => ({ bound: false })),
       prompt: {
         choose: vi.fn(async () => GEMINI_ENTRY),
@@ -124,9 +141,9 @@ describe('expansion onboarding', () => {
       }),
     };
 
-    await runExpansionOnboarding('needle', ctx as never);
+    await runExpansionOnboarding('vector', ctx as never);
 
     expect(equipped).toEqual(['gemini']);
-    expect(equipped).not.toContain('needle');
+    expect(equipped).not.toContain('vector');
   });
 });

@@ -121,23 +121,23 @@ describe('expansion activation', () => {
     const request = vi.fn().mockResolvedValue({
       status: 'equipped',
       expansion: {
-        name: 'needle',
+        name: 'onnx',
         tier: 'installed',
         status: 'equipped',
       },
     });
     mockState.ensure.mockResolvedValue({ request });
 
-    await expect(activation.activateExpansion('needle')).resolves.toEqual({
+    await expect(activation.activateExpansion('onnx')).resolves.toEqual({
       status: 'equipped',
       expansion: {
-        slot: 'kb.vector',
-        name: 'needle',
+        slot: 'kb.embedding',
+        name: 'onnx',
         tier: 'installed',
         status: 'equipped',
       },
     });
-    expect(request).toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' }, undefined);
+    expect(request).toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'onnx' }, undefined);
   });
 
   it('surfaces activation failures instead of collapsing them to unavailable', async () => {
@@ -146,32 +146,8 @@ describe('expansion activation', () => {
     const request = vi.fn().mockRejectedValue(error);
     mockState.ensure.mockResolvedValue({ request });
 
-    await expect(activation.activateExpansion('needle')).rejects.toBe(error);
-    expect(request).toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' }, undefined);
-  });
-
-  it('runs onboarding before needle install or activation and reports missing binding candidates', async () => {
-    const activation = createCliExpansionActivation();
-    const request = vi.fn(async (method: string) => {
-      if (method === 'coordinator.readBinding') {
-        return { bound: false };
-      }
-      throw new Error(`unexpected request: ${method}`);
-    });
-    mockState.ensure.mockResolvedValue({ request });
-
-    await expect(activation.equip('needle')).resolves.toMatchObject({
-      status: 'error',
-      code: 'binding_required',
-      context: {
-        binding: 'kb.embedding',
-        requiredBy: 'needle',
-        candidates: ['gemini', 'onnx'],
-      },
-      suggestions: ['gemini', 'onnx'],
-    });
-    expect(request).toHaveBeenCalledWith('coordinator.readBinding', { binding: 'kb.embedding' }, undefined);
-    expect(request).not.toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' }, undefined);
+    await expect(activation.activateExpansion('vector')).rejects.toBe(error);
+    expect(request).toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'vector' }, undefined);
   });
 
   it('runs env-var onboarding before gemini activation', async () => {
@@ -203,8 +179,8 @@ describe('expansion activation', () => {
     const request = vi.fn().mockResolvedValue({ status: 'uninstalled' });
     mockState.ensure.mockResolvedValue({ request });
 
-    await expect(activation.deactivateExpansion('needle')).resolves.toEqual({ status: 'uninstalled' });
-    expect(request).toHaveBeenCalledWith('coordinator.unequipExpansion', { name: 'needle' }, undefined);
+    await expect(activation.deactivateExpansion('vector')).resolves.toEqual({ status: 'uninstalled' });
+    expect(request).toHaveBeenCalledWith('coordinator.unequipExpansion', { name: 'vector' }, undefined);
   });
 
   it('removes expansion catalog entries through coordinator IPC without deactivating first', async () => {
@@ -215,6 +191,44 @@ describe('expansion activation', () => {
     await expect(activation.removeCatalog('external-cache')).resolves.toEqual({ status: 'uninstalled' });
     expect(request).toHaveBeenCalledWith('coordinator.removeExpansionCatalog', { name: 'external-cache' }, undefined);
     expect(request).not.toHaveBeenCalledWith('coordinator.unequipExpansion', { name: 'external-cache' }, undefined);
+  });
+
+  it('merges catalog-absent daemon state into the operator-visible retired residue list', async () => {
+    const activation = createCliExpansionActivation();
+    mockState.readDiscoveryRecord.mockReturnValue(makeDiscoveryRecord());
+    mockState.createIpcClient.mockReturnValue({
+      request: vi.fn().mockResolvedValue({
+        expansions: [
+          {
+            name: 'retired-vector',
+            version: '0.9.0',
+            tier: 'installed',
+            status: 'installed-not-active',
+            lastError:
+              "Expansion 'retired-vector' is no longer in the catalog. Run 'coral-cli expansion remove-catalog retired-vector' to remove retired expansion artifacts.",
+          },
+        ],
+      }),
+    });
+
+    const result = await activation.list();
+    expect(result.status).toBe('catalog');
+    if (result.status !== 'catalog') {
+      throw new Error('expected catalog result');
+    }
+    expect(result.packages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'retired-vector',
+          name: 'retired-vector',
+          tier: 'installed',
+          activation: 'equip',
+          status: 'installed-not-active',
+          version: '0.9.0',
+          lastError: expect.stringContaining('coral-cli expansion remove-catalog retired-vector'),
+        }),
+      ]),
+    );
   });
 
   it('maps immutable catalog removal without exposing the internal status string', async () => {
@@ -233,7 +247,7 @@ describe('expansion activation', () => {
     process.env.CORAL_FLAVOR = 'dev';
     mockState.readDiscoveryRecord.mockReturnValue(null);
 
-    await expect(activation.readExpansionStatus('needle')).resolves.toEqual({ status: 'unavailable' });
+    await expect(activation.readExpansionStatus('vector')).resolves.toEqual({ status: 'unavailable' });
     expect(mockState.readDiscoveryRecord).toHaveBeenCalled();
     expect(mockState.createIpcClient).not.toHaveBeenCalled();
   });

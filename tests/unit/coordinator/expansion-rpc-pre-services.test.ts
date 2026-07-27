@@ -117,7 +117,7 @@ describe('expansion RPC before store services exist', () => {
       data: {
         status: 'equipped',
         expansion: {
-          name: 'needle',
+          name: 'vector',
           tier: 'installed',
           status: 'equipped',
         },
@@ -149,7 +149,7 @@ describe('expansion RPC before store services exist', () => {
         'content-type': 'application/json',
         'x-coral-backend-token': token,
       },
-      body: JSON.stringify({ name: 'needle' }),
+      body: JSON.stringify({ name: 'vector' }),
     });
     const body = (await response.json()) as Record<string, unknown>;
 
@@ -157,14 +157,14 @@ describe('expansion RPC before store services exist', () => {
     expect(body).toEqual({
       status: 'equipped',
       expansion: {
-        name: 'needle',
+        name: 'vector',
         tier: 'installed',
         status: 'equipped',
       },
     });
     expect(expansionRpc).toHaveBeenCalledWith({
       method: 'equipExpansion',
-      args: { name: 'needle' },
+      args: { name: 'vector' },
       ctx: expect.objectContaining({
         principal: expect.objectContaining({
           subject: 'operator',
@@ -185,9 +185,9 @@ describe('expansion RPC before store services exist', () => {
     {
       code: 'unknown_expansion',
       statusCode: 500,
-      message: 'The expansion needle is not registered in the Coral catalog.',
+      message: 'The expansion vector is not registered in the Coral catalog.',
       remediation: "Run 'coral-cli expansion list' to see available expansions.",
-      detail: { name: 'needle' },
+      detail: { name: 'vector' },
     },
   ])('surfaces child expansion $code failures without collapsing to internal_error', async (failure) => {
     const token = 'test-token';
@@ -223,7 +223,7 @@ describe('expansion RPC before store services exist', () => {
         'content-type': 'application/json',
         'x-coral-backend-token': token,
       },
-      body: JSON.stringify({ name: 'needle' }),
+      body: JSON.stringify({ name: 'vector' }),
     });
     const body = (await response.json()) as Record<string, unknown>;
 

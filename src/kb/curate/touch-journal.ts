@@ -6,10 +6,11 @@ import { sha256Hex } from '../../infra/hash.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import { nowIsoString } from '../../infra/time.js';
 import { isWikiEntry, parseKbEntryId, wikiEntryId, type KbEntryId, type KbIndex } from '../entry-types.js';
+import { KB_RUNTIME_AUTHORITY } from '../runtime-authority.js';
 
-const TOUCH_JOURNAL_FILENAME = 'wiki-touches.jsonl';
-const TOUCH_JOURNAL_TOMBSTONE_FILENAME = `${TOUCH_JOURNAL_FILENAME}.tombstone`;
-const TOUCH_JOURNAL_PROGRESS_FILENAME = `${TOUCH_JOURNAL_FILENAME}.progress.json`;
+const TOUCH_JOURNAL_FILENAME = KB_RUNTIME_AUTHORITY.touchJournal;
+const TOUCH_JOURNAL_TOMBSTONE_FILENAME = KB_RUNTIME_AUTHORITY.touchJournalTombstone;
+const TOUCH_JOURNAL_PROGRESS_FILENAME = KB_RUNTIME_AUTHORITY.touchJournalProgress;
 const TOUCH_JOURNAL_ORPHAN_PREFIX = 'wiki-touches.orphan.';
 const TOUCH_JOURNAL_ORPHAN_SUFFIX = '.jsonl';
 const DEFAULT_APPEND_RETRIES = 3;

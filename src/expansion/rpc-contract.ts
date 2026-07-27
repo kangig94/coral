@@ -172,6 +172,7 @@ type ExpansionStatus = z.infer<typeof expansionStatusSchema>;
 
 export interface ExpansionView {
   readonly name: string;
+  readonly version?: string;
   readonly tier: 'bundled' | 'installed';
   readonly status: ExpansionStatus;
   readonly lastError?: string;
@@ -182,6 +183,7 @@ export interface ExpansionView {
 export const expansionViewSchema = z
   .object({
     name: z.string().min(1),
+    version: z.string().min(1).optional(),
     tier: z.enum(['bundled', 'installed']),
     status: expansionStatusSchema,
     lastError: z.string().min(1).optional(),

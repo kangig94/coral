@@ -22,6 +22,7 @@ import {
 } from './authority-apply.js';
 import { waitFreshUntilImpl, rejectWaiters, rejectWaitersForApplyFailure, resolveWaiters } from './freshness-waiter.js';
 import { ConsumerCursorRepository } from './persistence.js';
+import type { RetiredExpansionCursorPreflight } from './persistence.js';
 import {
   assertExistingRegistrationMatches,
   assertValidRegistration,
@@ -93,12 +94,19 @@ export interface UnregisterStoppedConsumerOptions {
   readonly preserveCursor?: boolean;
 }
 
+export interface RetiredExpansionCursorLease {
+  readonly preflight: RetiredExpansionCursorPreflight;
+  deleteCursor(): void;
+  release(): void;
+}
+
 export class ConsumerDriver {
   private readonly now: () => Date;
   private readonly timers: ConsumerDriverTimers;
   private readonly journalReader: JournalConsumerReadPort;
   private readonly corpusStateReader: CorpusStateReadPort;
   private readonly consumers = new Map<string, ConsumerState>();
+  private readonly retiringConsumerIds = new Set<string>();
   private readonly repository: ConsumerCursorRepository;
   private readonly applyDeps: AuthorityApplyDeps;
   private readonly stopDeps: StopConsumerDeps;
@@ -141,6 +149,9 @@ export class ConsumerDriver {
 
   register(reg: ConsumerRegistration): ConsumerHandle {
     assertValidRegistration(reg);
+    if (this.retiringConsumerIds.has(reg.id)) {
+      throw new Error(`Consumer '${reg.id}' is being retired`);
+    }
 
     const existing = this.consumers.get(reg.id);
     if (existing) {
@@ -175,6 +186,39 @@ export class ConsumerDriver {
     stateRef.current = state;
     this.consumers.set(reg.id, state);
     return handle;
+  }
+
+  beginRetiredExpansionCursorCleanup(consumerId: string): RetiredExpansionCursorLease {
+    if (this.consumers.has(consumerId)) {
+      throw new Error(`Consumer '${consumerId}' is active`);
+    }
+    if (this.retiringConsumerIds.has(consumerId)) {
+      throw new Error(`Consumer '${consumerId}' retirement is already in progress`);
+    }
+    this.retiringConsumerIds.add(consumerId);
+    try {
+      const preflight = this.repository.preflightRetiredExpansionCursor(consumerId);
+      let released = false;
+      return {
+        preflight,
+        deleteCursor: () => {
+          if (released) {
+            throw new Error(`Consumer '${consumerId}' retirement lease was released`);
+          }
+          this.repository.deletePreflightedRetiredExpansionCursor(consumerId, preflight);
+        },
+        release: () => {
+          if (released) {
+            return;
+          }
+          released = true;
+          this.retiringConsumerIds.delete(consumerId);
+        },
+      };
+    } catch (error) {
+      this.retiringConsumerIds.delete(consumerId);
+      throw error;
+    }
   }
 
   getJournalReader(): JournalConsumerReadPort {

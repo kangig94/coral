@@ -459,78 +459,78 @@ describe('cli main routing', () => {
     },
     {
       label: 'equip',
-      argv: ['expansion', 'equip', 'needle'],
+      argv: ['expansion', 'equip', 'vector'],
       setup: () => {
         mockState.expansionEquip.mockResolvedValueOnce({
           status: 'installed',
           method: 'prebuild',
           version: '1.0.0',
-          targetDir: '/tmp/needle',
+          targetDir: '/tmp/vector',
         });
       },
       assertCall: () => {
-        expect(mockState.expansionEquip).toHaveBeenCalledWith('needle');
+        expect(mockState.expansionEquip).toHaveBeenCalledWith('vector');
       },
     },
     {
       label: 'unequip',
-      argv: ['expansion', 'unequip', 'needle'],
+      argv: ['expansion', 'unequip', 'vector'],
       setup: () => {
         mockState.expansionUnequip.mockResolvedValueOnce({
           status: 'uninstalled',
         });
       },
       assertCall: () => {
-        expect(mockState.expansionUnequip).toHaveBeenCalledWith('needle');
+        expect(mockState.expansionUnequip).toHaveBeenCalledWith('vector');
       },
     },
     {
       label: 'remove-catalog',
-      argv: ['expansion', 'remove-catalog', 'needle'],
+      argv: ['expansion', 'remove-catalog', 'vector'],
       setup: () => {
         mockState.expansionRemoveCatalog.mockResolvedValueOnce({
           status: 'uninstalled',
         });
       },
       assertCall: () => {
-        expect(mockState.expansionRemoveCatalog).toHaveBeenCalledWith('needle');
+        expect(mockState.expansionRemoveCatalog).toHaveBeenCalledWith('vector');
       },
     },
     {
       label: 'update',
-      argv: ['expansion', 'update', 'needle'],
+      argv: ['expansion', 'update', 'vector'],
       setup: () => {
         mockState.expansionUpdate.mockResolvedValueOnce({
           status: 'updated',
           method: 'prebuild',
           version: '1.0.1',
-          targetDir: '/tmp/needle',
+          targetDir: '/tmp/vector',
         });
       },
       assertCall: () => {
-        expect(mockState.expansionUpdate).toHaveBeenCalledWith('needle');
+        expect(mockState.expansionUpdate).toHaveBeenCalledWith('vector');
       },
     },
     {
       label: 'info',
-      argv: ['expansion', 'info', 'needle'],
+      argv: ['expansion', 'info', 'vector'],
       setup: () => {
         mockState.expansionInfo.mockResolvedValueOnce({
           status: 'info',
           package: {
-            id: 'needle',
-            name: 'Needle',
-            description: 'Needle vector expansion',
+            id: 'vector',
+            name: 'Vector',
+            description: 'Vector vector expansion',
             tier: 'installed',
             activation: 'equip',
             status: 'not_equipped',
-            statusDescription: 'Needle is not installed.',
-            addonPath: '/tmp/coral-needle.node',
+            statusDescription: 'Vector is not installed.',
+            addonPath: '/tmp/coral-vector.node',
           },
         });
       },
       assertCall: () => {
-        expect(mockState.expansionInfo).toHaveBeenCalledWith('needle');
+        expect(mockState.expansionInfo).toHaveBeenCalledWith('vector');
       },
     },
   ])('routes expansion $label success as one stdout JSON line with exit 0', async ({ argv, setup, assertCall }) => {
@@ -561,66 +561,66 @@ describe('cli main routing', () => {
     },
     {
       label: 'equip',
-      argv: ['expansion', 'equip', 'needle'],
+      argv: ['expansion', 'equip', 'vector'],
       setup: () => {
         mockState.expansionEquip.mockResolvedValueOnce({
           status: 'error',
           code: 'unknown_expansion',
           userMessage: 'Unknown expansion.',
           remediation: 'Run coral-cli expansion list.',
-          context: { name: 'needle' },
+          context: { name: 'vector' },
         });
       },
     },
     {
       label: 'unequip',
-      argv: ['expansion', 'unequip', 'needle'],
+      argv: ['expansion', 'unequip', 'vector'],
       setup: () => {
         mockState.expansionUnequip.mockResolvedValueOnce({
           status: 'error',
           code: 'unknown_expansion',
           userMessage: 'Unknown expansion.',
           remediation: 'Run coral-cli expansion list.',
-          context: { name: 'needle' },
+          context: { name: 'vector' },
         });
       },
     },
     {
       label: 'remove-catalog',
-      argv: ['expansion', 'remove-catalog', 'needle'],
+      argv: ['expansion', 'remove-catalog', 'vector'],
       setup: () => {
         mockState.expansionRemoveCatalog.mockResolvedValueOnce({
           status: 'error',
           code: 'unknown_expansion',
           userMessage: 'Unknown expansion.',
           remediation: 'Run coral-cli expansion list.',
-          context: { name: 'needle' },
+          context: { name: 'vector' },
         });
       },
     },
     {
       label: 'update',
-      argv: ['expansion', 'update', 'needle'],
+      argv: ['expansion', 'update', 'vector'],
       setup: () => {
         mockState.expansionUpdate.mockResolvedValueOnce({
           status: 'error',
           code: 'expansion_install_lock_contended',
           userMessage: 'Expansion install already in progress.',
           remediation: 'Retry after the current install finishes.',
-          context: { name: 'needle' },
+          context: { name: 'vector' },
         });
       },
     },
     {
       label: 'info',
-      argv: ['expansion', 'info', 'needle'],
+      argv: ['expansion', 'info', 'vector'],
       setup: () => {
         mockState.expansionInfo.mockResolvedValueOnce({
           status: 'error',
           code: 'unknown_expansion',
           userMessage: 'Unknown expansion.',
           remediation: 'Run coral-cli expansion list.',
-          context: { name: 'needle' },
+          context: { name: 'vector' },
         });
       },
     },
@@ -640,7 +640,7 @@ describe('cli main routing', () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    await parseWithExpansionNormalization(program, ['expansion', 'equip', 'needle', '--unknown-flag']);
+    await parseWithExpansionNormalization(program, ['expansion', 'equip', 'vector', '--unknown-flag']);
 
     expect(mockState.expansionEquip).not.toHaveBeenCalled();
     const parsed = installErrorSchema.parse(parseSingleExpansionLine(stdout, stderr));

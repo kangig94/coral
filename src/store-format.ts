@@ -1,6 +1,6 @@
 import { discussRegistry } from './discuss/event-registry.js';
 import { persistedDiscussSnapshotSchema } from './discuss/projections.js';
-import { declarativeEngineManifestSchema } from './expansion/manifest/schema.js';
+import { persistedDeclarativeEngineManifestSchema } from './expansion/manifest/schema.js';
 import { providerScopeSchema } from './infra/provider-scope.js';
 import { jobsRegistry } from './jobs/events.js';
 import { jobPhaseSchema } from './jobs/phase.js';
@@ -52,7 +52,7 @@ export function describeCoralStoreFormat(providerRegistry: ProviderRegistry): St
       workflowPlan: workflowPlanSchema,
       providerScope: providerScopeSchema,
       workflowLifecycle: workflowLifecycleSchema,
-      expansionManifest: declarativeEngineManifestSchema,
+      expansionManifest: persistedDeclarativeEngineManifestSchema,
       consumerCursorMetadata: consumerCursorMetadataSchema,
       journalConsumerCursor: journalConsumerCursorSchema,
       corpusConsumerCursor: corpusConsumerCursorSchema,

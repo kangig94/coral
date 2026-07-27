@@ -114,7 +114,7 @@ describe('/health typed shape (AC10a)', () => {
       diagnostics: {
         consumerStuck: [
           { id: 'orama-base', elapsedSinceStopMs: 2500 },
-          { id: 'needle-base', authority: 'journal', cursor: 42, elapsedSinceStopMs: 100 },
+          { id: 'vector-base', authority: 'journal', cursor: 42, elapsedSinceStopMs: 100 },
           {
             id: 'corpus-projection',
             authority: 'corpus',

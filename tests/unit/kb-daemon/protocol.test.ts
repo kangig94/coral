@@ -45,7 +45,7 @@ describe('KB daemon protocol', () => {
   it('requires valid PrincipalWire context on read, mutation, and expansion requests', () => {
     expect(isKbDaemonKbReadRequest({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx })).toBe(true);
     expect(isKbDaemonKbMutationRequest({ method: 'createMemo', args: {}, ctx: daemonCtx })).toBe(true);
-    expect(isKbDaemonExpansionRequest({ method: 'equipExpansion', args: { name: 'needle' }, ctx: daemonCtx })).toBe(
+    expect(isKbDaemonExpansionRequest({ method: 'equipExpansion', args: { name: 'vector' }, ctx: daemonCtx })).toBe(
       true,
     );
 
@@ -60,7 +60,7 @@ describe('KB daemon protocol', () => {
     expect(
       isKbDaemonExpansionRequest({
         method: 'equipExpansion',
-        args: { name: 'needle' },
+        args: { name: 'vector' },
         ctx: { principal: { subject: 'operator', binding: { kind: 'workspace' } } },
       }),
     ).toBe(false);

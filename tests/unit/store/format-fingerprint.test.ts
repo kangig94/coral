@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { persistedDiscussSnapshotSchema } from '#src/discuss/projections.js';
-import { declarativeEngineManifestSchema } from '#src/expansion/manifest/schema.js';
+import { persistedDeclarativeEngineManifestSchema } from '#src/expansion/manifest/schema.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { jobPhaseSchema } from '#src/jobs/phase.js';
 import { jobKindSchema } from '#src/jobs/records.js';
@@ -109,7 +109,7 @@ const currentCodecSchemas = {
   workflowPlan: workflowPlanSchema,
   providerScope: providerScopeSchema,
   workflowLifecycle: workflowLifecycleSchema,
-  expansionManifest: declarativeEngineManifestSchema,
+  expansionManifest: persistedDeclarativeEngineManifestSchema,
   consumerCursorMetadata: consumerCursorMetadataSchema,
   journalConsumerCursor: journalConsumerCursorSchema,
   corpusConsumerCursor: corpusConsumerCursorSchema,

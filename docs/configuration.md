@@ -281,7 +281,7 @@ Discuss sessions are Journal events projected into `projection_discuss`. The sou
 - Runtime state defaults: `~/.coral/data/kb/` for prod, `~/.coral/data-dev/kb/` for dev
 - `CORAL_KB_PATH` still overrides the markdown root only
 - `<runtime-state>/orama/` stores the derived base retrieval snapshot when the Orama CorpusConsumer has applied the current Corpus snapshot
-- `<runtime-state>/needle/` and `<runtime-state>/needle-staging/` are optional Needle expansion artifacts, created only when the Needle expansion is equipped
+- `<runtime-state>/<engine-id>/` and `<runtime-state>/<engine-id>-staging/` are the trusted installed-engine projection locations used by provider extensions
 - Source import staging is machine-local runtime state; clients pass source `filePath`, not a staged markdown path
 
 ### Job state
@@ -303,7 +303,7 @@ Live scratch artifacts:
 | Package                          | Purpose                                                           |
 | -------------------------------- | ----------------------------------------------------------------- |
 | `zod`                            | Schema validation                                                 |
-| `@orama/orama`                   | Base KB retrieval projection and fallback vector search           |
+| `@orama/orama`                   | Base KB full-text retrieval projection                            |
 | `graphology`                     | Graph data structures for KB community analysis                   |
 | `graphology-communities-louvain` | Community detection                                               |
 | `mammoth` / `turndown`           | Source import conversion                                          |
@@ -343,7 +343,7 @@ projection_jobs.diagnostics in store.db        -> projected job terminal diagnos
 ~/.coral/exports-dev/jobs/<jobId>/result.md    -> durable job result export (dev)
 <os-tmpdir>/coral-jobs/<jobId>/                -> live job scratch artifacts
 ~/.coral/kb/ or ~/.coral/kb-dev/               -> KB markdown storage by flavor
-~/.coral/data/kb/ or ~/.coral/data-dev/kb/     -> KB runtime artifacts, Orama/Needle projections, source-import staging
+~/.coral/data/kb/ or ~/.coral/data-dev/kb/     -> KB runtime artifacts, Orama and installed-engine projections, source-import staging
 ```
 
 The important config distinction is simple: Coral is configured as a plugin plus hooks plus CLI-accessible bundles, and flavor-bearing state keeps prod and dev runtimes from reusing the wrong backend or KB data.

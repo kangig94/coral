@@ -45,6 +45,7 @@ import { startKiwiArtifactFetchOnBoot } from './expansion/kiwi-boot.js';
 import { ExpansionLifecycleService, type CoordinatorLifecyclePhase } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 import { createExpansionManifestCatalog } from '../expansion/manifest/catalog.js';
+import { INSTALL_ONLY_PACKAGES } from '../expansion/install-only.js';
 import { initializeCapabilityCatalog } from '../expansion/manifest/fills-validation.js';
 import { resolveKiwiSearchAnalyzerPort, type KiwiSearchAnalyzerPort } from './expansion/bundled-loaders.js';
 import {
@@ -57,6 +58,7 @@ import { waitForCorpusReadiness } from './services/readiness.js';
 import { openWritableStoreDbNoReset, type Database } from '../store/db.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 import type { KbDaemonExpansionRequest, KbDaemonExpansionResult } from './protocol.js';
+import { cleanupRetiredExpansion } from './expansion/retirement.js';
 
 type KbDaemonWriteRuntimeOptions = {
   pluginRoot: string;
@@ -429,6 +431,15 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         now: () => nowDate(runtime.time).toISOString(),
         resolveKbRuntime: () => kb,
         getLifecyclePhase: getExpansionLifecyclePhase,
+        protectedPackageIds: new Set(INSTALL_ONLY_PACKAGES.map((entry) => entry.id)),
+        retireCatalogAbsent: (name, finalizeState) =>
+          cleanupRetiredExpansion(name, {
+            runtime,
+            kbRuntimeDir: kb.runtimeDir,
+            manifestCatalog,
+            consumerDriver: activeConsumerDriver,
+            finalizeState,
+          }),
       });
       expansionLifecycleService = activeExpansionLifecycleService;
       await runPromoteRecovery(kb);

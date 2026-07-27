@@ -38,10 +38,11 @@ import {
   parsePositiveInteger,
 } from '../../validation.js';
 import { captureIndexStateSnapshot, type KbIndexStateSnapshot } from '../lanes.js';
+import { KB_RUNTIME_AUTHORITY } from '../../runtime-authority.js';
 
-export const INDEX_FILE = 'index.json';
-export const INDEX_STATE_FILE = 'index-state.json';
-const CORPUS_PROJECTION_DIR = 'corpus-projection';
+export const INDEX_FILE = KB_RUNTIME_AUTHORITY.index;
+export const INDEX_STATE_FILE = KB_RUNTIME_AUTHORITY.indexState;
+const CORPUS_PROJECTION_DIR = KB_RUNTIME_AUTHORITY.corpusProjection;
 const INDEX_ARTIFACT_DIR = 'index';
 const INDEX_STAGING_DIR = 'staging';
 const INDEX_COMMITS_DIR = 'commits';

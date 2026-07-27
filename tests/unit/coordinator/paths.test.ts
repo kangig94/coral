@@ -75,8 +75,8 @@ describe('composeCoralPaths', () => {
   it('enginePaths accepts an explicit baseDir and exposes per-name accessors', () => {
     const eq = enginePaths('prod', { baseDir: '/tmp/coral-root' });
     expect(eq.engineRoot).toBe(join('/tmp/coral-root', 'data', 'engines'));
-    expect(eq.dataDir('needle')).toBe(join('/tmp/coral-root', 'data', 'engines', 'needle'));
-    expect(eq.installLockPath('needle')).toBe(join('/tmp/coral-root', 'data', 'engines', 'needle', 'install.lock'));
+    expect(eq.dataDir('vector')).toBe(join('/tmp/coral-root', 'data', 'engines', 'vector'));
+    expect(eq.installLockPath('vector')).toBe(join('/tmp/coral-root', 'data', 'engines', '.locks', 'vector.lock'));
   });
 
   it('projectsPaths accepts an explicit baseDir and slugifies the source into dataDir', () => {

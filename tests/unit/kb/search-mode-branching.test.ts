@@ -11,7 +11,7 @@ import {
   bindOramaFtsForTest,
   createCorpusHandle,
   bindVectorBacked,
-  seedNeedleRouteState,
+  seedVectorRouteState,
 } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
@@ -152,7 +152,7 @@ describe('kb search mode branching', () => {
     const oramaSearchSpy = vi.fn((...args: Parameters<typeof actualOrama.search>) => actualOrama.search(...args));
     const embedQuery = vi.fn().mockResolvedValue(new Float32Array([1, 0]));
     const embedDocuments = vi.fn(async (texts: string[]) => texts.map(() => new Float32Array([1, 0])));
-    const needleSearchSpy = vi.fn().mockResolvedValue({
+    const vectorSearchSpy = vi.fn().mockResolvedValue({
       hits: [
         {
           entryId: 'note:vector-note',
@@ -183,10 +183,10 @@ describe('kb search mode branching', () => {
     bindVectorBacked(
       kb,
       {
-        search: needleSearchSpy,
+        search: vectorSearchSpy,
       },
       createCorpusHandle(
-        seedNeedleRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot(), {
+        seedVectorRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot(), {
           invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot(),
         }),
       ),
@@ -231,7 +231,7 @@ describe('kb search mode branching', () => {
         search: vi.fn(async () => ({ hits: [] })),
       },
       createCorpusHandle(
-        seedNeedleRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot(), {
+        seedVectorRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot(), {
           invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot(),
         }),
       ),
@@ -248,7 +248,7 @@ describe('kb search mode branching', () => {
   it('promotes explicit auto mode to hybrid when semantic evidence is present', async () => {
     const embedQuery = vi.fn().mockResolvedValue(new Float32Array([1, 0]));
     const embedDocuments = vi.fn(async (texts: string[]) => texts.map(() => new Float32Array([1, 0])));
-    const needleSearchSpy = vi.fn().mockResolvedValue({
+    const vectorSearchSpy = vi.fn().mockResolvedValue({
       hits: [
         {
           entryId: 'note:auto-vector',
@@ -277,10 +277,10 @@ describe('kb search mode branching', () => {
     bindVectorBacked(
       kb,
       {
-        search: needleSearchSpy,
+        search: vectorSearchSpy,
       },
       createCorpusHandle(
-        seedNeedleRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot(), {
+        seedVectorRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot(), {
           invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot(),
         }),
       ),
@@ -314,7 +314,7 @@ describe('kb search mode branching', () => {
         search: vi.fn(async () => ({ hits: [] })),
       },
       createCorpusHandle(
-        seedNeedleRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot(), {
+        seedVectorRouteState(writableDbByRuntime.get(kb)!, kb.captureCorpusSnapshot(), {
           invalidateCorpusStateSnapshot: () => kb.invalidateCorpusStateSnapshot(),
         }),
       ),

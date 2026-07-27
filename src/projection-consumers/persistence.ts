@@ -63,6 +63,8 @@ type RawCursorMetadataRow = {
   registration_kind: string | null;
 };
 
+export type RetiredExpansionCursorPreflight = { readonly status: 'missing' } | { readonly status: 'expansion-owned' };
+
 export const journalConsumerCursorSchema = z.object({ cursor: z.number().int().nonnegative() }).strict();
 type JournalCursorRow = z.infer<typeof journalConsumerCursorSchema>;
 
@@ -283,6 +285,36 @@ export class ConsumerCursorRepository {
   readCorpusCursor(consumerId: string): KbCorpusSnapshot {
     const row = this.readCorpusCursorStmt.get(consumerId);
     return normalizeCorpusCursor(row === undefined ? undefined : corpusConsumerCursorSchema.parse(row));
+  }
+
+  preflightRetiredExpansionCursor(consumerId: string): RetiredExpansionCursorPreflight {
+    const raw = this.selectCursorMetadataStmt.get(consumerId);
+    if (raw === undefined) {
+      return { status: 'missing' };
+    }
+    const parsed = consumerCursorMetadataSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error(`Consumer '${consumerId}' has invalid persisted cursor metadata`);
+    }
+    if (parsed.data.registration_kind !== 'expansion') {
+      throw consumerRegistrationKindMismatchError(consumerId, 'expansion', parsed.data.registration_kind);
+    }
+    return { status: 'expansion-owned' };
+  }
+
+  deletePreflightedRetiredExpansionCursor(consumerId: string, preflight: RetiredExpansionCursorPreflight): void {
+    if (preflight.status === 'missing') {
+      if (this.selectCursorMetadataStmt.get(consumerId) !== undefined) {
+        throw new Error(`Consumer '${consumerId}' cursor appeared during retirement`);
+      }
+      return;
+    }
+    const result = this.db
+      .prepare<[string]>("DELETE FROM consumer_cursors WHERE consumer_id = ? AND registration_kind = 'expansion'")
+      .run(consumerId);
+    if (Number(result.changes) !== 1) {
+      throw new Error(`Consumer '${consumerId}' cursor ownership changed during retirement`);
+    }
   }
 
   advanceJournalCursor(reg: JournalConsumerRegistration, newCursor: number): void {

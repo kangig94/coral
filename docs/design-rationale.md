@@ -156,7 +156,7 @@ Reset authority and support inspection deliberately point in opposite directions
 
 ## 6. Curiosity-Driven Expansion (Zelda Metaphor)
 
-Coral ships as a lightweight plugin (~3MB bundle): install gives a fully functional system for its zero-config surface (CLI, jobs, sessions, discuss, workflow, KB FTS). Features that intrinsically need external resources (vector retrieval needs an embedding engine) are documented in README with a one-line setup per feature. Users opt into heavier capabilities via the `/equip <name>` skill.
+Coral ships as a lightweight plugin (~3MB bundle): install gives a fully functional system for its zero-config surface (CLI, jobs, sessions, discuss, workflow, KB FTS). Gemini and ONNX are optional first-party embedding engines. Vector retrieval remains a provider-neutral extension point and additionally requires an external engine that fills `kb.vector`; no current first-party package does so. Users opt into available heavier capabilities via the `/equip <name>` skill.
 
 ### 6.1 UX philosophy
 

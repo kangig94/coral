@@ -110,7 +110,6 @@ When `--release` is passed, it additionally copies all artifacts from `clients/b
 | `__STORE_FORMAT_FINGERPRINT__` | probe backend output          | Bind executable identity to the exact store contract    |
 | `__PLUGIN_ROOT__`              | CJS banner using `__dirname`  | Resolve plugin-relative assets at runtime               |
 | `__IS_CORAL_BACKEND_MAIN__`    | build script                  | Backend main-entry guard                                |
-| `CORAL_VEC_ADDON_VERSION`      | coral-needle release metadata | KB addon reporting                                      |
 
 Unbundled hooks read the adjacent manifest; bundled runtimes compare that same manifest with their injected identity and the hashes of all three adjacent executables.
 

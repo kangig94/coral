@@ -52,6 +52,9 @@ describe('bindSocket stale-clear race', () => {
     const writeFileSync = vi.fn((path: string) => {
       lockFiles.add(path);
     });
+    const readdirSync = vi.fn((path: string) =>
+      [...lockFiles].filter((file) => file.startsWith(`${path}/`)).map((file) => file.slice(path.length + 1)),
+    );
     const rmSync = vi.fn((path: string) => {
       lockDirs.delete(path);
       for (const file of [...lockFiles]) {
@@ -84,6 +87,7 @@ describe('bindSocket stale-clear race', () => {
     vi.doMock('node:fs', () => ({
       chmodSync,
       mkdirSync,
+      readdirSync,
       rmSync,
       rmdirSync,
       statSync,
@@ -181,6 +185,9 @@ describe('bindSocket stale-clear race', () => {
     const writeFileSync = vi.fn((path: string) => {
       lockFiles.add(path);
     });
+    const readdirSync = vi.fn((path: string) =>
+      [...lockFiles].filter((file) => file.startsWith(`${path}/`)).map((file) => file.slice(path.length + 1)),
+    );
     const rmSync = vi.fn((path: string) => {
       lockDirs.delete(path);
       for (const file of [...lockFiles]) {
@@ -215,6 +222,7 @@ describe('bindSocket stale-clear race', () => {
     vi.doMock('node:fs', () => ({
       chmodSync,
       mkdirSync,
+      readdirSync,
       rmSync,
       rmdirSync,
       statSync,

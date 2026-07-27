@@ -1,5 +1,4 @@
 import oramaExpansion from '#src/engines/orama/expansion.js';
-import { needleInstaller } from '#src/engines/needle/install.js';
 import { KIWI_INSTALLER_VERSION, kiwiInstaller } from '#src/engines/kiwi/install.js';
 import type { EngineManifest, Expansion, ExpansionHost, InstallOnlyManifest } from './contract.js';
 import { parseEngineManifests } from './manifest/schema.js';
@@ -23,16 +22,6 @@ export const BUNDLED_ENGINES: readonly EngineManifest[] = parseEngineManifests([
     tier: 'installed',
     description: 'Local ONNX embedding model (~100MB one-time download; runs offline, no API key)',
     fills: ['kb.embedding'],
-  },
-  {
-    id: 'needle',
-    version: '0.2.0',
-    specifier: '#src/engines/needle/expansion.js',
-    tier: 'installed',
-    description: 'Needle vector backend (DuckDB-backed ScanANN; replaces Orama vector when equipped)',
-    installer: needleInstaller,
-    onboarding: [{ kind: 'require-binding', binding: 'kb.embedding' }],
-    fills: ['kb.vector'],
   },
   {
     id: 'orama',

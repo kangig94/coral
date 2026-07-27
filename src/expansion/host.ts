@@ -199,6 +199,9 @@ export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
       return deps.roleRegistry.registerScoped(wrappedRole, scope);
     },
     registerConsumer(reg, scope) {
+      if (deps.manifest.tier === 'installed' && reg.kind !== 'stateless' && reg.id !== host.id) {
+        throw new Error(`Installed expansion '${host.id}' must register cursor consumer '${host.id}'`);
+      }
       const registrationKind = deriveRegistrationKind(deps.manifest.tier, reg);
       const tierAware: ConsumerRegistration = { ...reg, registrationKind } as ConsumerRegistration;
       const handle = deps.consumerDriver.register(tierAware);

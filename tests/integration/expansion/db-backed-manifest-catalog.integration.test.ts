@@ -60,4 +60,38 @@ describe('DB-backed expansion manifest catalog', () => {
       readDb.close();
     }
   });
+
+  it.each([
+    {
+      label: 'row id and decoded manifest id drift',
+      rowId: 'row-id',
+      manifest: { ...dummyInstalledDbManifest, id: 'manifest-id' },
+    },
+    {
+      label: 'persisted bundled-tier entry',
+      rowId: 'legacy-bundled',
+      manifest: { ...dummyInstalledDbManifest, id: 'legacy-bundled', tier: 'bundled' },
+    },
+  ])('fails closed for $label', ({ rowId, manifest }) => {
+    const home = tempRoot('coral-db-backed-manifest-invalid-home-');
+    const runtime = createRealRuntime('prod', { baseDir: home });
+    const dbPath = join(tempRoot('coral-db-backed-manifest-invalid-store-'), 'store.db');
+    const storeFormat = currentCoralStoreFormat();
+    const db = openWritableStoreDbNoReset(runtime, { path: dbPath, storeFormat });
+    db.prepare('INSERT INTO expansion_manifest_catalog (id, manifest_json, updated_at) VALUES (?, ?, ?)').run(
+      rowId,
+      JSON.stringify(manifest),
+      '2026-01-01T00:00:00.000Z',
+    );
+    db.close();
+
+    const readDb = openReadOnlyStoreDatabase(runtime, { path: dbPath, storeFormat });
+    try {
+      expect(() => createExpansionManifestCatalog({ readDb })).toThrow(
+        `Invalid expansion manifest catalog row '${rowId}'`,
+      );
+    } finally {
+      readDb.close();
+    }
+  });
 });

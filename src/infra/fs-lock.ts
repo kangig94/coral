@@ -1,16 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { StoragePort, TimePort } from './port-types.js';
+import type { StoragePort, TimePort, TimerHandle } from './port-types.js';
 
 const LOCK_RETRY_INTERVAL_MS = 50;
 const STALE_LOCK_MS = 30_000;
 const syncWaitState = new Int32Array(new SharedArrayBuffer(4));
 
 export type DirectoryLockDeps = {
-  storage: Pick<StoragePort, 'mkdirSync' | 'rmSync' | 'rmdirSync' | 'statSync' | 'unlinkSync' | 'writeFileSync'>;
-  time: Pick<TimePort, 'now' | 'sleep'>;
+  storage: Pick<
+    StoragePort,
+    'mkdirSync' | 'readdirSync' | 'rmSync' | 'rmdirSync' | 'statSync' | 'unlinkSync' | 'writeFileSync'
+  >;
+  time: Pick<TimePort, 'now' | 'sleep' | 'setInterval' | 'clearInterval'>;
   staleMs?: number;
+  heartbeatMs?: number;
   signal?: AbortSignal;
 };
 
@@ -46,6 +50,7 @@ function resolveDirectoryLockDeps(deps?: DirectoryLockDeps): DirectoryLockDeps {
   return {
     storage: {
       mkdirSync,
+      readdirSync,
       rmSync,
       rmdirSync,
       statSync,
@@ -59,6 +64,16 @@ function resolveDirectoryLockDeps(deps?: DirectoryLockDeps): DirectoryLockDeps {
           const timer = setTimeout(resolve, ms);
           timer.unref?.();
         }),
+      setInterval: (fn, ms) => {
+        const timer = setInterval(fn, ms);
+        timer.unref?.();
+        return timer;
+      },
+      clearInterval: (handle) => {
+        if (handle !== null) {
+          clearInterval(handle as NodeJS.Timeout);
+        }
+      },
     },
   };
 }
@@ -98,21 +113,51 @@ function tryRemoveOwnedLockDirectory(lockDir: string, ownerToken: string, storag
   }
 }
 
-function releaseDirectoryLock(lockDir: string, storage: DirectoryLockDeps['storage'], ownerToken: string): () => void {
+function startDirectoryLockHeartbeat(lockDir: string, ownerToken: string, deps: DirectoryLockDeps): TimerHandle {
+  const ownerPath = lockOwnerMarkerPath(lockDir, ownerToken);
+  const staleMs = deps.staleMs ?? STALE_LOCK_MS;
+  const heartbeatMs = deps.heartbeatMs ?? Math.max(10, Math.floor(staleMs / 3));
+  return deps.time.setInterval(() => {
+    try {
+      deps.storage.statSync(ownerPath);
+      deps.storage.writeFileSync(ownerPath, ownerToken, { encoding: 'utf-8', mode: 0o600 });
+    } catch {
+      // The owner marker vanished, so this holder was fenced out. The release
+      // path remains token-safe and will not remove a replacement lock.
+    }
+  }, heartbeatMs);
+}
+
+function releaseDirectoryLock(
+  lockDir: string,
+  deps: DirectoryLockDeps,
+  ownerToken: string,
+  heartbeat: TimerHandle,
+): () => void {
   return () => {
-    tryRemoveOwnedLockDirectory(lockDir, ownerToken, storage);
+    deps.time.clearInterval(heartbeat);
+    tryRemoveOwnedLockDirectory(lockDir, ownerToken, deps.storage);
   };
 }
 
-// Owner-token release is implemented above so a process only removes its own
-// lock. The mtime-heartbeat half is deferred because StoragePort does not expose
-// a repeating-timer dependency here. Residual risk: a lock held past staleMs can
-// be stolen, briefly creating two holders; KB callers bound this in practice
-// with a stale threshold around 10 minutes, much longer than a peer acquire
-// timeout.
+function latestLockMtime(lockDir: string, deps: DirectoryLockDeps): number {
+  let latest = deps.storage.statSync(lockDir).mtimeMs;
+  for (const entry of deps.storage.readdirSync(lockDir)) {
+    if (!entry.startsWith('owner-') || !entry.endsWith('.lock')) {
+      continue;
+    }
+    try {
+      latest = Math.max(latest, deps.storage.statSync(join(lockDir, entry)).mtimeMs);
+    } catch {
+      // A concurrent release may remove the marker between list and stat.
+    }
+  }
+  return latest;
+}
+
 function isStaleLock(lockDir: string, deps: DirectoryLockDeps): boolean {
   try {
-    return deps.time.now() - deps.storage.statSync(lockDir).mtimeMs > (deps.staleMs ?? STALE_LOCK_MS);
+    return deps.time.now() - latestLockMtime(lockDir, deps) > (deps.staleMs ?? STALE_LOCK_MS);
   } catch {
     return false;
   }
@@ -176,7 +221,8 @@ export async function acquireDirectoryLock(
       deps.storage.mkdirSync(lockDir);
       const ownerToken = randomUUID();
       writeLockOwnerMarker(lockDir, ownerToken, deps.storage);
-      return releaseDirectoryLock(lockDir, deps.storage, ownerToken);
+      const heartbeat = startDirectoryLockHeartbeat(lockDir, ownerToken, deps);
+      return releaseDirectoryLock(lockDir, deps, ownerToken, heartbeat);
     } catch (error: unknown) {
       if (!isAlreadyExistsError(error)) throw error;
     }
@@ -209,7 +255,8 @@ export function acquireDirectoryLockSync(
       deps.storage.mkdirSync(lockDir);
       const ownerToken = randomUUID();
       writeLockOwnerMarker(lockDir, ownerToken, deps.storage);
-      return releaseDirectoryLock(lockDir, deps.storage, ownerToken);
+      const heartbeat = startDirectoryLockHeartbeat(lockDir, ownerToken, deps);
+      return releaseDirectoryLock(lockDir, deps, ownerToken, heartbeat);
     } catch (error: unknown) {
       if (!isAlreadyExistsError(error)) throw error;
     }

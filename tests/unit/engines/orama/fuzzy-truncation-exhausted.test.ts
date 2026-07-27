@@ -24,7 +24,7 @@ describe('Orama fuzzy fallback honors the exhausted contract on truncation', () 
     // One past the scan cap forces truncation; a non-empty fuzzy term skips the
     // empty-fuzzy early return so we exercise the truncation branch specifically.
     const db = fakeDbWithDocuments(ORAMA_FUZZY_DOCUMENT_SCAN_LIMIT + 1);
-    const analysis = { fuzzy: ['needle'] } as unknown as OramaSearchQueryAnalysis;
+    const analysis = { fuzzy: ['vector'] } as unknown as OramaSearchQueryAnalysis;
 
     const result = collectFuzzyOramaSearchCandidates(db, analysis, 10);
 

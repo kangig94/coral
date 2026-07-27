@@ -57,14 +57,14 @@ describe('createExpansionHost', () => {
       kb,
       scope,
       roleRegistry: kb.roleRegistry,
-      manifest: manifest('needle', 'installed', { fills: [KB_VECTOR_CAPABILITY] }),
+      manifest: manifest('vector', 'installed', { fills: [KB_VECTOR_CAPABILITY] }),
       consumerDriver: createConsumerDriver(vi.fn()),
     });
 
-    host.bind(KB_VECTOR_CAPABILITY, 'needle');
+    host.bind(KB_VECTOR_CAPABILITY, 'vector');
 
-    expect(kb.capabilityRegistry.runtimeView().read<string>(KB_VECTOR_CAPABILITY)).toBe('needle');
-    expect(kb.capabilityRegistry.runtimeView().status(KB_VECTOR_CAPABILITY)?.heldBy).toBe('needle');
+    expect(kb.capabilityRegistry.runtimeView().read<string>(KB_VECTOR_CAPABILITY)).toBe('vector');
+    expect(kb.capabilityRegistry.runtimeView().status(KB_VECTOR_CAPABILITY)?.heldBy).toBe('vector');
   });
 
   it('rewraps binding-empty as binding-required', () => {
@@ -74,7 +74,7 @@ describe('createExpansionHost', () => {
       kb,
       scope: { [Symbol.dispose]() {} },
       roleRegistry: kb.roleRegistry,
-      manifest: manifest('needle', 'installed', {
+      manifest: manifest('vector', 'installed', {
         onboarding: [{ kind: 'require-binding', binding: KB_EMBEDDING_CAPABILITY }],
       }),
       consumerDriver: createConsumerDriver(vi.fn()),
@@ -86,7 +86,7 @@ describe('createExpansionHost', () => {
     } catch (error) {
       expect(error).toMatchObject({
         code: 'binding_required',
-        context: { binding: 'kb.embedding', requiredBy: 'needle' },
+        context: { binding: 'kb.embedding', requiredBy: 'vector' },
       });
     }
   });
@@ -111,11 +111,11 @@ describe('createExpansionHost', () => {
       kb,
       scope,
       roleRegistry: kb.roleRegistry,
-      manifest: manifest('needle'),
+      manifest: manifest('vector'),
       consumerDriver,
     });
     const reg = {
-      id: 'consumer-a',
+      id: 'vector',
       authority: 'journal' as const,
       kind: 'apply' as const,
       async apply() {},
@@ -172,12 +172,12 @@ describe('createExpansionHost', () => {
       kb,
       scope: { [Symbol.dispose]() {} },
       roleRegistry: kb.roleRegistry,
-      manifest: manifest('needle'),
+      manifest: manifest('vector'),
       consumerDriver,
     });
     installedApplyHost.registerConsumer(
       {
-        id: 'needle',
+        id: 'vector',
         authority: 'corpus',
         kind: 'apply',
         corpusInterest: 'content',
@@ -197,5 +197,52 @@ describe('createExpansionHost', () => {
     installedStatelessHost.registerConsumer({ id: 'gemini', kind: 'stateless' }, installedStatelessHost.scope);
 
     expect(captured.map((reg) => reg.registrationKind)).toEqual(['base', 'expansion', 'stateless']);
+  });
+
+  it('rejects foreign cursor identities before repository registration but allows foreign stateless ids', () => {
+    const { runtime, kb } = createTestRuntime();
+    const register = vi.fn((reg: ConsumerRegistration) => ({
+      id: reg.id,
+      registrationKind: reg.registrationKind ?? 'base',
+      lastApplyError: null,
+      stop: async () => {},
+      unregister: async () => {},
+      status: () => ({
+        authority: 'journal' as const,
+        cursor: 0,
+        pending: false,
+        lastApplyError: null,
+      }),
+    }));
+    const host = createExpansionHost({
+      runtime,
+      kb,
+      scope: { [Symbol.dispose]() {} },
+      roleRegistry: kb.roleRegistry,
+      manifest: manifest('vector'),
+      consumerDriver: createConsumerDriver(register),
+    });
+
+    expect(() =>
+      host.registerConsumer(
+        {
+          id: 'foreign-cursor',
+          authority: 'journal',
+          kind: 'apply',
+          async apply() {},
+        },
+        host.scope,
+      ),
+    ).toThrow(/must register cursor consumer 'vector'/u);
+    expect(register).not.toHaveBeenCalled();
+
+    expect(host.registerConsumer({ id: 'foreign-stateless', kind: 'stateless' }, host.scope).id).toBe(
+      'foreign-stateless',
+    );
+    expect(register).toHaveBeenCalledWith({
+      id: 'foreign-stateless',
+      kind: 'stateless',
+      registrationKind: 'stateless',
+    });
   });
 });
