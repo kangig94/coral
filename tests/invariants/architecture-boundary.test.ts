@@ -1188,26 +1188,22 @@ describe('architecture boundary guard', () => {
     expect(collectEngineImportViolations([...PARSED_IMPORT_EDGES, ...PARSED_SUBPATH_IMPORT_EDGES])).toEqual([]);
   });
 
-  it('src/kb/** and src/coordinator/** carry no engine-id string literals (AC7.2)', () => {
+  it('engine-blind domains carry no engine-id string literals (AC7.2)', () => {
     // Engine-id literals (`'orama'`, `'needle'`, `'gemini'`, `'onnx'`) leaking
-    // into KB or coordinator code defeats engine-blindness regardless of
-    // whether the leak is wired through an import. Slot names
+    // into KB, coordinator, CLI expansion, infra, or runtime code defeat
+    // engine-blindness regardless of whether the leak is wired through an
+    // import. Slot names
     // (`'kb.fts'`, `'kb.vector'`, `'kb.embedding'`) and authority/interest
     // names (`'corpus'`, `'content'`, `'metadata'`, `'journal'`) remain
     // allowed — they are capability vocabulary, not engine identity.
-    // Allowlist the bundled-loader wiring point (the only legitimate consumer
-    // of bundled engine ids in coordinator code).
-    const ENGINE_IDS = new Set(['orama', 'needle', 'gemini', 'onnx']);
-    const ALLOWED_FILES = new Set<string>(['src/kb-daemon/expansion/bundled-loaders.ts']);
+    const engineBlindScopes = ['src/kb/', 'src/coordinator/', 'src/cli/expansion/', 'src/infra/', 'src/runtime/'];
+    const engineIds = new Set(['orama', 'needle', 'gemini', 'onnx', 'kb-scann']);
 
     const violations: string[] = [];
 
     for (const filePath of PRODUCTION_FILE_PATHS) {
       const canonical = toCanonicalSrcPath(REPO_ROOT, filePath);
-      if (!canonical.startsWith('src/kb/') && !canonical.startsWith('src/coordinator/')) {
-        continue;
-      }
-      if (ALLOWED_FILES.has(canonical)) {
+      if (!engineBlindScopes.some((scope) => canonical.startsWith(scope))) {
         continue;
       }
 
@@ -1215,9 +1211,9 @@ describe('architecture boundary guard', () => {
       const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 
       function visit(node: ts.Node): void {
-        if (ts.isStringLiteral(node) && ENGINE_IDS.has(node.text)) {
+        if (ts.isStringLiteral(node) && engineIds.has(node.text)) {
           violations.push(`${canonical}:${node.getStart()}: literal '${node.text}'`);
-        } else if (ts.isNoSubstitutionTemplateLiteral(node) && ENGINE_IDS.has(node.text)) {
+        } else if (ts.isNoSubstitutionTemplateLiteral(node) && engineIds.has(node.text)) {
           violations.push(`${canonical}:${node.getStart()}: template-literal '${node.text}'`);
         }
         ts.forEachChild(node, visit);
