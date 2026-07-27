@@ -1,4 +1,4 @@
-import { isKbRuntimeAuthority } from '../kb/runtime-authority.js';
+import { isKbRuntimeAuthority } from '../runtime/kb-runtime-authority.js';
 import {
   validateCanonicalExpansionPackageId,
   type CanonicalExpansionPackageIdValidation,

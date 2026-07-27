@@ -1154,7 +1154,7 @@ describe('architecture boundary guard', () => {
       }
       // The top-level KB reservation authority intentionally records the
       // exact Orama-owned directory so retirement can reject that path.
-      if (canonical === 'src/kb/runtime-authority.ts') {
+      if (canonical === 'src/runtime/kb-runtime-authority.ts') {
         continue;
       }
 

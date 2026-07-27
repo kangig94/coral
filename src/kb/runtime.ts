@@ -68,7 +68,7 @@ import { createCorpusStorage, type CorpusStorage } from './corpus/rescan/storage
 import { type EntityGraph, type KbIndex } from './entry-types.js';
 import { createCorpusStateMirror } from './state/corpus-state.js';
 import { createKbRuntimePaths, type KbRuntimePaths } from './paths.js';
-import { KB_RUNTIME_AUTHORITY } from './runtime-authority.js';
+import { KB_RUNTIME_AUTHORITY } from '../runtime/kb-runtime-authority.js';
 import { createKbProjectionInput } from './projection-input.js';
 import { EngineArtifactRegistry } from './corpus/artifact-registry.js';
 import { createCorpusAuthorityBaselineStore } from './corpus/rescan/authority-baseline.js';

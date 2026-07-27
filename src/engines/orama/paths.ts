@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { KB_RUNTIME_AUTHORITY } from '../../kb/runtime-authority.js';
+import { KB_RUNTIME_AUTHORITY } from '../../runtime/kb-runtime-authority.js';
 
 const ORAMA_INDEX_FILE = 'orama-index.json';
 const ORAMA_INDEX_METADATA_FILE = 'orama-index.metadata.json';

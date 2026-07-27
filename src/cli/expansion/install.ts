@@ -73,6 +73,7 @@ async function applyPostInstallCatalogActions(
   result: InstallResponse,
   runtime: Runtime,
   name: string,
+  assertLockOwned: () => void,
 ): Promise<InstallResponse> {
   if (!('postInstall' in result) || result.postInstall === undefined) {
     return result;
@@ -110,7 +111,9 @@ async function applyPostInstallCatalogActions(
     if (manifest.id !== name) {
       throw new Error(`Expansion package '${name}' cannot register manifest '${manifest.id}'`);
     }
+    assertLockOwned();
     catalog.upsertInstalledEntry(manifest);
+    assertLockOwned();
   } finally {
     db.close();
   }
@@ -157,7 +160,9 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
     );
     assertCanonicalInstallerTarget(result, runtime, name);
     release.assertOwned();
-    return await applyPostInstallCatalogActions(result, runtime, name);
+    const finalized = await applyPostInstallCatalogActions(result, runtime, name, () => release.assertOwned());
+    release.assertOwned();
+    return finalized;
   } finally {
     release();
   }

@@ -57,6 +57,14 @@ describe('bindSocket stale-clear race', () => {
       [...lockFiles].filter((file) => file.startsWith(`${path}/`)).map((file) => file.slice(path.length + 1)),
     );
     const renameSync = vi.fn((oldPath: string, newPath: string) => {
+      if (lockFiles.delete(oldPath)) {
+        if (lockFiles.has(newPath)) {
+          lockFiles.add(oldPath);
+          throw errno('EEXIST');
+        }
+        lockFiles.add(newPath);
+        return;
+      }
       if (!lockDirs.delete(oldPath)) {
         throw errno('ENOENT');
       }
@@ -88,9 +96,20 @@ describe('bindSocket stale-clear race', () => {
         throw errno('ENOENT');
       }
     });
-    const statSync = vi.fn((path: string) => {
+    const statSync = vi.fn((path: string, options?: { bigint?: true }) => {
       if (!lockDirs.has(path)) {
         throw errno('ENOENT');
+      }
+      if (options?.bigint === true) {
+        return {
+          dev: 1n,
+          ino: 1n,
+          mode: 0n,
+          size: 0n,
+          mtimeNs: BigInt(Date.now()) * 1_000_000n,
+          isDirectory: () => true,
+          isFile: () => false,
+        };
       }
       return { size: 0, mtimeMs: Date.now(), isDirectory: () => true, isFile: () => false };
     });
@@ -208,6 +227,14 @@ describe('bindSocket stale-clear race', () => {
       [...lockFiles].filter((file) => file.startsWith(`${path}/`)).map((file) => file.slice(path.length + 1)),
     );
     const renameSync = vi.fn((oldPath: string, newPath: string) => {
+      if (lockFiles.delete(oldPath)) {
+        if (lockFiles.has(newPath)) {
+          lockFiles.add(oldPath);
+          throw errno('EEXIST');
+        }
+        lockFiles.add(newPath);
+        return;
+      }
       if (!lockDirs.delete(oldPath)) {
         throw errno('ENOENT');
       }
@@ -239,9 +266,20 @@ describe('bindSocket stale-clear race', () => {
         throw errno('ENOENT');
       }
     });
-    const statSync = vi.fn((path: string) => {
+    const statSync = vi.fn((path: string, options?: { bigint?: true }) => {
       if (!lockDirs.has(path)) {
         throw errno('ENOENT');
+      }
+      if (options?.bigint === true) {
+        return {
+          dev: 1n,
+          ino: 1n,
+          mode: 0n,
+          size: 0n,
+          mtimeNs: BigInt(Date.now()) * 1_000_000n,
+          isDirectory: () => true,
+          isFile: () => false,
+        };
       }
       return { size: 0, mtimeMs: Date.now(), isDirectory: () => true, isFile: () => false };
     });

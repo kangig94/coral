@@ -6,7 +6,7 @@ import { sha256Hex } from '../../infra/hash.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import { nowIsoString } from '../../infra/time.js';
 import { isWikiEntry, parseKbEntryId, wikiEntryId, type KbEntryId, type KbIndex } from '../entry-types.js';
-import { KB_RUNTIME_AUTHORITY } from '../runtime-authority.js';
+import { KB_RUNTIME_AUTHORITY } from '../../runtime/kb-runtime-authority.js';
 
 const TOUCH_JOURNAL_FILENAME = KB_RUNTIME_AUTHORITY.touchJournal;
 const TOUCH_JOURNAL_TOMBSTONE_FILENAME = KB_RUNTIME_AUTHORITY.touchJournalTombstone;

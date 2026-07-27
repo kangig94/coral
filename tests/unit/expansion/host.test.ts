@@ -69,7 +69,10 @@ describe('createExpansionHost', () => {
     expect(host.kb.ownProjectionStagingDir).toBe(`${kb.runtimeDir}/vector-staging`);
   });
 
-  it('rejects an unsafe installed id before deriving host-owned paths', () => {
+  it.each([
+    ['../escape', /is unsafe/u],
+    ['corpus-projection', /is reserved/u],
+  ])('rejects installed id %s before deriving host-owned paths', (id, message) => {
     const { runtime, kb } = createTestRuntime();
 
     expect(() =>
@@ -78,10 +81,10 @@ describe('createExpansionHost', () => {
         kb,
         scope: { [Symbol.dispose]() {} },
         roleRegistry: kb.roleRegistry,
-        manifest: manifest('../escape'),
+        manifest: manifest(id),
         consumerDriver: createConsumerDriver(vi.fn()),
       }),
-    ).toThrow(/is unsafe/u);
+    ).toThrow(message);
   });
 
   it('rewraps binding-empty as binding-required', () => {

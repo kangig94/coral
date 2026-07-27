@@ -7,7 +7,7 @@ import type { ResourceBinding } from '../../../security/principal.js';
 import type { IdPort, ProcessPort } from '../../../runtime/ports.js';
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../../corpus/frontmatter.js';
 import { assertWithin, sourceImportStageDir } from '../../paths.js';
-import { KB_RUNTIME_AUTHORITY } from '../../runtime-authority.js';
+import { KB_RUNTIME_AUTHORITY } from '../../../runtime/kb-runtime-authority.js';
 import type { KbSourceFrontmatter } from '../../entry-types.js';
 import { assertNonEmptyText, assertSourceSlug } from '../../validation.js';
 import { convertSourceInWorker } from './conversion-worker.js';

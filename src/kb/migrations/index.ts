@@ -12,7 +12,7 @@ import type { KbRuntime } from '../contract.js';
 import type { KbNoteFrontmatter, KbSourceFrontmatter } from '../entry-types.js';
 import { stripMdExt } from '../paths.js';
 import { loadKbNote, loadKbSource } from '../read.js';
-import { KB_RUNTIME_AUTHORITY } from '../runtime-authority.js';
+import { KB_RUNTIME_AUTHORITY } from '../../runtime/kb-runtime-authority.js';
 
 const CURRENT_KB_MIGRATION_VERSION = 1;
 const VERSION_MARKER_PATH = [KB_RUNTIME_AUTHORITY.migrations, 'kb-version.json'] as const;

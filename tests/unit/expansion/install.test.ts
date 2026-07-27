@@ -9,6 +9,7 @@ import { writeKiwiModelFilesAtomicInWorker } from '#src/engines/kiwi/model-artif
 import { KIWI_MODEL_FILES, type KiwiModelFileName } from '#src/engines/kiwi/constants.js';
 import { installResponseSchema } from '#src/expansion/rpc-contract.js';
 import { enginePaths } from '#src/infra/path/engine.js';
+import { acquirePackageOperationLockAtPath } from '#src/infra/package-operation-lock.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { installExpansion, removeInstallArtifacts } from '#src/cli/expansion/install.js';
@@ -126,6 +127,62 @@ describe('installExpansion', () => {
     });
 
     await expect(installExpansion('kiwi', { runtime })).rejects.toThrow();
+  });
+});
+
+describe('Kiwi direct installer boundary', () => {
+  it('rejects a foreign package identity before touching Kiwi data', async () => {
+    const fixture = createFixture();
+    const runtime = createRuntimeForFixture(fixture);
+    const targetDir = runtime.paths.coral.engine.dataDir('kiwi');
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(join(targetDir, 'sentinel'), 'keep', 'utf-8');
+
+    await expect(
+      kiwiInstaller.uninstall({
+        name: 'foreign-package',
+        version: '1.0.0',
+        runtime,
+      }),
+    ).rejects.toThrow(/identity mismatch/u);
+    expect(pathExists(join(targetDir, 'sentinel'))).toBe(true);
+  });
+
+  it('keeps direct uninstall behind the shared package-operation lock', async () => {
+    const fixture = createFixture();
+    const runtime = createRuntimeForFixture(fixture);
+    const targetDir = runtime.paths.coral.engine.dataDir('kiwi');
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(join(targetDir, 'sentinel'), 'keep', 'utf-8');
+    const lease = await acquirePackageOperationLockAtPath(
+      runtime.paths.coral.engine.installLockPath('kiwi'),
+      { storage: runtime.storage, time: runtime.time },
+      50,
+    );
+
+    try {
+      await expect(
+        kiwiInstaller.uninstall({
+          name: 'kiwi',
+          version: '1.0.0',
+          runtime,
+          lockTimeoutMs: 50,
+        }),
+      ).resolves.toMatchObject({ status: 'error', code: 'expansion_install_lock_contended' });
+      expect(pathExists(join(targetDir, 'sentinel'))).toBe(true);
+    } finally {
+      lease();
+    }
+
+    await expect(
+      kiwiInstaller.uninstall({
+        name: 'kiwi',
+        version: '1.0.0',
+        runtime,
+        lockTimeoutMs: 50,
+      }),
+    ).resolves.toMatchObject({ status: 'uninstalled' });
+    expect(pathExists(targetDir)).toBe(false);
   });
 });
 

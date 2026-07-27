@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { validateCanonicalExpansionPackageId, validateExpansionPackageId } from '#src/expansion/package-id.js';
 import { parseDeclarativeEngineManifest } from '#src/expansion/manifest/schema.js';
-import { KB_RUNTIME_EXACT_AUTHORITIES, KB_RUNTIME_PATTERNED_AUTHORITIES } from '#src/kb/runtime-authority.js';
+import { KB_RUNTIME_EXACT_AUTHORITIES, KB_RUNTIME_PATTERNED_AUTHORITIES } from '#src/runtime/kb-runtime-authority.js';
 
 const manifest = (id: string, tier: 'bundled' | 'installed' = 'installed') => ({
   id,

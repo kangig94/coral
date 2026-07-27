@@ -38,7 +38,7 @@ import {
   parsePositiveInteger,
 } from '../../validation.js';
 import { captureIndexStateSnapshot, type KbIndexStateSnapshot } from '../lanes.js';
-import { KB_RUNTIME_AUTHORITY } from '../../runtime-authority.js';
+import { KB_RUNTIME_AUTHORITY } from '../../../runtime/kb-runtime-authority.js';
 
 export const INDEX_FILE = KB_RUNTIME_AUTHORITY.index;
 export const INDEX_STATE_FILE = KB_RUNTIME_AUTHORITY.indexState;

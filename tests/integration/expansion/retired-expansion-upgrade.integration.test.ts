@@ -25,6 +25,11 @@ import {
 const tempRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
 const RETIRED_ID = 'retired-vector';
+const BUILT_FLAVOR = (
+  JSON.parse(readFileSync(join(process.cwd(), 'clients', 'build', 'manifest.json'), 'utf-8')) as {
+    flavor: BuildFlavor;
+  }
+).flavor;
 
 afterEach(async () => {
   for (const coordinator of coordinators.splice(0).reverse()) {
@@ -117,12 +122,12 @@ function cursorCount(home: string, flavor: BuildFlavor): number {
 }
 
 describe('retired expansion full-boot upgrade', () => {
-  it('keeps prod residue visible until the built CLI performs explicit cleanup', async () => {
+  it('keeps built-flavor residue visible until the built CLI performs explicit cleanup', async () => {
     if (!buildArtifactsAvailable()) {
       throw new Error('Expected clients/build/coral-backend.cjs to exist before running integration tests');
     }
-    const flavor = 'prod';
-    const otherFlavor = 'dev';
+    const flavor = BUILT_FLAVOR;
+    const otherFlavor: BuildFlavor = flavor === 'prod' ? 'dev' : 'prod';
     const home = mkdtempSync(join(tmpdir(), `coral-retired-${flavor}-home-`));
     tempRoots.push(home);
     seedRetiredExpansion(home, flavor);

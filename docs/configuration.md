@@ -331,7 +331,6 @@ Live scratch artifacts:
 | Codex CLI   | Codex execution                            |
 | Claude CLI  | Claude execution through the broker helper |
 | Node.js 24+ | Runtime                                    |
-| `cmake`     | Native KB addon fallback builds            |
 
 ## File Role Summary
 

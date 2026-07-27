@@ -4,7 +4,7 @@ import {
   KB_RUNTIME_AUTHORITY,
   KB_RUNTIME_EXACT_AUTHORITIES,
   KB_RUNTIME_PATTERNED_AUTHORITIES,
-} from '#src/kb/runtime-authority.js';
+} from '#src/runtime/kb-runtime-authority.js';
 
 const expectedAuthorities = {
   orama: 'orama',

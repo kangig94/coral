@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 
 import type { KbEntryId } from '../entry-types.js';
-import { KB_RUNTIME_AUTHORITY } from '../runtime-authority.js';
+import { KB_RUNTIME_AUTHORITY } from '../../runtime/kb-runtime-authority.js';
 
 export const PROMOTE_MARKER_VERSION = 1 as const;
 

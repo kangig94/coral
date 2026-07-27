@@ -14,16 +14,18 @@ function createLockDeps(now: () => number): {
   files: Set<string>;
   removed: string[];
   refreshClaimOnRename(): void;
+  replaceDirectoryBeforeOwnerWrite(): void;
   seedClaim(lockDir: string, mtimeMs: number): void;
   failNextQuarantine(): void;
 } {
   const directories = new Map<string, number>();
   const files = new Set<string>();
   const fileMtimes = new Map<string, number>();
+  const directoryInodes = new Map<string, bigint>();
   const removed: string[] = [];
-  const openFiles = new Map<number, string>();
-  let nextFd = 1;
+  let nextInode = 1n;
   let refreshClaim = false;
+  let replaceBeforeOwnerWrite = false;
   let failQuarantine = false;
   const deps: DirectoryLockDeps = {
     storage: {
@@ -32,10 +34,20 @@ function createLockDeps(now: () => number): {
           throw errno('EEXIST');
         }
         directories.set(path, now());
+        directoryInodes.set(path, nextInode++);
       },
       writeFileSync: (path) => {
-        if (!directories.has(dirname(path))) {
+        const parent = dirname(path);
+        if (!directories.has(parent)) {
           throw errno('ENOENT');
+        }
+        if (replaceBeforeOwnerWrite && path.includes('/owner-')) {
+          replaceBeforeOwnerWrite = false;
+          directories.set(parent, now());
+          directoryInodes.set(parent, nextInode++);
+          const replacementOwner = `${parent}/owner-replacement.lock`;
+          files.add(replacementOwner);
+          fileMtimes.set(replacementOwner, now());
         }
         files.add(path);
         fileMtimes.set(path, now());
@@ -53,11 +65,6 @@ function createLockDeps(now: () => number): {
           files.add(newPath);
           fileMtimes.set(newPath, fileMtimes.get(oldPath) ?? now());
           fileMtimes.delete(oldPath);
-          for (const [fd, path] of openFiles) {
-            if (path === oldPath) {
-              openFiles.set(fd, newPath);
-            }
-          }
           if (refreshClaim && newPath.includes('/claim-')) {
             fileMtimes.set(newPath, now());
             refreshClaim = false;
@@ -71,7 +78,9 @@ function createLockDeps(now: () => number): {
           throw errno('EEXIST');
         }
         directories.set(newPath, directories.get(oldPath)!);
+        directoryInodes.set(newPath, directoryInodes.get(oldPath) ?? nextInode++);
         directories.delete(oldPath);
+        directoryInodes.delete(oldPath);
         for (const file of [...files]) {
           if (file.startsWith(`${oldPath}/`)) {
             const moved = `${newPath}${file.slice(oldPath.length)}`;
@@ -96,6 +105,7 @@ function createLockDeps(now: () => number): {
       rmSync: (path) => {
         removed.push(path);
         directories.delete(path);
+        directoryInodes.delete(path);
         for (const file of [...files]) {
           if (file === path || file.startsWith(`${path}/`)) {
             files.delete(file);
@@ -105,6 +115,7 @@ function createLockDeps(now: () => number): {
         for (const dir of [...directories.keys()]) {
           if (dir.startsWith(`${path}/`)) {
             directories.delete(dir);
+            directoryInodes.delete(dir);
           }
         }
       },
@@ -122,13 +133,31 @@ function createLockDeps(now: () => number): {
         if (!directories.delete(path)) {
           throw errno('ENOENT');
         }
+        directoryInodes.delete(path);
         removed.push(path);
       },
-      statSync: ((path: string) => {
+      statSync: ((path: string, options?: { bigint?: true }) => {
         const mtimeMs = directories.get(path);
         const fileMtimeMs = fileMtimes.get(path);
         if (mtimeMs === undefined && fileMtimeMs === undefined) {
           throw errno('ENOENT');
+        }
+        if (options?.bigint === true) {
+          const isDirectory = mtimeMs !== undefined;
+          let ino = directoryInodes.get(path);
+          if (isDirectory && ino === undefined) {
+            ino = nextInode++;
+            directoryInodes.set(path, ino);
+          }
+          return {
+            dev: 1n,
+            ino: ino ?? nextInode++,
+            mode: 0n,
+            size: 0n,
+            mtimeNs: BigInt(Math.floor((mtimeMs ?? fileMtimeMs!) * 1_000_000)),
+            isDirectory: () => isDirectory,
+            isFile: () => !isDirectory,
+          };
         }
         return {
           size: 0,
@@ -137,25 +166,6 @@ function createLockDeps(now: () => number): {
           isFile: () => fileMtimeMs !== undefined,
         };
       }) as DirectoryLockDeps['storage']['statSync'],
-      openSync: (path) => {
-        if (!files.has(path)) {
-          throw errno('ENOENT');
-        }
-        const fd = nextFd++;
-        openFiles.set(fd, path);
-        return fd;
-      },
-      writeSync: (fd, _buffer, _offset, length) => {
-        const path = openFiles.get(fd);
-        if (path === undefined) {
-          throw errno('EBADF');
-        }
-        fileMtimes.set(path, now());
-        return length;
-      },
-      closeSync: (fd) => {
-        openFiles.delete(fd);
-      },
     },
     time: {
       now,
@@ -172,8 +182,12 @@ function createLockDeps(now: () => number): {
     refreshClaimOnRename: () => {
       refreshClaim = true;
     },
+    replaceDirectoryBeforeOwnerWrite: () => {
+      replaceBeforeOwnerWrite = true;
+    },
     seedClaim: (lockDir, mtimeMs) => {
       directories.set(lockDir, mtimeMs);
+      directoryInodes.set(lockDir, nextInode++);
       const claimPath = `${lockDir}/claim-crashed.lock`;
       files.add(claimPath);
       fileMtimes.set(claimPath, mtimeMs);
@@ -227,6 +241,18 @@ describe('directory fs lock', () => {
 
     replacementRelease();
     expect(directories.has('/locks/shared-session')).toBe(false);
+  });
+
+  it('rejects a creator displaced before its owner marker write', () => {
+    const fixture = createLockDeps(() => 1000);
+    fixture.replaceDirectoryBeforeOwnerWrite();
+
+    expect(() => acquireDirectoryLockSync('/locks/publish-race', fixture.deps, 100)).toThrow(/ownership lost/u);
+
+    expect(fixture.directories.has('/locks/publish-race')).toBe(true);
+    expect([...fixture.files].filter((path) => path.includes('/owner-'))).toEqual([
+      '/locks/publish-race/owner-replacement.lock',
+    ]);
   });
 
   it('does not steal a lock whose owner refreshes during the stale claim', () => {

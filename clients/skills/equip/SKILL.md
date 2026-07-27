@@ -15,7 +15,7 @@ Install and configure Coral companion tooling for Claude Code.
 - `/equip --update <pkg>` -> `coral-cli expansion update <pkg>`
 - `/equip uninstall <pkg>` -> `coral-cli expansion unequip <pkg>`
 - `/equip info <pkg>` -> `coral-cli expansion info <pkg>`
-- Internal catalog-removal diagnostics map to `coral-cli expansion remove-catalog <pkg>` when that CLI surface is exposed.
+- `/equip` retired-residue cleanup diagnostics map to the public `coral-cli expansion remove-catalog <pkg>` command.
 
 ## Runtime Model
 
@@ -47,7 +47,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 | status    | Action |
 |-----------|--------|
-| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, `provides` when present, translated `activation`, `status`, and `statusDescription` when present. Render `provides` as sibling collections: `provides.capabilities` as a comma-separated capability label/name list and `provides.retrievalRoles` as a comma-separated role label list, for example `provides: capabilities=[Text (FTS), Vector (Semantic)]; retrievalRoles=[Text, Vector, Graph]`. Do not group capabilities by `typeTag`; it is opaque metadata |
+| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, `provides` when present, translated `activation`, `status`, `statusDescription` when present, and `cleanupCommand` when present. Render `provides` as sibling collections: `provides.capabilities` as a comma-separated capability label/name list and `provides.retrievalRoles` as a comma-separated role label list, for example `provides: capabilities=[Text (FTS), Vector (Semantic)]; retrievalRoles=[Text, Vector, Graph]`. Do not group capabilities by `typeTag`; it is opaque metadata |
 | `info`    | Show the single package entry using the same package-status routing table below, including `tier`, `fills`/`slot` when present, `provides` when present using the same sibling collection rendering as catalog rows, and the translated `activation` label |
 | `error`   | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
@@ -57,7 +57,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 |------------------------------|-----------------------------------------------------------------|
 | `equipped`                   | Active in the coordinator                                       |
 | `catching_up`                | Registered and replaying the corpus                             |
-| `installed-not-active`       | Installed, but boot recovery failed. Check the last error and satisfy missing dependencies before retrying `/equip <name>` |
+| `installed-not-active`       | If `activation` is `remove-catalog`, this is residue from a retired expansion: show and recommend its exact `cleanupCommand`; otherwise boot recovery failed, so check the last error and satisfy missing dependencies before retrying `/equip <name>` |
 | `inactive`                   | Installed but not registered. Run `/equip <name>` to reactivate |
 | `unavailable`                | Required local artifact missing or coordinator unreachable. Run `/equip <name>` to repair or reactivate |
 | `disabled_pending_reinstall` | Load failed. Run `/equip <name>` to reinstall                   |
@@ -69,6 +69,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 5. When rendering `activation`, translate internally:
    - `activation: 'equip'` -> `Active in Coordinator`
    - `activation: 'none'` -> `Install-only (use directly via the installed path)`
+   - `activation: 'remove-catalog'` -> `Retired expansion residue (run the exact cleanupCommand shown)`
 6. For bundled engines, do not suggest `/equip <name>` or `/equip uninstall <name>` as a repair action. These verbs return `expansion_bundled_immutable`; use `expansion list` to inspect status.
 7. Ask the user which package to install.
 
@@ -117,7 +118,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 1. Bash(`coral-cli expansion info <package>`)
 2. Parse the single-line JSON result.
-3. Show the status and, when returned, the package `tier`, `provides.capabilities`, `addonPath`, installed `command`, `userMessage`, and `remediation`. Treat an error result as terminal.
+3. Show the status and, when returned, the package `tier`, `provides.capabilities`, `addonPath`, installed `command`, retired-residue `cleanupCommand`, `userMessage`, and `remediation`. Treat an error result as terminal.
 
 ### `uninstall <equipment-name>`
 

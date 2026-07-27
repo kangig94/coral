@@ -2,6 +2,7 @@ import type { EngineInstaller, EngineInstallerOptions, LocalExpansionInstallStat
 import type { Runtime } from '../../runtime/ports.js';
 import { KIWI_INSTALL_ONLY_ID, KIWI_MODEL_VERSION } from './constants.js';
 import { ensureKiwiModelArtifact, hasKiwiDurableState, inspectKiwiModelArtifact } from './model-artifact.js';
+import { withKiwiPackageOperationLock } from './operation-lock.js';
 import { kiwiDataDir } from './paths.js';
 
 function isInstallLocked(runtime: Runtime): boolean {
@@ -10,6 +11,12 @@ function isInstallLocked(runtime: Runtime): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function assertKiwiInstallerIdentity(name: string): void {
+  if (name !== KIWI_INSTALL_ONLY_ID) {
+    throw new Error(`Kiwi installer identity mismatch: expected '${KIWI_INSTALL_ONLY_ID}', got '${name}'`);
   }
 }
 
@@ -28,6 +35,7 @@ export const kiwiInstaller: EngineInstaller = {
     };
   },
   async install(ctx: EngineInstallerOptions): Promise<unknown> {
+    assertKiwiInstallerIdentity(ctx.name);
     return ensureKiwiModelArtifact(ctx.runtime, {
       logger: ctx.logger,
       lockTimeoutMs: ctx.lockTimeoutMs,
@@ -36,9 +44,12 @@ export const kiwiInstaller: EngineInstaller = {
     });
   },
   async uninstall(ctx: EngineInstallerOptions): Promise<unknown> {
-    const current = kiwiInstaller.inspect(ctx.runtime, KIWI_INSTALL_ONLY_ID);
-    ctx.runtime.storage.rmSync(kiwiDataDir(ctx.runtime), { recursive: true, force: true });
-    return { status: current.durableState ? 'uninstalled' : 'not_equipped' };
+    assertKiwiInstallerIdentity(ctx.name);
+    return withKiwiPackageOperationLock(ctx.runtime, ctx, async () => {
+      const current = kiwiInstaller.inspect(ctx.runtime, KIWI_INSTALL_ONLY_ID);
+      ctx.runtime.storage.rmSync(kiwiDataDir(ctx.runtime), { recursive: true, force: true });
+      return { status: current.durableState ? 'uninstalled' : 'not_equipped' };
+    });
   },
 };
 

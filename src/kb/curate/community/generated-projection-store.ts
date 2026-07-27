@@ -20,7 +20,7 @@ import { computeMetadataSurfaceHash } from '../../corpus/snapshot.js';
 import type { KbReindexCommunityRecord } from '../../entry-types.js';
 import type { CorpusMarkdownFileScan } from '../../corpus/rescan/scan.js';
 import type { CommunityDocument, DetectedCommunity, ExistingGeneratedCommunity } from './contracts.js';
-import { KB_RUNTIME_AUTHORITY } from '../../runtime-authority.js';
+import { KB_RUNTIME_AUTHORITY } from '../../../runtime/kb-runtime-authority.js';
 
 const STORE_SCHEMA_VERSION = 1;
 const STORE_DIR = KB_RUNTIME_AUTHORITY.generatedCommunityProjection;
