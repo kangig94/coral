@@ -14,6 +14,8 @@ function createLockDeps(now: () => number): {
   files: Set<string>;
   removed: string[];
   refreshClaimOnRename(): void;
+  seedClaim(lockDir: string, mtimeMs: number): void;
+  failNextQuarantine(): void;
 } {
   const directories = new Map<string, number>();
   const files = new Set<string>();
@@ -22,6 +24,7 @@ function createLockDeps(now: () => number): {
   const openFiles = new Map<number, string>();
   let nextFd = 1;
   let refreshClaim = false;
+  let failQuarantine = false;
   const deps: DirectoryLockDeps = {
     storage: {
       mkdirSync: (path) => {
@@ -38,7 +41,15 @@ function createLockDeps(now: () => number): {
         fileMtimes.set(path, now());
       },
       renameSync: (oldPath, newPath) => {
+        if (failQuarantine && newPath.includes('.stale-')) {
+          failQuarantine = false;
+          throw errno('EACCES');
+        }
         if (files.delete(oldPath)) {
+          if (files.has(newPath)) {
+            files.add(oldPath);
+            throw errno('EEXIST');
+          }
           files.add(newPath);
           fileMtimes.set(newPath, fileMtimes.get(oldPath) ?? now());
           fileMtimes.delete(oldPath);
@@ -55,6 +66,9 @@ function createLockDeps(now: () => number): {
         }
         if (!directories.has(oldPath)) {
           throw errno('ENOENT');
+        }
+        if (directories.has(newPath)) {
+          throw errno('EEXIST');
         }
         directories.set(newPath, directories.get(oldPath)!);
         directories.delete(oldPath);
@@ -158,6 +172,15 @@ function createLockDeps(now: () => number): {
     refreshClaimOnRename: () => {
       refreshClaim = true;
     },
+    seedClaim: (lockDir, mtimeMs) => {
+      directories.set(lockDir, mtimeMs);
+      const claimPath = `${lockDir}/claim-crashed.lock`;
+      files.add(claimPath);
+      fileMtimes.set(claimPath, mtimeMs);
+    },
+    failNextQuarantine: () => {
+      failQuarantine = true;
+    },
   };
 }
 
@@ -220,6 +243,48 @@ describe('directory fs lock', () => {
     );
     expect(() => release.assertOwned()).not.toThrow();
     release();
+  });
+
+  it('refreshes explicit ownership checks before a stale contender can claim', () => {
+    let currentTime = 0;
+    let nowCalls = 0;
+    const fixture = createLockDeps(() => currentTime + nowCalls++ * 50);
+    const release = acquireDirectoryLockSync('/locks/resumed-session', fixture.deps, 100);
+    currentTime = 31_000;
+    nowCalls = 0;
+
+    expect(() => release.assertOwned()).not.toThrow();
+    expect(() => acquireDirectoryLockSync('/locks/resumed-session', fixture.deps, 100)).toThrow(
+      /Directory lock timeout/u,
+    );
+    release();
+  });
+
+  it('recovers a stale claim left by a crashed contender', () => {
+    const fixture = createLockDeps(() => 31_000);
+    fixture.seedClaim('/locks/crashed-claim', 0);
+
+    const release = acquireDirectoryLockSync('/locks/crashed-claim', fixture.deps, 100);
+
+    expect(fixture.directories.has('/locks/crashed-claim')).toBe(true);
+    expect(fixture.removed.some((path) => path.startsWith('/locks/crashed-claim.stale-'))).toBe(true);
+    release();
+  });
+
+  it('restores a claimed owner when quarantine fails so a retry can recover', () => {
+    let currentTime = 0;
+    const fixture = createLockDeps(() => currentTime);
+    const staleOwner = acquireDirectoryLockSync('/locks/quarantine-failure', fixture.deps, 100);
+    currentTime = 31_000;
+    fixture.failNextQuarantine();
+
+    expect(() => acquireDirectoryLockSync('/locks/quarantine-failure', fixture.deps, 100)).toThrow(/EACCES/u);
+    expect([...fixture.files].some((path) => path.includes('/owner-'))).toBe(true);
+
+    const replacement = acquireDirectoryLockSync('/locks/quarantine-failure', fixture.deps, 100);
+    expect(() => staleOwner.assertOwned()).toThrow(/ownership lost/u);
+    staleOwner();
+    replacement();
   });
 
   it('aborts async acquire while waiting for a busy lock', async () => {

@@ -69,6 +69,21 @@ describe('createExpansionHost', () => {
     expect(host.kb.ownProjectionStagingDir).toBe(`${kb.runtimeDir}/vector-staging`);
   });
 
+  it('rejects an unsafe installed id before deriving host-owned paths', () => {
+    const { runtime, kb } = createTestRuntime();
+
+    expect(() =>
+      createExpansionHost({
+        runtime,
+        kb,
+        scope: { [Symbol.dispose]() {} },
+        roleRegistry: kb.roleRegistry,
+        manifest: manifest('../escape'),
+        consumerDriver: createConsumerDriver(vi.fn()),
+      }),
+    ).toThrow(/is unsafe/u);
+  });
+
   it('rewraps binding-empty as binding-required', () => {
     const { runtime, kb } = createTestRuntime();
     const host = createExpansionHost({

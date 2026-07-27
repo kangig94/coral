@@ -42,10 +42,10 @@ describe('bindSocket stale-clear race', () => {
     const lockDirs = new Set<string>();
     const lockFiles = new Set<string>();
     const mkdirSync = vi.fn((path: string) => {
-      if (path.endsWith('.clear.lock') && lockDirs.has(path)) {
+      if (path.includes('.clear.lock') && lockDirs.has(path)) {
         throw errno('EEXIST');
       }
-      if (path.endsWith('.clear.lock')) {
+      if (path.includes('.clear.lock')) {
         lockDirs.add(path);
       }
     });
@@ -56,6 +56,22 @@ describe('bindSocket stale-clear race', () => {
     const readdirSync = vi.fn((path: string) =>
       [...lockFiles].filter((file) => file.startsWith(`${path}/`)).map((file) => file.slice(path.length + 1)),
     );
+    const renameSync = vi.fn((oldPath: string, newPath: string) => {
+      if (!lockDirs.delete(oldPath)) {
+        throw errno('ENOENT');
+      }
+      if (lockDirs.has(newPath)) {
+        lockDirs.add(oldPath);
+        throw errno('EEXIST');
+      }
+      lockDirs.add(newPath);
+      for (const file of [...lockFiles]) {
+        if (file.startsWith(`${oldPath}/`)) {
+          lockFiles.delete(file);
+          lockFiles.add(`${newPath}${file.slice(oldPath.length)}`);
+        }
+      }
+    });
     const rmSync = vi.fn((path: string) => {
       lockDirs.delete(path);
       for (const file of [...lockFiles]) {
@@ -90,6 +106,7 @@ describe('bindSocket stale-clear race', () => {
       chmodSync,
       mkdirSync,
       readdirSync,
+      renameSync,
       rmSync,
       rmdirSync,
       statSync,
@@ -165,10 +182,10 @@ describe('bindSocket stale-clear race', () => {
 
     const chmodSync = vi.fn();
     const mkdirSync = vi.fn((path: string) => {
-      if (path.endsWith('.clear.lock') && lockDirs.has(path)) {
+      if (path.includes('.clear.lock') && lockDirs.has(path)) {
         throw errno('EEXIST');
       }
-      if (path.endsWith('.clear.lock')) {
+      if (path.includes('.clear.lock')) {
         lockDirs.add(path);
       }
     });
@@ -190,6 +207,22 @@ describe('bindSocket stale-clear race', () => {
     const readdirSync = vi.fn((path: string) =>
       [...lockFiles].filter((file) => file.startsWith(`${path}/`)).map((file) => file.slice(path.length + 1)),
     );
+    const renameSync = vi.fn((oldPath: string, newPath: string) => {
+      if (!lockDirs.delete(oldPath)) {
+        throw errno('ENOENT');
+      }
+      if (lockDirs.has(newPath)) {
+        lockDirs.add(oldPath);
+        throw errno('EEXIST');
+      }
+      lockDirs.add(newPath);
+      for (const file of [...lockFiles]) {
+        if (file.startsWith(`${oldPath}/`)) {
+          lockFiles.delete(file);
+          lockFiles.add(`${newPath}${file.slice(oldPath.length)}`);
+        }
+      }
+    });
     const rmSync = vi.fn((path: string) => {
       lockDirs.delete(path);
       for (const file of [...lockFiles]) {
@@ -226,6 +259,7 @@ describe('bindSocket stale-clear race', () => {
       chmodSync,
       mkdirSync,
       readdirSync,
+      renameSync,
       rmSync,
       rmdirSync,
       statSync,

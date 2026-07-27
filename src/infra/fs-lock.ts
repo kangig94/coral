@@ -68,10 +68,6 @@ function isDirectoryLockDeps(value: DirectoryLockDeps | number | undefined): val
   return typeof value === 'object' && value !== null && 'storage' in value && 'time' in value;
 }
 
-function isAlreadyExistsError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && (error as NodeJS.ErrnoException).code === 'EEXIST';
-}
-
 export function isDirectoryLockTimeoutError(error: unknown): error is DirectoryLockTimeoutError {
   return error instanceof DirectoryLockTimeoutError;
 }
@@ -199,7 +195,7 @@ function releaseDirectoryLock(
       throw new DirectoryLockOwnershipLostError(lockDir);
     }
     try {
-      deps.storage.statSync(lockOwnerMarkerPath(lockDir, ownerToken));
+      refreshLockOwnerMarker(lockOwnerMarkerPath(lockDir, ownerToken), ownerToken, deps);
     } catch {
       loseOwnership();
       throw new DirectoryLockOwnershipLostError(lockDir);
@@ -211,6 +207,14 @@ function releaseDirectoryLock(
 function ownerMarkerEntries(lockDir: string, deps: DirectoryLockDeps): string[] {
   try {
     return deps.storage.readdirSync(lockDir).filter((entry) => entry.startsWith('owner-') && entry.endsWith('.lock'));
+  } catch {
+    return [];
+  }
+}
+
+function claimMarkerEntries(lockDir: string, deps: DirectoryLockDeps): string[] {
+  try {
+    return deps.storage.readdirSync(lockDir).filter((entry) => entry.startsWith('claim-') && entry.endsWith('.lock'));
   } catch {
     return [];
   }
@@ -236,6 +240,31 @@ function isMissingPathError(error: unknown): boolean {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
+function quarantineClaimedLock(
+  lockDir: string,
+  claimPath: string,
+  restorePath: string,
+  deps: DirectoryLockDeps,
+): boolean {
+  const quarantinePath = `${lockDir}.stale-${randomUUID()}`;
+  try {
+    deps.storage.renameSync(lockDir, quarantinePath);
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return false;
+    }
+    try {
+      deps.storage.renameSync(claimPath, restorePath);
+    } catch {
+      // A later contender can recover the stale claim if restoration loses a
+      // race or the claimant crashes during this error path.
+    }
+    throw error;
+  }
+  tryRemoveLockDirectory(quarantinePath, deps.storage);
+  return true;
+}
+
 /**
  * Claims a stale owner marker with an atomic rename before deleting anything.
  * Heartbeats update an already-open file descriptor, so a refresh racing with
@@ -246,13 +275,35 @@ function tryQuarantineStaleLock(lockDir: string, deps: DirectoryLockDeps): boole
   const ownerEntries = ownerMarkerEntries(lockDir, deps);
   const [ownerEntry] = ownerEntries;
   if (ownerEntry === undefined) {
-    let entries: string[];
-    try {
-      entries = deps.storage.readdirSync(lockDir);
-    } catch {
+    const claimEntries = claimMarkerEntries(lockDir, deps);
+    if (claimEntries.length === 1) {
+      const staleClaimPath = join(lockDir, claimEntries[0]);
+      if (!markerIsStale(staleClaimPath, deps)) {
+        return false;
+      }
+      const recoveryClaimPath = join(lockDir, `claim-${randomUUID()}.lock`);
+      try {
+        deps.storage.renameSync(staleClaimPath, recoveryClaimPath);
+      } catch (error) {
+        if (isMissingPathError(error)) {
+          return false;
+        }
+        throw error;
+      }
+      if (!markerIsStale(recoveryClaimPath, deps)) {
+        try {
+          deps.storage.renameSync(recoveryClaimPath, staleClaimPath);
+        } catch {
+          /* recoverable after the marker becomes stale */
+        }
+        return false;
+      }
+      return quarantineClaimedLock(lockDir, recoveryClaimPath, staleClaimPath, deps);
+    }
+    if (claimEntries.length > 1) {
       return false;
     }
-    if (entries.some((entry) => entry.startsWith('claim-')) || !directoryIsStale(lockDir, deps)) {
+    if (!directoryIsStale(lockDir, deps)) {
       return false;
     }
     const quarantinePath = `${lockDir}.stale-${randomUUID()}`;
@@ -294,17 +345,7 @@ function tryQuarantineStaleLock(lockDir: string, deps: DirectoryLockDeps): boole
     return false;
   }
 
-  const quarantinePath = `${lockDir}.stale-${randomUUID()}`;
-  try {
-    deps.storage.renameSync(lockDir, quarantinePath);
-  } catch (error) {
-    if (isMissingPathError(error)) {
-      return false;
-    }
-    throw error;
-  }
-  tryRemoveLockDirectory(quarantinePath, deps.storage);
-  return true;
+  return quarantineClaimedLock(lockDir, claimPath, ownerPath, deps);
 }
 
 function createDirectoryLockLease(lockDir: string, ownerToken: string, deps: DirectoryLockDeps): DirectoryLockLease {
@@ -314,6 +355,61 @@ function createDirectoryLockLease(lockDir: string, ownerToken: string, deps: Dir
   };
   const heartbeat = startDirectoryLockHeartbeat(lockDir, ownerToken, deps, loseOwnership);
   return releaseDirectoryLock(lockDir, deps, ownerToken, heartbeat, () => owned, loseOwnership);
+}
+
+function lockDirectoryExists(lockDir: string, deps: DirectoryLockDeps): boolean {
+  try {
+    return deps.storage.statSync(lockDir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isLockPublishContention(error: unknown, lockDir: string, deps: DirectoryLockDeps): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  return (
+    code === 'EEXIST' ||
+    code === 'ENOTEMPTY' ||
+    ((code === 'EPERM' || code === 'EACCES') && lockDirectoryExists(lockDir, deps))
+  );
+}
+
+/**
+ * Publishes a fully initialized, non-empty candidate directory atomically.
+ * No contender can observe a lock directory before its owner marker exists.
+ */
+function tryCreateDirectoryLock(lockDir: string, deps: DirectoryLockDeps): DirectoryLockLease | null {
+  const ownerToken = randomUUID();
+  const candidateDir = `${lockDir}.candidate-${ownerToken}`;
+  deps.storage.mkdirSync(candidateDir);
+  try {
+    writeLockOwnerMarker(candidateDir, ownerToken, deps.storage);
+    // Legacy publishers created the target directory before writing an owner
+    // marker. Do not let POSIX rename replace such a fresh empty directory.
+    // Current publishers appear atomically as non-empty directories, so a
+    // contender that arrives after this check still makes rename fail closed.
+    if (lockDirectoryExists(lockDir, deps)) {
+      tryRemoveLockDirectory(candidateDir, deps.storage);
+      return null;
+    }
+    deps.storage.renameSync(candidateDir, lockDir);
+  } catch (error) {
+    tryRemoveLockDirectory(candidateDir, deps.storage);
+    if (isLockPublishContention(error, lockDir, deps)) {
+      return null;
+    }
+    throw error;
+  }
+
+  const entries = ownerMarkerEntries(lockDir, deps);
+  if (entries.length !== 1 || entries[0] !== `owner-${ownerToken}.lock`) {
+    tryRemoveOwnedLockDirectory(lockDir, ownerToken, deps.storage);
+    throw new DirectoryLockOwnershipLostError(lockDir);
+  }
+  return createDirectoryLockLease(lockDir, ownerToken, deps);
 }
 
 function throwIfDirectoryLockAborted(deps: DirectoryLockDeps): void {
@@ -370,13 +466,9 @@ export async function acquireDirectoryLock(
 
   while (deps.time.now() < deadline) {
     throwIfDirectoryLockAborted(deps);
-    try {
-      deps.storage.mkdirSync(lockDir);
-      const ownerToken = randomUUID();
-      writeLockOwnerMarker(lockDir, ownerToken, deps.storage);
-      return createDirectoryLockLease(lockDir, ownerToken, deps);
-    } catch (error: unknown) {
-      if (!isAlreadyExistsError(error)) throw error;
+    const lease = tryCreateDirectoryLock(lockDir, deps);
+    if (lease !== null) {
+      return lease;
     }
 
     if (tryQuarantineStaleLock(lockDir, deps)) {
@@ -406,13 +498,9 @@ export function acquireDirectoryLockSync(
   const deadline = deps.time.now() + effectiveTimeoutMs;
 
   while (deps.time.now() < deadline) {
-    try {
-      deps.storage.mkdirSync(lockDir);
-      const ownerToken = randomUUID();
-      writeLockOwnerMarker(lockDir, ownerToken, deps.storage);
-      return createDirectoryLockLease(lockDir, ownerToken, deps);
-    } catch (error: unknown) {
-      if (!isAlreadyExistsError(error)) throw error;
+    const lease = tryCreateDirectoryLock(lockDir, deps);
+    if (lease !== null) {
+      return lease;
     }
 
     if (tryQuarantineStaleLock(lockDir, deps)) {

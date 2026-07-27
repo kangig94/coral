@@ -83,15 +83,12 @@ const onboardingChoiceSchema = z
   .strict();
 
 const postInstallSchema = z.array(
-  z.union([
-    z.literal('register_expansion'),
-    z
-      .object({
-        action: z.literal('register_expansion'),
-        manifestPath: z.string().min(1),
-      })
-      .strict(),
-  ]),
+  z
+    .object({
+      action: z.literal('register_expansion'),
+      manifestPath: z.string().min(1),
+    })
+    .strict(),
 );
 
 const onboardingSchema = z

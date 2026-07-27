@@ -1,10 +1,14 @@
-import { acquireDirectoryLock, type DirectoryLockLease } from '../infra/fs-lock.js';
+import {
+  acquirePackageOperationLockAtPath,
+  PACKAGE_OPERATION_LOCK_HEARTBEAT_MS,
+  PACKAGE_OPERATION_LOCK_STALE_MS,
+  PACKAGE_OPERATION_LOCK_TIMEOUT_MS,
+} from '../infra/package-operation-lock.js';
+import type { DirectoryLockLease } from '../infra/fs-lock.js';
 import type { Runtime } from '../runtime/ports.js';
 import { assertExpansionPackageId } from './package-id.js';
 
-export const PACKAGE_OPERATION_LOCK_TIMEOUT_MS = 250;
-export const PACKAGE_OPERATION_LOCK_STALE_MS = 10 * 60 * 1000;
-export const PACKAGE_OPERATION_LOCK_HEARTBEAT_MS = 10 * 1000;
+export { PACKAGE_OPERATION_LOCK_HEARTBEAT_MS, PACKAGE_OPERATION_LOCK_STALE_MS, PACKAGE_OPERATION_LOCK_TIMEOUT_MS };
 
 export async function acquirePackageOperationLock(
   runtime: Runtime,
@@ -12,14 +16,11 @@ export async function acquirePackageOperationLock(
   timeoutMs = PACKAGE_OPERATION_LOCK_TIMEOUT_MS,
 ): Promise<DirectoryLockLease> {
   const id = assertExpansionPackageId(packageId);
-  runtime.storage.mkdirSync(runtime.paths.coral.engine.operationLockRoot, { recursive: true });
-  return acquireDirectoryLock(
+  return acquirePackageOperationLockAtPath(
     runtime.paths.coral.engine.installLockPath(id),
     {
       storage: runtime.storage,
       time: runtime.time,
-      staleMs: PACKAGE_OPERATION_LOCK_STALE_MS,
-      heartbeatMs: PACKAGE_OPERATION_LOCK_HEARTBEAT_MS,
     },
     timeoutMs,
   );

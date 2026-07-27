@@ -72,7 +72,7 @@ async function withInstallLock<T>(opts: EngineInstallerOptions, run: () => Promi
     return run();
   }
 
-  let release: () => void;
+  let release: Awaited<ReturnType<typeof acquirePackageOperationLock>>;
   try {
     release = await acquirePackageOperationLock(
       opts.runtime,
@@ -87,7 +87,9 @@ async function withInstallLock<T>(opts: EngineInstallerOptions, run: () => Promi
   }
 
   try {
-    return await run();
+    const result = await run();
+    release.assertOwned();
+    return result;
   } finally {
     release();
   }

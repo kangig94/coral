@@ -92,7 +92,6 @@ describe('installExpansion', () => {
         status: 'installed' as const,
         method: 'fixture',
         targetDir: join(runtime.paths.coral.engine.dataDir('kiwi'), '..', 'other'),
-        postInstall: [{ action: 'register_expansion' as const, manifestPath: 'manifest.json' }],
       }),
       message: /non-canonical target directory/u,
     },
@@ -114,6 +113,19 @@ describe('installExpansion', () => {
     vi.spyOn(kiwiInstaller, 'install').mockImplementation(async () => result(runtime));
 
     await expect(installExpansion('kiwi', { runtime })).rejects.toThrow(message);
+  });
+
+  it('rejects the legacy post-install registration action instead of silently ignoring it', async () => {
+    const fixture = createFixture();
+    const runtime = createRuntimeForFixture(fixture);
+    vi.spyOn(kiwiInstaller, 'install').mockResolvedValue({
+      status: 'installed',
+      method: 'fixture',
+      targetDir: runtime.paths.coral.engine.dataDir('kiwi'),
+      postInstall: ['register_expansion'],
+    });
+
+    await expect(installExpansion('kiwi', { runtime })).rejects.toThrow();
   });
 });
 

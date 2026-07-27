@@ -15,7 +15,8 @@ export const expansionArgsSchema = z
 export type ExpansionArgs = z.infer<typeof expansionArgsSchema>;
 
 const INVALID_USAGE_REMEDIATION = "Retry with valid expansion command arguments or run 'coral-cli expansion --help'.";
-const UNKNOWN_ERROR_REMEDIATION = 'Retry with --verbose or check the coordinator logs.';
+const UNKNOWN_ERROR_REMEDIATION =
+  'Retry once, then report the full JSON error and check the coordinator logs if it persists.';
 const CATALOG_UNAVAILABLE_MESSAGE = /unable to open database file/i;
 
 function nextCause(error: unknown): unknown {

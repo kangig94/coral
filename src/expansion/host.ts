@@ -12,6 +12,7 @@ import type {
   JournalConsumerReadPort,
 } from '../store/consumer-contract.js';
 import type { EngineManifest, ExpansionConsumerRegistration, ExpansionHost } from './contract.js';
+import { validateCanonicalExpansionPackageId } from './canonical-package-id.js';
 import { decorateDispose } from './scope.js';
 import type { EngineArtifactRegistration } from '../kb/corpus/artifact-registry.js';
 import { join } from 'node:path';
@@ -115,6 +116,12 @@ function registeredArtifactPorts(scope: Disposable): readonly EngineArtifactRegi
 }
 
 export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
+  if (deps.manifest.tier === 'installed') {
+    const packageId = validateCanonicalExpansionPackageId(deps.manifest.id);
+    if (!packageId.ok) {
+      throw new Error(`Expansion package id '${deps.manifest.id}' is ${packageId.reason}`);
+    }
+  }
   const engineKb = engineFacingKbRuntime(deps.kb, deps.consumerDriver, deps.manifest.id);
   const runtimeCapabilities = deps.kb.capabilityRegistry.runtimeView();
   const declaredFills = deps.manifest.fills ?? [];

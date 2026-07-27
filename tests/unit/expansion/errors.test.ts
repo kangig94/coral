@@ -83,7 +83,7 @@ describe('encodeInstallError', () => {
       status: 'error',
       code: 'unknown_error',
       userMessage: 'install blew up',
-      remediation: 'Retry with --verbose or check the coordinator logs.',
+      remediation: 'Retry once, then report the full JSON error and check the coordinator logs if it persists.',
     });
     expect(installErrorSchema.parse(encoded)).toEqual(encoded);
   });
@@ -109,7 +109,7 @@ describe('encodeInstallError', () => {
       status: 'error',
       code: 'unknown_error',
       userMessage: 'boom',
-      remediation: 'Retry with --verbose or check the coordinator logs.',
+      remediation: 'Retry once, then report the full JSON error and check the coordinator logs if it persists.',
     });
     expect(installErrorSchema.parse(encoded)).toEqual(encoded);
   });

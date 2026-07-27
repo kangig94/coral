@@ -5,12 +5,16 @@ import { Worker } from 'node:worker_threads';
 import { gunzipSync } from 'node:zlib';
 
 import { downloadBuffer } from '#src/runtime/download.js';
-import { acquireDirectoryLock, isDirectoryLockTimeoutError } from '../../infra/fs-lock.js';
+import { isDirectoryLockTimeoutError } from '../../infra/fs-lock.js';
 import { sha256Hex } from '../../infra/hash.js';
 import { isRecord } from '../../infra/json.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { extractTarGzEntriesInWorker } from '../../infra/archive-extraction-worker.js';
+import {
+  acquirePackageOperationLockAtPath,
+  PACKAGE_OPERATION_LOCK_TIMEOUT_MS,
+} from '../../infra/package-operation-lock.js';
 import {
   KIWI_INSTALL_ONLY_ID,
   KIWI_MODEL_ARCHIVE_SIZE_BYTES,
@@ -25,7 +29,6 @@ import {
 } from './constants.js';
 import { kiwiDataDir, kiwiModelDir, kiwiModelFilePath, kiwiModelManifestPath } from './paths.js';
 
-const KIWI_INSTALL_LOCK_TIMEOUT_MS = 250;
 const TAR_BLOCK_SIZE = 512;
 const TAR_FILE_TYPES = new Set(['0', '']);
 const INSTALL_PATH_UNWRITABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOSPC']);
@@ -279,12 +282,15 @@ async function withInstallLock<T>(
     return run();
   }
 
-  let release: () => void;
+  let release: Awaited<ReturnType<typeof acquirePackageOperationLockAtPath>>;
   try {
-    release = await acquireDirectoryLock(
+    release = await acquirePackageOperationLockAtPath(
       runtime.paths.coral.engine.installLockPath(KIWI_INSTALL_ONLY_ID),
-      { storage: runtime.storage, time: runtime.time },
-      opts.lockTimeoutMs ?? KIWI_INSTALL_LOCK_TIMEOUT_MS,
+      {
+        storage: runtime.storage,
+        time: runtime.time,
+      },
+      opts.lockTimeoutMs ?? PACKAGE_OPERATION_LOCK_TIMEOUT_MS,
     );
   } catch (error: unknown) {
     if (isDirectoryLockTimeoutError(error)) {
@@ -294,7 +300,9 @@ async function withInstallLock<T>(
   }
 
   try {
-    return await run();
+    const result = await run();
+    release.assertOwned();
+    return result;
   } finally {
     release();
   }
@@ -589,7 +597,7 @@ async function installDownloadedModel(
     status: opts.update === true ? 'updated' : 'installed',
     method: 'github-release',
     version: KIWI_MODEL_VERSION,
-    targetDir: kiwiModelDir(runtime),
+    targetDir: kiwiDataDir(runtime),
   };
 }
 
@@ -605,7 +613,7 @@ export async function ensureKiwiModelArtifact(
           status: opts.update === true ? 'already_up_to_date' : 'already_installed',
           method: 'github-release',
           version: KIWI_MODEL_VERSION,
-          targetDir: current.targetDir,
+          targetDir: kiwiDataDir(runtime),
         };
       }
 

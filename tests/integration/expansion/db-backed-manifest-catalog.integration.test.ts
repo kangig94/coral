@@ -72,11 +72,6 @@ describe('DB-backed expansion manifest catalog', () => {
       rowId: 'legacy-bundled',
       manifest: { ...dummyInstalledDbManifest, id: 'legacy-bundled', tier: 'bundled' },
     },
-    {
-      label: 'persisted row colliding with a static id',
-      rowId: 'orama',
-      manifest: { ...dummyInstalledDbManifest, id: 'orama' },
-    },
   ])('fails closed for $label', ({ rowId, manifest }) => {
     const home = tempRoot('coral-db-backed-manifest-invalid-home-');
     const runtime = createRealRuntime('prod', { baseDir: home });
@@ -94,6 +89,29 @@ describe('DB-backed expansion manifest catalog', () => {
     try {
       expect(() => createExpansionManifestCatalog({ readDb })).toThrow(
         `Invalid expansion manifest catalog row '${rowId}'`,
+      );
+    } finally {
+      readDb.close();
+    }
+  });
+
+  it('fails closed when a valid installed row collides with a static id', () => {
+    const home = tempRoot('coral-db-backed-manifest-collision-home-');
+    const runtime = createRealRuntime('prod', { baseDir: home });
+    const dbPath = join(tempRoot('coral-db-backed-manifest-collision-store-'), 'store.db');
+    const storeFormat = currentCoralStoreFormat();
+    const db = openWritableStoreDbNoReset(runtime, { path: dbPath, storeFormat });
+    db.prepare('INSERT INTO expansion_manifest_catalog (id, manifest_json, updated_at) VALUES (?, ?, ?)').run(
+      'gemini',
+      JSON.stringify({ ...dummyInstalledDbManifest, id: 'gemini' }),
+      '2026-01-01T00:00:00.000Z',
+    );
+    db.close();
+
+    const readDb = openReadOnlyStoreDatabase(runtime, { path: dbPath, storeFormat });
+    try {
+      expect(() => createExpansionManifestCatalog({ readDb })).toThrow(
+        "Persisted expansion manifest 'gemini' collides with a static catalog entry",
       );
     } finally {
       readDb.close();
