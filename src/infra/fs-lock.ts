@@ -173,7 +173,9 @@ function ownsLockDirectory(
     return false;
   }
   const entries = ownerMarkerEntries(lockDir, deps);
-  return entries.length === 1 && entries[0] === `owner-${ownerToken}.lock`;
+  return (
+    entries.length === 1 && entries[0] === `owner-${ownerToken}.lock` && claimMarkerEntries(lockDir, deps).length === 0
+  );
 }
 
 /**
@@ -195,7 +197,7 @@ function refreshLockOwnerMarker(
   const refreshPath = join(lockDir, `claim-refresh-${ownerToken}.lock`);
   deps.storage.renameSync(ownerPath, refreshPath);
   try {
-    deps.storage.writeFileSync(refreshPath, ownerToken, { encoding: 'utf-8', mode: 0o600 });
+    deps.storage.writeFileSync(refreshPath, ownerToken, { encoding: 'utf-8', mode: 0o600, flag: 'r+' });
     if (!lockDirectoryIdentityMatches(lockDir, expectedIdentity, deps.storage)) {
       throw new DirectoryLockOwnershipLostError(lockDir);
     }

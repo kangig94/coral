@@ -13,6 +13,7 @@ function createLockDeps(now: () => number): {
   directories: Map<string, number>;
   files: Set<string>;
   removed: string[];
+  claimRefreshBeforeWrite(): void;
   refreshClaimOnRename(): void;
   replaceDirectoryBeforeOwnerWrite(): void;
   seedClaim(lockDir: string, mtimeMs: number): void;
@@ -24,6 +25,7 @@ function createLockDeps(now: () => number): {
   const directoryInodes = new Map<string, bigint>();
   const removed: string[] = [];
   let nextInode = 1n;
+  let claimRefresh = false;
   let refreshClaim = false;
   let replaceBeforeOwnerWrite = false;
   let failQuarantine = false;
@@ -36,9 +38,21 @@ function createLockDeps(now: () => number): {
         directories.set(path, now());
         directoryInodes.set(path, nextInode++);
       },
-      writeFileSync: (path) => {
+      writeFileSync: (path, _data, options) => {
         const parent = dirname(path);
         if (!directories.has(parent)) {
+          throw errno('ENOENT');
+        }
+        if (claimRefresh && path.includes('/claim-refresh-')) {
+          claimRefresh = false;
+          const mtime = fileMtimes.get(path) ?? now();
+          files.delete(path);
+          fileMtimes.delete(path);
+          const claimant = `${parent}/claim-contender.lock`;
+          files.add(claimant);
+          fileMtimes.set(claimant, mtime);
+        }
+        if (options?.flag === 'r+' && !files.has(path)) {
           throw errno('ENOENT');
         }
         if (replaceBeforeOwnerWrite && path.includes('/owner-')) {
@@ -179,6 +193,9 @@ function createLockDeps(now: () => number): {
     directories,
     files,
     removed,
+    claimRefreshBeforeWrite: () => {
+      claimRefresh = true;
+    },
     refreshClaimOnRename: () => {
       refreshClaim = true;
     },
@@ -284,6 +301,22 @@ describe('directory fs lock', () => {
       /Directory lock timeout/u,
     );
     release();
+  });
+
+  it('loses ownership when a stale claimant moves the refresh marker before its write', () => {
+    let currentTime = 0;
+    const fixture = createLockDeps(() => currentTime);
+    const staleOwner = acquireDirectoryLockSync('/locks/refresh-claim-race', fixture.deps, 100);
+    currentTime = 31_000;
+    fixture.claimRefreshBeforeWrite();
+
+    expect(() => staleOwner.assertOwned()).toThrow(/ownership lost/u);
+    expect([...fixture.files].some((path) => path.includes('/claim-contender.lock'))).toBe(true);
+
+    const replacement = acquireDirectoryLockSync('/locks/refresh-claim-race', fixture.deps, 100);
+    staleOwner();
+    expect(fixture.directories.has('/locks/refresh-claim-race')).toBe(true);
+    replacement();
   });
 
   it('recovers a stale claim left by a crashed contender', () => {

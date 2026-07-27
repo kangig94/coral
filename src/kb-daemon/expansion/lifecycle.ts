@@ -183,10 +183,15 @@ export class ExpansionLifecycleService {
     if (!scopes && !row && !failed) {
       throw documentedCoralSetupError('expansion_not_equipped', { name });
     }
-
-    if (entry !== undefined) {
-      this.assertNoActiveDependents(entry);
+    if (entry === undefined) {
+      const packageId = validateExpansionPackageId(name);
+      if (!packageId.ok) {
+        throw documentedCoralSetupError('retired_expansion_id_invalid', { name, reason: packageId.reason });
+      }
+      throw documentedCoralSetupError('retired_expansion_cleanup_required', { name });
     }
+
+    this.assertNoActiveDependents(entry);
 
     if (scopes && scopes.length > 0) {
       // LIFO disposal of chained scopes for this engine.

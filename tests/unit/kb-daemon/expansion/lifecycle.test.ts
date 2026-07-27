@@ -494,6 +494,13 @@ describe('ExpansionLifecycleService', () => {
     expect(warn).toHaveBeenCalledWith(
       "Retired expansion row 'ghost' preserved. Run 'coral-cli expansion remove-catalog ghost' to remove retired expansion artifacts.",
     );
+    await expect(lifecycle.unequip('ghost')).rejects.toMatchObject({
+      code: 'retired_expansion_cleanup_required',
+      remediation:
+        "Run 'coral-cli expansion remove-catalog ghost' so Coral can remove its artifacts and state transactionally.",
+    });
+    expect(state.snapshot()).toEqual([{ id: 'ghost', version: '1.0.0', installed_at: FIXED_NOW }]);
+    expect(lifecycle.info('ghost')).toMatchObject({ status: 'installed-not-active' });
   });
 
   it('does not emit an executable cleanup command for an unsafe retired row id', async () => {
@@ -513,6 +520,11 @@ describe('ExpansionLifecycleService', () => {
     });
     expect(lifecycle.info(unsafeId)?.lastError).not.toContain(unsafeId);
     expect(warn).toHaveBeenCalledWith(expect.not.stringContaining(unsafeId));
+    await expect(lifecycle.unequip(unsafeId)).rejects.toMatchObject({
+      code: 'retired_expansion_id_invalid',
+      remediation: expect.not.stringContaining(unsafeId),
+    });
+    expect(state.snapshot()).toEqual([{ id: unsafeId, version: '1.0.0', installed_at: FIXED_NOW }]);
   });
 
   it('preserves failed recovery rows and reports installed-not-active with lastError', async () => {

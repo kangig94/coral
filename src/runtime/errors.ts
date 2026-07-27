@@ -46,6 +46,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'consumer_wait_fresh_invalid_target'
   | 'expansion_install_path_unwritable'
   | 'retired_expansion_id_invalid'
+  | 'retired_expansion_cleanup_required'
   | 'retired_expansion_consumer_active'
   | 'retired_expansion_cleanup_in_progress'
   | 'retired_expansion_cursor_unsafe'
@@ -220,6 +221,12 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       `Retired expansion id '${stringContextValue(context, 'name', 'unknown')}' is unsafe or reserved.`,
     remediation:
       "Use the exact id shown by 'coral-cli expansion list'. Valid ids use lowercase letters, digits, and single hyphens and must not name a Coral-owned KB path.",
+  },
+  retired_expansion_cleanup_required: {
+    userMessage: (context) =>
+      `Retired expansion '${stringContextValue(context, 'name', 'this expansion')}' requires catalog cleanup.`,
+    remediation: (context) =>
+      `Run 'coral-cli expansion remove-catalog ${stringContextValue(context, 'name', '<name>')}' so Coral can remove its artifacts and state transactionally.`,
   },
   retired_expansion_consumer_active: {
     userMessage: (context) =>

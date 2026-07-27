@@ -138,6 +138,7 @@ describe('Kiwi direct installer boundary', () => {
     mkdirSync(targetDir, { recursive: true });
     writeFileSync(join(targetDir, 'sentinel'), 'keep', 'utf-8');
 
+    expect(() => kiwiInstaller.inspect(runtime, 'foreign-package')).toThrow(/identity mismatch/u);
     await expect(
       kiwiInstaller.uninstall({
         name: 'foreign-package',

@@ -22,6 +22,7 @@ function assertKiwiInstallerIdentity(name: string): void {
 
 export const kiwiInstaller: EngineInstaller = {
   inspect(runtime, name): LocalExpansionInstallState {
+    assertKiwiInstallerIdentity(name);
     const state = inspectKiwiModelArtifact(runtime);
     return {
       targetDir: kiwiDataDir(runtime),
