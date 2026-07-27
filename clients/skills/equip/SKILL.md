@@ -75,10 +75,12 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 ### `<package>`
 
-0. **Consent gate for install-only packages.** Unless you already know the package's `activation` from a prior `--list`/`info` in this session, run `coral-cli expansion info <package>` first. If `activation` is `'none'` (install-only), equipping it runs the package's own install script through your shell (typically `curl … | bash`) — code Coral fetches from a remote host and executes. Tell the user the package id and that equipping will download and run a remote install script, then ask them to confirm. If they decline, stop without running equip. (Engine packages — `activation: 'equip'` — need no extra prompt; proceed directly.) The install runs synchronously and its script output is not streamed back — only the final status returns — so tell the user it may take up to a minute before reporting.
-1. Bash(`coral-cli expansion equip <package>`)
-2. Parse the single-line JSON result.
-3. Route by `status`:
+0. Unless you already know the package's `activation` from a prior `--list`/`info` in this session, run `coral-cli expansion info <package>` first.
+1. **Retired residue gate.** If `activation` is `'remove-catalog'`, do not run `expansion equip`. When `cleanupCommand` is present, show that exact command, ask the user to confirm cleanup, and on confirmation run only Bash(`<exact cleanupCommand>`), parse its single-line JSON result, and stop. Never interpolate or reconstruct this command. When `cleanupCommand` is absent, show `lastError` and stop without running any command.
+2. **Consent gate for install-only packages.** If `activation` is `'none'`, equipping runs the package's own install script through your shell (typically `curl … | bash`) — code Coral fetches from a remote host and executes. Tell the user the package id and that equipping will download and run a remote install script, then ask them to confirm. If they decline, stop without running equip. (Engine packages — `activation: 'equip'` — need no extra prompt; proceed directly.) The install runs synchronously and its script output is not streamed back — only the final status returns — so tell the user it may take up to a minute before reporting.
+3. Bash(`coral-cli expansion equip <package>`)
+4. Parse the single-line JSON result.
+5. Route by `status`:
 
 | status               | Action                                                                                                           |
 |----------------------|------------------------------------------------------------------------------------------------------------------|
@@ -91,11 +93,11 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 | `already_equipped`   | Inform the user the expansion is already active                                                                  |
 | `error`              | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
-4. Onboarding runs inside `coral-cli expansion equip <package>` before install/activate:
+6. Onboarding runs inside `coral-cli expansion equip <package>` before install/activate:
    - `engine_env_var_missing`: show the missing `envVar` and remediation exactly. Do not suggest restart/retry loops.
    - `binding_required`: show `suggestions` when present; otherwise show candidate ids from `context.candidates` when present. The user should equip one engine that fills the missing binding, then retry the original package.
    - `user_cancelled`: stop without retrying automatically.
-5. Do not run `coral-cli expansion equip <package>` a second time unless the user has changed the missing setup state or equipped a required peer engine.
+7. Do not run `coral-cli expansion equip <package>` a second time unless the user has changed the missing setup state or equipped a required peer engine.
 
 ### `--update <package>`
 
