@@ -128,6 +128,17 @@ const installOnlyEntrySchema = z
   })
   .strict();
 
+const retiredResidueEntrySchema = z
+  .object({
+    ...catalogEntryCommonShape,
+    tier: z.literal('installed'),
+    activation: z.literal('remove-catalog'),
+    status: z.literal('installed-not-active'),
+    cleanupCommand: z.string().min(1),
+    lastError: z.string().min(1).optional(),
+  })
+  .strict();
+
 export const catalogEntryStatusSchema = z.union([
   z.literal('inactive'),
   z.literal('installed-not-active'),
@@ -141,7 +152,11 @@ export const catalogEntryStatusSchema = z.union([
   z.literal('installed'),
 ]);
 
-export const catalogEntrySchema = z.discriminatedUnion('activation', [expansionEntrySchema, installOnlyEntrySchema]);
+export const catalogEntrySchema = z.discriminatedUnion('activation', [
+  expansionEntrySchema,
+  installOnlyEntrySchema,
+  retiredResidueEntrySchema,
+]);
 export type CatalogEntry = z.infer<typeof catalogEntrySchema>;
 
 export const catalogResultSchema = z

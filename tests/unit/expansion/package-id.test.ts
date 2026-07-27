@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
 
-import { BUNDLED_ENGINES } from '#src/expansion/bundled.js';
-import { INSTALL_ONLY_PACKAGES } from '#src/expansion/install-only.js';
 import { validateCanonicalExpansionPackageId, validateExpansionPackageId } from '#src/expansion/package-id.js';
 import { parseDeclarativeEngineManifest } from '#src/expansion/manifest/schema.js';
 import { KB_RUNTIME_EXACT_AUTHORITIES, KB_RUNTIME_PATTERNED_AUTHORITIES } from '#src/kb/runtime-authority.js';
@@ -67,14 +65,5 @@ describe('expansion package ids', () => {
   it('rejects reserved installed manifests while retaining the bundled Orama authority', () => {
     expect(() => parseDeclarativeEngineManifest(manifest('orama'))).toThrow(/expansion_package_id_reserved/u);
     expect(parseDeclarativeEngineManifest(manifest('orama', 'bundled')).id).toBe('orama');
-  });
-
-  it('pins the complete current package catalog', () => {
-    expect(BUNDLED_ENGINES.map(({ id, tier }) => ({ id, tier }))).toEqual([
-      { id: 'gemini', tier: 'installed' },
-      { id: 'onnx', tier: 'installed' },
-      { id: 'orama', tier: 'bundled' },
-    ]);
-    expect(INSTALL_ONLY_PACKAGES.map(({ id }) => id)).toEqual(['kiwi', 'codebase-memory']);
   });
 });

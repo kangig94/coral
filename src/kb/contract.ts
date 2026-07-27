@@ -147,6 +147,9 @@ export interface KbEngineRuntimeBase {
 }
 
 export interface KbEngineRuntime extends KbEngineRuntimeBase {
+  /** Canonical projection directories owned by the active expansion id. */
+  readonly ownProjectionDir: string;
+  readonly ownProjectionStagingDir: string;
   readonly journalReader: JournalConsumerReadPort;
   readonly corpusStateReader: CorpusStateReadPort;
 }

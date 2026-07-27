@@ -281,8 +281,20 @@ Discuss sessions are Journal events projected into `projection_discuss`. The sou
 - Runtime state defaults: `~/.coral/data/kb/` for prod, `~/.coral/data-dev/kb/` for dev
 - `CORAL_KB_PATH` still overrides the markdown root only
 - `<runtime-state>/orama/` stores the derived base retrieval snapshot when the Orama CorpusConsumer has applied the current Corpus snapshot
-- `<runtime-state>/<engine-id>/` and `<runtime-state>/<engine-id>-staging/` are the trusted installed-engine projection locations used by provider extensions
+- `<runtime-state>/<engine-id>/` and `<runtime-state>/<engine-id>-staging/` are the canonical projection and staging locations exposed to an expansion as `host.kb.ownProjectionDir` and `host.kb.ownProjectionStagingDir`
 - Source import staging is machine-local runtime state; clients pass source `filePath`, not a staged markdown path
+
+Installed expansions are trusted local code, not filesystem-sandboxed plugins. They must keep rebuildable projection data within the two own-id paths above; Coral uses that ownership boundary when retiring a package.
+
+### Retired expansion cleanup
+
+When a previously installed expansion is no longer present in the current catalog, Coral preserves its durable row and artifacts instead of deleting them at boot. `coral-cli expansion list` reports the entry as `installed-not-active` with an explicit `cleanupCommand`. Inspect the same entry with `coral-cli expansion info <retired-id>`, then run:
+
+```bash
+coral-cli expansion remove-catalog <retired-id>
+```
+
+Cleanup is explicit and scoped to the selected build flavor. Current catalog entries, install-only package ids, active consumers, base-owned cursors, and malformed cursor metadata are protected and will fail closed with an actionable error.
 
 ### Job state
 

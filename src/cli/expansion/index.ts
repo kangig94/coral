@@ -142,16 +142,17 @@ function toInstallOnlyCatalogEntry(manifest: InstallOnlyManifest, runtime: Runti
 }
 
 function toRetiredResidueCatalogEntry(view: ExpansionView): CatalogEntry {
+  const cleanupCommand = `coral-cli expansion remove-catalog ${view.name}`;
   return catalogEntrySchema.parse({
     id: view.name,
     name: view.name,
     tier: 'installed',
     description: 'Retired expansion artifacts awaiting operator cleanup',
-    activation: 'equip',
+    activation: 'remove-catalog',
     status: 'installed-not-active',
     version: view.version ?? 'unknown',
-    lastError:
-      view.lastError ?? `Run 'coral-cli expansion remove-catalog ${view.name}' to remove retired expansion artifacts.`,
+    cleanupCommand,
+    lastError: view.lastError ?? `Retired expansion artifacts remain. Run '${cleanupCommand}' to remove them.`,
   });
 }
 
@@ -314,6 +315,15 @@ export function createCliExpansionActivation(): CliExpansionActivation {
         const catalog = readExpansionCatalog(runtime);
         const entry = resolveCatalogManifest(catalog, name);
         if (!entry) {
+          const passive = await lowLevel.readExpansionStatus(name);
+          const retired =
+            passive.status === 'available' ? passive.expansions.find((view) => view.name === name) : undefined;
+          if (retired !== undefined) {
+            return infoResultSchema.parse({
+              status: 'info',
+              package: toRetiredResidueCatalogEntry(retired),
+            });
+          }
           return unknownExpansionResponse(name);
         }
 

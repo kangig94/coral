@@ -1,5 +1,5 @@
 import { rmSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 
 import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
 import { INSTALL_ONLY_PACKAGES } from '../../expansion/install-only.js';
@@ -89,18 +89,28 @@ async function applyPostInstallCatalogActions(
     throw new Error(`Expansion package '${name}' returned multiple catalog registrations`);
   }
 
+  const action = structuredActions[0];
+  const canonicalTargetDir = resolve(runtime.paths.coral.engine.dataDir(name));
+  if (result.targetDir !== undefined && resolve(result.targetDir) !== canonicalTargetDir) {
+    throw new Error(`Expansion package '${name}' returned a non-canonical target directory`);
+  }
+  if (isAbsolute(action.manifestPath)) {
+    throw new Error(`Expansion package '${name}' returned an absolute manifest path`);
+  }
+  const manifestPath = resolve(canonicalTargetDir, action.manifestPath);
+  const relativeManifestPath = relative(canonicalTargetDir, manifestPath);
+  if (relativeManifestPath.startsWith('..') || isAbsolute(relativeManifestPath)) {
+    throw new Error(`Expansion package '${name}' returned a manifest path outside its target directory`);
+  }
+
   const db = openWritableStoreDbNoReset(runtime, { storeFormat: currentCoralStoreFormat() });
   try {
     const catalog = createExpansionManifestCatalog({ db });
-    for (const action of structuredActions) {
-      const baseDir = result.targetDir ?? runtime.paths.coral.engine.dataDir(name);
-      const manifestPath = isAbsolute(action.manifestPath) ? action.manifestPath : join(baseDir, action.manifestPath);
-      const manifest = parseEngineManifest(JSON.parse(runtime.storage.readFileSync(manifestPath, 'utf-8')) as unknown);
-      if (manifest.id !== name) {
-        throw new Error(`Expansion package '${name}' cannot register manifest '${manifest.id}'`);
-      }
-      catalog.upsertInstalledEntry(manifest);
+    const manifest = parseEngineManifest(JSON.parse(runtime.storage.readFileSync(manifestPath, 'utf-8')) as unknown);
+    if (manifest.id !== name) {
+      throw new Error(`Expansion package '${name}' cannot register manifest '${manifest.id}'`);
     }
+    catalog.upsertInstalledEntry(manifest);
   } finally {
     db.close();
   }
@@ -115,7 +125,7 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
   }
 
   const runtime = resolveRuntime(opts.runtime);
-  let release: () => void;
+  let release: Awaited<ReturnType<typeof acquirePackageOperationLock>>;
   try {
     release = await acquirePackageOperationLock(runtime, name, opts.lockTimeoutMs ?? PACKAGE_OPERATION_LOCK_TIMEOUT_MS);
   } catch (error) {
@@ -136,6 +146,7 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
         operationLockHeld: true,
       }),
     );
+    release.assertOwned();
     return await applyPostInstallCatalogActions(result, runtime, name);
   } finally {
     release();
@@ -153,7 +164,7 @@ export async function uninstallExpansion(name: string, opts: UninstallExpansionO
   }
 
   const runtime = resolveRuntime(opts.runtime);
-  let release: () => void;
+  let release: Awaited<ReturnType<typeof acquirePackageOperationLock>>;
   try {
     release = await acquirePackageOperationLock(runtime, name, opts.lockTimeoutMs ?? PACKAGE_OPERATION_LOCK_TIMEOUT_MS);
   } catch (error) {
@@ -163,7 +174,7 @@ export async function uninstallExpansion(name: string, opts: UninstallExpansionO
     throw error;
   }
   try {
-    return installResponseSchema.parse(
+    const result = installResponseSchema.parse(
       await pkg.installer.uninstall({
         name,
         version: pkg.version,
@@ -173,6 +184,8 @@ export async function uninstallExpansion(name: string, opts: UninstallExpansionO
         operationLockHeld: true,
       }),
     );
+    release.assertOwned();
+    return result;
   } finally {
     release();
   }

@@ -74,7 +74,7 @@ describe('retired expansion cursor cleanup', () => {
     db.prepare("UPDATE consumer_cursors SET registration_kind = 'base' WHERE consumer_id = ?").run('vector-fixture');
 
     expect(() => repository.deletePreflightedRetiredExpansionCursor('vector-fixture', preflight)).toThrow(
-      /ownership changed/u,
+      /changed cursor ownership/u,
     );
     expect(cursorCount(db, 'vector-fixture')).toBe(1);
   });
@@ -86,7 +86,7 @@ describe('retired expansion cursor cleanup', () => {
     insertJournalCursor(db, 'vector-fixture', 'expansion');
 
     expect(() => repository.deletePreflightedRetiredExpansionCursor('vector-fixture', preflight)).toThrow(
-      /appeared during retirement/u,
+      /changed cursor ownership/u,
     );
     expect(cursorCount(db, 'vector-fixture')).toBe(1);
   });

@@ -10,6 +10,7 @@ import { AbortError, throwIfAborted } from '../../runtime/abort.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Disposable } from '../../runtime/ports.js';
 import { validateManifestCompleteness } from '../../expansion/manifest/completeness.js';
+import { assertExpansionPackageId } from '../../expansion/package-id.js';
 import type { EngineManifestProvides } from '../../expansion/contract.js';
 import type { ExpansionManifestCatalog } from '../../expansion/manifest/catalog.js';
 import { LIFECYCLE_BUNDLED_LOADERS } from './bundled-loaders.js';
@@ -134,6 +135,7 @@ export class ExpansionLifecycleService {
     if (entry.tier === 'bundled') {
       throw documentedCoralSetupError('expansion_bundled_immutable', { name });
     }
+    assertExpansionPackageId(entry.id);
 
     // Phase fence BEFORE any async work — refuse new equips while the
     // coordinator is draining or stopped. Past the fence, the equip runs to

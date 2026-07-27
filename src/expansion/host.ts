@@ -14,6 +14,7 @@ import type {
 import type { EngineManifest, ExpansionConsumerRegistration, ExpansionHost } from './contract.js';
 import { decorateDispose } from './scope.js';
 import type { EngineArtifactRegistration } from '../kb/corpus/artifact-registry.js';
+import { join } from 'node:path';
 
 // Narrow port over the coordinator's ConsumerDriver. The host receives only
 // the registration entrypoint, not the full coordinator class — keeps
@@ -59,9 +60,15 @@ function deriveRegistrationKind(tier: ExpansionTier, reg: ExpansionConsumerRegis
   return tier === 'bundled' ? 'base' : 'expansion';
 }
 
-function engineFacingKbRuntime(kb: KbRuntime, consumerDriver: ConsumerDriverPort): KbEngineRuntime {
+function engineFacingKbRuntime(
+  kb: KbRuntime,
+  consumerDriver: ConsumerDriverPort,
+  expansionId: string,
+): KbEngineRuntime {
   return {
     runtimeDir: kb.runtimeDir,
+    ownProjectionDir: join(kb.runtimeDir, expansionId),
+    ownProjectionStagingDir: join(kb.runtimeDir, `${expansionId}-staging`),
     time: kb.time,
     ids: kb.ids,
     declaredAnalyzers: kb.declaredAnalyzers,
@@ -108,7 +115,7 @@ function registeredArtifactPorts(scope: Disposable): readonly EngineArtifactRegi
 }
 
 export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
-  const engineKb = engineFacingKbRuntime(deps.kb, deps.consumerDriver);
+  const engineKb = engineFacingKbRuntime(deps.kb, deps.consumerDriver, deps.manifest.id);
   const runtimeCapabilities = deps.kb.capabilityRegistry.runtimeView();
   const declaredFills = deps.manifest.fills ?? [];
   const declaredRequires: string[] = [];

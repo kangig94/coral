@@ -2,7 +2,7 @@ import { join } from 'node:path';
 
 import { isDirectoryLockTimeoutError } from '../../infra/fs-lock.js';
 import { acquirePackageOperationLock } from '../../expansion/package-lock.js';
-import { assertExpansionPackageId } from '../../expansion/package-id.js';
+import { validateExpansionPackageId } from '../../expansion/package-id.js';
 import type { ExpansionManifestCatalog } from '../../expansion/manifest/catalog.js';
 import type { ConsumerDriver } from '../../projection-consumers/index.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
@@ -27,8 +27,15 @@ export async function cleanupRetiredExpansion(
   rawId: string,
   options: RetiredExpansionCleanupOptions,
 ): Promise<RetiredExpansionCleanupResult> {
-  const id = assertExpansionPackageId(rawId);
-  let releasePackageLock: () => void;
+  const validatedId = validateExpansionPackageId(rawId);
+  if (!validatedId.ok) {
+    throw documentedCoralSetupError('retired_expansion_id_invalid', {
+      name: rawId,
+      reason: validatedId.reason,
+    });
+  }
+  const id = validatedId.id;
+  let releasePackageLock: Awaited<ReturnType<typeof acquirePackageOperationLock>>;
   try {
     releasePackageLock = await acquirePackageOperationLock(options.runtime, id);
   } catch (error) {
@@ -45,16 +52,21 @@ export async function cleanupRetiredExpansion(
 
     const cursorLease = options.consumerDriver.beginRetiredExpansionCursorCleanup(id);
     try {
+      releasePackageLock.assertOwned();
       options.runtime.storage.rmSync(options.runtime.paths.coral.engine.dataDir(id), {
         recursive: true,
         force: true,
       });
+      releasePackageLock.assertOwned();
       options.runtime.storage.rmSync(join(options.kbRuntimeDir, id), { recursive: true, force: true });
+      releasePackageLock.assertOwned();
       options.runtime.storage.rmSync(join(options.kbRuntimeDir, `${id}-staging`), {
         recursive: true,
         force: true,
       });
+      releasePackageLock.assertOwned();
       cursorLease.deleteCursor();
+      releasePackageLock.assertOwned();
       options.finalizeState();
       return 'removed';
     } finally {

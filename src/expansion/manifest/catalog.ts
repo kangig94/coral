@@ -100,10 +100,11 @@ export class ExpansionManifestCatalog {
     const readDb = options.readDb ?? options.db;
     if (readDb !== undefined) {
       for (const row of readRows(readDb)) {
+        const manifest = parsePersistedManifest(row);
         if (this.staticIds.has(row.id)) {
-          continue;
+          throw new Error(`Persisted expansion manifest '${row.id}' collides with a static catalog entry`);
         }
-        this.installed.set(row.id, parsePersistedManifest(row));
+        this.installed.set(row.id, manifest);
       }
     }
   }
@@ -163,7 +164,7 @@ export class ExpansionManifestCatalog {
 
   upsertInstalledEntry(manifest: EngineManifest): EngineManifest {
     if (this.staticIds.has(manifest.id)) {
-      return this.getManifest(manifest.id) ?? manifest;
+      throw new Error(`Installed expansion manifest '${manifest.id}' collides with a static catalog entry`);
     }
     if (manifest.tier !== 'installed') {
       throw new Error(`Installed expansion manifest '${manifest.id}' must have tier 'installed'`);

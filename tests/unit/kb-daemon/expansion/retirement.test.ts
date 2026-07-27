@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createExpansionManifestCatalog } from '#src/expansion/manifest/catalog.js';
+import { installExpansion } from '#src/cli/expansion/install.js';
+import { kiwiInstaller } from '#src/engines/kiwi/install.js';
 import { cleanupRetiredExpansion } from '#src/kb-daemon/expansion/retirement.js';
 import { ExpansionStateStore } from '#src/kb-daemon/expansion/state.js';
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
@@ -146,6 +148,55 @@ describe('retired expansion cleanup', () => {
       expect(rmSpy).not.toHaveBeenCalled();
     },
   );
+
+  it('leaves filesystem, cursor, and state untouched for an invalid id', async () => {
+    const fixture = createFixture();
+    const id = '../escape';
+    const engineSentinel = writeSentinel(fixture.runtime.paths.coral.engine.dataDir(id), 'engine');
+    const projectionSentinel = writeSentinel(join(fixture.kbRuntimeDir, id), 'projection');
+    const stagingSentinel = writeSentinel(join(fixture.kbRuntimeDir, `${id}-staging`), 'staging');
+    fixture.state.insert({ id, version: '0.1.0', installed_at: '2026-01-01T00:00:00.000Z' });
+    insertCursor(fixture.db, id, 'expansion');
+
+    await expect(cleanup(fixture, id)).rejects.toMatchObject({ code: 'retired_expansion_id_invalid' });
+
+    expect(readFileSync(engineSentinel, 'utf8')).toBe('engine');
+    expect(readFileSync(projectionSentinel, 'utf8')).toBe('projection');
+    expect(readFileSync(stagingSentinel, 'utf8')).toBe('staging');
+    expect(fixture.state.get(id)).toBeDefined();
+    expect(fixture.db.prepare('SELECT 1 FROM consumer_cursors WHERE consumer_id = ?').get(id)).toBeDefined();
+  });
+
+  it('shares one exclusion fence with a supported package install through finalization', async () => {
+    const fixture = createFixture();
+    let enteredInstall!: () => void;
+    const installEntered = new Promise<void>((resolve) => {
+      enteredInstall = resolve;
+    });
+    let finishInstall!: () => void;
+    const installFinished = new Promise<void>((resolve) => {
+      finishInstall = resolve;
+    });
+    vi.spyOn(kiwiInstaller, 'install').mockImplementation(async (options) => {
+      expect(options.operationLockHeld).toBe(true);
+      enteredInstall();
+      await installFinished;
+      return { status: 'already_installed', method: 'fixture', version: '1.0.0' };
+    });
+
+    const installing = installExpansion('kiwi', { runtime: fixture.runtime, lockTimeoutMs: 50 });
+    await installEntered;
+    expect(existsSync(fixture.runtime.paths.coral.engine.installLockPath('kiwi'))).toBe(true);
+
+    await expect(cleanup(fixture, 'kiwi')).rejects.toMatchObject({
+      code: 'expansion_install_lock_contended',
+    });
+    expect(existsSync(fixture.runtime.paths.coral.engine.installLockPath('kiwi'))).toBe(true);
+
+    finishInstall();
+    await expect(installing).resolves.toMatchObject({ status: 'already_installed' });
+    expect(existsSync(fixture.runtime.paths.coral.engine.installLockPath('kiwi'))).toBe(false);
+  });
 
   it('keeps the state row as the final retry marker and completes on retry', async () => {
     const fixture = createFixture();

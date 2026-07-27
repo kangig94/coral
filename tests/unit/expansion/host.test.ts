@@ -65,6 +65,8 @@ describe('createExpansionHost', () => {
 
     expect(kb.capabilityRegistry.runtimeView().read<string>(KB_VECTOR_CAPABILITY)).toBe('vector');
     expect(kb.capabilityRegistry.runtimeView().status(KB_VECTOR_CAPABILITY)?.heldBy).toBe('vector');
+    expect(host.kb.ownProjectionDir).toBe(`${kb.runtimeDir}/vector`);
+    expect(host.kb.ownProjectionStagingDir).toBe(`${kb.runtimeDir}/vector-staging`);
   });
 
   it('rewraps binding-empty as binding-required', () => {

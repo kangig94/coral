@@ -59,8 +59,7 @@ const manifestProvidesSchema = z
   })
   .describe('reject-reserved-kb-capability-namespace');
 
-const declarativeEngineManifestShape = {
-  id: expansionPackageIdSchema,
+const declarativeEngineManifestBodyShape = {
   version: z.string().min(1),
   specifier: z.string().min(1),
   tier: z.enum(['bundled', 'installed']),
@@ -78,13 +77,7 @@ const declarativeEngineManifestShape = {
 export const persistedDeclarativeEngineManifestSchema = z
   .object({
     id: z.string().min(1),
-    version: z.string().min(1),
-    specifier: z.string().min(1),
-    tier: z.enum(['bundled', 'installed']),
-    description: z.string().min(1),
-    onboarding: z.array(onboardingStepSchema).optional(),
-    fills: z.array(kbCapabilityNameSchema).optional(),
-    provides: manifestProvidesSchema.optional(),
+    ...declarativeEngineManifestBodyShape,
   })
   .strict();
 
@@ -106,14 +99,18 @@ function validateInstalledId(
 }
 
 export const declarativeEngineManifestSchema = z
-  .object(declarativeEngineManifestShape)
+  .object({
+    id: expansionPackageIdSchema,
+    ...declarativeEngineManifestBodyShape,
+  })
   .strict()
   .superRefine(validateInstalledId)
   .describe('validate-installed-expansion-package-id');
 
 export const engineManifestSchema = z
   .object({
-    ...declarativeEngineManifestShape,
+    id: expansionPackageIdSchema,
+    ...declarativeEngineManifestBodyShape,
     // EngineInstaller carries runtime functions and host-specific state and is
     // deliberately absent from the persisted catalog codec above.
     installer: z.any().optional(),

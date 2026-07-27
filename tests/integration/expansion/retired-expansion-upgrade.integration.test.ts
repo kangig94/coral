@@ -136,6 +136,7 @@ describe('retired expansion full-boot upgrade', () => {
       otherFlavor,
     );
     const otherProjection = writeSentinel(join(kbRuntimeDir(home, otherFlavor), RETIRED_ID), otherFlavor);
+    const otherStaging = writeSentinel(join(kbRuntimeDir(home, otherFlavor), `${RETIRED_ID}-staging`), otherFlavor);
 
     const fixture = createPluginFixture(tempRoots, { flavor });
     const coordinator = spawnCoordinator({
@@ -186,7 +187,28 @@ describe('retired expansion full-boot upgrade', () => {
 
     expect(readFileSync(otherEngine, 'utf8')).toBe(otherFlavor);
     expect(readFileSync(otherProjection, 'utf8')).toBe(otherFlavor);
+    expect(readFileSync(otherStaging, 'utf8')).toBe(otherFlavor);
     expect(rowCount(home, otherFlavor, 'expansion_state')).toBe(1);
     expect(cursorCount(home, otherFlavor)).toBe(1);
-  }, 20_000);
+
+    await stopCoordinator(coordinator);
+    coordinators.splice(coordinators.indexOf(coordinator), 1);
+    const restarted = spawnCoordinator({
+      fixture,
+      home,
+      tempRoots,
+      env: {
+        CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000',
+        CORAL_KB_EXTRA_LANGS: '',
+      },
+    });
+    coordinators.push(restarted);
+    await waitForDiscoveryRecord(home, flavor, 15_000);
+    const restartedList = runBuiltCli(fixture, home, flavor, ['expansion', 'list']) as {
+      packages: Array<{ id: string }>;
+    };
+    expect(restartedList.packages.some((entry) => entry.id === RETIRED_ID)).toBe(false);
+    expect(rowCount(home, flavor, 'expansion_state')).toBe(0);
+    expect(cursorCount(home, flavor)).toBe(0);
+  }, 30_000);
 });

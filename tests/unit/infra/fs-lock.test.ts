@@ -13,11 +13,15 @@ function createLockDeps(now: () => number): {
   directories: Map<string, number>;
   files: Set<string>;
   removed: string[];
+  refreshClaimOnRename(): void;
 } {
   const directories = new Map<string, number>();
   const files = new Set<string>();
   const fileMtimes = new Map<string, number>();
   const removed: string[] = [];
+  const openFiles = new Map<number, string>();
+  let nextFd = 1;
+  let refreshClaim = false;
   const deps: DirectoryLockDeps = {
     storage: {
       mkdirSync: (path) => {
@@ -32,6 +36,37 @@ function createLockDeps(now: () => number): {
         }
         files.add(path);
         fileMtimes.set(path, now());
+      },
+      renameSync: (oldPath, newPath) => {
+        if (files.delete(oldPath)) {
+          files.add(newPath);
+          fileMtimes.set(newPath, fileMtimes.get(oldPath) ?? now());
+          fileMtimes.delete(oldPath);
+          for (const [fd, path] of openFiles) {
+            if (path === oldPath) {
+              openFiles.set(fd, newPath);
+            }
+          }
+          if (refreshClaim && newPath.includes('/claim-')) {
+            fileMtimes.set(newPath, now());
+            refreshClaim = false;
+          }
+          return;
+        }
+        if (!directories.has(oldPath)) {
+          throw errno('ENOENT');
+        }
+        directories.set(newPath, directories.get(oldPath)!);
+        directories.delete(oldPath);
+        for (const file of [...files]) {
+          if (file.startsWith(`${oldPath}/`)) {
+            const moved = `${newPath}${file.slice(oldPath.length)}`;
+            files.delete(file);
+            files.add(moved);
+            fileMtimes.set(moved, fileMtimes.get(file) ?? now());
+            fileMtimes.delete(file);
+          }
+        }
       },
       readdirSync: ((path: string) =>
         [...files]
@@ -88,6 +123,25 @@ function createLockDeps(now: () => number): {
           isFile: () => fileMtimeMs !== undefined,
         };
       }) as DirectoryLockDeps['storage']['statSync'],
+      openSync: (path) => {
+        if (!files.has(path)) {
+          throw errno('ENOENT');
+        }
+        const fd = nextFd++;
+        openFiles.set(fd, path);
+        return fd;
+      },
+      writeSync: (fd, _buffer, _offset, length) => {
+        const path = openFiles.get(fd);
+        if (path === undefined) {
+          throw errno('EBADF');
+        }
+        fileMtimes.set(path, now());
+        return length;
+      },
+      closeSync: (fd) => {
+        openFiles.delete(fd);
+      },
     },
     time: {
       now,
@@ -96,7 +150,15 @@ function createLockDeps(now: () => number): {
       clearInterval: vi.fn(),
     },
   };
-  return { deps, directories, files, removed };
+  return {
+    deps,
+    directories,
+    files,
+    removed,
+    refreshClaimOnRename: () => {
+      refreshClaim = true;
+    },
+  };
 }
 
 describe('directory fs lock', () => {
@@ -114,13 +176,15 @@ describe('directory fs lock', () => {
   });
 
   it('uses explicit sync deps for stale lock checks and removal', () => {
-    const { deps, directories, removed } = createLockDeps(() => 31_000);
-    directories.set('/locks/stale-session', 0);
+    let currentTime = 0;
+    const { deps, directories, removed } = createLockDeps(() => currentTime);
+    acquireDirectoryLockSync('/locks/stale-session', deps, 100);
+    currentTime = 31_000;
 
     const release = acquireDirectoryLockSync('/locks/stale-session', deps, 100);
 
     expect(directories.has('/locks/stale-session')).toBe(true);
-    expect(removed[0]).toBe('/locks/stale-session');
+    expect(removed.some((path) => path.startsWith('/locks/stale-session.stale-'))).toBe(true);
     release();
     expect(directories.has('/locks/stale-session')).toBe(false);
   });
@@ -133,12 +197,29 @@ describe('directory fs lock', () => {
     currentTime += 31_000;
     const replacementRelease = acquireDirectoryLockSync('/locks/shared-session', deps, 100);
 
+    expect(() => staleOwnerRelease.assertOwned()).toThrow(/ownership lost/u);
     staleOwnerRelease();
 
     expect(directories.has('/locks/shared-session')).toBe(true);
 
     replacementRelease();
     expect(directories.has('/locks/shared-session')).toBe(false);
+  });
+
+  it('does not steal a lock whose owner refreshes during the stale claim', () => {
+    let currentTime = 0;
+    let nowCalls = 0;
+    const fixture = createLockDeps(() => currentTime + nowCalls++ * 50);
+    const release = acquireDirectoryLockSync('/locks/heartbeat-session', fixture.deps, 100);
+    currentTime = 31_000;
+    nowCalls = 0;
+    fixture.refreshClaimOnRename();
+
+    expect(() => acquireDirectoryLockSync('/locks/heartbeat-session', fixture.deps, 100)).toThrow(
+      /Directory lock timeout/u,
+    );
+    expect(() => release.assertOwned()).not.toThrow();
+    release();
   });
 
   it('aborts async acquire while waiting for a busy lock', async () => {

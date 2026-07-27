@@ -72,6 +72,11 @@ describe('DB-backed expansion manifest catalog', () => {
       rowId: 'legacy-bundled',
       manifest: { ...dummyInstalledDbManifest, id: 'legacy-bundled', tier: 'bundled' },
     },
+    {
+      label: 'persisted row colliding with a static id',
+      rowId: 'orama',
+      manifest: { ...dummyInstalledDbManifest, id: 'orama' },
+    },
   ])('fails closed for $label', ({ rowId, manifest }) => {
     const home = tempRoot('coral-db-backed-manifest-invalid-home-');
     const runtime = createRealRuntime('prod', { baseDir: home });

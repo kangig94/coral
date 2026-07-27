@@ -222,13 +222,23 @@ describe('expansion activation', () => {
           id: 'retired-vector',
           name: 'retired-vector',
           tier: 'installed',
-          activation: 'equip',
+          activation: 'remove-catalog',
           status: 'installed-not-active',
           version: '0.9.0',
+          cleanupCommand: 'coral-cli expansion remove-catalog retired-vector',
           lastError: expect.stringContaining('coral-cli expansion remove-catalog retired-vector'),
         }),
       ]),
     );
+
+    await expect(activation.info('retired-vector')).resolves.toMatchObject({
+      status: 'info',
+      package: {
+        id: 'retired-vector',
+        activation: 'remove-catalog',
+        cleanupCommand: 'coral-cli expansion remove-catalog retired-vector',
+      },
+    });
   });
 
   it('maps immutable catalog removal without exposing the internal status string', async () => {

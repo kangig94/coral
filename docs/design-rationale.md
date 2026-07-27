@@ -175,11 +175,11 @@ One engine ships one Expansion.
 
 ### 6.3 Expansion principles
 
-1. An Expansion **replaces a specific projection backend**; it does not add new commands. The CLI surface is identical in both tiers.
-2. An Expansion **never writes an authority**. Journal events and Corpus markdown remain truth; an Expansion maintains additional or replacement projections.
+1. An Expansion **fills a declared capability or retrieval role**; it does not add new commands. A filled slot may previously have been empty, so a base replacement is not assumed.
+2. An Expansion **never writes an authority**. Journal events and Corpus markdown remain truth; an Expansion maintains rebuildable projections or provider runtime state.
 3. Every equipped projection is **rebuildable from the authority it serves**. Journal-backed Expansions replay events; Corpus-backed Expansions diff Corpus snapshots.
-4. **Unequipping** returns the replaced path to the base backend without data loss and without command availability changes.
-5. An Expansion loads via **dynamic import** — the heavy dependency enters the process only after `/equip` completes.
+4. **Unequipping** releases only capabilities, roles, consumers, and artifacts owned by that scope. A base provider is used only when one is independently registered.
+5. Bundled fallback engines are statically linked and loaded by the KB daemon's boot pass. Installed-tier entries load through dynamic import during equip, after their install dependency is available.
 6. An Expansion is **never prompted**. Discovery is through `/equip --list` or documentation, not through nagging.
 
 Each `RuntimeBinding<T>` accepts at most one bound value; binding occupancy is enforced inside the binding primitive, not by lifecycle bookkeeping.

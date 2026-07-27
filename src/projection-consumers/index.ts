@@ -190,10 +190,10 @@ export class ConsumerDriver {
 
   beginRetiredExpansionCursorCleanup(consumerId: string): RetiredExpansionCursorLease {
     if (this.consumers.has(consumerId)) {
-      throw new Error(`Consumer '${consumerId}' is active`);
+      throw documentedCoralSetupError('retired_expansion_consumer_active', { name: consumerId });
     }
     if (this.retiringConsumerIds.has(consumerId)) {
-      throw new Error(`Consumer '${consumerId}' retirement is already in progress`);
+      throw documentedCoralSetupError('retired_expansion_cleanup_in_progress', { name: consumerId });
     }
     this.retiringConsumerIds.add(consumerId);
     try {
@@ -203,7 +203,7 @@ export class ConsumerDriver {
         preflight,
         deleteCursor: () => {
           if (released) {
-            throw new Error(`Consumer '${consumerId}' retirement lease was released`);
+            throw documentedCoralSetupError('retired_expansion_cursor_changed', { name: consumerId });
           }
           this.repository.deletePreflightedRetiredExpansionCursor(consumerId, preflight);
         },

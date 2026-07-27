@@ -141,6 +141,7 @@ type KiwiModelInstallOptions = {
   readonly update?: boolean;
   readonly lockTimeoutMs?: number;
   readonly logger?: (event: { readonly kind: string; readonly message: string }) => void;
+  readonly operationLockHeld?: true;
 };
 
 type KiwiModelWriteWorkerFile = {
@@ -274,6 +275,9 @@ async function withInstallLock<T>(
 ): Promise<T | Extract<KiwiModelArtifactInstallResult, { status: 'error' }>> {
   const dataDir = kiwiDataDir(runtime);
   runtime.storage.mkdirSync(dataDir, { recursive: true });
+  if (opts.operationLockHeld === true) {
+    return run();
+  }
 
   let release: () => void;
   try {

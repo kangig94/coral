@@ -32,6 +32,7 @@ export const kiwiInstaller: EngineInstaller = {
       logger: ctx.logger,
       lockTimeoutMs: ctx.lockTimeoutMs,
       update: ctx.update,
+      operationLockHeld: ctx.operationLockHeld,
     });
   },
   async uninstall(ctx: EngineInstallerOptions): Promise<unknown> {

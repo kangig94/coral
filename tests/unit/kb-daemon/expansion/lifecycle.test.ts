@@ -456,6 +456,14 @@ describe('ExpansionLifecycleService', () => {
     });
   });
 
+  it('revalidates an injected installed manifest id at equip ingress', async () => {
+    const unsafe = { ...FAKE_EMBEDDER_ENTRY, id: '../escape' } as EngineManifest;
+    const { lifecycle, state } = createLifecycleHarness({ manifest: [unsafe] });
+
+    await expect(lifecycle.equip('../escape')).rejects.toThrow(/is unsafe/u);
+    expect(state.snapshot()).toEqual([]);
+  });
+
   it('rolls back bound state when writing the expansion row fails', async () => {
     const { kb, state, lifecycle } = createLifecycleHarness();
     vi.mocked(state.insert).mockImplementation(() => {

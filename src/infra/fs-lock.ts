@@ -1,5 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readdirSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import type { StoragePort, TimePort, TimerHandle } from './port-types.js';
 
@@ -10,7 +22,17 @@ const syncWaitState = new Int32Array(new SharedArrayBuffer(4));
 export type DirectoryLockDeps = {
   storage: Pick<
     StoragePort,
-    'mkdirSync' | 'readdirSync' | 'rmSync' | 'rmdirSync' | 'statSync' | 'unlinkSync' | 'writeFileSync'
+    | 'closeSync'
+    | 'mkdirSync'
+    | 'openSync'
+    | 'readdirSync'
+    | 'renameSync'
+    | 'rmSync'
+    | 'rmdirSync'
+    | 'statSync'
+    | 'unlinkSync'
+    | 'writeFileSync'
+    | 'writeSync'
   >;
   time: Pick<TimePort, 'now' | 'sleep' | 'setInterval' | 'clearInterval'>;
   staleMs?: number;
@@ -25,6 +47,18 @@ export class DirectoryLockTimeoutError extends Error {
     Object.setPrototypeOf(this, DirectoryLockTimeoutError.prototype);
   }
 }
+
+export class DirectoryLockOwnershipLostError extends Error {
+  constructor(lockDir: string) {
+    super(`Directory lock ownership lost: ${lockDir}`);
+    this.name = 'DirectoryLockOwnershipLostError';
+    Object.setPrototypeOf(this, DirectoryLockOwnershipLostError.prototype);
+  }
+}
+
+export type DirectoryLockLease = (() => void) & {
+  assertOwned(): void;
+};
 
 function waitSync(ms: number): void {
   Atomics.wait(syncWaitState, 0, 0, ms);
@@ -50,12 +84,16 @@ function resolveDirectoryLockDeps(deps?: DirectoryLockDeps): DirectoryLockDeps {
   return {
     storage: {
       mkdirSync,
+      openSync,
       readdirSync,
+      renameSync,
       rmSync,
       rmdirSync,
       statSync,
       unlinkSync,
       writeFileSync,
+      writeSync,
+      closeSync,
     },
     time: {
       now: () => new Date().getTime(),
@@ -113,17 +151,32 @@ function tryRemoveOwnedLockDirectory(lockDir: string, ownerToken: string, storag
   }
 }
 
-function startDirectoryLockHeartbeat(lockDir: string, ownerToken: string, deps: DirectoryLockDeps): TimerHandle {
+function refreshLockOwnerMarker(ownerPath: string, ownerToken: string, deps: DirectoryLockDeps): void {
+  let fd: number | null = null;
+  try {
+    fd = deps.storage.openSync(ownerPath, 'r+');
+    deps.storage.writeSync(fd, Buffer.from(ownerToken), 0, Buffer.byteLength(ownerToken), 0);
+  } finally {
+    if (fd !== null) {
+      deps.storage.closeSync(fd);
+    }
+  }
+}
+
+function startDirectoryLockHeartbeat(
+  lockDir: string,
+  ownerToken: string,
+  deps: DirectoryLockDeps,
+  loseOwnership: () => void,
+): TimerHandle {
   const ownerPath = lockOwnerMarkerPath(lockDir, ownerToken);
   const staleMs = deps.staleMs ?? STALE_LOCK_MS;
   const heartbeatMs = deps.heartbeatMs ?? Math.max(10, Math.floor(staleMs / 3));
   return deps.time.setInterval(() => {
     try {
-      deps.storage.statSync(ownerPath);
-      deps.storage.writeFileSync(ownerPath, ownerToken, { encoding: 'utf-8', mode: 0o600 });
+      refreshLockOwnerMarker(ownerPath, ownerToken, deps);
     } catch {
-      // The owner marker vanished, so this holder was fenced out. The release
-      // path remains token-safe and will not remove a replacement lock.
+      loseOwnership();
     }
   }, heartbeatMs);
 }
@@ -133,34 +186,134 @@ function releaseDirectoryLock(
   deps: DirectoryLockDeps,
   ownerToken: string,
   heartbeat: TimerHandle,
-): () => void {
-  return () => {
+  isOwned: () => boolean,
+  loseOwnership: () => void,
+): DirectoryLockLease {
+  const release = (() => {
+    loseOwnership();
     deps.time.clearInterval(heartbeat);
     tryRemoveOwnedLockDirectory(lockDir, ownerToken, deps.storage);
-  };
-}
-
-function latestLockMtime(lockDir: string, deps: DirectoryLockDeps): number {
-  let latest = deps.storage.statSync(lockDir).mtimeMs;
-  for (const entry of deps.storage.readdirSync(lockDir)) {
-    if (!entry.startsWith('owner-') || !entry.endsWith('.lock')) {
-      continue;
+  }) as DirectoryLockLease;
+  release.assertOwned = () => {
+    if (!isOwned()) {
+      throw new DirectoryLockOwnershipLostError(lockDir);
     }
     try {
-      latest = Math.max(latest, deps.storage.statSync(join(lockDir, entry)).mtimeMs);
+      deps.storage.statSync(lockOwnerMarkerPath(lockDir, ownerToken));
     } catch {
-      // A concurrent release may remove the marker between list and stat.
+      loseOwnership();
+      throw new DirectoryLockOwnershipLostError(lockDir);
     }
-  }
-  return latest;
+  };
+  return release;
 }
 
-function isStaleLock(lockDir: string, deps: DirectoryLockDeps): boolean {
+function ownerMarkerEntries(lockDir: string, deps: DirectoryLockDeps): string[] {
   try {
-    return deps.time.now() - latestLockMtime(lockDir, deps) > (deps.staleMs ?? STALE_LOCK_MS);
+    return deps.storage.readdirSync(lockDir).filter((entry) => entry.startsWith('owner-') && entry.endsWith('.lock'));
+  } catch {
+    return [];
+  }
+}
+
+function markerIsStale(markerPath: string, deps: DirectoryLockDeps): boolean {
+  try {
+    return deps.time.now() - deps.storage.statSync(markerPath).mtimeMs > (deps.staleMs ?? STALE_LOCK_MS);
   } catch {
     return false;
   }
+}
+
+function directoryIsStale(lockDir: string, deps: DirectoryLockDeps): boolean {
+  try {
+    return deps.time.now() - deps.storage.statSync(lockDir).mtimeMs > (deps.staleMs ?? STALE_LOCK_MS);
+  } catch {
+    return false;
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+/**
+ * Claims a stale owner marker with an atomic rename before deleting anything.
+ * Heartbeats update an already-open file descriptor, so a refresh racing with
+ * the rename updates the claimed inode and makes the post-claim stale check
+ * fail. Other contenders cannot claim the marker after it has moved.
+ */
+function tryQuarantineStaleLock(lockDir: string, deps: DirectoryLockDeps): boolean {
+  const ownerEntries = ownerMarkerEntries(lockDir, deps);
+  const [ownerEntry] = ownerEntries;
+  if (ownerEntry === undefined) {
+    let entries: string[];
+    try {
+      entries = deps.storage.readdirSync(lockDir);
+    } catch {
+      return false;
+    }
+    if (entries.some((entry) => entry.startsWith('claim-')) || !directoryIsStale(lockDir, deps)) {
+      return false;
+    }
+    const quarantinePath = `${lockDir}.stale-${randomUUID()}`;
+    try {
+      deps.storage.renameSync(lockDir, quarantinePath);
+    } catch (error) {
+      if (isMissingPathError(error)) {
+        return false;
+      }
+      throw error;
+    }
+    tryRemoveLockDirectory(quarantinePath, deps.storage);
+    return true;
+  }
+  if (ownerEntries.length !== 1) {
+    return false;
+  }
+  const ownerPath = join(lockDir, ownerEntry);
+  if (!markerIsStale(ownerPath, deps)) {
+    return false;
+  }
+
+  const claimPath = join(lockDir, `claim-${randomUUID()}.lock`);
+  try {
+    deps.storage.renameSync(ownerPath, claimPath);
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return false;
+    }
+    throw error;
+  }
+
+  if (!markerIsStale(claimPath, deps)) {
+    try {
+      deps.storage.renameSync(claimPath, ownerPath);
+    } catch {
+      // The holder may have released while its refreshed claim was restored.
+    }
+    return false;
+  }
+
+  const quarantinePath = `${lockDir}.stale-${randomUUID()}`;
+  try {
+    deps.storage.renameSync(lockDir, quarantinePath);
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return false;
+    }
+    throw error;
+  }
+  tryRemoveLockDirectory(quarantinePath, deps.storage);
+  return true;
+}
+
+function createDirectoryLockLease(lockDir: string, ownerToken: string, deps: DirectoryLockDeps): DirectoryLockLease {
+  let owned = true;
+  const loseOwnership = () => {
+    owned = false;
+  };
+  const heartbeat = startDirectoryLockHeartbeat(lockDir, ownerToken, deps, loseOwnership);
+  return releaseDirectoryLock(lockDir, deps, ownerToken, heartbeat, () => owned, loseOwnership);
 }
 
 function throwIfDirectoryLockAborted(deps: DirectoryLockDeps): void {
@@ -200,17 +353,17 @@ async function waitForDirectoryLockRetry(deps: DirectoryLockDeps): Promise<void>
   signal.throwIfAborted();
 }
 
-export async function acquireDirectoryLock(lockDir: string, timeoutMs?: number): Promise<() => void>;
+export async function acquireDirectoryLock(lockDir: string, timeoutMs?: number): Promise<DirectoryLockLease>;
 export async function acquireDirectoryLock(
   lockDir: string,
   deps: DirectoryLockDeps,
   timeoutMs?: number,
-): Promise<() => void>;
+): Promise<DirectoryLockLease>;
 export async function acquireDirectoryLock(
   lockDir: string,
   depsOrTimeout: DirectoryLockDeps | number = 5000,
   timeoutMs = 5000,
-): Promise<() => void> {
+): Promise<DirectoryLockLease> {
   const deps = resolveDirectoryLockDeps(isDirectoryLockDeps(depsOrTimeout) ? depsOrTimeout : undefined);
   const effectiveTimeoutMs = typeof depsOrTimeout === 'number' ? depsOrTimeout : timeoutMs;
   const deadline = deps.time.now() + effectiveTimeoutMs;
@@ -221,14 +374,12 @@ export async function acquireDirectoryLock(
       deps.storage.mkdirSync(lockDir);
       const ownerToken = randomUUID();
       writeLockOwnerMarker(lockDir, ownerToken, deps.storage);
-      const heartbeat = startDirectoryLockHeartbeat(lockDir, ownerToken, deps);
-      return releaseDirectoryLock(lockDir, deps, ownerToken, heartbeat);
+      return createDirectoryLockLease(lockDir, ownerToken, deps);
     } catch (error: unknown) {
       if (!isAlreadyExistsError(error)) throw error;
     }
 
-    if (isStaleLock(lockDir, deps)) {
-      tryRemoveLockDirectory(lockDir, deps.storage);
+    if (tryQuarantineStaleLock(lockDir, deps)) {
       continue;
     }
 
@@ -239,13 +390,17 @@ export async function acquireDirectoryLock(
   throw new DirectoryLockTimeoutError(lockDir);
 }
 
-export function acquireDirectoryLockSync(lockDir: string, timeoutMs?: number): () => void;
-export function acquireDirectoryLockSync(lockDir: string, deps: DirectoryLockDeps, timeoutMs?: number): () => void;
+export function acquireDirectoryLockSync(lockDir: string, timeoutMs?: number): DirectoryLockLease;
+export function acquireDirectoryLockSync(
+  lockDir: string,
+  deps: DirectoryLockDeps,
+  timeoutMs?: number,
+): DirectoryLockLease;
 export function acquireDirectoryLockSync(
   lockDir: string,
   depsOrTimeout: DirectoryLockDeps | number = 5000,
   timeoutMs = 5000,
-): () => void {
+): DirectoryLockLease {
   const deps = resolveDirectoryLockDeps(isDirectoryLockDeps(depsOrTimeout) ? depsOrTimeout : undefined);
   const effectiveTimeoutMs = typeof depsOrTimeout === 'number' ? depsOrTimeout : timeoutMs;
   const deadline = deps.time.now() + effectiveTimeoutMs;
@@ -255,14 +410,12 @@ export function acquireDirectoryLockSync(
       deps.storage.mkdirSync(lockDir);
       const ownerToken = randomUUID();
       writeLockOwnerMarker(lockDir, ownerToken, deps.storage);
-      const heartbeat = startDirectoryLockHeartbeat(lockDir, ownerToken, deps);
-      return releaseDirectoryLock(lockDir, deps, ownerToken, heartbeat);
+      return createDirectoryLockLease(lockDir, ownerToken, deps);
     } catch (error: unknown) {
       if (!isAlreadyExistsError(error)) throw error;
     }
 
-    if (isStaleLock(lockDir, deps)) {
-      tryRemoveLockDirectory(lockDir, deps.storage);
+    if (tryQuarantineStaleLock(lockDir, deps)) {
       continue;
     }
 

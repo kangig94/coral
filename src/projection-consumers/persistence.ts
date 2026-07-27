@@ -11,6 +11,7 @@ import type {
   CorpusLaneHint,
   JournalConsumerRegistration,
 } from '../store/consumer-contract.js';
+import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Authority } from './state.js';
 import {
   consumerAuthorityMismatchError,
@@ -294,10 +295,16 @@ export class ConsumerCursorRepository {
     }
     const parsed = consumerCursorMetadataSchema.safeParse(raw);
     if (!parsed.success) {
-      throw new Error(`Consumer '${consumerId}' has invalid persisted cursor metadata`);
+      throw documentedCoralSetupError('retired_expansion_cursor_unsafe', {
+        name: consumerId,
+        reason: 'invalid persisted cursor metadata',
+      });
     }
     if (parsed.data.registration_kind !== 'expansion') {
-      throw consumerRegistrationKindMismatchError(consumerId, 'expansion', parsed.data.registration_kind);
+      throw documentedCoralSetupError('retired_expansion_cursor_unsafe', {
+        name: consumerId,
+        reason: `cursor is owned by ${parsed.data.registration_kind}`,
+      });
     }
     return { status: 'expansion-owned' };
   }
@@ -305,7 +312,7 @@ export class ConsumerCursorRepository {
   deletePreflightedRetiredExpansionCursor(consumerId: string, preflight: RetiredExpansionCursorPreflight): void {
     if (preflight.status === 'missing') {
       if (this.selectCursorMetadataStmt.get(consumerId) !== undefined) {
-        throw new Error(`Consumer '${consumerId}' cursor appeared during retirement`);
+        throw documentedCoralSetupError('retired_expansion_cursor_changed', { name: consumerId });
       }
       return;
     }
@@ -313,7 +320,7 @@ export class ConsumerCursorRepository {
       .prepare<[string]>("DELETE FROM consumer_cursors WHERE consumer_id = ? AND registration_kind = 'expansion'")
       .run(consumerId);
     if (Number(result.changes) !== 1) {
-      throw new Error(`Consumer '${consumerId}' cursor ownership changed during retirement`);
+      throw documentedCoralSetupError('retired_expansion_cursor_changed', { name: consumerId });
     }
   }
 

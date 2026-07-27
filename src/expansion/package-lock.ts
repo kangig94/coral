@@ -1,4 +1,4 @@
-import { acquireDirectoryLock } from '../infra/fs-lock.js';
+import { acquireDirectoryLock, type DirectoryLockLease } from '../infra/fs-lock.js';
 import type { Runtime } from '../runtime/ports.js';
 import { assertExpansionPackageId } from './package-id.js';
 
@@ -10,7 +10,7 @@ export async function acquirePackageOperationLock(
   runtime: Runtime,
   packageId: string,
   timeoutMs = PACKAGE_OPERATION_LOCK_TIMEOUT_MS,
-): Promise<() => void> {
+): Promise<DirectoryLockLease> {
   const id = assertExpansionPackageId(packageId);
   runtime.storage.mkdirSync(runtime.paths.coral.engine.operationLockRoot, { recursive: true });
   return acquireDirectoryLock(

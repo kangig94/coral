@@ -2,8 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { kiwiInstaller } from '#src/engines/kiwi/install.js';
+import { writeKiwiModelFilesAtomicInWorker } from '#src/engines/kiwi/model-artifact.js';
+import { KIWI_MODEL_FILES, type KiwiModelFileName } from '#src/engines/kiwi/constants.js';
 import { installResponseSchema } from '#src/expansion/rpc-contract.js';
 import { enginePaths } from '#src/infra/path/engine.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -13,6 +16,7 @@ import { installExpansion, removeInstallArtifacts } from '#src/cli/expansion/ins
 const createdRoots: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of createdRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -67,6 +71,50 @@ describe('installExpansion', () => {
       context: { name: 'missing-package' },
     });
   });
+
+  it('installs a supported package through the shared outer lock without self-contention', async () => {
+    const fixture = createFixture();
+    const runtime = createRuntimeForFixture(fixture);
+    const files = new Map<KiwiModelFileName, Buffer>(
+      KIWI_MODEL_FILES.map((fileName) => [fileName, Buffer.from(`installed:${fileName}`, 'utf-8')]),
+    );
+    await writeKiwiModelFilesAtomicInWorker(runtime, files);
+
+    await expect(installExpansion('kiwi', { runtime })).resolves.toMatchObject({
+      status: 'already_installed',
+    });
+  });
+
+  it.each([
+    {
+      label: 'non-canonical target directory',
+      result: (runtime: Runtime) => ({
+        status: 'installed' as const,
+        method: 'fixture',
+        targetDir: join(runtime.paths.coral.engine.dataDir('kiwi'), '..', 'other'),
+        postInstall: [{ action: 'register_expansion' as const, manifestPath: 'manifest.json' }],
+      }),
+      message: /non-canonical target directory/u,
+    },
+    {
+      label: 'absolute manifest path',
+      result: (runtime: Runtime) => ({
+        status: 'installed' as const,
+        method: 'fixture',
+        targetDir: runtime.paths.coral.engine.dataDir('kiwi'),
+        postInstall: [
+          { action: 'register_expansion' as const, manifestPath: join(fixtureAbsoluteRoot(), 'manifest.json') },
+        ],
+      }),
+      message: /absolute manifest path/u,
+    },
+  ])('rejects installer registration with $label', async ({ result, message }) => {
+    const fixture = createFixture();
+    const runtime = createRuntimeForFixture(fixture);
+    vi.spyOn(kiwiInstaller, 'install').mockImplementation(async () => result(runtime));
+
+    await expect(installExpansion('kiwi', { runtime })).rejects.toThrow(message);
+  });
 });
 
 describe('removeInstallArtifacts', () => {
@@ -90,4 +138,8 @@ function pathExists(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+function fixtureAbsoluteRoot(): string {
+  return process.platform === 'win32' ? 'C:\\outside' : '/outside';
 }

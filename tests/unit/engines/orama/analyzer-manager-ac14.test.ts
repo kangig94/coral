@@ -114,6 +114,8 @@ function readMetadata(kb: KbRuntime): OramaProjectionMetadata {
 function engineRuntime(kb: KbRuntime): KbEngineRuntime {
   return {
     runtimeDir: kb.runtimeDir,
+    ownProjectionDir: join(kb.runtimeDir, 'orama'),
+    ownProjectionStagingDir: join(kb.runtimeDir, 'orama-staging'),
     time: kb.time,
     ids: kb.ids,
     declaredAnalyzers: kb.declaredAnalyzers,
