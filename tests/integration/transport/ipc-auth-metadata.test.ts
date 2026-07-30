@@ -7,7 +7,7 @@ import { decode, encode, type JsonRpcRequestEnvelope } from '#src/transport/ipc/
 import { requestIpcMethod, subscribeIpcMethod } from '#src/transport/ipc/client.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 import type { HealthSnapshot, HttpHandlerPorts } from '#src/transport/server-ports.js';
-import { TEST_SYSTEM_PROVIDER_SCOPE } from '../helpers/provider-credentials.js';
+import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
 
 function requestEnvelope(payload: Record<string, unknown>): string {
   return JSON.stringify({ kind: 'request', id: 1, method: 'coordinator.listExpansion', ...payload });
@@ -202,6 +202,9 @@ async function withRealIpcServer(run: (socketPath: string, ports: HttpHandlerPor
   }
 }
 
+// An invariant by nature, but it lives in the integration tier rather than tests/invariants because it binds
+// a real unix socket to prove the metadata contract on the wire. The unit tier is kept free of unix-socket
+// binds so it stays runnable under a filesystem sandbox — see tests/invariants/unit-tier-io-boundary.test.ts.
 describe('IPC auth metadata invariant', () => {
   it('accepts only closed, validated auth metadata on JSON-RPC requests', () => {
     expect(decode(requestEnvelope({ auth: { kind: 'boot', token: 'boot-token' } }))).toMatchObject({
