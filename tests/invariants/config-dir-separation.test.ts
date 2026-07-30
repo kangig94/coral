@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import { composeCoralPaths, resolveClaudeConfigDir } from '#src/infra/path/index.js';
-import { kbRuntimeDir } from '#src/kb/paths.js';
+import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 
 // Coral-owned state belongs to the daemon, not to whichever provider account
 // invoked it. Provider selectors must never enter path composition.
@@ -43,7 +43,7 @@ describe('account-neutral Coral state tree', () => {
   });
 
   it('KB runtime artifacts and the markdown vault are account-neutral', () => {
-    expect(kbRuntimeDir(flavor)).not.toContain('by-config');
+    expect(kbRuntimePaths(flavor).root).not.toContain('by-config');
     for (const path of leafPaths(shared.corpus as unknown as Record<string, unknown>)) {
       expect(path).not.toContain('by-config');
     }

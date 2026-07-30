@@ -24,7 +24,6 @@ import {
 } from '../kb/queries.js';
 import { readEntryByKind } from '../kb/read.js';
 import { searchKb } from '../kb/ops/search.js';
-import { kbRuntimeDir } from '../kb/paths.js';
 import { GeneratedCommunityProjectionStore } from '../kb/curate/community/generated-projection-store.js';
 import type { KbReadKind } from '../kb/selector.js';
 import { kbError, kbSuccess, kbValidationError, type KbToolResult } from '../kb/result.js';
@@ -342,7 +341,7 @@ function createCommunitySummaryRuntime(
 ): CommunitySummaryReadRuntime {
   const paths = createDefaultKbReadPaths(queryContext);
   const indexStorage = runtime.storage;
-  const runtimeDir = kbRuntimeDir(runtime.flavor);
+  const runtimeDir = runtime.paths.coral.kbRuntime.root;
   const indexStore = new KbIndexStore({
     runtimeDir,
     storage: {

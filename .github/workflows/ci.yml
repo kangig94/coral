@@ -31,7 +31,10 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - run: npm run test:store-reset:integration
+      # Whole integration tier, not just the store-reset file it replaced: 20 of the 21 files under
+      # tests/integration were previously never gated by any workflow. Runs in ~2s, and tests that need real
+      # sockets or subprocesses live here rather than in the unit tier.
+      - run: npm run test:integration
       - run: npm run verify:store-reset-build
       - run: npm run test:e2e:store-reset:build
 

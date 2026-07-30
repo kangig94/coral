@@ -23,6 +23,10 @@ export default defineConfig({
     // 1.6x margin, which surfaced as intermittent "timed out in 5000ms" failures in tests/unit/cli. Still
     // short enough to fail a genuinely hung test promptly.
     testTimeout: 15_000,
+    // Matches the integration/e2e configs. Needed because the cheapest fix for the cold-transform problem
+    // above is a beforeAll that warms the module graph once, which moves that ~1s (much more under a slow or
+    // contended filesystem) out of a case's budget and into the hook's — vitest's hook default is only 10s.
+    hookTimeout: 30_000,
     // This suite is I/O-bound (IPC sockets, subprocess spawns, timers), so on a
     // 2-core CI runner it is worker-bound rather than core-bound: oversubscribing
     // workers overlaps the I/O waits (measured ~1m11s @2 → ~38s @4). Applied only

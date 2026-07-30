@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as NodeOs from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 import { noteEntryId, wikiEntryId } from '#src/kb/entry-types.js';
 import {
   PROMOTE_MARKER_VERSION,
@@ -31,11 +32,11 @@ async function loadKbModules() {
   return { createKbRuntime: runtime.createKbRuntime, paths };
 }
 
-function createRuntime(paths: Awaited<ReturnType<typeof loadKbModules>>['paths']) {
+function createRuntime(_paths: Awaited<ReturnType<typeof loadKbModules>>['paths']) {
   return createTestKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
-    runtimeDir: paths.kbRuntimeDir('prod'),
-    db: createKbTestDb(paths.kbRuntimeDir('prod')),
+    runtimeDir: kbRuntimePaths('prod').root,
+    db: createKbTestDb(kbRuntimePaths('prod').root),
   });
 }
 
@@ -133,7 +134,7 @@ function setupPromoteFixture(
     writeFileSync(wikiPath, spec.wikiOnDisk, 'utf-8');
   }
 
-  const runtimeDir = paths.kbRuntimeDir('prod');
+  const runtimeDir = kbRuntimePaths('prod').root;
   const promoteId = 'promote-test-1';
   const stagingDir = promoteRecoveryStagingDir(runtimeDir, promoteId);
   const backupDir = promoteRecoveryBackupDir(runtimeDir, promoteId);
@@ -202,8 +203,8 @@ describe('runPromoteRecovery', () => {
     await runPromoteRecovery(kb);
 
     expect(existsSync(markerPath)).toBe(false);
-    expect(existsSync(promoteRecoveryStagingDir(paths.kbRuntimeDir('prod'), promoteId))).toBe(false);
-    expect(existsSync(promoteRecoveryBackupDir(paths.kbRuntimeDir('prod'), promoteId))).toBe(false);
+    expect(existsSync(promoteRecoveryStagingDir(kbRuntimePaths('prod').root, promoteId))).toBe(false);
+    expect(existsSync(promoteRecoveryBackupDir(kbRuntimePaths('prod').root, promoteId))).toBe(false);
     expect(existsSync(memoPath)).toBe(true);
     expect(existsSync(notePath)).toBe(false);
     expect(existsSync(wikiPath)).toBe(false);
@@ -265,7 +266,7 @@ describe('runPromoteRecovery', () => {
     await runPromoteRecovery(kb);
 
     expect(existsSync(markerPath)).toBe(false);
-    expect(existsSync(promoteRecoveryStagingDir(paths.kbRuntimeDir('prod'), promoteId))).toBe(false);
+    expect(existsSync(promoteRecoveryStagingDir(kbRuntimePaths('prod').root, promoteId))).toBe(false);
     expect(existsSync(memoPath)).toBe(false);
     expect(readFileSync(notePath, 'utf-8')).toBe(NOTE_RAW);
     expect(readFileSync(wikiPath, 'utf-8')).toBe(WIKI_NEW_RAW);
@@ -344,7 +345,7 @@ describe('runPromoteRecovery', () => {
     await runPromoteRecovery(kb);
 
     expect(existsSync(markerPath)).toBe(false);
-    expect(existsSync(promoteRecoveryStagingDir(paths.kbRuntimeDir('prod'), promoteId))).toBe(false);
+    expect(existsSync(promoteRecoveryStagingDir(kbRuntimePaths('prod').root, promoteId))).toBe(false);
     expect(existsSync(notePath)).toBe(true);
     expect(existsSync(wikiPath)).toBe(true);
   });
@@ -352,7 +353,7 @@ describe('runPromoteRecovery', () => {
   it('removes a malformed marker but leaves staged payloads for operator inspection', async () => {
     const { paths } = await loadKbModules();
     const kb = createRuntime(paths);
-    const runtimeDir = paths.kbRuntimeDir('prod');
+    const runtimeDir = kbRuntimePaths('prod').root;
     mkdirSync(promoteRecoveryDir(runtimeDir), { recursive: true });
     const malformedPath = promoteRecoveryMarkerPath(runtimeDir, 'malformed');
     writeFileSync(malformedPath, '{ not valid json', 'utf-8');

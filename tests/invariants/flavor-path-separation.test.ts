@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import { composeCoralPaths } from '#src/infra/path/index.js';
-import { kbRuntimeDir } from '#src/kb/paths.js';
+import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 
-const FAMILIES = ['store', 'corpus', 'coordinator', 'exports', 'engine', 'projects'] as const;
+const FAMILIES = ['store', 'corpus', 'coordinator', 'exports', 'engine', 'kbRuntime', 'projects'] as const;
 
 function allLeafPaths(record: Record<string, unknown>, prefix = ''): { key: string; value: string }[] {
   const out: { key: string; value: string }[] = [];
@@ -51,8 +51,8 @@ describe('flavor path separation', () => {
     expect(dev.engine.engineRoot).toContain('data-dev/engines');
     expect(dev.projects.root).toContain('projects-dev');
     expect(prod.projects.root).not.toContain('projects-dev');
-    expect(kbRuntimeDir(devFlavor)).toContain('data-dev/kb');
-    expect(kbRuntimeDir(devFlavor)).not.toContain('data/kb-dev');
-    expect(kbRuntimeDir(prodFlavor)).toContain('data/kb');
+    expect(kbRuntimePaths(devFlavor).root).toContain('data-dev/kb');
+    expect(kbRuntimePaths(devFlavor).root).not.toContain('data/kb-dev');
+    expect(kbRuntimePaths(prodFlavor).root).toContain('data/kb');
   });
 });

@@ -27,7 +27,7 @@ vi.mock('#src/kb/ops/search.js', () => ({
 import { createKbDaemonRequestService } from '#src/kb-daemon/request-service.js';
 import { INDEX_FILE } from '#src/kb/corpus/index/store.js';
 import { GeneratedCommunityProjectionStore } from '#src/kb/curate/community/generated-projection-store.js';
-import { kbRuntimeDir, memoDir, notePathFromName, wikiPathFromName } from '#src/kb/paths.js';
+import { memoDir, notePathFromName, wikiPathFromName } from '#src/kb/paths.js';
 import type { KnowledgeBaseRuntime } from '#src/kb/runtime-contract.js';
 import type { KbQueryRuntime } from '#src/read-model/kb-query-runtime.js';
 import type { PrincipalWire } from '#src/security/principal-wire.js';
@@ -107,7 +107,7 @@ function writeMemo(runtime: SimulationRuntime, projectRoot: string): void {
 }
 
 function writeGeneratedCommunity(runtime: SimulationRuntime, slug: string): void {
-  const runtimeDir = kbRuntimeDir(runtime.flavor);
+  const runtimeDir = runtime.paths.coral.kbRuntime.root;
   const store = new GeneratedCommunityProjectionStore({
     runtimeDir,
     storage: runtime.storage,
@@ -666,7 +666,7 @@ describe('KB daemon request service', () => {
   it('reads community summary surfaces from the daemon request runtime', async () => {
     const runtime = new SimulationRuntime();
     writeGeneratedCommunity(runtime, 'alpha-community');
-    const indexPath = join(kbRuntimeDir(runtime.flavor), INDEX_FILE);
+    const indexPath = join(runtime.paths.coral.kbRuntime.root, INDEX_FILE);
     runtime.storage.mkdirSync(dirname(indexPath), { recursive: true });
     runtime.storage.writeFileSync(indexPath, '{not-json');
     const read = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime }).read;

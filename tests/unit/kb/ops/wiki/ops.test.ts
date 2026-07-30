@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as NodeOs from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 import { wikiEntryId } from '#src/kb/entry-types.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
@@ -44,11 +45,11 @@ async function loadModules() {
   };
 }
 
-function createRuntime(paths: Awaited<ReturnType<typeof loadModules>>['paths']) {
+function createRuntime(_paths: Awaited<ReturnType<typeof loadModules>>['paths']) {
   return createTestKbRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
-    runtimeDir: paths.kbRuntimeDir('prod'),
-    db: createKbTestDb(paths.kbRuntimeDir('prod')),
+    runtimeDir: kbRuntimePaths('prod').root,
+    db: createKbTestDb(kbRuntimePaths('prod').root),
   });
 }
 

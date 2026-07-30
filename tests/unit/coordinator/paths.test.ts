@@ -6,11 +6,21 @@ import { enginePaths } from '#src/infra/path/engine.js';
 import { storePaths } from '#src/infra/path/store.js';
 
 describe('composeCoralPaths', () => {
-  it('returns a record covering all six path families', () => {
+  it('returns a record covering all seven path families', () => {
     const p = composeCoralPaths('prod');
-    expect(Object.keys(p).sort()).toEqual(['coordinator', 'corpus', 'engine', 'exports', 'projects', 'store']);
+    expect(Object.keys(p).sort()).toEqual([
+      'coordinator',
+      'corpus',
+      'engine',
+      'exports',
+      'kbRuntime',
+      'projects',
+      'store',
+    ]);
     expect(p.store.dbFile).toContain('.coral/data/store/store.db');
     expect(p.corpus.kbRoot).toContain('.coral/kb');
+    // Sibling of data/store and data/engines, and distinct from corpus.kbRoot (the Markdown vault).
+    expect(p.kbRuntime.root).toContain('.coral/data/kb');
     expect(p.coordinator.socketPath).toMatch(/\.coral\/run\/coordinator\.sock$|^\/.*\/coral-prod-[0-9a-f]{8}\.sock$/);
     expect(p.exports.jobsRoot).toContain('.coral/exports/jobs');
     expect(p.engine.engineRoot).toContain('.coral/data/engines');

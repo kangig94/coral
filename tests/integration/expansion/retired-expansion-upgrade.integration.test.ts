@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
 import { enginePaths } from '#src/infra/path/engine.js';
+import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openWritableStoreDbNoReset } from '#src/store/db.js';
@@ -42,10 +43,6 @@ afterEach(async () => {
 
 function coralRoot(home: string): string {
   return join(home, '.coral');
-}
-
-function kbRuntimeDir(home: string, flavor: BuildFlavor): string {
-  return join(coralRoot(home), flavor === 'prod' ? 'data' : 'data-dev', 'kb');
 }
 
 function writeSentinel(path: string, value: string): string {
@@ -134,14 +131,26 @@ describe('retired expansion full-boot upgrade', () => {
     seedRetiredExpansion(home, otherFlavor);
 
     const selectedEngine = writeSentinel(enginePaths(flavor, { baseDir: coralRoot(home) }).dataDir(RETIRED_ID), flavor);
-    const selectedProjection = writeSentinel(join(kbRuntimeDir(home, flavor), RETIRED_ID), flavor);
-    const selectedStaging = writeSentinel(join(kbRuntimeDir(home, flavor), `${RETIRED_ID}-staging`), flavor);
+    const selectedProjection = writeSentinel(
+      join(kbRuntimePaths(flavor, { baseDir: coralRoot(home) }).root, RETIRED_ID),
+      flavor,
+    );
+    const selectedStaging = writeSentinel(
+      join(kbRuntimePaths(flavor, { baseDir: coralRoot(home) }).root, `${RETIRED_ID}-staging`),
+      flavor,
+    );
     const otherEngine = writeSentinel(
       enginePaths(otherFlavor, { baseDir: coralRoot(home) }).dataDir(RETIRED_ID),
       otherFlavor,
     );
-    const otherProjection = writeSentinel(join(kbRuntimeDir(home, otherFlavor), RETIRED_ID), otherFlavor);
-    const otherStaging = writeSentinel(join(kbRuntimeDir(home, otherFlavor), `${RETIRED_ID}-staging`), otherFlavor);
+    const otherProjection = writeSentinel(
+      join(kbRuntimePaths(otherFlavor, { baseDir: coralRoot(home) }).root, RETIRED_ID),
+      otherFlavor,
+    );
+    const otherStaging = writeSentinel(
+      join(kbRuntimePaths(otherFlavor, { baseDir: coralRoot(home) }).root, `${RETIRED_ID}-staging`),
+      otherFlavor,
+    );
 
     const fixture = createPluginFixture(tempRoots, { flavor });
     const coordinator = spawnCoordinator({
