@@ -1,12 +1,10 @@
-import { randomUUID } from 'node:crypto';
-
 import { Match, type Kiwi, type ModelFiles, type TokenInfo } from 'kiwi-nlp';
-import initKiwiModule from 'kiwi-nlp/dist/build/kiwi-wasm.js';
 
 import type { Runtime } from '../../runtime/ports.js';
+import { ensureKiwiArtifact, inspectKiwiArtifact } from './artifact.js';
 import { KIWI_MODEL_FILES, KIWI_MODEL_TYPE, KIWI_MODEL_VERSION, KIWI_NLP_VERSION } from './constants.js';
-import { ensureKiwiModelArtifact, inspectKiwiModelArtifact } from './model-artifact.js';
-import { kiwiModelFilePath, kiwiWasmPath } from './paths.js';
+import { kiwiModelFilePath } from './paths.js';
+import { createKiwiApi, type KiwiApi } from './wasm-loader.js';
 
 type KiwiAnalyzerIdentity = {
   readonly engine: 'kiwi';
@@ -41,28 +39,6 @@ function readModelFiles(runtime: Pick<Runtime, 'paths' | 'storage'>): ModelFiles
   return modelFiles;
 }
 
-type KiwiWasmModule = {
-  readonly FS: {
-    mkdir(path: string): void;
-    writeFile(path: string, data: Uint8Array): void;
-    unlink(path: string): void;
-    rmdir(path: string): void;
-  };
-  api(command: string): string;
-};
-
-type KiwiWasmInitializer = (moduleArg?: Record<string, unknown>) => Promise<unknown>;
-
-const initKiwi = initKiwiModule as unknown as KiwiWasmInitializer;
-
-type KiwiApi = {
-  cmd<T = unknown>(command: Record<string, unknown>): T;
-  loadModelFiles(files: ModelFiles): Promise<{
-    readonly modelPath: string;
-    unload(): Promise<void>;
-  }>;
-};
-
 function createKiwiProxy(api: KiwiApi, id: number): Kiwi {
   return new Proxy(
     {},
@@ -82,70 +58,14 @@ function createKiwiProxy(api: KiwiApi, id: number): Kiwi {
   ) as Kiwi;
 }
 
-async function createKiwiApi(): Promise<KiwiApi> {
-  const kiwi = (await initKiwi({
-    locateFile: (path: string) => (path.endsWith('.wasm') ? kiwiWasmPath() : path),
-  })) as KiwiWasmModule;
-
-  return {
-    cmd<T = unknown>(command: Record<string, unknown>): T {
-      return JSON.parse(kiwi.api(JSON.stringify(command))) as T;
-    },
-    async loadModelFiles(files: ModelFiles) {
-      const modelPath = `kiwi-model-${randomUUID()}`;
-      kiwi.FS.mkdir(modelPath);
-      const loadedFiles: string[] = [];
-      try {
-        for (const [name, data] of Object.entries(files)) {
-          if (typeof data === 'string') {
-            throw new Error('Kiwi model files must be installed locally before loading.');
-          }
-          const path = `${modelPath}/${name}`;
-          kiwi.FS.writeFile(path, data as Uint8Array);
-          loadedFiles.push(path);
-        }
-      } catch (error: unknown) {
-        for (const path of loadedFiles.reverse()) {
-          try {
-            kiwi.FS.unlink(path);
-          } catch {
-            /* best-effort cleanup */
-          }
-        }
-        try {
-          kiwi.FS.rmdir(modelPath);
-        } catch {
-          /* best-effort cleanup */
-        }
-        throw error;
-      }
-
-      return {
-        modelPath,
-        async unload(): Promise<void> {
-          for (const path of loadedFiles.reverse()) {
-            try {
-              kiwi.FS.unlink(path);
-            } catch {
-              /* best-effort cleanup */
-            }
-          }
-          try {
-            kiwi.FS.rmdir(modelPath);
-          } catch {
-            /* best-effort cleanup */
-          }
-        },
-      };
-    },
-  };
-}
-
-async function buildDisposableKiwi(modelFiles: ModelFiles): Promise<{
+async function buildDisposableKiwi(
+  runtime: Pick<Runtime, 'paths'>,
+  modelFiles: ModelFiles,
+): Promise<{
   readonly kiwi: Kiwi;
   dispose(): Promise<void>;
 }> {
-  const api = await createKiwiApi();
+  const api = await createKiwiApi(runtime);
   const loadedModel = await api.loadModelFiles(modelFiles);
   let disposed = false;
   try {
@@ -184,18 +104,21 @@ function kiwiAnalyzerIdentity(): KiwiAnalyzerIdentity {
 
 export async function loadKiwiAnalyzer(runtime: Runtime, options: LoadKiwiAnalyzerOptions = {}): Promise<KiwiAnalyzer> {
   if (options.installIfMissing === true) {
-    const result = await ensureKiwiModelArtifact(runtime);
+    const result = await ensureKiwiArtifact(runtime);
     if (result.status === 'error') {
-      throw new Error(result.userMessage);
+      throw new Error(`${result.userMessage} ${result.remediation}`, { cause: result });
     }
   }
 
-  const state = inspectKiwiModelArtifact(runtime);
-  if (!state.installed) {
-    throw new Error('Kiwi model artifact is not installed. Run `coral equip kiwi` to install it.');
+  const state = inspectKiwiArtifact(runtime);
+  if (!state.ready) {
+    throw new Error(
+      `Kiwi runtime artifacts are not installed (${state.missingComponents.join(', ')} missing). ` +
+        'Run `coral-cli expansion equip kiwi` to install them.',
+    );
   }
 
-  const loaded = await buildDisposableKiwi(readModelFiles(runtime));
+  const loaded = await buildDisposableKiwi(runtime, readModelFiles(runtime));
   const { kiwi } = loaded;
 
   if (!kiwi.ready()) {

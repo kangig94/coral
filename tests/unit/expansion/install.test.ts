@@ -1,11 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { inspectKiwiArtifact } from '#src/engines/kiwi/artifact.js';
 import { kiwiInstaller } from '#src/engines/kiwi/install.js';
 import { writeKiwiModelFilesAtomicInWorker } from '#src/engines/kiwi/model-artifact.js';
+import { kiwiWasmManifestPath } from '#src/engines/kiwi/paths.js';
+import { publishKiwiWasmArtifact } from '#src/engines/kiwi/wasm-artifact.js';
 import { KIWI_MODEL_FILES, type KiwiModelFileName } from '#src/engines/kiwi/constants.js';
 import { installResponseSchema } from '#src/expansion/rpc-contract.js';
 import { enginePaths } from '#src/infra/path/engine.js';
@@ -80,10 +83,21 @@ describe('installExpansion', () => {
       KIWI_MODEL_FILES.map((fileName) => [fileName, Buffer.from(`installed:${fileName}`, 'utf-8')]),
     );
     await writeKiwiModelFilesAtomicInWorker(runtime, files);
+    publishKiwiWasmArtifact(
+      runtime,
+      readFileSync(join(process.cwd(), 'node_modules', 'kiwi-nlp', 'dist', 'kiwi-wasm.wasm')),
+    );
+    rmSync(kiwiWasmManifestPath(runtime));
+    expect(inspectKiwiArtifact(runtime)).toMatchObject({
+      ready: false,
+      model: { installed: true },
+      wasm: { installed: false, payloadValid: true },
+    });
 
     await expect(installExpansion('kiwi', { runtime })).resolves.toMatchObject({
-      status: 'already_installed',
+      status: 'installed',
     });
+    expect(inspectKiwiArtifact(runtime).ready).toBe(true);
   });
 
   it.each([
@@ -131,6 +145,33 @@ describe('installExpansion', () => {
 });
 
 describe('Kiwi direct installer boundary', () => {
+  it('reports legacy model-only durable state separately from composite readiness', async () => {
+    const fixture = createFixture();
+    const runtime = createRuntimeForFixture(fixture);
+    const files = new Map<KiwiModelFileName, Buffer>(
+      KIWI_MODEL_FILES.map((fileName) => [fileName, Buffer.from(`installed:${fileName}`, 'utf-8')]),
+    );
+    await writeKiwiModelFilesAtomicInWorker(runtime, files);
+
+    expect(kiwiInstaller.inspect(runtime, 'kiwi')).toMatchObject({
+      installed: false,
+      version: null,
+      method: null,
+      durableState: true,
+    });
+
+    publishKiwiWasmArtifact(
+      runtime,
+      readFileSync(join(process.cwd(), 'node_modules', 'kiwi-nlp', 'dist', 'kiwi-wasm.wasm')),
+    );
+    expect(kiwiInstaller.inspect(runtime, 'kiwi')).toMatchObject({
+      installed: true,
+      version: '0.23.0',
+      method: 'runtime-download',
+      durableState: true,
+    });
+  });
+
   it('rejects a foreign package identity before touching Kiwi data', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);

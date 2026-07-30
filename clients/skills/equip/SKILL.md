@@ -75,52 +75,63 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 ### `<package>`
 
-0. Unless you already know the package's `activation` from a prior `--list`/`info` in this session, run `coral-cli expansion info <package>` first.
+0. Unless this session already has a complete current `--list`/`info` entry for the package — including `activation` and whether `confirmDownload` is present — run `coral-cli expansion info <package>` first. Remembering only the activation is not sufficient.
 1. **Retired residue gate.** If `activation` is `'remove-catalog'`, do not run `expansion equip`. When `cleanupCommand` is present, show that exact command, ask the user to confirm cleanup, and on confirmation run only Bash(`<exact cleanupCommand>`), parse its single-line JSON result, and stop. Never interpolate or reconstruct this command. When `cleanupCommand` is absent, show `lastError` and stop without running any command.
-2. **Consent gate for install-only packages.** If `activation` is `'none'`, equipping runs the package's own install script through your shell (typically `curl … | bash`) — code Coral fetches from a remote host and executes. Tell the user the package id and that equipping will download and run a remote install script, then ask them to confirm. If they decline, stop without running equip. (Engine packages — `activation: 'equip'` — need no extra prompt; proceed directly.) The install runs synchronously and its script output is not streamed back — only the final status returns — so tell the user it may take up to a minute before reporting.
+2. **Consent gate for install-only packages.** If `activation` is `'none'` and the current entry includes `confirmDownload`, show that message exactly and ask the user to confirm. It describes the package's actual download and preservation behavior; do not replace it with a generic remote-script warning. If the field is absent, explain that the package may run its own remote install script through the shell, then ask for confirmation. If the user declines, stop without running equip. (Engine packages — `activation: 'equip'` — need no extra prompt; proceed directly.) The install runs synchronously and progress is not streamed back, so explain that the final result may take time.
 3. Bash(`coral-cli expansion equip <package>`)
 4. Parse the single-line JSON result.
 5. Route by `status`:
 
-| status               | Action                                                                                                           |
-|----------------------|------------------------------------------------------------------------------------------------------------------|
-| `already_installed`  | Inform user; `expansion equip` continues activation when applicable                                              |
-| `already_up_to_date` | Inform user with version; `expansion equip` continues activation when applicable                                 |
-| `installed`          | Show method used. For install-only packages, show `command` when present, then tell the user to restart their coding agent so any tooling the install script registered (e.g. an MCP server) takes effect |
-| `updated`            | Show method and version. For install-only packages, show `command` when present, then tell the user to restart their coding agent for the updated tooling to take effect |
-| `equipped`           | Expansion is installed and active in the coordinator (equipment-backed packages only)                            |
-| `catching_up`        | Expansion is activating; tell the user to poll `/equip --list` until it reaches `equipped`                       |
-| `already_equipped`   | Inform the user the expansion is already active                                                                  |
-| `error`              | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
+| status               | Action                                                                                                                                                                                                                                                                     |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `already_installed`  | Inform user; `expansion equip` continues activation when applicable. If `method` is present, apply the no-change install-only routing below                                                                                                                                |
+| `already_up_to_date` | Inform user with version; `expansion equip` continues activation when applicable. If `method` is present, apply the no-change install-only routing below                                                                                                                   |
+| `installed`          | Show method used. For `method: 'runtime-download'`, apply the conditional live-recovery routing below. For other install-only methods, show `command` when present and mention restart only when the installer registered agent tooling   |
+| `updated`            | Show method and version. For `method: 'runtime-download'`, apply the conditional live-recovery routing below. For other install-only methods, show `command` when present and mention restart only when updated agent tooling requires it |
+| `equipped`           | Expansion is installed and active in the coordinator (equipment-backed packages only)                                                                                                                                                                                      |
+| `catching_up`        | Expansion is activating; tell the user to poll `/equip --list` until it reaches `equipped`                                                                                                                                                                                 |
+| `already_equipped`   | Inform the user the expansion is already active                                                                                                                                                                                                                            |
+| `error`              | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields                                                                                                                                      |
 
-6. Onboarding runs inside `coral-cli expansion equip <package>` before install/activate:
+6. For `installed` or `updated` install-only results that carry `method`:
+   - `method: 'runtime-download'`: show `targetDir` when present and say no coding-agent restart is required. When `ko` is enabled and the backend is active, Kiwi recovery and Korean reindex proceed live; otherwise the artifacts are ready for the next backend start or for when `ko` is enabled.
+   - Other methods: show the executable `command` when present. Mention an agent restart only when that installer registered or updated agent tooling.
+7. For the no-change statuses `already_installed` and `already_up_to_date` that carry `method`:
+   - `method: 'runtime-download'`: show `targetDir` when present and explain that the artifacts were already valid, so this command started neither a download nor a reindex. Do not promise an analyzer upgrade. If Kiwi remains degraded, run `coral-cli backend shutdown` so the next command restarts the backend and retries initialization; if that retry also fails, check artifact filesystem permissions and report the repeated error.
+   - Other methods: show the existing `command` when present without claiming that the installer ran or that a restart is required.
+8. Onboarding runs inside `coral-cli expansion equip <package>` before install/activate:
    - `engine_env_var_missing`: show the missing `envVar` and remediation exactly. Do not suggest restart/retry loops.
    - `binding_required`: show `suggestions` when present; otherwise show candidate ids from `context.candidates` when present. The user should equip one engine that fills the missing binding, then retry the original package.
    - `user_cancelled`: stop without retrying automatically.
-7. Do not run `coral-cli expansion equip <package>` a second time unless the user has changed the missing setup state or equipped a required peer engine.
+9. Do not run `coral-cli expansion equip <package>` a second time unless the user has changed the missing setup state or equipped a required peer engine.
 
 ### `--update <package>`
 
-1. Bash(`coral-cli expansion update <package>`)
-2. Parse the single-line JSON result.
-3. Route by `status`:
+0. Apply the same current-entry preflight as `<package>`: unless this session has a complete current entry including `activation` and whether `confirmDownload` is present, run `coral-cli expansion info <package>`.
+1. Apply the same retired-residue gate. For `activation: 'none'`, apply the same consent gate before update: when `confirmDownload` is present, show that message exactly and ask for confirmation; when absent, show the shell-installer warning and ask for confirmation. If declined, stop without running update.
+2. Bash(`coral-cli expansion update <package>`)
+3. Parse the single-line JSON result.
+4. Route by `status`:
 
-| status               | Action |
-|----------------------|--------|
-| `already_up_to_date` | Inform user with version. If `command` is present for an install-only expansion, show the installed path; no further action |
-| `updated`            | Show method and version. If `command` is present for an install-only expansion, show the installed path |
-| `equipped`           | Expansion is updated and active in the coordinator |
-| `catching_up`        | Expansion is updated and activating; tell the user to poll `/equip --list` until it reaches `equipped` |
-| `already_equipped`   | Inform the user the updated expansion is already active |
+| status               | Action                                                                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `already_installed`  | Inform user. If `method` is present, apply the no-change install-only routing below                                                    |
+| `already_up_to_date` | Inform user with version. If `method` is present, apply the no-change install-only routing below                                       |
+| `installed`          | Show method and version, then apply the changed install-only routing below                                                             |
+| `updated`            | Show method and version, then apply the changed install-only routing below                                                             |
+| `equipped`           | Expansion is updated and active in the coordinator                                                                                    |
+| `catching_up`        | Expansion is updated and activating; tell the user to poll `/equip --list` until it reaches `equipped`                                |
+| `already_equipped`   | Inform the user the updated expansion is already active                                                                               |
 | `error`              | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
-4. `update` is equivalent to `equip` when the local version differs from the catalog version; `/equip <package>` also updates implicitly. Use `/equip --update <package>` when the user is explicitly asking to bump or refresh the installed version.
+5. Apply the same changed versus no-change install-only routing as ordinary equip. For `installed` and `updated` with `method: 'runtime-download'`, show `targetDir` when present and use the same conditional live-recovery guidance: no coding-agent restart is required; recovery and reindex are live only when `ko` is enabled and the backend is active, otherwise the artifacts are ready for the next backend start or for when `ko` is enabled. For `already_installed` and `already_up_to_date`, say the artifacts were already valid and this command started neither a download nor a reindex; do not promise an analyzer upgrade. Show `targetDir` or `command` according to the method as above.
+6. `update` is equivalent to `equip` when the local version differs from the catalog version; `/equip <package>` also updates implicitly. Use `/equip --update <package>` when the user is explicitly asking to bump or refresh the installed version.
 
 ### `info <package>`
 
 1. Bash(`coral-cli expansion info <package>`)
 2. Parse the single-line JSON result.
-3. Show the status and, when returned, the package `tier`, `provides.capabilities`, `addonPath`, installed `command`, retired-residue `cleanupCommand`, `userMessage`, and `remediation`. Treat an error result as terminal.
+3. Show the status and, when returned, the package `tier`, `provides.capabilities`, `confirmDownload`, `addonPath`, installed `command`, retired-residue `cleanupCommand`, `userMessage`, and `remediation`. Show `confirmDownload` exactly so the user can inspect any source, size, and preservation disclosure before equip or update. Treat an error result as terminal.
 
 ### `uninstall <equipment-name>`
 
@@ -130,17 +141,17 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 | status         | Action                                                                                                           |
 |----------------|------------------------------------------------------------------------------------------------------------------|
-| `uninstalled`  | Confirm the installed-tier engine was removed through the coordinator-owned catalog-removal transaction           |
+| `uninstalled`  | For install-only packages, confirm the local installation or runtime artifacts were removed directly. For installed-tier engines, confirm removal through the coordinator-owned catalog-removal transaction |
 | `not_equipped` | Inform user the engine was already not equipped; treat as success                                                |
 | `error`        | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
-4. `unequip` for installed-tier engines asks the coordinator to remove the catalog entry transactionally, which disposes any live scope without running bundled fallback, unregisters manifest-scoped capability declarations when allowed, and then removes local artifacts. For install-only packages, it removes the local binary.
+4. `unequip` for installed-tier engines asks the coordinator to remove the catalog entry transactionally, which disposes any live scope without running bundled fallback, unregisters manifest-scoped capability declarations when allowed, and then removes local artifacts. For install-only packages, it removes the local installation or runtime artifacts.
 
 ## Notes
 
-- Install-only binaries and engine artifacts both land under the engine data tree (`~/.coral/data/engines/<engine>/`, or `~/.coral/data-dev/engines/<engine>/` when `CORAL_FLAVOR=dev`); the CLI reports the exact installed path as `command`
+- Install-only binaries and engine artifacts both land under the engine data tree (`~/.coral/data/engines/<engine>/`, or `~/.coral/data-dev/engines/<engine>/` when `CORAL_FLAVOR=dev`). Shell-installer results report the executable path as `command`; pinned runtime-download results report their artifact root as `targetDir`
 - Corpus indexes stay under `~/.coral/data/kb/` in prod or `~/.coral/data-dev/kb/` in dev
 - These data paths are account-neutral. `CODEX_HOME` and `CLAUDE_CONFIG_DIR` select provider credentials per invocation and never change the Coral daemon or state root
 - Some installed engines may have native artifacts or model downloads; follow the `userMessage` and `remediation` returned by the CLI for missing prerequisites.
-- An install-only package (`activation: 'none'`) installs by running the package's own install script (which Coral executes via the shell, e.g. `curl … | bash`). That external script — not Coral — may register the tool with the coding agent (for example as an MCP server); when it does, the agent must be restarted before the newly installed tooling is available.
+- An install-only package (`activation: 'none'`) may use a shell installer or Coral's pinned `runtime-download` path. Read `confirmDownload` and the returned `method` instead of assuming a remote script. Only shell installers that register coding-agent tooling require a coding-agent restart. With Kiwi runtime downloads, recovery and reindex are live only when `ko` is enabled and the backend is active.
 - On Windows, `unequip` after activation may require a Coral restart when a loaded native addon remains mapped for the coordinator process lifetime.

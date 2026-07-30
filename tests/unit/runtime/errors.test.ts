@@ -50,6 +50,12 @@ describe('CoralSetupError', () => {
       'Wait for the in-flight operation to complete, then retry. If this persists after ten minutes with no Coral process running, report the JSON error code and context; do not delete a live lock.',
     ],
     [
+      'expansion_install_artifact_failed',
+      { name: 'kiwi', detail: 'archive digest mismatch' },
+      'Coral could not install the runtime artifacts for kiwi.',
+      "archive digest mismatch\nCheck network access, filesystem permissions, and free space, then retry 'coral-cli expansion equip kiwi'.",
+    ],
+    [
       'expansion_binary_corrupt',
       { name: 'vector' },
       'The installed binary for vector could not be activated.',

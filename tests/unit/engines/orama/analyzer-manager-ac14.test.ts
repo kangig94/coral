@@ -13,8 +13,8 @@ import type { OramaAnalyzerManager } from '#src/engines/orama/analyzer.js';
 import type { OramaTokenizerAnalyzer } from '#src/engines/orama/document-builder.js';
 import { oramaIndexMetadataPath } from '#src/engines/orama/paths.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
+import { kiwiArtifactStateKey } from '#src/engines/kiwi/artifact.js';
 import { KiwiAnalyzerManager } from '#src/engines/kiwi/analyzer-manager.js';
-import type { KiwiModelArtifactState } from '#src/engines/kiwi/model-artifact.js';
 import { createScope } from '#src/expansion/scope.js';
 import type { KbEngineRuntime, KbRuntime } from '#src/kb/contract.js';
 import { buildNoteIndexEntry } from '#src/kb/corpus/index/records.js';
@@ -24,6 +24,7 @@ import { createKbProjectionInput } from '#src/kb/projection-input.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { missingKiwiArtifactState } from '#tests/helpers/kiwi-artifact-state.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];
@@ -49,16 +50,6 @@ function withKoEnv(runtime: Runtime): Runtime {
       fullSnapshot: () => ({ ...runtime.env.fullSnapshot(), CORAL_KB_EXTRA_LANGS: 'ko' }),
       coralSnapshot: () => ({ ...runtime.env.coralSnapshot(), CORAL_KB_EXTRA_LANGS: 'ko' }),
     },
-  };
-}
-
-function missingKiwiState(): KiwiModelArtifactState {
-  return {
-    targetDir: '/tmp/kiwi',
-    manifestPath: '/tmp/kiwi/manifest.json',
-    installed: false,
-    manifest: null,
-    missingFiles: ['cong.mdl'],
   };
 }
 
@@ -155,7 +146,7 @@ describe('Orama AC14 analyzer manager integration', () => {
       isTerminalLoadError: () => false,
     };
     const failingManager = new KiwiAnalyzerManager({
-      inspectModelArtifact: () => missingKiwiState(),
+      inspectArtifact: () => missingKiwiArtifactState(),
       loadAnalyzer: async () => {
         throw new Error('Kiwi model deleted');
       },
@@ -163,7 +154,7 @@ describe('Orama AC14 analyzer manager integration', () => {
     });
     const degradedEvents: string[] = [];
     failingManager.observeDegraded(createScope(), (event) => {
-      degradedEvents.push(event.modelStateKey);
+      degradedEvents.push(event.artifactStateKey);
     });
 
     const initialProjection = new OramaBaseProjection(kb, snapshotStore, {
@@ -193,7 +184,7 @@ describe('Orama AC14 analyzer manager integration', () => {
 
     expect(result.hits).toEqual([]);
     expect(failingManager.effectiveDeclaredAnalyzers(kb.declaredAnalyzers, runtime)).toEqual([]);
-    expect(degradedEvents).toEqual(['missing:cong.mdl']);
+    expect(degradedEvents).toEqual([kiwiArtifactStateKey(missingKiwiArtifactState())]);
     expect(requestedReasons).toEqual(['terminal-analyzer-failure', 'incompatible']);
     expect(searchingProjection.warnings()).toContain('fts_index_uninitialized');
     const persistedMetadata = readMetadata(kb);

@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createKbDaemonWriteRuntimeHost } from '#src/kb-daemon/runtime-host.js';
+import type { KiwiSearchAnalyzerPort } from '#src/kb-daemon/expansion/bundled-loaders.js';
 import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
 import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
 import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
@@ -99,7 +100,7 @@ function readImportPath(value: unknown): string {
 describe('KB daemon runtime host', () => {
   beforeEach(() => {
     // Neutralize an ambient CORAL_KB_EXTRA_LANGS=ko so build()'s background Kiwi
-    // boot fetch can never reach a real 88MB network download from a unit test,
+    // boot fetch can never reach real ~89MB artifact downloads from a unit test,
     // regardless of the runner's shell.
     vi.stubEnv('CORAL_KB_EXTRA_LANGS', '');
   });
@@ -136,6 +137,82 @@ describe('KB daemon runtime host', () => {
 
       expect(runtime.storage.existsSync(stagedDir)).toBe(false);
       expect(runtime.storage.existsSync(pdfDir)).toBe(false);
+    } finally {
+      await host.dispose().catch(() => undefined);
+      db.close();
+      rmSync(runtimeDir, { recursive: true, force: true });
+      while (tempRoots.length > 0) {
+        rmSync(tempRoots.pop()!, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('admits search while Kiwi is degraded to the Intl baseline', async () => {
+    const root = createTempRoot();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const db = openTestStoreDb(runtime, ':memory:');
+    const pluginRoot = join(root, 'plugin');
+    const runtimeDir = kbRuntimeDir(runtime.flavor);
+    const kiwiAnalyzer = {
+      leaseReadiness: () => ({
+        ready: true as const,
+        state: 'degraded' as const,
+        reason: 'Kiwi WASM artifact is still downloading',
+      }),
+      withAnalyzerLease: async (_runtime, declaredAnalyzers, run) =>
+        run({ analyzer: null, activeAnalyzers: declaredAnalyzers.filter((analyzer) => analyzer !== 'ko') }),
+    } satisfies KiwiSearchAnalyzerPort;
+    const host = createKbDaemonWriteRuntimeHost({
+      pluginRoot,
+      backendNamespace: 'test-namespace',
+      bundleHash: 'test-bundle',
+      curateUsageBudget: { isExhausted: async () => false },
+      runtime,
+      db,
+      kiwiAnalyzer,
+    });
+
+    try {
+      await host.withKb(() => undefined);
+
+      expect(host.searchReadiness()).toEqual({ ready: true });
+    } finally {
+      await host.dispose().catch(() => undefined);
+      db.close();
+      rmSync(runtimeDir, { recursive: true, force: true });
+      while (tempRoots.length > 0) {
+        rmSync(tempRoots.pop()!, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('aborts Kiwi boot recovery when disposal begins during initialization', async () => {
+    const root = createTempRoot();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
+    vi.stubEnv('CORAL_KB_EXTRA_LANGS', 'ko');
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const db = openTestStoreDb(runtime, ':memory:');
+    const pluginRoot = join(root, 'plugin');
+    const runtimeDir = kbRuntimeDir(runtime.flavor);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected Kiwi download'));
+    const host = createKbDaemonWriteRuntimeHost({
+      pluginRoot,
+      backendNamespace: 'test-namespace',
+      bundleHash: 'test-bundle',
+      curateUsageBudget: { isExhausted: async () => false },
+      runtime,
+      db,
+    });
+
+    try {
+      const initialization = host.withKb(() => undefined);
+      const disposal = host.dispose();
+
+      await expect(initialization).resolves.toBeUndefined();
+      await expect(disposal).resolves.toBeUndefined();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(host.health()).toEqual({ phase: 'disposed', initializedAt: expect.any(Number) });
     } finally {
       await host.dispose().catch(() => undefined);
       db.close();

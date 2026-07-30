@@ -126,6 +126,7 @@ function toCatalogEntry(
 
 function toInstallOnlyCatalogEntry(manifest: InstallOnlyManifest, runtime: Runtime): CatalogEntry {
   const local = inspectExpansionInstallState(runtime, manifest.id);
+  const confirmDownload = manifest.onboarding?.find((step) => step.kind === 'confirm-download')?.message;
   const status: CatalogEntry['status'] = local.installLocked
     ? 'installing'
     : local.installed
@@ -139,6 +140,7 @@ function toInstallOnlyCatalogEntry(manifest: InstallOnlyManifest, runtime: Runti
     status,
     version: manifest.version,
     ...(local.installed && typeof local.addonPath === 'string' ? { command: local.addonPath } : {}),
+    ...(confirmDownload === undefined ? {} : { confirmDownload }),
   });
 }
 

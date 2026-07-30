@@ -247,7 +247,7 @@ Coral learns from every session. Root causes, gotchas, and patterns stay searcha
 
 Coral always indexes KB text with `Intl.Segmenter` as the baseline. **No configuration is required for multilingual search** — non-Latin scripts such as Korean, Chinese, and Japanese are searchable at word-like units out of the box. `CORAL_KB_EXTRA_LANGS` opts extra languages into a dedicated morphological analyzer on top of that always-on baseline. Use lowercase, comma-separated language codes, for example `ko`; today only `ko` has an engine.
 
-The Korean engine is Kiwi `cong`. Opting into it can add about 1 GB of resident memory while loaded; it is lazy-loaded and idle-evicted, and Coral auto-fetches an approximately 88 MB model when needed.
+The Korean engine is Kiwi `cong`. Opting into it can add about 1 GB of resident memory while loaded; it is lazy-loaded and idle-evicted. Coral downloads only missing or invalid runtime artifacts: an approximately 88 MB CoNg model from GitHub Releases and a pinned approximately 0.9 MB `kiwi-nlp` archive from npm on a clean install. A valid existing model is preserved. After a terminal Kiwi load failure, Coral serves the `Intl.Segmenter` baseline; once the artifacts are repaired, it reloads Kiwi and reindexes Korean without a restart.
 
 Set in `.claude/settings.json` (persists across sessions):
 

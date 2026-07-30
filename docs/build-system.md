@@ -71,15 +71,26 @@ does not delete outputs for source files that were removed or moved, so cleaning
 `dist/` before compile is required for `package.json`'s `dist/` export to match
 the current `src/` tree.
 
-`scripts/build-server.mjs` does five things:
+`scripts/build-server.mjs` does six things:
 
 1. Runs simulation compatibility verification (`check-simulation.mjs`), which typechecks `tools/simulation` against `src` and verifies sealing.
 2. Reads `package.json` as the single source of truth for the version.
 3. Syncs that version into `clients/.claude-plugin/plugin.json`, `clients/.codex-plugin/plugin.json`, and the root `.claude-plugin/marketplace.json`.
-4. Bundles the backend, CLI, and Claude broker helper to `clients/build/`.
+4. Bundles the backend, CLI, and Claude broker helper to `clients/build/` using
+   the shared production options in `scripts/server-esbuild-options.mjs`.
 5. Builds a probe backend to obtain the canonical store-format fingerprint, rebuilds with that fingerprint embedded, and atomically writes `clients/build/manifest.json` with the shared identity plus hashes for the backend, CLI, and Claude helper.
+6. Runs `scripts/verify-kiwi-runtime-build-contract.mjs` against `clients/build`, checking the exact staging inventory and executing an isolated Kiwi initializer built from source with the same production esbuild options and an empty `NODE_PATH`.
 
 When `--release` is passed, it additionally copies all artifacts from `clients/build/` to `clients/bridge/`.
+
+Every `npm run build` performs the Kiwi runtime-build verification in step 6.
+`npm run verify:kiwi-runtime-build` also exposes that verifier as a standalone
+check: it checks the selected bundle directory's four-file inventory, then
+builds and executes an isolated Kiwi initializer from source with those same
+production esbuild options and an empty `NODE_PATH`.
+This feature-build check does not regenerate `clients/bridge`; the Release
+workflow performs that copy and separately verifies byte equality and package
+allowlisting.
 
 `bundleHash`, `cliBundleHash`, and `claudeAppserverBundleHash` bind the complete executable set. `version`, `buildSetId`, `flavor`, and `storeFormatFingerprint` are embedded and compared separately, so a mixed or stale artifact set fails closed even when one file happens to have unchanged bytes.
 

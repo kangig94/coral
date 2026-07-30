@@ -122,6 +122,7 @@ const installOnlyEntrySchema = z
     activation: z.literal('none'),
     status: z.enum(installOnlyCatalogStatusLiterals),
     command: z.string().min(1).optional(),
+    confirmDownload: z.string().min(1).optional(),
   })
   .strict();
 

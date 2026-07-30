@@ -250,6 +250,50 @@ async function drainCorpusMutationLock(
   });
 }
 
+type KiwiArtifactBootTaskOwner = {
+  start(): AbortController;
+  track(controller: AbortController, completed: Promise<void> | null): void;
+  abort(controller: AbortController): void;
+  abortCurrent(): void;
+};
+
+function createKiwiArtifactBootTaskOwner(): KiwiArtifactBootTaskOwner {
+  let current: AbortController | null = null;
+  const clear = (controller: AbortController): void => {
+    if (current === controller) {
+      current = null;
+    }
+  };
+  const abort = (controller: AbortController): void => {
+    controller.abort();
+    clear(controller);
+  };
+  return {
+    start() {
+      current?.abort();
+      const controller = new AbortController();
+      current = controller;
+      return controller;
+    },
+    track(controller, completed) {
+      if (completed === null) {
+        clear(controller);
+        return;
+      }
+      void completed.then(
+        () => clear(controller),
+        () => clear(controller),
+      );
+    },
+    abort,
+    abortCurrent() {
+      if (current !== null) {
+        abort(current);
+      }
+    },
+  };
+}
+
 export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOptions): KbDaemonWriteRuntimeHost {
   const now = options.now ?? Date.now;
   let phase: KbDaemonKbReadHealth['phase'] = 'not_initialized';
@@ -262,8 +306,8 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
   let lastSearchWarmupError: string | undefined;
   const kiwiAnalyzerManager = options.kiwiAnalyzer ?? resolveKiwiSearchAnalyzerPort();
   // Cancels the post-fetch Korean (Kiwi) re-tokenization reproject when the daemon
-  // disposes; the in-flight model download takes no signal and runs to completion detached.
-  let kiwiArtifactBootController: AbortController | null = null;
+  // disposes; an in-flight artifact download runs to completion detached.
+  const kiwiArtifactBootTasks = createKiwiArtifactBootTaskOwner();
 
   const markReady = (): void => {
     phase = 'ready';
@@ -296,6 +340,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
   const disposedError = (): KbToolResult => kbError('kb_unavailable', `KB daemon write runtime is ${phase}.`);
 
   const build = async (): Promise<KbDaemonWriteRuntimeState> => {
+    const buildKiwiArtifactBootController = kiwiArtifactBootTasks.start();
     const runtime = options.runtime ?? createRealRuntime(readBuildFlavor(options.pluginRoot));
     const ownsDb = options.db === undefined;
     let db: WritableDatabase | null = null;
@@ -447,18 +492,18 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       await activeExpansionLifecycleService.recoverOnBoot();
       activeConsumerDriver.notifyCorpus(kb.getCorpusStateSnapshot());
       await repairProjectionArtifactLagOnBoot(kb, activeConsumerDriver, corpusReadinessTimeoutMs);
-      // When CORAL_KB_EXTRA_LANGS declares 'ko', fetch the Kiwi model in the background and
+      // When CORAL_KB_EXTRA_LANGS declares 'ko', fetch the Kiwi runtime artifacts in the background and
       // reproject once it lands. Boot does not await this: the text lane serves Intl-segmented
       // results until the Korean analyzer is ready, so the first note mutation is never blocked
-      // on an 88MB model download or a corpus-scale Korean re-tokenization.
-      kiwiArtifactBootController = new AbortController();
-      startKiwiArtifactFetchOnBoot({
+      // on the ~89MB artifact downloads or a corpus-scale Korean re-tokenization.
+      const kiwiArtifactBootHandle = startKiwiArtifactFetchOnBoot({
         runtime,
         kb,
         driver: activeConsumerDriver,
         timeoutMs: corpusReadinessTimeoutMs,
-        signal: kiwiArtifactBootController.signal,
+        signal: buildKiwiArtifactBootController.signal,
       });
+      kiwiArtifactBootTasks.track(buildKiwiArtifactBootController, kiwiArtifactBootHandle.completed);
       const kbRuntime: DaemonKnowledgeBaseRuntime = {
         kb,
         readDb: activeDb,
@@ -531,6 +576,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       markReady();
       return state;
     } catch (error: unknown) {
+      kiwiArtifactBootTasks.abort(buildKiwiArtifactBootController);
       daemonConsumerDriver = null;
       await expansionLifecycleService?.shutdownActiveExpansions().catch(() => undefined);
       await consumerDriver?.shutdown({ drainTimeoutMs: 0 }).catch(() => undefined);
@@ -706,7 +752,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     }
     disposePromise = (async () => {
       markDisposing();
-      kiwiArtifactBootController?.abort();
+      kiwiArtifactBootTasks.abortCurrent();
       try {
         let activeState = state;
         if (activeState === null && initPromise !== null) {
@@ -717,6 +763,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
             return;
           }
         }
+        kiwiArtifactBootTasks.abortCurrent();
         if (activeState !== null) {
           await disposeState(activeState, options.signal);
         }

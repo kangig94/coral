@@ -8,9 +8,9 @@ import {
   createOramaProjectionReconcileRequester,
   type OramaProjectionReconcileRuntime,
 } from '#src/kb-daemon/expansion/projection-reconcile.js';
+import { kiwiArtifactStateKey } from '#src/engines/kiwi/artifact.js';
 import { KiwiAnalyzerManager, isKiwiAnalyzerTerminalLoadError } from '#src/engines/kiwi/analyzer-manager.js';
 import type { KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
-import type { KiwiModelArtifactState } from '#src/engines/kiwi/model-artifact.js';
 import {
   ORAMA_PROJECTION_IDENTITY_HASH,
   createOramaProjectionIdentityInput,
@@ -34,6 +34,7 @@ import type { Database } from '#src/store/db.js';
 import { createScope } from '#src/expansion/scope.js';
 import { createEmptyGeneratedCommunityProjectionStore, createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
+import { installedKiwiArtifactState, missingKiwiArtifactState } from '#tests/helpers/kiwi-artifact-state.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];
@@ -116,36 +117,6 @@ function withKoEnv(runtime: Runtime): Runtime {
       get: (key) => (key === 'CORAL_KB_EXTRA_LANGS' ? 'ko' : runtime.env.get(key)),
       fullSnapshot: () => ({ ...runtime.env.fullSnapshot(), CORAL_KB_EXTRA_LANGS: 'ko' }),
       coralSnapshot: () => ({ ...runtime.env.coralSnapshot(), CORAL_KB_EXTRA_LANGS: 'ko' }),
-    },
-  };
-}
-
-function missingKiwiState(): KiwiModelArtifactState {
-  return {
-    targetDir: '/tmp/kiwi',
-    manifestPath: '/tmp/kiwi/manifest.json',
-    installed: false,
-    missingFiles: ['cong.mdl'],
-    manifest: null,
-  };
-}
-
-function installedKiwiState(): KiwiModelArtifactState {
-  return {
-    targetDir: '/tmp/kiwi',
-    manifestPath: '/tmp/kiwi/manifest.json',
-    installed: true,
-    missingFiles: [],
-    manifest: {
-      packageId: 'kiwi',
-      kiwiNlpVersion: '0.23.0',
-      modelVersion: '0.23.0',
-      modelType: 'cong-global',
-      sourceUrl: 'https://example.invalid/kiwi.tgz',
-      archiveSha256: 'digest',
-      archiveSizeBytes: 1,
-      files: [],
-      installedAt: '2026-06-20T00:00:00.000Z',
     },
   };
 }
@@ -321,7 +292,7 @@ describe('Orama coordinator reconcile ownership', () => {
     await requester.waitForIdle();
     requester.requestKiwiDegradedReconcile({
       reason: 'Kiwi model missing',
-      modelStateKey: 'missing:cong.mdl',
+      artifactStateKey: 'missing:model',
     });
     await requester.waitForIdle();
 
@@ -377,7 +348,7 @@ describe('Orama coordinator reconcile ownership', () => {
 
     requester.requestKiwiDegradedReconcile({
       reason: 'Kiwi model missing',
-      modelStateKey: 'missing:cong.mdl',
+      artifactStateKey: 'missing:model',
     });
     await requester.waitForIdle();
 
@@ -396,7 +367,7 @@ describe('Orama coordinator reconcile ownership', () => {
     publishSnapshot(db, kb, snapshot);
     let failKiwiLoad = false;
     const manager = new KiwiAnalyzerManager({
-      inspectModelArtifact: () => (failKiwiLoad ? missingKiwiState() : installedKiwiState()),
+      inspectArtifact: () => (failKiwiLoad ? missingKiwiArtifactState() : installedKiwiArtifactState()),
       loadAnalyzer: async () => {
         if (failKiwiLoad) {
           throw new Error('Kiwi model deleted');
@@ -470,7 +441,7 @@ describe('Orama coordinator reconcile ownership', () => {
   it('does not fire a Kiwi degraded observer after its scope is disposed', async () => {
     const runtime = createRuntime();
     const manager = new KiwiAnalyzerManager({
-      inspectModelArtifact: () => missingKiwiState(),
+      inspectArtifact: () => missingKiwiArtifactState(),
       loadAnalyzer: async () => {
         throw new Error('Kiwi model missing');
       },
@@ -481,10 +452,10 @@ describe('Orama coordinator reconcile ownership', () => {
     const events: string[] = [];
 
     manager.observeDegraded(activeScope, (event) => {
-      events.push(`active:${event.modelStateKey}`);
+      events.push(`active:${event.artifactStateKey}`);
     });
     manager.observeDegraded(disposedScope, (event) => {
-      events.push(`disposed:${event.modelStateKey}`);
+      events.push(`disposed:${event.artifactStateKey}`);
     });
     disposedScope[Symbol.dispose]();
 
@@ -496,13 +467,13 @@ describe('Orama coordinator reconcile ownership', () => {
     }
     await flushMicrotasks();
 
-    expect(events).toEqual(['active:missing:cong.mdl']);
+    expect(events).toEqual([`active:${kiwiArtifactStateKey(missingKiwiArtifactState())}`]);
   });
 
   it('isolates Kiwi degraded observer exceptions from the terminal load error path', async () => {
     const runtime = createRuntime();
     const manager = new KiwiAnalyzerManager({
-      inspectModelArtifact: () => missingKiwiState(),
+      inspectArtifact: () => missingKiwiArtifactState(),
       loadAnalyzer: async () => {
         throw new Error('Kiwi model missing');
       },

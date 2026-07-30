@@ -15,6 +15,14 @@ function sort(values: readonly string[]): string[] {
   return [...values].sort();
 }
 
+function skillSection(heading: string, nextHeading: string): string {
+  const start = SKILL_MD.indexOf(heading);
+  const end = SKILL_MD.indexOf(nextHeading, start + heading.length);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return SKILL_MD.slice(start, end);
+}
+
 describe('expansion contracts parity', () => {
   it('keeps every install result status routed in skills/equip/SKILL.md', () => {
     const statuses = sort(installResultSchema.options.map((option) => option.shape.status.value));
@@ -61,6 +69,54 @@ describe('expansion contracts parity', () => {
     for (const status of statuses) {
       expect(SKILL_MD).toContain(`\`${status}\``);
     }
+  });
+
+  it('keeps install-only consent and runtime-download routing inside the update protocol', () => {
+    expect(
+      catalogEntrySchema.parse({
+        id: 'kiwi',
+        name: 'kiwi',
+        description: 'Korean analyzer',
+        activation: 'none',
+        status: 'not_installed',
+        version: '0.23.0',
+        confirmDownload: 'Download the pinned runtime artifacts?',
+      }),
+    ).toMatchObject({
+      confirmDownload: 'Download the pinned runtime artifacts?',
+    });
+    const equipSection = skillSection('### `<package>`', '### `--update <package>`');
+    expect(equipSection).toContain('the current entry includes `confirmDownload`');
+    expect(equipSection).toContain('show that message exactly');
+    expect(equipSection).toContain("`method: 'runtime-download'`");
+    expect(equipSection).toContain('`targetDir`');
+    expect(equipSection).toContain('`command`');
+    expect(equipSection).toContain('`installed`');
+    expect(equipSection).toContain('`updated`');
+    expect(equipSection).toContain('no coding-agent restart is required');
+    expect(equipSection).toContain('When `ko` is enabled and the backend is active');
+    expect(equipSection).toContain('this command started neither a download nor a reindex');
+    expect(equipSection).toContain('Do not promise an analyzer upgrade');
+    expect(equipSection).toContain('`coral-cli backend shutdown`');
+
+    const updateSection = skillSection('### `--update <package>`', '### `info <package>`');
+    expect(updateSection).toContain('`confirmDownload`');
+    expect(updateSection).toContain('show that message exactly');
+    expect(updateSection).toContain("`method: 'runtime-download'`");
+    expect(updateSection).toContain('`targetDir`');
+    expect(updateSection).toContain('`command`');
+    expect(updateSection).toContain('no coding-agent restart is required');
+    expect(updateSection).toContain('only when `ko` is enabled and the backend is active');
+    expect(updateSection).toContain('`installed`');
+    expect(updateSection).toContain('`updated`');
+    expect(updateSection).toContain('`already_installed`');
+    expect(updateSection).toContain('`already_up_to_date`');
+    expect(updateSection).toContain('For `installed` and `updated`');
+    expect(updateSection).toContain('this command started neither a download nor a reindex');
+    expect(updateSection).toContain('do not promise an analyzer upgrade');
+
+    const infoSection = skillSection('### `info <package>`', '### `uninstall <equipment-name>`');
+    expect(infoSection).toContain('`confirmDownload`');
   });
 
   it('keeps capability descriptors and runtime status as separate catalog entry siblings', () => {
