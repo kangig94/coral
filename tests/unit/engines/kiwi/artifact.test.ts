@@ -327,13 +327,11 @@ describe('Kiwi composite artifact', () => {
       expect(result).toMatchObject({
         status: 'error',
         code: 'expansion_install_artifact_failed',
-        context: {
-          name: 'kiwi',
-          detail: 'Kiwi artifact install completed without readiness: model',
-          causeName: 'Error',
-          causeMessage: 'Kiwi artifact install completed without readiness: model',
-          causeStack: expect.stringContaining('Kiwi artifact install completed without readiness: model'),
-        },
+      });
+      expect(result).toHaveProperty('context', {
+        name: 'kiwi',
+        detail: expect.stringContaining('Kiwi artifact install completed without readiness: model'),
+        causeName: 'Error',
       });
       expect(result).not.toHaveProperty('cause');
       expect(JSON.parse(JSON.stringify(result))).toEqual(result);

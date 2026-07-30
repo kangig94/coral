@@ -47,7 +47,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 | status    | Action |
 |-----------|--------|
-| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, `provides` when present, translated `activation`, `status`, `statusDescription` when present, `confirmDownload` when present, and `cleanupCommand` when present. Render `provides` as sibling collections: `provides.capabilities` as a comma-separated capability label/name list and `provides.retrievalRoles` as a comma-separated role label list, for example `provides: capabilities=[Text (FTS), Vector (Semantic)]; retrievalRoles=[Text, Vector, Graph]`. Do not group capabilities by `typeTag`; it is opaque metadata |
+| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, `provides` when present, translated `activation`, `status`, `statusDescription` when present, `confirmDownload` when present, `targetDir` when present, and `cleanupCommand` when present. Render `provides` as sibling collections: `provides.capabilities` as a comma-separated capability label/name list and `provides.retrievalRoles` as a comma-separated role label list, for example `provides: capabilities=[Text (FTS), Vector (Semantic)]; retrievalRoles=[Text, Vector, Graph]`. Do not group capabilities by `typeTag`; it is opaque metadata |
 | `info`    | Show the single package entry using the same package-status routing table below, including `tier`, `fills`/`slot` when present, `provides` when present using the same sibling collection rendering as catalog rows, and the translated `activation` label |
 | `error`   | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
@@ -133,7 +133,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 1. Bash(`coral-cli expansion info <package>`)
 2. Parse the single-line JSON result.
-3. Show the status and, when returned, the package `tier`, `provides.capabilities`, `confirmDownload`, `addonPath`, installed `command`, retired-residue `cleanupCommand`, `userMessage`, and `remediation`. Show `confirmDownload` exactly so the user can inspect any source, size, and preservation disclosure before equip or update. Treat an error result as terminal.
+3. Show the status and, when returned, the package `tier`, `provides.capabilities`, `confirmDownload`, `targetDir`, `addonPath`, installed `command`, retired-residue `cleanupCommand`, `userMessage`, and `remediation`. Show `confirmDownload` exactly so the user can inspect any source, size, and preservation disclosure before equip or update. Treat an error result as terminal.
 
 ### `uninstall <equipment-name>`
 

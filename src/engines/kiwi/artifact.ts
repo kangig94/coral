@@ -133,17 +133,14 @@ function installResult(
 
 function artifactInstallError(error: unknown): KiwiInstallError {
   const causeName = error instanceof Error ? error.name : typeof error;
-  const causeMessage = errorMessage(error);
-  const causeStack = error instanceof Error && typeof error.stack === 'string' ? error.stack : undefined;
+  const detail = errorMessage(error);
   const causeCode =
     error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
 
   return kiwiInstallError('expansion_install_artifact_failed', {
     name: KIWI_INSTALL_ONLY_ID,
-    detail: causeMessage,
+    detail,
     causeName,
-    causeMessage,
-    ...(causeStack === undefined ? {} : { causeStack }),
     ...(causeCode === undefined ? {} : { causeCode }),
   });
 }

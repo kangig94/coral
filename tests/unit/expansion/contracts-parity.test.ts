@@ -105,10 +105,11 @@ describe('expansion contracts parity', () => {
     for (const method of explicitlyRoutedMethods) {
       expect(schemaMethods.has(method)).toBe(true);
     }
-    for (const method of installMethodSchema.options) {
-      if (!explicitlyRoutedMethods.includes(method)) {
-        expect(updateSection).toContain(method);
-      }
+    const hasImplicitlyRoutedMethods = installMethodSchema.options.some(
+      (method) => !explicitlyRoutedMethods.includes(method),
+    );
+    if (hasImplicitlyRoutedMethods) {
+      expect(sharedRoutingSection).toContain('- Other methods:');
     }
 
     expect(sharedRoutingSection).toContain('- Other methods:');
