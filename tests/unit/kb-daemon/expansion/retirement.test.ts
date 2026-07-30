@@ -42,7 +42,7 @@ function createFixture(flavor: 'prod' | 'dev' = 'prod') {
   const root = mkdtempSync(join(tmpdir(), 'coral-retired-expansion-'));
   roots.push(root);
   const runtime = createRealRuntime(flavor, { baseDir: root });
-  const kbRuntimeDir = join(root, flavor === 'prod' ? 'kb-runtime' : 'kb-runtime-dev');
+  const runtimeDir = join(root, flavor === 'prod' ? 'kb-runtime' : 'kb-runtime-dev');
   const db = createDb();
   const state = new ExpansionStateStore(db);
   const manifestCatalog = createExpansionManifestCatalog({ db, staticManifests: [] });
@@ -51,7 +51,7 @@ function createFixture(flavor: 'prod' | 'dev' = 'prod') {
     now: () => new Date('2026-01-01T00:00:00.000Z'),
     time: runtime.time,
   });
-  return { root, runtime, kbRuntimeDir, db, state, manifestCatalog, consumerDriver };
+  return { root, runtime, runtimeDir, db, state, manifestCatalog, consumerDriver };
 }
 
 function writeSentinel(path: string, value: string): string {
@@ -77,7 +77,7 @@ async function cleanup(
 ) {
   return cleanupRetiredExpansion(id, {
     runtime,
-    kbRuntimeDir: fixture.kbRuntimeDir,
+    kbRuntimeDir: fixture.runtimeDir,
     manifestCatalog: fixture.manifestCatalog,
     consumerDriver: fixture.consumerDriver,
     finalizeState,
@@ -93,8 +93,8 @@ describe('retired expansion cleanup', () => {
       const otherRuntime = createRealRuntime(otherFlavor, { baseDir: fixture.root });
       const id = 'vector-fixture';
       const engineSentinel = writeSentinel(fixture.runtime.paths.coral.engine.dataDir(id), flavor);
-      const projectionSentinel = writeSentinel(join(fixture.kbRuntimeDir, id), flavor);
-      const stagingSentinel = writeSentinel(join(fixture.kbRuntimeDir, `${id}-staging`), flavor);
+      const projectionSentinel = writeSentinel(join(fixture.runtimeDir, id), flavor);
+      const stagingSentinel = writeSentinel(join(fixture.runtimeDir, `${id}-staging`), flavor);
       const otherEngineSentinel = writeSentinel(otherRuntime.paths.coral.engine.dataDir(id), otherFlavor);
       fixture.state.insert({
         id,
@@ -126,7 +126,7 @@ describe('retired expansion cleanup', () => {
     const fixture = createFixture();
     const id = 'vector-fixture';
     const engineSentinel = writeSentinel(fixture.runtime.paths.coral.engine.dataDir(id), 'engine');
-    const projectionSentinel = writeSentinel(join(fixture.kbRuntimeDir, id), 'projection');
+    const projectionSentinel = writeSentinel(join(fixture.runtimeDir, id), 'projection');
     fixture.state.insert({
       id,
       version: '1.0.0',
@@ -144,8 +144,8 @@ describe('retired expansion cleanup', () => {
     const fixture = createFixture();
     const id = '../escape';
     const engineSentinel = writeSentinel(fixture.runtime.paths.coral.engine.dataDir(id), 'engine');
-    const projectionSentinel = writeSentinel(join(fixture.kbRuntimeDir, id), 'projection');
-    const stagingSentinel = writeSentinel(join(fixture.kbRuntimeDir, `${id}-staging`), 'staging');
+    const projectionSentinel = writeSentinel(join(fixture.runtimeDir, id), 'projection');
+    const stagingSentinel = writeSentinel(join(fixture.runtimeDir, `${id}-staging`), 'staging');
     fixture.state.insert({ id, version: '0.1.0', installed_at: '2026-01-01T00:00:00.000Z' });
     insertCursor(fixture.db, id, 'expansion');
 
@@ -193,7 +193,7 @@ describe('retired expansion cleanup', () => {
     const fixture = createFixture();
     const id = 'vector-fixture';
     writeSentinel(fixture.runtime.paths.coral.engine.dataDir(id), 'engine');
-    writeSentinel(join(fixture.kbRuntimeDir, id), 'projection');
+    writeSentinel(join(fixture.runtimeDir, id), 'projection');
     fixture.state.insert({
       id,
       version: '1.0.0',
@@ -240,7 +240,7 @@ describe('retired expansion cleanup', () => {
     const fixture = createFixture();
     const id = 'vector-fixture';
     writeSentinel(fixture.runtime.paths.coral.engine.dataDir(id), 'engine');
-    const projectionPath = join(fixture.kbRuntimeDir, id);
+    const projectionPath = join(fixture.runtimeDir, id);
     writeSentinel(projectionPath, 'projection');
     let injected = false;
     const failingRuntime: Runtime = {

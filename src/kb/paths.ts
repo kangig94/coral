@@ -1,6 +1,6 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import { coralStateRoot, kbVaultRoot } from '../infra/path/root.js';
+import { kbVaultRoot } from '../infra/path/root.js';
 import { KB_RUNTIME_AUTHORITY } from '../runtime/kb-runtime-authority.js';
 
 // eslint-disable-next-line no-control-regex -- rejects C0/C1 control chars (incl NUL) in KB slugs before they reach writeFileSync
@@ -59,10 +59,6 @@ export function communitiesDir(root: string): string {
 }
 
 // KB runtime artifacts belong to the one account-neutral daemon state tree.
-export function kbRuntimeDir(flavor: BuildFlavor): string {
-  return join(coralStateRoot(), flavor === 'dev' ? 'data-dev' : 'data', 'kb');
-}
-
 export function sourcesDir(root: string): string {
   return join(root, 'sources');
 }

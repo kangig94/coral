@@ -13,7 +13,6 @@ import { parseSourceFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { CorpusFreshnessService } from '#src/kb/corpus/freshness-service.js';
 import type { Backed, FtsRetrieval } from '#src/kb/contract.js';
 import type { KbIndex } from '#src/kb/entry-types.js';
-import { kbRuntimeDir } from '#src/kb/paths.js';
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -116,7 +115,7 @@ describe('KB daemon runtime host', () => {
     const runtime = createRealRuntime('prod', { baseDir: root });
     const db = openTestStoreDb(runtime, ':memory:');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor);
+    const runtimeDir = runtime.paths.coral.kbRuntime.root;
     const stagedDir = join(runtimeDir, 'source-import-staging');
     const pdfDir = join(runtimeDir, 'source-import-pdf');
     runtime.storage.mkdirSync(stagedDir, { recursive: true });
@@ -153,7 +152,7 @@ describe('KB daemon runtime host', () => {
     const runtime = createRealRuntime('prod', { baseDir: root });
     const db = openTestStoreDb(runtime, ':memory:');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor);
+    const runtimeDir = runtime.paths.coral.kbRuntime.root;
     const kiwiAnalyzer = {
       leaseReadiness: () => ({
         ready: true as const,
@@ -194,7 +193,7 @@ describe('KB daemon runtime host', () => {
     const runtime = createRealRuntime('prod', { baseDir: root });
     const db = openTestStoreDb(runtime, ':memory:');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor);
+    const runtimeDir = runtime.paths.coral.kbRuntime.root;
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected Kiwi download'));
     const host = createKbDaemonWriteRuntimeHost({
       pluginRoot,
@@ -228,7 +227,7 @@ describe('KB daemon runtime host', () => {
     vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
     const runtime = createRealRuntime('prod', { baseDir: root });
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor);
+    const runtimeDir = runtime.paths.coral.kbRuntime.root;
     const host = createKbDaemonWriteRuntimeHost({
       pluginRoot,
       backendNamespace: 'test-namespace',
@@ -295,7 +294,7 @@ describe('KB daemon runtime host', () => {
     const runtime = createRealRuntime('prod', { baseDir: root });
     const db = openTestStoreDb(runtime, ':memory:');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor);
+    const runtimeDir = runtime.paths.coral.kbRuntime.root;
     const releaseExpansionShutdown = deferred();
     let getLifecyclePhase!: () => 'starting' | 'running' | 'draining' | 'stopped';
 
@@ -353,7 +352,7 @@ describe('KB daemon runtime host', () => {
     const runtime = createRealRuntime('prod', { baseDir: root });
     const db = openTestStoreDb(runtime, ':memory:');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor);
+    const runtimeDir = runtime.paths.coral.kbRuntime.root;
     const host = createKbDaemonWriteRuntimeHost({
       pluginRoot,
       backendNamespace: 'test-namespace',
@@ -399,7 +398,7 @@ describe('KB daemon runtime host', () => {
     const runtime = createRealRuntime('prod', { baseDir: root });
     const db = openTestStoreDb(runtime, ':memory:');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor);
+    const runtimeDir = runtime.paths.coral.kbRuntime.root;
     const delayedIndex: KbIndex = { entries: {}, principles: {}, entityMeta: {}, relationships: [] };
     const ensureFreshness = vi.spyOn(CorpusFreshnessService.prototype, 'ensureCorpusFreshness').mockImplementation(
       () =>
@@ -451,7 +450,7 @@ describe('KB daemon runtime host', () => {
     const db = openTestStoreDb(runtime, ':memory:');
     const projectRoot = join(root, 'project-a');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor);
+    const runtimeDir = runtime.paths.coral.kbRuntime.root;
     const sourcePath = join(projectRoot, 'paper.md');
     writeImportSource(runtime, sourcePath);
     const host = createKbDaemonWriteRuntimeHost({
@@ -550,7 +549,7 @@ describe('KB daemon runtime host', () => {
     const db = openTestStoreDb(runtime, ':memory:');
     const projectRoot = join(root, 'project-a');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor);
+    const runtimeDir = runtime.paths.coral.kbRuntime.root;
     const sourcePath = join(projectRoot, 'repair.md');
     writeImportSource(runtime, sourcePath);
     const firstHost = createKbDaemonWriteRuntimeHost({

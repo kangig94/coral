@@ -10,6 +10,7 @@ import type { BuildFlavor } from '../build-flavor.js';
 import { type CoordinatorPaths, coordinatorPaths } from './coordinator.js';
 import { coralStateRoot, kbVaultRoot } from './root.js';
 import { type EnginePaths, enginePaths } from './engine.js';
+import { type KbRuntimePaths, kbRuntimePaths } from './kb-runtime.js';
 import { type StorePaths, storePaths } from './store.js';
 
 export interface CorpusPaths {
@@ -35,6 +36,7 @@ export interface ProjectsPaths {
 export type CoralPaths = {
   readonly store: StorePaths;
   readonly corpus: CorpusPaths;
+  readonly kbRuntime: KbRuntimePaths;
   readonly coordinator: CoordinatorPaths;
   readonly exports: ExportsPaths;
   readonly engine: EnginePaths;
@@ -119,6 +121,7 @@ export function composeCoralPaths(flavor: BuildFlavor, opts?: ComposeCoralPathOp
   return {
     store: storePaths(flavor, stateOpts),
     corpus: corpusPaths(flavor, corpusOpts),
+    kbRuntime: kbRuntimePaths(flavor, stateOpts),
     coordinator: coordinatorPaths(flavor, undefined, stateOpts),
     exports: exportsPaths(flavor, stateOpts),
     engine: enginePaths(flavor, stateOpts),

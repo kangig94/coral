@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as OramaModule from '@orama/orama';
 import type * as NodeOs from 'node:os';
+import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import type { EntityGraph, KbSearchResponse } from '#src/kb/entry-types.js';
 import {
@@ -66,12 +67,12 @@ function asUnknownHandler<TArgs extends unknown[], TResult>(
 
 function createRuntime(
   _createKbRuntime: Awaited<ReturnType<typeof loadKbModules>>['createKbRuntime'],
-  paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
+  _paths: Awaited<ReturnType<typeof loadKbModules>>['paths'],
 ) {
-  const db = createKbTestDb(paths.kbRuntimeDir('prod'));
+  const db = createKbTestDb(kbRuntimePaths('prod').root);
   const { kb } = createKbTestRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
-    runtimeDir: paths.kbRuntimeDir('prod'),
+    runtimeDir: kbRuntimePaths('prod').root,
     db,
   });
   writableDbByRuntime.set(kb, db);

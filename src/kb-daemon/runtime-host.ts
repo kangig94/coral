@@ -8,7 +8,6 @@ import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { AbortError, throwIfAborted } from '../runtime/abort.js';
 import { serializeCoralSetupError } from '../runtime/errors.js';
-import { kbRuntimeDir } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
 import { createCurateScheduler, type CurateHandle } from '../kb/curate/scheduler.js';
 import type { CurateAssistantPort } from '../kb/curate/assistant.js';
@@ -354,11 +353,10 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
           storeFormat: currentCoralStoreFormat(),
         }) as unknown as WritableDatabase);
       const activeDb = db;
-      const flavor = readBuildFlavor(options.pluginRoot);
       const backendNamespace = options.backendNamespace ?? pluginRootNamespace(options.pluginRoot);
       const bundleHash = options.bundleHash ?? readBundleHash(options.pluginRoot);
       const markdownRoot = runtime.paths.coral.corpus.kbRoot;
-      const runtimeDir = kbRuntimeDir(flavor);
+      const runtimeDir = runtime.paths.coral.kbRuntime.root;
       cleanupSourceImportRuntimeArtifacts(runtimeDir, runtime);
       const curateAssistant = options.curateAssistant ?? createUnavailableCurateAssistant();
       const abortRegistry = new AbortRegistry(runtime.ids);

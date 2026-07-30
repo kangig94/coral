@@ -7,7 +7,6 @@ import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { KbRuntime } from '../kb/contract.js';
 import {
   communityPathFromName,
-  kbRuntimeDir,
   notePathFromName,
   principlePathFromName,
   sourcePathFromName,
@@ -122,11 +121,10 @@ function getDefaultKbQueryDb(context: KbQueryContext): ReadonlyDatabase {
 }
 
 export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime {
-  const flavor = resolveQueryFlavor(context);
   const runtime = resolveQueryRuntime(context);
   return createKbRuntime({
     markdownRoot: resolveQueryMarkdownRoot(context),
-    runtimeDir: kbRuntimeDir(flavor),
+    runtimeDir: runtime.paths.coral.kbRuntime.root,
     // Read-only query runtime: it never runs git-sync, so the version is inert
     // (only the daemon's curate path stamps commits with a real identity.version).
     version: '0.0.0',

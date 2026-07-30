@@ -15,7 +15,6 @@ import {
   readKnowledgeBaseEntryWithResolvedId,
 } from '../kb/queries.js';
 import { appendTouchEvent } from '../kb/curate/touch-journal.js';
-import { kbRuntimeDir } from '../kb/paths.js';
 import type { StoreReadContext } from '../store/body-codec.js';
 import type { CoralEvent } from '../store/envelope.js';
 import { type EventsFilter, type EventsPage, getEvent, getEventsSince } from '../store/event-queries.js';
@@ -264,7 +263,7 @@ export class CoralStore implements StoreReadContext {
 
     const runtime = this.runtime;
     try {
-      appendTouchEvent(kbRuntimeDir(runtime.flavor), target, runtime.ids.uuid(), {
+      appendTouchEvent(runtime.paths.coral.kbRuntime.root, target, runtime.ids.uuid(), {
         storage: runtime.storage,
         now: () => runtime.time.now(),
       });
