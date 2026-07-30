@@ -5,6 +5,7 @@ import { isInstallPathUnwritableError, kiwiInstallError, type KiwiInstallError }
 import {
   ensureKiwiModelArtifact,
   inspectKiwiModelArtifact,
+  probeKiwiModelArtifactIdentity,
   type KiwiModelArtifactInstallResult,
   type KiwiModelArtifactState,
 } from './model-artifact.js';
@@ -13,6 +14,7 @@ import { kiwiDataDir } from './paths.js';
 import {
   ensureKiwiWasmArtifactLocked,
   inspectKiwiWasmArtifact,
+  probeKiwiWasmArtifactIdentity,
   type KiwiWasmArtifactState,
   type KiwiWasmInstallOptions,
 } from './wasm-artifact.js';
@@ -45,6 +47,13 @@ export type KiwiArtifactInstallOptions = KiwiPackageOperationOptions &
     readonly ensureWasmArtifact?: EnsureWasmArtifact;
   };
 
+export function probeKiwiArtifactIdentity(runtime: Pick<Runtime, 'paths' | 'storage'>): string {
+  return JSON.stringify({
+    model: probeKiwiModelArtifactIdentity(runtime),
+    wasm: probeKiwiWasmArtifactIdentity(runtime),
+  });
+}
+
 export function inspectKiwiArtifact(runtime: Pick<Runtime, 'paths' | 'storage'>): KiwiArtifactState {
   const model = inspectKiwiModelArtifact(runtime);
   const wasm = inspectKiwiWasmArtifact(runtime);
@@ -73,7 +82,7 @@ export function hasKiwiArtifactDurableState(runtime: Pick<Runtime, 'paths' | 'st
     if (!runtime.storage.statSync(dataDir).isDirectory()) {
       return false;
     }
-    return runtime.storage.readdirSync(dataDir, { withFileTypes: true }).some((entry) => entry.name !== 'install.lock');
+    return runtime.storage.readdirSync(dataDir, { withFileTypes: true }).length > 0;
   } catch {
     return false;
   }
@@ -122,6 +131,23 @@ function installResult(
   };
 }
 
+function artifactInstallError(error: unknown): KiwiInstallError {
+  const causeName = error instanceof Error ? error.name : typeof error;
+  const causeMessage = errorMessage(error);
+  const causeStack = error instanceof Error && typeof error.stack === 'string' ? error.stack : undefined;
+  const causeCode =
+    error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+
+  return kiwiInstallError('expansion_install_artifact_failed', {
+    name: KIWI_INSTALL_ONLY_ID,
+    detail: causeMessage,
+    causeName,
+    causeMessage,
+    ...(causeStack === undefined ? {} : { causeStack }),
+    ...(causeCode === undefined ? {} : { causeCode }),
+  });
+}
+
 async function ensureKiwiArtifactLocked(
   runtime: Runtime,
   opts: KiwiArtifactInstallOptions,
@@ -144,11 +170,23 @@ async function ensureKiwiArtifactLocked(
   }
 
   if (!inspectKiwiArtifact(runtime).wasm.installed) {
-    await (opts.ensureWasmArtifact ?? ensureKiwiWasmArtifactLocked)(runtime, {
-      logger: opts.logger,
-      download: opts.download,
-      extract: opts.extract,
-    });
+    try {
+      const wasmResult = await (opts.ensureWasmArtifact ?? ensureKiwiWasmArtifactLocked)(runtime, {
+        logger: opts.logger,
+        download: opts.download,
+        extract: opts.extract,
+      });
+      if (!wasmResult.installed) {
+        return artifactInstallError(
+          new Error(`Kiwi WASM artifact install completed without readiness: ${wasmResult.reason ?? 'unknown reason'}`),
+        );
+      }
+    } catch (error: unknown) {
+      if (isInstallPathUnwritableError(error)) {
+        throw error;
+      }
+      return artifactInstallError(error);
+    }
   }
 
   const installed = inspectKiwiArtifact(runtime);
@@ -168,9 +206,6 @@ export async function ensureKiwiArtifact(
     if (isInstallPathUnwritableError(error)) {
       return kiwiInstallError('expansion_install_path_unwritable', { name: KIWI_INSTALL_ONLY_ID });
     }
-    return kiwiInstallError('expansion_install_artifact_failed', {
-      name: KIWI_INSTALL_ONLY_ID,
-      detail: errorMessage(error),
-    });
+    return artifactInstallError(error);
   }
 }

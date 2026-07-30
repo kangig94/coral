@@ -6,8 +6,13 @@ import { errorMessage } from '../../infra/error-format.js';
 import { decorateDispose } from '#src/expansion/scope.js';
 import type { KbDeclaredAnalyzer } from '../../kb/extra-langs.js';
 import type { Disposable, Runtime } from '../../runtime/ports.js';
-import { inspectKiwiArtifact, kiwiArtifactStateKey, type KiwiArtifactState } from './artifact.js';
-import { loadKiwiAnalyzer, type KiwiAnalyzer } from './loader.js';
+import {
+  inspectKiwiArtifact,
+  kiwiArtifactStateKey,
+  probeKiwiArtifactIdentity,
+  type KiwiArtifactState,
+} from './artifact.js';
+import { KiwiAnalyzerMissingArtifactError, loadKiwiAnalyzer, type KiwiAnalyzer } from './loader.js';
 
 const KIWI_ANALYZER_IDLE_TTL_MS = 5 * 60 * 1000;
 
@@ -22,6 +27,7 @@ type KiwiAnalyzerManagerOptions = {
   readonly idleTtlMs?: number;
   readonly loadAnalyzer?: (runtime: Runtime) => Promise<KiwiAnalyzer>;
   readonly inspectArtifact?: (runtime: Pick<Runtime, 'paths' | 'storage'>) => KiwiArtifactState;
+  readonly probeArtifactIdentity?: (runtime: Pick<Runtime, 'paths' | 'storage'>) => string;
   readonly logger?: (message: string) => void;
   readonly collectGarbage?: () => void;
 };
@@ -64,20 +70,18 @@ export type KiwiAnalyzerManagerStatus =
     };
 
 export type KiwiAnalyzerLeaseReadiness =
-  | {
-      readonly ready: true;
-      readonly state?: 'degraded';
-      readonly reason?: string;
-    }
+  | { readonly ready: true; readonly state: 'ok' }
+  | { readonly ready: true; readonly state: 'degraded'; readonly reason: string }
   | {
       readonly ready: false;
-      readonly state: 'unloaded' | 'loading' | 'evicting' | 'degraded';
+      readonly state: 'unloaded' | 'loading' | 'evicting';
       readonly reason?: string;
     };
 
 type DegradedState = {
   readonly reason: string;
   readonly artifactStateKey: string;
+  readonly artifactIdentity: string;
   readonly failedAt: number;
 };
 
@@ -132,6 +136,7 @@ export class KiwiAnalyzerManager {
   private readonly idleTtlMs: number;
   private readonly loadAnalyzer: (runtime: Runtime) => Promise<KiwiAnalyzer>;
   private readonly inspectArtifact: (runtime: Pick<Runtime, 'paths' | 'storage'>) => KiwiArtifactState;
+  private readonly probeArtifactIdentity: (runtime: Pick<Runtime, 'paths' | 'storage'>) => string;
   private readonly logger: (message: string) => void;
   private readonly collectGarbage?: () => void;
   private readonly leaseStorage = new AsyncLocalStorage<KiwiAnalyzer | null>();
@@ -149,6 +154,7 @@ export class KiwiAnalyzerManager {
     this.idleTtlMs = options.idleTtlMs ?? KIWI_ANALYZER_IDLE_TTL_MS;
     this.loadAnalyzer = options.loadAnalyzer ?? ((runtime) => loadKiwiAnalyzer(runtime, { installIfMissing: false }));
     this.inspectArtifact = options.inspectArtifact ?? inspectKiwiArtifact;
+    this.probeArtifactIdentity = options.probeArtifactIdentity ?? probeKiwiArtifactIdentity;
     this.logger = options.logger ?? ((message) => backendLog.warn(message));
     this.collectGarbage = options.collectGarbage;
   }
@@ -179,7 +185,7 @@ export class KiwiAnalyzerManager {
   ): KiwiAnalyzerLeaseReadiness {
     const normalized = normalDeclaredAnalyzers(declaredAnalyzers);
     if (!wantsKiwi(normalized) || runtime === undefined) {
-      return { ready: true };
+      return { ready: true, state: 'ok' };
     }
 
     if (this.degraded !== null && this.artifactChangedSinceFailure(runtime, this.degraded)) {
@@ -199,7 +205,7 @@ export class KiwiAnalyzerManager {
 
     const key = runtimeKey(runtime);
     if (this.activeHandle !== null && !this.activeHandle.closed && this.activeHandle.runtimeKey === key) {
-      return { ready: true };
+      return { ready: true, state: 'ok' };
     }
 
     return { ready: false, state: 'unloaded' };
@@ -337,12 +343,14 @@ export class KiwiAnalyzerManager {
   }
 
   private async loadFresh(runtime: Runtime, key: string): Promise<ActiveKiwiHandle> {
+    let failedArtifactIdentity = this.inspectArtifactIdentity(runtime);
     let failedArtifactStateKey = this.inspectArtifactStateKey(runtime);
     try {
       if (this.activeHandle !== null) {
         await this.disposeHandle(this.activeHandle);
       }
 
+      failedArtifactIdentity = this.inspectArtifactIdentity(runtime);
       failedArtifactStateKey = this.inspectArtifactStateKey(runtime);
       const analyzer = await this.loadAnalyzer(runtime);
       const handle: ActiveKiwiHandle = {
@@ -356,7 +364,7 @@ export class KiwiAnalyzerManager {
       this.lastNotifiedDegradedArtifactStateKey = null;
       return handle;
     } catch (error: unknown) {
-      this.markDegraded(runtime, error, failedArtifactStateKey);
+      this.markDegraded(runtime, error, failedArtifactStateKey, failedArtifactIdentity);
       throw new KiwiAnalyzerTerminalLoadError(`Kiwi analyzer load failed: ${errorMessage(error)}`, error);
     }
   }
@@ -369,17 +377,27 @@ export class KiwiAnalyzerManager {
     }
   }
 
-  private markDegraded(runtime: Runtime, error: unknown, stateKey: string): void {
+  private inspectArtifactIdentity(runtime: Runtime): string {
+    try {
+      return this.probeArtifactIdentity(runtime);
+    } catch (error: unknown) {
+      return `probe-error:${errorMessage(error)}`;
+    }
+  }
+
+  private markDegraded(runtime: Runtime, error: unknown, stateKey: string, artifactIdentity: string): void {
     const reason = errorMessage(error);
     this.degraded = {
       reason,
       artifactStateKey: stateKey,
+      artifactIdentity,
       failedAt: runtime.time.now(),
     };
-    const remediation = reason.includes('coral-cli expansion equip kiwi')
-      ? ''
-      : ' Run `coral-cli backend shutdown` so the next command retries Kiwi initialization. ' +
-        'If it fails again, check the Kiwi artifact filesystem permissions and report this error.';
+    const remediation =
+      error instanceof KiwiAnalyzerMissingArtifactError
+        ? ''
+        : ' Run `coral-cli backend shutdown` so the next command retries Kiwi initialization. ' +
+          'If it fails again, check the Kiwi artifact filesystem permissions and report this error.';
     this.logger(`[kiwi] analyzer unavailable; Intl fallback remains active: ${reason}${remediation}`);
     this.notifyDegraded({ reason, artifactStateKey: stateKey });
   }
@@ -409,6 +427,9 @@ export class KiwiAnalyzerManager {
 
   private artifactChangedSinceFailure(runtime: Runtime, degraded: DegradedState): boolean {
     try {
+      if (this.inspectArtifactIdentity(runtime) === degraded.artifactIdentity) {
+        return false;
+      }
       const state = this.inspectArtifact(runtime);
       return state.ready && kiwiArtifactStateKey(state) !== degraded.artifactStateKey;
     } catch {

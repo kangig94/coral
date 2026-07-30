@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,9 +19,14 @@ const expectedBuildFiles = new Set([
   'coral-claude-appserver.cjs',
   'manifest.json',
 ]);
+if (!existsSync(buildDir)) {
+  throw new Error(`Kiwi build contract is missing ${buildDir}; run \`npm run build\` before this verifier.`);
+}
 const buildFiles = readdirSync(buildDir);
 if (buildFiles.length !== expectedBuildFiles.size || buildFiles.some((entry) => !expectedBuildFiles.has(entry))) {
-  throw new Error(`Kiwi build contract expected only the four bundle files, got: ${buildFiles.sort().join(', ')}`);
+  throw new Error(
+    `Kiwi build contract expected only the four bundle files, with no WASM staged beside them; got: ${buildFiles.sort().join(', ')}`,
+  );
 }
 
 const projectManifest = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8'));
@@ -29,6 +34,9 @@ const packageManifest = JSON.parse(readFileSync(join(repoRoot, 'node_modules', '
 const tempRoot = mkdtempSync(join(tmpdir(), 'coral-kiwi-build-smoke-'));
 const isolatedBundleDir = join(tempRoot, 'bundle');
 const runtimeRoot = join(tempRoot, 'runtime');
+// Deliberately derive the kiwi/wasm/v<ver>/ layout and installed version independently of
+// src/engines/kiwi/paths.ts and KIWI_NLP_VERSION so drift makes this verifier fail instead of
+// silently passing.
 const runtimeWasmPath = join(runtimeRoot, 'kiwi', 'wasm', `v${String(packageManifest.version)}`, 'kiwi-wasm.wasm');
 const smokeBundle = join(isolatedBundleDir, 'kiwi-smoke.cjs');
 

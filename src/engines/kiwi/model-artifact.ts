@@ -6,6 +6,7 @@ import { gunzipSync } from 'node:zlib';
 
 import { downloadBuffer } from '#src/runtime/download.js';
 import { sha256Hex } from '../../infra/hash.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { extractTarGzEntriesInWorker } from '../../infra/archive-extraction-worker.js';
@@ -120,6 +121,26 @@ export type KiwiModelArtifactState = {
   readonly missingFiles: readonly string[];
 };
 
+type KiwiModelPathIdentity =
+  | { readonly state: 'missing' | 'unreadable' }
+  | {
+      readonly state: 'present';
+      readonly regularFile: boolean;
+      readonly dev: string;
+      readonly ino: string;
+      readonly mode: string;
+      readonly size: string;
+      readonly mtimeNs: string;
+    };
+
+export type KiwiModelArtifactIdentity = {
+  readonly manifest: KiwiModelPathIdentity;
+  readonly files: readonly {
+    readonly fileName: KiwiModelFileName;
+    readonly identity: KiwiModelPathIdentity;
+  }[];
+};
+
 export type KiwiModelArtifactInstallResult =
   | {
       readonly status: 'installed' | 'updated' | 'already_installed' | 'already_up_to_date';
@@ -173,6 +194,34 @@ function isFile(runtime: Pick<Runtime, 'storage'>, path: string): boolean {
   } catch {
     return false;
   }
+}
+
+function probePathIdentity(runtime: Pick<Runtime, 'storage'>, path: string): KiwiModelPathIdentity {
+  try {
+    const kind = runtime.storage.lstatSync(path);
+    const stat = runtime.storage.statSync(path, { bigint: true });
+    return {
+      state: 'present',
+      regularFile: kind.isFile() && !kind.isSymbolicLink(),
+      dev: stat.dev.toString(),
+      ino: stat.ino.toString(),
+      mode: stat.mode.toString(),
+      size: stat.size.toString(),
+      mtimeNs: stat.mtimeNs.toString(),
+    };
+  } catch (error: unknown) {
+    return { state: isNoEntryError(error) ? 'missing' : 'unreadable' };
+  }
+}
+
+export function probeKiwiModelArtifactIdentity(runtime: Pick<Runtime, 'paths' | 'storage'>): KiwiModelArtifactIdentity {
+  return {
+    manifest: probePathIdentity(runtime, kiwiModelManifestPath(runtime)),
+    files: KIWI_MODEL_FILES.map((fileName) => ({
+      fileName,
+      identity: probePathIdentity(runtime, kiwiModelFilePath(runtime, fileName)),
+    })),
+  };
 }
 
 function isKiwiModelArtifactManifest(value: unknown): value is KiwiModelArtifactManifest {

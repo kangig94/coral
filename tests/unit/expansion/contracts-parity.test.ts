@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   catalogEntrySchema,
   catalogEntryStatusSchema,
+  installMethodSchema,
   installResultSchema,
   removeExpansionCatalogResultSchema,
 } from '#src/expansion/rpc-contract.js';
@@ -71,7 +72,7 @@ describe('expansion contracts parity', () => {
     }
   });
 
-  it('keeps install-only consent and runtime-download routing inside the update protocol', () => {
+  it('keeps install-only consent and schema methods routed through the shared protocol', () => {
     expect(
       catalogEntrySchema.parse({
         id: 'kiwi',
@@ -85,35 +86,39 @@ describe('expansion contracts parity', () => {
     ).toMatchObject({
       confirmDownload: 'Download the pinned runtime artifacts?',
     });
+
     const equipSection = skillSection('### `<package>`', '### `--update <package>`');
     expect(equipSection).toContain('the current entry includes `confirmDownload`');
     expect(equipSection).toContain('show that message exactly');
-    expect(equipSection).toContain("`method: 'runtime-download'`");
-    expect(equipSection).toContain('`targetDir`');
-    expect(equipSection).toContain('`command`');
-    expect(equipSection).toContain('`installed`');
-    expect(equipSection).toContain('`updated`');
-    expect(equipSection).toContain('no coding-agent restart is required');
-    expect(equipSection).toContain('When `ko` is enabled and the backend is active');
-    expect(equipSection).toContain('this command started neither a download nor a reindex');
-    expect(equipSection).toContain('Do not promise an analyzer upgrade');
-    expect(equipSection).toContain('`coral-cli backend shutdown`');
+    expect(equipSection).toContain('shared install-only result routing');
 
-    const updateSection = skillSection('### `--update <package>`', '### `info <package>`');
+    const updateSection = skillSection('### `--update <package>`', '#### Shared install-only result routing');
     expect(updateSection).toContain('`confirmDownload`');
     expect(updateSection).toContain('show that message exactly');
-    expect(updateSection).toContain("`method: 'runtime-download'`");
-    expect(updateSection).toContain('`targetDir`');
-    expect(updateSection).toContain('`command`');
-    expect(updateSection).toContain('no coding-agent restart is required');
-    expect(updateSection).toContain('only when `ko` is enabled and the backend is active');
-    expect(updateSection).toContain('`installed`');
-    expect(updateSection).toContain('`updated`');
-    expect(updateSection).toContain('`already_installed`');
-    expect(updateSection).toContain('`already_up_to_date`');
-    expect(updateSection).toContain('For `installed` and `updated`');
-    expect(updateSection).toContain('this command started neither a download nor a reindex');
-    expect(updateSection).toContain('do not promise an analyzer upgrade');
+    expect(updateSection).toContain('shared install-only result routing');
+
+    const sharedRoutingSection = skillSection('#### Shared install-only result routing', '### `info <package>`');
+    const explicitlyRoutedMethods = [...sharedRoutingSection.matchAll(/`method: '([^']+)'`/g)].map((match) => match[1]);
+    const schemaMethods = new Set<string>(installMethodSchema.options);
+
+    expect(explicitlyRoutedMethods.length).toBeGreaterThan(0);
+    for (const method of explicitlyRoutedMethods) {
+      expect(schemaMethods.has(method)).toBe(true);
+    }
+    for (const method of installMethodSchema.options) {
+      if (!explicitlyRoutedMethods.includes(method)) {
+        expect(updateSection).toContain(method);
+      }
+    }
+
+    expect(sharedRoutingSection).toContain('- Other methods:');
+    expect(sharedRoutingSection).toContain('`targetDir`');
+    expect(sharedRoutingSection).toContain('`command`');
+    expect(sharedRoutingSection).toContain('no coding-agent restart is required');
+    expect(sharedRoutingSection).toContain('When `ko` is enabled and the backend is active');
+    expect(sharedRoutingSection).toContain('this command started neither a download nor a reindex');
+    expect(sharedRoutingSection).toContain('Do not promise an analyzer upgrade');
+    expect(sharedRoutingSection).toContain('`coral-cli backend shutdown`');
 
     const infoSection = skillSection('### `info <package>`', '### `uninstall <equipment-name>`');
     expect(infoSection).toContain('`confirmDownload`');

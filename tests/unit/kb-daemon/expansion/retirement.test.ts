@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createExpansionManifestCatalog } from '#src/expansion/manifest/catalog.js';
 import { installExpansion } from '#src/cli/expansion/install.js';
 import { kiwiInstaller } from '#src/engines/kiwi/install.js';
+import type { InstallMethod } from '#src/expansion/rpc-contract.js';
 import { cleanupRetiredExpansion } from '#src/kb-daemon/expansion/retirement.js';
 import { ExpansionStateStore } from '#src/kb-daemon/expansion/state.js';
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
@@ -18,6 +19,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 
 const roots: string[] = [];
 const databases: Database[] = [];
+const kiwiInstallMethod = 'runtime-download' satisfies InstallMethod;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -170,7 +172,7 @@ describe('retired expansion cleanup', () => {
       expect(options.operationLockHeld).toBe(true);
       enteredInstall();
       await installFinished;
-      return { status: 'already_installed', method: 'fixture', version: '1.0.0' };
+      return { status: 'already_installed', method: kiwiInstallMethod, version: '1.0.0' };
     });
 
     const installing = installExpansion('kiwi', { runtime: fixture.runtime, lockTimeoutMs: 50 });

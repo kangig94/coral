@@ -140,6 +140,8 @@ function toInstallOnlyCatalogEntry(manifest: InstallOnlyManifest, runtime: Runti
     status,
     version: manifest.version,
     ...(local.installed && typeof local.addonPath === 'string' ? { command: local.addonPath } : {}),
+    ...(typeof local.targetDir === 'string' ? { targetDir: local.targetDir } : {}),
+    ...(typeof local.method === 'string' ? { method: local.method } : {}),
     ...(confirmDownload === undefined ? {} : { confirmDownload }),
   });
 }

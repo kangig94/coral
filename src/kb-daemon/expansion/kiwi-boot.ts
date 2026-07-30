@@ -172,7 +172,7 @@ async function ensureArtifactWithContentionRetry(params: {
     }
     if (!contentionLogged) {
       contentionLogged = true;
-      backendLog.raw(
+      backendLog.info(
         '[kiwi] another package operation holds the install lock; background recovery will keep retrying ' +
           'until it completes or the daemon shuts down.',
       );
@@ -230,7 +230,7 @@ export function startKiwiArtifactFetchOnBoot({
     const snapshot = kb.getCorpusStateSnapshot();
     await forceOramaReindexAfterKiwiFetch(kb, driver, snapshot, timeoutMs, signal);
     if (!signal.aborted) {
-      backendLog.raw('[kiwi] runtime artifacts are ready; Korean search reindex completed without a restart.');
+      backendLog.info('[kiwi] runtime artifacts are ready; Korean search reindex completed without a restart.');
     }
   })().catch((error: unknown) => {
     if (!signal.aborted) {

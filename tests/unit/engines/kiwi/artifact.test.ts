@@ -4,12 +4,13 @@ import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { ensureKiwiArtifact, inspectKiwiArtifact } from '#src/engines/kiwi/artifact.js';
+import { ensureKiwiArtifact, inspectKiwiArtifact, probeKiwiArtifactIdentity } from '#src/engines/kiwi/artifact.js';
 import { KIWI_MODEL_FILES, type KiwiModelFileName } from '#src/engines/kiwi/constants.js';
 import { type ensureKiwiModelArtifact, writeKiwiModelFilesAtomicInWorker } from '#src/engines/kiwi/model-artifact.js';
 import { withKiwiPackageOperationLock } from '#src/engines/kiwi/operation-lock.js';
-import { kiwiModelFilePath, kiwiModelManifestPath } from '#src/engines/kiwi/paths.js';
+import { kiwiModelFilePath, kiwiModelManifestPath, kiwiWasmPath } from '#src/engines/kiwi/paths.js';
 import { publishKiwiWasmArtifact } from '#src/engines/kiwi/wasm-artifact.js';
+import { installErrorSchema } from '#src/expansion/rpc-contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
 const wasmFixture = readFileSync(join(process.cwd(), 'node_modules', 'kiwi-nlp', 'dist', 'kiwi-wasm.wasm'));
@@ -180,6 +181,35 @@ describe('Kiwi composite artifact', () => {
     }
   });
 
+  it('probes model and WASM identity without reading artifact contents', async () => {
+    const { root, runtime } = createTestRuntime();
+    try {
+      await writeKiwiModelFilesAtomicInWorker(runtime, modelFiles());
+      publishKiwiWasmArtifact(runtime, wasmFixture);
+      const readFileSpy = vi.spyOn(runtime.storage, 'readFileSync');
+      const openSpy = vi.spyOn(runtime.storage, 'openSync');
+      const readSpy = vi.spyOn(runtime.storage, 'readSync');
+
+      const before = probeKiwiArtifactIdentity(runtime);
+      expect(probeKiwiArtifactIdentity(runtime)).toBe(before);
+      expect(readFileSpy).not.toHaveBeenCalled();
+      expect(openSpy).not.toHaveBeenCalled();
+      expect(readSpy).not.toHaveBeenCalled();
+
+      runtime.storage.rmSync(kiwiModelFilePath(runtime, KIWI_MODEL_FILES[0]));
+      const withoutModelFile = probeKiwiArtifactIdentity(runtime);
+      expect(withoutModelFile).not.toBe(before);
+
+      runtime.storage.rmSync(kiwiWasmPath(runtime));
+      expect(probeKiwiArtifactIdentity(runtime)).not.toBe(withoutModelFile);
+      expect(readFileSpy).not.toHaveBeenCalled();
+      expect(openSpy).not.toHaveBeenCalled();
+      expect(readSpy).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('reports already_up_to_date and updated through the observable update contract', async () => {
     const { root, runtime } = createTestRuntime();
     try {
@@ -281,6 +311,38 @@ describe('Kiwi composite artifact', () => {
     }
   });
 
+  it('returns a schema-valid error when installation completes without readiness', async () => {
+    const { root, runtime } = createTestRuntime();
+    try {
+      const result = await ensureKiwiArtifact(runtime, {
+        ensureModelArtifact: async () => ({
+          status: 'installed',
+          method: 'github-release',
+          version: '0.23.0',
+          targetDir: root,
+        }),
+        ensureWasmArtifact: async () => publishKiwiWasmArtifact(runtime, wasmFixture),
+      });
+
+      expect(result).toMatchObject({
+        status: 'error',
+        code: 'expansion_install_artifact_failed',
+        context: {
+          name: 'kiwi',
+          detail: 'Kiwi artifact install completed without readiness: model',
+          causeName: 'Error',
+          causeMessage: 'Kiwi artifact install completed without readiness: model',
+          causeStack: expect.stringContaining('Kiwi artifact install completed without readiness: model'),
+        },
+      });
+      expect(result).not.toHaveProperty('cause');
+      expect(JSON.parse(JSON.stringify(result))).toEqual(result);
+      expect(installErrorSchema.safeParse(result).success).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(['EACCES', 'EPERM', 'EROFS', 'ENOSPC'])(
     'maps a component %s failure to the structured unwritable-path result',
     async (code) => {
@@ -297,6 +359,7 @@ describe('Kiwi composite artifact', () => {
           code: 'expansion_install_path_unwritable',
           context: { name: 'kiwi' },
         });
+        expect(installErrorSchema.safeParse(result).success).toBe(true);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

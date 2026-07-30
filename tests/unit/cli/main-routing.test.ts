@@ -8,7 +8,7 @@ import type * as CommandClientMod from '#src/cli/dispatch.js';
 import type * as CommandOutputMod from '#src/cli/emit.js';
 import type * as ErrorsMod from '#src/cli/errors.js';
 import type * as MainMod from '#src/cli/program.js';
-import { installErrorSchema, installResultSchema } from '#src/expansion/rpc-contract.js';
+import { installErrorSchema, installResultSchema, type InstallMethod } from '#src/expansion/rpc-contract.js';
 import { serializeWaitCursor } from '#src/jobs/wait.js';
 import type { JobDetailResponse, JobStatus } from '#src/jobs/records.js';
 import { formatErrorEnvelope } from '#src/cli/format/error.js';
@@ -25,6 +25,8 @@ import { formatWaitProgress, formatWaitTerminal, formatWaitWaiting } from '#src/
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/infra/path/store.js';
+
+const genericInstallMethod = 'shell' satisfies InstallMethod;
 
 const mockState = vi.hoisted(() => ({
   createSession: vi.fn(),
@@ -463,7 +465,7 @@ describe('cli main routing', () => {
       setup: () => {
         mockState.expansionEquip.mockResolvedValueOnce({
           status: 'installed',
-          method: 'prebuild',
+          method: genericInstallMethod,
           version: '1.0.0',
           targetDir: '/tmp/vector',
         });
@@ -502,7 +504,7 @@ describe('cli main routing', () => {
       setup: () => {
         mockState.expansionUpdate.mockResolvedValueOnce({
           status: 'updated',
-          method: 'prebuild',
+          method: genericInstallMethod,
           version: '1.0.1',
           targetDir: '/tmp/vector',
         });

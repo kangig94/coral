@@ -25,6 +25,16 @@ export type LoadKiwiAnalyzerOptions = {
   readonly installIfMissing?: boolean;
 };
 
+export class KiwiAnalyzerMissingArtifactError extends Error {
+  constructor(missingComponents: readonly string[]) {
+    super(
+      `Kiwi runtime artifacts are not installed (${missingComponents.join(', ')} missing). ` +
+        'Run `coral-cli expansion equip kiwi` to install them.',
+    );
+    this.name = 'KiwiAnalyzerMissingArtifactError';
+  }
+}
+
 function readBinaryFile(runtime: Pick<Runtime, 'storage'>, path: string): Uint8Array {
   const readFileSync = runtime.storage.readFileSync as unknown as (filePath: string) => Uint8Array | Buffer;
   const content = readFileSync(path);
@@ -112,10 +122,7 @@ export async function loadKiwiAnalyzer(runtime: Runtime, options: LoadKiwiAnalyz
 
   const state = inspectKiwiArtifact(runtime);
   if (!state.ready) {
-    throw new Error(
-      `Kiwi runtime artifacts are not installed (${state.missingComponents.join(', ')} missing). ` +
-        'Run `coral-cli expansion equip kiwi` to install them.',
-    );
+    throw new KiwiAnalyzerMissingArtifactError(state.missingComponents);
   }
 
   const loaded = await buildDisposableKiwi(runtime, readModelFiles(runtime));

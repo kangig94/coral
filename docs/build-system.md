@@ -89,8 +89,15 @@ check: it checks the selected bundle directory's four-file inventory, then
 builds and executes an isolated Kiwi initializer from source with those same
 production esbuild options and an empty `NODE_PATH`.
 This feature-build check does not regenerate `clients/bridge`; the Release
-workflow performs that copy and separately verifies byte equality and package
-allowlisting.
+workflow performs that copy, and `npm run verify:store-reset-release`
+separately verifies byte equality and package allowlisting.
+
+The standalone Kiwi runtime-build contract can be reproduced locally with:
+
+```bash
+npm run build
+npm run verify:kiwi-runtime-build
+```
 
 `bundleHash`, `cliBundleHash`, and `claudeAppserverBundleHash` bind the complete executable set. `version`, `buildSetId`, `flavor`, and `storeFormatFingerprint` are embedded and compared separately, so a mixed or stale artifact set fails closed even when one file happens to have unchanged bytes.
 
@@ -127,6 +134,8 @@ Unbundled hooks read the adjacent manifest; bundled runtimes compare that same m
 ## Dependencies
 
 The build and runtime no longer depend on `@modelcontextprotocol/sdk`. Current package-managed runtime concerns are ordinary Node/TypeScript concerns: `zod` for schema validation, `esbuild` for bundling, native runtime packages such as `@lydell/node-pty` (prebuilt-binary fork — ships per-platform `.node` via optional dependencies, so install needs no native toolchain or lifecycle scripts), and the Coral runtime packages declared in `package.json`.
+
+`kiwi-nlp` is exact-pinned in `package.json` (no caret). `src/engines/kiwi/constants.ts` hardcodes the matching package archive, WASM, and model digests and sizes, so a dependency bump must update the pin and constants together or artifact installation fails at runtime.
 
 ## Testing
 

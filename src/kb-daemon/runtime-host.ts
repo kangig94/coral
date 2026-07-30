@@ -140,8 +140,7 @@ type KbDaemonSearchRuntimeReadiness =
         | 'fts_binding_unavailable'
         | 'kiwi_analyzer_unloaded'
         | 'kiwi_analyzer_loading'
-        | 'kiwi_analyzer_evicting'
-        | 'kiwi_analyzer_degraded';
+        | 'kiwi_analyzer_evicting';
       message: string;
       detail?: Record<string, unknown>;
     };

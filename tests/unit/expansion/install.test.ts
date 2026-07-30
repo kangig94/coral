@@ -10,7 +10,7 @@ import { writeKiwiModelFilesAtomicInWorker } from '#src/engines/kiwi/model-artif
 import { kiwiWasmManifestPath } from '#src/engines/kiwi/paths.js';
 import { publishKiwiWasmArtifact } from '#src/engines/kiwi/wasm-artifact.js';
 import { KIWI_MODEL_FILES, type KiwiModelFileName } from '#src/engines/kiwi/constants.js';
-import { installResponseSchema } from '#src/expansion/rpc-contract.js';
+import { installResponseSchema, type InstallMethod } from '#src/expansion/rpc-contract.js';
 import { enginePaths } from '#src/infra/path/engine.js';
 import { acquirePackageOperationLockAtPath } from '#src/infra/package-operation-lock.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -18,6 +18,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { installExpansion } from '#src/cli/expansion/install.js';
 
 const createdRoots: string[] = [];
+const kiwiInstallMethod = 'runtime-download' satisfies InstallMethod;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -105,7 +106,7 @@ describe('installExpansion', () => {
       label: 'non-canonical target directory',
       result: (runtime: Runtime) => ({
         status: 'installed' as const,
-        method: 'fixture',
+        method: kiwiInstallMethod,
         targetDir: join(runtime.paths.coral.engine.dataDir('kiwi'), '..', 'other'),
       }),
       message: /non-canonical target directory/u,
@@ -114,7 +115,7 @@ describe('installExpansion', () => {
       label: 'absolute manifest path',
       result: (runtime: Runtime) => ({
         status: 'installed' as const,
-        method: 'fixture',
+        method: kiwiInstallMethod,
         targetDir: runtime.paths.coral.engine.dataDir('kiwi'),
         postInstall: [
           { action: 'register_expansion' as const, manifestPath: join(fixtureAbsoluteRoot(), 'manifest.json') },
@@ -135,7 +136,7 @@ describe('installExpansion', () => {
     const runtime = createRuntimeForFixture(fixture);
     vi.spyOn(kiwiInstaller, 'install').mockResolvedValue({
       status: 'installed',
-      method: 'fixture',
+      method: kiwiInstallMethod,
       targetDir: runtime.paths.coral.engine.dataDir('kiwi'),
       postInstall: ['register_expansion'],
     });

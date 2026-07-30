@@ -183,7 +183,7 @@ describe('startKiwiArtifactFetchOnBoot', () => {
     let ready = false;
     let attempts = 0;
     const sleepDelays: number[] = [];
-    const rawLog = vi.spyOn(backendLog, 'raw').mockImplementation(() => {});
+    const infoLog = vi.spyOn(backendLog, 'info').mockImplementation(() => {});
     const runtime = createRuntime({
       now: () => (attempts === 0 ? 0 : 31_000),
       sleep: async (ms) => {
@@ -245,7 +245,7 @@ describe('startKiwiArtifactFetchOnBoot', () => {
     expect(invalidateTextSnapshot).toHaveBeenCalledTimes(1);
     expect(forceCorpusApply).toHaveBeenCalledTimes(1);
     expect(
-      rawLog.mock.calls.filter(([message]) => String(message).includes('another package operation holds')).length,
+      infoLog.mock.calls.filter(([message]) => String(message).includes('another package operation holds')).length,
     ).toBe(1);
   });
 

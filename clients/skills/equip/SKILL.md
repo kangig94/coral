@@ -47,7 +47,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 | status    | Action |
 |-----------|--------|
-| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, `provides` when present, translated `activation`, `status`, `statusDescription` when present, and `cleanupCommand` when present. Render `provides` as sibling collections: `provides.capabilities` as a comma-separated capability label/name list and `provides.retrievalRoles` as a comma-separated role label list, for example `provides: capabilities=[Text (FTS), Vector (Semantic)]; retrievalRoles=[Text, Vector, Graph]`. Do not group capabilities by `typeTag`; it is opaque metadata |
+| `catalog` | Present the catalog as a table with `id`, `name`, `tier`, package `description`, `provides` when present, translated `activation`, `status`, `statusDescription` when present, `confirmDownload` when present, and `cleanupCommand` when present. Render `provides` as sibling collections: `provides.capabilities` as a comma-separated capability label/name list and `provides.retrievalRoles` as a comma-separated role label list, for example `provides: capabilities=[Text (FTS), Vector (Semantic)]; retrievalRoles=[Text, Vector, Graph]`. Do not group capabilities by `typeTag`; it is opaque metadata |
 | `info`    | Show the single package entry using the same package-status routing table below, including `tier`, `fills`/`slot` when present, `provides` when present using the same sibling collection rendering as catalog rows, and the translated `activation` label |
 | `error`   | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
@@ -84,26 +84,21 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 | status               | Action                                                                                                                                                                                                                                                                     |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `already_installed`  | Inform user; `expansion equip` continues activation when applicable. If `method` is present, apply the no-change install-only routing below                                                                                                                                |
-| `already_up_to_date` | Inform user with version; `expansion equip` continues activation when applicable. If `method` is present, apply the no-change install-only routing below                                                                                                                   |
-| `installed`          | Show method used. For `method: 'runtime-download'`, apply the conditional live-recovery routing below. For other install-only methods, show `command` when present and mention restart only when the installer registered agent tooling   |
-| `updated`            | Show method and version. For `method: 'runtime-download'`, apply the conditional live-recovery routing below. For other install-only methods, show `command` when present and mention restart only when updated agent tooling requires it |
+| `already_installed`  | Inform user; `expansion equip` continues activation when applicable. For install-only results, apply the no-change case in the shared install-only result routing in the `--update <package>` section below                                                                   |
+| `already_up_to_date` | Inform user with version; `expansion equip` continues activation when applicable. For install-only results, apply the no-change case in the shared install-only result routing in the `--update <package>` section below                                                      |
+| `installed`          | Show method used. For install-only results, apply the changed case in the shared install-only result routing in the `--update <package>` section below                                                        |
+| `updated`            | Show method and version. For install-only results, apply the changed case in the shared install-only result routing in the `--update <package>` section below                                                 |
 | `equipped`           | Expansion is installed and active in the coordinator (equipment-backed packages only)                                                                                                                                                                                      |
 | `catching_up`        | Expansion is activating; tell the user to poll `/equip --list` until it reaches `equipped`                                                                                                                                                                                 |
 | `already_equipped`   | Inform the user the expansion is already active                                                                                                                                                                                                                            |
 | `error`              | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields                                                                                                                                      |
 
-6. For `installed` or `updated` install-only results that carry `method`:
-   - `method: 'runtime-download'`: show `targetDir` when present and say no coding-agent restart is required. When `ko` is enabled and the backend is active, Kiwi recovery and Korean reindex proceed live; otherwise the artifacts are ready for the next backend start or for when `ko` is enabled.
-   - Other methods: show the executable `command` when present. Mention an agent restart only when that installer registered or updated agent tooling.
-7. For the no-change statuses `already_installed` and `already_up_to_date` that carry `method`:
-   - `method: 'runtime-download'`: show `targetDir` when present and explain that the artifacts were already valid, so this command started neither a download nor a reindex. Do not promise an analyzer upgrade. If Kiwi remains degraded, run `coral-cli backend shutdown` so the next command restarts the backend and retries initialization; if that retry also fails, check artifact filesystem permissions and report the repeated error.
-   - Other methods: show the existing `command` when present without claiming that the installer ran or that a restart is required.
-8. Onboarding runs inside `coral-cli expansion equip <package>` before install/activate:
+6. Apply the shared install-only result routing in the `--update <package>` section below when the mutation result is install-only.
+7. Onboarding runs inside `coral-cli expansion equip <package>` before install/activate:
    - `engine_env_var_missing`: show the missing `envVar` and remediation exactly. Do not suggest restart/retry loops.
    - `binding_required`: show `suggestions` when present; otherwise show candidate ids from `context.candidates` when present. The user should equip one engine that fills the missing binding, then retry the original package.
    - `user_cancelled`: stop without retrying automatically.
-9. Do not run `coral-cli expansion equip <package>` a second time unless the user has changed the missing setup state or equipped a required peer engine.
+8. Do not run `coral-cli expansion equip <package>` a second time unless the user has changed the missing setup state or equipped a required peer engine.
 
 ### `--update <package>`
 
@@ -115,17 +110,24 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 | status               | Action                                                                                                                                |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `already_installed`  | Inform user. If `method` is present, apply the no-change install-only routing below                                                    |
-| `already_up_to_date` | Inform user with version. If `method` is present, apply the no-change install-only routing below                                       |
-| `installed`          | Show method and version, then apply the changed install-only routing below                                                             |
-| `updated`            | Show method and version, then apply the changed install-only routing below                                                             |
+| `already_up_to_date` | Inform user with version. For install-only results, apply the no-change case in the shared install-only result routing below            |
+| `updated`            | Show method and version. For install-only results, apply the changed case in the shared install-only result routing below               |
 | `equipped`           | Expansion is updated and active in the coordinator                                                                                    |
 | `catching_up`        | Expansion is updated and activating; tell the user to poll `/equip --list` until it reaches `equipped`                                |
 | `already_equipped`   | Inform the user the updated expansion is already active                                                                               |
 | `error`              | Show `userMessage` and `remediation`. Show `suggestions` when present, then stop. For debugging, show `code` and any `context` fields |
 
-5. Apply the same changed versus no-change install-only routing as ordinary equip. For `installed` and `updated` with `method: 'runtime-download'`, show `targetDir` when present and use the same conditional live-recovery guidance: no coding-agent restart is required; recovery and reindex are live only when `ko` is enabled and the backend is active, otherwise the artifacts are ready for the next backend start or for when `ko` is enabled. For `already_installed` and `already_up_to_date`, say the artifacts were already valid and this command started neither a download nor a reindex; do not promise an analyzer upgrade. Show `targetDir` or `command` according to the method as above.
+5. Apply the shared install-only result routing below: use the changed case for `updated` and the no-change case for `already_up_to_date`.
 6. `update` is equivalent to `equip` when the local version differs from the catalog version; `/equip <package>` also updates implicitly. Use `/equip --update <package>` when the user is explicitly asking to bump or refresh the installed version.
+
+#### Shared install-only result routing
+
+- Changed results:
+  - `method: 'runtime-download'`: show `targetDir` when present and say no coding-agent restart is required. When `ko` is enabled and the backend is active, Kiwi recovery and Korean reindex proceed live; otherwise the artifacts are ready for the next backend start or for when `ko` is enabled.
+  - Other methods: show the executable `command` when present. Mention an agent restart only when that installer registered or updated agent tooling.
+- No-change results:
+  - `method: 'runtime-download'`: show `targetDir` when present and explain that the artifacts were already valid, so this command started neither a download nor a reindex. Do not promise an analyzer upgrade. Unconditionally offer this next step: if Korean search is still not using Kiwi, the user can run `coral-cli backend shutdown` so the next command restarts the backend and retries initialization; if that retry also fails, check artifact filesystem permissions and report the repeated error.
+  - Other methods: show the existing `command` when present without claiming that the installer ran or that a restart is required.
 
 ### `info <package>`
 

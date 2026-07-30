@@ -163,6 +163,39 @@ describe('Kiwi WASM artifact', () => {
     }
   });
 
+  it('given a wrong-size payload, when publishing, then rejects before writing artifact files', () => {
+    const { root, runtime } = createTestRuntime();
+    try {
+      expect(() => publishKiwiWasmArtifact(runtime, Buffer.alloc(1))).toThrow(/WASM size mismatch/);
+      expect(runtime.storage.existsSync(kiwiWasmPath(runtime))).toBe(false);
+      expect(runtime.storage.existsSync(kiwiWasmManifestPath(runtime))).toBe(false);
+      expect(
+        runtime.storage.existsSync(kiwiWasmDir(runtime)) &&
+          readdirSync(kiwiWasmDir(runtime)).some((name) => name.endsWith('.tmp')),
+      ).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('given a wrong-digest payload, when publishing, then rejects before writing artifact files', () => {
+    const { root, runtime } = createTestRuntime();
+    const corrupt = Buffer.from(wasmFixture);
+    corrupt[corrupt.length - 1] ^= 0xff;
+    try {
+      expect(corrupt).toHaveLength(KIWI_WASM_SIZE_BYTES);
+      expect(() => publishKiwiWasmArtifact(runtime, corrupt)).toThrow(/WASM digest mismatch/);
+      expect(runtime.storage.existsSync(kiwiWasmPath(runtime))).toBe(false);
+      expect(runtime.storage.existsSync(kiwiWasmManifestPath(runtime))).toBe(false);
+      expect(
+        runtime.storage.existsSync(kiwiWasmDir(runtime)) &&
+          readdirSync(kiwiWasmDir(runtime)).some((name) => name.endsWith('.tmp')),
+      ).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('publishes a strongly validated payload and manifest', () => {
     const { root, runtime } = createTestRuntime();
     try {

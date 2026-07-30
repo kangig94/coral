@@ -61,6 +61,23 @@ export type KiwiWasmArtifactState = {
   readonly reason: KiwiWasmArtifactReason | null;
 };
 
+type KiwiWasmPathIdentity =
+  | { readonly state: 'missing' | 'unreadable' }
+  | {
+      readonly state: 'present';
+      readonly regularFile: boolean;
+      readonly dev: string;
+      readonly ino: string;
+      readonly mode: string;
+      readonly size: string;
+      readonly mtimeNs: string;
+    };
+
+export type KiwiWasmArtifactIdentity = {
+  readonly manifest: KiwiWasmPathIdentity;
+  readonly payload: KiwiWasmPathIdentity;
+};
+
 type KiwiWasmDownload = (runtime: Runtime, url: string, options: { readonly maxBytes: number }) => Promise<Buffer>;
 
 export type KiwiWasmInstallOptions = {
@@ -80,6 +97,31 @@ function isRegularFile(runtime: Pick<Runtime, 'storage'>, path: string): boolean
   } catch {
     return false;
   }
+}
+
+function probePathIdentity(runtime: Pick<Runtime, 'storage'>, path: string): KiwiWasmPathIdentity {
+  try {
+    const kind = runtime.storage.lstatSync(path);
+    const stat = runtime.storage.statSync(path, { bigint: true });
+    return {
+      state: 'present',
+      regularFile: kind.isFile() && !kind.isSymbolicLink(),
+      dev: stat.dev.toString(),
+      ino: stat.ino.toString(),
+      mode: stat.mode.toString(),
+      size: stat.size.toString(),
+      mtimeNs: stat.mtimeNs.toString(),
+    };
+  } catch (error: unknown) {
+    return { state: isNoEntryError(error) ? 'missing' : 'unreadable' };
+  }
+}
+
+export function probeKiwiWasmArtifactIdentity(runtime: Pick<Runtime, 'paths' | 'storage'>): KiwiWasmArtifactIdentity {
+  return {
+    manifest: probePathIdentity(runtime, kiwiWasmManifestPath(runtime)),
+    payload: probePathIdentity(runtime, kiwiWasmPath(runtime)),
+  };
 }
 
 function isKiwiWasmArtifactManifest(value: unknown): value is KiwiWasmArtifactManifest {
@@ -246,6 +288,8 @@ export function inspectKiwiWasmArtifact(runtime: Pick<Runtime, 'paths' | 'storag
     targetDir: kiwiWasmDir(runtime),
     manifestPath: kiwiWasmManifestPath(runtime),
     wasmPath: kiwiWasmPath(runtime),
+    // The manifest remains load-bearing for install provenance (when and from where);
+    // a missing one is republished without downloading when the pinned payload digest is valid.
     installed: manifest !== null && payload.payloadValid,
     manifest,
     ...payload,
