@@ -1,51 +1,39 @@
 import { CommanderError } from 'commander';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// `bootstrap.ts` runs `runBootstrap()` at module load, so each case must re-import it after
-// `vi.resetModules()` to get a fresh execution. Whichever case imports first therefore absorbs a cold
-// transform+resolve of the CLI module graph (~1s idle). `vitest/default.ts` oversubscribes workers on CI
-// (4 workers on a 2-core runner) by design, so that second inflates under contention and the 5s default
-// timeout leaves too little headroom. Budget for the import; a genuine hang still trips this.
-describe('cli bootstrap', { timeout: 30_000 }, () => {
+const parseAsync = vi.hoisted(() => vi.fn());
+const emitError = vi.hoisted(() => vi.fn());
+
+vi.mock('#src/cli/program.js', () => ({
+  buildProgram: () => ({ parseAsync }),
+}));
+vi.mock('#src/cli/emit.js', () => ({ emitError }));
+
+// Static import: `runCli` is invoked per case, so no case needs `vi.resetModules()` plus a re-import to get a
+// fresh run. That keeps the command graph's cold transform in this file's collection phase instead of
+// charging it to whichever case imports first, which is what made these cases flake against the 5s default.
+import { runCli } from '#src/cli/run.js';
+
+describe('cli bootstrap', () => {
   const originalArgv = [...process.argv];
+
+  beforeEach(() => {
+    vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => undefined) as typeof process.exit);
+  });
 
   afterEach(() => {
     process.argv = [...originalArgv];
     vi.restoreAllMocks();
-    vi.resetModules();
+    parseAsync.mockReset();
+    emitError.mockReset();
     process.exitCode = undefined;
   });
 
-  async function importBootstrapWith(options: { parseError?: unknown }): Promise<{
-    emitError: ReturnType<typeof vi.fn>;
-    parseAsync: ReturnType<typeof vi.fn>;
-  }> {
-    const emitError = vi.fn();
-    const parseAsync =
-      options.parseError === undefined
-        ? vi.fn().mockResolvedValue(undefined)
-        : vi.fn().mockRejectedValue(options.parseError);
-    const program = { parseAsync };
-
-    vi.doMock('#src/cli/program.js', () => ({
-      buildProgram: () => program,
-    }));
-    vi.doMock('#src/cli/emit.js', () => ({ emitError }));
-
-    vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => undefined) as typeof process.exit);
-
-    const { bootstrapCompletion } = await import('#src/cli/bootstrap.js');
-    await bootstrapCompletion;
-
-    return { emitError, parseAsync };
-  }
-
   it('exits 0 for --help CommanderError without emitting an envelope', async () => {
     process.argv = ['node', 'coral-cli', '--help'];
+    parseAsync.mockRejectedValue(new CommanderError(0, 'commander.helpDisplayed', '(outputHelp)'));
 
-    const { emitError, parseAsync } = await importBootstrapWith({
-      parseError: new CommanderError(0, 'commander.helpDisplayed', '(outputHelp)'),
-    });
+    await runCli();
 
     expect(parseAsync).toHaveBeenCalledWith(process.argv);
     expect(process.exit).not.toHaveBeenCalled();
@@ -55,10 +43,9 @@ describe('cli bootstrap', { timeout: 30_000 }, () => {
 
   it('exits 0 for --version CommanderError without emitting an envelope', async () => {
     process.argv = ['node', 'coral-cli', '--version'];
+    parseAsync.mockRejectedValue(new CommanderError(0, 'commander.version', '1.2.3'));
 
-    const { emitError, parseAsync } = await importBootstrapWith({
-      parseError: new CommanderError(0, 'commander.version', '1.2.3'),
-    });
+    await runCli();
 
     expect(parseAsync).toHaveBeenCalledWith(process.argv);
     expect(process.exit).not.toHaveBeenCalled();
@@ -68,25 +55,15 @@ describe('cli bootstrap', { timeout: 30_000 }, () => {
 
   it('routes non-zero CommanderError through emitError and preserves exit 2', async () => {
     process.argv = ['node', 'coral-cli', 'wait'];
-
-    const emitError = vi.fn((_error: unknown) => {
+    parseAsync.mockRejectedValue(
+      new CommanderError(2, 'commander.missingArgument', "error: missing required argument 'jobIds'"),
+    );
+    emitError.mockImplementation((_error: unknown) => {
       // Simulate real emitError setting exit code for CommanderError → 2.
       process.exitCode = 2;
     });
-    const parseAsync = vi
-      .fn()
-      .mockRejectedValue(
-        new CommanderError(2, 'commander.missingArgument', "error: missing required argument 'jobIds'"),
-      );
-    const program = { parseAsync };
-    vi.doMock('#src/cli/program.js', () => ({
-      buildProgram: () => program,
-    }));
-    vi.doMock('#src/cli/emit.js', () => ({ emitError }));
-    vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => undefined) as typeof process.exit);
 
-    const { bootstrapCompletion } = await import('#src/cli/bootstrap.js');
-    await bootstrapCompletion;
+    await runCli();
 
     expect(parseAsync).toHaveBeenCalledWith(process.argv);
     expect(emitError).toHaveBeenCalledTimes(1);
