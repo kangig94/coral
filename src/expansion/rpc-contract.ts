@@ -28,6 +28,9 @@ const expansionCatalogStatusLiterals = [
 ] as const;
 
 const installOnlyCatalogStatusLiterals = ['not_installed', 'installed', 'installing'] as const;
+export const installMethodSchema = z.enum(['runtime-download', 'shell']);
+export type InstallMethod = z.infer<typeof installMethodSchema>;
+
 const providesSchema = z
   .object({
     retrievalRoles: z.array(retrievalRoleDescriptorSchema).optional(),
@@ -51,7 +54,7 @@ const catalogEntryCommonShape = {
   description: z.string().min(1),
   statusDescription: z.string().min(1).optional(),
   version: z.string().min(1).optional(),
-  method: z.string().min(1).optional(),
+  method: installMethodSchema.optional(),
   provides: providesSchema.optional(),
   capabilityStatus: z.array(capabilityStatusSchema).optional(),
 } as const;
@@ -122,6 +125,8 @@ const installOnlyEntrySchema = z
     activation: z.literal('none'),
     status: z.enum(installOnlyCatalogStatusLiterals),
     command: z.string().min(1).optional(),
+    targetDir: z.string().min(1).optional(),
+    confirmDownload: z.string().min(1).optional(),
   })
   .strict();
 
@@ -326,7 +331,7 @@ export interface ExpansionRequestPort {
 const installedResultSchema = z
   .object({
     status: z.literal('installed'),
-    method: z.string().min(1),
+    method: installMethodSchema,
     version: z.string().min(1).optional(),
     targetDir: z.string().min(1).optional(),
     postInstall: postInstallSchema.optional(),
@@ -338,7 +343,7 @@ const installedResultSchema = z
 const updatedResultSchema = z
   .object({
     status: z.literal('updated'),
-    method: z.string().min(1),
+    method: installMethodSchema,
     version: z.string().min(1).optional(),
     targetDir: z.string().min(1).optional(),
     postInstall: postInstallSchema.optional(),
@@ -350,7 +355,7 @@ const updatedResultSchema = z
 const alreadyInstalledResultSchema = z
   .object({
     status: z.literal('already_installed'),
-    method: z.string().min(1),
+    method: installMethodSchema,
     version: z.string().min(1).optional(),
     targetDir: z.string().min(1).optional(),
     postInstall: postInstallSchema.optional(),
@@ -362,7 +367,7 @@ const alreadyInstalledResultSchema = z
 const alreadyUpToDateResultSchema = z
   .object({
     status: z.literal('already_up_to_date'),
-    method: z.string().min(1),
+    method: installMethodSchema,
     version: z.string().min(1).optional(),
     targetDir: z.string().min(1).optional(),
     postInstall: postInstallSchema.optional(),

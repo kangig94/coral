@@ -1,7 +1,7 @@
 import type { EngineInstaller, EngineInstallerOptions, LocalExpansionInstallState } from '../../expansion/contract.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { KIWI_INSTALL_ONLY_ID, KIWI_MODEL_VERSION } from './constants.js';
-import { ensureKiwiModelArtifact, hasKiwiDurableState, inspectKiwiModelArtifact } from './model-artifact.js';
+import { ensureKiwiArtifact, hasKiwiArtifactDurableState, inspectKiwiArtifact } from './artifact.js';
+import { KIWI_INSTALL_ONLY_ID, KIWI_NLP_VERSION } from './constants.js';
 import { withKiwiPackageOperationLock } from './operation-lock.js';
 import { kiwiDataDir } from './paths.js';
 
@@ -23,21 +23,21 @@ function assertKiwiInstallerIdentity(name: string): void {
 export const kiwiInstaller: EngineInstaller = {
   inspect(runtime, name): LocalExpansionInstallState {
     assertKiwiInstallerIdentity(name);
-    const state = inspectKiwiModelArtifact(runtime);
+    const state = inspectKiwiArtifact(runtime);
     return {
       targetDir: kiwiDataDir(runtime),
       addonPath: null,
       installLockPath: runtime.paths.coral.engine.installLockPath(name),
-      version: state.manifest?.modelVersion ?? null,
-      method: state.installed ? 'github-release' : null,
-      installed: state.installed,
+      version: state.ready ? KIWI_NLP_VERSION : null,
+      method: state.ready ? 'runtime-download' : null,
+      installed: state.ready,
       installLocked: isInstallLocked(runtime),
-      durableState: state.installed || hasKiwiDurableState(runtime),
+      durableState: hasKiwiArtifactDurableState(runtime),
     };
   },
   async install(ctx: EngineInstallerOptions): Promise<unknown> {
     assertKiwiInstallerIdentity(ctx.name);
-    return ensureKiwiModelArtifact(ctx.runtime, {
+    return ensureKiwiArtifact(ctx.runtime, {
       logger: ctx.logger,
       lockTimeoutMs: ctx.lockTimeoutMs,
       update: ctx.update,
@@ -54,4 +54,4 @@ export const kiwiInstaller: EngineInstaller = {
   },
 };
 
-export const KIWI_INSTALLER_VERSION = KIWI_MODEL_VERSION;
+export const KIWI_INSTALLER_VERSION = KIWI_NLP_VERSION;

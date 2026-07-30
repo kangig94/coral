@@ -44,7 +44,7 @@ export const BUNDLED_INSTALL_ONLY_PACKAGES: readonly InstallOnlyManifest[] = [
       {
         kind: 'confirm-download',
         message:
-          "This downloads the Kiwi CoNg base model (~88 MB) from github.com/bab2min/Kiwi releases into Coral's engine data directory. Continue?",
+          "This downloads only missing or invalid Kiwi artifacts into Coral's engine data directory: an ~88 MB CoNg base model from GitHub Releases and a ~0.9 MB pinned kiwi-nlp archive from npm on a clean install. A valid existing model is preserved. Continue?",
       },
     ],
   },

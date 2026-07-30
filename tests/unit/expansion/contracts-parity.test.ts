@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   catalogEntrySchema,
   catalogEntryStatusSchema,
+  installMethodSchema,
   installResultSchema,
   removeExpansionCatalogResultSchema,
 } from '#src/expansion/rpc-contract.js';
@@ -13,6 +14,14 @@ const SKILL_MD = readFileSync(new URL('../../../clients/skills/equip/SKILL.md', 
 
 function sort(values: readonly string[]): string[] {
   return [...values].sort();
+}
+
+function skillSection(heading: string, nextHeading: string): string {
+  const start = SKILL_MD.indexOf(heading);
+  const end = SKILL_MD.indexOf(nextHeading, start + heading.length);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return SKILL_MD.slice(start, end);
 }
 
 describe('expansion contracts parity', () => {
@@ -61,6 +70,59 @@ describe('expansion contracts parity', () => {
     for (const status of statuses) {
       expect(SKILL_MD).toContain(`\`${status}\``);
     }
+  });
+
+  it('keeps install-only consent and schema methods routed through the shared protocol', () => {
+    expect(
+      catalogEntrySchema.parse({
+        id: 'kiwi',
+        name: 'kiwi',
+        description: 'Korean analyzer',
+        activation: 'none',
+        status: 'not_installed',
+        version: '0.23.0',
+        confirmDownload: 'Download the pinned runtime artifacts?',
+      }),
+    ).toMatchObject({
+      confirmDownload: 'Download the pinned runtime artifacts?',
+    });
+
+    const equipSection = skillSection('### `<package>`', '### `--update <package>`');
+    expect(equipSection).toContain('the current entry includes `confirmDownload`');
+    expect(equipSection).toContain('show that message exactly');
+    expect(equipSection).toContain('shared install-only result routing');
+
+    const updateSection = skillSection('### `--update <package>`', '#### Shared install-only result routing');
+    expect(updateSection).toContain('`confirmDownload`');
+    expect(updateSection).toContain('show that message exactly');
+    expect(updateSection).toContain('shared install-only result routing');
+
+    const sharedRoutingSection = skillSection('#### Shared install-only result routing', '### `info <package>`');
+    const explicitlyRoutedMethods = [...sharedRoutingSection.matchAll(/`method: '([^']+)'`/g)].map((match) => match[1]);
+    const schemaMethods = new Set<string>(installMethodSchema.options);
+
+    expect(explicitlyRoutedMethods.length).toBeGreaterThan(0);
+    for (const method of explicitlyRoutedMethods) {
+      expect(schemaMethods.has(method)).toBe(true);
+    }
+    const hasImplicitlyRoutedMethods = installMethodSchema.options.some(
+      (method) => !explicitlyRoutedMethods.includes(method),
+    );
+    if (hasImplicitlyRoutedMethods) {
+      expect(sharedRoutingSection).toContain('- Other methods:');
+    }
+
+    expect(sharedRoutingSection).toContain('- Other methods:');
+    expect(sharedRoutingSection).toContain('`targetDir`');
+    expect(sharedRoutingSection).toContain('`command`');
+    expect(sharedRoutingSection).toContain('no coding-agent restart is required');
+    expect(sharedRoutingSection).toContain('When `ko` is enabled and the backend is active');
+    expect(sharedRoutingSection).toContain('this command started neither a download nor a reindex');
+    expect(sharedRoutingSection).toContain('Do not promise an analyzer upgrade');
+    expect(sharedRoutingSection).toContain('`coral-cli backend shutdown`');
+
+    const infoSection = skillSection('### `info <package>`', '### `uninstall <equipment-name>`');
+    expect(infoSection).toContain('`confirmDownload`');
   });
 
   it('keeps capability descriptors and runtime status as separate catalog entry siblings', () => {

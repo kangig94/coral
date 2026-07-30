@@ -3,39 +3,24 @@ import {
   acquirePackageOperationLockAtPath,
   PACKAGE_OPERATION_LOCK_TIMEOUT_MS,
 } from '../../infra/package-operation-lock.js';
-import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { KIWI_INSTALL_ONLY_ID } from './constants.js';
+import { kiwiInstallError, type KiwiInstallError } from './install-error.js';
 
-type KiwiPackageOperationOptions = {
+export type KiwiPackageOperationOptions = {
   readonly lockTimeoutMs?: number;
   readonly operationLockHeld?: true;
 };
 
-export type KiwiPackageOperationLockError = {
-  readonly status: 'error';
-  readonly code: string;
-  readonly userMessage: string;
-  readonly remediation: string;
-  readonly context?: Record<string, unknown>;
-};
-
-function lockContendedError(): KiwiPackageOperationLockError {
-  const error = documentedCoralSetupError('expansion_install_lock_contended', { name: KIWI_INSTALL_ONLY_ID });
-  return {
-    status: 'error',
-    code: error.code,
-    userMessage: error.userMessage,
-    remediation: error.remediation,
-    ...(error.context === undefined ? {} : { context: error.context }),
-  };
+function lockContendedError(): KiwiInstallError {
+  return kiwiInstallError('expansion_install_lock_contended', { name: KIWI_INSTALL_ONLY_ID });
 }
 
 export async function withKiwiPackageOperationLock<T>(
   runtime: Runtime,
   options: KiwiPackageOperationOptions,
   run: () => Promise<T>,
-): Promise<T | KiwiPackageOperationLockError> {
+): Promise<T | KiwiInstallError> {
   if (options.operationLockHeld === true) {
     return run();
   }

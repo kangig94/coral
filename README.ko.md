@@ -242,7 +242,7 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 
 Coral은 항상 `Intl.Segmenter`를 기본값으로 사용해 KB 텍스트를 인덱싱합니다. **다국어 검색에는 별도 설정이 필요 없습니다** — 한국어·중국어·일본어 같은 비라틴 문자도 기본값으로 단어/어절 단위 검색이 동작합니다. `CORAL_KB_EXTRA_LANGS`는 그 상시 활성 기본값 위에 특정 언어용 형태소 분석기를 추가로 켭니다. 값은 `ko`처럼 소문자 쉼표 구분 언어 코드로 씁니다. 현재 엔진이 있는 코드는 `ko`뿐입니다.
 
-한국어 엔진은 Kiwi `cong`입니다. 선택하면 로드된 동안 resident memory가 약 1 GB 늘 수 있습니다. 엔진은 lazy-loaded 및 idle-evicted 방식으로 동작하며, 필요할 때 Coral이 약 88 MB 모델을 자동으로 가져옵니다.
+한국어 엔진은 Kiwi `cong`입니다. 선택하면 로드된 동안 resident memory가 약 1 GB 늘 수 있습니다. 엔진은 lazy-loaded 및 idle-evicted 방식으로 동작합니다. Coral은 누락되었거나 유효하지 않은 런타임 아티팩트만 내려받습니다. clean install 기준 GitHub Releases의 약 88 MB CoNg 모델과 npm의 고정된 약 0.9 MB `kiwi-nlp` 아카이브이며, 기존의 유효한 모델은 보존합니다. Kiwi 로드가 최종 실패 상태에 이르면 Coral은 `Intl.Segmenter` 기본 검색을 제공하고, 아티팩트가 복구되면 재시작 없이 Kiwi를 다시 로드해 한국어를 재색인합니다.
 
 `.claude/settings.json`에 설정 (세션 간 유지):
 

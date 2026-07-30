@@ -4,6 +4,11 @@ import { createHash, randomUUID } from 'crypto';
 import { chmodSync, copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
+import {
+  createProductionServerEsbuildOptions,
+  PLACEHOLDER_STORE_FORMAT_FINGERPRINT,
+} from './server-esbuild-options.mjs';
+
 mkdirSync('clients/build', { recursive: true });
 
 function parseArgs(argv) {
@@ -32,16 +37,6 @@ const buildSetId = randomUUID();
 execFileSync('node', ['scripts/check-simulation.mjs'], { stdio: 'inherit' });
 
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
-const placeholderStoreFormatFingerprint = `sha256:${'0'.repeat(64)}`;
-
-function bundleBanner(storeFormatFingerprint) {
-  return (
-    `var __CORAL_BUILD_IDENTITY__=${JSON.stringify({ version, buildSetId, flavor, storeFormatFingerprint })};` +
-    'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' +
-    'var __BUNDLE_DIR__=__dirname;' +
-    'var __importMetaUrl=require("url").pathToFileURL(__filename).href;'
-  );
-}
 
 // Sync manifest versions (single source of truth: package.json). The plugin
 // manifests live under clients/ (the plugin root); marketplace.json stays at
@@ -80,28 +75,12 @@ for (const path of [
   }
 }
 
-const sharedOpts = {
-  bundle: true,
-  platform: 'node',
-  target: 'node22',
-  format: 'cjs',
-  external: ['node:*', '@lydell/node-pty'],
-  loader: { '.sql': 'text' },
-  minify: true,
-  banner: {
-    js: bundleBanner(placeholderStoreFormatFingerprint),
-  },
-  define: {
-    __VERSION__: JSON.stringify(version),
-    __BUILD_SET_ID__: JSON.stringify(buildSetId),
-    __BUILD_FLAVOR__: JSON.stringify(flavor),
-    __STORE_FORMAT_FINGERPRINT__: JSON.stringify(placeholderStoreFormatFingerprint),
-    // esbuild empties `import.meta` in CJS output, so `import.meta.url` would be
-    // `undefined`; redirect it to a banner-injected file URL of the bundle file
-    // so `createRequire(import.meta.url)` (e.g. engines/kiwi/paths.ts) resolves.
-    'import.meta.url': '__importMetaUrl',
-  },
-};
+let sharedOpts = createProductionServerEsbuildOptions({
+  version,
+  buildSetId,
+  flavor,
+  storeFormatFingerprint: PLACEHOLDER_STORE_FORMAT_FINGERPRINT,
+});
 
 await esbuild.build({
   ...sharedOpts,
@@ -118,8 +97,12 @@ const storeFormatFingerprint = execFileSync(
 if (!/^sha256:[a-f0-9]{64}$/.test(storeFormatFingerprint)) {
   throw new Error(`Built backend reported an invalid store format fingerprint: ${storeFormatFingerprint}`);
 }
-sharedOpts.banner.js = bundleBanner(storeFormatFingerprint);
-sharedOpts.define.__STORE_FORMAT_FINGERPRINT__ = JSON.stringify(storeFormatFingerprint);
+sharedOpts = createProductionServerEsbuildOptions({
+  version,
+  buildSetId,
+  flavor,
+  storeFormatFingerprint,
+});
 await esbuild.build({
   ...sharedOpts,
   entryPoints: ['src/coordinator/bootstrap.ts'],
@@ -177,6 +160,9 @@ writeFileSync(
   }) + '\n',
 );
 renameSync(manifestTmp, manifestPath);
+execFileSync(process.execPath, ['scripts/verify-kiwi-runtime-build-contract.mjs', 'clients/build'], {
+  stdio: 'inherit',
+});
 
 if (release) {
   // The shipped bundle (clients/bridge/) and the staging dir (clients/build/)

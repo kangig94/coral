@@ -140,6 +140,31 @@ describe('expansion activation', () => {
     expect(request).toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'onnx' }, undefined);
   });
 
+  it('exposes the complete Kiwi download disclosure through expansion info', async () => {
+    const activation = createCliExpansionActivation();
+
+    const result = await activation.info('kiwi');
+    expect(result).toMatchObject({
+      status: 'info',
+      package: {
+        id: 'kiwi',
+        activation: 'none',
+      },
+    });
+    expect(result.status).toBe('info');
+    if (result.status !== 'info') {
+      throw new Error('expected Kiwi info result');
+    }
+    if (!('confirmDownload' in result.package) || typeof result.package.confirmDownload !== 'string') {
+      throw new Error('expected Kiwi confirmDownload disclosure');
+    }
+    const message = result.package.confirmDownload;
+    expect(message).toContain('missing or invalid Kiwi artifacts');
+    expect(message).toContain('~88 MB CoNg base model from GitHub Releases');
+    expect(message).toContain('~0.9 MB pinned kiwi-nlp archive from npm');
+    expect(message).toContain('A valid existing model is preserved');
+  });
+
   it('surfaces activation failures instead of collapsing them to unavailable', async () => {
     const activation = createCliExpansionActivation();
     const error = Object.assign(new Error('coordinator.equipExpansion failed'), { code: 'boom' });

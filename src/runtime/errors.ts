@@ -21,6 +21,7 @@ export type SerializedCoralSetupError = CoralSetupErrorInit;
 export type DocumentedCoralSetupErrorCode =
   | 'expansion_install_lock_contended'
   | 'expansion_install_command_failed'
+  | 'expansion_install_artifact_failed'
   | 'startup_not_ready'
   | 'store_schema_outdated'
   | 'store_reset_lock_contended'
@@ -95,6 +96,17 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     remediation: (context) => {
       const detail = stringContextValue(context, 'detail', '');
       const base = 'Check network access and the prerequisites named by the install script, then retry.';
+      return detail.length > 0 ? `${detail}\n${base}` : base;
+    },
+  },
+  expansion_install_artifact_failed: {
+    userMessage: (context) =>
+      `Coral could not install the runtime artifacts for ${stringContextValue(context, 'name', 'this expansion')}.`,
+    remediation: (context) => {
+      const detail = stringContextValue(context, 'detail', '');
+      const base =
+        `Check network access, filesystem permissions, and free space, then retry ` +
+        `'coral-cli expansion equip ${stringContextValue(context, 'name', '<name>')}'.`;
       return detail.length > 0 ? `${detail}\n${base}` : base;
     },
   },

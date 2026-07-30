@@ -71,15 +71,33 @@ does not delete outputs for source files that were removed or moved, so cleaning
 `dist/` before compile is required for `package.json`'s `dist/` export to match
 the current `src/` tree.
 
-`scripts/build-server.mjs` does five things:
+`scripts/build-server.mjs` does six things:
 
 1. Runs simulation compatibility verification (`check-simulation.mjs`), which typechecks `tools/simulation` against `src` and verifies sealing.
 2. Reads `package.json` as the single source of truth for the version.
 3. Syncs that version into `clients/.claude-plugin/plugin.json`, `clients/.codex-plugin/plugin.json`, and the root `.claude-plugin/marketplace.json`.
-4. Bundles the backend, CLI, and Claude broker helper to `clients/build/`.
+4. Bundles the backend, CLI, and Claude broker helper to `clients/build/` using
+   the shared production options in `scripts/server-esbuild-options.mjs`.
 5. Builds a probe backend to obtain the canonical store-format fingerprint, rebuilds with that fingerprint embedded, and atomically writes `clients/build/manifest.json` with the shared identity plus hashes for the backend, CLI, and Claude helper.
+6. Runs `scripts/verify-kiwi-runtime-build-contract.mjs` against `clients/build`, checking the exact staging inventory and executing an isolated Kiwi initializer built from source with the same production esbuild options and an empty `NODE_PATH`.
 
 When `--release` is passed, it additionally copies all artifacts from `clients/build/` to `clients/bridge/`.
+
+Every `npm run build` performs the Kiwi runtime-build verification in step 6.
+`npm run verify:kiwi-runtime-build` also exposes that verifier as a standalone
+check: it checks the selected bundle directory's four-file inventory, then
+builds and executes an isolated Kiwi initializer from source with those same
+production esbuild options and an empty `NODE_PATH`.
+This feature-build check does not regenerate `clients/bridge`; the Release
+workflow performs that copy, and `npm run verify:store-reset-release`
+separately verifies byte equality and package allowlisting.
+
+The standalone Kiwi runtime-build contract can be reproduced locally with:
+
+```bash
+npm run build
+npm run verify:kiwi-runtime-build
+```
 
 `bundleHash`, `cliBundleHash`, and `claudeAppserverBundleHash` bind the complete executable set. `version`, `buildSetId`, `flavor`, and `storeFormatFingerprint` are embedded and compared separately, so a mixed or stale artifact set fails closed even when one file happens to have unchanged bytes.
 
@@ -116,6 +134,8 @@ Unbundled hooks read the adjacent manifest; bundled runtimes compare that same m
 ## Dependencies
 
 The build and runtime no longer depend on `@modelcontextprotocol/sdk`. Current package-managed runtime concerns are ordinary Node/TypeScript concerns: `zod` for schema validation, `esbuild` for bundling, native runtime packages such as `@lydell/node-pty` (prebuilt-binary fork — ships per-platform `.node` via optional dependencies, so install needs no native toolchain or lifecycle scripts), and the Coral runtime packages declared in `package.json`.
+
+`kiwi-nlp` is exact-pinned in `package.json` (no caret). `src/engines/kiwi/constants.ts` hardcodes the matching package archive, WASM, and model digests and sizes, so a dependency bump must update the pin and constants together or artifact installation fails at runtime.
 
 ## Testing
 

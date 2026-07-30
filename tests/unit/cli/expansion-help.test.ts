@@ -1,23 +1,26 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { runCli } from '#src/cli/run.js';
 import { installErrorSchema } from '#src/expansion/rpc-contract.js';
 
 function toText(chunk: string | Uint8Array): string {
   return typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
 }
 
+// Static import of `runCli`, invoked per case. Re-importing a self-executing entry through
+// `vi.resetModules()` used to charge this file's cold transform of the real command graph to whichever case
+// ran first, which flaked against the 5s default; collection absorbs it now.
 describe('expansion bootstrap output', () => {
   const originalArgv = [...process.argv];
   let stdout = '';
   let stderr = '';
 
-  async function runBootstrap(argv: string[]): Promise<void> {
+  async function run(argv: string[]): Promise<void> {
     stdout = '';
     stderr = '';
     process.argv = ['node', 'coral-cli', ...argv];
     process.exitCode = undefined;
 
-    vi.resetModules();
     vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => undefined) as typeof process.exit);
     vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
       stdout += toText(chunk);
@@ -28,19 +31,17 @@ describe('expansion bootstrap output', () => {
       return true;
     }) as typeof process.stderr.write);
 
-    const { bootstrapCompletion } = await import('#src/cli/bootstrap.js');
-    await bootstrapCompletion;
+    await runCli();
   }
 
   afterEach(() => {
     process.argv = [...originalArgv];
     process.exitCode = undefined;
     vi.restoreAllMocks();
-    vi.resetModules();
   });
 
   it('keeps expansion --help visible on stdout with exit 0', async () => {
-    await runBootstrap(['expansion', '--help']);
+    await run(['expansion', '--help']);
 
     expect(stderr).toBe('');
     expect(stdout.trim().length).toBeGreaterThan(0);
@@ -51,7 +52,7 @@ describe('expansion bootstrap output', () => {
   });
 
   it('normalizes expansion equip missing-argument failures to one stdout InstallError JSON line', async () => {
-    await runBootstrap(['expansion', 'equip']);
+    await run(['expansion', 'equip']);
 
     expect(stderr).toBe('');
     expect(stdout.endsWith('\n')).toBe(true);

@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { KiwiAnalyzerManager, isKiwiAnalyzerTerminalLoadError } from '#src/engines/kiwi/analyzer-manager.js';
-import type { KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
-import type { KiwiModelArtifactState } from '#src/engines/kiwi/model-artifact.js';
+import { KiwiAnalyzerMissingArtifactError, type KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
 import type { TimerHandle } from '#src/infra/port-types.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { installedKiwiArtifactState, missingKiwiArtifactState } from '#tests/helpers/kiwi-artifact-state.js';
 
 type FakeTimer = TimerHandle & {
   active: boolean;
@@ -40,44 +40,12 @@ function createRuntime(timers: FakeTimer[] = []): Runtime {
   } as unknown as Runtime;
 }
 
-function installedState(installedAt = '2026-06-19T00:00:00.000Z'): KiwiModelArtifactState {
-  return {
-    targetDir: '/tmp/kiwi',
-    manifestPath: '/tmp/kiwi/manifest.json',
-    installed: true,
-    missingFiles: [],
-    manifest: {
-      packageId: 'kiwi',
-      kiwiNlpVersion: '0.23.0',
-      modelVersion: '0.23.0',
-      modelType: 'cong-global',
-      sourceUrl: 'https://example.invalid/kiwi.tgz',
-      archiveSha256: 'digest',
-      archiveSizeBytes: 1,
-      files: [
-        'sj.morph',
-        'default.dict',
-        'dialect.dict',
-        'multi.dict',
-        'typo.dict',
-        'combiningRule.txt',
-        'cong.mdl',
-        'extract.mdl',
-        'nounchr.mdl',
-      ],
-      installedAt,
-    },
-  };
+function installedState(installedAt = '2026-06-19T00:00:00.000Z') {
+  return installedKiwiArtifactState(installedAt);
 }
 
-function missingState(): KiwiModelArtifactState {
-  return {
-    targetDir: '/tmp/kiwi',
-    manifestPath: '/tmp/kiwi/manifest.json',
-    installed: false,
-    missingFiles: ['cong.mdl'],
-    manifest: null,
-  };
+function modelOnlyState() {
+  return missingKiwiArtifactState('wasm');
 }
 
 function createAnalyzer(label: string, dispose: () => Promise<void> | void = () => {}): KiwiAnalyzer {
@@ -97,6 +65,15 @@ function createAnalyzer(label: string, dispose: () => Promise<void> | void = () 
   };
 }
 
+async function expectTerminalFailure(manager: KiwiAnalyzerManager, runtime: Runtime): Promise<void> {
+  try {
+    await manager.withAnalyzerLease(runtime, ['ko'], () => {});
+    throw new Error('expected load failure');
+  } catch (error: unknown) {
+    expect(isKiwiAnalyzerTerminalLoadError(error)).toBe(true);
+  }
+}
+
 describe('KiwiAnalyzerManager', () => {
   it('single-flights concurrent loads and exposes the lease through AsyncLocalStorage', async () => {
     const runtime = createRuntime();
@@ -108,7 +85,7 @@ describe('KiwiAnalyzerManager', () => {
     const analyzer = createAnalyzer('a');
     const manager = new KiwiAnalyzerManager({
       idleTtlMs: 300_000,
-      inspectModelArtifact: () => installedState(),
+      inspectArtifact: () => installedState(),
       loadAnalyzer: async () => {
         loadCalls += 1;
         await loadGate;
@@ -143,7 +120,7 @@ describe('KiwiAnalyzerManager', () => {
     let evictionResolved = false;
     const manager = new KiwiAnalyzerManager({
       idleTtlMs: 300_000,
-      inspectModelArtifact: () => installedState(),
+      inspectArtifact: () => installedState(),
       loadAnalyzer: async () =>
         createAnalyzer('a', () => {
           disposeCalls += 1;
@@ -176,7 +153,7 @@ describe('KiwiAnalyzerManager', () => {
     });
     const manager = new KiwiAnalyzerManager({
       idleTtlMs: 300_000,
-      inspectModelArtifact: () => installedState(),
+      inspectArtifact: () => installedState(),
       loadAnalyzer: async () => {
         loadCalls += 1;
         return createAnalyzer(`load-${loadCalls}`, loadCalls === 1 ? () => disposeGate : () => {});
@@ -207,7 +184,7 @@ describe('KiwiAnalyzerManager', () => {
     let disposeCalls = 0;
     const manager = new KiwiAnalyzerManager({
       idleTtlMs: 300_000,
-      inspectModelArtifact: () => installedState(),
+      inspectArtifact: () => installedState(),
       loadAnalyzer: async () =>
         createAnalyzer('a', () => {
           disposeCalls += 1;
@@ -235,30 +212,32 @@ describe('KiwiAnalyzerManager', () => {
     expect(disposeCalls).toBe(1);
   });
 
-  it('degrades to Intl baseline after terminal load failure and retries when the model changes', async () => {
+  it('degrades to Intl baseline after terminal load failure and retries when WASM completes', async () => {
     const runtime = createRuntime();
     let loadCalls = 0;
-    let state = missingState();
+    let state = modelOnlyState();
+    let artifactIdentity = 'model-only';
     const manager = new KiwiAnalyzerManager({
       idleTtlMs: 300_000,
-      inspectModelArtifact: () => state,
+      inspectArtifact: () => state,
+      probeArtifactIdentity: () => artifactIdentity,
       loadAnalyzer: async () => {
         loadCalls += 1;
         if (loadCalls === 1) {
-          throw new Error('model missing');
+          throw new Error('WASM missing');
         }
         return createAnalyzer('recovered');
       },
       logger: () => {},
     });
 
-    try {
-      await manager.withAnalyzerLease(runtime, ['ko'], () => {});
-      throw new Error('expected load failure');
-    } catch (error: unknown) {
-      expect(isKiwiAnalyzerTerminalLoadError(error)).toBe(true);
-    }
+    await expectTerminalFailure(manager, runtime);
     expect(manager.effectiveDeclaredAnalyzers(['ko'], runtime)).toEqual([]);
+    expect(manager.leaseReadiness(runtime, ['ko'])).toEqual({
+      ready: true,
+      state: 'degraded',
+      reason: 'WASM missing',
+    });
 
     await manager.withAnalyzerLease(runtime, ['ko'], (lease) => {
       expect(lease.analyzer).toBeNull();
@@ -267,11 +246,155 @@ describe('KiwiAnalyzerManager', () => {
     expect(loadCalls).toBe(1);
 
     state = installedState('2026-06-19T00:01:00.000Z');
+    artifactIdentity = 'installed';
+    expect(manager.leaseReadiness(runtime, ['ko'])).toEqual({ ready: false, state: 'unloaded' });
+    expect(loadCalls).toBe(1);
+  });
+
+  it('recovers through effectiveDeclaredAnalyzers without a prior readiness probe', async () => {
+    const runtime = createRuntime();
+    let state = modelOnlyState();
+    let artifactIdentity = 'model-only';
+    const manager = new KiwiAnalyzerManager({
+      inspectArtifact: () => state,
+      probeArtifactIdentity: () => artifactIdentity,
+      loadAnalyzer: async () => {
+        throw new Error('WASM missing');
+      },
+      logger: () => {},
+    });
+
+    await expectTerminalFailure(manager, runtime);
+    state = installedState('2026-06-19T00:01:00.000Z');
+    artifactIdentity = 'installed';
+
+    expect(manager.effectiveDeclaredAnalyzers(['ko'], runtime)).toEqual(['ko']);
+    expect(manager.status()).toEqual({ state: 'unloaded', leaseCount: 0 });
+  });
+
+  it('recovers through lease acquisition without a prior readiness or effective-analyzer probe', async () => {
+    const runtime = createRuntime();
+    let state = modelOnlyState();
+    let artifactIdentity = 'model-only';
+    let loadCalls = 0;
+    const manager = new KiwiAnalyzerManager({
+      inspectArtifact: () => state,
+      probeArtifactIdentity: () => artifactIdentity,
+      loadAnalyzer: async () => {
+        loadCalls += 1;
+        if (loadCalls === 1) {
+          throw new Error('WASM missing');
+        }
+        return createAnalyzer('recovered');
+      },
+      logger: () => {},
+    });
+
+    await expectTerminalFailure(manager, runtime);
+    state = installedState('2026-06-19T00:01:00.000Z');
+    artifactIdentity = 'installed';
+
     await manager.withAnalyzerLease(runtime, ['ko'], (lease) => {
       expect(lease.analyzer?.identity.modelVersion).toBe('recovered');
       expect(lease.activeAnalyzers).toEqual(['ko']);
     });
-    expect(manager.effectiveDeclaredAnalyzers(['ko'], runtime)).toEqual(['ko']);
     expect(loadCalls).toBe(2);
+  });
+
+  it('records the pre-load artifact key when recovery completes before a failing load rejects', async () => {
+    const runtime = createRuntime();
+    let state = modelOnlyState();
+    let artifactIdentity = 'model-only';
+    let loadCalls = 0;
+    const manager = new KiwiAnalyzerManager({
+      inspectArtifact: () => state,
+      probeArtifactIdentity: () => artifactIdentity,
+      loadAnalyzer: async () => {
+        loadCalls += 1;
+        if (loadCalls === 1) {
+          state = installedState('2026-06-19T00:01:00.000Z');
+          artifactIdentity = 'installed';
+          throw new Error('load raced artifact publication');
+        }
+        return createAnalyzer('recovered-after-race');
+      },
+      logger: () => {},
+    });
+
+    await expectTerminalFailure(manager, runtime);
+    expect(manager.leaseReadiness(runtime, ['ko'])).toEqual({ ready: false, state: 'unloaded' });
+
+    await manager.withAnalyzerLease(runtime, ['ko'], (lease) => {
+      expect(lease.analyzer?.identity.modelVersion).toBe('recovered-after-race');
+    });
+    expect(loadCalls).toBe(2);
+  });
+
+  it('uses only the identity probe while a degraded artifact is unchanged', async () => {
+    const runtime = createRuntime();
+    let state = modelOnlyState();
+    let artifactIdentity = 'model-only';
+    const inspectArtifact = vi.fn(() => state);
+    const probeArtifactIdentity = vi.fn(() => artifactIdentity);
+    const manager = new KiwiAnalyzerManager({
+      inspectArtifact,
+      probeArtifactIdentity,
+      loadAnalyzer: async () => {
+        throw new Error('WASM missing');
+      },
+      logger: () => {},
+    });
+
+    await expectTerminalFailure(manager, runtime);
+    inspectArtifact.mockClear();
+    probeArtifactIdentity.mockClear();
+
+    expect(manager.leaseReadiness(runtime, ['ko'])).toEqual({
+      ready: true,
+      state: 'degraded',
+      reason: 'WASM missing',
+    });
+    expect(probeArtifactIdentity).toHaveBeenCalledTimes(1);
+    expect(inspectArtifact).not.toHaveBeenCalled();
+
+    state = installedState('2026-06-19T00:01:00.000Z');
+    artifactIdentity = 'installed';
+    expect(manager.leaseReadiness(runtime, ['ko'])).toEqual({ ready: false, state: 'unloaded' });
+    expect(probeArtifactIdentity).toHaveBeenCalledTimes(2);
+    expect(inspectArtifact).toHaveBeenCalledTimes(1);
+  });
+
+  it('recommends a daemon retry instead of equip when valid artifacts fail to initialize', async () => {
+    const runtime = createRuntime();
+    const logs: string[] = [];
+    const manager = new KiwiAnalyzerManager({
+      inspectArtifact: () => installedState(),
+      loadAnalyzer: async () => {
+        throw new Error('Emscripten initializer crashed');
+      },
+      logger: (message) => logs.push(message),
+    });
+
+    await expectTerminalFailure(manager, runtime);
+
+    expect(logs).toEqual([expect.stringContaining('coral-cli backend shutdown')]);
+    expect(logs.join('\n')).not.toContain('coral-cli expansion equip kiwi');
+  });
+
+  it('preserves the canonical equip remediation for missing runtime artifacts', async () => {
+    const runtime = createRuntime();
+    const logs: string[] = [];
+    const manager = new KiwiAnalyzerManager({
+      inspectArtifact: () => modelOnlyState(),
+      loadAnalyzer: async () => {
+        throw new KiwiAnalyzerMissingArtifactError(['wasm']);
+      },
+      logger: (message) => logs.push(message),
+    });
+
+    await expectTerminalFailure(manager, runtime);
+
+    expect(logs.join('\n')).toContain('coral-cli expansion equip kiwi');
+    expect(logs.join('\n')).not.toContain('coral-cli backend shutdown');
   });
 });

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Command } from 'commander';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as MainMod from '#src/cli/program.js';
 
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -106,6 +106,13 @@ async function runCli(program: Command, args: string[]): Promise<{ stdout: strin
 }
 
 describe('kb diagnose integration', () => {
+  // `loadMainModule()` resets the module registry per case because these cases swap module doubles, but a
+  // registry reset does not clear vitest's transform cache. Warm it once here so the first case does not
+  // absorb ~1.4s of cold command-graph transform inside its 5s budget, which flaked under CI contention.
+  beforeAll(async () => {
+    await import('#src/cli/program.js');
+  });
+
   let tempHome: string;
   let projectRoot: string;
   let originalHome: string | undefined;

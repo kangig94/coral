@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 
 import { KiwiAnalyzerManager } from '#src/engines/kiwi/analyzer-manager.js';
 import type { KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
-import type { KiwiModelArtifactState } from '#src/engines/kiwi/model-artifact.js';
 import {
   createOramaDb,
   createOramaTokenizer,
@@ -13,6 +12,7 @@ import {
 } from '#src/engines/orama/document-builder.js';
 import { buildOramaSearchChannelFields } from '#src/engines/orama/search-channels.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { installedKiwiArtifactState } from '#tests/helpers/kiwi-artifact-state.js';
 
 function createRuntime(): Runtime {
   return {
@@ -34,26 +34,6 @@ function createRuntime(): Runtime {
   } as unknown as Runtime;
 }
 
-function installedKiwiState(): KiwiModelArtifactState {
-  return {
-    targetDir: '/tmp/kiwi',
-    manifestPath: '/tmp/kiwi/manifest.json',
-    installed: true,
-    missingFiles: [],
-    manifest: {
-      packageId: 'kiwi',
-      kiwiNlpVersion: '0.23.0',
-      modelVersion: '0.23.0',
-      modelType: 'cong-global',
-      sourceUrl: 'https://example.invalid/kiwi.tgz',
-      archiveSha256: 'digest',
-      archiveSizeBytes: 1,
-      files: [],
-      installedAt: '2026-06-19T00:00:00.000Z',
-    },
-  };
-}
-
 function createKiwiAnalyzer(): KiwiAnalyzer {
   return {
     identity: {
@@ -73,7 +53,7 @@ function createKiwiAnalyzer(): KiwiAnalyzer {
 
 function createManager(): KiwiAnalyzerManager {
   return new KiwiAnalyzerManager({
-    inspectModelArtifact: () => installedKiwiState(),
+    inspectArtifact: () => installedKiwiArtifactState(),
     loadAnalyzer: async () => createKiwiAnalyzer(),
     logger: () => {},
   });

@@ -1,5 +1,14 @@
 export const KIWI_INSTALL_ONLY_ID = 'kiwi';
 export const KIWI_NLP_VERSION = '0.23.0';
+export const KIWI_NLP_PACKAGE_URL = `https://registry.npmjs.org/kiwi-nlp/-/kiwi-nlp-${KIWI_NLP_VERSION}.tgz`;
+export const KIWI_NLP_PACKAGE_INTEGRITY =
+  'sha512-J/rizrydoxwD6kUnzOnWb6A3ALSDZphFmmC7XzWPb0ouXZZyhiWmgQTrI458V6KrkC21zg4G8CPew7rM0x1Cmw==';
+export const KIWI_NLP_PACKAGE_SHA256 = '161965a7115f589cb64afec5d97075a057dee08022f693981b15c1b3b6f58921';
+export const KIWI_NLP_PACKAGE_SIZE_BYTES = 929_082;
+export const KIWI_WASM_TAR_ENTRY = 'package/dist/kiwi-wasm.wasm';
+export const KIWI_WASM_FILE_NAME = 'kiwi-wasm.wasm';
+export const KIWI_WASM_SHA256 = '1b78e48701468610cbb49b34105fd297dc1252774ef5c861ebf80fd6cc7d664e';
+export const KIWI_WASM_SIZE_BYTES = 3_779_034;
 export const KIWI_MODEL_VERSION = '0.23.0';
 export const KIWI_MODEL_TYPE = 'cong-global';
 const KIWI_MODEL_RELEASE_TAG = `v${KIWI_MODEL_VERSION}`;

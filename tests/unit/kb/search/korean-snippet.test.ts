@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { KiwiAnalyzerManager } from '#src/engines/kiwi/analyzer-manager.js';
 import type { KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
-import type { KiwiModelArtifactState } from '#src/engines/kiwi/model-artifact.js';
 import { searchKb } from '#src/kb/ops/search.js';
 import { noteEntryId, type KbResult } from '#src/kb/entry-types.js';
 import { buildNoteIndexEntry } from '#src/kb/corpus/index/records.js';
@@ -15,6 +14,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { bindOramaFtsForTest } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
+import { installedKiwiArtifactState } from '#tests/helpers/kiwi-artifact-state.js';
 
 const tempRoots: string[] = [];
 
@@ -42,26 +42,6 @@ function withKoEnv(runtime: Runtime): Runtime {
   };
 }
 
-function installedKiwiState(): KiwiModelArtifactState {
-  return {
-    targetDir: '/tmp/kiwi',
-    manifestPath: '/tmp/kiwi/manifest.json',
-    installed: true,
-    missingFiles: [],
-    manifest: {
-      packageId: 'kiwi',
-      kiwiNlpVersion: '0.23.0',
-      modelVersion: '0.23.0',
-      modelType: 'cong-global',
-      sourceUrl: 'https://example.invalid/kiwi.tgz',
-      archiveSha256: 'digest',
-      archiveSizeBytes: 1,
-      files: [],
-      installedAt: '2026-06-19T00:00:00.000Z',
-    },
-  };
-}
-
 function createLemmaKiwiAnalyzer(): KiwiAnalyzer {
   return {
     identity: {
@@ -84,7 +64,7 @@ function createLemmaKiwiAnalyzer(): KiwiAnalyzer {
 
 function createLemmaKiwiManager(): KiwiAnalyzerManager {
   return new KiwiAnalyzerManager({
-    inspectModelArtifact: () => installedKiwiState(),
+    inspectArtifact: () => installedKiwiArtifactState(),
     loadAnalyzer: async () => createLemmaKiwiAnalyzer(),
     logger: () => {},
   });

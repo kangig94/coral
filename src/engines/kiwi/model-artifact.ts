@@ -6,8 +6,8 @@ import { gunzipSync } from 'node:zlib';
 
 import { downloadBuffer } from '#src/runtime/download.js';
 import { sha256Hex } from '../../infra/hash.js';
+import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
-import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { extractTarGzEntriesInWorker } from '../../infra/archive-extraction-worker.js';
 import {
@@ -24,10 +24,10 @@ import {
 } from './constants.js';
 import { kiwiDataDir, kiwiModelDir, kiwiModelFilePath, kiwiModelManifestPath } from './paths.js';
 import { withKiwiPackageOperationLock } from './operation-lock.js';
+import { isInstallPathUnwritableError, kiwiInstallError, type KiwiInstallError } from './install-error.js';
 
 const TAR_BLOCK_SIZE = 512;
 const TAR_FILE_TYPES = new Set(['0', '']);
-const INSTALL_PATH_UNWRITABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOSPC']);
 export const KIWI_MODEL_TAR_MAX_BYTES = 512 * 1024 * 1024;
 const KIWI_MODEL_EXTRACTION_WORKER_TIMEOUT_MS = 60_000;
 const KIWI_MODEL_WRITE_WORKER_TIMEOUT_MS = 60_000;
@@ -121,6 +121,26 @@ export type KiwiModelArtifactState = {
   readonly missingFiles: readonly string[];
 };
 
+type KiwiModelPathIdentity =
+  | { readonly state: 'missing' | 'unreadable' }
+  | {
+      readonly state: 'present';
+      readonly regularFile: boolean;
+      readonly dev: string;
+      readonly ino: string;
+      readonly mode: string;
+      readonly size: string;
+      readonly mtimeNs: string;
+    };
+
+export type KiwiModelArtifactIdentity = {
+  readonly manifest: KiwiModelPathIdentity;
+  readonly files: readonly {
+    readonly fileName: KiwiModelFileName;
+    readonly identity: KiwiModelPathIdentity;
+  }[];
+};
+
 export type KiwiModelArtifactInstallResult =
   | {
       readonly status: 'installed' | 'updated' | 'already_installed' | 'already_up_to_date';
@@ -128,13 +148,7 @@ export type KiwiModelArtifactInstallResult =
       readonly version: string;
       readonly targetDir: string;
     }
-  | {
-      readonly status: 'error';
-      readonly code: string;
-      readonly userMessage: string;
-      readonly remediation: string;
-      readonly context?: Record<string, unknown>;
-    };
+  | KiwiInstallError;
 
 type KiwiModelInstallOptions = {
   readonly update?: boolean;
@@ -174,28 +188,6 @@ function logInstallEvent(opts: KiwiModelInstallOptions, kind: string, message: s
   opts.logger?.({ kind, message });
 }
 
-function toInstallError(
-  code: Parameters<typeof documentedCoralSetupError>[0],
-  context: Parameters<typeof documentedCoralSetupError>[1],
-): Extract<KiwiModelArtifactInstallResult, { status: 'error' }> {
-  const error = documentedCoralSetupError(code, context);
-  return {
-    status: 'error',
-    code: error.code,
-    userMessage: error.userMessage,
-    remediation: error.remediation,
-    ...(error.context === undefined ? {} : { context: error.context }),
-  };
-}
-
-function isInstallPathUnwritableError(error: unknown): error is NodeJS.ErrnoException {
-  return (
-    error instanceof Error &&
-    'code' in error &&
-    INSTALL_PATH_UNWRITABLE_CODES.has(String((error as NodeJS.ErrnoException).code))
-  );
-}
-
 function isFile(runtime: Pick<Runtime, 'storage'>, path: string): boolean {
   try {
     return runtime.storage.statSync(path).isFile();
@@ -204,12 +196,32 @@ function isFile(runtime: Pick<Runtime, 'storage'>, path: string): boolean {
   }
 }
 
-function isDirectory(runtime: Pick<Runtime, 'storage'>, path: string): boolean {
+function probePathIdentity(runtime: Pick<Runtime, 'storage'>, path: string): KiwiModelPathIdentity {
   try {
-    return runtime.storage.statSync(path).isDirectory();
-  } catch {
-    return false;
+    const kind = runtime.storage.lstatSync(path);
+    const stat = runtime.storage.statSync(path, { bigint: true });
+    return {
+      state: 'present',
+      regularFile: kind.isFile() && !kind.isSymbolicLink(),
+      dev: stat.dev.toString(),
+      ino: stat.ino.toString(),
+      mode: stat.mode.toString(),
+      size: stat.size.toString(),
+      mtimeNs: stat.mtimeNs.toString(),
+    };
+  } catch (error: unknown) {
+    return { state: isNoEntryError(error) ? 'missing' : 'unreadable' };
   }
+}
+
+export function probeKiwiModelArtifactIdentity(runtime: Pick<Runtime, 'paths' | 'storage'>): KiwiModelArtifactIdentity {
+  return {
+    manifest: probePathIdentity(runtime, kiwiModelManifestPath(runtime)),
+    files: KIWI_MODEL_FILES.map((fileName) => ({
+      fileName,
+      identity: probePathIdentity(runtime, kiwiModelFilePath(runtime, fileName)),
+    })),
+  };
 }
 
 function isKiwiModelArtifactManifest(value: unknown): value is KiwiModelArtifactManifest {
@@ -249,22 +261,6 @@ export function inspectKiwiModelArtifact(runtime: Pick<Runtime, 'paths' | 'stora
     manifest,
     missingFiles,
   };
-}
-
-export function hasKiwiModelArtifact(runtime: Pick<Runtime, 'paths' | 'storage'>): boolean {
-  return inspectKiwiModelArtifact(runtime).installed;
-}
-
-export function hasKiwiDurableState(runtime: Pick<Runtime, 'paths' | 'storage'>): boolean {
-  const dataDir = kiwiDataDir(runtime);
-  if (!isDirectory(runtime, dataDir)) {
-    return false;
-  }
-  try {
-    return runtime.storage.readdirSync(dataDir, { withFileTypes: true }).some((entry) => entry.name !== 'install.lock');
-  } catch {
-    return false;
-  }
 }
 
 function tarFieldToString(buffer: Buffer): string {
@@ -580,7 +576,7 @@ export async function ensureKiwiModelArtifact(
     });
   } catch (error: unknown) {
     if (isInstallPathUnwritableError(error)) {
-      return toInstallError('expansion_install_path_unwritable', { name: KIWI_INSTALL_ONLY_ID });
+      return kiwiInstallError('expansion_install_path_unwritable', { name: KIWI_INSTALL_ONLY_ID });
     }
     throw error;
   }
