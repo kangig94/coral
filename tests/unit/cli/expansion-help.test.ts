@@ -6,7 +6,11 @@ function toText(chunk: string | Uint8Array): string {
   return typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
 }
 
-describe('expansion bootstrap output', () => {
+// Each case re-imports `bootstrap.ts` after `vi.resetModules()` (it runs on load) and deliberately uses the
+// real `buildProgram()`, so the first case absorbs a cold transform+resolve of the whole CLI command graph
+// (~1.2s idle). `vitest/default.ts` oversubscribes workers on CI (4 workers on a 2-core runner) by design, so
+// that inflates under contention past the 5s default. Budget for the import; a genuine hang still trips this.
+describe('expansion bootstrap output', { timeout: 30_000 }, () => {
   const originalArgv = [...process.argv];
   let stdout = '';
   let stderr = '';

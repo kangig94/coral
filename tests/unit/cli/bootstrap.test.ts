@@ -1,7 +1,12 @@
 import { CommanderError } from 'commander';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-describe('cli bootstrap', () => {
+// `bootstrap.ts` runs `runBootstrap()` at module load, so each case must re-import it after
+// `vi.resetModules()` to get a fresh execution. Whichever case imports first therefore absorbs a cold
+// transform+resolve of the CLI module graph (~1s idle). `vitest/default.ts` oversubscribes workers on CI
+// (4 workers on a 2-core runner) by design, so that second inflates under contention and the 5s default
+// timeout leaves too little headroom. Budget for the import; a genuine hang still trips this.
+describe('cli bootstrap', { timeout: 30_000 }, () => {
   const originalArgv = [...process.argv];
 
   afterEach(() => {
