@@ -10,27 +10,55 @@ import {
 const AUTH_ERROR_MESSAGE =
   'Claude CLI is not authenticated. Run "claude auth login" with the same CLAUDE_CONFIG_DIR, then retry.';
 
+type AuthEvidence = 'authenticated' | 'unauthenticated';
+
+const AUTHENTICATED_STATUSES: ReadonlySet<string> = new Set(['authenticated', 'logged_in', 'loggedin', 'active']);
+const UNAUTHENTICATED_STATUSES: ReadonlySet<string> = new Set([
+  'unauthenticated',
+  'logged_out',
+  'loggedout',
+  'not_authenticated',
+  'missing',
+  'expired',
+  'inactive',
+]);
+
+function statusEvidence(value: unknown): AuthEvidence | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/gu, '_');
+  if (AUTHENTICATED_STATUSES.has(normalized)) return 'authenticated';
+  if (UNAUTHENTICATED_STATUSES.has(normalized)) return 'unauthenticated';
+  return null;
+}
+
 function parseAuthStatus(stdout: string): AuthProbeResult | null {
   try {
-    const parsed = JSON.parse(stdout) as Record<string, unknown>;
-    if (typeof parsed.authenticated === 'boolean') {
-      return parsed.authenticated
-        ? { authState: 'authenticated' }
-        : { authState: 'unauthenticated', authError: AUTH_ERROR_MESSAGE };
+    const parsed = JSON.parse(stdout) as unknown;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { authState: 'unknown' };
     }
-    const status =
-      typeof parsed.status === 'string'
-        ? parsed.status
-        : typeof parsed.auth_status === 'string'
-          ? parsed.auth_status
-          : null;
-    if (status === null) return null;
-    if (/authenticated|logged.?in|active/i.test(status)) return { authState: 'authenticated' };
-    if (/unauthenticated|logged.?out|not.?authenticated|missing|expired/i.test(status)) {
-      return { authState: 'unauthenticated', authError: AUTH_ERROR_MESSAGE };
+
+    const record = parsed as Record<string, unknown>;
+    const evidence = new Set<AuthEvidence>();
+    if (typeof record.loggedIn === 'boolean') {
+      evidence.add(record.loggedIn ? 'authenticated' : 'unauthenticated');
     }
+    if (typeof record.authenticated === 'boolean') {
+      evidence.add(record.authenticated ? 'authenticated' : 'unauthenticated');
+    }
+    for (const value of [record.status, record.auth_status]) {
+      const state = statusEvidence(value);
+      if (state !== null) evidence.add(state);
+    }
+
+    if (evidence.size !== 1) return { authState: 'unknown' };
+    if (evidence.has('authenticated')) return { authState: 'authenticated' };
+    return { authState: 'unauthenticated', authError: AUTH_ERROR_MESSAGE };
   } catch {
-    // Malformed JSON is not authenticated evidence.
+    // Non-JSON output remains eligible for the generic auth-error fallback.
   }
   return null;
 }

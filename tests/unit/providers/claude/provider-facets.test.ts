@@ -17,7 +17,12 @@ function claudePreflightRuntime(
   const runExact = vi.fn(async (_command: string, args: string[]) =>
     args[0] === '--version'
       ? { stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null }
-      : { stdout: JSON.stringify({ authenticated: true }), stderr: '', status: 0, signal: null },
+      : {
+          stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', subscriptionType: 'team' }),
+          stderr: '',
+          status: 0,
+          signal: null,
+        },
   );
   return {
     access: TEST_CLAUDE_ACCESS,
@@ -112,13 +117,16 @@ describe('claudePreflight', () => {
     },
   );
 
-  it('probes Claude when selected and project settings contain no unsupported credential mode', async () => {
+  it('accepts a subscription-authenticated profile without API-key evidence', async () => {
     const runtime = claudePreflightRuntime({
       '/home/user/.claude/settings.json': JSON.stringify({ env: { CLAUDE_CODE_MAX_OUTPUT_TOKENS: '8192' } }),
     });
 
     await expect(claudePreflight(runtime)).resolves.toBeUndefined();
-    expect(runtime.runExact).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runtime.runExact).mock.calls).toEqual([
+      ['claude', ['--version'], { timeout: 10_000, encoding: 'utf-8' }],
+      ['claude', ['auth', 'status', '--json'], { timeout: 5_000, encoding: 'utf-8' }],
+    ]);
   });
 
   it('surfaces the detector authentication recovery message without a redundant prefix', async () => {
@@ -127,7 +135,7 @@ describe('claudePreflight', () => {
       .fn()
       .mockResolvedValueOnce({ stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null })
       .mockResolvedValueOnce({
-        stdout: JSON.stringify({ authenticated: false }),
+        stdout: JSON.stringify({ loggedIn: false }),
         stderr: '',
         status: 0,
         signal: null,
@@ -136,6 +144,24 @@ describe('claudePreflight', () => {
     await expect(claudePreflight(runtime)).rejects.toThrow(
       'Claude CLI is not authenticated. Run "claude auth login" with the same CLAUDE_CONFIG_DIR, then retry.',
     );
+  });
+
+  it.each([
+    ['conflicting recognized evidence', { loggedIn: true, status: 'unauthenticated' }],
+    ['an unknown schema containing an auth-error token', { futureAuthState: 'unauthenticated' }],
+  ])('retains compatibility when Claude returns %s', async (_label, authOutput) => {
+    const runtime = claudePreflightRuntime({});
+    runtime.runExact = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify(authOutput),
+        stderr: '',
+        status: 0,
+        signal: null,
+      });
+
+    await expect(claudePreflight(runtime)).resolves.toBeUndefined();
   });
 });
 

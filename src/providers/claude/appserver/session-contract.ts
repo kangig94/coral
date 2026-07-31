@@ -84,6 +84,7 @@ export interface ClaudePrintChild {
 export interface SpawnClaudePrintChildOptions {
   cwd: string;
   conversationRef?: string;
+  resume: boolean;
   systemPrompt?: string;
   permissionMode: PermissionMode;
   model?: string;
