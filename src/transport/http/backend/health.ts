@@ -1,4 +1,5 @@
 import { isRecord } from '../../../infra/json.js';
+import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
 
 /**
  * Health metadata exposed by the Coral backend over HTTP.
@@ -43,6 +44,7 @@ type TransportKbDaemonRuntimeHealth = {
   phase: TransportKbDaemonRuntimeHealthPhase;
   initializedAt?: number;
   lastError?: string;
+  setupError?: SerializedCoralSetupError;
   curateRunning?: boolean;
   mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
 };
@@ -69,6 +71,7 @@ type TransportKbDaemonHealthSnapshot = {
     uptimeMs: number | null;
   };
   lastError?: string;
+  setupError?: SerializedCoralSetupError;
 };
 
 export interface BackendHealth {
@@ -265,6 +268,7 @@ function isKbDaemonRuntimeHealth(value: unknown): value is TransportKbDaemonRunt
       value.phase === 'disposed') &&
     (value.initializedAt === undefined || isNonNegativeFiniteNumber(value.initializedAt)) &&
     (value.lastError === undefined || typeof value.lastError === 'string') &&
+    (value.setupError === undefined || isSerializedCoralSetupError(value.setupError)) &&
     (value.curateRunning === undefined || typeof value.curateRunning === 'boolean') &&
     (value.mutationBlocked === undefined || isMutationBlocked(value.mutationBlocked))
   );
@@ -288,7 +292,8 @@ function isKbDaemonHealth(value: unknown): value is TransportKbDaemonHealthSnaps
     (value.kbWrite === undefined || isKbDaemonRuntimeHealth(value.kbWrite)) &&
     (value.reason === undefined || typeof value.reason === 'string') &&
     (value.lastExit === undefined || isKbDaemonExit(value.lastExit)) &&
-    (value.lastError === undefined || typeof value.lastError === 'string')
+    (value.lastError === undefined || typeof value.lastError === 'string') &&
+    (value.setupError === undefined || isSerializedCoralSetupError(value.setupError))
   );
 }
 

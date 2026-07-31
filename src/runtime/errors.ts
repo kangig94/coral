@@ -24,6 +24,12 @@ export type DocumentedCoralSetupErrorCode =
   | 'expansion_install_artifact_failed'
   | 'startup_not_ready'
   | 'store_schema_outdated'
+  | 'legacy_foreign_generation'
+  | 'legacy_source_not_quiescent'
+  | 'store_newer_incompatible'
+  | 'store_older_incompatible'
+  | 'store_corrupt_or_unsupported'
+  | 'kb_commit_corrupt_or_unsupported'
   | 'store_reset_lock_contended'
   | 'store_reset_quarantine_failed'
   | 'expansion_binary_corrupt'
@@ -118,6 +124,50 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: 'Coral backend store format does not match this installation.',
     remediation:
       'A read-only command cannot change the store. Start Coral through a normal provider launch; the next writable daemon startup quarantines the old store files and initializes the current format, making prior Coral history unavailable from the active store.',
+  },
+  legacy_foreign_generation: {
+    userMessage: (context) =>
+      `The legacy Coral tree at ${stringContextValue(context, 'legacyPath', '<legacy-path>')} belongs to Coral ${stringContextValue(context, 'version', '<legacy-version>')} and cannot be adopted by this build.`,
+    remediation: (context) =>
+      `Continue using Coral ${stringContextValue(context, 'version', '<legacy-version>')} to read the history at ${stringContextValue(context, 'legacyPath', '<legacy-path>')}. This build leaves that foreign-generation tree untouched.`,
+  },
+  legacy_source_not_quiescent: {
+    userMessage: (context) =>
+      `The current-generation adoption source still has an active writer lease held by ${stringContextValue(context, 'holder', '<writer-lease-holder>')}.`,
+    remediation: (context) =>
+      `Run this build's own 'coral-cli backend shutdown'. Wait for current-generation writer-lease holder '${stringContextValue(context, 'holder', '<writer-lease-holder>')}' to exit and release its lease, then retry 'coral-cli backend store-adopt --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}'.`,
+  },
+  store_newer_incompatible: {
+    userMessage: (context) =>
+      `The current-generation store was written by newer Coral ${stringContextValue(context, 'version', '<stored-version>')} and is incompatible with this build.`,
+    remediation: (context) =>
+      `Use Coral ${stringContextValue(context, 'version', '<stored-version>')} to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}' to quarantine it before this build initializes an empty store.`,
+  },
+  store_older_incompatible: {
+    userMessage: (context) =>
+      `The current-generation store was written by Coral ${stringContextValue(context, 'version', '<stored-version>')} with an older incompatible format.`,
+    remediation: (context) =>
+      `Use Coral ${stringContextValue(context, 'version', '<stored-version>')} to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}' to quarantine it before this build initializes an empty store.`,
+  },
+  store_corrupt_or_unsupported: {
+    userMessage: 'The current-generation store is corrupt or uses an unsupported format.',
+    remediation: (context) =>
+      `Run 'coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}' to quarantine it before this build initializes an empty store.`,
+  },
+  kb_commit_corrupt_or_unsupported: {
+    userMessage: (context) => {
+      const version = stringContextValue(context, 'version', '');
+      return version.length > 0
+        ? `KB commit '${stringContextValue(context, 'commitId', '<commit>')}' requires Coral ${version}.`
+        : `KB commit '${stringContextValue(context, 'commitId', '<commit>')}' is corrupt or unsupported.`;
+    },
+    remediation: (context) => {
+      const version = stringContextValue(context, 'version', '');
+      const command = `'coral-cli backend kb-commit quarantine --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')} --commit ${stringContextValue(context, 'commitId', '<commit>')}'`;
+      return version.length > 0
+        ? `Use Coral ${version} to read this commit, or run ${command} to quarantine the blocking KB artifacts.`
+        : `Run ${command} to quarantine the blocking KB artifacts.`;
+    },
   },
   store_reset_lock_contended: {
     userMessage: 'Another Coral process is initializing the backend store.',
@@ -462,7 +512,7 @@ export class CoralSetupError extends Error {
   }
 }
 
-function isSerializedCoralSetupError(error: unknown): error is SerializedCoralSetupError {
+export function isSerializedCoralSetupError(error: unknown): error is SerializedCoralSetupError {
   return (
     isRecord(error) &&
     typeof error.code === 'string' &&
@@ -491,4 +541,9 @@ export function serializeCoralSetupError(error: unknown): SerializedCoralSetupEr
     remediation: error.remediation,
     ...(isRecord(error.context) ? { context: error.context } : {}),
   };
+}
+
+export function rehydrateCoralSetupError(error: unknown): CoralSetupError | null {
+  const serialized = serializeCoralSetupError(error);
+  return serialized === null ? null : new CoralSetupError(serialized);
 }

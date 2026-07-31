@@ -7,7 +7,7 @@ import { pluginRootNamespace } from '../infra/plugin-identity.js';
 import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { AbortError, throwIfAborted } from '../runtime/abort.js';
-import { serializeCoralSetupError } from '../runtime/errors.js';
+import { serializeCoralSetupError, type SerializedCoralSetupError } from '../runtime/errors.js';
 import { createKbRuntime } from '../kb/runtime.js';
 import { createCurateScheduler, type CurateHandle } from '../kb/curate/scheduler.js';
 import type { CurateAssistantPort } from '../kb/curate/assistant.js';
@@ -142,6 +142,7 @@ type KbDaemonSearchRuntimeReadiness =
         | 'kiwi_analyzer_evicting';
       message: string;
       detail?: Record<string, unknown>;
+      setupError?: SerializedCoralSetupError;
     };
 
 function createUnavailableCurateAssistant(): CurateAssistantPort {
@@ -198,6 +199,7 @@ function expansionRpcError(error: unknown): KbDaemonExpansionResult {
       message: setupError.userMessage,
       remediation: setupError.remediation,
       ...(setupError.context === undefined ? {} : { detail: setupError.context }),
+      setupError,
     };
   }
 
@@ -297,11 +299,13 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
   let phase: KbDaemonKbReadHealth['phase'] = 'not_initialized';
   let initializedAt: number | undefined;
   let lastError: string | undefined;
+  let lastSetupError: SerializedCoralSetupError | undefined;
   let state: KbDaemonWriteRuntimeState | null = null;
   let initPromise: Promise<KbDaemonWriteRuntimeState> | null = null;
   let disposePromise: Promise<void> | null = null;
   let searchWarmupPromise: Promise<void> | null = null;
   let lastSearchWarmupError: string | undefined;
+  let lastSearchWarmupSetupError: SerializedCoralSetupError | undefined;
   const kiwiAnalyzerManager = options.kiwiAnalyzer ?? resolveKiwiSearchAnalyzerPort();
   // Cancels the post-fetch Korean (Kiwi) re-tokenization reproject when the daemon
   // disposes; an in-flight artifact download runs to completion detached.
@@ -311,10 +315,12 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     phase = 'ready';
     initializedAt ??= now();
     lastError = undefined;
+    lastSetupError = undefined;
   };
   const markFailure = (error: unknown): void => {
     phase = 'failed';
     lastError = errorMessage(error);
+    lastSetupError = serializeCoralSetupError(error) ?? undefined;
   };
   const markDisposing = (): void => {
     phase = 'disposing';
@@ -322,6 +328,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
   const markDisposed = (): void => {
     phase = 'disposed';
     lastError = undefined;
+    lastSetupError = undefined;
   };
   const getExpansionLifecyclePhase = (): CoordinatorLifecyclePhase => {
     if (phase === 'disposing') {
@@ -615,11 +622,13 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       activeState.kbRuntime.kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read();
       return null;
     } catch (error: unknown) {
+      const setupError = serializeCoralSetupError(error);
       return {
         ready: false,
         reason: 'fts_binding_unavailable',
         message: 'KB search runtime is not ready: FTS capability is not bound.',
         detail: { error: errorMessage(error) },
+        ...(setupError === null ? {} : { setupError }),
       };
     }
   };
@@ -638,6 +647,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         ready: false,
         reason: phase === 'not_initialized' ? 'write_runtime_not_initialized' : 'write_runtime_unavailable',
         message: `KB search runtime is not ready: write runtime is ${phase}.`,
+        ...(lastSearchWarmupSetupError === undefined ? {} : { setupError: lastSearchWarmupSetupError }),
         ...(lastSearchWarmupError === undefined ? {} : { detail: { lastSearchWarmupError } }),
       };
     }
@@ -656,7 +666,15 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         ready: false,
         reason: `kiwi_analyzer_${analyzerReadiness.state}`,
         message: `KB search runtime is not ready: Kiwi analyzer is ${analyzerReadiness.state}.`,
-        ...(analyzerReadiness.reason === undefined ? {} : { detail: { analyzerReason: analyzerReadiness.reason } }),
+        ...(lastSearchWarmupSetupError === undefined ? {} : { setupError: lastSearchWarmupSetupError }),
+        ...(analyzerReadiness.reason === undefined && lastSearchWarmupError === undefined
+          ? {}
+          : {
+              detail: {
+                ...(analyzerReadiness.reason === undefined ? {} : { analyzerReason: analyzerReadiness.reason }),
+                ...(lastSearchWarmupError === undefined ? {} : { lastSearchWarmupError }),
+              },
+            }),
       };
     }
 
@@ -678,9 +696,11 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
           );
         }
         lastSearchWarmupError = undefined;
+        lastSearchWarmupSetupError = undefined;
       })
       .catch((error: unknown) => {
         lastSearchWarmupError = errorMessage(error);
+        lastSearchWarmupSetupError = serializeCoralSetupError(error) ?? undefined;
       })
       .finally(() => {
         searchWarmupPromise = null;
@@ -859,10 +879,13 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
               signaledAtMs: mutationDiagnostics.signaledAtMs,
             }
           : undefined;
+      const healthLastError = lastError ?? lastSearchWarmupError;
+      const healthSetupError = lastSetupError ?? lastSearchWarmupSetupError;
       return {
         phase,
         ...(initializedAt === undefined ? {} : { initializedAt }),
-        ...(lastError === undefined ? {} : { lastError }),
+        ...(healthLastError === undefined ? {} : { lastError: healthLastError }),
+        ...(healthSetupError === undefined ? {} : { setupError: healthSetupError }),
         ...(activeState === null ? {} : { curateRunning: activeState.kbRuntime.curateScheduler.isRunning() }),
         ...(mutationBlocked === undefined ? {} : { mutationBlocked }),
       };

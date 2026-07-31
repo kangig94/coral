@@ -85,14 +85,16 @@ describe('kb detection and paths', () => {
 
     expect(infraPaths.kbRoot('prod')).toBe(join(mockState.tmpHome, '.coral', 'kb'));
     const prodRuntimeDir = kbRuntimePaths('prod').root;
-    expect(prodRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb'));
-    expect(oramaPaths.oramaSnapshotDir(prodRuntimeDir)).toBe(join(mockState.tmpHome, '.coral', 'data', 'kb', 'orama'));
+    expect(prodRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'gen2', 'data', 'kb'));
+    expect(oramaPaths.oramaSnapshotDir(prodRuntimeDir)).toBe(
+      join(mockState.tmpHome, '.coral', 'gen2', 'data', 'kb', 'orama'),
+    );
 
     expect(infraPaths.kbRoot('dev')).toBe(join(mockState.tmpHome, '.coral', 'kb-dev'));
     const devRuntimeDir = kbRuntimePaths('dev').root;
-    expect(devRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'data-dev', 'kb'));
+    expect(devRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'gen2', 'data-dev', 'kb'));
     expect(oramaPaths.oramaSnapshotDir(devRuntimeDir)).toBe(
-      join(mockState.tmpHome, '.coral', 'data-dev', 'kb', 'orama'),
+      join(mockState.tmpHome, '.coral', 'gen2', 'data-dev', 'kb', 'orama'),
     );
   });
 
@@ -147,7 +149,7 @@ describe('kb detection and paths', () => {
       db: createKbTestDb(kbRuntimePaths('dev').root),
     });
     const markdownRoot = join(mockState.tmpHome, 'vault');
-    const machineLocalRuntimeDir = join(mockState.tmpHome, '.coral', 'data-dev', 'kb');
+    const machineLocalRuntimeDir = join(mockState.tmpHome, '.coral', 'gen2', 'data-dev', 'kb');
     const notePath = join(markdownRoot, 'notes', 'coral-kb-runtime-root.md');
     const principlePath = join(markdownRoot, 'principles', 'contract-first-design.md');
 

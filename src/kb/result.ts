@@ -1,8 +1,17 @@
 import { isRecord } from '../infra/json.js';
 
+import type { SerializedCoralSetupError } from '../runtime/errors.js';
+
 export type KbToolResult =
   | { ok: true; data: unknown }
-  | { ok: false; code: string; message: string; remediation?: string; detail?: unknown };
+  | {
+      ok: false;
+      code: string;
+      message: string;
+      remediation?: string;
+      detail?: unknown;
+      setupError?: SerializedCoralSetupError;
+    };
 
 export function kbSuccess(data: unknown): KbToolResult {
   return { ok: true, data };

@@ -163,6 +163,20 @@ function structuredBodyError(
   value: unknown,
   fallback: { readonly code: string; readonly message: string; readonly httpStatus?: number },
 ): CliErrorResult {
+  const setupError = serializeCoralSetupError(value);
+  if (setupError !== null) {
+    return withExitCode(
+      {
+        error: true,
+        code: setupError.code,
+        message: setupError.userMessage,
+        remediation: setupError.remediation,
+        ...(setupError.context === undefined ? {} : { detail: setupError.context }),
+      },
+      errorCodeToExit(setupError.code, fallback.httpStatus),
+    );
+  }
+
   const body = isRecord(value) ? value : null;
   const code = body && typeof body.code === 'string' ? body.code : fallback.code;
   const message = body && typeof body.message === 'string' ? body.message : fallback.message;

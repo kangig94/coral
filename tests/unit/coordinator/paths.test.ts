@@ -17,13 +17,15 @@ describe('composeCoralPaths', () => {
       'projects',
       'store',
     ]);
-    expect(p.store.dbFile).toContain('.coral/data/store/store.db');
+    expect(p.store.dbFile).toContain('.coral/gen2/data/store/store.db');
     expect(p.corpus.kbRoot).toContain('.coral/kb');
-    // Sibling of data/store and data/engines, and distinct from corpus.kbRoot (the Markdown vault).
-    expect(p.kbRuntime.root).toContain('.coral/data/kb');
-    expect(p.coordinator.socketPath).toMatch(/\.coral\/run\/coordinator\.sock$|^\/.*\/coral-prod-[0-9a-f]{8}\.sock$/);
+    // Sibling of gen2/data/store and gen2/data/engines, and distinct from corpus.kbRoot (the Markdown vault).
+    expect(p.kbRuntime.root).toContain('.coral/gen2/data/kb');
+    expect(p.coordinator.socketPath).toMatch(
+      /\.coral\/gen2\/run\/coordinator\.sock$|^\/.*\/coral-prod-[0-9a-f]{8}\.sock$/,
+    );
     expect(p.exports.jobsRoot).toContain('.coral/exports/jobs');
-    expect(p.engine.engineRoot).toContain('.coral/data/engines');
+    expect(p.engine.engineRoot).toContain('.coral/gen2/data/engines');
     expect(p.projects.root).toContain('.coral/projects');
   });
 
@@ -48,10 +50,10 @@ describe('composeCoralPaths', () => {
 
   it('storePaths accepts an explicit baseDir', () => {
     expect(storePaths('prod', { baseDir: '/tmp/coral-root' })).toEqual({
-      dbDir: join('/tmp/coral-root', 'data', 'store'),
-      dbFile: join('/tmp/coral-root', 'data', 'store', 'store.db'),
-      walFile: join('/tmp/coral-root', 'data', 'store', 'store.db-wal'),
-      shmFile: join('/tmp/coral-root', 'data', 'store', 'store.db-shm'),
+      dbDir: join('/tmp/coral-root', 'gen2', 'data', 'store'),
+      dbFile: join('/tmp/coral-root', 'gen2', 'data', 'store', 'store.db'),
+      walFile: join('/tmp/coral-root', 'gen2', 'data', 'store', 'store.db-wal'),
+      shmFile: join('/tmp/coral-root', 'gen2', 'data', 'store', 'store.db-shm'),
     });
   });
 
@@ -68,11 +70,11 @@ describe('composeCoralPaths', () => {
 
   it('coordinatorPaths accepts an explicit baseDir', () => {
     expect(coordinatorPaths('prod', { TMPDIR: '/tmp' }, { baseDir: '/tmp/coral-root' })).toEqual({
-      runDir: join('/tmp/coral-root', 'run'),
-      socketPath: join('/tmp/coral-root', 'run', 'coordinator.sock'),
-      infoFile: join('/tmp/coral-root', 'run', 'coordinator.json'),
-      startupErrorFile: join('/tmp/coral-root', 'run', 'startup-error.json'),
-      startupDiagnosticFile: join('/tmp/coral-root', 'run', 'startup-diagnostic.json'),
+      runDir: join('/tmp/coral-root', 'gen2', 'run'),
+      socketPath: join('/tmp/coral-root', 'gen2', 'run', 'coordinator.sock'),
+      infoFile: join('/tmp/coral-root', 'gen2', 'run', 'coordinator.json'),
+      startupErrorFile: join('/tmp/coral-root', 'gen2', 'run', 'startup-error.json'),
+      startupDiagnosticFile: join('/tmp/coral-root', 'gen2', 'run', 'startup-diagnostic.json'),
     });
   });
 
@@ -84,9 +86,11 @@ describe('composeCoralPaths', () => {
 
   it('enginePaths accepts an explicit baseDir and exposes per-name accessors', () => {
     const eq = enginePaths('prod', { baseDir: '/tmp/coral-root' });
-    expect(eq.engineRoot).toBe(join('/tmp/coral-root', 'data', 'engines'));
-    expect(eq.dataDir('vector')).toBe(join('/tmp/coral-root', 'data', 'engines', 'vector'));
-    expect(eq.installLockPath('vector')).toBe(join('/tmp/coral-root', 'data', 'engines', '.locks', 'vector.lock'));
+    expect(eq.engineRoot).toBe(join('/tmp/coral-root', 'gen2', 'data', 'engines'));
+    expect(eq.dataDir('vector')).toBe(join('/tmp/coral-root', 'gen2', 'data', 'engines', 'vector'));
+    expect(eq.installLockPath('vector')).toBe(
+      join('/tmp/coral-root', 'gen2', 'data', 'engines', '.locks', 'vector.lock'),
+    );
   });
 
   it('projectsPaths accepts an explicit baseDir and slugifies the source into dataDir', () => {

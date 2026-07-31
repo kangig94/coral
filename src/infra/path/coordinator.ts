@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import type { BuildFlavor } from '../build-flavor.js';
 import { hashToken } from '../hash.js';
-import { coralStateRoot } from './root.js';
+import { generationRoot } from './root.js';
 
 export interface CoordinatorPaths {
   runDir: string;
@@ -30,7 +30,7 @@ export function coordinatorPaths(
   opts?: CoordinatorPathOptions,
 ): CoordinatorPaths {
   const base = flavor === 'dev' ? 'run-dev' : 'run';
-  const runDir = join(coralStateRoot(opts?.baseDir), base);
+  const runDir = join(generationRoot(opts), base);
   const candidateSocket = join(runDir, 'coordinator.sock');
   const limit = socketPathLimit();
   let socketPath = candidateSocket;

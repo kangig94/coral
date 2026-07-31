@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../runtime/errors.js';
 import { principalWireSchema, type PrincipalWire } from '../security/principal-wire.js';
 
 export const KB_DAEMON_READY_MESSAGE = 'coral.kb_daemon.ready';
@@ -147,7 +148,14 @@ export type KbDaemonJobsResult = {
 
 export type KbDaemonKbReadResult =
   | { ok: true; data: unknown }
-  | { ok: false; code: string; message: string; remediation?: string; detail?: unknown };
+  | {
+      ok: false;
+      code: string;
+      message: string;
+      remediation?: string;
+      detail?: unknown;
+      setupError?: SerializedCoralSetupError;
+    };
 
 export type KbDaemonKbMutationResult = KbDaemonKbReadResult;
 
@@ -159,6 +167,7 @@ export type KbDaemonKbReadHealth = {
   phase: KbDaemonRuntimeHealthPhase;
   initializedAt?: number;
   lastError?: string;
+  setupError?: SerializedCoralSetupError;
   curateRunning?: boolean;
   mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
 };
@@ -188,7 +197,7 @@ export type KbDaemonResponseMessage =
       type: typeof KB_DAEMON_RESPONSE_MESSAGE;
       id: string;
       ok: false;
-      error: { message: string };
+      error: KbDaemonErrorEnvelope;
     };
 
 export type KbDaemonParentRequestMessage = {
@@ -209,8 +218,13 @@ export type KbDaemonParentResponseMessage =
       type: typeof KB_DAEMON_PARENT_RESPONSE_MESSAGE;
       id: string;
       ok: false;
-      error: { message: string };
+      error: KbDaemonErrorEnvelope;
     };
+
+export type KbDaemonErrorEnvelope = {
+  message: string;
+  setupError?: SerializedCoralSetupError;
+};
 
 export type KbDaemonEventMessage =
   | {
@@ -314,7 +328,7 @@ export function isKbDaemonResponseMessage(value: unknown): value is KbDaemonResp
   if (record.ok !== false || record.error === null || typeof record.error !== 'object') {
     return false;
   }
-  return typeof (record.error as { message?: unknown }).message === 'string';
+  return isKbDaemonErrorEnvelope(record.error);
 }
 
 export function isKbDaemonParentRequestMessage(value: unknown): value is KbDaemonParentRequestMessage {
@@ -346,7 +360,7 @@ export function isKbDaemonParentResponseMessage(value: unknown): value is KbDaem
   if (record.ok !== false || record.error === null || typeof record.error !== 'object') {
     return false;
   }
-  return typeof (record.error as { message?: unknown }).message === 'string';
+  return isKbDaemonErrorEnvelope(record.error);
 }
 
 export function isKbDaemonHealthResult(value: unknown): value is KbDaemonHealthResult {
@@ -377,8 +391,20 @@ export function isKbDaemonKbReadHealth(value: unknown): value is KbDaemonKbReadH
       record.phase === 'disposed') &&
     (record.initializedAt === undefined || isNonNegativeFiniteNumber(record.initializedAt)) &&
     (record.lastError === undefined || typeof record.lastError === 'string') &&
+    (record.setupError === undefined || isSerializedCoralSetupError(record.setupError)) &&
     (record.curateRunning === undefined || typeof record.curateRunning === 'boolean') &&
     (record.mutationBlocked === undefined || isKbDaemonMutationBlocked(record.mutationBlocked))
+  );
+}
+
+function isKbDaemonErrorEnvelope(value: unknown): value is KbDaemonErrorEnvelope {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.message === 'string' &&
+    (record.setupError === undefined || isSerializedCoralSetupError(record.setupError))
   );
 }
 
@@ -494,7 +520,10 @@ function isKbDaemonKbResult(value: unknown): value is KbDaemonKbReadResult {
   if (record.ok !== false || typeof record.code !== 'string' || typeof record.message !== 'string') {
     return false;
   }
-  return record.remediation === undefined || typeof record.remediation === 'string';
+  return (
+    (record.remediation === undefined || typeof record.remediation === 'string') &&
+    (record.setupError === undefined || isSerializedCoralSetupError(record.setupError))
+  );
 }
 
 export function isKbDaemonKbReadResult(value: unknown): value is KbDaemonKbReadResult {

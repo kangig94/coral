@@ -229,7 +229,7 @@ Make the contract explicit first.
       relationships: [],
       ...EMPTY_GENERATED_COMMUNITY_FRESHNESS,
     });
-    expect(readFileSync(join(mockState.tmpHome, '.coral', 'data', 'kb', 'index.json'), 'utf-8')).toContain(
+    expect(readFileSync(join(mockState.tmpHome, '.coral', 'gen2', 'data', 'kb', 'index.json'), 'utf-8')).toContain(
       '"coral-kb-mode"',
     );
   });

@@ -33,9 +33,16 @@ import {
   type KbDaemonEventMessage,
   type KbDaemonJobsResult,
   type KbDaemonParentRequestMessage,
+  type KbDaemonErrorEnvelope,
 } from '../../kb-daemon/protocol.js';
 import { readBundleHash } from '../../infra/bundle-manifest.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
+import {
+  CoralSetupError,
+  rehydrateCoralSetupError,
+  serializeCoralSetupError,
+  type SerializedCoralSetupError,
+} from '../../runtime/errors.js';
 
 type DaemonProcessLike = ReturnType<Runtime['process']['spawn']>;
 
@@ -65,6 +72,7 @@ export type KbDaemonHealthSnapshot = {
   reason?: string;
   lastExit?: KbDaemonExit;
   lastError?: string;
+  setupError?: SerializedCoralSetupError;
 };
 
 export interface KbDaemonSupervisor {
@@ -286,6 +294,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   let readyAt: number | null = null;
   let lastExit: KbDaemonExit | undefined;
   let lastError: string | undefined;
+  let lastSetupError: SerializedCoralSetupError | undefined;
   let operation: Promise<unknown> | null = null;
   let probeOperation: Promise<KbDaemonHealthSnapshot> | null = null;
   let stderrBuffer = '';
@@ -317,10 +326,12 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     ...(kbWriteHealth === undefined ? {} : { kbWrite: kbWriteHealth }),
     ...(lastExit === undefined ? {} : { lastExit }),
     ...(lastError === undefined ? {} : { lastError }),
+    ...(lastSetupError === undefined ? {} : { setupError: lastSetupError }),
   });
 
-  const setFailure = (message: string): void => {
+  const setFailure = (message: string, setupError?: SerializedCoralSetupError): void => {
     lastError = message;
+    lastSetupError = setupError;
     phase = 'failed';
     log(`[kb-daemon] ${message}`);
   };
@@ -427,7 +438,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
 
   const writeParentResponse = (
     target: DaemonProcessLike,
-    message: { id: string; ok: true; result: unknown } | { id: string; ok: false; error: { message: string } },
+    message: { id: string; ok: true; result: unknown } | { id: string; ok: false; error: KbDaemonErrorEnvelope },
   ): void => {
     try {
       target.stdin?.write(
@@ -470,7 +481,15 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
         })
         .catch((error: unknown) => {
           if (activeParentRequests.get(key)?.controller !== controller) return;
-          writeParentResponse(target, { id: request.id, ok: false, error: { message: errorMessage(error) } });
+          const setupError = serializeCoralSetupError(error);
+          writeParentResponse(target, {
+            id: request.id,
+            ok: false,
+            error: {
+              message: errorMessage(error),
+              ...(setupError === null ? {} : { setupError }),
+            },
+          });
         })
         .finally(() => {
           if (activeParentRequests.get(key)?.controller === controller) activeParentRequests.delete(key);
@@ -543,7 +562,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     try {
       const response = await sendRequest('health');
       if (!response.ok) {
-        setFailure(`health probe failed: ${response.error.message}`);
+        setFailure(`health probe failed: ${response.error.message}`, response.error.setupError);
         return read();
       }
       if (!isKbDaemonHealthResult(response.result)) {
@@ -552,6 +571,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       }
       lastHeartbeatAt = runtime.time.now();
       lastError = undefined;
+      lastSetupError = undefined;
       daemonUptimeMs = response.result.uptimeMs;
       kbReadHealth = response.result.kbRead;
       kbWriteHealth = response.result.kbWrite;
@@ -559,6 +579,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       return read();
     } catch (error: unknown) {
       lastError = `health probe failed: ${errorMessage(error)}`;
+      lastSetupError = serializeCoralSetupError(error) ?? undefined;
       return read();
     }
   };
@@ -581,7 +602,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     try {
       const response = await sendRequest('kb.warmup');
       if (!response.ok) {
-        setFailure(`warmup failed: ${response.error.message}`);
+        setFailure(`warmup failed: ${response.error.message}`, response.error.setupError);
         return read();
       }
       if (!isKbDaemonKbReadHealth(response.result)) {
@@ -593,6 +614,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       return read();
     } catch (error: unknown) {
       lastError = `warmup failed: ${errorMessage(error)}`;
+      lastSetupError = serializeCoralSetupError(error) ?? undefined;
       return read();
     }
   };
@@ -640,10 +662,18 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   ): Promise<KbDaemonKbReadResult> => {
     const response = await sendRequest(method, request, timeoutMs, signal);
     if (!response.ok) {
+      const setupError = rehydrateCoralSetupError(response.error.setupError);
+      if (setupError !== null) {
+        throw setupError;
+      }
       return { ok: false, code: 'kb_daemon_protocol_error', message: response.error.message };
     }
     if (!isResult(response.result)) {
       return { ok: false, code: 'kb_daemon_protocol_error', message: malformedMessage };
+    }
+    const setupError = response.result.ok ? null : rehydrateCoralSetupError(response.result.setupError);
+    if (setupError !== null) {
+      throw setupError;
     }
     return response.result;
   };
@@ -723,6 +753,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     try {
       return await sendKbReadRequest(request, options);
     } catch (error: unknown) {
+      if (error instanceof CoralSetupError) {
+        throw error;
+      }
       if (options.signal?.aborted) {
         return kbUnavailable('KB daemon read request aborted.');
       }
@@ -734,6 +767,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       try {
         return await sendKbReadRequest(request, options);
       } catch (retryError: unknown) {
+        if (retryError instanceof CoralSetupError) {
+          throw retryError;
+        }
         if (options.signal?.aborted) {
           return kbUnavailable('KB daemon read request aborted.');
         }
@@ -759,6 +795,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     try {
       return await sendKbMutationRequest(request);
     } catch (error: unknown) {
+      if (error instanceof CoralSetupError) {
+        throw error;
+      }
       return kbUnavailable(`KB daemon mutation request failed: ${errorMessage(error)}; request was not retried.`);
     }
   };
@@ -778,6 +817,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     try {
       return await sendExpansionRpcRequest(request);
     } catch (error: unknown) {
+      if (error instanceof CoralSetupError) {
+        throw error;
+      }
       return kbUnavailable(`KB daemon expansion request failed: ${errorMessage(error)}; request was not retried.`);
     }
   };
@@ -792,6 +834,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     startedAt = runtime.time.now();
     readyAt = null;
     lastError = undefined;
+    lastSetupError = undefined;
     stderrBuffer = '';
     lastHeartbeatAt = undefined;
     lastHeartbeatLatencyMs = undefined;
@@ -918,6 +961,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
 
       spawned.on('error', (error) => {
         lastError = `daemon process error: ${formatError(error)}`;
+        lastSetupError = undefined;
         runtime.time.clearTimeout(timeout);
         settle('error');
       });
@@ -941,6 +985,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
           } else {
             phase = 'failed';
             lastError = stderrBuffer.trim().length > 0 ? stderrBuffer.trim() : 'daemon exited';
+            lastSetupError = undefined;
           }
           notifyExitListeners();
         }

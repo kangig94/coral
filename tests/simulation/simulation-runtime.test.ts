@@ -145,7 +145,7 @@ describe('simulation runtime', () => {
     expect(entries).toEqual(['alpha.txt', 'lock.json', 'renamed.json']);
     expect(storage.statSync(filePath).size).toBe(Buffer.byteLength('alpha\nbeta\ngamma'));
     expect(paths.jobsDir()).toBe('/tmp/sim/jobs');
-    expect(paths.coral.coordinator.infoFile).toBe('/tmp/sim/coral/run/coordinator.json');
+    expect(paths.coral.coordinator.infoFile).toBe('/tmp/sim/coral/gen2/run/coordinator.json');
     expect(namespace).toMatch(/^[0-9a-f]{12}$/);
     expect(projectSource).toMatch(/^local\/project-[0-9a-f]{8}$/);
     expect(paths.projectSource('/tmp/sim/project')).toBe(projectSource);
