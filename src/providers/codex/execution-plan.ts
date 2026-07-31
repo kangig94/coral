@@ -52,6 +52,21 @@ function baseLayer(values: Readonly<Record<string, string>>, platform: string): 
   );
 }
 
+function childBoundaryLayer(platform: string): EnvironmentLayer {
+  const values = { CORAL_CHILD: '1' } as const;
+  return environmentLayer(
+    {
+      name: 'coral-child-boundary',
+      lifetime: 'host',
+      provenance: 'coral-daemon',
+      values,
+      writes: new Set(Object.keys(values)),
+      protects: new Set(Object.keys(values)),
+    },
+    platform,
+  );
+}
+
 function routingLayer(access: CodexProviderAccess, platform: string): EnvironmentLayer {
   const values = codexRoutingEnv(access);
   return environmentLayer(
@@ -123,6 +138,20 @@ export function compileCodexHostEnvironment(host: CodexExecutionPlan['host']): R
   });
 }
 
+/**
+ * Build a Codex subprocess policy that preserves caller values while pinning
+ * the non-secret Coral child marker. The input is never mutated and cannot
+ * override the marker.
+ */
+export function codexChildShellEnvironmentPolicy(
+  values: Readonly<Record<string, string>> = {},
+): Readonly<{ inherit: 'all'; set: Readonly<Record<string, string>> }> {
+  return Object.freeze({
+    inherit: 'all',
+    set: Object.freeze({ ...values, CORAL_CHILD: '1' }),
+  });
+}
+
 export function buildCodexHost(options: {
   access: CodexProviderAccess;
   request: ProviderRequest;
@@ -138,6 +167,7 @@ export function buildCodexHost(options: {
     cwd: resolveCodexHostCwd(options.request.cwd, options.persistedContinuity),
     environment: Object.freeze([
       baseLayer(options.baseEnv, options.platform),
+      childBoundaryLayer(options.platform),
       routingLayer(options.access, options.platform),
       processSettingsLayer(options.request.coralEnv, options.platform),
     ]),
@@ -170,10 +200,7 @@ export function buildCodexExecutionPlan(options: {
     session: Object.freeze({ sessionId: options.request.sessionId }),
     turn: Object.freeze({
       threadConfig: Object.freeze({
-        shell_environment_policy: Object.freeze({
-          inherit: 'all',
-          set: Object.freeze({ ...threadConfiguration }),
-        }),
+        shell_environment_policy: codexChildShellEnvironmentPolicy(threadConfiguration),
       }),
     }),
   });

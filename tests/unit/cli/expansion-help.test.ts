@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runCli } from '#src/cli/run.js';
 import { installErrorSchema } from '#src/expansion/rpc-contract.js';
 
+const CHILD_ENV_KEYS = ['CORAL_CHILD', 'CORAL_CHILD_PRINCIPAL_HANDLE', 'CORAL_JOB_ID', 'CORAL_SESSION_ID'] as const;
+
 function toText(chunk: string | Uint8Array): string {
   return typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
 }
@@ -12,6 +14,7 @@ function toText(chunk: string | Uint8Array): string {
 // ran first, which flaked against the 5s default; collection absorbs it now.
 describe('expansion bootstrap output', () => {
   const originalArgv = [...process.argv];
+  const originalChildEnv = new Map(CHILD_ENV_KEYS.map((key) => [key, process.env[key]]));
   let stdout = '';
   let stderr = '';
 
@@ -37,6 +40,14 @@ describe('expansion bootstrap output', () => {
   afterEach(() => {
     process.argv = [...originalArgv];
     process.exitCode = undefined;
+    for (const key of CHILD_ENV_KEYS) {
+      const original = originalChildEnv.get(key);
+      if (original === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = original;
+      }
+    }
     vi.restoreAllMocks();
   });
 
@@ -60,5 +71,24 @@ describe('expansion bootstrap output', () => {
     const parsed = installErrorSchema.parse(JSON.parse(stdout));
     expect(parsed.code).toBe('invalid_usage');
     expect(process.exit).toHaveBeenCalledWith(2);
+  });
+
+  it('normalizes incomplete child credentials inside the expansion JSON contract', async () => {
+    process.env.CORAL_CHILD = '1';
+    delete process.env.CORAL_CHILD_PRINCIPAL_HANDLE;
+    delete process.env.CORAL_JOB_ID;
+    delete process.env.CORAL_SESSION_ID;
+
+    await run(['expansion', 'list']);
+
+    expect(stderr).toBe('');
+    expect(stdout.trim().split('\n')).toHaveLength(1);
+    const parsed = installErrorSchema.parse(JSON.parse(stdout));
+    expect(parsed).toMatchObject({
+      code: 'child_credentials_incomplete',
+      userMessage: 'This nested Coral command has incomplete child credentials and was not sent.',
+      remediation: expect.stringContaining('top-level Coral session'),
+    });
+    expect(process.exitCode).toBe(77);
   });
 });

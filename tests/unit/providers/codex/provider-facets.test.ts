@@ -133,7 +133,12 @@ describe('codexAppServerLifecycle.probe', () => {
       model: null,
       modelProvider: 'openai',
       approvalPolicy: 'never',
-      config: {},
+      config: {
+        shell_environment_policy: {
+          inherit: 'all',
+          set: { CORAL_CHILD: '1' },
+        },
+      },
     });
   });
 

@@ -25,6 +25,7 @@ import { formatWaitProgress, formatWaitTerminal, formatWaitWaiting } from '#src/
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/infra/path/store.js';
+import { IpcRpcError } from '#src/transport/ipc/client.js';
 
 const genericInstallMethod = 'shell' satisfies InstallMethod;
 
@@ -428,6 +429,25 @@ describe('cli main routing', () => {
     expect(program.commands.find((command) => command.name() === 'expansion')).toBeDefined();
   });
 
+  it('surfaces child lifecycle denial from backend shutdown without reporting success', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    mockState.shutdownBackend.mockResolvedValueOnce({
+      ok: false,
+      reason:
+        "this nested Coral process cannot shut down its parent coordinator; return to the top-level Coral session and run 'coral-cli backend shutdown' there",
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
+
+    expect(mockState.shutdownBackend).toHaveBeenCalledTimes(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain(
+      "Shutdown failed: this nested Coral process cannot shut down its parent coordinator; return to the top-level Coral session and run 'coral-cli backend shutdown' there",
+    );
+    expect(process.exitCode).toBe(1);
+  });
+
   it('preserves top-level help output via snapshot', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
@@ -643,6 +663,32 @@ describe('cli main routing', () => {
     const parsed = installErrorSchema.parse(parseSingleExpansionLine(stdout, stderr));
     expect(parsed.code).not.toBe('invalid_usage');
     expect(process.exitCode).toBe(1);
+  });
+
+  it('preserves expansion capability denials as one typed JSON line with exit 77', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    mockState.expansionEquip.mockRejectedValueOnce(
+      new IpcRpcError({
+        code: -32_603,
+        message: 'This nested Coral session cannot perform this command.',
+        data: {
+          code: 'missing_capability',
+          message: 'This nested Coral session cannot perform this command.',
+          detail: { requires: 'expansions:manage' },
+        },
+      }),
+    );
+
+    await parseWithExpansionNormalization(program, ['expansion', 'equip', 'vector']);
+
+    expect(installErrorSchema.parse(parseSingleExpansionLine(stdout, stderr))).toMatchObject({
+      code: 'missing_capability',
+      userMessage: 'This nested Coral session cannot perform this command.',
+      remediation: expect.stringContaining('top-level Coral session'),
+      context: { requires: 'expansions:manage' },
+    });
+    expect(process.exitCode).toBe(77);
   });
 
   it('normalizes expansion unknown-flag usage failures to one stdout InstallError JSON line', async () => {

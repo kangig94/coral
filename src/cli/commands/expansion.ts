@@ -38,7 +38,13 @@ function expansionExitCode(result: InstallResult | InstallError): number {
     return 0;
   }
 
-  return result.code === 'invalid_usage' ? 2 : 1;
+  if (result.code === 'invalid_usage') {
+    return 2;
+  }
+  if (result.code === 'missing_capability' || result.code === 'child_credentials_incomplete') {
+    return 77;
+  }
+  return 1;
 }
 
 function writeJsonLineAndExit(line: string, exitCode: number): void {
@@ -70,7 +76,7 @@ function normalizeExpansionResult(result: InstallResponse): InstallResult | Inst
 async function runExpansionCommand<TArgs extends ExpansionArgs>(
   rawArgs: TArgs,
   schema: z.ZodType<TArgs>,
-  execute: (args: TArgs) => Promise<InstallResponse>,
+  execute: (activation: ReturnType<typeof createCliExpansionActivation>, args: TArgs) => Promise<InstallResponse>,
 ): Promise<void> {
   try {
     let parsed: TArgs;
@@ -84,7 +90,7 @@ async function runExpansionCommand<TArgs extends ExpansionArgs>(
       throw error;
     }
 
-    const result = await execute(parsed);
+    const result = await execute(createCliExpansionActivation(), parsed);
     emitExpansionJsonLine(normalizeExpansionResult(result));
   } catch (error: unknown) {
     emitExpansionJsonLine(encodeInstallError(error));
@@ -128,17 +134,17 @@ export function registerExpansionCommands(program: Command): void {
     .command('list')
     .description('List installed and available expansions')
     .action(async () => {
-      const activation = createCliExpansionActivation();
-      await runExpansionCommand({}, expansionArgsSchema, async () => activation.list());
+      await runExpansionCommand({}, expansionArgsSchema, async (activation) => activation.list());
     });
 
   expansion
     .command('equip <name>')
     .description('Install or activate an expansion')
     .action(async (name: string) => {
-      const activation = createCliExpansionActivation();
-      await runExpansionCommand({ name }, namedExpansionArgsSchema, async ({ name: parsedName }: NamedExpansionArgs) =>
-        activation.equip(parsedName),
+      await runExpansionCommand(
+        { name },
+        namedExpansionArgsSchema,
+        async (activation, { name: parsedName }: NamedExpansionArgs) => activation.equip(parsedName),
       );
     });
 
@@ -146,9 +152,10 @@ export function registerExpansionCommands(program: Command): void {
     .command('unequip <name>')
     .description('Remove an expansion from the coordinator catalog and local install')
     .action(async (name: string) => {
-      const activation = createCliExpansionActivation();
-      await runExpansionCommand({ name }, namedExpansionArgsSchema, async ({ name: parsedName }: NamedExpansionArgs) =>
-        activation.unequip(parsedName),
+      await runExpansionCommand(
+        { name },
+        namedExpansionArgsSchema,
+        async (activation, { name: parsedName }: NamedExpansionArgs) => activation.unequip(parsedName),
       );
     });
 
@@ -156,9 +163,10 @@ export function registerExpansionCommands(program: Command): void {
     .command('remove-catalog <name>')
     .description('Remove a catalog entry or clean up artifacts from a retired expansion')
     .action(async (name: string) => {
-      const activation = createCliExpansionActivation();
-      await runExpansionCommand({ name }, namedExpansionArgsSchema, async ({ name: parsedName }: NamedExpansionArgs) =>
-        activation.removeCatalog(parsedName),
+      await runExpansionCommand(
+        { name },
+        namedExpansionArgsSchema,
+        async (activation, { name: parsedName }: NamedExpansionArgs) => activation.removeCatalog(parsedName),
       );
     });
 
@@ -166,9 +174,10 @@ export function registerExpansionCommands(program: Command): void {
     .command('update <name>')
     .description('Update an installed expansion')
     .action(async (name: string) => {
-      const activation = createCliExpansionActivation();
-      await runExpansionCommand({ name }, namedExpansionArgsSchema, async ({ name: parsedName }: NamedExpansionArgs) =>
-        activation.update(parsedName),
+      await runExpansionCommand(
+        { name },
+        namedExpansionArgsSchema,
+        async (activation, { name: parsedName }: NamedExpansionArgs) => activation.update(parsedName),
       );
     });
 
@@ -176,9 +185,10 @@ export function registerExpansionCommands(program: Command): void {
     .command('info <name>')
     .description('Show expansion metadata and install state')
     .action(async (name: string) => {
-      const activation = createCliExpansionActivation();
-      await runExpansionCommand({ name }, namedExpansionArgsSchema, async ({ name: parsedName }: NamedExpansionArgs) =>
-        activation.info(parsedName),
+      await runExpansionCommand(
+        { name },
+        namedExpansionArgsSchema,
+        async (activation, { name: parsedName }: NamedExpansionArgs) => activation.info(parsedName),
       );
     });
 }

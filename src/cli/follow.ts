@@ -10,7 +10,7 @@ import { HEALTH_TIMEOUT_MS } from '../transport/http/sse.js';
 import { isTransientStreamError } from '../infra/http-errors.js';
 import { assertNever } from '../infra/error-format.js';
 import { ensure } from '../transport/ipc/ensure.js';
-import { childPrincipalAuthFromEnv } from '../transport/ipc/child-principal-auth.js';
+import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import { formatLaunch } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
 import { mapWaitSubscriptionError } from './wait-stream-error.js';
@@ -136,13 +136,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
   let sigintCount = 0;
   let abortPromise: Promise<void> | null = null;
   const causeRenderer = openCliCauseRefRenderer(options.projectRoot);
-  const ipcAuth = childPrincipalAuthFromEnv();
-  const ipcAuthOptions = (): { auth: NonNullable<typeof ipcAuth> } | undefined => {
-    if (ipcAuth === null) {
-      throw new Error('CORAL_CHILD_PRINCIPAL_HANDLE is required for IPC re-entry from a Coral child process.');
-    }
-    return ipcAuth === undefined ? undefined : { auth: ipcAuth };
-  };
+  const ipcAuthOptions = childPrincipalAuthOptions(childPrincipalAuthFromEnv());
 
   const onSigint = () => {
     sigintCount += 1;
@@ -213,7 +207,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
           {
             timeoutMs: HEALTH_TIMEOUT_MS,
             signal: controller.signal,
-            ...ipcAuthOptions(),
+            ...ipcAuthOptions,
           },
         );
 

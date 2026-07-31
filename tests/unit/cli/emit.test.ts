@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { emitError, isAcceptedLaunchResponse } from '#src/cli/emit.js';
 import { StoreResetCliError } from '#src/cli/errors.js';
+import { IpcRpcError } from '#src/transport/ipc/client.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -86,5 +87,37 @@ describe('store-reset error emission', () => {
         'remediation: Retry once. If it still fails, file a Store-reset incident issue with this fixed error output; do not move, restore, delete, or attach DB, WAL, SHM, or raw logs.\n',
     );
     expect(process.exitCode).toBe(70);
+  });
+});
+
+describe('IPC authorization error emission', () => {
+  it('renders nested capability denial with its public code and permission exit', () => {
+    let stdout = '';
+    let stderr = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      stdout += chunk.toString();
+      return true;
+    }) as typeof process.stdout.write);
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+      stderr += chunk.toString();
+      return true;
+    }) as typeof process.stderr.write);
+
+    emitError(
+      new IpcRpcError({
+        code: -32603,
+        message: 'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
+        data: {
+          code: 'missing_capability',
+          message: 'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
+        },
+      }),
+    );
+
+    expect(stdout).toBe('');
+    expect(stderr).toBe(
+      'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it. [code=missing_capability]\n',
+    );
+    expect(process.exitCode).toBe(77);
   });
 });

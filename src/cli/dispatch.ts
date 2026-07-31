@@ -67,7 +67,7 @@ import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
 import { ensure, shutdownAndAwaitRelease, type RawCoordinatorHealth } from '../transport/ipc/ensure.js';
-import { childPrincipalAuthFromEnv } from '../transport/ipc/child-principal-auth.js';
+import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
 import { filterForwardableCoralEnv } from '../infra/env-sanitize.js';
 import { collectForwardedNetworkEnv } from '../infra/network-env.js';
@@ -486,12 +486,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
   const defaultContext = createDefaultInvocationContext(projectRoot);
   const providerRegistry = createBuiltInProviderRegistry();
   const ipcAuth = childPrincipalAuthFromEnv();
-  const ipcAuthOptions = (): { auth: NonNullable<typeof ipcAuth> } | undefined => {
-    if (ipcAuth === null) {
-      throw new Error('CORAL_CHILD_PRINCIPAL_HANDLE is required for IPC re-entry from a Coral child process.');
-    }
-    return ipcAuth === undefined ? undefined : { auth: ipcAuth };
-  };
+  const ipcAuthOptions = () => childPrincipalAuthOptions(ipcAuth);
 
   // Lazy KB re-enable: a `kb …` command run with CORAL_KB_ENABLE=1 against a
   // daemon that booted with KB disabled restarts the daemon so it respawns with
@@ -523,11 +518,12 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
   };
 
   const request = async <TResult>(method: string, params?: unknown): Promise<TResult> => {
+    const authOptions = ipcAuthOptions();
     await reconcileKbBoot();
     const client = await ensure(resolvePluginRoot());
     return client.request<TResult>(method, params, {
       timeoutMs: TOOL_TIMEOUT_MS,
-      ...ipcAuthOptions(),
+      ...authOptions,
     });
   };
 
@@ -540,12 +536,13 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       throw new Error(`Command "${path}" is classified as ${commandClass} and cannot open subscriptions.`);
     }
 
+    const authOptions = ipcAuthOptions();
     await reconcileKbBoot();
     const client = await ensure(resolvePluginRoot());
     return client.subscribe<TResult>(method, params, {
       timeoutMs: HEALTH_TIMEOUT_MS,
       ...options,
-      ...ipcAuthOptions(),
+      ...authOptions,
     });
   };
 

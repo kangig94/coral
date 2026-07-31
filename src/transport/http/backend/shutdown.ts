@@ -4,6 +4,7 @@ import { isProcessAlive } from '../../../infra/node-process.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isRecord } from '../../../infra/json.js';
+import { isCoralChildEnvironment } from '../../../security/child-principal-env.js';
 
 export type ShutdownResult = { ok: true; alreadyDraining?: true } | { ok: false; reason: string };
 
@@ -17,6 +18,13 @@ function isShutdownAccepted(value: unknown): boolean {
 
 export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResult> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
+  if (isCoralChildEnvironment(runtime.env.fullSnapshot())) {
+    return {
+      ok: false,
+      reason:
+        "this nested Coral process cannot shut down its parent coordinator; return to the top-level Coral session and run 'coral-cli backend shutdown' there",
+    };
+  }
   const info = readBackendInfo({
     storage: runtime.storage,
     env: runtime.env,

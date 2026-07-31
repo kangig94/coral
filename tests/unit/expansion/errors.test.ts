@@ -6,6 +6,8 @@ import { UserInputError } from '#src/cli/commands/expansion.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { installErrorSchema } from '#src/expansion/rpc-contract.js';
 import { encodeInstallError } from '#src/cli/expansion/contract.js';
+import { ChildPrincipalBindingError } from '#src/transport/ipc/child-principal-auth.js';
+import { IpcRpcError } from '#src/transport/ipc/client.js';
 
 describe('encodeInstallError', () => {
   it('encodes CoralSetupError instances', () => {
@@ -84,6 +86,42 @@ describe('encodeInstallError', () => {
       code: 'unknown_error',
       userMessage: 'install blew up',
       remediation: 'Retry once, then report the full JSON error and check the coordinator logs if it persists.',
+    });
+    expect(installErrorSchema.parse(encoded)).toEqual(encoded);
+  });
+
+  it('preserves incomplete child credentials as an actionable authorization error', () => {
+    const encoded = encodeInstallError(new ChildPrincipalBindingError());
+
+    expect(encoded).toEqual({
+      status: 'error',
+      code: 'child_credentials_incomplete',
+      userMessage: 'This nested Coral command has incomplete child credentials and was not sent.',
+      remediation:
+        'Return to the top-level Coral session and run the command there. Retry the parent workflow instead of editing CORAL_* environment variables.',
+    });
+    expect(installErrorSchema.parse(encoded)).toEqual(encoded);
+  });
+
+  it('preserves coordinator capability denials and their structured detail', () => {
+    const encoded = encodeInstallError(
+      new IpcRpcError({
+        code: -32_603,
+        message: 'This nested Coral session cannot perform this command.',
+        data: {
+          code: 'missing_capability',
+          message: 'This nested Coral session cannot perform this command.',
+          detail: { requires: 'expansions:manage' },
+        },
+      }),
+    );
+
+    expect(encoded).toEqual({
+      status: 'error',
+      code: 'missing_capability',
+      userMessage: 'This nested Coral session cannot perform this command.',
+      remediation: 'Return to the top-level Coral session and run this expansion command there.',
+      context: { requires: 'expansions:manage' },
     });
     expect(installErrorSchema.parse(encoded)).toEqual(encoded);
   });

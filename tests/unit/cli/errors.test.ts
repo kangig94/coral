@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { StoreResetCliError, UsageError, buildErrorEnvelope, errorCodeToExit } from '#src/cli/errors.js';
+import { ChildPrincipalBindingError } from '#src/transport/ipc/child-principal-auth.js';
+import { IpcRpcError } from '#src/transport/ipc/client.js';
 
 describe('cli errors', () => {
   describe('buildErrorEnvelope', () => {
@@ -73,6 +75,43 @@ describe('cli errors', () => {
           message: 'fetch failed',
         },
         exitCode: 69,
+      });
+    });
+
+    it('maps incomplete nested credentials to a public remediation without exposing variable names', () => {
+      expect(buildErrorEnvelope(new ChildPrincipalBindingError())).toEqual({
+        envelope: {
+          error: true,
+          code: 'child_credentials_incomplete',
+          message: 'This nested Coral command has incomplete child credentials and was not sent.',
+          remediation:
+            'Return to the top-level Coral session and run the command there. Retry the parent workflow instead of editing CORAL_* environment variables.',
+        },
+        exitCode: 77,
+      });
+    });
+
+    it('preserves a nested capability denial as authorization instead of internal failure', () => {
+      expect(
+        buildErrorEnvelope(
+          new IpcRpcError({
+            code: -32603,
+            message: 'This nested Coral session cannot perform this command.',
+            data: {
+              code: 'missing_capability',
+              message: 'This nested Coral session cannot perform this command.',
+              detail: { requires: 'sessions:create' },
+            },
+          }),
+        ),
+      ).toEqual({
+        envelope: {
+          error: true,
+          code: 'missing_capability',
+          message: 'This nested Coral session cannot perform this command.',
+          detail: { requires: 'sessions:create' },
+        },
+        exitCode: 77,
       });
     });
 
@@ -158,6 +197,8 @@ describe('cli errors', () => {
       ['backend_shutting_down', undefined, 75],
       ['backend_error', 503, 75],
       ['backend_unreachable', undefined, 69],
+      ['missing_capability', undefined, 77],
+      ['child_credentials_incomplete', undefined, 77],
       ['internal', undefined, 70],
       ['internal_error', undefined, 70],
       ['backend_error', 500, 70],

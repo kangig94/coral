@@ -1,16 +1,31 @@
 import { randomBytes } from 'node:crypto';
 
-import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../security/child-principal-env.js';
+import {
+  CORAL_CHILD_PRINCIPAL_HANDLE,
+  isCoralChildEnvironment,
+  type CoralChildEnvironment,
+} from '../../security/child-principal-env.js';
 import type { IpcAuthMetadata } from './json-rpc.js';
 
 export { CORAL_CHILD_PRINCIPAL_HANDLE };
 
-export type ChildPrincipalEnv = Partial<
-  Record<'CORAL_CHILD' | 'CORAL_JOB_ID' | 'CORAL_SESSION_ID' | typeof CORAL_CHILD_PRINCIPAL_HANDLE, string | undefined>
-> &
-  Record<string, string | undefined>;
+export type ChildPrincipalEnv = CoralChildEnvironment;
 
 export type ChildPrincipalNonceFactory = () => string;
+export type ChildPrincipalAuthProvider = (() => IpcAuthMetadata) | null | undefined;
+export type ChildPrincipalAuthOptions = { readonly auth: Exclude<ChildPrincipalAuthProvider, null | undefined> };
+
+export class ChildPrincipalBindingError extends Error {
+  readonly code = 'child_credentials_incomplete';
+  readonly exitCode = 77;
+  readonly remediation =
+    'Return to the top-level Coral session and run the command there. Retry the parent workflow instead of editing CORAL_* environment variables.';
+
+  constructor() {
+    super('This nested Coral command has incomplete child credentials and was not sent.');
+    this.name = 'ChildPrincipalBindingError';
+  }
+}
 
 function defaultNonce(): string {
   return randomBytes(16).toString('hex');
@@ -23,7 +38,7 @@ function nonEmpty(value: string | undefined): string | undefined {
 export function childPrincipalAuthFromEnv(
   env: ChildPrincipalEnv = process.env,
   nonce: ChildPrincipalNonceFactory = defaultNonce,
-): (() => IpcAuthMetadata) | null | undefined {
+): ChildPrincipalAuthProvider {
   const handle = nonEmpty(env[CORAL_CHILD_PRINCIPAL_HANDLE]);
   const jobId = nonEmpty(env.CORAL_JOB_ID);
   const sessionId = nonEmpty(env.CORAL_SESSION_ID);
@@ -38,7 +53,15 @@ export function childPrincipalAuthFromEnv(
     });
   }
 
-  return env.CORAL_CHILD === '1' || handle !== undefined || jobId !== undefined || sessionId !== undefined
-    ? null
-    : undefined;
+  return isCoralChildEnvironment(env) ? null : undefined;
+}
+
+/**
+ * Convert a captured child-principal provider into IPC request options while
+ * keeping incomplete nested credentials out of coordinator discovery/lifecycle
+ * work and giving the CLI an actionable public error.
+ */
+export function childPrincipalAuthOptions(auth: ChildPrincipalAuthProvider): ChildPrincipalAuthOptions | undefined {
+  if (auth === null) throw new ChildPrincipalBindingError();
+  return auth === undefined ? undefined : { auth };
 }

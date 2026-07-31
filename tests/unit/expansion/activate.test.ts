@@ -116,6 +116,15 @@ describe('expansion activation', () => {
     }
   });
 
+  it('rejects incomplete child credentials before coordinator ensure', () => {
+    process.env.CORAL_CHILD = '1';
+
+    expect(() => createCliExpansionActivation()).toThrow(
+      'This nested Coral command has incomplete child credentials and was not sent.',
+    );
+    expect(mockState.ensure).not.toHaveBeenCalled();
+  });
+
   it('activates expansions through ensure-backed coordinator IPC', async () => {
     const activation = createCliExpansionActivation();
     const request = vi.fn().mockResolvedValue({
