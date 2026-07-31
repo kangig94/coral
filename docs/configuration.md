@@ -41,6 +41,14 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_KB_ENABLE`                     | _(unset → enabled)_                            | Set `0` to boot the daemon without spawning the KB daemon — no corpus indexing, curate, retrieval, or KB content injected into sessions/agents. `1` or unset enables it; a malformed value warns once and leaves KB enabled. Read from the daemon's environment at startup like `CORAL_KB_IMPORT_MAX_BYTES`. Flipping `0`→`1` and running any `kb …` command transparently restarts the daemon to bring KB online (that one command waits for daemon-ready; KB daemon boot remains non-blocking)                                                                                    |
 | `GEMINI_API_KEY`                      | _(none)_                                       | API key the Gemini embedding expansion reads when equipped (`coral-cli expansion equip gemini`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
+Project ignore migration is independent of `CORAL_AUTO_SYMLINK`. On a valid project
+SessionStart, Coral checks the Git-root `.gitignore` for the exact legacy entry that
+older Coral versions generated (`.claude/coral` at the root, or the project-relative
+equivalent for a nested project). When found, Coral first establishes a standalone
+`coral` entry in `.claude/.gitignore`, then atomically removes only the legacy line.
+The one-time migration is reported in SessionStart context. Unsafe or concurrently
+changed paths retain the legacy entry and fail open without blocking the session.
+
 ### Multi-Account Provider Routing
 
 Coral runs one account-neutral daemon and store per flavor. Provider selectors never choose a socket, daemon, or Coral state directory. Each local CLI invocation captures only the providers that operation can launch: `CODEX_HOME` selects a Codex profile and `CLAUDE_CONFIG_DIR` selects a Claude profile. If either variable is unset, Coral constructs the explicit caller-local default shown above and canonicalizes it; it never inherits selector state from the process that booted the daemon.
