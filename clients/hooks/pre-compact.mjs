@@ -21,9 +21,9 @@ import { exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin
 exitIfChildProcess();
 exitIfWrongFlavor();
 
-function storeDbPath() {
-  const dataDir = buildFlavor() === 'dev' ? 'data-dev' : 'data';
-  return join(coralStateRoot(), dataDir, 'store', 'store.db');
+function storeDbPath(flavor = buildFlavor(), stateRoot = coralStateRoot()) {
+  const dataDir = flavor === 'dev' ? 'data-dev' : 'data';
+  return join(stateRoot, 'gen2', dataDir, 'store', 'store.db');
 }
 
 function snapshotDirForProject(projectDir) {

@@ -6,7 +6,7 @@ import {
   zodPersistedContract,
   type CanonicalContractValue,
   type PersistedDdlFragment,
-  type StoreFormatDescription,
+  type StoreFormatFingerprintDescription,
 } from './format-fingerprint.js';
 import type { ComposedReducers } from './reducers.js';
 import schemaSource from './schema.sql';
@@ -82,7 +82,7 @@ export function createCurrentStoreFormat(
   schemas: CurrentStoreCodecSchemas,
   ddlFragments: readonly PersistedDdlFragment[],
   components: readonly CurrentStoreCodecComponent[] = [],
-): StoreFormatDescription {
+): StoreFormatFingerprintDescription {
   const codecs = new PersistedCodecRegistry();
   registerEventBodyCodec(codecs, reducers);
   codecs.registerZodComponent('store.events.envelope', schemas.eventEnvelope);

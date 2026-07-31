@@ -53,7 +53,7 @@ function coralProjectDir(homeDir: string, source: string): string {
 
 function seedCodebaseMemoryBinary(homeDir: string): void {
   for (const dataDir of ['data', 'data-dev']) {
-    const dir = join(homeDir, '.coral', dataDir, 'engines', 'codebase-memory');
+    const dir = join(homeDir, '.coral', 'gen2', dataDir, 'engines', 'codebase-memory');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'codebase-memory-mcp'), 'binary');
   }
@@ -769,7 +769,7 @@ describe('codex.json', () => {
 
 describe('pre-compact.mjs', () => {
   function seedStore(homeDir: string, projectRoot: string, fingerprint: string): void {
-    const storeDir = join(homeDir, '.coral', 'data', 'store');
+    const storeDir = join(homeDir, '.coral', 'gen2', 'data', 'store');
     mkdirSync(storeDir, { recursive: true });
     const db = new DatabaseSync(join(storeDir, 'store.db'));
     try {
@@ -889,7 +889,7 @@ describe('pre-compact.mjs', () => {
     cpSync(join(process.cwd(), 'clients', 'hooks'), hooksRoot, { recursive: true });
     const fingerprint = 'sha256:3333333333333333333333333333333333333333333333333333333333333333';
     seedStore(fixture.root, fixture.projectRoot, fingerprint);
-    const shmPath = join(fixture.root, '.coral', 'data', 'store', 'store.db-shm');
+    const shmPath = join(fixture.root, '.coral', 'gen2', 'data', 'store', 'store.db-shm');
     writeFileSync(shmPath, 'untouched-shm', 'utf8');
     const before = { bytes: readFileSync(shmPath), mtimeMs: statSync(shmPath).mtimeMs };
 

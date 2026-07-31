@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
 import { dirname, join, resolve } from 'node:path';
 
 import { writeAuditEvent } from '../infra/audit-log.js';
@@ -9,7 +8,8 @@ import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
-import { classifyStoreFormat, openStoreDatabase, type Database, type StoreFormatClassification } from './db.js';
+import { classifyStoreFile, openStoreDatabase, type Database } from './db.js';
+import type { StoreFormatClassification } from './format-fingerprint.js';
 import type { StoreFormatDescription, StoreFormatFingerprint } from './format-fingerprint.js';
 import {
   isCanonicalStoreResetIncidentId,
@@ -32,6 +32,10 @@ const STEADY_STATE_BUSY_TIMEOUT_MS = 5_000;
 const STORE_FORMAT_FINGERPRINT_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 const BACKEND_STORE_RESET_AUTHORITY_BRAND: unique symbol = Symbol('BackendStoreResetAuthority');
+
+type ResettableStoreFormatClassification =
+  | { readonly kind: 'missing'; readonly current: StoreFormatFingerprint }
+  | { readonly kind: 'mismatch'; readonly current: StoreFormatFingerprint; readonly stored: string };
 
 export type BackendStoreResetAuthority = Readonly<{
   socketPath: string;
@@ -175,12 +179,32 @@ function assertResetAuthority(
   }
 }
 
-function storedFingerprint(
-  classification: Exclude<StoreFormatClassification, { kind: 'fresh' | 'current' }>,
-): string | null {
+function storedFingerprint(classification: ResettableStoreFormatClassification): string | null {
   return classification.kind === 'mismatch' && STORE_FORMAT_FINGERPRINT_PATTERN.test(classification.stored)
     ? classification.stored
     : null;
+}
+
+function resettableStoreFormatClassification(
+  classification: StoreFormatClassification,
+): ResettableStoreFormatClassification | null {
+  if (
+    classification.kind === 'absent' ||
+    classification.kind === 'fresh' ||
+    classification.kind === 'compatible' ||
+    classification.kind === 'legacy-adoptable'
+  ) {
+    return null;
+  }
+  const storedFingerprint = classification.storedFingerprint;
+  if (storedFingerprint !== null && STORE_FORMAT_FINGERPRINT_PATTERN.test(storedFingerprint)) {
+    return {
+      kind: 'mismatch',
+      current: classification.currentFingerprint,
+      stored: storedFingerprint,
+    };
+  }
+  return { kind: 'missing', current: classification.currentFingerprint };
 }
 
 function sameFileIdentity(left: StorageBigIntStat, right: StorageBigIntStat): boolean {
@@ -664,7 +688,7 @@ function removeCommittedActiveEvidence(
 function createIncidentManifest(
   runtime: Pick<Runtime, 'env'>,
   authority: BackendStoreResetAuthority,
-  classification: Exclude<StoreFormatClassification, { kind: 'fresh' | 'current' }>,
+  classification: ResettableStoreFormatClassification,
   incidentId: string,
   resetAt: string,
   files: readonly StoreResetIncidentFile[],
@@ -719,7 +743,7 @@ function publishIncident(
   runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'storage' | 'time'>,
   authority: BackendStoreResetAuthority,
   files: StoreFileSet,
-  classification: Exclude<StoreFormatClassification, { kind: 'fresh' | 'current' }>,
+  classification: ResettableStoreFormatClassification,
 ): BackendStoreResetIncident | undefined {
   const candidates = activeEvidenceCandidates(runtime.storage, files);
   if (candidates.length === 0) {
@@ -799,7 +823,7 @@ function publishIncident(
 }
 
 function warnBackendStoreReset(
-  classification: Exclude<StoreFormatClassification, { kind: 'fresh' | 'current' }>,
+  classification: ResettableStoreFormatClassification,
   incident: BackendStoreResetIncident | undefined,
 ): void {
   backendLog.warn(
@@ -812,22 +836,6 @@ function warnBackendStoreReset(
         : `Incident ${incident.incidentId} was recorded. If this reset was unexpected, run ` +
           `coral-cli backend store-reset report ${incident.incidentId}.`),
   );
-}
-
-function classifyStoreFile(
-  path: string,
-  storage: Pick<StoragePort, 'existsSync'>,
-  storeFormat: StoreFormatDescription,
-): StoreFormatClassification {
-  if (path !== ':memory:' && !storage.existsSync(path)) {
-    return { kind: 'fresh' };
-  }
-  const db = new DatabaseSync(path, { readOnly: true }) as unknown as Database;
-  try {
-    return classifyStoreFormat(db, storeFormat.fingerprint);
-  } finally {
-    db.close();
-  }
 }
 
 export function openOrResetBackendStoreDb(
@@ -886,9 +894,10 @@ export function openOrResetBackendStoreDb(
     }
 
     const classification = classifyStoreFile(files.dbFile, runtime.storage, options.storeFormat);
-    if (classification.kind === 'missing' || classification.kind === 'mismatch') {
-      const incident = publishIncident(runtime, authority, files, classification);
-      warnBackendStoreReset(classification, incident);
+    const resettableClassification = resettableStoreFormatClassification(classification);
+    if (resettableClassification !== null) {
+      const incident = publishIncident(runtime, authority, files, resettableClassification);
+      warnBackendStoreReset(resettableClassification, incident);
     }
 
     const db = openStoreDatabase({

@@ -71,7 +71,13 @@ describe('store schema idempotency', () => {
         value: key === 'coordinator_id' || key === 'created_ts' ? '<dynamic>' : value,
       }));
       expect(meta).toContainEqual({ key: 'store_format_fingerprint', value: currentCoralStoreFormat().fingerprint });
-      expect(meta.map((row) => row.key)).toEqual(['coordinator_id', 'created_ts', 'store_format_fingerprint']);
+      expect(meta).toContainEqual({ key: 'store_product_version', value: currentCoralStoreFormat().productVersion });
+      expect(meta.map((row) => row.key)).toEqual([
+        'coordinator_id',
+        'created_ts',
+        'store_format_fingerprint',
+        'store_product_version',
+      ]);
 
       expect(
         db

@@ -48,7 +48,7 @@ describe('coral-hud account isolation', () => {
 
     expect(hudCacheFile(cacheDir, accountA)).not.toBe(hudCacheFile(cacheDir, accountB));
     expect(hudFetchLockPath(cacheDir, accountA)).not.toBe(hudFetchLockPath(cacheDir, accountB));
-    expect(coralBackendInfoPath('/home/operator')).toBe('/home/operator/.coral/run/coordinator.json');
+    expect(coralBackendInfoPath('/home/operator')).toBe('/home/operator/.coral/gen2/run/coordinator.json');
   });
 
   it('allows macOS Keychain only for ambient Claude', () => {

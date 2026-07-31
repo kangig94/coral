@@ -2,17 +2,18 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { dirname, resolve } from 'node:path';
 
 import type { StoragePort } from '../infra/port-types.js';
+import { compareProductVersions, validateProductVersion } from '../infra/product-version.js';
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { ReadonlyDatabase, ReadonlyStatement } from './read-port.js';
 import {
-  compareStoreFormatFingerprint,
+  isStoreFormatFingerprint,
+  type StoreFormatClassification,
   type StoreFormatDescription,
-  type StoreFormatFingerprint,
-  type StoreFormatFingerprintComparison,
 } from './format-fingerprint.js';
 
 const STORE_FORMAT_FINGERPRINT_KEY = 'store_format_fingerprint';
+const STORE_PRODUCT_VERSION_KEY = 'store_product_version';
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 
 /**
@@ -104,34 +105,114 @@ export function applyJournalPragmas(db: Database, mode: JournalPragmaMode): void
   }
 }
 
-export type StoreFormatClassification = StoreFormatFingerprintComparison | { readonly kind: 'fresh' };
-
 const USER_TABLE_EXISTS_SQL = "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1";
 
 function hasUserTable(db: Database): boolean {
   return db.prepare(USER_TABLE_EXISTS_SQL).get() !== undefined;
 }
 
-function readStoredFormatFingerprint(db: Database): string | null {
+type StoredMetadataValue =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'present'; readonly value: unknown }
+  | { readonly kind: 'unsupported' };
+
+function readStoredMetadataValue(db: Database, key: string): StoredMetadataValue {
   try {
-    const row = db
-      .prepare<[string], { value?: unknown }>('SELECT value FROM meta WHERE key = ? LIMIT 1')
-      .get(STORE_FORMAT_FINGERPRINT_KEY);
-    if (typeof row?.value !== 'string') {
-      return null;
-    }
-    return row.value;
+    const row = db.prepare<[string], { value?: unknown }>('SELECT value FROM meta WHERE key = ? LIMIT 1').get(key);
+    return row === undefined ? { kind: 'absent' } : { kind: 'present', value: row.value };
   } catch (error: unknown) {
     if (error instanceof Error && /no such table: meta/i.test(error.message)) {
-      return null;
+      return { kind: 'absent' };
+    }
+    if (error instanceof Error && /no such column/i.test(error.message)) {
+      return { kind: 'unsupported' };
     }
     throw error;
   }
 }
 
-export function classifyStoreFormat(db: Database, current: StoreFormatFingerprint): StoreFormatClassification {
+function stringMetadataValue(metadata: StoredMetadataValue): string | null {
+  return metadata.kind === 'present' && typeof metadata.value === 'string' ? metadata.value : null;
+}
+
+function corruptOrUnsupported(
+  current: StoreFormatDescription,
+  storedFingerprint: string | null,
+  storedProductVersion: string | null,
+): StoreFormatClassification {
+  return {
+    kind: 'corrupt-or-unsupported',
+    currentFingerprint: current.fingerprint,
+    currentProductVersion: current.productVersion,
+    storedFingerprint,
+    storedProductVersion,
+  };
+}
+
+export function classifyStoreFormat(db: Database, current: StoreFormatDescription): StoreFormatClassification {
+  if (!isStoreFormatFingerprint(current.fingerprint)) {
+    throw new TypeError(`Invalid current store format fingerprint: ${current.fingerprint}`);
+  }
+  const currentProductVersion = validateProductVersion(current.productVersion);
+  if (currentProductVersion === null) {
+    throw new TypeError(`Invalid current Coral product version: ${current.productVersion}`);
+  }
+
   if (!hasUserTable(db)) return { kind: 'fresh' };
-  return compareStoreFormatFingerprint(readStoredFormatFingerprint(db), current);
+
+  const fingerprintMetadata = readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_KEY);
+  const versionMetadata = readStoredMetadataValue(db, STORE_PRODUCT_VERSION_KEY);
+  const storedFingerprint = stringMetadataValue(fingerprintMetadata);
+  const storedProductVersion = stringMetadataValue(versionMetadata);
+
+  if (!isStoreFormatFingerprint(storedFingerprint)) {
+    return corruptOrUnsupported(current, storedFingerprint, storedProductVersion);
+  }
+
+  if (versionMetadata.kind === 'absent') {
+    return storedFingerprint === current.fingerprint
+      ? {
+          kind: 'legacy-adoptable',
+          currentFingerprint: current.fingerprint,
+          currentProductVersion,
+          storedFingerprint,
+        }
+      : corruptOrUnsupported(current, storedFingerprint, null);
+  }
+
+  if (storedProductVersion === null) {
+    return corruptOrUnsupported(current, storedFingerprint, null);
+  }
+  const validStoredProductVersion = validateProductVersion(storedProductVersion);
+  if (validStoredProductVersion === null) {
+    return corruptOrUnsupported(current, storedFingerprint, storedProductVersion);
+  }
+
+  const precedence = compareProductVersions(validStoredProductVersion, currentProductVersion);
+  const identity = {
+    currentFingerprint: current.fingerprint,
+    currentProductVersion,
+    storedFingerprint,
+    storedProductVersion,
+  };
+  if (precedence > 0) return { kind: 'newer-incompatible', ...identity };
+  if (storedFingerprint === current.fingerprint) return { kind: 'compatible', ...identity };
+  if (precedence < 0) return { kind: 'older-incompatible', ...identity };
+  return { kind: 'corrupt-or-unsupported', ...identity };
+}
+
+export function classifyStoreFile(
+  path: string,
+  storage: Pick<StoragePort, 'existsSync'>,
+  current: StoreFormatDescription,
+): StoreFormatClassification {
+  if (path !== ':memory:' && !storage.existsSync(path)) return { kind: 'absent' };
+  const db = new DatabaseSync(path, { readOnly: path !== ':memory:' }) as unknown as Database;
+  try {
+    return classifyStoreFormat(db, current);
+  } finally {
+    db.close();
+  }
 }
 
 function writeStoreFormatSidecar(options: WritableStoreOptions): void {
@@ -150,14 +231,15 @@ function writeStoreFormatSidecar(options: WritableStoreOptions): void {
 function storeSchemaOutdatedError(
   path: string,
   classification: StoreFormatClassification,
-  current: StoreFormatFingerprint,
+  current: StoreFormatDescription,
 ): Error {
   return documentedCoralSetupError({
     code: 'store_schema_outdated',
     path,
-    storedFingerprint:
-      classification.kind === 'current' || classification.kind === 'mismatch' ? classification.stored : null,
-    currentFingerprint: current,
+    storedFingerprint: 'storedFingerprint' in classification ? classification.storedFingerprint : null,
+    storedProductVersion: 'storedProductVersion' in classification ? classification.storedProductVersion : null,
+    currentFingerprint: current.fingerprint,
+    currentProductVersion: current.productVersion,
     classification: classification.kind,
   });
 }
@@ -166,13 +248,17 @@ export function applyBundledStoreSchema(db: Database, storeFormat: StoreFormatDe
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec(storeFormat.manifest.ddl);
-    const existing = readStoredFormatFingerprint(db);
+    const existing = stringMetadataValue(readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_KEY));
     if (existing !== null && existing !== storeFormat.fingerprint) {
       throw new Error(`Refusing to apply schema over store format '${existing}'.`);
     }
     db.prepare<[string, string]>(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)`).run(
       STORE_FORMAT_FINGERPRINT_KEY,
       storeFormat.fingerprint,
+    );
+    db.prepare<[string, string]>(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)`).run(
+      STORE_PRODUCT_VERSION_KEY,
+      storeFormat.productVersion,
     );
     db.exec('COMMIT');
   } catch (error) {
@@ -202,8 +288,8 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
       });
     }
 
-    const classification = classifyStoreFormat(db, options.storeFormat.fingerprint);
-    if (classification.kind === 'current') {
+    const classification = classifyStoreFormat(db, options.storeFormat);
+    if (classification.kind === 'compatible' || classification.kind === 'legacy-adoptable') {
       if (!readonly) {
         applyJournalPragmas(db, {
           kind: 'writable',
@@ -215,7 +301,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
     }
 
     if (readonly) {
-      throw storeSchemaOutdatedError(options.path, classification, options.storeFormat.fingerprint);
+      throw storeSchemaOutdatedError(options.path, classification, options.storeFormat);
     }
 
     if (classification.kind === 'fresh') {
@@ -228,7 +314,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
       return db;
     }
 
-    throw storeSchemaOutdatedError(options.path, classification, options.storeFormat.fingerprint);
+    throw storeSchemaOutdatedError(options.path, classification, options.storeFormat);
   } catch (error) {
     db.close();
     throw error;
