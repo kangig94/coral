@@ -286,17 +286,24 @@ argument-hint: "[existing|new]"
   cp -r "$STAGING/dot-claude/"* .claude/ && rm -rf "$STAGING"
   ```
 
-  Then create the coral project data symlink and add it to `.gitignore`:
+  Then run Coral's shared project-ignore maintainer. It safely writes the scoped
+  ignore first, migrates the legacy Git-root entry, and only then creates the symlink.
+  This is the same bounded, atomic implementation used by SessionStart; do not
+  reimplement these mutations with shell text processing.
 
   ```bash
-  # Symlink .claude/coral → ~/.coral/projects/{slug}/
-  if [ ! -e .claude/coral ] && [ ! -L .claude/coral ]; then
-    mkdir -p "CORAL_PROJECT"
-    ln -s "CORAL_PROJECT" .claude/coral
+  CORAL_PROJECT_IGNORE_SCRIPT="{skill_base_dir}/../../hooks/project-ignore.mjs"
+  if ! CORAL_PROJECT_IGNORE_RESULT="$(
+    node "$CORAL_PROJECT_IGNORE_SCRIPT" --project-dir "$PWD" --create-symlink
+  )"; then
+    echo "Coral project-ignore setup failed; the legacy ignore entry was preserved. Resolve unsafe or unwritable ignore paths, then retry." >&2
+    exit 1
   fi
-  # Add to .gitignore if not already present
-  grep -qxF '.claude/coral' .gitignore 2>/dev/null || echo '.claude/coral' >> .gitignore
   ```
+
+  Keep `CORAL_PROJECT_IGNORE_RESULT` for the Phase 6 report. A successful result
+  confirms that `.claude/.gitignore` contains a standalone `coral` entry before
+  any legacy protection is removed.
 
   ## Phase 6: Report
 
@@ -313,6 +320,8 @@ argument-hint: "[existing|new]"
 
   ### Updated (stale content corrected)
   - {files with targeted edits, what was changed and why}
+  - {report the project-ignore migration result: generated/updated `.claude/.gitignore`,
+    removed legacy Git-root entry when present, and created/reused `.claude/coral`}
 
   ### Note
   {If CLAUDE.md was enhanced/updated: mention what was added/changed vs preserved}
@@ -340,6 +349,9 @@ argument-hint: "[existing|new]"
   | Agents | `.claude/agents/test-critic.md` | Must exist | Rubric anchors (10/7/4/1) |
   | Template | `.claude/templates/AGENT.md` | Must NOT be created | Internal template — not deployed to user project |
   | Skills | `.claude/skills/tier-review/SKILL.md` | Must exist | `name: tier-review` in frontmatter |
+  | Ignore | `.claude/.gitignore` | Must exist | Standalone `coral` line |
+  | Ignore | Git-root `.gitignore` | If it contained Coral's legacy project entry | Exact legacy entry absent; every other byte preserved |
+  | Link | `.claude/coral` | Must exist as a symlink | Resolves to `CORAL_PROJECT` |
   | Agents | `.claude/agents/{domain-specific}.md` | Per plan | `<Agent_Prompt>` XML structure |
   | Docs | `docs/ARCHITECTURE.md` | If generated | Layer diagram present |
   | Docs | `docs/DEV_GUIDE.md` | If generated | Exact build/test commands |
@@ -372,4 +384,5 @@ argument-hint: "[existing|new]"
   | Domain reference file not found | Proceed with available references, note the missing domain |
   | Template file not found | FIRST confirm genuine absence with a full `find {skill_base_dir}/templates -type f` (no `-maxdepth`, no `grep`) — a partial or filtered listing has falsely triggered this fallback. Only then report for that artifact and continue |
   | File already exists | Follow merge rule from plan: enhance (append missing sections) or update (patch stale content). Preserve non-cited content. Include in report as enhanced/updated |
+  | Project-ignore maintainer fails | STOP Phase 5. Report that legacy protection remains in place; repair unsafe, oversized, or unwritable ignore paths before retrying |
 </Error_Handling>

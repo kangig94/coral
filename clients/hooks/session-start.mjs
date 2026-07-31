@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
-import { execSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import {
   buildFlavor,
   claudeConfigDir,
-  coralProjectDir,
   coralStateRoot,
   exitIfChildProcess,
   exitIfWrongFlavor,
@@ -31,6 +31,7 @@ import { isKbEnabled } from './lib/kb-toggle.mjs';
 // `requestIncumbentShutdown` decision.
 
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
+const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore.mjs');
 
 function rotateLogIfLarge(runDir) {
   const path = join(runDir, 'coordinator.log');
@@ -86,11 +87,10 @@ try {
   spawnBackend(PLUGIN_ROOT);
 
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
-  const gitRoot = projectDir ? findGitRoot(projectDir) : undefined;
   ensureCliPermission();
-  if (projectDir && process.env.CORAL_AUTO_SYMLINK === '1') {
-    ensureCoralSymlink(projectDir, gitRoot);
-  }
+  const ignoreMaintenance = projectDir
+    ? runProjectIgnoreMaintenance(projectDir, process.env.CORAL_AUTO_SYMLINK === '1')
+    : null;
 
   const kbEnabled = isKbEnabled();
   const injectContent = renderInject({
@@ -107,7 +107,10 @@ try {
 
   const projectSlug = projectDir ? resolveProjectSource(projectDir).replace(/\//g, '-') : undefined;
   const wakeUpPayload = kbEnabled && projectSlug ? readProjectScopedWakeUp(resolveKbRoot(), projectSlug) : null;
-  const head = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}`;
+  const migrationNotice = ignoreMaintenance?.migrated
+    ? '\n\nCoral migration: moved the generated coral ignore rule from the Git-root .gitignore into .claude/.gitignore.'
+    : '';
+  const head = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}${migrationNotice}`;
   const additionalContext = wakeUpPayload === null ? head : `${head}\n\n${wakeUpPayload}`;
 
   console.log(JSON.stringify({
@@ -120,50 +123,22 @@ try {
   process.exit(0);
 }
 
-function findGitRoot(cwd) {
+function runProjectIgnoreMaintenance(projectDir, createSymlink) {
   try {
-    // Bound git rev-parse against pathological mounts (NFS / WSL slow fs).
-    // Fail-open: any timeout, ENOENT, or non-zero exit returns undefined.
-    return execSync('git rev-parse --show-toplevel', {
-      cwd,
+    const args = [PROJECT_IGNORE_SCRIPT, '--project-dir', projectDir];
+    if (createSymlink) args.push('--create-symlink');
+    const result = spawnSync(process.execPath, args, {
       encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 2000,
-    }).trim();
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3500,
+      maxBuffer: 16 * 1024,
+    });
+    if (result.error || !result.stdout) return null;
+    const parsed = JSON.parse(result.stdout);
+    return parsed && typeof parsed === 'object' ? parsed : null;
   } catch {
-    return undefined;
+    return null;
   }
-}
-
-function addGitignoreEntry(projectDir, entry, gitRoot) {
-  try {
-    const baseDir = gitRoot ?? projectDir;
-    const fullEntry = gitRoot && gitRoot !== projectDir
-      ? join(relative(gitRoot, projectDir), entry)
-      : entry;
-    const gitignore = join(baseDir, '.gitignore');
-    const content = existsSync(gitignore) ? readFileSync(gitignore, 'utf-8') : '';
-    if (!content.split('\n').includes(fullEntry)) {
-      writeFileSync(gitignore, content + (content.endsWith('\n') || !content ? '' : '\n') + fullEntry + '\n');
-    }
-  } catch {
-    // fail-open
-  }
-}
-
-function ensureCoralSymlink(projectDir, gitRoot) {
-  const claudeDir = join(projectDir, '.claude');
-  if (!existsSync(claudeDir)) return; // no .claude dir — nothing to link into
-  const link = join(claudeDir, 'coral');
-  const target = coralProjectDir(projectDir);
-  try {
-    if (existsSync(link)) return;
-    mkdirSync(target, { recursive: true });
-    symlinkSync(target, link);
-  } catch {
-    return; // lost race or fs error — skip gitignore
-  }
-  addGitignoreEntry(projectDir, '.claude/coral', gitRoot);
 }
 
 function ensureCliPermission() {

@@ -1,5 +1,16 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  readdirSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -24,6 +35,7 @@ import {
   liveWorkSubagentsDir,
   parseHookOutput,
   runHook,
+  runHookAsync,
   writeInjectBundle,
   type HookOutput,
 } from '#tests/unit/hooks/_helpers.js';
@@ -100,6 +112,215 @@ describe('session-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain(
       `KB: node "${join(fixture.pluginRoot, 'bridge', 'coral-cli.cjs')}" kb principles`,
     );
+  });
+
+  it('ignores a newly created coral symlink from .claude/.gitignore', () => {
+    const fixture = createFixture();
+    initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
+    writeInjectBundle(fixture.pluginRoot, 'inject content');
+    mkdirSync(join(fixture.projectRoot, '.claude'), { recursive: true });
+
+    const result = runHook(
+      SESSION_START_HOOK,
+      { session_id: 'sess-symlink' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        CORAL_AUTO_SYMLINK: '1',
+        HOME: fixture.root,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const link = join(fixture.projectRoot, '.claude', 'coral');
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(link)).toBe(coralProjectDir(fixture.root, 'acme/repo'));
+    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n');
+    expect(existsSync(join(fixture.projectRoot, '.gitignore'))).toBe(false);
+  });
+
+  it('migrates the legacy root gitignore entry without requiring auto-symlink', () => {
+    const fixture = createFixture();
+    initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
+    writeInjectBundle(fixture.pluginRoot, 'inject content');
+    mkdirSync(join(fixture.projectRoot, '.claude'), { recursive: true });
+    writeFileSync(join(fixture.projectRoot, '.gitignore'), 'dist/\n.claude/coral\ncoverage/\n');
+    writeFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'settings.local.json');
+
+    const env = {
+      CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+      CLAUDE_PROJECT_DIR: fixture.projectRoot,
+      CORAL_AUTO_SYMLINK: undefined,
+      HOME: fixture.root,
+    };
+    const first = runHook(SESSION_START_HOOK, { session_id: 'sess-migrate-1' }, env);
+    const second = runHook(SESSION_START_HOOK, { session_id: 'sess-migrate-2' }, env);
+
+    expect(first.status).toBe(0);
+    expect(second.status).toBe(0);
+    expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe('dist/\ncoverage/\n');
+    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe(
+      'settings.local.json\ncoral\n',
+    );
+    expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
+    expect(expectHookOutput(first).hookSpecificOutput.additionalContext).toContain(
+      'Coral migration: moved the generated coral ignore rule from the Git-root .gitignore into .claude/.gitignore.',
+    );
+    expect(expectHookOutput(second).hookSpecificOutput.additionalContext).not.toContain('Coral migration:');
+  });
+
+  it('migrates a nested project entry while preserving unrelated bytes and mixed line endings', () => {
+    const fixture = createFixture();
+    initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
+    writeInjectBundle(fixture.pluginRoot, 'inject content');
+    const nestedProject = join(fixture.projectRoot, 'packages', 'app');
+    mkdirSync(join(nestedProject, '.claude'), { recursive: true });
+    const original =
+      'dist/\r\npackages/app/.claude/coral\r\n!.claude/coral\n.claude/coral/\r\npackages/app/.claude/coral\nlast';
+    const expected = 'dist/\r\n!.claude/coral\n.claude/coral/\r\nlast';
+    writeFileSync(join(fixture.projectRoot, '.gitignore'), original);
+
+    const env = {
+      CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+      CLAUDE_PROJECT_DIR: nestedProject,
+      CORAL_AUTO_SYMLINK: undefined,
+      HOME: fixture.root,
+    };
+    const first = runHook(SESSION_START_HOOK, { session_id: 'sess-nested-1' }, env);
+    const second = runHook(SESSION_START_HOOK, { session_id: 'sess-nested-2' }, env);
+
+    expect(first.status).toBe(0);
+    expect(second.status).toBe(0);
+    expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe(expected);
+    expect(readFileSync(join(nestedProject, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n');
+  });
+
+  it('adds the scoped ignore for an existing symlink without replacing it', () => {
+    const fixture = createFixture();
+    initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
+    writeInjectBundle(fixture.pluginRoot, 'inject content');
+    const claudeDir = join(fixture.projectRoot, '.claude');
+    const existingTarget = join(fixture.root, 'existing-coral-target');
+    mkdirSync(claudeDir, { recursive: true });
+    mkdirSync(existingTarget, { recursive: true });
+    symlinkSync(existingTarget, join(claudeDir, 'coral'));
+
+    const result = runHook(
+      SESSION_START_HOOK,
+      { session_id: 'sess-existing-symlink' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        CORAL_AUTO_SYMLINK: '1',
+        HOME: fixture.root,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(readlinkSync(join(claudeDir, 'coral'))).toBe(existingTarget);
+    expect(readFileSync(join(claudeDir, '.gitignore'), 'utf-8')).toBe('coral\n');
+  });
+
+  it('preserves the legacy protection when the scoped ignore is a symlink', () => {
+    const fixture = createFixture();
+    initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
+    writeInjectBundle(fixture.pluginRoot, 'inject content');
+    const claudeDir = join(fixture.projectRoot, '.claude');
+    const externalIgnore = join(fixture.root, 'external-ignore');
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(join(fixture.projectRoot, '.gitignore'), 'dist/\n.claude/coral\n');
+    writeFileSync(externalIgnore, 'do-not-touch\n');
+    symlinkSync(externalIgnore, join(claudeDir, '.gitignore'));
+
+    const result = runHook(
+      SESSION_START_HOOK,
+      { session_id: 'sess-unsafe-scoped-ignore' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        CORAL_AUTO_SYMLINK: undefined,
+        HOME: fixture.root,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe('dist/\n.claude/coral\n');
+    expect(readFileSync(externalIgnore, 'utf-8')).toBe('do-not-touch\n');
+  });
+
+  it('rejects a symlinked root gitignore without touching its target', () => {
+    const fixture = createFixture();
+    initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
+    writeInjectBundle(fixture.pluginRoot, 'inject content');
+    const externalIgnore = join(fixture.root, 'external-root-ignore');
+    writeFileSync(externalIgnore, '.claude/coral\nkeep/\n');
+    symlinkSync(externalIgnore, join(fixture.projectRoot, '.gitignore'));
+
+    const result = runHook(
+      SESSION_START_HOOK,
+      { session_id: 'sess-unsafe-root-ignore' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        CORAL_AUTO_SYMLINK: '1',
+        HOME: fixture.root,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(externalIgnore, 'utf-8')).toBe('.claude/coral\nkeep/\n');
+    expect(existsSync(join(fixture.projectRoot, '.claude', '.gitignore'))).toBe(false);
+    expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
+  });
+
+  it('rejects oversized root gitignore files before reading or mutating project ignores', () => {
+    const fixture = createFixture();
+    initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
+    writeInjectBundle(fixture.pluginRoot, 'inject content');
+    const oversized = Buffer.alloc(1024 * 1024 + 1, 0x61);
+    writeFileSync(join(fixture.projectRoot, '.gitignore'), oversized);
+
+    const result = runHook(
+      SESSION_START_HOOK,
+      { session_id: 'sess-oversized-root-ignore' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        CORAL_AUTO_SYMLINK: '1',
+        HOME: fixture.root,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(join(fixture.projectRoot, '.gitignore'))).toEqual(oversized);
+    expect(existsSync(join(fixture.projectRoot, '.claude', '.gitignore'))).toBe(false);
+    expect(existsSync(join(fixture.projectRoot, '.claude', 'coral'))).toBe(false);
+  });
+
+  it('serializes concurrent migration outcomes without duplicate entries or temp residue', async () => {
+    const fixture = createFixture();
+    initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
+    writeInjectBundle(fixture.pluginRoot, 'inject content');
+    mkdirSync(join(fixture.projectRoot, '.claude'), { recursive: true });
+    writeFileSync(join(fixture.projectRoot, '.gitignore'), 'dist/\n.claude/coral\ncoverage/\n');
+    const env = {
+      CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+      CLAUDE_PROJECT_DIR: fixture.projectRoot,
+      CORAL_AUTO_SYMLINK: undefined,
+      HOME: fixture.root,
+    };
+
+    const results = await Promise.all(
+      Array.from({ length: 4 }, (_, index) =>
+        runHookAsync(SESSION_START_HOOK, { session_id: `sess-concurrent-${index}` }, env),
+      ),
+    );
+
+    expect(results.every((result) => result.status === 0)).toBe(true);
+    expect(readFileSync(join(fixture.projectRoot, '.gitignore'), 'utf-8')).toBe('dist/\ncoverage/\n');
+    expect(readFileSync(join(fixture.projectRoot, '.claude', '.gitignore'), 'utf-8')).toBe('coral\n');
+    expect(readdirSync(fixture.projectRoot).filter((name) => name.includes('.coral-'))).toEqual([]);
+    expect(readdirSync(join(fixture.projectRoot, '.claude')).filter((name) => name.includes('.coral-'))).toEqual([]);
   });
 
   it('exits silently when session_id is missing (CORAL_CHILD guard would also catch this)', () => {
