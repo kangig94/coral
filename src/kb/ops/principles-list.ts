@@ -1,4 +1,4 @@
-import type { KbRuntime } from '../contract.js';
+import type { KbReadQueryRuntime } from '../contract.js';
 import { readKnowledgeBaseListIndex } from '../direct-read-index.js';
 import {
   isNoteEntry,
@@ -75,6 +75,6 @@ function listPrinciplesFromIndex(index: KbIndex, args: KbPrinciplesInput): KbPri
   };
 }
 
-export function listPrinciples(kb: KbRuntime, args: KbPrinciplesInput): KbPrinciplesResult {
+export function listPrinciples(kb: KbReadQueryRuntime, args: KbPrinciplesInput): KbPrinciplesResult {
   return listPrinciplesFromIndex(readKnowledgeBaseListIndex(kb), args);
 }

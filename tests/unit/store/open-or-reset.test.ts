@@ -32,7 +32,7 @@ import {
   openOrResetBackendStoreDb,
   type BackendStoreResetAuthority,
 } from '#src/store/backend-store-reset.js';
-import { openWritableStoreDbNoReset } from '#src/store/db.js';
+import { openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
 import { MAX_RESET_MANIFEST_BYTES } from '#src/store/reset-incident.js';
 import { pragmaSimple } from '#tests/helpers/test-db.js';
@@ -99,6 +99,10 @@ function withEnv<T>(updates: Record<string, string | undefined>, fn: () => T): T
 
 function createRuntime(home = makeTempRoot('coral-store-open-reset-home-')): Runtime {
   return withEnv({ HOME: home, CLAUDE_PLUGIN_ROOT: REPO_ROOT }, () => createRealRuntime('prod'));
+}
+
+function createCurrentStore(runtime: Runtime, path = runtime.paths.coral.store.dbFile): void {
+  openStoreDatabase({ path, storage: runtime.storage, storeFormat: STORE_FORMAT }).close();
 }
 
 function tableExists(dbPath: string, name: string): boolean {
@@ -967,6 +971,30 @@ describe('openOrResetBackendStoreDb', () => {
 });
 
 describe('read-only store access', () => {
+  it('surfaces a typed absent-store error without creating the parent or database', () => {
+    const runtime = createRuntime();
+    const parent = join(makeTempRoot('coral-store-readonly-absent-'), 'missing-parent');
+    const dbPath = join(parent, 'store.db');
+
+    const portError = captureError(() =>
+      openReadOnlyStoreDatabase(runtime, { storeFormat: STORE_FORMAT, path: dbPath }),
+    );
+    const sharedError = captureError(() =>
+      openStoreDatabase({
+        path: dbPath,
+        storage: runtime.storage,
+        storeFormat: STORE_FORMAT,
+        readonly: true,
+      }),
+    );
+
+    expectSetupCode(portError, 'store_schema_outdated');
+    expectSetupCode(sharedError, 'store_schema_outdated');
+    expect(serializeCoralSetupError(portError)?.context).toMatchObject({ classification: 'absent', path: dbPath });
+    expect(existsSync(parent)).toBe(false);
+    expect(existsSync(dbPath)).toBe(false);
+  });
+
   it('throws store_schema_outdated for missing-fingerprint and mismatched stores without changing the file', () => {
     const runtime = createRuntime();
     const missingPath = join(makeTempRoot('coral-store-readonly-missing-fingerprint-'), 'store.db');
@@ -1049,12 +1077,21 @@ describe('read-only store access', () => {
 });
 
 describe('openWritableStoreDbNoReset', () => {
-  it('opens fresh and current stores for catalog writers', () => {
+  it('requires an existing store and opens a current store for catalog writers', () => {
     const runtime = createRuntime();
-    const dbPath = join(makeTempRoot('coral-store-no-reset-current-'), 'store.db');
+    const parent = join(makeTempRoot('coral-store-no-reset-current-'), 'missing-parent');
+    const dbPath = join(parent, 'store.db');
 
-    const fresh = openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: dbPath });
-    fresh.close();
+    const absentError = captureError(() =>
+      openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: dbPath }),
+    );
+    // An absent store is not an outdated one — store_schema_outdated's remediation
+    // offers to discard history, which is meaningless and misleading here.
+    expectSetupCode(absentError, 'store_not_initialized');
+    expect(serializeCoralSetupError(absentError)?.context).toMatchObject({ path: dbPath });
+    expect(existsSync(parent)).toBe(false);
+
+    createCurrentStore(runtime, dbPath);
     const marker = readFormatFingerprint(dbPath);
     const current = openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: dbPath });
     current.close();
@@ -1099,8 +1136,7 @@ describe('openWritableStoreDbNoReset', () => {
 describe('KbQueryRegistry', () => {
   it('reuses runtime-owned read-only DB handles until the registry is closed', () => {
     const runtime = createRuntime();
-    const writable = openWritableStoreDbNoReset(runtime, { storeFormat: currentCoralStoreFormat() });
-    writable.close();
+    createCurrentStore(runtime);
 
     const registry = new KbQueryRegistry();
     try {
@@ -1111,5 +1147,44 @@ describe('KbQueryRegistry', () => {
     } finally {
       registry.close();
     }
+  });
+
+  it('constructs a query-only runtime without creating the KB runtime target', () => {
+    const runtime = createRuntime();
+    createCurrentStore(runtime);
+    const kbRuntimeRoot = runtime.paths.coral.kbRuntime.root;
+    expect(existsSync(kbRuntimeRoot)).toBe(false);
+
+    const mkdir = vi.spyOn(runtime.storage, 'mkdirSync');
+    const remove = vi.spyOn(runtime.storage, 'rmSync');
+    const rename = vi.spyOn(runtime.storage, 'renameSync');
+    const write = vi.spyOn(runtime.storage, 'writeFileSync');
+
+    createDefaultKbQueryRuntime({ pluginRoot: REPO_ROOT, runtime });
+
+    expect(mkdir).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(rename).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(existsSync(kbRuntimeRoot)).toBe(false);
+  });
+
+  it('leaves malformed staged projection evidence byte-identical during query construction', () => {
+    const runtime = createRuntime();
+    createCurrentStore(runtime);
+    const commitRecord = join(
+      runtime.paths.coral.kbRuntime.root,
+      'corpus-projection',
+      'commits',
+      'malformed',
+      'commit.json',
+    );
+    mkdirSync(dirname(commitRecord), { recursive: true });
+    writeFileSync(commitRecord, '{malformed', 'utf-8');
+    const before = readFileSync(commitRecord);
+
+    createDefaultKbQueryRuntime({ pluginRoot: REPO_ROOT, runtime });
+
+    expect(readFileSync(commitRecord)).toEqual(before);
   });
 });

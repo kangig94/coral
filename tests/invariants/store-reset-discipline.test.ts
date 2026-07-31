@@ -7,6 +7,9 @@ const REPO_ROOT = process.cwd();
 const SRC_ROOT = join(REPO_ROOT, 'src');
 const BACKEND_STORE_RESET_PATH = 'src/store/backend-store-reset.ts';
 const READ_PORT_PATH = 'src/store/read-port.ts';
+const KB_QUERY_RUNTIME_PATH = 'src/read-model/kb-query-runtime.ts';
+const GENERATION_MUTATION_COORDINATION_PATH = 'src/store/generation-mutation-coordination.ts';
+const EXPANSION_INSTALL_PATH = 'src/cli/expansion/install.ts';
 
 type CallHit = {
   relativePath: string;
@@ -212,6 +215,45 @@ describe('store reset discipline invariants', () => {
 
     expect(forbiddenImports).toEqual([]);
     expect(forbiddenCalls).toEqual([]);
+  });
+
+  it('keeps read-only store and KB-query construction non-creating and non-reconciling', () => {
+    const readPortSource = readFileSync(join(REPO_ROOT, READ_PORT_PATH), 'utf8');
+    const queryRuntimeSource = readFileSync(join(REPO_ROOT, KB_QUERY_RUNTIME_PATH), 'utf8');
+
+    expect(readPortSource).not.toMatch(/mkdirSync/u);
+    expect(queryRuntimeSource).not.toMatch(
+      /\bcreateKbRuntime\b|KbRuntimeImpl|mkdirSync|adoptStagedSurfaceHashes|reconcileCorpusProjectionCommits/u,
+    );
+  });
+
+  it('orders expansion mutations after readiness release and writer-lease acquisition', () => {
+    const coordinationSource = sourceFile(GENERATION_MUTATION_COORDINATION_PATH);
+    const acquireLease = findFunction(
+      GENERATION_MUTATION_COORDINATION_PATH,
+      'acquireGenerationWriterLeaseAfterReadiness',
+    );
+    const coordinationBody = acquireLease.body?.getText(coordinationSource) ?? '';
+    const completeIndex = coordinationBody.indexOf('coordination.completeReadiness(');
+    const releaseReadinessIndex = coordinationBody.indexOf('readiness.release()');
+    const writerLeaseIndex = coordinationBody.indexOf('coordination.acquireWriterLease(');
+
+    expect(completeIndex).toBeGreaterThanOrEqual(0);
+    expect(releaseReadinessIndex).toBeGreaterThan(completeIndex);
+    expect(writerLeaseIndex).toBeGreaterThan(releaseReadinessIndex);
+
+    const installSource = sourceFile(EXPANSION_INSTALL_PATH);
+    const coordinatedMutation = findFunction(EXPANSION_INSTALL_PATH, 'runGenerationCoordinatedMutation');
+    const coordinatedBody = coordinatedMutation.body?.getText(installSource) ?? '';
+    expect(coordinatedBody.indexOf('acquirePackageOperationLock(')).toBeGreaterThan(
+      coordinatedBody.indexOf('acquireGenerationWriterLeaseAfterReadiness('),
+    );
+
+    for (const functionName of ['installExpansion', 'uninstallExpansion']) {
+      const mutation = findFunction(EXPANSION_INSTALL_PATH, functionName);
+      const body = mutation.body?.getText(installSource) ?? '';
+      expect(body.indexOf('runGenerationCoordinatedMutation(')).toBeGreaterThanOrEqual(0);
+    }
   });
 
   it('keeps store file quarantine in openOrResetBackendStoreDb behind BackendStoreResetAuthority', () => {

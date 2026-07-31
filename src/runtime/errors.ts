@@ -29,6 +29,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'store_newer_incompatible'
   | 'store_older_incompatible'
   | 'store_corrupt_or_unsupported'
+  | 'store_not_initialized'
   | 'kb_commit_corrupt_or_unsupported'
   | 'store_reset_lock_contended'
   | 'store_reset_quarantine_failed'
@@ -158,6 +159,11 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: 'The current-generation store is corrupt or uses an unsupported format.',
     remediation: (context) =>
       `Run 'coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}' to quarantine it before this build initializes an empty store.`,
+  },
+  store_not_initialized: {
+    userMessage: 'No Coral store exists yet for this installation.',
+    remediation:
+      'Only the coordinator creates the store. Run any normal Coral command so the coordinator starts and initializes it, then retry; read-only and non-daemon commands deliberately cannot create it.',
   },
   kb_commit_corrupt_or_unsupported: {
     userMessage: (context) => {

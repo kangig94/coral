@@ -287,7 +287,11 @@ function raiseStoredProductVersion(db: Database, currentProductVersion: string):
 export function openStoreDatabase(options: OpenStoreOptions): Database {
   const readonly = options.readonly ?? false;
 
-  if (options.path !== ':memory:') {
+  if (readonly && options.path !== ':memory:' && !options.storage.existsSync(options.path)) {
+    throw storeSchemaOutdatedError(options.path, { kind: 'absent' }, options.storeFormat);
+  }
+
+  if (!readonly && options.path !== ':memory:') {
     options.storage.mkdirSync(dirname(options.path), { recursive: true });
   }
 
@@ -355,16 +359,13 @@ export function openWritableStoreDbNoReset(
   options: BackendStorePathOptions,
 ): Database {
   const storeDbPath = resolveStoreDbPath(runtime, options);
-  if (storeDbPath === ':memory:') {
-    return openStoreDatabase({
-      path: ':memory:',
-      storage: runtime.storage,
-      storeFormat: options.storeFormat,
-      busyTimeoutMs: options.busyTimeoutMs,
-    });
+  // An absent store is not an outdated one: only the coordinator creates it, so
+  // a non-daemon opener that creates it here would satisfy adoption's
+  // "generation tree has no store" guard and strand the legacy tree forever.
+  if (storeDbPath === ':memory:' || !runtime.storage.existsSync(storeDbPath)) {
+    throw documentedCoralSetupError('store_not_initialized', { path: storeDbPath });
   }
 
-  runtime.storage.mkdirSync(dirname(storeDbPath), { recursive: true });
   return openStoreDatabase({
     path: storeDbPath,
     storage: runtime.storage,

@@ -13,7 +13,7 @@ import type {
 } from './entry-types.js';
 import { type MemoStorage, listMemos } from './ops/memo.js';
 import { buildKbDiagnoseResult } from './diagnose.js';
-import type { KbRuntime } from './contract.js';
+import type { KbReadQueryRuntime } from './contract.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
 import {
   readEntry,
@@ -43,8 +43,7 @@ import {
  * receive a ready host through this interface.
  */
 export interface KbQueryHost {
-  /** Returns a read-only `KbRuntime` for non-search direct read queries. */
-  acquireKbRuntime(): Promise<KbRuntime>;
+  acquireKbRuntime(): Promise<KbReadQueryRuntime>;
   readonly readDb: ReadonlyDatabase;
   readonly storage: KbReadStorage;
   readonly readPaths: KbReadPathResolver;

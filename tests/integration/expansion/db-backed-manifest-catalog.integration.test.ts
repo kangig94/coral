@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createExpansionManifestCatalog } from '#src/expansion/manifest/catalog.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { openWritableStoreDbNoReset } from '#src/store/db.js';
+import { openStoreDatabase } from '#src/store/db.js';
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
 import dummyInstalledDbManifest from '#tests/fixtures/dummy-installed-engine/manifest.js';
 
@@ -38,7 +38,7 @@ describe('DB-backed expansion manifest catalog', () => {
 
     const dbPath = join(tempRoot('coral-db-backed-manifest-store-'), 'store.db');
     const storeFormat = currentCoralStoreFormat();
-    const db = openWritableStoreDbNoReset(runtime, { path: dbPath, storeFormat });
+    const db = openStoreDatabase({ path: dbPath, storage: runtime.storage, storeFormat });
     createExpansionManifestCatalog({ db }).upsertInstalledEntry(dummyInstalledDbManifest);
     db.close();
 
@@ -77,7 +77,7 @@ describe('DB-backed expansion manifest catalog', () => {
     const runtime = createRealRuntime('prod', { baseDir: home });
     const dbPath = join(tempRoot('coral-db-backed-manifest-invalid-store-'), 'store.db');
     const storeFormat = currentCoralStoreFormat();
-    const db = openWritableStoreDbNoReset(runtime, { path: dbPath, storeFormat });
+    const db = openStoreDatabase({ path: dbPath, storage: runtime.storage, storeFormat });
     db.prepare('INSERT INTO expansion_manifest_catalog (id, manifest_json, updated_at) VALUES (?, ?, ?)').run(
       rowId,
       JSON.stringify(manifest),
@@ -100,7 +100,7 @@ describe('DB-backed expansion manifest catalog', () => {
     const runtime = createRealRuntime('prod', { baseDir: home });
     const dbPath = join(tempRoot('coral-db-backed-manifest-collision-store-'), 'store.db');
     const storeFormat = currentCoralStoreFormat();
-    const db = openWritableStoreDbNoReset(runtime, { path: dbPath, storeFormat });
+    const db = openStoreDatabase({ path: dbPath, storage: runtime.storage, storeFormat });
     db.prepare('INSERT INTO expansion_manifest_catalog (id, manifest_json, updated_at) VALUES (?, ?, ?)').run(
       'gemini',
       JSON.stringify({ ...dummyInstalledDbManifest, id: 'gemini' }),

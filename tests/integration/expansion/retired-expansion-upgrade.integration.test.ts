@@ -10,7 +10,7 @@ import { enginePaths } from '#src/infra/path/engine.js';
 import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { openWritableStoreDbNoReset } from '#src/store/db.js';
+import { openStoreDatabase } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import {
   buildArtifactsAvailable,
@@ -54,8 +54,9 @@ function writeSentinel(path: string, value: string): string {
 
 function seedRetiredExpansion(home: string, flavor: BuildFlavor): void {
   const runtime = createRealRuntime(flavor, { baseDir: coralRoot(home) });
-  const db = openWritableStoreDbNoReset(runtime, {
+  const db = openStoreDatabase({
     path: storeDbPathForHome(home, flavor),
+    storage: runtime.storage,
     storeFormat: currentCoralStoreFormat(),
   });
   try {

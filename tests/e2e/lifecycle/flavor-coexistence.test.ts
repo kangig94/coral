@@ -106,6 +106,12 @@ function createPluginFixture(flavor: 'prod' | 'dev'): {
   const scratchCwd = mkdtempSync(join(tmpdir(), `coral-fixture-smoke-${flavor}-`));
   tempRoots.push(scratchCwd);
   const smokeDbPath = join(root, 'fixture.db');
+  const smokeRuntime = createRealRuntime(flavor);
+  openStoreDatabase({
+    path: smokeDbPath,
+    storage: smokeRuntime.storage,
+    storeFormat: currentCoralStoreFormat(),
+  }).close();
   const smokeOut = execFileSync(
     'node',
     [join(root, 'bridge', 'coral-backend.cjs'), '--smoke-open-store', '--path', smokeDbPath],

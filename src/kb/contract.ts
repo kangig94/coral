@@ -243,3 +243,19 @@ export interface KbRuntime extends KbEngineRuntimeBase {
   readCorpusStructuralKey(index: KbIndex, currentGraph?: EntityGraph | null): CorpusStructuralKey | null;
   writeEntityGraph(graph: EntityGraph): Promise<void>;
 }
+
+export type KbReadQueryRuntime = Pick<
+  KbRuntime,
+  | 'markdownRoot'
+  | 'storagePort'
+  | 'corpusStorage'
+  | 'envPort'
+  | 'generatedCommunityProjectionStore'
+  | 'readIndex'
+  | 'readIndexOrEmpty'
+  | 'entityGraphPath'
+  | 'notePath'
+  | 'wikiPath'
+  | 'sourcePath'
+  | 'communityPath'
+>;

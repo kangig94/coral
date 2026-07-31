@@ -1,21 +1,23 @@
-import type { Database } from '../store/db.js';
-
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import type { KbRuntime } from '../kb/contract.js';
+import type { KbReadQueryRuntime } from '../kb/contract.js';
 import {
   communityPathFromName,
+  createKbRuntimePaths,
   notePathFromName,
   principlePathFromName,
   sourcePathFromName,
   wikiPathFromName,
 } from '../kb/paths.js';
-import { createKbRuntime } from '../kb/runtime.js';
-import type { CurateAssistantPort } from '../kb/curate/assistant.js';
 import type { KbReadPathResolver, KbReadStorage } from '../kb/read.js';
 import type { KbQueryHost } from '../kb/queries.js';
+import { readKnowledgeBaseListIndex } from '../kb/direct-read-index.js';
+import { createCorpusStorage } from '../kb/corpus/rescan/storage.js';
+import { readKbIndexSnapshot } from '../kb/corpus/index/store.js';
+import { GeneratedCommunityProjectionStore } from '../kb/curate/community/generated-projection-store.js';
+import type { KbIndex } from '../kb/entry-types.js';
 import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../store/read-port.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 
@@ -120,49 +122,57 @@ function getDefaultKbQueryDb(context: KbQueryContext): ReadonlyDatabase {
   return defaultRegistry.getDb(resolveQueryFlavor(context));
 }
 
-export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime {
+export function createDefaultKbQueryRuntime(context: KbQueryContext): KbReadQueryRuntime {
   const runtime = resolveQueryRuntime(context);
-  return createKbRuntime({
-    markdownRoot: resolveQueryMarkdownRoot(context),
-    runtimeDir: runtime.paths.coral.kbRuntime.root,
-    // Read-only query runtime: it never runs git-sync, so the version is inert
-    // (only the daemon's curate path stamps commits with a real identity.version).
-    version: '0.0.0',
-    db: getDefaultKbQueryDb(context) as Database,
-    time: runtime.time,
-    envPort: runtime.env,
-    ids: runtime.ids,
-    storage: runtime.storage,
-    curateAssistant: createReadOnlyCurateAssistant(),
-    processPort: runtime.process,
-  });
-}
+  void getDefaultKbQueryDb(context);
 
-/**
- * KB query runtime is read-only: it answers `kb` CLI subcommands without touching
- * `gitSync.scheduleDeferredCommit()` or the auto-fix dispatcher. The curate assistant
- * surface is therefore unreachable from the read path; rejecting any invocation here makes
- * accidental future writes fail loudly instead of silently spawning a real provider.
- */
-function createReadOnlyCurateAssistant(): CurateAssistantPort {
-  return {
-    async complete() {
-      throw new Error('KB query runtime is read-only and cannot run curate assistant requests.');
+  const markdownRoot = resolveQueryMarkdownRoot(context);
+  const runtimeDir = runtime.paths.coral.kbRuntime.root;
+  const paths = createKbRuntimePaths(markdownRoot, runtimeDir);
+  const generatedCommunityProjectionStore = new GeneratedCommunityProjectionStore({
+    runtimeDir,
+    storage: runtime.storage,
+    ids: runtime.ids,
+    time: runtime.time,
+  });
+  let cachedIndex: KbIndex | null | undefined;
+
+  const queryRuntime: KbReadQueryRuntime = {
+    markdownRoot,
+    storagePort: runtime.storage,
+    corpusStorage: createCorpusStorage(runtime.storage),
+    envPort: runtime.env,
+    generatedCommunityProjectionStore,
+    readIndex() {
+      if (cachedIndex === undefined) {
+        cachedIndex = readKbIndexSnapshot(runtimeDir, runtime.storage);
+      }
+      return cachedIndex;
     },
+    readIndexOrEmpty() {
+      return readKnowledgeBaseListIndex(queryRuntime);
+    },
+    entityGraphPath: paths.entityGraphPath,
+    notePath: paths.notePath,
+    wikiPath: paths.wikiPath,
+    sourcePath: paths.sourcePath,
+    communityPath: paths.communityPath,
   };
+
+  return queryRuntime;
 }
 
 /**
  * Compose a `KbQueryHost` for read-side KB queries. The host caches the
- * built `KbRuntime` so metadata reads in the same CLI process share one
+ * built query runtime so metadata reads in the same CLI process share one
  * runtime. Domain code receives the
  * composed host through `kb/queries.ts`'s `KbQueryHost` interface — KB
  * does not import composition itself.
  */
 export function createKbQueryHost(context: KbQueryContext): KbQueryHost {
-  let cachedKb: KbRuntime | undefined;
+  let cachedKb: KbReadQueryRuntime | undefined;
 
-  const ensureKb = (): KbRuntime => (cachedKb ??= createDefaultKbQueryRuntime(context));
+  const ensureKb = (): KbReadQueryRuntime => (cachedKb ??= createDefaultKbQueryRuntime(context));
 
   return {
     async acquireKbRuntime() {
