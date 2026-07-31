@@ -29,6 +29,7 @@ import { storePaths } from '#src/infra/path/store.js';
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-backend.cjs');
 const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-cli.cjs');
+const SOURCE_CLAUDE_APPSERVER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-claude-appserver.cjs');
 const SOURCE_MANIFEST = join(REPO_ROOT, 'clients', 'build', 'manifest.json');
 const SOURCE_SQLITE3_DIR = join(REPO_ROOT, 'node_modules', 'better-sqlite3');
 
@@ -141,12 +142,18 @@ function createFixture(): Fixture {
   mkdirSync(join(home, '.codex'), { recursive: true });
   copyFileSync(SOURCE_BACKEND_BUNDLE, join(root, 'bridge', 'coral-backend.cjs'));
   copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli.cjs'));
+  // The coordinator validates its whole adjacent build set at startup, so the
+  // Claude appserver bundle must be present or boot aborts on build identity.
+  copyFileSync(SOURCE_CLAUDE_APPSERVER_BUNDLE, join(root, 'bridge', 'coral-claude-appserver.cjs'));
   copyFileSync(SOURCE_MANIFEST, join(root, 'bridge', 'manifest.json'));
   writeFileSync(join(binDir, 'codex'), FAKE_CODEX_APP_SERVER, 'utf-8');
   chmodSync(join(binDir, 'codex'), 0o755);
+  // `account_id` is what makes this a bindable ChatGPT-mode profile: Codex
+  // account binding resolves its subject from it. Without it the launch fails
+  // on provider identity before the coordinator is ever exercised.
   writeFileSync(
     join(home, '.codex', 'auth.json'),
-    JSON.stringify({ tokens: { access_token: 'fake-access-token' } }),
+    JSON.stringify({ tokens: { access_token: 'fake-access-token', account_id: 'fake-account-id' } }),
     'utf-8',
   );
 
@@ -232,10 +239,13 @@ afterEach(async () => {
 
 describe('mutating commands via IPC', () => {
   it('auto-launches the coordinator and completes coral-cli codex through a fake Codex app-server', async () => {
-    if (!existsSync(SOURCE_BACKEND_BUNDLE) || !existsSync(SOURCE_CLI_BUNDLE) || !existsSync(SOURCE_MANIFEST)) {
-      throw new Error(
-        'Expected clients/build/coral-backend.cjs, clients/build/coral-cli.cjs, and clients/build/manifest.json to exist.',
-      );
+    if (
+      !existsSync(SOURCE_BACKEND_BUNDLE) ||
+      !existsSync(SOURCE_CLI_BUNDLE) ||
+      !existsSync(SOURCE_CLAUDE_APPSERVER_BUNDLE) ||
+      !existsSync(SOURCE_MANIFEST)
+    ) {
+      throw new Error('Expected a built Coral bundle set under clients/build/ before running lifecycle E2E tests.');
     }
 
     const fixture = createFixture();
