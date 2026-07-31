@@ -25,6 +25,8 @@ Fields:
 
 Backend HTTP errors are lifted into the same envelope. There is no nested `body` wrapper in the CLI detail payload.
 
+Backend IPC errors are lifted the same way. Mutating and live commands reach the coordinator over IPC, and a JSON-RPC rejection carries its public `{code, message, remediation?, detail?}` in the error data. The CLI reads that payload, so an IPC rejection surfaces its own code and exit code rather than a generic internal failure. When an IPC rejection carries no recognized `code`, the CLI falls back to `ipc_rpc_error`.
+
 When a backend HTTP response body is missing, non-JSON, or does not carry a `code`/`message` field, the CLI falls back to:
 
 - `code`: `backend_error`
@@ -43,6 +45,9 @@ This only affects malformed or truncated backend responses. In normal operation 
 | `audit_requires_ended_session`        | Audit/detail view was requested for a discuss session that has not ended yet                                                                                                                                                                                             |
 | `scope_mismatch`                      | The requested resource exists, but not in the current project/scope                                                                                                                                                                                                      |
 | `unauthorized`                        | Backend token/auth mismatch                                                                                                                                                                                                                                              |
+| `missing_capability`                  | The authenticated principal is bound to the resource but lacks the capability the command requires. A nested (child) Coral session gets a message directing the operator to run the command from the top-level session                                                    |
+| `child_credentials_incomplete`        | A nested Coral command ran with a partial `CORAL_*` child binding, so no request was sent. Raised CLI-side before coordinator discovery, ensure, or dispatch                                                                                                             |
+| `ipc_rpc_error`                       | Fallback for a coordinator IPC rejection whose error data did not provide a recognized `code`                                                                                                                                                                            |
 | `provider_binding_*`                  | Typed provider authority failure. Current suffixes are `missing_profile`, `profile_unavailable`, `identity_unavailable`, `profile_mismatch`, `subject_mismatch`, `unsupported_selection`, and `invalid_persisted_binding`                                                |
 | `provider_scope_missing`              | The captured caller or durable operation scope does not contain every provider the operation can launch                                                                                                                                                                  |
 | `system_provider_scope_invalid`       | Daemon startup received a malformed, incomplete, unknown-provider, relative-path, or otherwise non-canonical `CORAL_SYSTEM_PROVIDER_SCOPE`                                                                                                                               |
@@ -69,6 +74,7 @@ This only affects malformed or truncated backend responses. In normal operation 
 | `1`  | User-correctable backend/domain errors such as `invalid_request`, `not_found`, `session_not_found`, `audit_requires_ended_session`, `scope_mismatch`, `unauthorized`, `store_reset_incident_not_found`, `store_reset_incident_limit_exceeded`, and default `backend_error` cases |
 | `75` | Retry-later failures: `transient`, `backend_shutting_down`, and generic HTTP `503` fallback                                                                                                                                                                                      |
 | `69` | `backend_unreachable`                                                                                                                                                                                                                                                            |
+| `77` | Authorization failures that no retry fixes: `missing_capability` and `child_credentials_incomplete`. The same code is used by `coral-cli expansion …`, whose single-JSON-line output carries these two codes as an `InstallError`                                                  |
 | `70` | `internal`, `internal_error`, `store_reset_build_mismatch`, `store_reset_incident_build_mismatch`, `store_reset_reporting_failed`, and generic HTTP `500` fallback                                                                                                               |
 
 Store-reset errors never carry `http` or `detail`; they carry only a fixed public-safe `remediation` selected by code. They never interpolate the supplied incident argument or a low-level filesystem/SQLite/child-process message. The successful report is written only to `stdout`; Coral creates no report file and performs no upload. If reporting itself fails, paste the complete fixed error output into the Store-reset incident issue form instead of attaching evidence or raw logs.
@@ -129,6 +135,16 @@ Backend-not-running example:
 fetch failed [code=backend_unreachable]
 ```
 
+## Nested Coral Commands
+
+A `coral-cli` invoked from inside a provider job (a Coral child) reconnects to its parent coordinator and never starts or replaces one. Three failures are specific to that boundary, and all three tell the operator to go back to the top-level Coral session:
+
+- `child_credentials_incomplete` (exit `77`) — the child binding was partial, so the command was rejected locally and no request was sent.
+- `missing_capability` (exit `77`) — the child principal is valid but its capability set does not cover the command. The denial is authoritative; the parent's capability set is not negotiable from the child.
+- `backend_unreachable` (exit `69`) — the parent coordinator was unreachable, draining, replaced, or too slow. The message states that no coordinator was started or replaced and points at `coral-cli backend status` from the top-level session.
+
+`coral-cli backend shutdown` from a child is refused for the same reason and exits `1`, because a child must not drain the coordinator its parent job is running on.
+
 ## Consumer Examples
 
 Retry only on retry-later failures:
@@ -176,7 +192,9 @@ function parseCliError(stderr: string): CliError {
   };
 }
 
-function classify(error: CliError): 'fix-input' | 'retry' | 'restart-backend' | 'escalate' {
+function classify(
+  error: CliError,
+): 'fix-input' | 'retry' | 'restart-backend' | 'run-at-top-level' | 'escalate' {
   switch (error.code) {
     case 'invalid_usage':
     case 'invalid_request':
@@ -189,6 +207,9 @@ function classify(error: CliError): 'fix-input' | 'retry' | 'restart-backend' | 
       return 'retry';
     case 'backend_unreachable':
       return 'restart-backend';
+    case 'missing_capability':
+    case 'child_credentials_incomplete':
+      return 'run-at-top-level';
     default:
       return 'escalate';
   }

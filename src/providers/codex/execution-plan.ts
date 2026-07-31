@@ -139,9 +139,10 @@ export function compileCodexHostEnvironment(host: CodexExecutionPlan['host']): R
 }
 
 /**
- * Build a Codex subprocess policy that preserves caller values while pinning
- * the non-secret Coral child marker. The input is never mutated and cannot
- * override the marker.
+ * Build a Codex subprocess policy that preserves the compiled turn values while
+ * pinning the non-secret Coral child marker last. Normal turns already carry the
+ * marker from `turnAuthorityLayer`; interrupted recovery has no turn layers, so
+ * this is where its resumed thread gets the marker.
  */
 export function codexChildShellEnvironmentPolicy(
   values: Readonly<Record<string, string>> = {},

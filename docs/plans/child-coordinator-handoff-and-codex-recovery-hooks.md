@@ -191,6 +191,16 @@ interrupted-recovery `thread/resume` request share that policy builder.
 
 ### User-facing failures
 
+Reporting a nested capability denial required the CLI to read coordinator IPC
+rejections at all. Nothing mapped `IpcRpcError` before this change, so every
+coordinator IPC rejection rendered as `internal` with exit `70`. The new mapping
+therefore widens beyond the nested case: any IPC rejection now surfaces its own
+public code, remediation, detail, and exit code (`invalid_request` → `1`,
+`kb_offline` → `75`, `missing_capability` → `77`, …), with `ipc_rpc_error` as the
+fallback when the error data carries no recognized code. Subscription errors are
+unaffected because `mapWaitSubscriptionError` still translates them first.
+`docs/cli-errors.md` documents the codes and exit codes.
+
 - incomplete bindings identify the nested command, state that no request was
   sent, and direct the user back to the top-level session;
 - expansion commands retain that guidance as a single JSON response and use
