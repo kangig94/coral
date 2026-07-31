@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { validateProductVersion } from '#src/infra/product-version.js';
@@ -10,6 +11,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { classifyStoreFile, openStoreDatabase } from '#src/store/db.js';
 import type { StoreFormatDescription, StoreFormatFingerprint } from '#src/store/format-fingerprint.js';
+import { totalChanges } from '#tests/helpers/test-db.js';
 
 const CURRENT_FINGERPRINT = currentCoralStoreFormat().fingerprint;
 const OTHER_FINGERPRINT: StoreFormatFingerprint = `sha256:${'0'.repeat(64)}`;
@@ -58,6 +60,54 @@ function classify(dbPath: string, current: StoreFormatDescription) {
 
 function sha256File(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function readStoredProductVersion(dbPath: string): unknown {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    return db.prepare("SELECT value FROM meta WHERE key = 'store_product_version'").get()?.value;
+  } finally {
+    db.close();
+  }
+}
+
+const NEWER_STAMP_WORKER_SOURCE = `
+const { DatabaseSync } = require('node:sqlite');
+const { parentPort, workerData } = require('node:worker_threads');
+
+const state = workerData.state;
+const db = new DatabaseSync(workerData.dbPath);
+try {
+  db.exec('PRAGMA busy_timeout = 5000');
+  db.exec('BEGIN IMMEDIATE');
+  const observed = db.prepare("SELECT value FROM meta WHERE key = 'store_product_version'").get().value;
+  Atomics.store(state, 0, 1);
+  Atomics.notify(state, 0);
+  Atomics.wait(state, 0, 1, 250);
+
+  try {
+    db.prepare("UPDATE meta SET value = '1.2.0' WHERE key = 'store_product_version'").run();
+    db.exec('COMMIT');
+    Atomics.store(state, 0, 2);
+    Atomics.notify(state, 0);
+    parentPort.postMessage({ observed });
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+} finally {
+  db.close();
+}
+`;
+
+function workerResult(worker: Worker): Promise<{ readonly observed: string }> {
+  return new Promise((resolve, reject) => {
+    worker.once('message', resolve);
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`High-water stamp worker exited with code ${code}.`));
+    });
+  });
 }
 
 afterEach(() => {
@@ -238,5 +288,86 @@ describe('store format classification', () => {
       stored.close();
     }
     expect(classify(dbPath, current)).toMatchObject({ kind: 'compatible' });
+  });
+
+  it('does not lower the product version when an older build opens a newer store', () => {
+    const { root, dbPath } = tempPath('newer-high-water.db');
+    createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT, productVersion: '1.2.0' });
+    const storage = createRealRuntime('prod', { baseDir: join(root, 'runtime') }).storage;
+
+    expect(() => openStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0') })).toThrow();
+    expect(readStoredProductVersion(dbPath)).toBe('1.2.0');
+  });
+
+  it('raises the product version when a newer build opens an older compatible store', () => {
+    const { root, dbPath } = tempPath('older-high-water.db');
+    createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT, productVersion: '1.0.0' });
+    const storage = createRealRuntime('prod', { baseDir: join(root, 'runtime') }).storage;
+
+    openStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0') }).close();
+
+    expect(readStoredProductVersion(dbPath)).toBe('1.1.0');
+  });
+
+  it('retains the stored string and performs no write at equal SemVer precedence', () => {
+    const { root, dbPath } = tempPath('equal-high-water.db');
+    createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT, productVersion: '1.0.0+stored' });
+    const storage = createRealRuntime('prod', { baseDir: join(root, 'runtime') }).storage;
+
+    const db = openStoreDatabase({ path: dbPath, storage, storeFormat: format('1.0.0+current') });
+    try {
+      expect(totalChanges(db)).toBe(0);
+    } finally {
+      db.close();
+    }
+    expect(readStoredProductVersion(dbPath)).toBe('1.0.0+stored');
+  });
+
+  it('does not stamp an absent product version during an ordinary open', () => {
+    const { root, dbPath } = tempPath('legacy-adoptable-high-water.db');
+    createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT });
+    const storage = createRealRuntime('prod', { baseDir: join(root, 'runtime') }).storage;
+
+    openStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0') }).close();
+
+    expect(readStoredProductVersion(dbPath)).toBeUndefined();
+  });
+
+  it('serializes two real connections so an interleaved newer stamp remains the maximum', async () => {
+    const { root, dbPath } = tempPath('interleaved-high-water.db');
+    createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT, productVersion: '1.0.0' });
+    const walSetup = new DatabaseSync(dbPath);
+    walSetup.exec('PRAGMA journal_mode = WAL');
+    walSetup.close();
+    const storage = createRealRuntime('prod', { baseDir: join(root, 'runtime') }).storage;
+    const state = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+    const newerWorker = new Worker(NEWER_STAMP_WORKER_SOURCE, {
+      eval: true,
+      workerData: { dbPath, state },
+    });
+    const newerResult = workerResult(newerWorker);
+
+    try {
+      expect(Atomics.wait(state, 0, 0, 5_000)).not.toBe('timed-out');
+      expect(Atomics.load(state, 0)).toBe(1);
+
+      openStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0') }).close();
+
+      expect(Atomics.load(state, 0)).toBe(2);
+      expect(await newerResult).toEqual({ observed: '1.0.0' });
+      expect(readStoredProductVersion(dbPath)).toBe('1.2.0');
+    } finally {
+      await newerWorker.terminate();
+    }
+  });
+
+  it('never raises the product version during a read-only open', () => {
+    const { root, dbPath } = tempPath('readonly-high-water.db');
+    createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT, productVersion: '1.0.0' });
+    const storage = createRealRuntime('prod', { baseDir: join(root, 'runtime') }).storage;
+
+    openStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0'), readonly: true }).close();
+
+    expect(readStoredProductVersion(dbPath)).toBe('1.0.0');
   });
 });

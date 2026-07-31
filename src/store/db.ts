@@ -271,6 +271,19 @@ export function applyBundledStoreSchema(db: Database, storeFormat: StoreFormatDe
   }
 }
 
+function raiseStoredProductVersion(db: Database, currentProductVersion: string): void {
+  withImmediate(db, () => {
+    const storedProductVersion = stringMetadataValue(readStoredMetadataValue(db, STORE_PRODUCT_VERSION_KEY));
+    if (storedProductVersion === null || validateProductVersion(storedProductVersion) === null) return;
+    if (compareProductVersions(storedProductVersion, currentProductVersion) >= 0) return;
+
+    db.prepare<[string, string]>('UPDATE meta SET value = ? WHERE key = ?').run(
+      currentProductVersion,
+      STORE_PRODUCT_VERSION_KEY,
+    );
+  });
+}
+
 export function openStoreDatabase(options: OpenStoreOptions): Database {
   const readonly = options.readonly ?? false;
 
@@ -295,6 +308,9 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
           kind: 'writable',
           busyTimeoutMs: options.busyTimeoutMs,
         });
+        if (classification.kind === 'compatible') {
+          raiseStoredProductVersion(db, options.storeFormat.productVersion);
+        }
       }
       if (options.readonly !== true) writeStoreFormatSidecar(options);
       return db;
