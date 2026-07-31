@@ -413,7 +413,7 @@ export function buildClaudeChildArgs(options: SpawnClaudeChildOptions): string[]
 export function buildClaudePrintChildArgs(options: SpawnClaudePrintChildOptions): string[] {
   const args = ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json'];
   if (options.conversationRef !== undefined) {
-    args.push('--resume', options.conversationRef);
+    args.push(options.resume ? '--resume' : '--session-id', options.conversationRef);
   }
   if (options.systemPrompt) {
     args.push('--append-system-prompt', options.systemPrompt);

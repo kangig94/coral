@@ -25,6 +25,7 @@ function spawnOptions(overrides: Partial<SpawnClaudeChildOptions> = {}): SpawnCl
 function printSpawnOptions(overrides: Partial<SpawnClaudePrintChildOptions> = {}): SpawnClaudePrintChildOptions {
   return {
     cwd: '/workspace',
+    resume: false,
     permissionMode: 'default',
     ...overrides,
   };
@@ -105,11 +106,25 @@ describe('claude appserver print child args', () => {
     ]);
   });
 
+  it('starts a new print-mode session with the requested session id', () => {
+    expect(buildClaudePrintChildArgs(printSpawnOptions({ conversationRef: TEST_SESSION_ID }))).toEqual([
+      '-p',
+      '--verbose',
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
+      '--session-id',
+      TEST_SESSION_ID,
+    ]);
+  });
+
   it('resumes existing print-mode sessions and carries bootstrap options', () => {
     expect(
       buildClaudePrintChildArgs(
         printSpawnOptions({
           conversationRef: 'session-existing',
+          resume: true,
           systemPrompt: 'Stay concise.',
           model: 'claude-sonnet-4-6',
           effort: 'high',

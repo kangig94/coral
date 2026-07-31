@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { PrintSessionController } from '#src/providers/claude/appserver/print-controller.js';
-import type { ControllerNotification, ClaudePrintChild } from '#src/providers/claude/appserver/session-contract.js';
+import type {
+  ControllerNotification,
+  ClaudePrintChild,
+  SpawnClaudePrintChildOptions,
+} from '#src/providers/claude/appserver/session-contract.js';
 
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
 const testControlRequestTimer = {
@@ -95,7 +99,10 @@ async function waitForWrite(child: FakeClaudePrintChild, index: number): Promise
 function createController(
   child: FakeClaudePrintChild,
   notifications: ControllerNotification[] = [],
-  options: { controlRequestTimeoutMs?: number } = {},
+  options: {
+    controlRequestTimeoutMs?: number;
+    onSpawn?: (spawnOptions: SpawnClaudePrintChildOptions) => void;
+  } = {},
 ) {
   return createControllerFromChildren([child], notifications, options);
 }
@@ -103,12 +110,17 @@ function createController(
 function createControllerFromChildren(
   children: FakeClaudePrintChild[],
   notifications: ControllerNotification[] = [],
-  options: { controlRequestTimeoutMs?: number } = {},
+  options: {
+    controlRequestTimeoutMs?: number;
+    onSpawn?: (spawnOptions: SpawnClaudePrintChildOptions) => void;
+  } = {},
 ) {
   let spawnIndex = 0;
   let requestIndex = 0;
+  const { onSpawn, ...controllerOptions } = options;
   const controller = new PrintSessionController({
-    spawnChild: () => {
+    spawnChild: (spawnOptions) => {
+      onSpawn?.(spawnOptions);
       const child = children[spawnIndex];
       spawnIndex += 1;
       if (!child) {
@@ -124,7 +136,7 @@ function createControllerFromChildren(
     },
     now: () => 1_000,
     controlRequestTimer: testControlRequestTimer,
-    ...options,
+    ...controllerOptions,
   });
   controller.subscribeNotifications((notification) => {
     notifications.push(notification);
@@ -136,6 +148,7 @@ async function ensureController(
   controller: PrintSessionController,
   child: FakeClaudePrintChild,
   permissionMode: 'default' | 'bypassPermissions' = 'default',
+  overrides: { conversationRef?: string; resumeExisting?: boolean } = {},
 ) {
   const ensure = controller.sessionEnsure({
     cwd: '/workspace',
@@ -147,6 +160,7 @@ async function ensureController(
     systemPrompt: 'system',
     model: 'claude-sonnet-test',
     effort: 'high',
+    ...overrides,
   });
   await waitForWrite(child, 0);
 
@@ -160,7 +174,7 @@ async function ensureController(
   child.emitStdout({
     type: 'system',
     subtype: 'init',
-    session_id: TEST_SESSION_ID,
+    session_id: overrides.conversationRef ?? TEST_SESSION_ID,
     model: 'claude-sonnet-test',
   });
   child.emitStdout({
@@ -176,6 +190,31 @@ async function ensureController(
 }
 
 describe('PrintSessionController', () => {
+  it.each([
+    ['new', false],
+    ['resumed', true],
+  ] as const)('passes %s-session intent to the print child', async (_label, resumeExisting) => {
+    const child = new FakeClaudePrintChild();
+    const spawnOptions: SpawnClaudePrintChildOptions[] = [];
+    const controller = createController(child, [], {
+      onSpawn: (options) => spawnOptions.push(options),
+    });
+
+    await expect(
+      ensureController(controller, child, 'default', {
+        conversationRef: TEST_SESSION_ID,
+        resumeExisting,
+      }),
+    ).resolves.toMatchObject({ conversationRef: TEST_SESSION_ID });
+    expect(spawnOptions).toHaveLength(1);
+    expect(spawnOptions[0]).toMatchObject({
+      conversationRef: TEST_SESSION_ID,
+      resume: resumeExisting,
+    });
+
+    await controller.shutdown();
+  });
+
   it('bootstraps with a control request, sends user JSONL, and completes from result output', async () => {
     const child = new FakeClaudePrintChild();
     const notifications: ControllerNotification[] = [];

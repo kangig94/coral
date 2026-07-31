@@ -351,6 +351,7 @@ export class PrintSessionController implements BrokerSessionController {
     const child = await this.spawnChild({
       cwd: signature.cwd,
       ...(conversationRef === undefined ? {} : { conversationRef }),
+      resume: params.resumeExisting === true,
       systemPrompt: params.systemPrompt,
       permissionMode: params.permissionMode,
       model: params.model,
