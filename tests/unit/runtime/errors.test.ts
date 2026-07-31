@@ -56,6 +56,18 @@ describe('CoralSetupError', () => {
       "archive digest mismatch\nCheck network access, filesystem permissions, and free space, then retry 'coral-cli expansion equip kiwi'.",
     ],
     [
+      'store_schema_outdated',
+      { version: '0.9.16', flavor: 'prod' },
+      'Coral backend store format does not match this installation.',
+      "This build cannot read this store's format. Use Coral 0.9.16 to read this store, or deliberately destroy its history by running 'coral-cli backend store-reset discard --target gen2 --flavor prod'; this build can then initialize an empty store.",
+    ],
+    [
+      'store_schema_outdated',
+      { flavor: 'dev' },
+      'Coral backend store format does not match this installation.',
+      "This build cannot read this store's format. To deliberately destroy its history, run 'coral-cli backend store-reset discard --target gen2 --flavor dev'; this build can then initialize an empty store.",
+    ],
+    [
       'expansion_binary_corrupt',
       { name: 'vector' },
       'The installed binary for vector could not be activated.',

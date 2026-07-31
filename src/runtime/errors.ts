@@ -122,8 +122,13 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
   store_schema_outdated: {
     userMessage: 'Coral backend store format does not match this installation.',
-    remediation:
-      'A read-only command cannot change the store. Start Coral through a normal provider launch; the next writable daemon startup quarantines the old store files and initializes the current format, making prior Coral history unavailable from the active store.',
+    remediation: (context) => {
+      const version = stringContextValue(context, 'version', '');
+      const command = `'coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}'`;
+      return version.length > 0
+        ? `This build cannot read this store's format. Use Coral ${version} to read this store, or deliberately destroy its history by running ${command}; this build can then initialize an empty store.`
+        : `This build cannot read this store's format. To deliberately destroy its history, run ${command}; this build can then initialize an empty store.`;
+    },
   },
   legacy_foreign_generation: {
     userMessage: (context) =>
