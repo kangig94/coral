@@ -70,7 +70,8 @@ import {
   TEST_PROVIDER_SCOPE,
   withTestProfileLocation,
 } from '#tests/helpers/provider-credentials.js';
-import { ChildPrincipalRegistry, CORAL_CHILD_PRINCIPAL_HANDLE } from '#src/coordinator/child-principal-registry.js';
+import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { CORAL_CHILD_PRINCIPAL_HANDLE } from '#src/security/child-principal-env.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;

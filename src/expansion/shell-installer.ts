@@ -5,7 +5,8 @@ import type { Runtime } from '../runtime/ports.js';
 import type { EngineInstaller, EngineInstallerOptions, LocalExpansionInstallState } from './contract.js';
 import { assertExpansionPackageId } from './package-id.js';
 import type { InstallError } from './rpc-contract.js';
-import { acquirePackageOperationLock, PACKAGE_OPERATION_LOCK_TIMEOUT_MS } from './package-lock.js';
+import { acquirePackageOperationLock } from './package-lock.js';
+import { PACKAGE_OPERATION_LOCK_TIMEOUT_MS } from '../infra/package-operation-lock.js';
 
 const INSTALL_TIMEOUT_MS = 300_000;
 

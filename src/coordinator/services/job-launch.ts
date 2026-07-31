@@ -32,11 +32,8 @@ import {
   runProviderPreflight,
   toPreflightRuntime,
 } from './execution-policies.js';
-import {
-  CHILD_PRINCIPAL_CAPABILITIES,
-  CORAL_CHILD_PRINCIPAL_HANDLE,
-  type ChildPrincipalRegistry,
-} from '../child-principal-registry.js';
+import { CHILD_PRINCIPAL_CAPABILITIES, type ChildPrincipalRegistry } from '../child-principal-registry.js';
+import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../security/child-principal-env.js';
 
 export interface JobLaunchServiceDeps {
   runtime: Runtime;

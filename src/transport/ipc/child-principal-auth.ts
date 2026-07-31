@@ -7,8 +7,6 @@ import {
 } from '../../security/child-principal-env.js';
 import type { IpcAuthMetadata } from './json-rpc.js';
 
-export { CORAL_CHILD_PRINCIPAL_HANDLE };
-
 export type ChildPrincipalEnv = CoralChildEnvironment;
 
 export type ChildPrincipalNonceFactory = () => string;

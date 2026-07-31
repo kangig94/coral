@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { validateCanonicalExpansionPackageId, validateExpansionPackageId } from '#src/expansion/package-id.js';
+import { validateExpansionPackageId } from '#src/expansion/package-id.js';
+import { validateCanonicalExpansionPackageId } from '#src/expansion/canonical-package-id.js';
 import { parseDeclarativeEngineManifest } from '#src/expansion/manifest/schema.js';
 import { KB_RUNTIME_EXACT_AUTHORITIES, KB_RUNTIME_PATTERNED_AUTHORITIES } from '#src/runtime/kb-runtime-authority.js';
 

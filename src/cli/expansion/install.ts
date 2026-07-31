@@ -12,7 +12,8 @@ import type { Runtime } from '../../runtime/ports.js';
 import { openWritableStoreDbNoReset } from '../../store/db.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
 import { isDirectoryLockTimeoutError } from '../../infra/fs-lock.js';
-import { acquirePackageOperationLock, PACKAGE_OPERATION_LOCK_TIMEOUT_MS } from '../../expansion/package-lock.js';
+import { acquirePackageOperationLock } from '../../expansion/package-lock.js';
+import { PACKAGE_OPERATION_LOCK_TIMEOUT_MS } from '../../infra/package-operation-lock.js';
 import {
   installErrorSchema,
   installResponseSchema,
