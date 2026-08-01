@@ -1,4 +1,5 @@
-import { formatError } from '../../../infra/error-format.js';
+import { errorMessage, formatError } from '../../../infra/error-format.js';
+import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime } from '../../../jobs/records.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
@@ -23,6 +24,7 @@ import {
   type RunningRecoverableJob,
 } from './actions.js';
 import { buildRecoverySnapshot } from './snapshot.js';
+import { releaseSessionJobClaim } from '../../../sessions/job-release.js';
 import type { SessionLookup } from '../../../sessions/lookup.js';
 
 const RECOVERY_POLL_MS = 500;
@@ -80,6 +82,7 @@ type RecoveryAdoptionContext = {
   queuedJobs: QueuedRecoverableJob[];
   runningJobs: RunningRecoverableJob[];
   signal: AbortSignal;
+  coordinatorCommit: CommitEventsFn;
   interruptedAppServerReason: InterruptedAppServerReason;
 };
 
@@ -210,28 +213,69 @@ export function createRecoveryCoordinator({
     queuedJobs,
     runningJobs,
     signal,
+    coordinatorCommit,
     interruptedAppServerReason,
   }: RecoveryAdoptionContext): Promise<void> {
     /**
-     * A job whose recovery cannot be resolved is a per-job fault, never a process
-     * verdict. Terminalizing with the thrown reason keeps the cause queryable through
-     * the job's own cause chain instead of leaving the job at `running` forever, and
-     * `releaseJob` preserves `conversationRef`/`providerContinuity`, so the session
-     * stays resumable.
+     * Persist an unresolvable recovery as a per-job terminal fault, release any
+     * matching session claim, and remove registry ownership so startup can continue.
      */
     const recordUnresolvedRecovery = (jobId: string, summary: string, error: unknown): void => {
       const status = progressStore.readStatus(jobId);
-      if (status !== null) {
+      if (status === null) {
+        state.recoveryRegistry?.remove(jobId);
+        log(
+          `${summary} for ${jobId}: ${errorMessage(error)}; job status was unavailable, so no terminal or session claim could be updated.\n`,
+        );
+        return;
+      }
+
+      const alreadyTerminal = isTerminalPhase(status.phase);
+      if (!alreadyTerminal) {
         markJobAsError(
           progressStore,
           status,
-          { kind: 'recovery_parse_failed', cause: { message: `${summary}: ${formatError(error)}` } },
+          {
+            kind: 'recovery_parse_failed',
+            cause: {
+              message: `${summary}: ${errorMessage(error)}`,
+              ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+            },
+          },
           runtime.time.now(),
           log,
         );
       }
-      state.recoveryRegistry?.remove(jobId);
-      log(`${summary} for ${jobId}: ${formatError(error)}\n`);
+
+      let releasedSessionClaim = status.sessionId === null;
+      try {
+        if (status.sessionId !== null) {
+          releaseSessionJobClaim({
+            projectRoot: status.projectRoot,
+            runtime,
+            emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
+            db: progressStore.getDb(),
+            commitEvents: coordinatorCommit,
+            sessionId: status.sessionId,
+            jobId,
+          });
+          releasedSessionClaim = true;
+        }
+      } finally {
+        state.recoveryRegistry?.remove(jobId);
+        const terminalDisposition = alreadyTerminal
+          ? 'job was already terminal'
+          : 'terminalized as recovery_parse_failed';
+        const sessionDisposition =
+          status.sessionId === null
+            ? 'no session claim was present'
+            : releasedSessionClaim
+              ? 'released its session claim'
+              : 'could not release its session claim';
+        log(
+          `${summary} for ${jobId}: ${errorMessage(error)}; ${terminalDisposition}; ${sessionDisposition}. Run coral-cli jobs detail ${jobId} for the recorded reason.\n`,
+        );
+      }
     };
 
     queuedJobs.sort((a, b) => a.authority.launchRecord.enqueueSequence - b.authority.launchRecord.enqueueSequence);
@@ -523,6 +567,7 @@ export function createRecoveryCoordinator({
           queuedJobs: queuedRecoverable,
           runningJobs: runningRecoverable,
           signal,
+          coordinatorCommit: ctx.coordinatorCommit,
           interruptedAppServerReason,
         });
       } catch (error: unknown) {

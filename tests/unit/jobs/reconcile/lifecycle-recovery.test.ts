@@ -13,6 +13,8 @@ import type { ProviderSession } from '#src/sessions/entry.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { reduceSessionOpened } from '#src/sessions/projections.js';
 import type { CoralEvent } from '#src/store/envelope.js';
+import { getEvent } from '#src/store/event-queries.js';
+import type { JobStore } from '#src/jobs/store.js';
 import type { SessionOpenedBody } from '#src/sessions/event-bodies.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -691,6 +693,26 @@ async function stopLifecycleController(controller: {
   } catch {
     /* best effort */
   }
+}
+
+/**
+ * A `recovery_parse_failed` terminal records its reason on the job's own progress
+ * stream and points at it with a causeRef, so asserting the terminal alone proves
+ * nothing about the reason. Resolve the ref the way production does
+ * (`src/workflow/recover.ts` uses the same `getEvent`) and assert the real message.
+ */
+function expectRecordedRecoveryFault(progressStore: JobStore, jobId: string, expectedMessage: string): void {
+  const status = progressStore.readStatus(jobId);
+  expect(status?.phase).toBe('error');
+  const outcome = status?.result?.outcome;
+  expect(outcome?.kind).toBe('failed');
+  if (outcome?.kind !== 'failed') return;
+  const { causeRef } = outcome;
+  const cause = getEvent(progressStore.getDb(), causeRef.stream, causeRef.seq, progressStore);
+  expect(cause?.body).toMatchObject({
+    kind: 'recovery_parse_failed',
+    cause: { message: expect.stringContaining(expectedMessage) },
+  });
 }
 
 describe('lifecycle recovery', () => {
@@ -1494,13 +1516,9 @@ describe('lifecycle recovery', () => {
       await controller.start();
       expect(runtimeState.getLaunchFenceActive()).toBe(false);
       expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
-      // `recovery_parse_failed` is a progress fault, so the terminal is `failed` and the
-      // reason is recorded on the job's own stream and referenced by a causeRef — the job
-      // is terminal with a queryable cause instead of stuck at `running` forever.
-      expect(progressStore.readStatus(jobId)).toMatchObject({
-        phase: 'error',
-        result: { outcome: { kind: 'failed', causeRef: expect.anything() } },
-      });
+      // The terminal is `failed` with the reason on the job's own stream behind a
+      // causeRef; resolve it so a wrong or unresolvable ref cannot pass.
+      expectRecordedRecoveryFault(progressStore, jobId, 'exact session CAS went stale');
     } finally {
       await stopLifecycleController(controller);
     }
@@ -1795,13 +1813,9 @@ describe('lifecycle recovery', () => {
       await controller.start();
       expect(runtimeState.getLaunchFenceActive()).toBe(false);
       expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
-      // `recovery_parse_failed` is a progress fault, so the terminal is `failed` and the
-      // reason is recorded on the job's own stream and referenced by a causeRef — the job
-      // is terminal with a queryable cause instead of stuck at `running` forever.
-      expect(progressStore.readStatus(jobId)).toMatchObject({
-        phase: 'error',
-        result: { outcome: { kind: 'failed', causeRef: expect.anything() } },
-      });
+      // The terminal is `failed` with the reason on the job's own stream behind a
+      // causeRef; resolve it so a wrong or unresolvable ref cannot pass.
+      expectRecordedRecoveryFault(progressStore, jobId, 'session CAS became stale');
     } finally {
       await stopLifecycleController(controller);
     }
@@ -1809,7 +1823,10 @@ describe('lifecycle recovery', () => {
 
   // Per-job isolation is the invariant `lifecycle.ts` documents ("corrupt sessions should
   // not abort recovery") and did not have: one unresolvable job used to abandon every other
-  // job's recovery, discuss recovery, workflow recovery, and stale-job cleanup with it.
+  // job's recovery. Downstream stages are safe for a different reason and are deliberately
+  // not asserted here — `cleanupStaleJobs` already runs before `runRecoveryAdoption`, and
+  // discuss/workflow recovery run after `runStartupRecovery` resolves, which it now always
+  // does. Only the `actions.ts` register-stage throws could ever starve those.
   it('14c2. one unresolvable job does not abandon the recovery of another', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-app-server-isolation');
@@ -1821,6 +1838,11 @@ describe('lifecycle recovery', () => {
       eventBus,
       providers: permissiveProviderLookupPort,
     });
+    // `runningJobs` order comes from `ORDER BY job_id ASC` (src/jobs/read-queries.ts), and
+    // 'isolation-blocked-job' < 'isolation-healthy-job' lexically. That ordering is what makes
+    // this a proof: the failing job must be processed FIRST, or both old and new code would
+    // finalize the healthy job before the throw and the test would assert nothing. Keep the
+    // blocked id sorting first if these are ever renamed.
     const blockedJobId = 'isolation-blocked-job';
     const healthyJobId = 'isolation-healthy-job';
     const fakeService = createFakeExecutionAndRecoveryService({
@@ -1859,11 +1881,94 @@ describe('lifecycle recovery', () => {
       expect(runtimeState.getLaunchFenceActive()).toBe(false);
       // The healthy job's recovery ran even though the other one could not be resolved.
       expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledTimes(2);
-      expect(progressStore.readStatus(blockedJobId)).toMatchObject({
-        phase: 'error',
-        result: { outcome: { kind: 'failed', causeRef: expect.anything() } },
-      });
+      expectRecordedRecoveryFault(progressStore, blockedJobId, 'replacement host could not be opened');
       expect(controller.getRecoveryRegistry()?.has(healthyJobId) ?? false).toBe(false);
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
+  // BLOCKING finding from tier review: terminalizing without releasing the claim left
+  // `activeJobId` pointed at a terminal job, so every later launch on that session was
+  // rejected `session_busy` ("wait for it to complete or abort it first" — both false)
+  // until the next boot. 14c cannot catch it: it passes a bare sessionId string with no
+  // session entry, so there is no claim to leak. This one uses a real claimed session.
+  it('14c3. an unresolvable app-server job releases its session claim immediately', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-app-server-claim');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-app-server-claim');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const db = openTestStoreDb(runtime, ':memory:');
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db,
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const sessionManager = new modules.sessionManagerModule.SessionManager(
+      projectRoot,
+      runtime,
+      undefined,
+      undefined,
+      db,
+      permissiveProviderLookupPort,
+    );
+    const session = allocateTestSession(
+      sessionManager,
+      'codex',
+      'alpha',
+      undefined,
+      projectRoot,
+      projectRoot,
+      namespace,
+    );
+    const jobId = 'app-server-claim-job';
+    expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
+    const fakeService = createFakeExecutionAndRecoveryService({
+      finalizeInterruptedAppServerJob: vi.fn(async () => {
+        throw new Error('replacement host could not be opened');
+      }),
+    });
+
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: session.sessionId,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'app-server',
+      startTime: '2026-03-31T00:00:00.000Z',
+      providerMeta: { provider: 'codex', leaseState: 'waiting' },
+    });
+
+    const { controller } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      runtime,
+    });
+
+    try {
+      await controller.start();
+      expectRecordedRecoveryFault(progressStore, jobId, 'replacement host could not be opened');
+      // Released in this boot, not deferred to the next one: the session is immediately
+      // claimable again, which is what keeps the conversation resumable.
+      // Read and re-claim through a fresh manager, matching test 12: the release must be
+      // durable, and `releaseJob` bumps the session version so a handle held from before
+      // the release would fail its CAS for a reason unrelated to the fix.
+      const reader = new modules.sessionManagerModule.SessionManager(
+        projectRoot,
+        runtime,
+        undefined,
+        undefined,
+        db,
+        permissiveProviderLookupPort,
+      );
+      expect(reader.get('codex', session.sessionId)?.activeJobId).toBeUndefined();
+      expect(reader.claimForJobSync(session.sessionId, 'a-later-job')).toBe(true);
     } finally {
       await stopLifecycleController(controller);
     }
@@ -1973,6 +2078,65 @@ describe('lifecycle recovery', () => {
       expect(runtime.process.isAlive).toHaveBeenCalledWith(pid);
       // The stop request is still the point of this case; only the boot failure is gone.
       expect(kill).toHaveBeenCalledWith(pid, 'SIGTERM');
+      expect(fakeService.finalizeProviderRecoveryBindingFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ jobId }),
+        { reason: 'subject-mismatch', provider: 'codex' },
+      );
+      expect(runtimeState.getLaunchFenceActive()).toBe(false);
+      expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
+  // The failed-stop branch is unreachable in production — RealRuntime.kill swallows signal
+  // errors and returns false — so only a mocked port exercises it. It still must not be
+  // fatal: before the fix a failed stop threw and took the whole boot with it.
+  it('14e2. a failed process stop is logged, not fatal', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-durable-kill-fails');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-durable-kill-fails');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const jobId = 'durable-kill-fails-job';
+    const pid = 73_939;
+    const kill = vi.spyOn(runtime.process, 'kill').mockImplementation(() => {
+      throw new Error('EPERM: operation not permitted');
+    });
+    vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid) => candidatePid === pid);
+    const fakeService = createFakeExecutionAndRecoveryService({
+      captureProviderRecoveryAuthority: vi.fn(async () => ({
+        ok: false,
+        failure: { reason: 'subject-mismatch', provider: 'codex' },
+      })),
+    });
+
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: 'durable-kill-fails-session',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    stubRuntimeRecord(progressStore, { jobId, pid });
+
+    const { controller, runtimeState } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      runtime,
+    });
+
+    try {
+      await controller.start();
+      expect(kill).toHaveBeenCalled();
+      // The throw is absorbed and the job still reaches its terminal.
       expect(fakeService.finalizeProviderRecoveryBindingFailure).toHaveBeenCalledWith(
         expect.objectContaining({ jobId }),
         { reason: 'subject-mismatch', provider: 'codex' },

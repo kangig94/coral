@@ -11,12 +11,14 @@ import { serializeCoralSetupError } from '../runtime/errors.js';
 
 export type BootstrapDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootstrap_unhandled_rejection';
 
+const MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH = 8;
+
 function startupStartedAt(): number {
   const startedAt = Number(process.env.CORAL_STARTUP_STARTED_AT);
   return Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now();
 }
 
-function serializeBootstrapError(error: unknown): Record<string, unknown> {
+export function serializeBootstrapError(error: unknown, causeDepth = 0): Record<string, unknown> {
   const setupError = serializeCoralSetupError(error);
   if (setupError) {
     return { kind: 'coral_setup_error', ...setupError };
@@ -29,7 +31,9 @@ function serializeBootstrapError(error: unknown): Record<string, unknown> {
       ...(error.stack === undefined ? {} : { stack: error.stack }),
       // A wrapper that carries the real reason in `cause` is useless without it: the
       // operator sees a fatal, non-retryable failure and no way to learn why.
-      ...(error.cause === undefined || error.cause === null ? {} : { cause: serializeBootstrapError(error.cause) }),
+      ...(error.cause === undefined || error.cause === null || causeDepth >= MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH
+        ? {}
+        : { cause: serializeBootstrapError(error.cause, causeDepth + 1) }),
     };
   }
   return {

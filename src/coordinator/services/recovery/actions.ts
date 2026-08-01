@@ -1,4 +1,4 @@
-import { formatError } from '../../../infra/error-format.js';
+import { errorMessage, formatError } from '../../../infra/error-format.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobRuntime } from '../../../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
@@ -17,6 +17,7 @@ import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import type { CommitEventsFn } from '../../../store/append.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
+import { gracefulKillByPid } from '../../live/process-supervision.js';
 
 export type QueuedRecoverableJob = { jobId: string; authority: ProviderRecoveryAuthority };
 export type RunningRecoverableJob = {
@@ -119,16 +120,22 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
         // try/catch, which would abandon every other job's recovery too.
         if (isDurableCliRuntime(action.runtimeRecord) && runtime.process.isAlive(action.runtimeRecord.pid)) {
           try {
-            runtime.process.kill(action.runtimeRecord.pid, 'SIGTERM');
+            gracefulKillByPid(runtime, action.runtimeRecord.pid);
           } catch (error: unknown) {
-            // A failed stop is not a reason to refuse the whole daemon. The next boot
-            // observes the pid as dead and takes the dead-process path.
-            log(`Failed to stop rejected recovery process ${action.runtimeRecord.pid}: ${formatError(error)}\n`);
+            // RealRuntime.kill swallows signal errors, so only a mocked port reaches
+            // this catch. An EPERM-alive PID was recycled into a process that was never
+            // ours; a failed kill of our own child means it is already gone. Either way,
+            // no owned live process is abandoned.
+            log(
+              `Failed to stop rejected recovery process ${action.runtimeRecord.pid} for job ${action.jobId}; no owned live process was abandoned and recovery finalization will continue: ${errorMessage(error)}\n`,
+            );
           }
         }
         service.finalizeProviderRecoveryBindingFailure(action.launchRecord, captured.failure);
         recoveryRegistry.remove(action.jobId);
-        log(`Rejected running recovery with invalid provider authority: ${action.jobId}\n`);
+        log(
+          `Rejected running recovery with invalid provider authority: terminalized ${action.jobId}, released its session claim, and recorded the reason. Run coral-cli jobs detail ${action.jobId} for details.\n`,
+        );
         return;
       }
       const { authority } = captured;
