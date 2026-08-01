@@ -21,6 +21,7 @@ import { exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin
 exitIfChildProcess();
 exitIfWrongFlavor();
 
+// Self-contained mirror of the path authority in src/infra/path/store.ts.
 function storeDbPath(flavor = buildFlavor(), stateRoot = coralStateRoot()) {
   const dataDir = flavor === 'dev' ? 'data-dev' : 'data';
   return join(stateRoot, 'gen2', dataDir, 'store', 'store.db');
@@ -134,7 +135,7 @@ await failOpen(async () => {
         logSnapshotSkipped(
           projectDir,
           'projection_jobs contains an unsafe job identifier',
-          storeDiscardRemediation(),
+          "Run 'coral-cli backend shutdown' and report this projection integrity failure. Do not edit the database or discard the store solely because of this row.",
         );
         return [];
       }
