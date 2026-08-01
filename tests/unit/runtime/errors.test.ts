@@ -88,8 +88,8 @@ describe('CoralSetupError', () => {
     [
       'legacy_source_not_quiescent',
       { operation: 'store-reset', holder: 'install:kiwi (pid 42)', flavor: 'prod', baseDir: '/state' },
-      'The current-generation adoption source still has an active writer lease held by install:kiwi (pid 42).',
-      "Run this build's own 'coral-cli backend shutdown'. Wait for current-generation writer-lease holder 'install:kiwi (pid 42)' to exit and release its lease, then retry 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
+      'The generation-boundary operation cannot proceed while install:kiwi (pid 42) remains active.',
+      "Run this build's own 'coral-cli backend shutdown'. Wait for 'install:kiwi (pid 42)' to exit and release its lease or lock, then retry 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
     ],
     [
       'store_reset_lock_contended',
@@ -101,7 +101,7 @@ describe('CoralSetupError', () => {
         baseDir: '/state',
       },
       'Store reset refused because the gen2 coordinator socket is already owned.',
-      'Stop the gen2 prod coordinator rooted at /state, then retry. The discard command never shuts down an incumbent daemon.',
+      "Run 'coral-cli backend shutdown' for the gen2 prod coordinator rooted at /state, then retry. The discard command never shuts down an incumbent daemon.",
     ],
     [
       'expansion_binary_corrupt',

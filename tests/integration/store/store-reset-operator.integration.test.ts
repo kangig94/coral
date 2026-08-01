@@ -98,8 +98,9 @@ describe('store-reset operator socket exclusion', () => {
       await expect(
         discardStoreReset({ target: 'gen2', runtime, build: BUILD, storeFormat: STORE_FORMAT }),
       ).rejects.toMatchObject({
-        code: 'store_reset_lock_contended',
-        context: { target: 'gen2', flavor: 'prod', baseDir, socketPath: paths.socketPath },
+        code: 'coordinator_socket_in_use',
+        remediation: expect.stringContaining('coral-cli backend shutdown'),
+        context: { flavor: 'prod', operation: 'gen2 store reset', socketPath: paths.socketPath },
       });
       expect(readFileSync(paths.storeDbPath)).toEqual(before);
       expect(existsSync(paths.quarantineRoot)).toBe(false);

@@ -160,17 +160,22 @@ function ensureCoordinationRoot(runtime: Runtime, paths: GenerationBoundaryPaths
   runtime.storage.mkdirSync(paths.writersRoot, { recursive: true });
 }
 
-async function acquireAdoptionLock(runtime: Runtime, paths: GenerationBoundaryPaths): Promise<DirectoryLockLease> {
+async function acquireAdoptionLock(
+  runtime: Runtime,
+  paths: GenerationBoundaryPaths,
+  timeoutMs: number,
+): Promise<DirectoryLockLease> {
   runtime.storage.mkdirSync(paths.generationRoot, { recursive: true });
-  return acquireDirectoryLock(paths.adoptionLock, directoryLockDeps(runtime), GENERATION_COORDINATION_TIMEOUT_MS);
+  return acquireDirectoryLock(paths.adoptionLock, directoryLockDeps(runtime), timeoutMs);
 }
 
 export async function acquireGenerationAdoptionLease(
   runtime: Runtime,
   storeFormat: StoreFormatDescription,
+  timeoutMs = GENERATION_COORDINATION_TIMEOUT_MS,
 ): Promise<GenerationAdoptionLease> {
   const paths = resolveGenerationBoundaryPaths(runtime);
-  const releaseAdoption = await acquireAdoptionLock(runtime, paths);
+  const releaseAdoption = await acquireAdoptionLock(runtime, paths, timeoutMs);
   try {
     const readiness = inspectGenerationReadiness(runtime, storeFormat);
     switch (readiness.kind) {

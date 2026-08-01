@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Command } from 'commander';
@@ -10,12 +11,13 @@ import type { KbCommitQuarantineResult } from '#src/kb/commit-quarantine.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { captureIndexStateSnapshot } from '#src/kb/corpus/lanes.js';
 import type { StagedCorpusProjection } from '#src/kb/corpus/projection-lifecycle.js';
-import { CoralSetupError } from '#src/runtime/errors.js';
+import { CoralSetupError, serializeCoralSetupError } from '#src/runtime/errors.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
+import { bindSocket } from '#src/transport/ipc/server.js';
 
 const tempRoots: string[] = [];
 const openDatabases: Database[] = [];
@@ -59,6 +61,12 @@ function openHarness(input: ProjectionHarness): { db: Database; kb: KbRuntime } 
     runtime: input.runtime,
   });
   return { db, kb };
+}
+
+function shutdownCoordinator(server: Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
 }
 
 function writeNote(root: string, slug: string, body: string): void {
@@ -181,9 +189,32 @@ describe('corpus projection recovery', () => {
 
     const refusal = refuseHarnessBoot(harness);
     expect(refusal.code).toBe('kb_commit_corrupt_or_unsupported');
+    const shutdownStep = refusal.remediation.indexOf('coral-cli backend shutdown');
+    const quarantineStep = refusal.remediation.indexOf('coral-cli backend kb-commit quarantine');
+    expect(shutdownStep).toBeGreaterThanOrEqual(0);
+    expect(quarantineStep).toBeGreaterThan(shutdownStep);
     closeHarnessDatabase(harness);
     const storePath = join(harness.runtimeDir, 'store.db');
     const storeBefore = readFileSync(storePath);
+
+    const coordinator = createServer();
+    await expect(bindSocket(coordinator, harness.runtime.paths.coral.coordinator.socketPath)).resolves.toEqual({
+      kind: 'bound',
+    });
+    try {
+      let quarantineWhileRunning: unknown;
+      try {
+        await quarantineKbCommit({ runtime: harness.runtime, commitId: staged.commitId });
+      } catch (error: unknown) {
+        quarantineWhileRunning = error;
+      }
+      expect(serializeCoralSetupError(quarantineWhileRunning)).toMatchObject({
+        code: 'coordinator_socket_in_use',
+        remediation: expect.stringContaining('coral-cli backend shutdown'),
+      });
+    } finally {
+      await shutdownCoordinator(coordinator);
+    }
 
     const quarantine = await runQuarantineCommand(harness, staged.commitId);
 

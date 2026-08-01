@@ -263,6 +263,125 @@ describe('legacy store generation adoption', () => {
     expect(hashTree(legacyRoot)).toBe(before);
   });
 
+  it('reports a missing legacy store database as observed instead of fabricating a foreign generation', async () => {
+    const { runtime } = harness();
+    const paths = resolveGenerationBoundaryPaths(runtime);
+    mkdirSync(paths.legacyFlavorRoot, { recursive: true });
+    const socket = vi.fn(fakeSocketGuard());
+
+    let refusal: unknown;
+    try {
+      await adoptLegacyStore({ runtime, storeFormat: STORE_FORMAT, acquireSocketGuard: socket });
+    } catch (error: unknown) {
+      refusal = error;
+    }
+
+    expect(serializeCoralSetupError(refusal)).toMatchObject({
+      code: 'legacy_adoption_source_unreadable',
+      context: {
+        legacyPath: paths.legacyFlavorRoot,
+        observation: expect.stringContaining('is missing'),
+      },
+    });
+    expect(serializeCoralSetupError(refusal)?.context).not.toHaveProperty('version');
+    expect(socket).not.toHaveBeenCalled();
+  });
+
+  it('reports corrupt legacy store state as unreadable without inventing a legacy version', async () => {
+    const { runtime } = harness();
+    const paths = resolveGenerationBoundaryPaths(runtime);
+    const dbFile = storeDbPath(paths.legacyFlavorRoot);
+    mkdirSync(dirname(dbFile), { recursive: true });
+    writeFileSync(dbFile, 'not a sqlite database', 'utf-8');
+    const before = readFileSync(dbFile);
+
+    let refusal: unknown;
+    try {
+      await adoptLegacyStore({ runtime, storeFormat: STORE_FORMAT, acquireSocketGuard: fakeSocketGuard() });
+    } catch (error: unknown) {
+      refusal = error;
+    }
+
+    expect(serializeCoralSetupError(refusal)).toMatchObject({
+      code: 'legacy_adoption_source_unreadable',
+      context: {
+        legacyPath: paths.legacyFlavorRoot,
+        observation: expect.stringMatching(/could not be (opened|read)/u),
+        cause: expect.stringContaining('database'),
+      },
+    });
+    expect(serializeCoralSetupError(refusal)?.context).not.toHaveProperty('version');
+    expect(readFileSync(dbFile)).toEqual(before);
+  });
+
+  it.each(['already exists and is not a completed adoption', 'appeared during adoption'] as const)(
+    'documents the generated target state when it %s',
+    async (observation) => {
+      const { runtime } = harness();
+      createSameGenerationLegacyStore(runtime);
+      const paths = resolveGenerationBoundaryPaths(runtime);
+      const acquireSocketGuard = async (): Promise<AdoptionSocketGuard> => {
+        if (observation === 'appeared during adoption') {
+          mkdirSync(paths.generatedFlavorRoot, { recursive: true });
+        }
+        return { async release() {} };
+      };
+      if (observation === 'already exists and is not a completed adoption') {
+        mkdirSync(paths.generatedFlavorRoot, { recursive: true });
+      }
+
+      let refusal: unknown;
+      try {
+        await adoptLegacyStore({ runtime, storeFormat: STORE_FORMAT, acquireSocketGuard });
+      } catch (error: unknown) {
+        refusal = error;
+      }
+
+      expect(serializeCoralSetupError(refusal)).toMatchObject({
+        code: 'legacy_adoption_state_changed',
+        context: { observation: expect.stringContaining(observation) },
+      });
+    },
+  );
+
+  it('documents a legacy source that disappears after the guards are acquired', async () => {
+    const { runtime } = harness();
+    createSameGenerationLegacyStore(runtime);
+    const paths = resolveGenerationBoundaryPaths(runtime);
+    const acquireSocketGuard = async (): Promise<AdoptionSocketGuard> => {
+      rmSync(paths.legacyFlavorRoot, { recursive: true });
+      return { async release() {} };
+    };
+
+    await expect(adoptLegacyStore({ runtime, storeFormat: STORE_FORMAT, acquireSocketGuard })).rejects.toMatchObject({
+      code: 'legacy_adoption_state_changed',
+      context: { observation: expect.stringContaining('disappeared during adoption') },
+    });
+  });
+
+  it.each(['baseDir', 'generationRoot'] as const)(
+    'documents a failed post-rename directory sync for %s',
+    async (pathKey) => {
+      const { runtime } = harness();
+      createSameGenerationLegacyStore(runtime);
+      const paths = resolveGenerationBoundaryPaths(runtime);
+      const failingPath = paths[pathKey];
+      const sync = runtime.storage.syncDirectoryDurableSync.bind(runtime.storage);
+      vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) =>
+        path === failingPath ? false : sync(path),
+      );
+
+      await expect(
+        adoptLegacyStore({ runtime, storeFormat: STORE_FORMAT, acquireSocketGuard: fakeSocketGuard() }),
+      ).rejects.toMatchObject({
+        code: 'legacy_adoption_durability_failed',
+        context: { path: failingPath, flavor: runtime.flavor },
+      });
+      expect(existsSync(paths.generatedFlavorRoot)).toBe(true);
+      expect(existsSync(paths.legacyFlavorRoot)).toBe(false);
+    },
+  );
+
   it.each(['prod', 'dev'] as const)(
     'moves the complete %s flavor tree with one root rename under external guards',
     async (flavor) => {

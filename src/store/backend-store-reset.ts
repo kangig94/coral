@@ -1028,6 +1028,7 @@ export function openOrResetBackendStoreDb(
       path: files.dbFile,
       storage: runtime.storage,
       storeFormat: options.storeFormat,
+      flavor: runtime.flavor,
       busyTimeoutMs: startupBusyTimeoutMs,
     });
     db.exec(`PRAGMA busy_timeout = ${steadyStateBusyTimeoutMs}`);

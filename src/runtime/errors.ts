@@ -23,6 +23,8 @@ export type DocumentedCoralSetupErrorCode =
   | 'expansion_install_command_failed'
   | 'expansion_install_artifact_failed'
   | 'startup_not_ready'
+  | 'coordinator_socket_in_use'
+  | 'coordinator_socket_bind_failed'
   | 'store_schema_outdated'
   | 'legacy_foreign_generation'
   | 'legacy_adoption_required'
@@ -32,6 +34,13 @@ export type DocumentedCoralSetupErrorCode =
   | 'store_corrupt_or_unsupported'
   | 'store_not_initialized'
   | 'kb_commit_corrupt_or_unsupported'
+  | 'kb_commit_id_invalid'
+  | 'kb_commit_not_found'
+  | 'kb_commit_already_quarantined'
+  | 'kb_commit_quarantine_failed'
+  | 'legacy_adoption_source_unreadable'
+  | 'legacy_adoption_state_changed'
+  | 'legacy_adoption_durability_failed'
   | 'store_reset_lock_contended'
   | 'store_reset_quarantine_failed'
   | 'expansion_binary_corrupt'
@@ -122,6 +131,18 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: 'Coral backend is still starting.',
     remediation: 'The Coral backend is still starting; retry shortly.',
   },
+  coordinator_socket_in_use: {
+    userMessage: (context) =>
+      `${stringContextValue(context, 'operation', 'This operator command')} requires the Coral coordinator socket to be unbound.`,
+    remediation: (context) =>
+      `Run 'coral-cli backend shutdown', wait for the coordinator to exit, then retry '${stringContextValue(context, 'retryCommand', '<operator-command>')}'.`,
+  },
+  coordinator_socket_bind_failed: {
+    userMessage: (context) =>
+      `Coral could not bind the coordinator socket at ${stringContextValue(context, 'socketPath', '<socket-path>')} for ${stringContextValue(context, 'operation', 'this operator command')}.`,
+    remediation: (context) =>
+      `Run 'coral-cli backend shutdown'. Check the socket parent directory, permissions, and platform path-length limit, then retry '${stringContextValue(context, 'retryCommand', '<operator-command>')}'.`,
+  },
   store_schema_outdated: {
     userMessage: 'Coral backend store format does not match this installation.',
     remediation: (context) => {
@@ -150,13 +171,16 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
   legacy_source_not_quiescent: {
     userMessage: (context) =>
-      `The current-generation adoption source still has an active writer lease held by ${stringContextValue(context, 'holder', '<writer-lease-holder>')}.`,
+      `The generation-boundary operation cannot proceed while ${stringContextValue(context, 'holder', '<writer-lease-holder>')} remains active.`,
     remediation: (context) => {
-      const retry =
+      const retry = stringContextValue(
+        context,
+        'retryCommand',
         context?.operation === 'store-reset'
           ? `coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}`
-          : `coral-cli backend store-adopt --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}`;
-      return `Run this build's own 'coral-cli backend shutdown'. Wait for current-generation writer-lease holder '${stringContextValue(context, 'holder', '<writer-lease-holder>')}' to exit and release its lease, then retry '${retry}'.`;
+          : `coral-cli backend store-adopt --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}`,
+      );
+      return `Run this build's own 'coral-cli backend shutdown'. Wait for '${stringContextValue(context, 'holder', '<writer-lease-holder>')}' to exit and release its lease or lock, then retry '${retry}'.`;
     },
   },
   store_newer_incompatible: {
@@ -192,9 +216,50 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       const version = stringContextValue(context, 'version', '');
       const command = `'coral-cli backend kb-commit quarantine --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')} --commit ${stringContextValue(context, 'commitId', '<commit>')}'`;
       return version.length > 0
-        ? `Use Coral ${version} to read this commit, or run ${command} to quarantine the blocking KB artifacts.`
-        : `Run ${command} to quarantine the blocking KB artifacts.`;
+        ? `Use Coral ${version} to read this commit, or run 'coral-cli backend shutdown' and then ${command} to quarantine the blocking KB artifacts.`
+        : `Run 'coral-cli backend shutdown' and then ${command} to quarantine the blocking KB artifacts.`;
     },
+  },
+  kb_commit_id_invalid: {
+    userMessage: 'KB commit ID must be one safe filesystem path segment.',
+    remediation:
+      "Copy the commit ID exactly from the kb_commit_corrupt_or_unsupported refusal; do not add a path, '.', or '..'.",
+  },
+  kb_commit_not_found: {
+    userMessage: (context) =>
+      `KB commit '${stringContextValue(context, 'commitId', '<commit>')}' is not present in the active commit evidence.`,
+    remediation:
+      "Start Coral again to obtain the current kb_commit_corrupt_or_unsupported refusal, then run 'coral-cli backend shutdown' and retry with that refusal's exact commit ID. Preserve any retained quarantine or staging evidence.",
+  },
+  kb_commit_already_quarantined: {
+    userMessage: (context) =>
+      `KB commit '${stringContextValue(context, 'commitId', '<commit>')}' already has retained quarantine evidence.`,
+    remediation: (context) =>
+      `Do not overwrite the retained evidence at ${stringContextValue(context, 'quarantineDir', '<quarantine-dir>')}. Start Coral again; if it still names this commit as blocking, report this code and path.`,
+  },
+  kb_commit_quarantine_failed: {
+    userMessage: (context) =>
+      `Coral could not durably quarantine KB commit '${stringContextValue(context, 'commitId', '<commit>')}'.`,
+    remediation:
+      'Check permissions and free disk space in the generated KB runtime directory, then retry the quarantine command. Preserve active, staging, and retained quarantine evidence.',
+  },
+  legacy_adoption_source_unreadable: {
+    userMessage: (context) =>
+      `Coral could not inspect the legacy adoption source at ${stringContextValue(context, 'legacyPath', '<legacy-path>')}: ${stringContextValue(context, 'observation', 'the store could not be read')}.`,
+    remediation:
+      "Run 'coral-cli backend shutdown', verify that the legacy tree contains a readable store/store.db owned by the expected Coral installation, then retry store-adopt. This build left the tree unchanged; do not replace or delete it based on a fabricated generation diagnosis.",
+  },
+  legacy_adoption_state_changed: {
+    userMessage: (context) =>
+      `Legacy adoption refused because ${stringContextValue(context, 'observation', 'the source or target changed during the operation')}.`,
+    remediation:
+      "Run 'coral-cli backend shutdown' and preserve both the legacy and generated trees. Retry store-adopt only after confirming no Coral process is changing either tree; if the generated target remains incomplete, report this code and its context instead of merging or deleting either tree.",
+  },
+  legacy_adoption_durability_failed: {
+    userMessage: (context) =>
+      `Legacy adoption could not durably synchronize ${stringContextValue(context, 'path', '<generation-directory>')} after the rename.`,
+    remediation: (context) =>
+      `Do not move or delete either generation tree. Run 'coral-cli backend shutdown', then retry 'coral-cli backend store-adopt --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}' so Coral can recognize the completed rename and synchronize it again.`,
   },
   store_reset_lock_contended: {
     userMessage: (context) =>
@@ -203,8 +268,8 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
         : `Store reset refused because the ${stringContextValue(context, 'holder', 'target coordinator socket')} is already owned.`,
     remediation: (context) =>
       context?.holder === undefined
-        ? 'Retry shortly. If this persists after 30 seconds, stop the other Coral process or remove the stale store.db.reset.lock directory.'
-        : `Stop the ${stringContextValue(context, 'target', '<legacy|gen2>')} ${stringContextValue(context, 'flavor', '<prod|dev>')} coordinator rooted at ${stringContextValue(context, 'baseDir', '<base-dir>')}, then retry. The discard command never shuts down an incumbent daemon.`,
+        ? "Run 'coral-cli backend shutdown', then retry shortly. If this persists after 30 seconds with no Coral process running, remove only the stale store.db.reset.lock directory."
+        : `Run 'coral-cli backend shutdown' for the ${stringContextValue(context, 'target', '<legacy|gen2>')} ${stringContextValue(context, 'flavor', '<prod|dev>')} coordinator rooted at ${stringContextValue(context, 'baseDir', '<base-dir>')}, then retry. The discard command never shuts down an incumbent daemon.`,
   },
   store_reset_quarantine_failed: {
     userMessage: (context) =>

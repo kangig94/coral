@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path';
 
 import type { StoragePort } from '../infra/port-types.js';
+import { documentedCoralSetupError } from '../runtime/errors.js';
 import { KB_RUNTIME_AUTHORITY } from '../runtime/kb-runtime-authority.js';
 
 const CORPUS_PROJECTION_COMMITS_DIR = 'commits';
@@ -40,25 +41,33 @@ export function quarantineKbCommitEvidence({
   const finalDirectory = join(quarantineRoot, commitId);
 
   if (!storage.existsSync(commitSource)) {
-    throw new Error(`KB commit '${commitId}' is not present in the active commit evidence.`);
+    throw documentedCoralSetupError({
+      code: 'kb_commit_not_found',
+      commitId,
+      commitSource,
+    });
   }
   if (storage.existsSync(finalDirectory)) {
-    throw new Error(`KB commit '${commitId}' already has retained quarantine evidence.`);
+    throw documentedCoralSetupError({
+      code: 'kb_commit_already_quarantined',
+      commitId,
+      quarantineDir: finalDirectory,
+    });
   }
 
   storage.mkdirSync(quarantineRoot, { recursive: true });
-  requireDirectorySync(storage, corpusProjectionRoot, quarantineRoot);
+  requireDirectorySync(storage, commitId, corpusProjectionRoot, quarantineRoot);
 
   const stagingDirectory = join(quarantineRoot, `.staging-${stagingId}`);
   storage.mkdirSync(stagingDirectory);
-  requireDirectorySync(storage, quarantineRoot);
+  requireDirectorySync(storage, commitId, quarantineRoot);
 
   const artifacts: Array<'commit' | 'index'> = [];
-  moveEvidence(storage, commitSource, join(stagingDirectory, 'commit'));
+  moveEvidence(storage, commitId, commitSource, join(stagingDirectory, 'commit'));
   artifacts.push('commit');
 
   if (storage.existsSync(indexSource)) {
-    moveEvidence(storage, indexSource, join(stagingDirectory, 'index'));
+    moveEvidence(storage, commitId, indexSource, join(stagingDirectory, 'index'));
     artifacts.push('index');
   }
 
@@ -75,31 +84,47 @@ export function quarantineKbCommitEvidence({
       { encoding: 'utf-8', mode: 0o600 },
     )
   ) {
-    throw new Error('KB commit quarantine manifest could not be durably written.');
+    throw documentedCoralSetupError({
+      code: 'kb_commit_quarantine_failed',
+      commitId,
+      reason: 'manifest-not-durable',
+      stagingDirectory,
+    });
   }
-  requireDirectorySync(storage, stagingDirectory);
+  requireDirectorySync(storage, commitId, stagingDirectory);
 
   storage.renameSync(stagingDirectory, finalDirectory);
-  requireDirectorySync(storage, quarantineRoot, commitRoot, ...(artifacts.includes('index') ? [indexCommitRoot] : []));
+  requireDirectorySync(
+    storage,
+    commitId,
+    quarantineRoot,
+    commitRoot,
+    ...(artifacts.includes('index') ? [indexCommitRoot] : []),
+  );
 
   return { commitId, quarantineDir: finalDirectory, artifacts };
 }
 
-function moveEvidence(storage: StoragePort, source: string, destination: string): void {
+function moveEvidence(storage: StoragePort, commitId: string, source: string, destination: string): void {
   storage.renameSync(source, destination);
-  requireDirectorySync(storage, dirname(source), dirname(destination));
+  requireDirectorySync(storage, commitId, dirname(source), dirname(destination));
 }
 
-function requireDirectorySync(storage: StoragePort, ...directories: readonly string[]): void {
+function requireDirectorySync(storage: StoragePort, commitId: string, ...directories: readonly string[]): void {
   for (const directory of new Set(directories)) {
     if (!storage.syncDirectoryDurableSync(directory)) {
-      throw new Error('KB commit quarantine directory metadata could not be synchronized.');
+      throw documentedCoralSetupError({
+        code: 'kb_commit_quarantine_failed',
+        commitId,
+        reason: 'directory-sync-failed',
+        directory,
+      });
     }
   }
 }
 
-function assertSafeCommitId(commitId: string): void {
-  if (
+export function isSafeKbCommitId(commitId: string): boolean {
+  return !(
     commitId.length === 0 ||
     commitId.length > 255 ||
     commitId === '.' ||
@@ -107,7 +132,11 @@ function assertSafeCommitId(commitId: string): void {
     commitId.includes('/') ||
     commitId.includes('\\') ||
     commitId.includes('\0')
-  ) {
-    throw new Error('KB commit ID must be one safe filesystem path segment.');
+  );
+}
+
+export function assertSafeCommitId(commitId: string): void {
+  if (!isSafeKbCommitId(commitId)) {
+    throw documentedCoralSetupError({ code: 'kb_commit_id_invalid', commitId });
   }
 }

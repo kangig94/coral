@@ -1,6 +1,7 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { dirname, resolve } from 'node:path';
 
+import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { StoragePort } from '../infra/port-types.js';
 import { compareProductVersions, validateProductVersion } from '../infra/product-version.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -56,6 +57,7 @@ type ReadonlyStoreOptions = {
   readonly path: string;
   readonly storage: StoragePort;
   readonly storeFormat: StoreFormatDescription;
+  readonly flavor?: BuildFlavor;
   readonly readonly: true;
   readonly busyTimeoutMs?: number;
 };
@@ -64,6 +66,7 @@ type WritableStoreOptions = {
   readonly path: string;
   readonly storage: StoragePort;
   readonly storeFormat: StoreFormatDescription;
+  readonly flavor?: BuildFlavor;
   readonly readonly?: false;
   readonly busyTimeoutMs?: number;
 };
@@ -232,12 +235,15 @@ function storeSchemaOutdatedError(
   path: string,
   classification: StoreFormatClassification,
   current: StoreFormatDescription,
+  flavor: BuildFlavor | undefined,
 ): Error {
+  const version = 'storedProductVersion' in classification ? classification.storedProductVersion : null;
   return documentedCoralSetupError({
     code: 'store_schema_outdated',
     path,
     storedFingerprint: 'storedFingerprint' in classification ? classification.storedFingerprint : null,
-    storedProductVersion: 'storedProductVersion' in classification ? classification.storedProductVersion : null,
+    version,
+    ...(flavor === undefined ? {} : { flavor }),
     currentFingerprint: current.fingerprint,
     currentProductVersion: current.productVersion,
     classification: classification.kind,
@@ -309,7 +315,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
     if (classification.kind === 'legacy-adoptable') {
       // Only explicit adoption may stamp this state, and it does so in the legacy
       // tree before the atomic flavor-root rename. Ordinary opens never write it.
-      throw storeSchemaOutdatedError(options.path, classification, options.storeFormat);
+      throw storeSchemaOutdatedError(options.path, classification, options.storeFormat, options.flavor);
     }
     if (classification.kind === 'compatible') {
       if (!readonly) {
@@ -324,7 +330,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
     }
 
     if (readonly) {
-      throw storeSchemaOutdatedError(options.path, classification, options.storeFormat);
+      throw storeSchemaOutdatedError(options.path, classification, options.storeFormat, options.flavor);
     }
 
     if (classification.kind === 'fresh') {
@@ -337,7 +343,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
       return db;
     }
 
-    throw storeSchemaOutdatedError(options.path, classification, options.storeFormat);
+    throw storeSchemaOutdatedError(options.path, classification, options.storeFormat, options.flavor);
   } catch (error) {
     db.close();
     throw error;
@@ -358,7 +364,7 @@ function resolveStoreDbPath(runtime: Pick<Runtime, 'paths'>, options: BackendSto
 }
 
 export function openWritableStoreDbNoReset(
-  runtime: Pick<Runtime, 'paths' | 'storage'>,
+  runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
   options: BackendStorePathOptions,
 ): Database {
   const storeDbPath = resolveStoreDbPath(runtime, options);
@@ -373,6 +379,7 @@ export function openWritableStoreDbNoReset(
     path: storeDbPath,
     storage: runtime.storage,
     storeFormat: options.storeFormat,
+    flavor: runtime.flavor,
     busyTimeoutMs: options.busyTimeoutMs,
   });
 }

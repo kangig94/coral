@@ -1058,6 +1058,22 @@ describe('read-only store access', () => {
     expect(readFileSync(mismatchPath)).toEqual(mismatchBefore);
   });
 
+  it('reports the stored version and flavor through the production store_schema_outdated caller', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-readonly-versioned-mismatch-'), 'store.db');
+    createVersionedStore(dbPath, `sha256:${'0'.repeat(64)}`, '0.9.16');
+
+    const error = captureError(() => openReadOnlyStoreDatabase(runtime, { storeFormat: STORE_FORMAT, path: dbPath }));
+
+    expect(serializeCoralSetupError(error)).toMatchObject({
+      code: 'store_schema_outdated',
+      context: { version: '0.9.16', flavor: runtime.flavor },
+      remediation: expect.stringContaining(
+        `Use Coral 0.9.16 to read this store, or deliberately destroy its history by running 'coral-cli backend store-reset discard --target gen2 --flavor ${runtime.flavor}'`,
+      ),
+    });
+  });
+
   it('uses the bundled expansion catalog for an empty home', () => {
     const home = makeTempRoot('coral-expansion-catalog-empty-home-');
 

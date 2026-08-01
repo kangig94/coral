@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { StoreResetCliError, UsageError, buildErrorEnvelope, errorCodeToExit } from '#src/cli/errors.js';
+import { documentedCoralSetupError, serializeCoralSetupError } from '#src/runtime/errors.js';
+import { buildTransportErrorResponse } from '#src/transport/error-response.js';
 import { ChildPrincipalBindingError } from '#src/transport/ipc/child-principal-auth.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
 
@@ -187,6 +189,35 @@ describe('cli errors', () => {
       [{ code: 'not_found', message: 'Not found' }, 404, 1],
     ])('uses backend code/status combinations %j / %i -> %i', (body, statusCode, exitCode) => {
       expect(buildErrorEnvelope(new BackendToolHttpError(body.message, statusCode, body)).exitCode).toBe(exitCode);
+    });
+
+    it.each([
+      ['legacy_foreign_generation', { legacyPath: '/legacy', version: '0.9.16' }],
+      ['legacy_adoption_required', { legacyPath: '/legacy', flavor: 'prod' }],
+      ['legacy_source_not_quiescent', { holder: 'install:kiwi (pid 42)', flavor: 'prod' }],
+      ['store_newer_incompatible', { version: '99.0.0', flavor: 'prod' }],
+      ['store_older_incompatible', { version: '0.0.1', flavor: 'prod' }],
+      ['store_corrupt_or_unsupported', { flavor: 'prod' }],
+      ['kb_commit_corrupt_or_unsupported', { commitId: 'blocking-commit', flavor: 'prod' }],
+    ] as const)('keeps %s at exit 1 over IPC and HTTP', (code, context) => {
+      const setupError = documentedCoralSetupError(code, context);
+      const serialized = serializeCoralSetupError(setupError);
+      if (serialized === null) throw new Error(`Expected ${code} to serialize`);
+      const response = buildTransportErrorResponse(setupError);
+
+      expect(response.statusCode).toBe(409);
+      expect(
+        buildErrorEnvelope(
+          new IpcRpcError({
+            code: -32603,
+            message: serialized.userMessage,
+            data: serialized,
+          }),
+        ).exitCode,
+      ).toBe(1);
+      expect(
+        buildErrorEnvelope(new BackendToolHttpError(response.message, response.statusCode, response.body)).exitCode,
+      ).toBe(1);
     });
   });
 

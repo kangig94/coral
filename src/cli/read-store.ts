@@ -128,6 +128,7 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
         path: ':memory:',
         storage: runtime.storage,
         storeFormat: currentCoralStoreFormat(),
+        flavor: runtime.flavor,
       });
 
   return {

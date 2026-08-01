@@ -2,6 +2,7 @@ import { InvalidArgumentError, type Command } from 'commander';
 
 import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
 import { assertNever } from '../../infra/error-format.js';
+import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import {
   formatLegacyForeignGenerationNotice,
@@ -183,7 +184,7 @@ export function registerBackendCommands(
     .command('quarantine')
     .description('Durably quarantine one blocking KB commit and its matching runtime evidence')
     .requiredOption('--flavor <flavor>', 'Generated state flavor (prod or dev)', parseFlavor)
-    .requiredOption('--commit <id>', 'Blocking KB commit ID')
+    .requiredOption('--commit <id>', 'Blocking KB commit ID', parseKbCommitId)
     .action(async (options: { flavor: BuildFlavor; commit: string }) => {
       try {
         const result = await kbCommit.quarantine(options.flavor, options.commit);
@@ -202,4 +203,9 @@ function parseFlavor(value: string): BuildFlavor {
 function parseStoreResetTarget(value: string): StoreResetTarget {
   if (value === 'legacy' || value === 'gen2') return value;
   throw new InvalidArgumentError("Target must be 'legacy' or 'gen2'.");
+}
+
+function parseKbCommitId(value: string): string {
+  if (isSafeKbCommitId(value)) return value;
+  throw new InvalidArgumentError('KB commit ID must be one safe filesystem path segment.');
 }

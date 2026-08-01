@@ -56,8 +56,9 @@ describe('legacy store adoption socket guard', () => {
       }
 
       expect(serializeCoralSetupError(refusal)).toMatchObject({
-        code: 'legacy_source_not_quiescent',
-        context: { holder: 'current-generation coordinator socket' },
+        code: 'coordinator_socket_in_use',
+        remediation: expect.stringContaining('coral-cli backend shutdown'),
+        context: { operation: 'legacy store adoption' },
       });
       expect(existsSync(paths.legacyFlavorRoot)).toBe(true);
       expect(existsSync(paths.generatedFlavorRoot)).toBe(false);

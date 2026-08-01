@@ -14,7 +14,8 @@ import {
   PACKAGE_OPERATION_LOCK_STALE_MS,
 } from '../infra/package-operation-lock.js';
 import { compareProductVersions, validateProductVersion } from '../infra/product-version.js';
-import { documentedCoralSetupError } from '../runtime/errors.js';
+import { errorMessage } from '../infra/error-format.js';
+import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { type Database } from './db.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
@@ -136,6 +137,21 @@ function foreignGenerationError(runtime: Pick<Runtime, 'flavor'>, legacyPath: st
   });
 }
 
+function unreadableAdoptionSourceError(
+  runtime: Pick<Runtime, 'flavor'>,
+  legacyPath: string,
+  observation: string,
+  cause?: unknown,
+): Error {
+  return documentedCoralSetupError({
+    code: 'legacy_adoption_source_unreadable',
+    flavor: runtime.flavor,
+    legacyPath,
+    observation,
+    ...(cause === undefined ? {} : { cause: errorMessage(cause) }),
+  });
+}
+
 function readAdoptionSource(
   runtime: Pick<Runtime, 'flavor' | 'storage'>,
   paths: GenerationBoundaryPaths,
@@ -143,24 +159,23 @@ function readAdoptionSource(
 ): AdoptionSourceState {
   const dbFile = storeDbPath(paths.legacyFlavorRoot);
   if (!runtime.storage.existsSync(dbFile)) {
-    throw foreignGenerationError(runtime, paths.legacyFlavorRoot, {
-      fingerprint: null,
-      productVersion: null,
-      adoptedAt: null,
-      adoptedByVersion: null,
-    });
+    throw unreadableAdoptionSourceError(
+      runtime,
+      paths.legacyFlavorRoot,
+      `expected store database '${dbFile}' is missing`,
+    );
   }
 
   let db: Database;
   try {
     db = new DatabaseSync(dbFile, { readOnly: true }) as unknown as Database;
-  } catch {
-    throw foreignGenerationError(runtime, paths.legacyFlavorRoot, {
-      fingerprint: null,
-      productVersion: null,
-      adoptedAt: null,
-      adoptedByVersion: null,
-    });
+  } catch (error: unknown) {
+    throw unreadableAdoptionSourceError(
+      runtime,
+      paths.legacyFlavorRoot,
+      `store database '${dbFile}' could not be opened read-only`,
+      error,
+    );
   }
   try {
     const identity = readSourceIdentity(db);
@@ -168,15 +183,15 @@ function readAdoptionSource(
     if (state === null) throw foreignGenerationError(runtime, paths.legacyFlavorRoot, identity);
     return state;
   } catch (error: unknown) {
-    if (error instanceof Error && 'code' in error && error.code === 'legacy_foreign_generation') {
+    if (error instanceof CoralSetupError && error.code === 'legacy_foreign_generation') {
       throw error;
     }
-    throw foreignGenerationError(runtime, paths.legacyFlavorRoot, {
-      fingerprint: null,
-      productVersion: null,
-      adoptedAt: null,
-      adoptedByVersion: null,
-    });
+    throw unreadableAdoptionSourceError(
+      runtime,
+      paths.legacyFlavorRoot,
+      `store metadata in '${dbFile}' could not be read`,
+      error,
+    );
   } finally {
     db.close();
   }
@@ -315,11 +330,33 @@ function readCompletedAdoption(
 
 function syncRenameParents(runtime: Runtime, paths: GenerationBoundaryPaths): void {
   if (!runtime.storage.syncDirectoryDurableSync(paths.baseDir)) {
-    throw new Error(`Failed to durably synchronize legacy source parent '${paths.baseDir}'.`);
+    throw documentedCoralSetupError({
+      code: 'legacy_adoption_durability_failed',
+      flavor: runtime.flavor,
+      path: paths.baseDir,
+    });
   }
   if (!runtime.storage.syncDirectoryDurableSync(paths.generationRoot)) {
-    throw new Error(`Failed to durably synchronize generated destination parent '${paths.generationRoot}'.`);
+    throw documentedCoralSetupError({
+      code: 'legacy_adoption_durability_failed',
+      flavor: runtime.flavor,
+      path: paths.generationRoot,
+    });
   }
+}
+
+function adoptionStateChangedError(
+  runtime: Pick<Runtime, 'flavor'>,
+  paths: GenerationBoundaryPaths,
+  observation: string,
+): Error {
+  return documentedCoralSetupError({
+    code: 'legacy_adoption_state_changed',
+    flavor: runtime.flavor,
+    observation,
+    legacyPath: paths.legacyFlavorRoot,
+    generatedPath: paths.generatedFlavorRoot,
+  });
 }
 
 async function acquireAdoptionGuard(
@@ -353,8 +390,10 @@ export async function adoptLegacyStore({
       if (runtime.storage.existsSync(paths.legacyFlavorRoot)) {
         readAdoptionSource(runtime, paths, storeFormat);
       }
-      throw new Error(
-        `Generated target '${paths.generatedFlavorRoot}' already exists and is not a completed adoption.`,
+      throw adoptionStateChangedError(
+        runtime,
+        paths,
+        `generated target '${paths.generatedFlavorRoot}' already exists and is not a completed adoption`,
       );
     }
     syncRenameParents(runtime, paths);
@@ -370,10 +409,18 @@ export async function adoptLegacyStore({
     const releaseAdoption = await acquireAdoptionGuard(runtime, paths, adoptionLockTimeoutMs);
     try {
       if (runtime.storage.existsSync(paths.generatedFlavorRoot)) {
-        throw new Error(`Generated target '${paths.generatedFlavorRoot}' appeared during adoption.`);
+        throw adoptionStateChangedError(
+          runtime,
+          paths,
+          `generated target '${paths.generatedFlavorRoot}' appeared during adoption`,
+        );
       }
       if (!runtime.storage.existsSync(paths.legacyFlavorRoot)) {
-        throw new Error(`Legacy source '${paths.legacyFlavorRoot}' disappeared during adoption.`);
+        throw adoptionStateChangedError(
+          runtime,
+          paths,
+          `legacy source '${paths.legacyFlavorRoot}' disappeared during adoption`,
+        );
       }
 
       const maintenance = await acquireGenerationMaintenanceLease(runtime, maintenanceTimeoutMs);

@@ -1,4 +1,3 @@
-import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -43,8 +42,8 @@ import {
 } from '../store/reset-incident.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 import type { StoreFormatDescription } from '../store/format-fingerprint.js';
-import { bindSocket } from '../transport/ipc/server.js';
 import { StoreResetCliError } from './errors.js';
+import { acquireOperatorSocketGuard } from './operator-socket-guard.js';
 
 export type StoreResetTarget = 'legacy' | 'gen2';
 
@@ -155,29 +154,16 @@ export function resolveStoreResetTargetPaths(
   };
 }
 
-async function closeSocketGuard(server: Server): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
-}
-
 export async function acquireStoreResetSocketGuard(
   paths: StoreResetTargetPaths,
   flavor: BuildFlavor,
 ): Promise<StoreResetSocketGuard> {
-  const server = createServer();
-  const binding = await bindSocket(server, paths.socketPath);
-  if (binding.kind === 'incumbent') {
-    throw documentedCoralSetupError({
-      code: 'store_reset_lock_contended',
-      holder: `${paths.target} coordinator socket`,
-      socketPath: paths.socketPath,
-      target: paths.target,
-      flavor,
-      baseDir: paths.baseDir,
-    });
-  }
-  return { release: () => closeSocketGuard(server) };
+  return acquireOperatorSocketGuard({
+    socketPath: paths.socketPath,
+    flavor,
+    operation: `${paths.target} store reset`,
+    retryCommand: `coral-cli backend store-reset discard --target ${paths.target} --flavor ${flavor}`,
+  });
 }
 
 function acquireStoreResetLock(runtime: Runtime, paths: StoreResetTargetPaths) {
