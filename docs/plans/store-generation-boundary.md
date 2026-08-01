@@ -2,9 +2,9 @@
 
 ## Status
 
-Planned. Not implemented. Supersedes `store-format-path-isolation.md` (deleted),
-which keyed the store directory per store-format fingerprint. That approach
-fragmented history across formats and taxed every schema edit; this one does not.
+Implemented. Supersedes `store-format-path-isolation.md` (deleted), which keyed
+the store directory per store-format fingerprint. That approach fragmented
+history across formats and taxed every schema edit; this one does not.
 
 Root causes below are confirmed by reading and by forensic evidence from a real
 machine.

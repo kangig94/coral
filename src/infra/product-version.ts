@@ -8,6 +8,11 @@ export function validateProductVersion(version: string): string | null {
   return semver.valid(version);
 }
 
+/**
+ * Compares SemVer precedence as `left` versus `right`: negative means `left`
+ * is older, zero means equal precedence, and positive means newer. Build
+ * metadata is ignored as required by SemVer 2.0.
+ */
 export function compareProductVersions(left: string, right: string): number {
   return semver.compare(left, right);
 }

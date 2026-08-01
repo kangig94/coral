@@ -49,6 +49,8 @@ describe('backend store-adopt command', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'store-adopt', '--flavor', 'dev']);
 
     expect(adopt).toHaveBeenCalledExactlyOnceWith('dev');
-    expect(stdout).toBe('Adopted legacy dev store from /coral/data-dev to /coral/gen2/data-dev.\n');
+    expect(stdout).toBe(
+      'Adopted legacy dev store from /coral/data-dev to /coral/gen2/data-dev. Retry the command that starts the backend.\n',
+    );
   });
 });

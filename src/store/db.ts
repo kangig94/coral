@@ -9,12 +9,12 @@ import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { ReadonlyDatabase, ReadonlyStatement } from './read-port.js';
 import {
   isStoreFormatFingerprint,
+  STORE_FORMAT_FINGERPRINT_META_KEY,
+  STORE_PRODUCT_VERSION_META_KEY,
   type StoreFormatClassification,
   type StoreFormatDescription,
 } from './format-fingerprint.js';
 
-const STORE_FORMAT_FINGERPRINT_KEY = 'store_format_fingerprint';
-const STORE_PRODUCT_VERSION_KEY = 'store_product_version';
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 
 /**
@@ -163,8 +163,8 @@ export function classifyStoreFormat(db: Database, current: StoreFormatDescriptio
 
   if (!hasUserTable(db)) return { kind: 'fresh' };
 
-  const fingerprintMetadata = readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_KEY);
-  const versionMetadata = readStoredMetadataValue(db, STORE_PRODUCT_VERSION_KEY);
+  const fingerprintMetadata = readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_META_KEY);
+  const versionMetadata = readStoredMetadataValue(db, STORE_PRODUCT_VERSION_META_KEY);
   const storedFingerprint = stringMetadataValue(fingerprintMetadata);
   const storedProductVersion = stringMetadataValue(versionMetadata);
 
@@ -254,16 +254,16 @@ export function applyBundledStoreSchema(db: Database, storeFormat: StoreFormatDe
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec(storeFormat.manifest.ddl);
-    const existing = stringMetadataValue(readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_KEY));
+    const existing = stringMetadataValue(readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_META_KEY));
     if (existing !== null && existing !== storeFormat.fingerprint) {
       throw new Error(`Refusing to apply schema over store format '${existing}'.`);
     }
     db.prepare<[string, string]>(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)`).run(
-      STORE_FORMAT_FINGERPRINT_KEY,
+      STORE_FORMAT_FINGERPRINT_META_KEY,
       storeFormat.fingerprint,
     );
     db.prepare<[string, string]>(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)`).run(
-      STORE_PRODUCT_VERSION_KEY,
+      STORE_PRODUCT_VERSION_META_KEY,
       storeFormat.productVersion,
     );
     db.exec('COMMIT');
@@ -279,13 +279,13 @@ export function applyBundledStoreSchema(db: Database, storeFormat: StoreFormatDe
 
 function raiseStoredProductVersion(db: Database, currentProductVersion: string): void {
   withImmediate(db, () => {
-    const storedProductVersion = stringMetadataValue(readStoredMetadataValue(db, STORE_PRODUCT_VERSION_KEY));
+    const storedProductVersion = stringMetadataValue(readStoredMetadataValue(db, STORE_PRODUCT_VERSION_META_KEY));
     if (storedProductVersion === null || validateProductVersion(storedProductVersion) === null) return;
     if (compareProductVersions(storedProductVersion, currentProductVersion) >= 0) return;
 
     db.prepare<[string, string]>('UPDATE meta SET value = ? WHERE key = ?').run(
       currentProductVersion,
-      STORE_PRODUCT_VERSION_KEY,
+      STORE_PRODUCT_VERSION_META_KEY,
     );
   });
 }

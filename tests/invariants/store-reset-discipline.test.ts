@@ -324,12 +324,12 @@ describe('store reset discipline invariants', () => {
     const importers = allSourcePaths()
       .filter((path) => sourceImports(path).includes(BACKEND_STORE_RESET_PATH))
       .sort();
-    expect(importers).toEqual(['src/cli/store-reset.ts', 'src/coordinator/lifecycle.ts']);
+    expect(importers).toEqual(['src/coordinator/lifecycle.ts', 'src/store/operator-store-reset.ts']);
 
     const symbolAllowlist = new Set([
       BACKEND_STORE_RESET_PATH,
-      'src/cli/store-reset.ts',
       'src/coordinator/lifecycle.ts',
+      'src/store/operator-store-reset.ts',
     ]);
     const forbiddenReferences = allSourcePaths()
       .filter((path) => !symbolAllowlist.has(path))
@@ -341,12 +341,12 @@ describe('store reset discipline invariants', () => {
   });
 
   it('keeps quarantine resume and publish reachable only through the direct-filesystem operator service', () => {
-    const operatorPath = 'src/cli/store-reset.ts';
+    const operatorPath = 'src/store/operator-store-reset.ts';
     const operatorSource = sourceFile(operatorPath);
     const topLevel = findFunction(operatorPath, 'discardStoreReset').body?.getText(operatorSource) ?? '';
     const generated = findFunction(operatorPath, 'discardGeneratedStore').body?.getText(operatorSource) ?? '';
     const targetPathsIndex = topLevel.indexOf('resolveStoreResetTargetPaths(');
-    const socketIndex = topLevel.indexOf('acquireSocketGuard ?? acquireStoreResetSocketGuard');
+    const socketIndex = topLevel.indexOf('options.acquireSocketGuard(');
     const legacyRefusalIndex = topLevel.indexOf("options.target === 'legacy'");
     const generatedIndex = topLevel.indexOf('discardGeneratedStore(');
     const adoptionIndex = generated.indexOf('acquireGenerationAdoptionLease(');
@@ -366,8 +366,9 @@ describe('store reset discipline invariants', () => {
     expect(publishIndex).toBeGreaterThan(resumeIndex);
     expect(readFileSync(join(REPO_ROOT, operatorPath), 'utf8')).not.toMatch(/shutdownAndAwaitRelease/u);
     expect(readFileSync(join(REPO_ROOT, operatorPath), 'utf8')).toContain(
-      'Documented exception to the CLI policy that mutating commands go through',
+      'Destructive operator service used while the coordinator is deliberately',
     );
+    expect(readFileSync(join(REPO_ROOT, 'src/cli/store-reset.ts'), 'utf8')).not.toContain('backend-store-reset.js');
 
     const destructiveCallers = allSourcePaths()
       .flatMap((path) =>

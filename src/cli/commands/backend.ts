@@ -18,13 +18,18 @@ import { formatBackendStatus, formatShutdown } from '../format/backend.js';
 import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import { adoptLegacyStoreLocal } from '../store-adopt.js';
+import type { StoreResetTarget } from '../../store/operator-store-reset.js';
 import {
   boundStoreResetCliError,
   discardStoreResetLocal,
   listStoreResetIncidentsLocal,
   reportStoreResetIncidentLocal,
-  type StoreResetTarget,
 } from '../store-reset.js';
+
+const OFFLINE_OPERATOR_FLAVOR_HELP =
+  'State flavor (prod or dev); required because the daemon that normally supplies it is down';
+const STORE_RESET_EVIDENCE_WARNING =
+  'Quarantined store-reset evidence is diagnostic-only and cannot restore active state.\n';
 
 export interface StoreResetCommandOperations {
   list(target: StoreResetTarget): ReturnType<typeof listStoreResetIncidentsLocal>;
@@ -112,7 +117,7 @@ export function registerBackendCommands(
   backend
     .command('store-adopt')
     .description('Adopt a same-generation legacy store into the generated state boundary')
-    .requiredOption('--flavor <flavor>', 'Generated state flavor (prod or dev)', parseFlavor)
+    .requiredOption('--flavor <flavor>', OFFLINE_OPERATOR_FLAVOR_HELP, parseFlavor)
     .action(async (options: { flavor: BuildFlavor }) => {
       try {
         const result = await storeAdopt.adopt(options.flavor);
@@ -121,10 +126,14 @@ export function registerBackendCommands(
           return;
         }
         if (result.kind === 'already-adopted') {
-          process.stdout.write(`Legacy ${result.flavor} store was already adopted at ${result.destination}.\n`);
+          process.stdout.write(
+            `Legacy ${result.flavor} store was already adopted at ${result.destination}. Retry the command that starts the backend.\n`,
+          );
           return;
         }
-        process.stdout.write(`Adopted legacy ${result.flavor} store from ${result.source} to ${result.destination}.\n`);
+        process.stdout.write(
+          `Adopted legacy ${result.flavor} store from ${result.source} to ${result.destination}. Retry the command that starts the backend.\n`,
+        );
       } catch (error: unknown) {
         emitError(error);
       }
@@ -134,7 +143,11 @@ export function registerBackendCommands(
   storeResetCommand
     .command('list')
     .description('List retained store-reset incidents and reportability')
-    .requiredOption('--target <target>', 'Store generation to inspect (legacy or gen2)', parseStoreResetTarget)
+    .requiredOption(
+      '--target <target>',
+      'Store generation to inspect (legacy or current; gen2 also accepted)',
+      parseStoreResetTarget,
+    )
     .action((options: { target: StoreResetTarget }) => {
       try {
         process.stdout.write(`${formatStoreResetList(storeReset.list(options.target), options.target)}\n`);
@@ -146,7 +159,11 @@ export function registerBackendCommands(
     .command('report')
     .description('Generate a public-safe store-reset incident report')
     .argument('<incident-id>', 'Canonical lowercase UUID shown by backend store-reset list')
-    .requiredOption('--target <target>', 'Store generation to inspect (legacy or gen2)', parseStoreResetTarget)
+    .requiredOption(
+      '--target <target>',
+      'Store generation to inspect (legacy or current; gen2 also accepted)',
+      parseStoreResetTarget,
+    )
     .action(async (incidentId: string, options: { target: StoreResetTarget }) => {
       try {
         process.stdout.write(formatStoreResetReport(await storeReset.report(options.target, incidentId)));
@@ -159,13 +176,14 @@ export function registerBackendCommands(
     .description('Quarantine and replace an incompatible generated store under explicit operator control')
     .requiredOption(
       '--target <target>',
-      'Store generation to discard (gen2; legacy is inspection-only)',
+      'Store generation to discard (current; gen2 also accepted, legacy is inspection-only)',
       parseStoreResetTarget,
     )
-    .requiredOption('--flavor <flavor>', 'Store flavor (prod or dev)', parseFlavor)
+    .requiredOption('--flavor <flavor>', OFFLINE_OPERATOR_FLAVOR_HELP, parseFlavor)
     .action(async (options: { target: StoreResetTarget; flavor: BuildFlavor }) => {
       try {
         const result = await storeReset.discard(options.target, options.flavor);
+        process.stderr.write(STORE_RESET_EVIDENCE_WARNING);
         if (result.incident === null) {
           process.stdout.write(`Initialized ${result.target} ${result.flavor} store at ${result.storeDbPath}.\n`);
           return;
@@ -180,10 +198,11 @@ export function registerBackendCommands(
     });
 
   const kbCommitCommand = backend.command('kb-commit').description('Operate on retained blocking KB commit evidence');
+  kbCommitCommand.configureOutput({ writeErr: () => undefined });
   kbCommitCommand
     .command('quarantine')
     .description('Durably quarantine one blocking KB commit and its matching runtime evidence')
-    .requiredOption('--flavor <flavor>', 'Generated state flavor (prod or dev)', parseFlavor)
+    .requiredOption('--flavor <flavor>', OFFLINE_OPERATOR_FLAVOR_HELP, parseFlavor)
     .requiredOption('--commit <id>', 'Blocking KB commit ID', parseKbCommitId)
     .action(async (options: { flavor: BuildFlavor; commit: string }) => {
       try {
@@ -202,7 +221,8 @@ function parseFlavor(value: string): BuildFlavor {
 
 function parseStoreResetTarget(value: string): StoreResetTarget {
   if (value === 'legacy' || value === 'gen2') return value;
-  throw new InvalidArgumentError("Target must be 'legacy' or 'gen2'.");
+  if (value === 'current') return 'gen2';
+  throw new InvalidArgumentError("Target must be 'legacy', 'current', or 'gen2'.");
 }
 
 function parseKbCommitId(value: string): string {

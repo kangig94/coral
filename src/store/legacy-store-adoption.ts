@@ -1,13 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 
-import {
-  acquireDirectoryLock,
-  isDirectoryLockTimeoutError,
-  tryRemoveStaleDirectoryLock,
-  type DirectoryLockDeps,
-  type DirectoryLockLease,
-} from '../infra/fs-lock.js';
+import { tryRemoveStaleDirectoryLock, type DirectoryLockDeps } from '../infra/fs-lock.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import {
   PACKAGE_OPERATION_LOCK_HEARTBEAT_MS,
@@ -18,20 +12,22 @@ import { errorMessage } from '../infra/error-format.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { type Database } from './db.js';
-import type { StoreFormatDescription } from './format-fingerprint.js';
 import {
+  STORE_FORMAT_FINGERPRINT_META_KEY,
+  STORE_PRODUCT_VERSION_META_KEY,
+  type StoreFormatDescription,
+} from './format-fingerprint.js';
+import {
+  acquireGenerationAdoptionLock,
   acquireGenerationMaintenanceLease,
+  generationNotQuiescentError,
   resolveGenerationBoundaryPaths,
   type GenerationBoundaryPaths,
 } from './generation-mutation-coordination.js';
 
-const STORE_FORMAT_FINGERPRINT_KEY = 'store_format_fingerprint';
-const STORE_PRODUCT_VERSION_KEY = 'store_product_version';
 const ADOPTED_FROM_LEGACY_AT_KEY = 'adopted_from_legacy_at';
 const ADOPTED_BY_VERSION_KEY = 'adopted_by_version';
 const ADOPTION_LOCK_TIMEOUT_MS = 5_000;
-const ADOPTION_LOCK_STALE_MS = 10 * 60 * 1_000;
-const ADOPTION_LOCK_HEARTBEAT_MS = 10 * 1_000;
 
 type AdoptionSourceState =
   | { readonly kind: 'adoptable' }
@@ -96,8 +92,8 @@ function readMetadata(db: Database, key: string): string | null {
 
 function readSourceIdentity(db: Database): SourceIdentity {
   return {
-    fingerprint: readMetadata(db, STORE_FORMAT_FINGERPRINT_KEY),
-    productVersion: readMetadata(db, STORE_PRODUCT_VERSION_KEY),
+    fingerprint: readMetadata(db, STORE_FORMAT_FINGERPRINT_META_KEY),
+    productVersion: readMetadata(db, STORE_PRODUCT_VERSION_META_KEY),
     adoptedAt: readMetadata(db, ADOPTED_FROM_LEGACY_AT_KEY),
     adoptedByVersion: readMetadata(db, ADOPTED_BY_VERSION_KEY),
   };
@@ -197,7 +193,7 @@ function readAdoptionSource(
   }
 }
 
-function lockDeps(runtime: Runtime): DirectoryLockDeps {
+function packageLockDeps(runtime: Runtime): DirectoryLockDeps {
   return {
     storage: runtime.storage,
     time: {
@@ -206,25 +202,9 @@ function lockDeps(runtime: Runtime): DirectoryLockDeps {
       setInterval: runtime.time.setInterval.bind(runtime.time),
       clearInterval: runtime.time.clearInterval.bind(runtime.time),
     },
-    staleMs: ADOPTION_LOCK_STALE_MS,
-    heartbeatMs: ADOPTION_LOCK_HEARTBEAT_MS,
-  };
-}
-
-function packageLockDeps(runtime: Runtime): DirectoryLockDeps {
-  return {
-    ...lockDeps(runtime),
     staleMs: PACKAGE_OPERATION_LOCK_STALE_MS,
     heartbeatMs: PACKAGE_OPERATION_LOCK_HEARTBEAT_MS,
   };
-}
-
-function notQuiescent(runtime: Pick<Runtime, 'flavor'>, holder: string): Error {
-  return documentedCoralSetupError({
-    code: 'legacy_source_not_quiescent',
-    flavor: runtime.flavor,
-    holder,
-  });
 }
 
 function legacyPackageLocks(runtime: Runtime, paths: GenerationBoundaryPaths): string[] {
@@ -236,7 +216,7 @@ function legacyPackageLocks(runtime: Runtime, paths: GenerationBoundaryPaths): s
       .map((entry) => join(lockRoot, entry));
   } catch (error: unknown) {
     if (isNoEntryError(error)) return [];
-    throw notQuiescent(runtime, `unreadable install.lock directory at ${lockRoot}`);
+    throw generationNotQuiescentError(runtime, `unreadable install.lock directory at ${lockRoot}`);
   }
 }
 
@@ -248,10 +228,10 @@ function removeDeadLegacyPackageLocks(runtime: Runtime, paths: GenerationBoundar
       isDirectory = stat.isDirectory() && !stat.isSymbolicLink();
     } catch (error: unknown) {
       if (isNoEntryError(error)) continue;
-      throw notQuiescent(runtime, `unreadable install.lock at ${lockPath}`);
+      throw generationNotQuiescentError(runtime, `unreadable install.lock at ${lockPath}`);
     }
     if (!isDirectory || !tryRemoveStaleDirectoryLock(lockPath, packageLockDeps(runtime))) {
-      throw notQuiescent(runtime, `install.lock at ${lockPath}`);
+      throw generationNotQuiescentError(runtime, `install.lock at ${lockPath}`);
     }
   }
 }
@@ -259,7 +239,7 @@ function removeDeadLegacyPackageLocks(runtime: Runtime, paths: GenerationBoundar
 function assertNoLegacyPackageLocks(runtime: Runtime, paths: GenerationBoundaryPaths): void {
   const [lockPath] = legacyPackageLocks(runtime, paths);
   if (lockPath !== undefined) {
-    throw notQuiescent(runtime, `install.lock at ${lockPath}`);
+    throw generationNotQuiescentError(runtime, `install.lock at ${lockPath}`);
   }
 }
 
@@ -292,7 +272,7 @@ function stampAdoptionProvenance(
 
     const storedVersion = identity.productVersion === null ? null : validateProductVersion(identity.productVersion);
     if (storedVersion === null || compareProductVersions(storedVersion, storeFormat.productVersion) < 0) {
-      writeMetadata(db, STORE_PRODUCT_VERSION_KEY, storeFormat.productVersion);
+      writeMetadata(db, STORE_PRODUCT_VERSION_META_KEY, storeFormat.productVersion);
     }
     db.exec('COMMIT');
     committed = true;
@@ -359,20 +339,41 @@ function adoptionStateChangedError(
   });
 }
 
-async function acquireAdoptionGuard(
+function assertAdoptionSourceCanBeAdopted(
   runtime: Runtime,
   paths: GenerationBoundaryPaths,
-  timeoutMs: number,
-): Promise<DirectoryLockLease> {
-  runtime.storage.mkdirSync(paths.generationRoot, { recursive: true });
+  storeFormat: StoreFormatDescription,
+): void {
+  readAdoptionSource(runtime, paths, storeFormat);
+}
+
+function performLegacyStoreAdoption(
+  runtime: Runtime,
+  paths: GenerationBoundaryPaths,
+  storeFormat: StoreFormatDescription,
+  faults: AdoptLegacyStoreOptions['faults'],
+): Extract<LegacyStoreAdoptionResult, { readonly kind: 'adopted' }> {
+  removeDeadLegacyPackageLocks(runtime, paths);
+  assertNoLegacyPackageLocks(runtime, paths);
+  const source = readAdoptionSource(runtime, paths, storeFormat);
+  assertNoLegacyPackageLocks(runtime, paths);
+  const provenance = stampAdoptionProvenance(runtime, paths, storeFormat, faults?.afterProvenanceCommitBeforeClose);
+  assertNoLegacyPackageLocks(runtime, paths);
+  faults?.beforeRename?.();
+  runtime.storage.renameSync(paths.legacyFlavorRoot, paths.generatedFlavorRoot);
   try {
-    return await acquireDirectoryLock(paths.adoptionLock, lockDeps(runtime), timeoutMs);
-  } catch (error: unknown) {
-    if (isDirectoryLockTimeoutError(error)) {
-      throw notQuiescent(runtime, `adoption lock at ${paths.adoptionLock}`);
-    }
-    throw error;
+    faults?.afterRename?.();
+  } finally {
+    syncRenameParents(runtime, paths);
   }
+  return {
+    kind: 'adopted',
+    flavor: runtime.flavor,
+    source: paths.legacyFlavorRoot,
+    destination: paths.generatedFlavorRoot,
+    adoptedAt: provenance.adoptedAt,
+    sourceState: source.kind,
+  };
 }
 
 export async function adoptLegacyStore({
@@ -388,7 +389,7 @@ export async function adoptLegacyStore({
     const adoptedAt = readCompletedAdoption(runtime, paths, storeFormat);
     if (adoptedAt === null) {
       if (runtime.storage.existsSync(paths.legacyFlavorRoot)) {
-        readAdoptionSource(runtime, paths, storeFormat);
+        assertAdoptionSourceCanBeAdopted(runtime, paths, storeFormat);
       }
       throw adoptionStateChangedError(
         runtime,
@@ -403,10 +404,10 @@ export async function adoptLegacyStore({
     return { kind: 'no-legacy-source', flavor: runtime.flavor, source: paths.legacyFlavorRoot };
   }
 
-  readAdoptionSource(runtime, paths, storeFormat);
+  assertAdoptionSourceCanBeAdopted(runtime, paths, storeFormat);
   const socketGuard = await acquireSocketGuard(runtime.paths.coral.coordinator.socketPath, runtime.flavor);
   try {
-    const releaseAdoption = await acquireAdoptionGuard(runtime, paths, adoptionLockTimeoutMs);
+    const releaseAdoption = await acquireGenerationAdoptionLock(runtime, adoptionLockTimeoutMs);
     try {
       if (runtime.storage.existsSync(paths.generatedFlavorRoot)) {
         throw adoptionStateChangedError(
@@ -425,32 +426,7 @@ export async function adoptLegacyStore({
 
       const maintenance = await acquireGenerationMaintenanceLease(runtime, maintenanceTimeoutMs);
       try {
-        removeDeadLegacyPackageLocks(runtime, paths);
-        assertNoLegacyPackageLocks(runtime, paths);
-        const source = readAdoptionSource(runtime, paths, storeFormat);
-        assertNoLegacyPackageLocks(runtime, paths);
-        const provenance = stampAdoptionProvenance(
-          runtime,
-          paths,
-          storeFormat,
-          faults?.afterProvenanceCommitBeforeClose,
-        );
-        assertNoLegacyPackageLocks(runtime, paths);
-        faults?.beforeRename?.();
-        runtime.storage.renameSync(paths.legacyFlavorRoot, paths.generatedFlavorRoot);
-        try {
-          faults?.afterRename?.();
-        } finally {
-          syncRenameParents(runtime, paths);
-        }
-        return {
-          kind: 'adopted',
-          flavor: runtime.flavor,
-          source: paths.legacyFlavorRoot,
-          destination: paths.generatedFlavorRoot,
-          adoptedAt: provenance.adoptedAt,
-          sourceState: source.kind,
-        };
+        return performLegacyStoreAdoption(runtime, paths, storeFormat, faults);
       } finally {
         maintenance.release();
       }

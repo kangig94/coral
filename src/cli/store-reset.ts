@@ -1,28 +1,16 @@
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
 
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../infra/bundle-manifest.js';
-import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
-import { socketPathForRunDir } from '../infra/path/index.js';
 import { createNodeStoreResetDiagnosticSupervisor } from '../infra/store-reset-diagnostic-supervisor.js';
 import { createStoreResetInspectionFs } from '../infra/store-reset-inspection-fs.js';
-import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
-import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
 import {
-  createBackendStoreResetAuthority,
-  openOrResetBackendStoreDb,
-  publishBackendStoreResetIncident,
-  resumeInterruptedBackendStoreResetIncident,
-  type BackendStoreResetIncident,
-} from '../store/backend-store-reset.js';
-import {
-  acquireGenerationAdoptionLease,
-  acquireGenerationMaintenanceLease,
-  resolveGenerationBoundaryPaths,
-  type GenerationMaintenanceLease,
-} from '../store/generation-mutation-coordination.js';
+  discardStoreReset,
+  resolveStoreResetTargetPaths,
+  type StoreResetDiscardResult,
+  type StoreResetTarget,
+} from '../store/operator-store-reset.js';
 import {
   createStoreResetIncidentDiagnosticRunner,
   type StoreResetIncidentDiagnosticRunner,
@@ -36,56 +24,12 @@ import {
 } from '../store/reset-incident-reader.js';
 import {
   isCanonicalStoreResetIncidentId,
-  STORE_RESET_QUARANTINE_DIRECTORY,
   type StoreResetIncidentListResult,
   type StoreResetPublicReport,
 } from '../store/reset-incident.js';
 import { currentCoralStoreFormat } from '../store-format.js';
-import type { StoreFormatDescription } from '../store/format-fingerprint.js';
 import { StoreResetCliError } from './errors.js';
-import { acquireOperatorSocketGuard } from './operator-socket-guard.js';
-
-export type StoreResetTarget = 'legacy' | 'gen2';
-
-export type StoreResetTargetPaths = {
-  readonly target: StoreResetTarget;
-  readonly baseDir: string;
-  readonly storeDbPath: string;
-  readonly quarantineRoot: string;
-  readonly socketPath: string;
-};
-
-export interface StoreResetSocketGuard {
-  release(): Promise<void>;
-}
-
-export type StoreResetDiscardResult = {
-  readonly target: 'gen2';
-  readonly flavor: BuildFlavor;
-  readonly baseDir: string;
-  readonly storeDbPath: string;
-  readonly incident: BackendStoreResetIncident | null;
-  readonly resumed: boolean;
-};
-
-type AcquireStoreResetSocketGuard = (
-  paths: StoreResetTargetPaths,
-  flavor: BuildFlavor,
-) => Promise<StoreResetSocketGuard>;
-
-type StoreResetDiscardOptions =
-  | {
-      readonly target: 'legacy';
-      readonly runtime: Runtime;
-    }
-  | {
-      readonly target: 'gen2';
-      readonly runtime: Runtime;
-      readonly build: StrictBundleManifest;
-      readonly storeFormat: StoreFormatDescription;
-      readonly acquireSocketGuard?: AcquireStoreResetSocketGuard;
-      readonly maintenanceTimeoutMs?: number;
-    };
+import { acquireStoreResetSocketGuard } from './store-reset-socket.js';
 
 export interface StoreResetCliDependencies {
   resolveIdentity(): { readonly ok: true; readonly manifest: StrictBundleManifest } | { readonly ok: false };
@@ -125,165 +69,6 @@ export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal):
   };
 }
 
-export function resolveStoreResetTargetPaths(
-  runtime: Pick<Runtime, 'env' | 'flavor' | 'paths'>,
-  target: StoreResetTarget,
-): StoreResetTargetPaths {
-  const boundary = resolveGenerationBoundaryPaths(runtime);
-  if (target === 'gen2') {
-    return {
-      target,
-      baseDir: boundary.baseDir,
-      storeDbPath: runtime.paths.coral.store.dbFile,
-      quarantineRoot: join(runtime.paths.coral.store.dbDir, STORE_RESET_QUARANTINE_DIRECTORY),
-      socketPath: runtime.paths.coral.coordinator.socketPath,
-    };
-  }
-
-  const storeDbPath = join(boundary.legacyFlavorRoot, 'store', 'store.db');
-  const runDirectory = join(boundary.baseDir, basename(runtime.paths.coral.coordinator.runDir));
-  return {
-    target,
-    baseDir: boundary.baseDir,
-    storeDbPath,
-    quarantineRoot: join(dirname(storeDbPath), STORE_RESET_QUARANTINE_DIRECTORY),
-    socketPath: socketPathForRunDir(runDirectory, runtime.flavor, {
-      platform: runtime.env.platform(),
-      tempDirectory: runtime.env.get('TMPDIR') ?? runtime.env.tmpdir(),
-    }),
-  };
-}
-
-export async function acquireStoreResetSocketGuard(
-  paths: StoreResetTargetPaths,
-  flavor: BuildFlavor,
-): Promise<StoreResetSocketGuard> {
-  return acquireOperatorSocketGuard({
-    socketPath: paths.socketPath,
-    flavor,
-    operation: `${paths.target} store reset`,
-    retryCommand: `coral-cli backend store-reset discard --target ${paths.target} --flavor ${flavor}`,
-  });
-}
-
-function acquireStoreResetLock(runtime: Runtime, paths: StoreResetTargetPaths) {
-  const dbDir = dirname(paths.storeDbPath);
-  runtime.storage.mkdirSync(dbDir, { recursive: true });
-  const lockPath = join(dbDir, 'store.db.reset.lock');
-  try {
-    return acquireDirectoryLockSync(lockPath, 250);
-  } catch (error: unknown) {
-    if (isDirectoryLockTimeoutError(error)) {
-      throw documentedCoralSetupError({
-        code: 'store_reset_lock_contended',
-        lockPath,
-        dbDir,
-        target: paths.target,
-        flavor: runtime.flavor,
-        baseDir: paths.baseDir,
-      });
-    }
-    throw error;
-  }
-}
-
-async function discardGeneratedStore(
-  options: Extract<StoreResetDiscardOptions, { readonly target: 'gen2' }>,
-  paths: StoreResetTargetPaths,
-): Promise<StoreResetDiscardResult> {
-  const adoption = await acquireGenerationAdoptionLease(options.runtime, options.storeFormat);
-  try {
-    let maintenance: GenerationMaintenanceLease;
-    try {
-      maintenance = await acquireGenerationMaintenanceLease(options.runtime, options.maintenanceTimeoutMs);
-    } catch (error: unknown) {
-      if (error instanceof CoralSetupError && error.code === 'legacy_source_not_quiescent') {
-        throw documentedCoralSetupError({
-          code: 'legacy_source_not_quiescent',
-          operation: 'store-reset',
-          holder: error.context?.holder,
-          flavor: options.runtime.flavor,
-          baseDir: paths.baseDir,
-        });
-      }
-      throw error;
-    }
-    try {
-      adoption.assertOwned();
-      maintenance.assertOwned();
-
-      const authority = createBackendStoreResetAuthority(
-        options.runtime,
-        { acquiredViaHandoff: false },
-        {
-          path: paths.storeDbPath,
-          namespace: 'store-reset-operator',
-          storeFormat: options.storeFormat,
-          build: options.build,
-        },
-      );
-      let resumed: BackendStoreResetIncident | null;
-      let published: BackendStoreResetIncident | undefined;
-      const releaseReset = acquireStoreResetLock(options.runtime, paths);
-      try {
-        resumed = resumeInterruptedBackendStoreResetIncident(options.runtime, authority, {
-          path: paths.storeDbPath,
-          storeFormat: options.storeFormat,
-        });
-        published = publishBackendStoreResetIncident(options.runtime, authority, {
-          path: paths.storeDbPath,
-          storeFormat: options.storeFormat,
-        });
-      } finally {
-        releaseReset();
-      }
-
-      const db = openOrResetBackendStoreDb(options.runtime, authority, {
-        path: paths.storeDbPath,
-        storeFormat: options.storeFormat,
-      });
-      db.close();
-      return {
-        target: 'gen2',
-        flavor: options.runtime.flavor,
-        baseDir: paths.baseDir,
-        storeDbPath: paths.storeDbPath,
-        incident: resumed ?? published ?? null,
-        resumed: resumed !== null,
-      };
-    } finally {
-      maintenance.release();
-    }
-  } finally {
-    adoption.release();
-  }
-}
-
-/**
- * Documented exception to the CLI policy that mutating commands go through
- * IPC: store reset must remain reachable while the daemon refuses to boot.
- */
-export async function discardStoreReset(options: StoreResetDiscardOptions): Promise<StoreResetDiscardResult> {
-  if (options.target === 'legacy') {
-    throw documentedCoralSetupError({
-      code: 'legacy_foreign_generation',
-      operation: 'discard',
-      legacyPath: options.runtime.paths.coral.generation.legacyDataRoot,
-      version: null,
-      flavor: options.runtime.flavor,
-      baseDir: dirname(options.runtime.paths.coral.generation.root),
-    });
-  }
-
-  const paths = resolveStoreResetTargetPaths(options.runtime, options.target);
-  const socket = await (options.acquireSocketGuard ?? acquireStoreResetSocketGuard)(paths, options.runtime.flavor);
-  try {
-    return await discardGeneratedStore(options, paths);
-  } finally {
-    await socket.release();
-  }
-}
-
 export function discardStoreResetLocal(
   target: StoreResetTarget,
   flavor: BuildFlavor,
@@ -299,6 +84,7 @@ export function discardStoreResetLocal(
     runtime,
     build: identity.manifest,
     storeFormat: currentCoralStoreFormat(),
+    acquireSocketGuard: acquireStoreResetSocketGuard,
   });
 }
 

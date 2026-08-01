@@ -192,20 +192,30 @@ describe('cli errors', () => {
     });
 
     it.each([
-      ['legacy_foreign_generation', { legacyPath: '/legacy', version: '0.9.16' }],
-      ['legacy_adoption_required', { legacyPath: '/legacy', flavor: 'prod' }],
-      ['legacy_source_not_quiescent', { holder: 'install:kiwi (pid 42)', flavor: 'prod' }],
-      ['store_newer_incompatible', { version: '99.0.0', flavor: 'prod' }],
-      ['store_older_incompatible', { version: '0.0.1', flavor: 'prod' }],
-      ['store_corrupt_or_unsupported', { flavor: 'prod' }],
-      ['kb_commit_corrupt_or_unsupported', { commitId: 'blocking-commit', flavor: 'prod' }],
-    ] as const)('keeps %s at exit 1 over IPC and HTTP', (code, context) => {
+      ['legacy_foreign_generation', { legacyPath: '/legacy', version: '0.9.16' }, 409],
+      ['legacy_adoption_required', { legacyPath: '/legacy', flavor: 'prod' }, 409],
+      ['legacy_source_not_quiescent', { holder: 'install:kiwi (pid 42)', flavor: 'prod' }, 409],
+      ['store_newer_incompatible', { version: '99.0.0', flavor: 'prod' }, 409],
+      ['store_older_incompatible', { version: '0.0.1', flavor: 'prod' }, 409],
+      ['store_corrupt_or_unsupported', { flavor: 'prod' }, 409],
+      ['store_not_initialized', { path: '/store/store.db' }, 409],
+      ['kb_commit_corrupt_or_unsupported', { commitId: 'blocking-commit', flavor: 'prod' }, 409],
+      ['kb_commit_id_invalid', { commitId: '../bad' }, 400],
+      ['kb_commit_not_found', { commitId: 'missing' }, 409],
+      ['kb_commit_already_quarantined', { commitId: 'retained', quarantineDir: '/retained' }, 409],
+      ['kb_commit_quarantine_failed', { commitId: 'blocking-commit' }, 409],
+      ['coordinator_socket_in_use', { operation: 'store reset', retryCommand: 'retry' }, 409],
+      ['coordinator_socket_bind_failed', { operation: 'store reset', retryCommand: 'retry' }, 409],
+      ['legacy_adoption_source_unreadable', { legacyPath: '/legacy' }, 409],
+      ['legacy_adoption_state_changed', { observation: 'target appeared' }, 409],
+      ['legacy_adoption_durability_failed', { path: '/generation', flavor: 'prod' }, 409],
+    ] as const)('keeps %s at exit 1 over IPC and HTTP', (code, context, statusCode) => {
       const setupError = documentedCoralSetupError(code, context);
       const serialized = serializeCoralSetupError(setupError);
       if (serialized === null) throw new Error(`Expected ${code} to serialize`);
       const response = buildTransportErrorResponse(setupError);
 
-      expect(response.statusCode).toBe(409);
+      expect(response.statusCode).toBe(statusCode);
       expect(
         buildErrorEnvelope(
           new IpcRpcError({

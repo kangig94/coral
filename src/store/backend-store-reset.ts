@@ -10,8 +10,12 @@ import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { classifyStoreFile, openStoreDatabase, type Database } from './db.js';
-import type { StoreFormatClassification } from './format-fingerprint.js';
-import type { StoreFormatDescription, StoreFormatFingerprint } from './format-fingerprint.js';
+import {
+  isStoreFormatFingerprint,
+  type StoreFormatClassification,
+  type StoreFormatDescription,
+  type StoreFormatFingerprint,
+} from './format-fingerprint.js';
 import { formatLegacyForeignGenerationNotice, inspectGenerationReadiness } from './generation-mutation-coordination.js';
 import {
   isCanonicalStoreResetIncidentId,
@@ -31,7 +35,6 @@ import {
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 const STEADY_STATE_BUSY_TIMEOUT_MS = 5_000;
-const STORE_FORMAT_FINGERPRINT_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 const BACKEND_STORE_RESET_AUTHORITY_BRAND: unique symbol = Symbol('BackendStoreResetAuthority');
 
@@ -182,7 +185,7 @@ function assertResetAuthority(
 }
 
 function storedFingerprint(classification: ResettableStoreFormatClassification): string | null {
-  return classification.kind === 'mismatch' && STORE_FORMAT_FINGERPRINT_PATTERN.test(classification.stored)
+  return classification.kind === 'mismatch' && isStoreFormatFingerprint(classification.stored)
     ? classification.stored
     : null;
 }
@@ -199,7 +202,7 @@ function resettableStoreFormatClassification(
     return null;
   }
   const storedFingerprint = classification.storedFingerprint;
-  if (storedFingerprint !== null && STORE_FORMAT_FINGERPRINT_PATTERN.test(storedFingerprint)) {
+  if (isStoreFormatFingerprint(storedFingerprint)) {
     return {
       kind: 'mismatch',
       current: classification.currentFingerprint,

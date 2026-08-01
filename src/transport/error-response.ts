@@ -27,6 +27,7 @@ function setupErrorStatusCode(code: string): number {
     case 'store_newer_incompatible':
     case 'store_older_incompatible':
     case 'store_corrupt_or_unsupported':
+    case 'store_not_initialized':
     case 'kb_commit_corrupt_or_unsupported':
     case 'coordinator_socket_in_use':
     case 'coordinator_socket_bind_failed':

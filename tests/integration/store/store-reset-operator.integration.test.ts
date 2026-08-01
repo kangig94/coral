@@ -5,9 +5,10 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { discardStoreReset, resolveStoreResetTargetPaths } from '#src/cli/store-reset.js';
+import { acquireStoreResetSocketGuard } from '#src/cli/store-reset-socket.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { discardStoreReset, resolveStoreResetTargetPaths } from '#src/store/operator-store-reset.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { bindSocket } from '#src/transport/ipc/server.js';
 
@@ -96,7 +97,13 @@ describe('store-reset operator socket exclusion', () => {
 
     try {
       await expect(
-        discardStoreReset({ target: 'gen2', runtime, build: BUILD, storeFormat: STORE_FORMAT }),
+        discardStoreReset({
+          target: 'gen2',
+          runtime,
+          build: BUILD,
+          storeFormat: STORE_FORMAT,
+          acquireSocketGuard: acquireStoreResetSocketGuard,
+        }),
       ).rejects.toMatchObject({
         code: 'coordinator_socket_in_use',
         remediation: expect.stringContaining('coral-cli backend shutdown'),

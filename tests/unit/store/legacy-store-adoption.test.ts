@@ -525,6 +525,9 @@ describe('legacy store generation adoption', () => {
       }),
     ).rejects.toThrow('post-commit fault');
 
+    // `stampAdoptionProvenance` closes its DB in `finally`, which can checkpoint
+    // the WAL. This case proves recovery from committed prepared metadata; it
+    // deliberately does not claim to simulate process-crash WAL recovery.
     const originalTimestamp = readMeta(sourceDb, 'adopted_from_legacy_at');
     expect(originalTimestamp).toBe('2026-08-01T01:02:03.004Z');
     expect(readMeta(sourceDb, 'adopted_by_version')).toBe(stampingFormat.productVersion);

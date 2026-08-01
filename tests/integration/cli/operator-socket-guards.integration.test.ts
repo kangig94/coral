@@ -5,9 +5,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { quarantineKbCommit } from '#src/cli/kb-commit-quarantine.js';
 import { acquireStoreAdoptionSocketGuard } from '#src/cli/store-adopt.js';
-import { acquireStoreResetSocketGuard, resolveStoreResetTargetPaths } from '#src/cli/store-reset.js';
+import { acquireStoreResetSocketGuard } from '#src/cli/store-reset-socket.js';
 import { serializeCoralSetupError } from '#src/runtime/errors.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { resolveStoreResetTargetPaths } from '#src/store/operator-store-reset.js';
 
 const roots: string[] = [];
 

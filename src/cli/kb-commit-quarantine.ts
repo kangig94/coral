@@ -1,6 +1,10 @@
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
-import { assertSafeCommitId, quarantineKbCommitEvidence } from '../kb/commit-quarantine.js';
+import {
+  assertSafeCommitId,
+  quarantineKbCommitEvidence,
+  type KbCommitQuarantineResult,
+} from '../kb/commit-quarantine.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
@@ -21,7 +25,7 @@ export type QuarantineKbCommitOptions = {
   readonly maintenanceTimeoutMs?: number;
 };
 
-export function quarantineKbCommitLocal(flavor: BuildFlavor, commitId: string) {
+export function quarantineKbCommitLocal(flavor: BuildFlavor, commitId: string): Promise<KbCommitQuarantineResult> {
   return quarantineKbCommit({ runtime: createRealRuntime(flavor), commitId });
 }
 
@@ -29,7 +33,7 @@ export async function quarantineKbCommit({
   runtime,
   commitId,
   maintenanceTimeoutMs = MAINTENANCE_LOCK_TIMEOUT_MS,
-}: QuarantineKbCommitOptions) {
+}: QuarantineKbCommitOptions): Promise<KbCommitQuarantineResult> {
   assertSafeCommitId(commitId);
   const retryCommand = `coral-cli backend kb-commit quarantine --flavor ${runtime.flavor} --commit ${commitId}`;
   const socketGuard = await acquireOperatorSocketGuard({

@@ -3,7 +3,7 @@ import { basename, dirname, join } from 'node:path';
 import { backendLog } from '../infra/backend-log.js';
 import { assertNever } from '../infra/error-format.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
-import { acquireDirectoryLock, type DirectoryLockLease } from '../infra/fs-lock.js';
+import { acquireDirectoryLock, isDirectoryLockTimeoutError, type DirectoryLockLease } from '../infra/fs-lock.js';
 import { validateProductVersion } from '../infra/product-version.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -156,17 +156,32 @@ function directoryLockDeps(runtime: Runtime) {
   };
 }
 
+export function generationNotQuiescentError(runtime: Pick<Runtime, 'flavor'>, holder: string): Error {
+  return documentedCoralSetupError({
+    code: 'legacy_source_not_quiescent',
+    flavor: runtime.flavor,
+    holder,
+  });
+}
+
 function ensureCoordinationRoot(runtime: Runtime, paths: GenerationBoundaryPaths): void {
   runtime.storage.mkdirSync(paths.writersRoot, { recursive: true });
 }
 
-async function acquireAdoptionLock(
+export async function acquireGenerationAdoptionLock(
   runtime: Runtime,
-  paths: GenerationBoundaryPaths,
-  timeoutMs: number,
+  timeoutMs = GENERATION_COORDINATION_TIMEOUT_MS,
 ): Promise<DirectoryLockLease> {
+  const paths = resolveGenerationBoundaryPaths(runtime);
   runtime.storage.mkdirSync(paths.generationRoot, { recursive: true });
-  return acquireDirectoryLock(paths.adoptionLock, directoryLockDeps(runtime), timeoutMs);
+  try {
+    return await acquireDirectoryLock(paths.adoptionLock, directoryLockDeps(runtime), timeoutMs);
+  } catch (error: unknown) {
+    if (isDirectoryLockTimeoutError(error)) {
+      throw generationNotQuiescentError(runtime, `adoption lock at ${paths.adoptionLock}`);
+    }
+    throw error;
+  }
 }
 
 export async function acquireGenerationAdoptionLease(
@@ -174,8 +189,7 @@ export async function acquireGenerationAdoptionLease(
   storeFormat: StoreFormatDescription,
   timeoutMs = GENERATION_COORDINATION_TIMEOUT_MS,
 ): Promise<GenerationAdoptionLease> {
-  const paths = resolveGenerationBoundaryPaths(runtime);
-  const releaseAdoption = await acquireAdoptionLock(runtime, paths, timeoutMs);
+  const releaseAdoption = await acquireGenerationAdoptionLock(runtime, timeoutMs);
   try {
     const readiness = inspectGenerationReadiness(runtime, storeFormat);
     switch (readiness.kind) {
@@ -227,7 +241,7 @@ function writerEntries(runtime: Runtime, paths: GenerationBoundaryPaths): string
     return runtime.storage.readdirSync(paths.writersRoot).filter((entry) => entry.endsWith('.lock'));
   } catch (error: unknown) {
     if (isNoEntryError(error)) return [];
-    throw quiescenceError(runtime, `unreadable writer lease directory at ${paths.writersRoot}`);
+    throw generationNotQuiescentError(runtime, `unreadable writer lease directory at ${paths.writersRoot}`);
   }
 }
 
@@ -246,14 +260,6 @@ function removeDeadWriterLeases(runtime: Runtime, paths: GenerationBoundaryPaths
     runtime.storage.rmSync(join(paths.writersRoot, entry), { recursive: true, force: true });
   }
   return live;
-}
-
-function quiescenceError(runtime: Pick<Runtime, 'flavor'>, holder: string): Error {
-  return documentedCoralSetupError({
-    code: 'legacy_source_not_quiescent',
-    flavor: runtime.flavor,
-    holder,
-  });
 }
 
 export const generationMutationCoordinationSeam: GenerationMutationCoordination = {
@@ -289,7 +295,7 @@ export const generationMutationCoordinationSeam: GenerationMutationCoordination 
       await runtime.time.sleep(GENERATION_COORDINATION_RETRY_MS);
     }
 
-    throw quiescenceError(runtime, 'generation maintenance');
+    throw generationNotQuiescentError(runtime, 'generation maintenance');
   },
 };
 
@@ -313,7 +319,7 @@ export async function acquireGenerationMaintenanceLease(
       const live = removeDeadWriterLeases(runtime, paths);
       if (live.length === 0) break;
       if (runtime.time.now() >= deadline) {
-        throw quiescenceError(runtime, live.join(', '));
+        throw generationNotQuiescentError(runtime, live.join(', '));
       }
       await runtime.time.sleep(GENERATION_COORDINATION_RETRY_MS);
     }

@@ -6,6 +6,7 @@ import {
   type KbCommitCommandOperations,
   type StoreResetCommandOperations,
 } from '#src/cli/commands/backend.js';
+import { emitError } from '#src/cli/emit.js';
 import { buildErrorEnvelope } from '#src/cli/errors.js';
 
 const storeReset: StoreResetCommandOperations = {
@@ -19,13 +20,19 @@ const storeReset: StoreResetCommandOperations = {
 };
 
 let stdout = '';
+let stderr = '';
 
 beforeEach(() => {
   stdout = '';
+  stderr = '';
   vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
     stdout += chunk.toString();
     return true;
   }) as typeof process.stdout.write);
+  vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+    stderr += chunk.toString();
+    return true;
+  }) as typeof process.stderr.write);
 });
 
 afterEach(() => {
@@ -65,7 +72,6 @@ describe('backend kb-commit quarantine command', () => {
       const quarantine = vi.fn<KbCommitCommandOperations['quarantine']>();
       const program = new Command();
       program.exitOverride();
-      program.configureOutput({ writeErr: () => undefined });
       registerBackendCommands(program, storeReset, { quarantine });
 
       let refusal: unknown;
@@ -89,6 +95,9 @@ describe('backend kb-commit quarantine command', () => {
         envelope: { code: 'invalid_usage', message: expect.stringContaining('safe filesystem path segment') },
         exitCode: 2,
       });
+      expect(stderr).toBe('');
+      emitError(refusal);
+      expect(stderr.match(/safe filesystem path segment/gu)).toHaveLength(1);
       expect(quarantine).not.toHaveBeenCalled();
     },
   );

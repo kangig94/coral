@@ -20,10 +20,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerBackendCommands, type StoreResetCommandOperations } from '#src/cli/commands/backend.js';
 import { StoreResetCliError } from '#src/cli/errors.js';
 import {
-  discardStoreReset,
   listStoreResetIncidentsLocal,
   reportStoreResetIncidentLocal,
-  resolveStoreResetTargetPaths,
   type StoreResetCliDependencies,
 } from '#src/cli/store-reset.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
@@ -34,6 +32,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { createBackendStoreResetAuthority, publishBackendStoreResetIncident } from '#src/store/backend-store-reset.js';
 import { classifyStoreFile } from '#src/store/db.js';
 import { generationMutationCoordinationSeam } from '#src/store/generation-mutation-coordination.js';
+import { discardStoreReset, resolveStoreResetTargetPaths } from '#src/store/operator-store-reset.js';
 import {
   projectStoreResetPublicReport,
   serializeStoreResetIncidentManifest,
@@ -354,28 +353,41 @@ describe('local store-reset operations', () => {
 });
 
 describe('operator store-reset discard', () => {
-  it('refuses destructive legacy targeting before path resolution and leaves the tree byte-identical', async () => {
-    const baseDir = root();
-    const runtime = createRealRuntime('prod', { baseDir });
-    const paths = resolveStoreResetTargetPaths(runtime, 'legacy');
-    createMismatchStore(paths.storeDbPath);
-    const legacyDb = new DatabaseSync(paths.storeDbPath);
-    try {
-      legacyDb.prepare("INSERT INTO meta (key, value) VALUES ('store_product_version', ?)").run('0.9.16');
-    } finally {
-      legacyDb.close();
-    }
-    const before = snapshotTree(baseDir);
+  it.each(['absent', 'compatible', 'foreign', 'corrupt'] as const)(
+    'refuses a black-box --target legacy discard for an %s store without changing the tree',
+    async (state) => {
+      const baseDir = root();
+      const runtime = createRealRuntime('prod', { baseDir });
+      const paths = resolveStoreResetTargetPaths(runtime, 'legacy');
+      if (state === 'compatible') {
+        mkdirSync(dirname(paths.storeDbPath), { recursive: true });
+        openTestStoreDb(runtime, paths.storeDbPath).close();
+      } else if (state === 'foreign') {
+        createMismatchStore(paths.storeDbPath);
+      } else if (state === 'corrupt') {
+        mkdirSync(dirname(paths.storeDbPath), { recursive: true });
+        writeFileSync(paths.storeDbPath, 'not a sqlite database');
+      }
+      const before = snapshotTree(baseDir);
+      const operations: StoreResetCommandOperations = {
+        list: () => ({ incidents: [] }),
+        report: async () => publicReport(),
+        discard: async (target) => {
+          if (target === 'legacy') return discardStoreReset({ target, runtime });
+          throw new Error('unexpected generated target');
+        },
+      };
 
-    await expect(discardStoreReset({ target: 'legacy', runtime })).rejects.toMatchObject({
-      code: 'legacy_foreign_generation',
-      context: { operation: 'discard', legacyPath: join(baseDir, 'data'), version: null, baseDir },
-    });
+      await runCommand(['backend', 'store-reset', 'discard', '--target', 'legacy', '--flavor', 'prod'], operations);
 
-    const after = snapshotTree(baseDir);
-    expect(after.paths).toEqual(before.paths);
-    expect(after.sha256).toBe(before.sha256);
-  });
+      expect(stdout).toBe('');
+      expect(stderr).toContain('[code=legacy_foreign_generation]');
+      expect(process.exitCode).toBe(1);
+      const after = snapshotTree(baseDir);
+      expect(after.paths).toEqual(before.paths);
+      expect(after.sha256).toBe(before.sha256);
+    },
+  );
 
   it('refuses while a live installer writer lease cannot drain and leaves the store byte-identical', async () => {
     const baseDir = root();
@@ -600,14 +612,16 @@ describe('backend store-reset commands', () => {
     await expect(runCommand(['backend', 'store-reset', 'list'], operations)).rejects.toMatchObject({
       code: 'commander.missingMandatoryOptionValue',
     });
+    stderr = '';
     await runCommand(['backend', 'store-reset', 'list', '--target', 'legacy'], operations);
     await runCommand(['backend', 'store-reset', 'report', '--target', 'legacy', INCIDENT_ID], operations);
-    await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'dev'], operations);
+    await runCommand(['backend', 'store-reset', 'discard', '--target', 'current', '--flavor', 'dev'], operations);
 
     expect(list).toHaveBeenCalledWith('legacy');
     expect(report).toHaveBeenCalledWith('legacy', INCIDENT_ID);
     expect(discard).toHaveBeenCalledWith('gen2', 'dev');
     expect(stdout).toContain('Initialized gen2 dev store at /coral/gen2/data-dev/store/store.db.');
+    expect(stderr).toBe('Quarantined store-reset evidence is diagnostic-only and cannot restore active state.\n');
   });
 
   it('preserves known errors and collapses unknown exceptions without leaking arguments or details', async () => {

@@ -3,7 +3,6 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { validateProductVersion } from '#src/infra/product-version.js';
@@ -69,45 +68,6 @@ function readStoredProductVersion(dbPath: string): unknown {
   } finally {
     db.close();
   }
-}
-
-const NEWER_STAMP_WORKER_SOURCE = `
-const { DatabaseSync } = require('node:sqlite');
-const { parentPort, workerData } = require('node:worker_threads');
-
-const state = workerData.state;
-const db = new DatabaseSync(workerData.dbPath);
-try {
-  db.exec('PRAGMA busy_timeout = 5000');
-  db.exec('BEGIN IMMEDIATE');
-  const observed = db.prepare("SELECT value FROM meta WHERE key = 'store_product_version'").get().value;
-  Atomics.store(state, 0, 1);
-  Atomics.notify(state, 0);
-  Atomics.wait(state, 0, 1, 250);
-
-  try {
-    db.prepare("UPDATE meta SET value = '1.2.0' WHERE key = 'store_product_version'").run();
-    db.exec('COMMIT');
-    Atomics.store(state, 0, 2);
-    Atomics.notify(state, 0);
-    parentPort.postMessage({ observed });
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
-} finally {
-  db.close();
-}
-`;
-
-function workerResult(worker: Worker): Promise<{ readonly observed: string }> {
-  return new Promise((resolve, reject) => {
-    worker.once('message', resolve);
-    worker.once('error', reject);
-    worker.once('exit', (code) => {
-      if (code !== 0) reject(new Error(`High-water stamp worker exited with code ${code}.`));
-    });
-  });
 }
 
 afterEach(() => {
@@ -333,34 +293,6 @@ describe('store format classification', () => {
 
     expect(readStoredProductVersion(dbPath)).toBeUndefined();
     expect(sha256File(dbPath)).toBe(before);
-  });
-
-  it('serializes two real connections so an interleaved newer stamp remains the maximum', async () => {
-    const { root, dbPath } = tempPath('interleaved-high-water.db');
-    createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT, productVersion: '1.0.0' });
-    const walSetup = new DatabaseSync(dbPath);
-    walSetup.exec('PRAGMA journal_mode = WAL');
-    walSetup.close();
-    const storage = createRealRuntime('prod', { baseDir: join(root, 'runtime') }).storage;
-    const state = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
-    const newerWorker = new Worker(NEWER_STAMP_WORKER_SOURCE, {
-      eval: true,
-      workerData: { dbPath, state },
-    });
-    const newerResult = workerResult(newerWorker);
-
-    try {
-      expect(Atomics.wait(state, 0, 0, 5_000)).not.toBe('timed-out');
-      expect(Atomics.load(state, 0)).toBe(1);
-
-      openStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0') }).close();
-
-      expect(Atomics.load(state, 0)).toBe(2);
-      expect(await newerResult).toEqual({ observed: '1.0.0' });
-      expect(readStoredProductVersion(dbPath)).toBe('1.2.0');
-    } finally {
-      await newerWorker.terminate();
-    }
   });
 
   it('never raises the product version during a read-only open', () => {

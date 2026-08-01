@@ -1011,6 +1011,8 @@ describe('openOrResetBackendStoreDb', () => {
   });
 });
 
+// Distinct from the reset-authority cases above: these callers have no mutation
+// capability and must refuse without creating or quarantining any store files.
 describe('read-only store access', () => {
   it('surfaces a typed absent-store error without creating the parent or database', () => {
     const runtime = createRuntime();
@@ -1142,6 +1144,8 @@ describe('read-only store access', () => {
   });
 });
 
+// Distinct from both reset-authority and read-only access: this surface may
+// write a compatible store, but it can neither initialize nor reset one.
 describe('openWritableStoreDbNoReset', () => {
   it('requires an existing store and opens a current store for catalog writers', () => {
     const runtime = createRuntime();
