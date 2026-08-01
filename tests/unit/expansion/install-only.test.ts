@@ -33,18 +33,13 @@ function createFixture(homeName = 'home') {
   return { root, homeDir, baseDir };
 }
 
+// Scope the WHOLE path tree to the fixture, not just the engine family. Overriding
+// `engine` alone used to work only because generation coordination reverse-derived
+// its root from `engineRoot`; once the generation family became published path
+// authority, a partial override let the install pipeline take its adoption lock in
+// the developer's real ~/.coral.
 function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Runtime {
-  const realRuntime = createRealRuntime('prod');
-  const fixtureEngine = enginePaths('prod', { baseDir: fixture.baseDir });
-  return {
-    ...realRuntime,
-    paths: {
-      ...realRuntime.paths,
-      get coral() {
-        return { ...realRuntime.paths.coral, engine: fixtureEngine };
-      },
-    },
-  };
+  return createRealRuntime('prod', { baseDir: fixture.baseDir });
 }
 
 function dataDir(baseDir: string): string {

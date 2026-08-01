@@ -4,11 +4,11 @@
 // `src/infra/paths.ts` magnet must not return — see
 // tests/invariants/architecture-boundary.test.ts.
 
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import type { BuildFlavor } from '../build-flavor.js';
-import { type CoordinatorPaths, coordinatorPaths } from './coordinator.js';
-import { coralStateRoot, kbVaultRoot } from './root.js';
+import { type CoordinatorPaths, coordinatorPaths, socketPathForRunDir } from './coordinator.js';
+import { coralStateRoot, generationRoot, generationStateRoot, kbVaultRoot } from './root.js';
 import { type EnginePaths, enginePaths } from './engine.js';
 import { type KbRuntimePaths, kbRuntimePaths } from './kb-runtime.js';
 import { type StorePaths, storePaths } from './store.js';
@@ -33,7 +33,15 @@ export interface ProjectsPaths {
   dataDir(source: string): string;
 }
 
+export interface GenerationPaths {
+  readonly root: string;
+  readonly dataRoot: string;
+  readonly legacyDataRoot: string;
+  readonly adoptionLock: string;
+}
+
 export type CoralPaths = {
+  readonly generation: GenerationPaths;
   readonly store: StorePaths;
   readonly corpus: CorpusPaths;
   readonly kbRuntime: KbRuntimePaths;
@@ -47,6 +55,7 @@ export type CoralPaths = {
 // test fixtures) see a single public surface for path-shape vocabulary.
 // Runtime path-construction functions stay subdir-internal.
 export type { CoordinatorPaths } from './coordinator.js';
+export { socketPathForRunDir };
 // Config-dir resolution remains public for plugin discovery and provider
 // credentials. It never participates in Coral daemon path composition.
 export { resolveClaudeConfigDir, resolveUserHomeDir } from './root.js';
@@ -109,6 +118,18 @@ export interface ComposeCoralPathOptions {
   readonly customKbRoot?: string;
 }
 
+function generationPaths(flavor: BuildFlavor, opts?: FamilyPathOptions): GenerationPaths {
+  const root = generationRoot(opts);
+  const dataRoot = generationStateRoot(flavor, opts);
+  const dataDirectory = basename(dataRoot);
+  return {
+    root,
+    dataRoot,
+    legacyDataRoot: join(coralStateRoot(opts?.baseDir), dataDirectory),
+    adoptionLock: join(root, `.adoption-${dataDirectory}.lock`),
+  };
+}
+
 export function composeCoralPaths(flavor: BuildFlavor, opts?: ComposeCoralPathOptions): CoralPaths {
   // Provider account selection never changes Coral-owned state paths.
   const stateOpts: FamilyPathOptions = {
@@ -119,6 +140,7 @@ export function composeCoralPaths(flavor: BuildFlavor, opts?: ComposeCoralPathOp
     ...(opts?.customKbRoot === undefined ? {} : { customKbRoot: opts.customKbRoot }),
   };
   return {
+    generation: generationPaths(flavor, stateOpts),
     store: storePaths(flavor, stateOpts),
     corpus: corpusPaths(flavor, corpusOpts),
     kbRuntime: kbRuntimePaths(flavor, stateOpts),

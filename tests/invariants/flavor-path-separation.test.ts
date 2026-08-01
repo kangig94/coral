@@ -11,7 +11,16 @@ import { generationRoot, generationStateRoot } from '#src/infra/path/root.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { listProductionSourceFiles, toCanonicalSrcPath } from '#tests/helpers/ts-import-scanner.js';
 
-const FAMILIES = ['store', 'corpus', 'coordinator', 'exports', 'engine', 'kbRuntime', 'projects'] as const;
+const FLAVOR_SEPARATED_FAMILIES = [
+  'store',
+  'corpus',
+  'coordinator',
+  'exports',
+  'engine',
+  'kbRuntime',
+  'projects',
+] as const;
+const FAMILIES = ['generation', ...FLAVOR_SEPARATED_FAMILIES] as const;
 const REPO_ROOT = process.cwd();
 const SRC_ROOT = join(REPO_ROOT, 'src');
 const EXPLICIT_BASE_DIR = join(REPO_ROOT, '.ac2-explicit-base');
@@ -25,23 +34,60 @@ const PATH_CASES = [
 ] as const;
 
 const LEGACY_BASE_SEGMENTS = new Set(['data', 'data-dev', 'run', 'run-dev']);
-// AC5's legacy-adoption module and AC10's explicitly targeted reset/inspection
-// authorities may be added here only once they actually resolve legacy roots.
-const LEGACY_BASE_CONSUMER_ALLOWLIST = new Set(['src/cli/store-reset.ts']);
 
-function staticPathSegments(expression: ts.Expression, bindings: ReadonlyMap<string, readonly string[]>): string[] {
+function staticPathSegments(
+  expression: ts.Expression,
+  bindings: ReadonlyMap<string, readonly string[]>,
+  helperReturns: ReadonlyMap<string, ts.Expression>,
+  resolvingHelpers = new Set<string>(),
+): string[] {
   if (ts.isStringLiteralLike(expression)) return [expression.text];
   if (ts.isIdentifier(expression)) return [...(bindings.get(expression.text) ?? [])];
   if (ts.isConditionalExpression(expression)) {
     return [
-      ...staticPathSegments(expression.whenTrue, bindings),
-      ...staticPathSegments(expression.whenFalse, bindings),
+      ...staticPathSegments(expression.whenTrue, bindings, helperReturns, resolvingHelpers),
+      ...staticPathSegments(expression.whenFalse, bindings, helperReturns, resolvingHelpers),
     ];
   }
   if (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression)) {
-    return staticPathSegments(expression.expression, bindings);
+    return staticPathSegments(expression.expression, bindings, helperReturns, resolvingHelpers);
+  }
+  if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression)) {
+    const helperName = expression.expression.text;
+    const helperReturn = helperReturns.get(helperName);
+    if (!helperReturn || resolvingHelpers.has(helperName)) return [];
+    const nextHelpers = new Set(resolvingHelpers);
+    nextHelpers.add(helperName);
+    return staticPathSegments(helperReturn, bindings, helperReturns, nextHelpers);
   }
   return [];
+}
+
+function singleReturnExpression(body: ts.ConciseBody | undefined): ts.Expression | undefined {
+  if (!body) return undefined;
+  if (!ts.isBlock(body)) return body;
+  if (body.statements.length !== 1) return undefined;
+  const [statement] = body.statements;
+  return ts.isReturnStatement(statement) ? statement.expression : undefined;
+}
+
+function collectHelperReturns(source: ts.SourceFile): ReadonlyMap<string, ts.Expression> {
+  const helperReturns = new Map<string, ts.Expression>();
+  for (const statement of source.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name) {
+      const expression = singleReturnExpression(statement.body);
+      if (expression) helperReturns.set(statement.name.text, expression);
+      continue;
+    }
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
+      if (!ts.isArrowFunction(declaration.initializer) && !ts.isFunctionExpression(declaration.initializer)) continue;
+      const expression = singleReturnExpression(declaration.initializer.body);
+      if (expression) helperReturns.set(declaration.name.text, expression);
+    }
+  }
+  return helperReturns;
 }
 
 function pathJoinBindings(source: ts.SourceFile): { direct: Set<string>; namespaces: Set<string> } {
@@ -94,15 +140,15 @@ function legacyBaseConsumers(): string[] {
 
   for (const filePath of listProductionSourceFiles(SRC_ROOT)) {
     const relativePath = toCanonicalSrcPath(REPO_ROOT, filePath);
-    if (LEGACY_BASE_CONSUMER_ALLOWLIST.has(relativePath)) continue;
 
     const source = ts.createSourceFile(filePath, readFileSync(filePath, 'utf8'), ts.ScriptTarget.Latest, true);
     const bindings = pathJoinBindings(source);
+    const helperReturns = collectHelperReturns(source);
     const staticBindings = new Map<string, readonly string[]>();
 
     const collectBindings = (node: ts.Node): void => {
       if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-        const segments = staticPathSegments(node.initializer, staticBindings);
+        const segments = staticPathSegments(node.initializer, staticBindings, helperReturns);
         if (segments.length > 0) staticBindings.set(node.name.text, segments);
       }
       ts.forEachChild(node, collectBindings);
@@ -113,7 +159,7 @@ function legacyBaseConsumers(): string[] {
       if (ts.isCallExpression(node) && isPathJoin(node.expression, bindings) && node.arguments.length > 1) {
         const resolvesLegacySegment = node.arguments
           .slice(1)
-          .flatMap((argument) => staticPathSegments(argument, staticBindings))
+          .flatMap((argument) => staticPathSegments(argument, staticBindings, helperReturns))
           .some((segment) => LEGACY_BASE_SEGMENTS.has(segment));
         if (resolvesLegacySegment && !isGenerationRootCall(node.arguments[0])) {
           const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
@@ -152,7 +198,7 @@ describe('flavor path separation', () => {
     expect(dev).not.toHaveProperty('equipment');
   });
 
-  it.each(FAMILIES)('%s family has distinct prod vs dev paths', (family) => {
+  it.each(FLAVOR_SEPARATED_FAMILIES)('%s family has distinct prod vs dev paths', (family) => {
     const prodLeaves = allLeafPaths(prod[family] as unknown as Record<string, unknown>);
     const devLeaves = allLeafPaths(dev[family] as unknown as Record<string, unknown>);
     expect(prodLeaves.length).toBeGreaterThan(0);
@@ -170,6 +216,8 @@ describe('flavor path separation', () => {
   });
 
   it('expected segment tokens appear in dev paths', () => {
+    expect(dev.generation.dataRoot).toContain('gen2/data-dev');
+    expect(dev.generation.legacyDataRoot).toContain('.coral/data-dev');
     expect(dev.store.dbDir).toContain('data-dev/store');
     expect(dev.corpus.kbRoot).toContain('kb-dev');
     expect(dev.coordinator.runDir).toContain('run-dev');

@@ -20,8 +20,18 @@ export interface CoordinatorPathOptions {
 const SOCKET_LIMIT_DARWIN = 104;
 const SOCKET_LIMIT_LINUX = 108;
 
-function socketPathLimit(): number {
-  return platform() === 'darwin' ? SOCKET_LIMIT_DARWIN : SOCKET_LIMIT_LINUX;
+interface SocketPathEnvironment {
+  readonly platform: string;
+  readonly tempDirectory: string;
+}
+
+export function socketPathForRunDir(runDir: string, flavor: BuildFlavor, env: SocketPathEnvironment): string {
+  const candidateSocket = join(runDir, 'coordinator.sock');
+  const limit = env.platform === 'darwin' ? SOCKET_LIMIT_DARWIN : SOCKET_LIMIT_LINUX;
+  if (Buffer.byteLength(candidateSocket, 'utf8') < limit) return candidateSocket;
+
+  const hash = hashToken(candidateSocket, 8);
+  return join(env.tempDirectory, `coral-${flavor}-${hash}.sock`);
 }
 
 export function coordinatorPaths(
@@ -31,15 +41,10 @@ export function coordinatorPaths(
 ): CoordinatorPaths {
   const base = flavor === 'dev' ? 'run-dev' : 'run';
   const runDir = join(generationRoot(opts), base);
-  const candidateSocket = join(runDir, 'coordinator.sock');
-  const limit = socketPathLimit();
-  let socketPath = candidateSocket;
-
-  if (Buffer.byteLength(candidateSocket, 'utf8') >= limit) {
-    const tmp = env.TMPDIR ?? tmpdir();
-    const hash = hashToken(candidateSocket, 8);
-    socketPath = join(tmp, `coral-${flavor}-${hash}.sock`);
-  }
+  const socketPath = socketPathForRunDir(runDir, flavor, {
+    platform: platform(),
+    tempDirectory: env.TMPDIR ?? tmpdir(),
+  });
 
   return {
     runDir,

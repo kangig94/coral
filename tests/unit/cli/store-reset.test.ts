@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -25,6 +25,7 @@ import {
   type StoreResetCliDependencies,
 } from '#src/cli/store-reset.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
+import { socketPathForRunDir } from '#src/infra/path/coordinator.js';
 import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
 import { createKbDaemonWriteRuntimeHost } from '#src/kb-daemon/runtime-host.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -186,6 +187,21 @@ afterEach(() => {
 });
 
 describe('local store-reset operations', () => {
+  it.each(['prod', 'dev'] as const)('uses one socket path rule for %s generated and legacy roots', (flavor) => {
+    const baseDir = join(tmpdir(), 'coral-store-reset-socket-path', 'a'.repeat(110));
+    const runtime = createRealRuntime(flavor, { baseDir });
+    const socketEnvironment = {
+      platform: runtime.env.platform(),
+      tempDirectory: runtime.env.get('TMPDIR') ?? runtime.env.tmpdir(),
+    };
+    const generated = runtime.paths.coral.coordinator;
+    const legacy = resolveStoreResetTargetPaths(runtime, 'legacy');
+    const legacyRunDir = join(baseDir, basename(generated.runDir));
+
+    expect(generated.socketPath).toBe(socketPathForRunDir(generated.runDir, flavor, socketEnvironment));
+    expect(legacy.socketPath).toBe(socketPathForRunDir(legacyRunDir, flavor, socketEnvironment));
+  });
+
   it('lists a missing quarantine root as an empty local success', () => {
     const base = root();
     const createDiagnosticRunner = vi.fn(dependencies(base).createDiagnosticRunner);

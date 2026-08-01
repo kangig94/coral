@@ -1,11 +1,11 @@
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
-import { hashToken } from '../infra/hash.js';
+import { socketPathForRunDir } from '../infra/path/index.js';
 import { createNodeStoreResetDiagnosticSupervisor } from '../infra/store-reset-diagnostic-supervisor.js';
 import { createStoreResetInspectionFs } from '../infra/store-reset-inspection-fs.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
@@ -127,14 +127,6 @@ export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal):
   };
 }
 
-function socketPathForRunDir(runtime: Pick<Runtime, 'env' | 'flavor'>, runDir: string): string {
-  const candidate = join(runDir, 'coordinator.sock');
-  const limit = runtime.env.platform() === 'darwin' ? 104 : 108;
-  if (Buffer.byteLength(candidate, 'utf8') < limit) return candidate;
-  const shortRoot = runtime.env.get('TMPDIR') ?? runtime.env.tmpdir();
-  return join(shortRoot, `coral-${runtime.flavor}-${hashToken(candidate, 8)}.sock`);
-}
-
 export function resolveStoreResetTargetPaths(
   runtime: Pick<Runtime, 'env' | 'flavor' | 'paths'>,
   target: StoreResetTarget,
@@ -150,15 +142,17 @@ export function resolveStoreResetTargetPaths(
     };
   }
 
-  const flavorDirectory = runtime.flavor === 'dev' ? 'data-dev' : 'data';
-  const storeDbPath = join(boundary.baseDir, flavorDirectory, 'store', 'store.db');
-  const runDirectory = join(boundary.baseDir, runtime.flavor === 'dev' ? 'run-dev' : 'run');
+  const storeDbPath = join(boundary.legacyFlavorRoot, 'store', 'store.db');
+  const runDirectory = join(boundary.baseDir, basename(runtime.paths.coral.coordinator.runDir));
   return {
     target,
     baseDir: boundary.baseDir,
     storeDbPath,
     quarantineRoot: join(dirname(storeDbPath), STORE_RESET_QUARANTINE_DIRECTORY),
-    socketPath: socketPathForRunDir(runtime, runDirectory),
+    socketPath: socketPathForRunDir(runDirectory, runtime.flavor, {
+      platform: runtime.env.platform(),
+      tempDirectory: runtime.env.get('TMPDIR') ?? runtime.env.tmpdir(),
+    }),
   };
 }
 

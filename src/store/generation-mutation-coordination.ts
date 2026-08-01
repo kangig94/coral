@@ -60,25 +60,16 @@ const GENERATION_COORDINATION_HEARTBEAT_MS = 10 * 1_000;
 const GENERATION_COORDINATION_RETRY_MS = 25;
 const LEGACY_GENERATION_READER_VERSION = '0.9.x';
 
-function flavorDirectory(runtime: Pick<Runtime, 'flavor'>): string {
-  return runtime.flavor === 'dev' ? 'data-dev' : 'data';
-}
-
-export function resolveGenerationBoundaryPaths(runtime: Pick<Runtime, 'flavor' | 'paths'>): GenerationBoundaryPaths {
-  const generatedFlavorRoot = dirname(runtime.paths.coral.engine.engineRoot);
-  const generationRoot = dirname(generatedFlavorRoot);
-  const baseDir = dirname(generationRoot);
-  const flavorDir = flavorDirectory(runtime);
-  if (basename(generatedFlavorRoot) !== flavorDir) {
-    throw new Error(`Generated flavor root does not end in '${flavorDir}': ${generatedFlavorRoot}`);
-  }
-  const coordinationRoot = join(generationRoot, `.mutation-${flavorDir}`);
+export function resolveGenerationBoundaryPaths(runtime: Pick<Runtime, 'paths'>): GenerationBoundaryPaths {
+  const generation = runtime.paths.coral.generation;
+  const flavorDir = basename(generation.dataRoot);
+  const coordinationRoot = join(generation.root, `.mutation-${flavorDir}`);
   return {
-    baseDir,
-    generationRoot,
-    generatedFlavorRoot,
-    legacyFlavorRoot: join(baseDir, flavorDir),
-    adoptionLock: join(generationRoot, `.adoption-${flavorDir}.lock`),
+    baseDir: dirname(generation.legacyDataRoot),
+    generationRoot: generation.root,
+    generatedFlavorRoot: generation.dataRoot,
+    legacyFlavorRoot: generation.legacyDataRoot,
+    adoptionLock: generation.adoptionLock,
     coordinationRoot,
     admissionLock: join(coordinationRoot, 'admission.lock'),
     maintenanceLock: join(coordinationRoot, 'maintenance.lock'),

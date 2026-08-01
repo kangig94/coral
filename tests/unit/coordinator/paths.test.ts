@@ -6,17 +6,22 @@ import { enginePaths } from '#src/infra/path/engine.js';
 import { storePaths } from '#src/infra/path/store.js';
 
 describe('composeCoralPaths', () => {
-  it('returns a record covering all seven path families', () => {
+  it('returns a record covering all eight path families', () => {
     const p = composeCoralPaths('prod');
     expect(Object.keys(p).sort()).toEqual([
       'coordinator',
       'corpus',
       'engine',
       'exports',
+      'generation',
       'kbRuntime',
       'projects',
       'store',
     ]);
+    expect(p.generation.root).toContain('.coral/gen2');
+    expect(p.generation.dataRoot).toContain('.coral/gen2/data');
+    expect(p.generation.legacyDataRoot).toContain('.coral/data');
+    expect(p.generation.adoptionLock).toContain('.coral/gen2/.adoption-data.lock');
     expect(p.store.dbFile).toContain('.coral/gen2/data/store/store.db');
     expect(p.corpus.kbRoot).toContain('.coral/kb');
     // Sibling of gen2/data/store and gen2/data/engines, and distinct from corpus.kbRoot (the Markdown vault).
@@ -33,6 +38,9 @@ describe('composeCoralPaths', () => {
     const prod = composeCoralPaths('prod');
     const dev = composeCoralPaths('dev');
     expect(dev.store.dbDir).not.toBe(prod.store.dbDir);
+    expect(dev.generation.dataRoot).not.toBe(prod.generation.dataRoot);
+    expect(dev.generation.legacyDataRoot).not.toBe(prod.generation.legacyDataRoot);
+    expect(dev.generation.adoptionLock).not.toBe(prod.generation.adoptionLock);
     expect(dev.store.dbDir).toContain('data-dev');
     expect(dev.corpus.kbRoot).toContain('kb-dev');
     expect(dev.coordinator.runDir).toContain('run-dev');
