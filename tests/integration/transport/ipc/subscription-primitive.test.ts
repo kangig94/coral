@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { decode, encode, type JsonRpcRequestEnvelope } from '#src/transport/ipc/json-rpc.js';
-import { subscribeIpcMethod } from '#src/transport/ipc/client.js';
+import { IpcRpcError, subscribeIpcMethod } from '#src/transport/ipc/client.js';
 
 const tempDirs: string[] = [];
 const servers: NetServer[] = [];
@@ -214,11 +214,18 @@ describe('subscription primitive', () => {
       socket.end();
     });
 
-    await expect(
-      subscribeIpcMethod(socketPath, 'jobs.wait', {
-        jobIds: [],
-        projectRoot: '/tmp/project',
-      }),
-    ).rejects.toThrow('Invalid params');
+    const rejected = await subscribeIpcMethod(socketPath, 'jobs.wait', {
+      jobIds: [],
+      projectRoot: '/tmp/project',
+    }).catch((error: unknown) => error);
+
+    expect(rejected).toBeInstanceOf(IpcRpcError);
+    expect(rejected).toMatchObject({
+      rpcCode: -32_602,
+      message: 'Invalid params',
+      data: {
+        issues: [{ path: ['jobIds'], message: 'At least one job is required' }],
+      },
+    });
   });
 });

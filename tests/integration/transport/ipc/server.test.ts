@@ -4,7 +4,7 @@ import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
-import { requestIpcMethod } from '#src/transport/ipc/client.js';
+import { IpcRpcError, requestIpcMethod } from '#src/transport/ipc/client.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type { Principal } from '#src/security/principal.js';
@@ -288,22 +288,31 @@ describe('ipc server', () => {
         ),
       ).resolves.toEqual({ jobs: [] });
 
-      await expect(
-        requestIpcMethod(
-          socketPath,
-          'coordinator.listExpansion',
-          {},
-          {
-            auth: {
-              kind: 'child',
-              handle: 'handle-a',
-              token: 'nonce-2',
-              jobId: 'job-a',
-              sessionId: 'session-a',
-            },
+      const denied = await requestIpcMethod(
+        socketPath,
+        'coordinator.listExpansion',
+        {},
+        {
+          auth: {
+            kind: 'child',
+            handle: 'handle-a',
+            token: 'nonce-2',
+            jobId: 'job-a',
+            sessionId: 'session-a',
           },
-        ),
-      ).rejects.toThrow('Missing required capability');
+        },
+      ).catch((error: unknown) => error);
+
+      expect(denied).toBeInstanceOf(IpcRpcError);
+      expect(denied).toMatchObject({
+        code: 'missing_capability',
+        rpcCode: -32603,
+        message: 'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
+        data: {
+          code: 'missing_capability',
+          message: 'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.',
+        },
+      });
 
       await expect(
         requestIpcMethod(

@@ -19,6 +19,7 @@ import {
 import { verifyCodexEffectiveTransport } from './transport-policy.js';
 import {
   buildCodexHost,
+  codexChildShellEnvironmentPolicy,
   compileCodexHostEnvironment,
   type CodexProviderAccess,
   type CodexExecutionPlan,
@@ -193,7 +194,7 @@ async function probeCodexSession(
       model: null,
       modelProvider: 'openai',
       approvalPolicy: 'never',
-      config: {},
+      config: { shell_environment_policy: codexChildShellEnvironmentPolicy() },
     });
     if (response.thread?.id !== parsed.threadId) {
       throw new Error('Codex recovery probe did not resume the exact requested thread id.');

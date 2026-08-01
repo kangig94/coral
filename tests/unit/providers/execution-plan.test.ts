@@ -23,6 +23,7 @@ import {
   buildCodexExecutionPlan as buildCodexExecutionPlanWithHost,
   buildCodexHost,
   buildCodexPreflightRuntime,
+  codexChildShellEnvironmentPolicy,
   codexRoutingEnv,
 } from '#src/providers/codex/execution-plan.js';
 import {
@@ -109,6 +110,18 @@ function codexThreadEnvironment(prepared: ReturnType<typeof buildCodexExecutionP
 }
 
 describe('provider execution plan', () => {
+  it('pins the Codex child marker after caller values without mutating the input', () => {
+    const values = { CORAL_CHILD: '0', CORAL_SESSION_ID: 'session-1' };
+
+    const policy = codexChildShellEnvironmentPolicy(values);
+
+    expect(policy).toEqual({
+      inherit: 'all',
+      set: { CORAL_CHILD: '1', CORAL_SESSION_ID: 'session-1' },
+    });
+    expect(values).toEqual({ CORAL_CHILD: '0', CORAL_SESSION_ID: 'session-1' });
+  });
+
   it('exports runtime-immutable allowlist tuples rather than mutable Set facades', () => {
     const allowlists = [
       EXECUTION_ENV_ALLOWLIST,
@@ -722,7 +735,10 @@ describe('provider execution plan', () => {
       CORAL_CHILD: '1',
       CORAL_CHILD_PRINCIPAL_HANDLE: 'turn-handle',
     });
+    expect(codexLaunch(prepared).env).toMatchObject({ CORAL_CHILD: '1' });
     expect(codexLaunch(prepared).env).not.toHaveProperty('CORAL_CHILD_PRINCIPAL_HANDLE');
+    expect(codexLaunch(prepared).env).not.toHaveProperty('CORAL_JOB_ID');
+    expect(codexLaunch(prepared).env).not.toHaveProperty('CORAL_SESSION_ID');
     expect(codexThreadEnvironment(prepared)).toMatchObject({
       CORAL_CHILD: '1',
       CORAL_SESSION_ID: 'session-1',

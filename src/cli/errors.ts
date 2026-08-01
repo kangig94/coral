@@ -6,6 +6,8 @@ import { BackendUnreachableError, TransientHttpError } from '../infra/http-error
 import { isRecord } from '../infra/json.js';
 import { DiscussWatchReadError } from '../discuss/watch.js';
 import { serializeCoralSetupError } from '../runtime/errors.js';
+import { ChildPrincipalBindingError } from '../transport/ipc/child-principal-auth.js';
+import { IpcRpcError } from '../transport/ipc/client.js';
 
 export type StoreResetCliErrorCode =
   | 'invalid_store_reset_incident_id'
@@ -124,6 +126,8 @@ function withExitCode(envelope: CliErrorEnvelope, exitCode: number): { envelope:
   return { envelope, exitCode };
 }
 
+type CliErrorResult = ReturnType<typeof withExitCode>;
+
 export function errorCodeToExit(code: string, httpStatus?: number): number {
   if (code === 'invalid_usage') {
     return 2;
@@ -134,41 +138,51 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
   if (code === 'backend_unreachable') {
     return 69;
   }
+  if (code === 'missing_capability' || code === 'child_credentials_incomplete') {
+    return 77;
+  }
   if (code === 'internal' || code === 'internal_error' || httpStatus === 500) {
     return 70;
   }
   return 1;
 }
 
-export function buildErrorEnvelope(error: unknown): { envelope: CliErrorEnvelope; exitCode: number } {
-  if (error instanceof StoreResetCliError) {
-    return withExitCode(
-      {
-        error: true,
-        code: error.code,
-        message: error.message,
-        remediation: error.remediation,
-      },
-      error.exitCode,
-    );
-  }
+function remediatedError(error: {
+  readonly code: string;
+  readonly message: string;
+  readonly remediation: string;
+  readonly exitCode: number;
+}): CliErrorResult {
+  return withExitCode(
+    { error: true, code: error.code, message: error.message, remediation: error.remediation },
+    error.exitCode,
+  );
+}
 
-  if (error instanceof BackendToolHttpError) {
-    const body = isRecord(error.body) ? error.body : null;
-    const code = body && typeof body.code === 'string' ? body.code : 'backend_error';
-    const message = body && typeof body.message === 'string' ? body.message : error.message;
-    const remediation = body && typeof body.remediation === 'string' ? body.remediation : undefined;
-    const detail = body && 'detail' in body ? body.detail : undefined;
-    return withExitCode(
-      {
-        error: true,
-        code,
-        message,
-        ...(remediation === undefined ? {} : { remediation }),
-        ...(detail === undefined ? {} : { detail }),
-      },
-      errorCodeToExit(code, error.statusCode),
-    );
+function structuredBodyError(
+  value: unknown,
+  fallback: { readonly code: string; readonly message: string; readonly httpStatus?: number },
+): CliErrorResult {
+  const body = isRecord(value) ? value : null;
+  const code = body && typeof body.code === 'string' ? body.code : fallback.code;
+  const message = body && typeof body.message === 'string' ? body.message : fallback.message;
+  const remediation = body && typeof body.remediation === 'string' ? body.remediation : undefined;
+  const detail = body && 'detail' in body ? body.detail : undefined;
+  return withExitCode(
+    {
+      error: true,
+      code,
+      message,
+      ...(remediation === undefined ? {} : { remediation }),
+      ...(detail === undefined ? {} : { detail }),
+    },
+    errorCodeToExit(code, fallback.httpStatus),
+  );
+}
+
+function directErrorEnvelope(error: unknown): CliErrorResult | null {
+  if (error instanceof StoreResetCliError || error instanceof ChildPrincipalBindingError) {
+    return remediatedError(error);
   }
 
   if (error instanceof DiscussWatchReadError) {
@@ -189,12 +203,38 @@ export function buildErrorEnvelope(error: unknown): { envelope: CliErrorEnvelope
     return withExitCode({ error: true, code: error.code, message: error.message, remediation: error.remediation }, 2);
   }
 
+  return null;
+}
+
+function transportErrorEnvelope(error: unknown): CliErrorResult | null {
+  if (error instanceof BackendToolHttpError) {
+    return structuredBodyError(error.body, {
+      code: 'backend_error',
+      message: error.message,
+      httpStatus: error.statusCode,
+    });
+  }
+  if (error instanceof IpcRpcError) {
+    return structuredBodyError(error.data, { code: 'ipc_rpc_error', message: error.message });
+  }
   if (error instanceof TransientHttpError) {
     return withExitCode({ error: true, code: 'transient', message: error.message }, 75);
   }
-
   if (error instanceof BackendUnreachableError) {
     return withExitCode({ error: true, code: 'backend_unreachable', message: error.message }, 69);
+  }
+
+  return null;
+}
+
+export function buildErrorEnvelope(error: unknown): CliErrorResult {
+  const direct = directErrorEnvelope(error);
+  if (direct !== null) {
+    return direct;
+  }
+  const transport = transportErrorEnvelope(error);
+  if (transport !== null) {
+    return transport;
   }
 
   const setupError = serializeCoralSetupError(error);

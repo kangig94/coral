@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendInfo } from '#src/infra/backend-discovery.js';
+import { readBackendInfo } from '#src/infra/backend-discovery.js';
 
 const mockState = vi.hoisted(() => ({
   info: null as BackendInfo | null,
+  env: {} as Record<string, string>,
 }));
 
 vi.mock('#src/infra/backend-discovery.js', () => ({
@@ -20,7 +22,7 @@ vi.mock('#src/infra/node-process.js', () => ({
 vi.mock('#src/runtime/real.js', () => ({
   createRealRuntime: vi.fn(() => ({
     storage: {},
-    env: {},
+    env: { fullSnapshot: () => ({ ...mockState.env }) },
     paths: {},
   })),
 }));
@@ -47,12 +49,33 @@ function backendInfo(overrides: Partial<BackendInfo> = {}): BackendInfo {
 describe('shutdownBackend', () => {
   beforeEach(() => {
     mockState.info = backendInfo();
+    mockState.env = {};
+    vi.mocked(readBackendInfo).mockClear();
     vi.stubGlobal(
       'fetch',
       vi.fn(
         async () => new Response(JSON.stringify({ status: 'draining', instanceId: 'test-instance' }), { status: 200 }),
       ),
     );
+  });
+
+  it('rejects child lifecycle mutation before reading discovery or issuing HTTP', async () => {
+    mockState.env = {
+      CORAL_CHILD: '1',
+      CORAL_CHILD_PRINCIPAL_HANDLE: 'child-handle',
+      CORAL_JOB_ID: 'parent-job',
+      CORAL_SESSION_ID: 'parent-session',
+    };
+    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
+
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({
+      ok: false,
+      reason:
+        "this nested Coral process cannot shut down its parent coordinator; return to the top-level Coral session and run 'coral-cli backend shutdown' there",
+    });
+
+    expect(readBackendInfo).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('uses the boot token for shutdown authorization', async () => {

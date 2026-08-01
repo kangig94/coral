@@ -49,6 +49,31 @@ export type IpcClient = {
   shutdown<TResult>(options?: IpcRequestOptions): Promise<TResult>;
 };
 
+/**
+ * A structured JSON-RPC rejection returned by the Coral coordinator. The
+ * numeric JSON-RPC code remains available as `rpcCode`; when the response data
+ * carries a public Coral code, `code` preserves it for CLI error rendering.
+ */
+export class IpcRpcError extends Error {
+  readonly rpcCode: number;
+  readonly data: unknown;
+  readonly code: string | undefined;
+
+  constructor(error: Extract<JsonRpcEnvelope, { kind: 'error' }>['error']) {
+    super(error.message, error.data === undefined ? undefined : { cause: error.data });
+    this.name = 'IpcRpcError';
+    this.rpcCode = error.code;
+    this.data = error.data;
+    this.code =
+      typeof error.data === 'object' &&
+      error.data !== null &&
+      'code' in error.data &&
+      typeof error.data.code === 'string'
+        ? error.data.code
+        : undefined;
+  }
+}
+
 let nextRequestId = 1;
 
 function setupError(socketPath: string, error: unknown): CoralSetupError {
@@ -142,6 +167,10 @@ function buildIpcError(message: string, data?: unknown): Error {
   return data === undefined ? new Error(message) : new Error(message, { cause: data });
 }
 
+function buildIpcRpcError(error: Extract<JsonRpcEnvelope, { kind: 'error' }>['error']): IpcRpcError {
+  return new IpcRpcError(error);
+}
+
 function isSubscriptionAck(value: unknown, method: string): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return false;
@@ -219,7 +248,7 @@ export async function requestIpcMethod<TResult>(
           if (envelope.id !== requestId) {
             continue;
           }
-          finish(() => reject(new Error(envelope.error.message, { cause: envelope.error.data })));
+          finish(() => reject(buildIpcRpcError(envelope.error)));
           return;
         }
 
@@ -408,7 +437,7 @@ export async function subscribeIpcMethod<TResult>(
         if (envelope.id !== requestId) {
           continue;
         }
-        fail(buildIpcError(envelope.error.message, envelope.error.data));
+        fail(buildIpcRpcError(envelope.error));
         socket.destroy();
         return;
       }

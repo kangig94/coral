@@ -5,6 +5,9 @@ import { installErrorSchema, type InstallError } from '../../expansion/rpc-contr
 import { kbCapabilityNameSchema } from '../../kb/capability/contract.js';
 import { isRecord } from '../../infra/json.js';
 import { documentedCoralSetupError, serializeCoralSetupError } from '../../runtime/errors.js';
+import { ChildPrincipalBindingError } from '../../transport/ipc/child-principal-auth.js';
+import { IpcRpcError } from '../../transport/ipc/client.js';
+import { buildErrorEnvelope } from '../errors.js';
 import { readDefaultExpansionCatalog } from './catalog.js';
 
 export const expansionArgsSchema = z
@@ -17,6 +20,7 @@ export type ExpansionArgs = z.infer<typeof expansionArgsSchema>;
 const INVALID_USAGE_REMEDIATION = "Retry with valid expansion command arguments or run 'coral-cli expansion --help'.";
 const UNKNOWN_ERROR_REMEDIATION =
   'Retry once, then report the full JSON error and check the coordinator logs if it persists.';
+const CHILD_AUTHORIZATION_REMEDIATION = 'Return to the top-level Coral session and run this expansion command there.';
 const CATALOG_UNAVAILABLE_MESSAGE = /unable to open database file/i;
 
 function nextCause(error: unknown): unknown {
@@ -135,7 +139,29 @@ function isUserInputError(error: unknown): error is Error & { cause: ZodError } 
   return error instanceof Error && error.name === 'UserInputError' && error.cause instanceof ZodError;
 }
 
+function cliBoundaryInstallError(error: unknown): InstallError | null {
+  if (!(error instanceof ChildPrincipalBindingError) && !(error instanceof IpcRpcError)) {
+    return null;
+  }
+
+  const { envelope } = buildErrorEnvelope(error);
+  return finalizeInstallError({
+    status: 'error',
+    code: envelope.code,
+    userMessage: envelope.message,
+    remediation:
+      envelope.remediation ??
+      (envelope.code === 'missing_capability' ? CHILD_AUTHORIZATION_REMEDIATION : UNKNOWN_ERROR_REMEDIATION),
+    ...(isRecord(envelope.detail) ? { context: envelope.detail } : {}),
+  });
+}
+
 export function encodeInstallError(err: unknown): InstallError {
+  const cliBoundary = cliBoundaryInstallError(err);
+  if (cliBoundary !== null) {
+    return cliBoundary;
+  }
+
   const structured = findStructuredSetupError(err);
   if (structured !== null) {
     const bindingRequired = bindingRequiredInstallError(structured);

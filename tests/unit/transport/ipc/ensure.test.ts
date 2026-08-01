@@ -32,6 +32,7 @@ const mockState = vi.hoisted(() => ({
   health: vi.fn<(socketPath: string, options?: unknown) => Promise<unknown>>(),
   shutdown: vi.fn<(socketPath: string, options?: unknown) => Promise<unknown>>(),
   bindSocket: vi.fn<() => Promise<{ kind: 'bound' } | { kind: 'incumbent'; reason: string }>>(),
+  createdClients: [] as Array<{ socketPath: string; auth: unknown }>,
   home: '',
   platform: process.platform,
 }));
@@ -50,13 +51,16 @@ vi.mock('node:os', async () => {
 });
 
 vi.mock('#src/transport/ipc/client.js', () => ({
-  createIpcClient: (socketPath: string) => ({
-    socketPath,
-    request: vi.fn(),
-    ping: (options?: unknown) => mockState.health(socketPath, options),
-    health: (options?: unknown) => mockState.health(socketPath, options),
-    shutdown: (options?: unknown) => mockState.shutdown(socketPath, options),
-  }),
+  createIpcClient: (socketPath: string, _time?: unknown, auth?: unknown) => {
+    mockState.createdClients.push({ socketPath, auth });
+    return {
+      socketPath,
+      request: vi.fn(),
+      ping: (options?: unknown) => mockState.health(socketPath, options),
+      health: (options?: unknown) => mockState.health(socketPath, options),
+      shutdown: (options?: unknown) => mockState.shutdown(socketPath, options),
+    };
+  },
 }));
 
 // Stub bindSocket so probeSocketReleased's behavior is deterministic without
@@ -141,6 +145,13 @@ function createErrnoError(code: string): NodeJS.ErrnoException {
   return error;
 }
 
+function setCompleteChildEnv(): void {
+  process.env.CORAL_CHILD = '1';
+  process.env.CORAL_CHILD_PRINCIPAL_HANDLE = 'child-handle';
+  process.env.CORAL_JOB_ID = 'parent-job';
+  process.env.CORAL_SESSION_ID = 'parent-session';
+}
+
 async function importEnsure() {
   vi.resetModules();
   return await import('#src/transport/ipc/ensure.js');
@@ -151,9 +162,12 @@ async function importEnsure() {
 // coordinatorPaths(flavor) with no slot, so an ambient CLAUDE_CONFIG_DIR would
 // make ensure() read a partitioned path that never matches the seeded discovery.
 const savedClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+const childEnvKeys = ['CORAL_CHILD', 'CORAL_CHILD_PRINCIPAL_HANDLE', 'CORAL_JOB_ID', 'CORAL_SESSION_ID'] as const;
+const savedChildEnv = new Map(childEnvKeys.map((key) => [key, process.env[key]]));
 
 beforeEach(() => {
   delete process.env.CLAUDE_CONFIG_DIR;
+  for (const key of childEnvKeys) delete process.env[key];
 });
 
 afterEach(() => {
@@ -171,6 +185,12 @@ afterEach(() => {
   mockState.shutdown.mockReset();
   mockState.bindSocket.mockReset();
   mockState.bindSocket.mockResolvedValue({ kind: 'bound' });
+  mockState.createdClients.length = 0;
+  for (const key of childEnvKeys) {
+    const value = savedChildEnv.get(key);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -200,6 +220,306 @@ describe('ipc ensure', () => {
     expect(ensured.instanceId).toBe('existing-coordinator');
     expect(mockState.spawn).not.toHaveBeenCalled();
     expect(mockState.shutdown).not.toHaveBeenCalled();
+    expect(mockState.createdClients).toContainEqual({
+      socketPath: socketPath(root),
+      auth: { kind: 'boot', token: 'test-boot-token' },
+    });
+  });
+
+  describe('child existing-only lifecycle', () => {
+    it('reuses a mismatched incumbent without boot auth, shutdown, release probing, or spawn', async () => {
+      makeHome();
+      const root = createPluginRoot();
+      setCompleteChildEnv();
+      writeDiscovery(root, {
+        bundleHash: 'parent-hash',
+        instanceId: 'parent-coordinator',
+      });
+      mockState.health.mockResolvedValue({
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'parent-hash',
+        flavor: 'prod',
+        instanceId: 'parent-coordinator',
+        namespace: pluginRootNamespace(root),
+      });
+
+      const { ensure } = await importEnsure();
+      const ensured = await ensure(root);
+
+      expect(ensured.instanceId).toBe('parent-coordinator');
+      expect(ensured.bundleHash).toBe('parent-hash');
+      expect(ensured).not.toHaveProperty('token');
+      expect(mockState.createdClients.every(({ auth }) => auth === undefined)).toBe(true);
+      expect(mockState.shutdown).not.toHaveBeenCalled();
+      expect(mockState.bindSocket).not.toHaveBeenCalled();
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    });
+
+    it('fails without creating lifecycle state when the parent is unreachable', async () => {
+      makeHome();
+      const root = createPluginRoot();
+      process.env.CORAL_CHILD = '1';
+      mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+
+      const { ensure } = await importEnsure();
+
+      await expect(ensure(root)).rejects.toThrow(
+        'Nested Coral command stopped because its parent coordinator is unreachable',
+      );
+      expect(existsSync(discoveryPath(root))).toBe(false);
+      expect(mockState.shutdown).not.toHaveBeenCalled();
+      expect(mockState.bindSocket).not.toHaveBeenCalled();
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    });
+
+    it('does not wait for release or spawn when the parent is draining', async () => {
+      makeHome();
+      const root = createPluginRoot();
+      setCompleteChildEnv();
+      writeDiscovery(root, { instanceId: 'parent-coordinator' });
+      mockState.health.mockResolvedValue({
+        status: 'draining',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'parent-coordinator',
+        namespace: pluginRootNamespace(root),
+      });
+
+      const { ensure } = await importEnsure();
+
+      await expect(ensure(root)).rejects.toThrow('parent coordinator is draining');
+      expect(mockState.shutdown).not.toHaveBeenCalled();
+      expect(mockState.bindSocket).not.toHaveBeenCalled();
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    });
+
+    it('rejects lazy restart before shutdown or release probing', async () => {
+      makeHome();
+      const root = createPluginRoot();
+      setCompleteChildEnv();
+
+      const { shutdownAndAwaitRelease } = await importEnsure();
+
+      await expect(shutdownAndAwaitRelease(root)).rejects.toThrow('not allowed to restart its parent coordinator');
+      expect(mockState.shutdown).not.toHaveBeenCalled();
+      expect(mockState.bindSocket).not.toHaveBeenCalled();
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    });
+
+    it('waits for the same starting parent to become ready with matching process identity', async () => {
+      makeHome();
+      vi.useFakeTimers();
+      const root = createPluginRoot();
+      setCompleteChildEnv();
+      const identity = {
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod' as const,
+        instanceId: 'parent-coordinator',
+        namespace: pluginRootNamespace(root),
+        pid: 4_201,
+        processStartedAt: 1_000,
+      };
+      mockState.health
+        .mockResolvedValueOnce({ status: 'starting', ...identity })
+        .mockResolvedValue({ status: 'ok', ...identity });
+      setTimeout(
+        () =>
+          writeDiscovery(root, {
+            instanceId: identity.instanceId,
+            pid: identity.pid,
+            processStartedAt: identity.processStartedAt,
+          }),
+        100,
+      );
+
+      const { ensure } = await importEnsure();
+      const result = ensure(root);
+      await vi.advanceTimersByTimeAsync(400);
+      const ensured = await result;
+
+      expect(ensured.instanceId).toBe(identity.instanceId);
+      expect(ensured).not.toHaveProperty('token');
+      expect(mockState.createdClients.every(({ auth }) => auth === undefined)).toBe(true);
+      expect(mockState.shutdown).not.toHaveBeenCalled();
+      expect(mockState.bindSocket).not.toHaveBeenCalled();
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    });
+
+    it('rejects a PID change while waiting for the observed parent', async () => {
+      makeHome();
+      vi.useFakeTimers();
+      const root = createPluginRoot();
+      setCompleteChildEnv();
+      writeDiscovery(root, {
+        instanceId: 'parent-coordinator',
+        pid: 4_201,
+        processStartedAt: 1_000,
+      });
+      const identity = {
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod' as const,
+        instanceId: 'parent-coordinator',
+        namespace: pluginRootNamespace(root),
+        processStartedAt: 1_000,
+      };
+      mockState.health
+        .mockResolvedValueOnce({ status: 'starting', ...identity, pid: 4_201 })
+        .mockResolvedValue({ status: 'ok', ...identity, pid: 4_202 });
+
+      const { ensure } = await importEnsure();
+      const result = ensure(root).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(400);
+      const error = await result;
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('coordinator identity changed');
+      expect(mockState.shutdown).not.toHaveBeenCalled();
+      expect(mockState.bindSocket).not.toHaveBeenCalled();
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    });
+
+    it('rejects discovery with a different process start time', async () => {
+      makeHome();
+      const root = createPluginRoot();
+      setCompleteChildEnv();
+      writeDiscovery(root, {
+        instanceId: 'parent-coordinator',
+        pid: 4_201,
+        processStartedAt: 2_000,
+      });
+      mockState.health.mockResolvedValue({
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'parent-coordinator',
+        namespace: pluginRootNamespace(root),
+        pid: 4_201,
+        processStartedAt: 1_000,
+      });
+
+      const { ensure } = await importEnsure();
+
+      await expect(ensure(root)).rejects.toThrow('discovery does not match the observed parent');
+      expect(mockState.shutdown).not.toHaveBeenCalled();
+      expect(mockState.bindSocket).not.toHaveBeenCalled();
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    });
+
+    it('rejects discovery that points at a different coordinator socket', async () => {
+      makeHome();
+      const root = createPluginRoot();
+      setCompleteChildEnv();
+      writeDiscovery(root, {
+        instanceId: 'parent-coordinator',
+        socketPath: join(root, 'unrelated-coordinator.sock'),
+      });
+      mockState.health.mockResolvedValue({
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'parent-coordinator',
+        namespace: pluginRootNamespace(root),
+      });
+
+      const { ensure } = await importEnsure();
+
+      await expect(ensure(root)).rejects.toThrow('discovery does not match the observed parent');
+      expect(mockState.shutdown).not.toHaveBeenCalled();
+      expect(mockState.bindSocket).not.toHaveBeenCalled();
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    });
+
+    it('pins a starting child connection to the first observed coordinator instance', async () => {
+      makeHome();
+      vi.useFakeTimers();
+      const root = createPluginRoot();
+      setCompleteChildEnv();
+      mockState.health
+        .mockResolvedValueOnce({
+          status: 'starting',
+          version: '0.5.2',
+          bundleHash: 'test-hash',
+          flavor: 'prod',
+          instanceId: 'parent-coordinator',
+          namespace: pluginRootNamespace(root),
+        })
+        .mockResolvedValue({
+          status: 'ok',
+          version: '0.5.2',
+          bundleHash: 'test-hash',
+          flavor: 'prod',
+          instanceId: 'replacement-coordinator',
+          namespace: pluginRootNamespace(root),
+        });
+      setTimeout(() => writeDiscovery(root, { instanceId: 'replacement-coordinator' }), 100);
+
+      const { ensure } = await importEnsure();
+      const ensured = ensure(root);
+      const result = ensured.catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(400);
+      const error = await result;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('coordinator identity changed');
+
+      expect(mockState.shutdown).not.toHaveBeenCalled();
+      expect(mockState.bindSocket).not.toHaveBeenCalled();
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    });
+
+    it('rejects stale discovery even when health is ready', async () => {
+      makeHome();
+      const root = createPluginRoot();
+      setCompleteChildEnv();
+      writeDiscovery(root, { instanceId: 'stale-coordinator' });
+      mockState.health.mockResolvedValue({
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'parent-coordinator',
+        namespace: pluginRootNamespace(root),
+      });
+
+      const { ensure } = await importEnsure();
+
+      await expect(ensure(root)).rejects.toThrow('discovery does not match the observed parent');
+      expect(mockState.shutdown).not.toHaveBeenCalled();
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    });
+
+    it('leaves a startup sentinel untouched while waiting for its exact parent', async () => {
+      makeHome();
+      vi.useFakeTimers();
+      const root = createPluginRoot();
+      setCompleteChildEnv();
+      const paths = coordinatorPaths('prod');
+      mkdirSync(paths.runDir, { recursive: true });
+      writeFileSync(paths.startupErrorFile, '{"dead":"sentinel"}\n', 'utf-8');
+      mockState.health.mockResolvedValue({
+        status: 'starting',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'parent-coordinator',
+        namespace: pluginRootNamespace(root),
+      });
+
+      const { ensure, KERNEL_READY_DEADLINE_MS, STARTUP_POLL_MS } = await importEnsure();
+      const result = ensure(root).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(KERNEL_READY_DEADLINE_MS + STARTUP_POLL_MS);
+      const error = await result;
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('timed out waiting for the observed parent');
+      expect(readFileSync(paths.startupErrorFile, 'utf-8')).toBe('{"dead":"sentinel"}\n');
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    });
   });
 
   it('treats same-bundle older-version incumbent as incompatible and spawns fresh', async () => {

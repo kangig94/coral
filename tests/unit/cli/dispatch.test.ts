@@ -330,6 +330,25 @@ describe('command client routing', () => {
     expect(ensure).not.toHaveBeenCalled();
   });
 
+  it('rejects incomplete child auth before ensure or lazy KB lifecycle reconciliation', async () => {
+    vi.stubEnv('CORAL_CHILD', '1');
+    vi.stubEnv('CORAL_CHILD_PRINCIPAL_HANDLE', '');
+    vi.stubEnv('CORAL_JOB_ID', 'parent-job');
+    vi.stubEnv('CORAL_SESSION_ID', 'parent-session');
+    vi.stubEnv('CORAL_KB_ENABLE', '1');
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'kb', 'reindex'));
+
+    await expect(client.kbSearch({ query: 'child query' })).rejects.toThrow(
+      'This nested Coral command has incomplete child credentials and was not sent',
+    );
+
+    expect(ensure).not.toHaveBeenCalled();
+    expect(mockState.health).not.toHaveBeenCalled();
+    expect(mockState.shutdownAndAwaitRelease).not.toHaveBeenCalled();
+    expect(mockState.request).not.toHaveBeenCalled();
+  });
+
   it('forwards kb search mode through transport dispatchers', async () => {
     mockState.request.mockResolvedValueOnce({ results: [], mode: 'vector' });
     const program = buildProgram();

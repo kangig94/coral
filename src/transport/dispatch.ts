@@ -230,14 +230,19 @@ function requiredCapability(spec: RpcMethodSpec<unknown, unknown>): Capability |
   return isCapability(requires) ? requires : null;
 }
 
-function authorizationFailure(decision: Extract<Decision, { ok: false }>): CatalogRequestExecution {
+function authorizationFailure(
+  decision: Extract<Decision, { ok: false }>,
+  principal: Principal,
+): CatalogRequestExecution {
   const statusCode = decision.reason === 'resource_unbound' ? 403 : 401;
   const code = decision.reason === 'resource_unbound' ? 'scope_mismatch' : decision.reason;
   const message =
     decision.reason === 'unauthenticated'
       ? 'Authentication required'
       : decision.reason === 'missing_capability'
-        ? 'Missing required capability'
+        ? principal.credential.kind === 'child-principal'
+          ? 'This nested Coral session cannot perform this command. Ask the top-level Coral session to run it.'
+          : 'Missing required capability'
         : 'Principal is not bound to the requested resource';
 
   return unary({ code, message, detail: decision.detail }, statusCode);
@@ -265,7 +270,7 @@ export async function executeCatalogRequest(
   const authz = authorize(principal, requires, requestedBinding);
   writeAuthorizationDecisionAudit(principal, spec.name, authz, requestedBinding);
   if (!authz.ok) {
-    return authorizationFailure(authz);
+    return authorizationFailure(authz, principal);
   }
 
   switch (spec.name) {

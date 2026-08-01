@@ -267,6 +267,17 @@ describe('cli follow', () => {
     vi.unstubAllEnvs();
   });
 
+  it('rejects incomplete child credentials before coordinator ensure', async () => {
+    vi.stubEnv('CORAL_CHILD', '1');
+    const { launchAndFollow } = await loadFollowModule();
+
+    await expect(launchAndFollow(makeOptions())).rejects.toThrow(
+      'This nested Coral command has incomplete child credentials and was not sent.',
+    );
+    expect(mockState.ensure).not.toHaveBeenCalled();
+    expect(stdout).toBe('');
+  });
+
   it('writes launch output and a path-first terminal summary in text mode', async () => {
     const { launchAndFollow } = await loadFollowModule();
     const backend = makeBackend();
