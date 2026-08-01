@@ -11,13 +11,16 @@ import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import { adoptLegacyStoreLocal } from '../store-adopt.js';
 import {
   boundStoreResetCliError,
+  discardStoreResetLocal,
   listStoreResetIncidentsLocal,
   reportStoreResetIncidentLocal,
+  type StoreResetTarget,
 } from '../store-reset.js';
 
 export interface StoreResetCommandOperations {
-  list(): ReturnType<typeof listStoreResetIncidentsLocal>;
-  report(incidentId: string): ReturnType<typeof reportStoreResetIncidentLocal>;
+  list(target: StoreResetTarget): ReturnType<typeof listStoreResetIncidentsLocal>;
+  report(target: StoreResetTarget, incidentId: string): ReturnType<typeof reportStoreResetIncidentLocal>;
+  discard(target: StoreResetTarget, flavor: BuildFlavor): ReturnType<typeof discardStoreResetLocal>;
 }
 
 export interface KbCommitCommandOperations {
@@ -36,6 +39,7 @@ export function registerBackendCommands(
   storeReset: StoreResetCommandOperations = {
     list: listStoreResetIncidentsLocal,
     report: reportStoreResetIncidentLocal,
+    discard: discardStoreResetLocal,
   },
   kbCommit: KbCommitCommandOperations = {
     quarantine: quarantineKbCommitLocal,
@@ -99,9 +103,10 @@ export function registerBackendCommands(
   storeResetCommand
     .command('list')
     .description('List retained store-reset incidents and reportability')
-    .action(() => {
+    .requiredOption('--target <target>', 'Store generation to inspect (legacy or gen2)', parseStoreResetTarget)
+    .action((options: { target: StoreResetTarget }) => {
       try {
-        process.stdout.write(`${formatStoreResetList(storeReset.list())}\n`);
+        process.stdout.write(`${formatStoreResetList(storeReset.list(options.target), options.target)}\n`);
       } catch (error: unknown) {
         emitError(boundStoreResetCliError(error));
       }
@@ -110,11 +115,32 @@ export function registerBackendCommands(
     .command('report')
     .description('Generate a public-safe store-reset incident report')
     .argument('<incident-id>', 'Canonical lowercase UUID shown by backend store-reset list')
-    .action(async (incidentId: string) => {
+    .requiredOption('--target <target>', 'Store generation to inspect (legacy or gen2)', parseStoreResetTarget)
+    .action(async (incidentId: string, options: { target: StoreResetTarget }) => {
       try {
-        process.stdout.write(formatStoreResetReport(await storeReset.report(incidentId)));
+        process.stdout.write(formatStoreResetReport(await storeReset.report(options.target, incidentId)));
       } catch (error: unknown) {
         emitError(boundStoreResetCliError(error));
+      }
+    });
+  storeResetCommand
+    .command('discard')
+    .description('Quarantine and replace an incompatible generated store under explicit operator control')
+    .requiredOption('--target <target>', 'Store generation to discard (legacy or gen2)', parseStoreResetTarget)
+    .requiredOption('--flavor <flavor>', 'Store flavor (prod or dev)', parseFlavor)
+    .action(async (options: { target: StoreResetTarget; flavor: BuildFlavor }) => {
+      try {
+        const result = await storeReset.discard(options.target, options.flavor);
+        if (result.incident === null) {
+          process.stdout.write(`Initialized ${result.target} ${result.flavor} store at ${result.storeDbPath}.\n`);
+          return;
+        }
+        const action = result.resumed ? 'Resumed' : 'Quarantined';
+        process.stdout.write(
+          `${action} store-reset incident '${result.incident.incidentId}' and initialized ${result.target} ${result.flavor} store at ${result.storeDbPath}.\n`,
+        );
+      } catch (error: unknown) {
+        emitError(error);
       }
     });
 
@@ -137,4 +163,9 @@ export function registerBackendCommands(
 function parseFlavor(value: string): BuildFlavor {
   if (value === 'prod' || value === 'dev') return value;
   throw new InvalidArgumentError("Flavor must be 'prod' or 'dev'.");
+}
+
+function parseStoreResetTarget(value: string): StoreResetTarget {
+  if (value === 'legacy' || value === 'gen2') return value;
+  throw new InvalidArgumentError("Target must be 'legacy' or 'gen2'.");
 }

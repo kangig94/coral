@@ -49,6 +49,11 @@ export interface GenerationMaintenanceLease {
   release(): void;
 }
 
+export interface GenerationAdoptionLease {
+  assertOwned(): void;
+  release(): void;
+}
+
 const GENERATION_COORDINATION_TIMEOUT_MS = 5_000;
 const GENERATION_COORDINATION_STALE_MS = 10 * 60 * 1_000;
 const GENERATION_COORDINATION_HEARTBEAT_MS = 10 * 1_000;
@@ -123,6 +128,21 @@ async function acquireAdoptionLock(runtime: Runtime, paths: GenerationBoundaryPa
   return acquireDirectoryLock(paths.adoptionLock, directoryLockDeps(runtime), GENERATION_COORDINATION_TIMEOUT_MS);
 }
 
+export async function acquireGenerationAdoptionLease(runtime: Runtime): Promise<GenerationAdoptionLease> {
+  const paths = resolveGenerationBoundaryPaths(runtime);
+  const releaseAdoption = await acquireAdoptionLock(runtime, paths);
+  try {
+    inspectGenerationReadiness(runtime);
+  } catch (error) {
+    releaseAdoption();
+    throw error;
+  }
+  return {
+    assertOwned: releaseAdoption.assertOwned,
+    release: releaseAdoption,
+  };
+}
+
 function writerLeaseName(runtime: Runtime, mutation: { readonly kind: GenerationMutationKind; readonly name: string }) {
   return `${runtime.env.pid()}-${mutation.kind}-${encodeURIComponent(mutation.name)}.lease-${runtime.ids.uuid()}.lock`;
 }
@@ -177,15 +197,7 @@ function quiescenceError(runtime: Pick<Runtime, 'flavor'>, holder: string): Erro
 
 export const generationMutationCoordinationSeam: GenerationMutationCoordination = {
   async completeReadiness(runtime) {
-    const paths = resolveGenerationBoundaryPaths(runtime);
-    const releaseAdoption = await acquireAdoptionLock(runtime, paths);
-    try {
-      inspectGenerationReadiness(runtime);
-    } catch (error) {
-      releaseAdoption();
-      throw error;
-    }
-    return { release: releaseAdoption };
+    return acquireGenerationAdoptionLease(runtime);
   },
   async acquireWriterLease(runtime, mutation) {
     const paths = resolveGenerationBoundaryPaths(runtime);

@@ -308,7 +308,6 @@ describe('store reset discipline invariants', () => {
 
   it('keeps every store-reset support import closure outside reset authority and generic DB openers', () => {
     const supportRoots = [
-      'src/cli/store-reset.ts',
       'src/cli/format/store-reset.ts',
       'src/store/reset-incident-reader.ts',
       'src/store/reset-incident-diagnostic.ts',
@@ -317,20 +316,21 @@ describe('store reset discipline invariants', () => {
       'src/infra/store-reset-diagnostic-supervisor.ts',
     ];
     const supportClosure = importClosure(supportRoots);
-    const cliClosure = importClosure(['src/cli/bootstrap.ts']);
-
     expect(supportClosure.has(BACKEND_STORE_RESET_PATH)).toBe(false);
     expect(supportClosure.has('src/store/db.ts')).toBe(false);
-    expect(cliClosure.has(BACKEND_STORE_RESET_PATH)).toBe(false);
   });
 
-  it('keeps lifecycle as the sole production importer of the backend reset boundary', () => {
+  it('keeps backend reset access limited to lifecycle opening and the explicit operator service', () => {
     const importers = allSourcePaths()
       .filter((path) => sourceImports(path).includes(BACKEND_STORE_RESET_PATH))
       .sort();
-    expect(importers).toEqual(['src/coordinator/lifecycle.ts']);
+    expect(importers).toEqual(['src/cli/store-reset.ts', 'src/coordinator/lifecycle.ts']);
 
-    const symbolAllowlist = new Set([BACKEND_STORE_RESET_PATH, 'src/coordinator/lifecycle.ts']);
+    const symbolAllowlist = new Set([
+      BACKEND_STORE_RESET_PATH,
+      'src/cli/store-reset.ts',
+      'src/coordinator/lifecycle.ts',
+    ]);
     const forbiddenReferences = allSourcePaths()
       .filter((path) => !symbolAllowlist.has(path))
       .flatMap((path) => {
@@ -338,5 +338,44 @@ describe('store reset discipline invariants', () => {
         return /createBackendStoreResetAuthority|openOrResetBackendStoreDb|publishIncident/u.test(source) ? [path] : [];
       });
     expect(forbiddenReferences).toEqual([]);
+  });
+
+  it('keeps quarantine resume and publish reachable only through the direct-filesystem operator service', () => {
+    const operatorPath = 'src/cli/store-reset.ts';
+    const operatorSource = sourceFile(operatorPath);
+    const topLevel = findFunction(operatorPath, 'discardStoreReset').body?.getText(operatorSource) ?? '';
+    const generated = findFunction(operatorPath, 'discardGeneratedStore').body?.getText(operatorSource) ?? '';
+    const socketIndex = topLevel.indexOf('acquireSocketGuard ?? acquireStoreResetSocketGuard');
+    const legacyRefusalIndex = topLevel.indexOf("options.target === 'legacy'");
+    const generatedIndex = topLevel.indexOf('discardGeneratedStore(');
+    const adoptionIndex = generated.indexOf('acquireGenerationAdoptionLease(');
+    const maintenanceIndex = generated.indexOf('acquireGenerationMaintenanceLease(');
+    const resetLockIndex = generated.indexOf('acquireStoreResetLock(');
+    const resumeIndex = generated.indexOf('resumeInterruptedBackendStoreResetIncident(');
+    const publishIndex = generated.indexOf('publishBackendStoreResetIncident(');
+
+    expect(socketIndex).toBeGreaterThanOrEqual(0);
+    expect(legacyRefusalIndex).toBeGreaterThan(socketIndex);
+    expect(generatedIndex).toBeGreaterThan(legacyRefusalIndex);
+    expect(adoptionIndex).toBeGreaterThanOrEqual(0);
+    expect(maintenanceIndex).toBeGreaterThan(adoptionIndex);
+    expect(resetLockIndex).toBeGreaterThan(maintenanceIndex);
+    expect(resumeIndex).toBeGreaterThan(resetLockIndex);
+    expect(publishIndex).toBeGreaterThan(resumeIndex);
+    expect(readFileSync(join(REPO_ROOT, operatorPath), 'utf8')).not.toMatch(/shutdownAndAwaitRelease/u);
+    expect(readFileSync(join(REPO_ROOT, operatorPath), 'utf8')).toContain(
+      'Documented exception to the CLI policy that mutating commands go through',
+    );
+
+    const destructiveCallers = allSourcePaths()
+      .flatMap((path) =>
+        collectCalls(path)
+          .filter((call) =>
+            ['publishBackendStoreResetIncident', 'resumeInterruptedBackendStoreResetIncident'].includes(call.callee),
+          )
+          .map((call) => call.relativePath),
+      )
+      .sort();
+    expect(destructiveCallers).toEqual([operatorPath, operatorPath]);
   });
 });

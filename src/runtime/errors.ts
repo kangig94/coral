@@ -133,15 +133,24 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
   legacy_foreign_generation: {
     userMessage: (context) =>
-      `The legacy Coral tree at ${stringContextValue(context, 'legacyPath', '<legacy-path>')} belongs to Coral ${stringContextValue(context, 'version', '<legacy-version>')} and cannot be adopted by this build.`,
+      context?.operation === 'discard'
+        ? `Coral cannot safely discard the foreign-generation tree at ${stringContextValue(context, 'legacyPath', '<legacy-path>')}.`
+        : `The legacy Coral tree at ${stringContextValue(context, 'legacyPath', '<legacy-path>')} belongs to Coral ${stringContextValue(context, 'version', '<legacy-version>')} and cannot be adopted by this build.`,
     remediation: (context) =>
-      `Continue using Coral ${stringContextValue(context, 'version', '<legacy-version>')} to read the history at ${stringContextValue(context, 'legacyPath', '<legacy-path>')}. This build leaves that foreign-generation tree untouched.`,
+      context?.operation === 'discard'
+        ? `Stop using Coral ${stringContextValue(context, 'version', '<legacy-version>')} and close every older-version session that may use ${stringContextValue(context, 'legacyPath', '<legacy-path>')}; then remove that tree yourself. This command refused without changing it. Active baseDir: ${stringContextValue(context, 'baseDir', '<base-dir>')}.`
+        : `Continue using Coral ${stringContextValue(context, 'version', '<legacy-version>')} to read the history at ${stringContextValue(context, 'legacyPath', '<legacy-path>')}. This build leaves that foreign-generation tree untouched.`,
   },
   legacy_source_not_quiescent: {
     userMessage: (context) =>
       `The current-generation adoption source still has an active writer lease held by ${stringContextValue(context, 'holder', '<writer-lease-holder>')}.`,
-    remediation: (context) =>
-      `Run this build's own 'coral-cli backend shutdown'. Wait for current-generation writer-lease holder '${stringContextValue(context, 'holder', '<writer-lease-holder>')}' to exit and release its lease, then retry 'coral-cli backend store-adopt --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}'.`,
+    remediation: (context) => {
+      const retry =
+        context?.operation === 'store-reset'
+          ? `coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}`
+          : `coral-cli backend store-adopt --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}`;
+      return `Run this build's own 'coral-cli backend shutdown'. Wait for current-generation writer-lease holder '${stringContextValue(context, 'holder', '<writer-lease-holder>')}' to exit and release its lease, then retry '${retry}'.`;
+    },
   },
   store_newer_incompatible: {
     userMessage: (context) =>
@@ -181,9 +190,14 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     },
   },
   store_reset_lock_contended: {
-    userMessage: 'Another Coral process is initializing the backend store.',
-    remediation:
-      'Retry shortly. If this persists after 30 seconds, stop the other Coral process or remove the stale store.db.reset.lock directory.',
+    userMessage: (context) =>
+      context?.holder === undefined
+        ? 'Another Coral process is initializing the backend store.'
+        : `Store reset refused because the ${stringContextValue(context, 'holder', 'target coordinator socket')} is already owned.`,
+    remediation: (context) =>
+      context?.holder === undefined
+        ? 'Retry shortly. If this persists after 30 seconds, stop the other Coral process or remove the stale store.db.reset.lock directory.'
+        : `Stop the ${stringContextValue(context, 'target', '<legacy|gen2>')} ${stringContextValue(context, 'flavor', '<prod|dev>')} coordinator rooted at ${stringContextValue(context, 'baseDir', '<base-dir>')}, then retry. The discard command never shuts down an incumbent daemon.`,
   },
   store_reset_quarantine_failed: {
     userMessage: (context) =>

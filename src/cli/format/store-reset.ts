@@ -43,7 +43,7 @@ export function formatStoreResetReport(report: StoreResetPublicReport): string {
   return lines.join('\n');
 }
 
-export function formatStoreResetList(result: StoreResetIncidentListResult): string {
+export function formatStoreResetList(result: StoreResetIncidentListResult, target: 'legacy' | 'gen2'): string {
   if (result.incidents.length === 0) {
     return [
       'No store-reset incidents.',
@@ -60,7 +60,7 @@ export function formatStoreResetList(result: StoreResetIncidentListResult): stri
     ),
     '',
     'States: ready produces a Markdown report; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.',
-    'Next: coral-cli backend store-reset report <ready-incident-id>',
+    `Next: coral-cli backend store-reset report --target ${target} <ready-incident-id>`,
     'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.',
     'Non-ready evidence remains retained. Do not move, restore, delete, or upload DB, WAL, or SHM files.',
   ].join('\n');

@@ -27,7 +27,7 @@ const PATH_CASES = [
 const LEGACY_BASE_SEGMENTS = new Set(['data', 'data-dev', 'run', 'run-dev']);
 // AC5's legacy-adoption module and AC10's explicitly targeted reset/inspection
 // authorities may be added here only once they actually resolve legacy roots.
-const LEGACY_BASE_CONSUMER_ALLOWLIST = new Set<string>();
+const LEGACY_BASE_CONSUMER_ALLOWLIST = new Set(['src/cli/store-reset.ts']);
 
 function staticPathSegments(expression: ts.Expression, bindings: ReadonlyMap<string, readonly string[]>): string[] {
   if (ts.isStringLiteralLike(expression)) return [expression.text];

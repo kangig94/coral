@@ -68,6 +68,36 @@ describe('CoralSetupError', () => {
       "This build cannot read this store's format. To deliberately destroy its history, run 'coral-cli backend store-reset discard --target gen2 --flavor dev'; this build can then initialize an empty store.",
     ],
     [
+      'legacy_foreign_generation',
+      {
+        operation: 'discard',
+        legacyPath: '/state/data',
+        version: '0.9.x',
+        flavor: 'prod',
+        baseDir: '/state',
+      },
+      'Coral cannot safely discard the foreign-generation tree at /state/data.',
+      'Stop using Coral 0.9.x and close every older-version session that may use /state/data; then remove that tree yourself. This command refused without changing it. Active baseDir: /state.',
+    ],
+    [
+      'legacy_source_not_quiescent',
+      { operation: 'store-reset', holder: 'install:kiwi (pid 42)', flavor: 'prod', baseDir: '/state' },
+      'The current-generation adoption source still has an active writer lease held by install:kiwi (pid 42).',
+      "Run this build's own 'coral-cli backend shutdown'. Wait for current-generation writer-lease holder 'install:kiwi (pid 42)' to exit and release its lease, then retry 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
+    ],
+    [
+      'store_reset_lock_contended',
+      {
+        holder: 'gen2 coordinator socket',
+        socketPath: '/state/gen2/run/coordinator.sock',
+        target: 'gen2',
+        flavor: 'prod',
+        baseDir: '/state',
+      },
+      'Store reset refused because the gen2 coordinator socket is already owned.',
+      'Stop the gen2 prod coordinator rooted at /state, then retry. The discard command never shuts down an incumbent daemon.',
+    ],
+    [
       'expansion_binary_corrupt',
       { name: 'vector' },
       'The installed binary for vector could not be activated.',

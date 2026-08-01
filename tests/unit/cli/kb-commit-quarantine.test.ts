@@ -12,6 +12,9 @@ const storeReset: StoreResetCommandOperations = {
   report: async () => {
     throw new Error('not used');
   },
+  discard: async () => {
+    throw new Error('not used');
+  },
 };
 
 let stdout = '';

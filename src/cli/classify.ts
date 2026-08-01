@@ -120,6 +120,7 @@ export const commandClassExemptions = {
   'backend kb-commit quarantine': 'operator-only local KB evidence quarantine',
   'backend store-reset list': 'local operational incident inspection',
   'backend store-reset report': 'local operational incident inspection',
+  'backend store-reset discard': 'operator-only direct-filesystem store quarantine',
 } as const;
 
 const providerCommandFamily = new WeakSet<Command>();
