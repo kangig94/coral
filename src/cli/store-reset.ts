@@ -6,6 +6,7 @@ import type { BuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
 import { socketPathForRunDir } from '../infra/path/index.js';
+import { validateProductVersion } from '../infra/product-version.js';
 import { createNodeStoreResetDiagnosticSupervisor } from '../infra/store-reset-diagnostic-supervisor.js';
 import { createStoreResetInspectionFs } from '../infra/store-reset-inspection-fs.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
@@ -18,6 +19,7 @@ import {
   resumeInterruptedBackendStoreResetIncident,
   type BackendStoreResetIncident,
 } from '../store/backend-store-reset.js';
+import { classifyStoreFile } from '../store/db.js';
 import {
   acquireGenerationAdoptionLease,
   acquireGenerationMaintenanceLease,
@@ -206,7 +208,7 @@ async function discardGeneratedStore(
   options: Extract<StoreResetDiscardOptions, { readonly target: 'gen2' }>,
   paths: StoreResetTargetPaths,
 ): Promise<StoreResetDiscardResult> {
-  const adoption = await acquireGenerationAdoptionLease(options.runtime);
+  const adoption = await acquireGenerationAdoptionLease(options.runtime, options.storeFormat);
   try {
     let maintenance: GenerationMaintenanceLease;
     try {
@@ -283,11 +285,20 @@ export async function discardStoreReset(options: StoreResetDiscardOptions): Prom
   const socket = await (options.acquireSocketGuard ?? acquireStoreResetSocketGuard)(paths, options.runtime.flavor);
   try {
     if (options.target === 'legacy') {
+      let storedProductVersion: string | null = null;
+      try {
+        const classification = classifyStoreFile(paths.storeDbPath, options.runtime.storage, currentCoralStoreFormat());
+        if ('storedProductVersion' in classification && classification.storedProductVersion !== null) {
+          storedProductVersion = validateProductVersion(classification.storedProductVersion);
+        }
+      } catch {
+        // An unreadable legacy store still has no version Coral can safely report.
+      }
       throw documentedCoralSetupError({
         code: 'legacy_foreign_generation',
         operation: 'discard',
         legacyPath: dirname(dirname(paths.storeDbPath)),
-        version: '0.9.x',
+        version: storedProductVersion,
         flavor: options.runtime.flavor,
         baseDir: paths.baseDir,
       });

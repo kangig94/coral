@@ -25,6 +25,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'startup_not_ready'
   | 'store_schema_outdated'
   | 'legacy_foreign_generation'
+  | 'legacy_adoption_required'
   | 'legacy_source_not_quiescent'
   | 'store_newer_incompatible'
   | 'store_older_incompatible'
@@ -135,11 +136,17 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       context?.operation === 'discard'
         ? `Coral cannot safely discard the foreign-generation tree at ${stringContextValue(context, 'legacyPath', '<legacy-path>')}.`
-        : `The legacy Coral tree at ${stringContextValue(context, 'legacyPath', '<legacy-path>')} belongs to Coral ${stringContextValue(context, 'version', '<legacy-version>')} and cannot be adopted by this build.`,
+        : `The legacy Coral tree at ${stringContextValue(context, 'legacyPath', '<legacy-path>')} has stored Coral version ${stringContextValue(context, 'version', 'unknown')} and cannot be adopted by this build.`,
     remediation: (context) =>
       context?.operation === 'discard'
-        ? `Stop using Coral ${stringContextValue(context, 'version', '<legacy-version>')} and close every older-version session that may use ${stringContextValue(context, 'legacyPath', '<legacy-path>')}; then remove that tree yourself. This command refused without changing it. Active baseDir: ${stringContextValue(context, 'baseDir', '<base-dir>')}.`
-        : `Continue using Coral ${stringContextValue(context, 'version', '<legacy-version>')} to read the history at ${stringContextValue(context, 'legacyPath', '<legacy-path>')}. This build leaves that foreign-generation tree untouched.`,
+        ? `Close every older-version session that may use ${stringContextValue(context, 'legacyPath', '<legacy-path>')}; stored Coral version: ${stringContextValue(context, 'version', 'unknown')}. Then remove that tree yourself. This command refused without changing it. Active baseDir: ${stringContextValue(context, 'baseDir', '<base-dir>')}.`
+        : `Use the Coral version that owns the history at ${stringContextValue(context, 'legacyPath', '<legacy-path>')} (stored version: ${stringContextValue(context, 'version', 'unknown')}). This build leaves that foreign-generation tree untouched.`,
+  },
+  legacy_adoption_required: {
+    userMessage: (context) =>
+      `Compatible legacy Coral history at ${stringContextValue(context, 'legacyPath', '<legacy-path>')} must be adopted before this generation can initialize.`,
+    remediation: (context) =>
+      `Run 'coral-cli backend store-adopt --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}', then retry the command that starts the backend.`,
   },
   legacy_source_not_quiescent: {
     userMessage: (context) =>

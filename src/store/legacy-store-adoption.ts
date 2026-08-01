@@ -28,7 +28,6 @@ const STORE_FORMAT_FINGERPRINT_KEY = 'store_format_fingerprint';
 const STORE_PRODUCT_VERSION_KEY = 'store_product_version';
 const ADOPTED_FROM_LEGACY_AT_KEY = 'adopted_from_legacy_at';
 const ADOPTED_BY_VERSION_KEY = 'adopted_by_version';
-const LEGACY_GENERATION_READER_VERSION = '0.9.x';
 const ADOPTION_LOCK_TIMEOUT_MS = 5_000;
 const ADOPTION_LOCK_STALE_MS = 10 * 60 * 1_000;
 const ADOPTION_LOCK_HEARTBEAT_MS = 10 * 1_000;
@@ -114,17 +113,18 @@ function sourceState(identity: SourceIdentity, storeFormat: StoreFormatDescripti
   if (identity.adoptedAt === null && identity.adoptedByVersion === null) {
     return { kind: 'adoptable' };
   }
-  if (validAdoptionTimestamp(identity.adoptedAt) && identity.adoptedByVersion === storeFormat.productVersion) {
+  if (
+    validAdoptionTimestamp(identity.adoptedAt) &&
+    identity.adoptedByVersion !== null &&
+    validateProductVersion(identity.adoptedByVersion) !== null
+  ) {
     return { kind: 'prepared-adoption', adoptedAt: identity.adoptedAt };
   }
   return null;
 }
 
-function readerVersion(identity: SourceIdentity): string {
-  return (
-    (identity.productVersion === null ? null : validateProductVersion(identity.productVersion)) ??
-    LEGACY_GENERATION_READER_VERSION
-  );
+function readerVersion(identity: SourceIdentity): string | null {
+  return identity.productVersion === null ? null : validateProductVersion(identity.productVersion);
 }
 
 function foreignGenerationError(runtime: Pick<Runtime, 'flavor'>, legacyPath: string, identity: SourceIdentity): Error {
@@ -350,6 +350,9 @@ export async function adoptLegacyStore({
   if (runtime.storage.existsSync(paths.generatedFlavorRoot)) {
     const adoptedAt = readCompletedAdoption(runtime, paths, storeFormat);
     if (adoptedAt === null) {
+      if (runtime.storage.existsSync(paths.legacyFlavorRoot)) {
+        readAdoptionSource(runtime, paths, storeFormat);
+      }
       throw new Error(
         `Generated target '${paths.generatedFlavorRoot}' already exists and is not a completed adoption.`,
       );

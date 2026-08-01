@@ -61,7 +61,7 @@ function openGeneratedStore(runtime: Runtime): void {
   openOrResetBackendStoreDb(runtime, authority, { storeFormat: STORE_FORMAT }).close();
 }
 
-function createForeignLegacyStore(runtime: Runtime): string {
+function createForeignLegacyStore(runtime: Runtime, productVersion?: string): string {
   const paths = resolveGenerationBoundaryPaths(runtime);
   const dbFile = join(paths.legacyFlavorRoot, 'store', 'store.db');
   mkdirSync(dirname(dbFile), { recursive: true });
@@ -73,6 +73,9 @@ function createForeignLegacyStore(runtime: Runtime): string {
       CREATE TABLE history (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
       INSERT INTO history (value) VALUES ('legacy-byte-sentinel');
     `);
+    if (productVersion !== undefined) {
+      db.prepare("INSERT INTO meta (key, value) VALUES ('store_product_version', ?)").run(productVersion);
+    }
   } finally {
     db.close();
   }
@@ -169,17 +172,81 @@ describe('legacy store generation adoption', () => {
     const paths = resolveGenerationBoundaryPaths(runtime);
     expect(existsSync(paths.generatedFlavorRoot)).toBe(false);
     expect(existsSync(paths.legacyFlavorRoot)).toBe(false);
+    expect(inspectGenerationReadiness(runtime, STORE_FORMAT)).toEqual({ kind: 'no-legacy' });
 
     openGeneratedStore(runtime);
 
     expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
   });
 
-  it('refuses a foreign generation byte-for-byte, then ordinary startup initializes empty generated state', async () => {
+  it('boots only after same-generation legacy history is explicitly adopted', async () => {
     const { runtime } = harness();
-    const legacyRoot = createForeignLegacyStore(runtime);
+    createSameGenerationLegacyStore(runtime);
+    const paths = resolveGenerationBoundaryPaths(runtime);
+    expect(inspectGenerationReadiness(runtime, STORE_FORMAT)).toEqual({
+      kind: 'legacy-adoptable',
+      legacyPath: paths.legacyFlavorRoot,
+    });
+    const legacyDb = storeDbPath(paths.legacyFlavorRoot);
+    const history = new DatabaseSync(legacyDb);
+    try {
+      history.exec(`
+        CREATE TABLE legacy_boot_history (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO legacy_boot_history (value) VALUES ('survives-adoption');
+      `);
+    } finally {
+      history.close();
+    }
+
+    let refusal: unknown;
+    try {
+      openGeneratedStore(runtime);
+    } catch (error: unknown) {
+      refusal = error;
+    }
+
+    expect(serializeCoralSetupError(refusal)).toMatchObject({
+      code: 'legacy_adoption_required',
+      context: { legacyPath: paths.legacyFlavorRoot, flavor: 'prod' },
+      remediation: expect.stringContaining('coral-cli backend store-adopt --flavor prod'),
+    });
+    expect(existsSync(paths.generatedFlavorRoot)).toBe(false);
+
+    await expect(
+      adoptLegacyStore({ runtime, storeFormat: STORE_FORMAT, acquireSocketGuard: fakeSocketGuard() }),
+    ).resolves.toMatchObject({ kind: 'adopted' });
+    openGeneratedStore(runtime);
+
+    const adopted = new DatabaseSync(runtime.paths.coral.store.dbFile, { readOnly: true });
+    try {
+      expect(adopted.prepare('SELECT value FROM legacy_boot_history').get()).toEqual({
+        value: 'survives-adoption',
+      });
+    } finally {
+      adopted.close();
+    }
+  });
+
+  it('boots empty beside a byte-identical foreign generation, then refuses adoption as foreign', async () => {
+    const { runtime } = harness();
+    const legacyRoot = createForeignLegacyStore(runtime, '0.9.16');
     const before = hashTree(legacyRoot);
     const socket = vi.fn(fakeSocketGuard());
+    const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+
+    expect(inspectGenerationReadiness(runtime, STORE_FORMAT)).toMatchObject({
+      kind: 'legacy-foreign',
+      legacyPath: legacyRoot,
+      storedProductVersion: '0.9.16',
+    });
+
+    openGeneratedStore(runtime);
+
+    expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
+    expect(hashTree(legacyRoot)).toBe(before);
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining(legacyRoot));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('stored Coral version is 0.9.16'));
+    expect(warning).not.toHaveBeenCalledWith(expect.stringContaining('0.9.x'));
 
     let refusal: unknown;
     try {
@@ -190,18 +257,10 @@ describe('legacy store generation adoption', () => {
 
     captureSetupError(refusal, 'legacy_foreign_generation');
     expect(serializeCoralSetupError(refusal)).toMatchObject({
-      context: { legacyPath: legacyRoot, version: '0.9.x' },
+      context: { legacyPath: legacyRoot, version: '0.9.16' },
     });
     expect(socket).not.toHaveBeenCalled();
     expect(hashTree(legacyRoot)).toBe(before);
-
-    const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
-    openGeneratedStore(runtime);
-
-    expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
-    expect(hashTree(legacyRoot)).toBe(before);
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining(legacyRoot));
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('Coral 0.9.x'));
   });
 
   it.each(['prod', 'dev'] as const)(
@@ -272,17 +331,54 @@ describe('legacy store generation adoption', () => {
     ).resolves.toMatchObject({ kind: 'adopted', sourceState: 'adoptable' });
   });
 
-  it('recovers the prepared-adoption state after the post-COMMIT/pre-close fault and preserves its timestamp', async () => {
+  it('refuses generation mutation readiness while an adoptable legacy source exists', async () => {
+    const { runtime } = harness();
+    createSameGenerationLegacyStore(runtime);
+    const paths = resolveGenerationBoundaryPaths(runtime);
+
+    await expect(
+      generationMutationCoordinationSeam.completeReadiness(runtime, {
+        kind: 'install',
+        name: 'kiwi',
+      }),
+    ).rejects.toMatchObject({ code: 'legacy_adoption_required' });
+    expect(existsSync(paths.generatedFlavorRoot)).toBe(false);
+    expect(existsSync(paths.adoptionLock)).toBe(false);
+  });
+
+  it('refuses a legacy-adoptable database already placed at the generated target', () => {
+    const { runtime } = harness();
+    openGeneratedStore(runtime);
+    const db = new DatabaseSync(runtime.paths.coral.store.dbFile);
+    try {
+      db.prepare("DELETE FROM meta WHERE key = 'store_product_version'").run();
+    } finally {
+      db.close();
+    }
+
+    let refusal: unknown;
+    try {
+      openGeneratedStore(runtime);
+    } catch (error: unknown) {
+      refusal = error;
+    }
+
+    captureSetupError(refusal, 'store_schema_outdated');
+    expect(readMeta(runtime.paths.coral.store.dbFile, 'store_product_version')).toBeNull();
+  });
+
+  it('recovers a prepared adoption with a newer build and preserves the original timestamp', async () => {
     const { runtime } = harness();
     createSameGenerationLegacyStore(runtime);
     const paths = resolveGenerationBoundaryPaths(runtime);
     const sourceDb = storeDbPath(paths.legacyFlavorRoot);
     const now = vi.spyOn(runtime.time, 'now').mockReturnValue(Date.parse('2026-08-01T01:02:03.004Z'));
+    const stampingFormat = { ...STORE_FORMAT, productVersion: '0.0.0' };
 
     await expect(
       adoptLegacyStore({
         runtime,
-        storeFormat: STORE_FORMAT,
+        storeFormat: stampingFormat,
         acquireSocketGuard: fakeSocketGuard(),
         faults: {
           afterProvenanceCommitBeforeClose() {
@@ -297,9 +393,9 @@ describe('legacy store generation adoption', () => {
                   )
                   .all(),
               ).toEqual([
-                { key: 'adopted_by_version', value: STORE_FORMAT.productVersion },
+                { key: 'adopted_by_version', value: stampingFormat.productVersion },
                 { key: 'adopted_from_legacy_at', value: '2026-08-01T01:02:03.004Z' },
-                { key: 'store_product_version', value: STORE_FORMAT.productVersion },
+                { key: 'store_product_version', value: stampingFormat.productVersion },
               ]);
             } finally {
               observer.close();
@@ -312,7 +408,7 @@ describe('legacy store generation adoption', () => {
 
     const originalTimestamp = readMeta(sourceDb, 'adopted_from_legacy_at');
     expect(originalTimestamp).toBe('2026-08-01T01:02:03.004Z');
-    expect(readMeta(sourceDb, 'adopted_by_version')).toBe(STORE_FORMAT.productVersion);
+    expect(readMeta(sourceDb, 'adopted_by_version')).toBe(stampingFormat.productVersion);
     now.mockReturnValue(Date.parse('2026-08-01T05:06:07.008Z'));
 
     const result = await adoptLegacyStore({
@@ -327,6 +423,7 @@ describe('legacy store generation adoption', () => {
       adoptedAt: originalTimestamp,
     });
     expect(readMeta(storeDbPath(paths.generatedFlavorRoot), 'adopted_from_legacy_at')).toBe(originalTimestamp);
+    expect(readMeta(storeDbPath(paths.generatedFlavorRoot), 'adopted_by_version')).toBe(stampingFormat.productVersion);
   });
 
   it('retries an adoption crash immediately before rename from the committed prepared state', async () => {
@@ -398,8 +495,6 @@ describe('legacy store generation adoption', () => {
 
   it('refuses with the typed quiescence error while a generation writer lease is live', async () => {
     const { runtime } = harness();
-    const source = createSameGenerationLegacyStore(runtime);
-    vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
     const readiness = await generationMutationCoordinationSeam.completeReadiness(runtime, {
       kind: 'install',
       name: 'kiwi',
@@ -409,6 +504,7 @@ describe('legacy store generation adoption', () => {
       kind: 'install',
       name: 'kiwi',
     });
+    const source = createSameGenerationLegacyStore(runtime);
 
     try {
       let refusal: unknown;

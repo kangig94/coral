@@ -1,10 +1,15 @@
 import { basename, dirname, join } from 'node:path';
 
 import { backendLog } from '../infra/backend-log.js';
+import { assertNever } from '../infra/error-format.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import { acquireDirectoryLock, type DirectoryLockLease } from '../infra/fs-lock.js';
+import { validateProductVersion } from '../infra/product-version.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
+import { currentCoralStoreFormat } from '../store-format.js';
+import { classifyStoreFile } from './db.js';
+import type { StoreFormatClassification, StoreFormatDescription } from './format-fingerprint.js';
 
 export type GenerationMutationKind = 'install' | 'update' | 'uninstall' | 'kb-child';
 
@@ -42,7 +47,14 @@ export type GenerationBoundaryPaths = {
 
 export type GenerationReadiness =
   | { readonly kind: 'generated-ready' }
-  | { readonly kind: 'ready-to-initialize'; readonly legacyPath?: string };
+  | { readonly kind: 'no-legacy' }
+  | {
+      readonly kind: 'legacy-foreign';
+      readonly legacyPath: string;
+      readonly generatedPath: string;
+      readonly storedProductVersion: string | null;
+    }
+  | { readonly kind: 'legacy-adoptable'; readonly legacyPath: string };
 
 export interface GenerationMaintenanceLease {
   assertOwned(): void;
@@ -58,7 +70,6 @@ const GENERATION_COORDINATION_TIMEOUT_MS = 5_000;
 const GENERATION_COORDINATION_STALE_MS = 10 * 60 * 1_000;
 const GENERATION_COORDINATION_HEARTBEAT_MS = 10 * 1_000;
 const GENERATION_COORDINATION_RETRY_MS = 25;
-const LEGACY_GENERATION_READER_VERSION = '0.9.x';
 
 export function resolveGenerationBoundaryPaths(runtime: Pick<Runtime, 'paths'>): GenerationBoundaryPaths {
   const generation = runtime.paths.coral.generation;
@@ -79,21 +90,52 @@ export function resolveGenerationBoundaryPaths(runtime: Pick<Runtime, 'paths'>):
 
 export function inspectGenerationReadiness(
   runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
+  storeFormat: StoreFormatDescription = currentCoralStoreFormat(),
 ): GenerationReadiness {
   const paths = resolveGenerationBoundaryPaths(runtime);
   if (runtime.storage.existsSync(paths.generatedFlavorRoot)) {
     return { kind: 'generated-ready' };
   }
   if (!runtime.storage.existsSync(paths.legacyFlavorRoot)) {
-    return { kind: 'ready-to-initialize' };
+    return { kind: 'no-legacy' };
   }
 
-  backendLog.warn(
-    `Legacy Coral history remains at ${paths.legacyFlavorRoot}; Coral ${LEGACY_GENERATION_READER_VERSION} ` +
-      `continues to own and read that tree. This generation will initialize empty state at ` +
-      `${paths.generatedFlavorRoot} without inspecting or changing the legacy tree.`,
+  let classification: StoreFormatClassification;
+  try {
+    classification = classifyStoreFile(join(paths.legacyFlavorRoot, 'store', 'store.db'), runtime.storage, storeFormat);
+  } catch {
+    return {
+      kind: 'legacy-foreign',
+      legacyPath: paths.legacyFlavorRoot,
+      generatedPath: paths.generatedFlavorRoot,
+      storedProductVersion: null,
+    };
+  }
+
+  if ('storedFingerprint' in classification && classification.storedFingerprint === storeFormat.fingerprint) {
+    return { kind: 'legacy-adoptable', legacyPath: paths.legacyFlavorRoot };
+  }
+
+  const storedProductVersion =
+    'storedProductVersion' in classification && classification.storedProductVersion !== null
+      ? validateProductVersion(classification.storedProductVersion)
+      : null;
+  return {
+    kind: 'legacy-foreign',
+    legacyPath: paths.legacyFlavorRoot,
+    generatedPath: paths.generatedFlavorRoot,
+    storedProductVersion,
+  };
+}
+
+export function formatLegacyForeignGenerationNotice(
+  readiness: Extract<GenerationReadiness, { readonly kind: 'legacy-foreign' }>,
+): string {
+  return (
+    `Legacy Coral history remains at ${readiness.legacyPath}; its stored Coral version is ` +
+    `${readiness.storedProductVersion ?? 'unknown'}. This generation will initialize empty state at ` +
+    `${readiness.generatedPath} without changing the legacy tree.`
   );
-  return { kind: 'ready-to-initialize', legacyPath: paths.legacyFlavorRoot };
 }
 
 function directoryLockDeps(runtime: Runtime) {
@@ -119,11 +161,30 @@ async function acquireAdoptionLock(runtime: Runtime, paths: GenerationBoundaryPa
   return acquireDirectoryLock(paths.adoptionLock, directoryLockDeps(runtime), GENERATION_COORDINATION_TIMEOUT_MS);
 }
 
-export async function acquireGenerationAdoptionLease(runtime: Runtime): Promise<GenerationAdoptionLease> {
+export async function acquireGenerationAdoptionLease(
+  runtime: Runtime,
+  storeFormat: StoreFormatDescription = currentCoralStoreFormat(),
+): Promise<GenerationAdoptionLease> {
   const paths = resolveGenerationBoundaryPaths(runtime);
   const releaseAdoption = await acquireAdoptionLock(runtime, paths);
   try {
-    inspectGenerationReadiness(runtime);
+    const readiness = inspectGenerationReadiness(runtime, storeFormat);
+    switch (readiness.kind) {
+      case 'generated-ready':
+      case 'no-legacy':
+        break;
+      case 'legacy-foreign':
+        backendLog.warn(formatLegacyForeignGenerationNotice(readiness));
+        break;
+      case 'legacy-adoptable':
+        throw documentedCoralSetupError({
+          code: 'legacy_adoption_required',
+          flavor: runtime.flavor,
+          legacyPath: readiness.legacyPath,
+        });
+      default:
+        assertNever(readiness);
+    }
   } catch (error) {
     releaseAdoption();
     throw error;

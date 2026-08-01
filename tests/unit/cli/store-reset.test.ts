@@ -323,13 +323,19 @@ describe('operator store-reset discard', () => {
     const runtime = createRealRuntime('prod', { baseDir });
     const paths = resolveStoreResetTargetPaths(runtime, 'legacy');
     createMismatchStore(paths.storeDbPath);
+    const legacyDb = new DatabaseSync(paths.storeDbPath);
+    try {
+      legacyDb.prepare("INSERT INTO meta (key, value) VALUES ('store_product_version', ?)").run('0.9.16');
+    } finally {
+      legacyDb.close();
+    }
     const before = readFileSync(paths.storeDbPath);
     const release = vi.fn(() => Promise.resolve());
     const acquireSocketGuard = vi.fn(async () => ({ release }));
 
     await expect(discardStoreReset({ target: 'legacy', runtime, acquireSocketGuard })).rejects.toMatchObject({
       code: 'legacy_foreign_generation',
-      context: { operation: 'discard', legacyPath: join(baseDir, 'data'), baseDir },
+      context: { operation: 'discard', legacyPath: join(baseDir, 'data'), version: '0.9.16', baseDir },
     });
 
     expect(acquireSocketGuard).toHaveBeenCalledOnce();

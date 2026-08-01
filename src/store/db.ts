@@ -306,15 +306,18 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
     }
 
     const classification = classifyStoreFormat(db, options.storeFormat);
-    if (classification.kind === 'compatible' || classification.kind === 'legacy-adoptable') {
+    if (classification.kind === 'legacy-adoptable') {
+      // Only explicit adoption may stamp this state, and it does so in the legacy
+      // tree before the atomic flavor-root rename. Ordinary opens never write it.
+      throw storeSchemaOutdatedError(options.path, classification, options.storeFormat);
+    }
+    if (classification.kind === 'compatible') {
       if (!readonly) {
         applyJournalPragmas(db, {
           kind: 'writable',
           busyTimeoutMs: options.busyTimeoutMs,
         });
-        if (classification.kind === 'compatible') {
-          raiseStoredProductVersion(db, options.storeFormat.productVersion);
-        }
+        raiseStoredProductVersion(db, options.storeFormat.productVersion);
       }
       if (options.readonly !== true) writeStoreFormatSidecar(options);
       return db;

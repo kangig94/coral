@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 
 import { writeAuditEvent } from '../infra/audit-log.js';
+import { backendLog } from '../infra/backend-log.js';
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
+import { assertNever } from '../infra/error-format.js';
 import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
@@ -10,7 +12,7 @@ import type { Runtime } from '../runtime/ports.js';
 import { classifyStoreFile, openStoreDatabase, type Database } from './db.js';
 import type { StoreFormatClassification } from './format-fingerprint.js';
 import type { StoreFormatDescription, StoreFormatFingerprint } from './format-fingerprint.js';
-import { inspectGenerationReadiness } from './generation-mutation-coordination.js';
+import { formatLegacyForeignGenerationNotice, inspectGenerationReadiness } from './generation-mutation-coordination.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_INCIDENT_DIR_ENTRIES,
@@ -949,6 +951,12 @@ function refuseIncompatibleStore(
       ...context,
     });
   }
+  if (classification.kind === 'legacy-adoptable') {
+    throw documentedCoralSetupError({
+      code: 'store_schema_outdated',
+      ...context,
+    });
+  }
 }
 
 export function openOrResetBackendStoreDb(
@@ -965,7 +973,23 @@ export function openOrResetBackendStoreDb(
 
   assertResetAuthority(runtime, authority, options);
   if (options.path === undefined) {
-    inspectGenerationReadiness(runtime);
+    const readiness = inspectGenerationReadiness(runtime, options.storeFormat);
+    switch (readiness.kind) {
+      case 'generated-ready':
+      case 'no-legacy':
+        break;
+      case 'legacy-foreign':
+        backendLog.warn(formatLegacyForeignGenerationNotice(readiness));
+        break;
+      case 'legacy-adoptable':
+        throw documentedCoralSetupError({
+          code: 'legacy_adoption_required',
+          flavor: runtime.flavor,
+          legacyPath: readiness.legacyPath,
+        });
+      default:
+        assertNever(readiness);
+    }
   }
   runtime.storage.mkdirSync(files.dbDir, { recursive: true });
 

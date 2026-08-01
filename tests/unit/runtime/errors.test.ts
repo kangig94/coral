@@ -72,12 +72,18 @@ describe('CoralSetupError', () => {
       {
         operation: 'discard',
         legacyPath: '/state/data',
-        version: '0.9.x',
+        version: null,
         flavor: 'prod',
         baseDir: '/state',
       },
       'Coral cannot safely discard the foreign-generation tree at /state/data.',
-      'Stop using Coral 0.9.x and close every older-version session that may use /state/data; then remove that tree yourself. This command refused without changing it. Active baseDir: /state.',
+      'Close every older-version session that may use /state/data; stored Coral version: unknown. Then remove that tree yourself. This command refused without changing it. Active baseDir: /state.',
+    ],
+    [
+      'legacy_adoption_required',
+      { legacyPath: '/state/data', flavor: 'prod' },
+      'Compatible legacy Coral history at /state/data must be adopted before this generation can initialize.',
+      "Run 'coral-cli backend store-adopt --flavor prod', then retry the command that starts the backend.",
     ],
     [
       'legacy_source_not_quiescent',

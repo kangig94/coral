@@ -323,14 +323,16 @@ describe('store format classification', () => {
     expect(readStoredProductVersion(dbPath)).toBe('1.0.0+stored');
   });
 
-  it('does not stamp an absent product version during an ordinary open', () => {
+  it('refuses an ordinary legacy-adoptable open without stamping it', () => {
     const { root, dbPath } = tempPath('legacy-adoptable-high-water.db');
     createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT });
     const storage = createRealRuntime('prod', { baseDir: join(root, 'runtime') }).storage;
+    const before = sha256File(dbPath);
 
-    openStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0') }).close();
+    expect(() => openStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0') })).toThrow();
 
     expect(readStoredProductVersion(dbPath)).toBeUndefined();
+    expect(sha256File(dbPath)).toBe(before);
   });
 
   it('serializes two real connections so an interleaved newer stamp remains the maximum', async () => {

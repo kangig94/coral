@@ -1,7 +1,15 @@
 import { InvalidArgumentError, type Command } from 'commander';
 
-import type { BuildFlavor } from '../../infra/build-flavor.js';
-import { getBackendStatusFull } from '../../transport/http/backend/status.js';
+import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
+import { assertNever } from '../../infra/error-format.js';
+import { createRealRuntime } from '../../runtime/real.js';
+import {
+  formatLegacyForeignGenerationNotice,
+  inspectGenerationReadiness,
+  type GenerationReadiness,
+} from '../../store/generation-mutation-coordination.js';
+import { currentCoralStoreFormat } from '../../store-format.js';
+import { getBackendStatusFull, type BackendStatusFull } from '../../transport/http/backend/status.js';
 import { shutdownBackend } from '../../transport/http/backend/shutdown.js';
 import { getPluginRoot } from '../dispatch.js';
 import { emitError } from '../emit.js';
@@ -34,6 +42,11 @@ export interface StoreAdoptCommandOperations {
   adopt: typeof adoptLegacyStoreLocal;
 }
 
+export interface BackendStatusCommandOperations {
+  inspectReadiness(): GenerationReadiness;
+  getStatus(): Promise<BackendStatusFull>;
+}
+
 export function registerBackendCommands(
   program: Command,
   storeReset: StoreResetCommandOperations = {
@@ -47,13 +60,30 @@ export function registerBackendCommands(
   storeAdopt: StoreAdoptCommandOperations = {
     adopt: adoptLegacyStoreLocal,
   },
+  backendStatus: BackendStatusCommandOperations = {
+    inspectReadiness: () =>
+      inspectGenerationReadiness(createRealRuntime(resolveBuildFlavor(process.env)), currentCoralStoreFormat()),
+    getStatus: () => getBackendStatusFull(getPluginRoot()),
+  },
 ): void {
   const backend = program.command('backend').description('Backend administration and local incident inspection');
 
   const statusCommand = backend.command('status');
   statusCommand.description('Show backend daemon status').action(async () => {
     try {
-      const status = await getBackendStatusFull(getPluginRoot());
+      const readiness = backendStatus.inspectReadiness();
+      switch (readiness.kind) {
+        case 'generated-ready':
+        case 'no-legacy':
+        case 'legacy-adoptable':
+          break;
+        case 'legacy-foreign':
+          process.stderr.write(`${formatLegacyForeignGenerationNotice(readiness)}\n`);
+          break;
+        default:
+          assertNever(readiness);
+      }
+      const status = await backendStatus.getStatus();
       process.stdout.write(formatBackendStatus(status) + '\n');
     } catch (error) {
       emitError(error);
