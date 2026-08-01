@@ -58,7 +58,7 @@ import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';
 import { createWorkflowRecoveryFinalizer } from '../../../src/coordinator/services/workflow-recovery-finalizer.js';
 import { jobsReconcile } from '../../../src/jobs/startup.js';
-import { openWritableStoreDbNoReset } from '../../../src/store/db.js';
+import { openStoreDatabase } from '../../../src/store/db.js';
 import { createEventBodyCodec } from '../../../src/store/event-body-codec.js';
 import { composeReducers } from '../../../src/store/reducers.js';
 import { createProjectionSessionLookup } from '../../../src/sessions/lookup.js';
@@ -591,8 +591,9 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   providerRegistry.register(fakeProvider);
   const storeFormat = describeCoralStoreFormat(providerRegistry);
   const providerScope = simulationProviderScope(fakeProvider.name);
-  const storeDb = openWritableStoreDbNoReset(runtime, {
+  const storeDb = openStoreDatabase({
     path: ':memory:',
+    storage: runtime.storage,
     storeFormat,
   });
   const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
