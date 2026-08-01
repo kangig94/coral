@@ -26,6 +26,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import type { RunStartupRecoveryFn } from '#src/coordinator/lifecycle.js';
+import type { TimerHandle } from '#src/infra/port-types.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
@@ -235,6 +236,35 @@ function createRuntimeStateMock() {
   return { runtimeState };
 }
 
+function createControllableTimeoutRuntime(baseRuntime: ReturnType<typeof createRealRuntime>) {
+  const scheduled: Array<{ callback: () => void; handle: TimerHandle; ms: number }> = [];
+  const setTimeout = vi.fn((callback: () => void, ms: number): TimerHandle => {
+    const handle: TimerHandle = { unref: vi.fn() };
+    scheduled.push({ callback, handle, ms });
+    return handle;
+  });
+  const clearTimeout = vi.fn((handle: TimerHandle | null): void => {
+    const index = scheduled.findIndex((timer) => timer.handle === handle);
+    if (index !== -1) scheduled.splice(index, 1);
+  });
+
+  return {
+    runtime: {
+      ...baseRuntime,
+      time: { ...baseRuntime.time, setTimeout, clearTimeout },
+    },
+    setTimeout,
+    runNextTimeout(): number {
+      const timer = scheduled.shift();
+      if (!timer) throw new Error('No controlled timeout is scheduled.');
+      timer.callback();
+      return timer.ms;
+    },
+    pendingTimeoutCount: () => scheduled.length,
+    discardScheduledTimeouts: () => scheduled.splice(0),
+  };
+}
+
 function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown> = {}) {
   return {
     start: vi.fn(async () => ({ status: 'running', job: 'started-job', session: 'started-session' })),
@@ -254,7 +284,7 @@ function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown
           },
         }) as never,
     ),
-    finalizeProviderRecoveryBindingFailure: vi.fn(),
+    finalizeProviderRecoveryBindingFailure: vi.fn(() => 'released' as const),
     recoverQueuedJob: vi.fn(async () => 'recovered-job'),
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
@@ -523,6 +553,7 @@ function createLifecycleHarness(
     runStartupRecoveryFn?: RunStartupRecoveryFn;
     interruptedAppServerReason?: 'restart' | 'handoff';
     runtime?: ReturnType<typeof createRealRuntime>;
+    log?: (message: string) => void;
   },
 ) {
   const namespace = modules.pathsModule.pluginRootNamespace(options.pluginRoot);
@@ -560,7 +591,7 @@ function createLifecycleHarness(
       bootToken: 'test-boot-token',
       shutdownToken: 'test-shutdown-token',
       now: () => 1,
-      log: () => {},
+      log: options.log ?? (() => {}),
     },
     runtime: options.runtime ?? createRealRuntime('prod'),
     backendPid: 1234,
@@ -1821,12 +1852,8 @@ describe('lifecycle recovery', () => {
     }
   });
 
-  // Per-job isolation is the invariant `lifecycle.ts` documents ("corrupt sessions should
-  // not abort recovery") and did not have: one unresolvable job used to abandon every other
-  // job's recovery. Downstream stages are safe for a different reason and are deliberately
-  // not asserted here — `cleanupStaleJobs` already runs before `runRecoveryAdoption`, and
-  // discuss/workflow recovery run after `runStartupRecovery` resolves, which it now always
-  // does. Only the `actions.ts` register-stage throws could ever starve those.
+  // This case covers isolation inside the adoption loop. Register-stage isolation is
+  // exercised separately because it has a different exception boundary.
   it('14c2. one unresolvable job does not abandon the recovery of another', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-app-server-isolation');
@@ -1838,11 +1865,6 @@ describe('lifecycle recovery', () => {
       eventBus,
       providers: permissiveProviderLookupPort,
     });
-    // `runningJobs` order comes from `ORDER BY job_id ASC` (src/jobs/read-queries.ts), and
-    // 'isolation-blocked-job' < 'isolation-healthy-job' lexically. That ordering is what makes
-    // this a proof: the failing job must be processed FIRST, or both old and new code would
-    // finalize the healthy job before the throw and the test would assert nothing. Keep the
-    // blocked id sorting first if these are ever renamed.
     const blockedJobId = 'isolation-blocked-job';
     const healthyJobId = 'isolation-healthy-job';
     const fakeService = createFakeExecutionAndRecoveryService({
@@ -1974,6 +1996,214 @@ describe('lifecycle recovery', () => {
     }
   });
 
+  it.each(['queued', 'running'] as const)(
+    '14c4. a thrown %s registration failure is terminalized without aborting startup',
+    async (recoveryKind) => {
+      const modules = await loadModules();
+      const pluginRoot = createProjectRoot(`plugin-${recoveryKind}-registration-throws`);
+      const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+      const projectRoot = createProjectRoot(`project-${recoveryKind}-registration-throws`);
+      const eventBus = new modules.eventBusModule.TypedEventBus();
+      const db = openTestStoreDb(runtime, ':memory:');
+      const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+        db,
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      });
+      const jobId = `${recoveryKind}-registration-throws-job`;
+      const sessionId = `${jobId}-session`;
+      const captureError = `${recoveryKind} authority capture rejected`;
+      const fakeService = createFakeExecutionAndRecoveryService({
+        captureProviderRecoveryAuthority: vi.fn(async () => {
+          throw new Error(captureError);
+        }),
+      });
+      const log = vi.fn<(message: string) => void>();
+
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId,
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: namespace,
+      });
+      if (recoveryKind === 'queued') {
+        appendQueuedEvent(progressStore, jobId, sessionId, namespace, projectRoot);
+      } else {
+        stubRuntimeRecord(progressStore, { jobId, pid: process.pid });
+      }
+
+      const { controller, runtimeState } = createLifecycleHarness(modules, {
+        pluginRoot,
+        progressStore,
+        eventBus,
+        servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+        log,
+      });
+
+      try {
+        await controller.start();
+        expectRecordedRecoveryFault(progressStore, jobId, captureError);
+        expect(runtimeState.getLaunchFenceActive()).toBe(false);
+        expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
+        expect(log.mock.calls.flat().join('')).toContain('session claim disposition: released');
+
+        const reader = new modules.sessionManagerModule.SessionManager(
+          projectRoot,
+          runtime,
+          undefined,
+          undefined,
+          db,
+          permissiveProviderLookupPort,
+        );
+        expect(reader.get('codex', sessionId)?.activeJobId).toBeUndefined();
+        expect(reader.claimForJobSync(sessionId, `${jobId}-later`)).toBe(true);
+      } finally {
+        await stopLifecycleController(controller);
+      }
+    },
+  );
+
+  it.each(['queued', 'running'] as const)(
+    '14c5. a partial %s adoption is unwound before the session is made reusable',
+    async (recoveryKind) => {
+      const modules = await loadModules();
+      const pluginRoot = createProjectRoot(`plugin-${recoveryKind}-adoption-throws`);
+      const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+      const projectRoot = createProjectRoot(`project-${recoveryKind}-adoption-throws`);
+      const eventBus = new modules.eventBusModule.TypedEventBus();
+      const db = openTestStoreDb(runtime, ':memory:');
+      const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+        db,
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      });
+      const launchCoordinator = createLaunchCoordinator(modules);
+      const providerRegistry = createRecoveryProviderRegistry(modules);
+      const service = createActualRecoveryService(modules, {
+        progressStore,
+        eventBus,
+        launchCoordinator,
+        providerRegistry,
+        pluginRoot,
+        projectRoot,
+      });
+      const jobId = `${recoveryKind}-adoption-throws-job`;
+      const sessionId = `${jobId}-session`;
+      const adoptionError = `${recoveryKind} namespace rebind failed`;
+
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId,
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: namespace,
+      });
+      if (recoveryKind === 'queued') {
+        appendQueuedEvent(progressStore, jobId, sessionId, namespace, projectRoot);
+      } else {
+        stubRuntimeRecord(progressStore, { jobId, pid: process.pid });
+      }
+      vi.spyOn(progressStore, 'rebindNamespace').mockImplementationOnce(() => {
+        throw new Error(adoptionError);
+      });
+
+      const { controller, runtimeState } = createLifecycleHarness(modules, {
+        pluginRoot,
+        progressStore,
+        eventBus,
+        launchCoordinator,
+        providerRegistry,
+        servicesByProjectRoot: new Map([[projectRoot, service]]),
+      });
+
+      try {
+        await controller.start();
+        expectRecordedRecoveryFault(progressStore, jobId, adoptionError);
+        expect(runtimeState.getLaunchFenceActive()).toBe(false);
+        expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
+        expect(launchCoordinator.queuePosition(jobId)).toBeNull();
+        expect(launchCoordinator.getActiveJobIds()).not.toContain(jobId);
+
+        const reader = new modules.sessionManagerModule.SessionManager(
+          projectRoot,
+          runtime,
+          undefined,
+          undefined,
+          db,
+          permissiveProviderLookupPort,
+        );
+        expect(reader.get('codex', sessionId)?.activeJobId).toBeUndefined();
+        expect(reader.claimForJobSync(sessionId, `${jobId}-later`)).toBe(true);
+      } finally {
+        await stopLifecycleController(controller);
+      }
+    },
+  );
+
+  it('14c6. a terminal-write failure is logged and leaves the session claim in place', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-registration-terminal-write-fails');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-registration-terminal-write-fails');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const db = openTestStoreDb(runtime, ':memory:');
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db,
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const jobId = 'registration-terminal-write-fails-job';
+    const sessionId = `${jobId}-session`;
+    const fakeService = createFakeExecutionAndRecoveryService({
+      captureProviderRecoveryAuthority: vi.fn(async () => {
+        throw new Error('authority capture failed first');
+      }),
+    });
+    const log = vi.fn<(message: string) => void>();
+
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    appendQueuedEvent(progressStore, jobId, sessionId, namespace, projectRoot);
+    vi.spyOn(progressStore, 'commit').mockImplementationOnce(() => {
+      throw new Error('terminal journal unavailable');
+    });
+
+    const { controller } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      log,
+    });
+
+    try {
+      await expect(controller.start()).rejects.toThrow('terminal journal unavailable');
+      expect(progressStore.readStatus(jobId)?.phase).toBe('queued');
+      expect(
+        new modules.sessionManagerModule.SessionManager(
+          projectRoot,
+          runtime,
+          undefined,
+          undefined,
+          db,
+          permissiveProviderLookupPort,
+        ).get('codex', sessionId)?.activeJobId,
+      ).toBe(jobId);
+      const messages = log.mock.calls.flat().join('');
+      expect(messages).toContain('could not terminalize as recovery_parse_failed');
+      expect(messages).toContain('session claim release was not attempted because terminalization failed');
+      expect(messages).toContain('Resolve the store write failure and restart the coordinator');
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
   it('14d. app-server binding failure terminalizes instead of failing the boot', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-provider-authority-blocked');
@@ -1991,7 +2221,9 @@ describe('lifecycle recovery', () => {
         ok: false,
         failure: { reason: 'subject-mismatch', provider: 'codex' },
       })),
+      finalizeProviderRecoveryBindingFailure: vi.fn(() => 'owned_by_another_job' as const),
     });
+    const log = vi.fn<(message: string) => void>();
 
     stubLaunchRecord(progressStore, {
       jobId,
@@ -2015,6 +2247,7 @@ describe('lifecycle recovery', () => {
       eventBus,
       servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
       runtime,
+      log,
     });
 
     try {
@@ -2027,6 +2260,7 @@ describe('lifecycle recovery', () => {
         expect.objectContaining({ jobId }),
         { reason: 'subject-mismatch', provider: 'codex' },
       );
+      expect(log.mock.calls.flat().join('')).toContain('session claim disposition: owned by another job');
     } finally {
       await stopLifecycleController(controller);
     }
@@ -2045,6 +2279,7 @@ describe('lifecycle recovery', () => {
     });
     const jobId = 'durable-binding-blocked-job';
     const pid = 73_737;
+    const controlledTime = createControllableTimeoutRuntime(runtime);
     const kill = vi.spyOn(runtime.process, 'kill').mockReturnValue(true);
     vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid) => candidatePid === pid);
     const fakeService = createFakeExecutionAndRecoveryService({
@@ -2053,6 +2288,7 @@ describe('lifecycle recovery', () => {
         failure: { reason: 'subject-mismatch', provider: 'codex' },
       })),
     });
+    const log = vi.fn<(message: string) => void>();
 
     stubLaunchRecord(progressStore, {
       jobId,
@@ -2068,7 +2304,8 @@ describe('lifecycle recovery', () => {
       progressStore,
       eventBus,
       servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
-      runtime,
+      runtime: controlledTime.runtime,
+      log,
     });
 
     try {
@@ -2076,22 +2313,29 @@ describe('lifecycle recovery', () => {
       await controller.start();
       expect(fakeService.captureProviderRecoveryAuthority).toHaveBeenCalledTimes(1);
       expect(runtime.process.isAlive).toHaveBeenCalledWith(pid);
-      // The stop request is still the point of this case; only the boot failure is gone.
-      expect(kill).toHaveBeenCalledWith(pid, 'SIGTERM');
+      expect(kill.mock.calls).toEqual([[pid, 'SIGTERM']]);
+      expect(controlledTime.setTimeout).toHaveBeenCalledTimes(1);
+      expect(controlledTime.runNextTimeout()).toBe(5_000);
+      expect(kill.mock.calls).toEqual([
+        [pid, 'SIGTERM'],
+        [pid, 'SIGKILL'],
+      ]);
+      expect(controlledTime.pendingTimeoutCount()).toBe(0);
       expect(fakeService.finalizeProviderRecoveryBindingFailure).toHaveBeenCalledWith(
         expect.objectContaining({ jobId }),
         { reason: 'subject-mismatch', provider: 'codex' },
       );
+      expect(log.mock.calls.flat().join('')).toContain('session claim disposition: released');
       expect(runtimeState.getLaunchFenceActive()).toBe(false);
       expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
     } finally {
       await stopLifecycleController(controller);
+      controlledTime.discardScheduledTimeouts();
     }
   });
 
-  // The failed-stop branch is unreachable in production — RealRuntime.kill swallows signal
-  // errors and returns false — so only a mocked port exercises it. It still must not be
-  // fatal: before the fix a failed stop threw and took the whole boot with it.
+  // A throwing process port exercises the synchronous failure boundary; the real port
+  // reports signal failures as a false return value.
   it('14e2. a failed process stop is logged, not fatal', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-durable-kill-fails');
@@ -2105,6 +2349,7 @@ describe('lifecycle recovery', () => {
     });
     const jobId = 'durable-kill-fails-job';
     const pid = 73_939;
+    const controlledTime = createControllableTimeoutRuntime(runtime);
     const kill = vi.spyOn(runtime.process, 'kill').mockImplementation(() => {
       throw new Error('EPERM: operation not permitted');
     });
@@ -2130,12 +2375,14 @@ describe('lifecycle recovery', () => {
       progressStore,
       eventBus,
       servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
-      runtime,
+      runtime: controlledTime.runtime,
     });
 
     try {
       await controller.start();
-      expect(kill).toHaveBeenCalled();
+      expect(kill.mock.calls).toEqual([[pid, 'SIGTERM']]);
+      expect(controlledTime.setTimeout).not.toHaveBeenCalled();
+      expect(controlledTime.pendingTimeoutCount()).toBe(0);
       // The throw is absorbed and the job still reaches its terminal.
       expect(fakeService.finalizeProviderRecoveryBindingFailure).toHaveBeenCalledWith(
         expect.objectContaining({ jobId }),
@@ -2145,6 +2392,7 @@ describe('lifecycle recovery', () => {
       expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
     } finally {
       await stopLifecycleController(controller);
+      controlledTime.discardScheduledTimeouts();
     }
   });
 

@@ -2,6 +2,7 @@ import type { Database } from '../store/db.js';
 
 import type { Runtime } from '../runtime/ports.js';
 import { SessionManager } from './shell.js';
+import type { SessionJobClaimReleaseResult } from './contracts.js';
 import type { CommitEventsFn } from '../store/append.js';
 
 export type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;
@@ -20,8 +21,8 @@ export function releaseSessionJobClaim(options: {
   emitSessionReleased: SessionReleasedEmitter;
   sessionId: string;
   jobId: string;
-}): void {
-  SessionManager.forProduction(
+}): SessionJobClaimReleaseResult {
+  return SessionManager.forProduction(
     options.projectRoot,
     options.runtime,
     options.commitEvents,
@@ -30,4 +31,15 @@ export function releaseSessionJobClaim(options: {
       db: options.db,
     },
   ).releaseJob(options.sessionId, options.jobId);
+}
+
+export function describeSessionJobClaimReleaseResult(result: SessionJobClaimReleaseResult): string {
+  switch (result) {
+    case 'released':
+      return 'released';
+    case 'already_absent':
+      return 'already absent';
+    case 'owned_by_another_job':
+      return 'owned by another job';
+  }
 }

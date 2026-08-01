@@ -10,7 +10,7 @@ import type { RecoveryAction } from '../../../jobs/reconcile/plan.js';
 import type { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { SessionLookup } from '../../../sessions/lookup.js';
-import { releaseSessionJobClaim } from '../../../sessions/job-release.js';
+import { describeSessionJobClaimReleaseResult, releaseSessionJobClaim } from '../../../sessions/job-release.js';
 import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import type { RecoveryCommitFence } from '../../../jobs/reconcile/contracts.js';
 import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
@@ -100,9 +100,11 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
       const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
       signal.throwIfAborted();
       if (!captured.ok) {
-        service.finalizeProviderRecoveryBindingFailure(action.launchRecord, captured.failure);
+        const releaseResult = service.finalizeProviderRecoveryBindingFailure(action.launchRecord, captured.failure);
         recoveryRegistry.remove(action.jobId);
-        log(`Rejected queued recovery with invalid provider authority: ${action.jobId}\n`);
+        log(
+          `Rejected queued recovery with invalid provider authority: ${action.jobId}; session claim disposition: ${describeSessionJobClaimReleaseResult(releaseResult)}.\n`,
+        );
         return;
       }
       const { authority } = captured;
@@ -122,19 +124,15 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
           try {
             gracefulKillByPid(runtime, action.runtimeRecord.pid);
           } catch (error: unknown) {
-            // RealRuntime.kill swallows signal errors, so only a mocked port reaches
-            // this catch. An EPERM-alive PID was recycled into a process that was never
-            // ours; a failed kill of our own child means it is already gone. Either way,
-            // no owned live process is abandoned.
             log(
-              `Failed to stop rejected recovery process ${action.runtimeRecord.pid} for job ${action.jobId}; no owned live process was abandoned and recovery finalization will continue: ${errorMessage(error)}\n`,
+              `Failed to send SIGTERM to rejected recovery process ${action.runtimeRecord.pid} for job ${action.jobId}; recovery finalization will continue: ${errorMessage(error)}\n`,
             );
           }
         }
-        service.finalizeProviderRecoveryBindingFailure(action.launchRecord, captured.failure);
+        const releaseResult = service.finalizeProviderRecoveryBindingFailure(action.launchRecord, captured.failure);
         recoveryRegistry.remove(action.jobId);
         log(
-          `Rejected running recovery with invalid provider authority: terminalized ${action.jobId}, released its session claim, and recorded the reason. Run coral-cli jobs detail ${action.jobId} for details.\n`,
+          `Rejected running recovery with invalid provider authority: terminalized ${action.jobId}; session claim disposition: ${describeSessionJobClaimReleaseResult(releaseResult)}. Run coral-cli jobs detail ${action.jobId} for the recorded reason.\n`,
         );
         return;
       }
@@ -163,7 +161,7 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
         return;
       }
 
-      releaseSessionJobClaim({
+      const releaseResult = releaseSessionJobClaim({
         projectRoot: session.projectRoot,
         runtime,
         emitSessionReleased,
@@ -174,9 +172,13 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
       });
       const status = progressStore.readStatus(action.jobId);
       if (status && isTerminalPhase(status.phase)) {
-        log(`Released terminal session claim: ${action.sessionId}\n`);
+        log(
+          `Terminal session claim ${action.sessionId} disposition: ${describeSessionJobClaimReleaseResult(releaseResult)}.\n`,
+        );
       } else {
-        log(`Released orphaned session claim: ${action.sessionId}\n`);
+        log(
+          `Orphaned session claim ${action.sessionId} disposition: ${describeSessionJobClaimReleaseResult(releaseResult)}.\n`,
+        );
       }
       return;
     }

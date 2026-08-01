@@ -24,7 +24,8 @@ import {
   type RunningRecoverableJob,
 } from './actions.js';
 import { buildRecoverySnapshot } from './snapshot.js';
-import { releaseSessionJobClaim } from '../../../sessions/job-release.js';
+import { describeSessionJobClaimReleaseResult, releaseSessionJobClaim } from '../../../sessions/job-release.js';
+import type { SessionJobClaimReleaseResult } from '../../../sessions/contracts.js';
 import type { SessionLookup } from '../../../sessions/lookup.js';
 
 const RECOVERY_POLL_MS = 500;
@@ -209,28 +210,29 @@ export function createRecoveryCoordinator({
     resetRecoveryState({ forceRegistryRelease: true });
   };
 
-  async function runRecoveryAdoption({
-    queuedJobs,
-    runningJobs,
-    signal,
-    coordinatorCommit,
-    interruptedAppServerReason,
-  }: RecoveryAdoptionContext): Promise<void> {
-    /**
-     * Persist an unresolvable recovery as a per-job terminal fault, release any
-     * matching session claim, and remove registry ownership so startup can continue.
-     */
-    const recordUnresolvedRecovery = (jobId: string, summary: string, error: unknown): void => {
-      const status = progressStore.readStatus(jobId);
-      if (status === null) {
+  const recordUnresolvedRecovery = (
+    jobId: string,
+    summary: string,
+    error: unknown,
+    coordinatorCommit: CommitEventsFn,
+  ): void => {
+    const status = progressStore.readStatus(jobId);
+    if (status === null) {
+      try {
         state.recoveryRegistry?.remove(jobId);
+      } finally {
         log(
           `${summary} for ${jobId}: ${errorMessage(error)}; job status was unavailable, so no terminal or session claim could be updated.\n`,
         );
-        return;
       }
+      return;
+    }
 
-      const alreadyTerminal = isTerminalPhase(status.phase);
+    const alreadyTerminal = isTerminalPhase(status.phase);
+    let terminalized = alreadyTerminal;
+    let releaseResult: SessionJobClaimReleaseResult | null = null;
+    let recoveryUpdateError: unknown = null;
+    try {
       if (!alreadyTerminal) {
         markJobAsError(
           progressStore,
@@ -245,39 +247,58 @@ export function createRecoveryCoordinator({
           runtime.time.now(),
           log,
         );
+        terminalized = true;
       }
 
-      let releasedSessionClaim = status.sessionId === null;
+      if (status.sessionId !== null) {
+        releaseResult = releaseSessionJobClaim({
+          projectRoot: status.projectRoot,
+          runtime,
+          emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
+          db: progressStore.getDb(),
+          commitEvents: coordinatorCommit,
+          sessionId: status.sessionId,
+          jobId,
+        });
+      }
+    } catch (updateError: unknown) {
+      recoveryUpdateError = updateError;
+      throw updateError;
+    } finally {
+      const terminalDisposition = alreadyTerminal
+        ? 'job was already terminal'
+        : terminalized
+          ? 'terminalized as recovery_parse_failed'
+          : 'could not terminalize as recovery_parse_failed';
+      const sessionDisposition =
+        status.sessionId === null
+          ? 'no session claim was recorded on the job'
+          : !terminalized
+            ? 'session claim release was not attempted because terminalization failed'
+            : releaseResult !== null
+              ? `session claim disposition: ${describeSessionJobClaimReleaseResult(releaseResult)}`
+              : 'session claim release failed';
+      const nextStep =
+        recoveryUpdateError === null
+          ? `Run coral-cli jobs detail ${jobId} for the recorded reason.`
+          : `Recovery state update failed: ${errorMessage(recoveryUpdateError)}. Resolve the store write failure and restart the coordinator.`;
       try {
-        if (status.sessionId !== null) {
-          releaseSessionJobClaim({
-            projectRoot: status.projectRoot,
-            runtime,
-            emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
-            db: progressStore.getDb(),
-            commitEvents: coordinatorCommit,
-            sessionId: status.sessionId,
-            jobId,
-          });
-          releasedSessionClaim = true;
-        }
-      } finally {
         state.recoveryRegistry?.remove(jobId);
-        const terminalDisposition = alreadyTerminal
-          ? 'job was already terminal'
-          : 'terminalized as recovery_parse_failed';
-        const sessionDisposition =
-          status.sessionId === null
-            ? 'no session claim was present'
-            : releasedSessionClaim
-              ? 'released its session claim'
-              : 'could not release its session claim';
+      } finally {
         log(
-          `${summary} for ${jobId}: ${errorMessage(error)}; ${terminalDisposition}; ${sessionDisposition}. Run coral-cli jobs detail ${jobId} for the recorded reason.\n`,
+          `${summary} for ${jobId}: ${errorMessage(error)}; ${terminalDisposition}; ${sessionDisposition}. ${nextStep}\n`,
         );
       }
-    };
+    }
+  };
 
+  async function runRecoveryAdoption({
+    queuedJobs,
+    runningJobs,
+    signal,
+    coordinatorCommit,
+    interruptedAppServerReason,
+  }: RecoveryAdoptionContext): Promise<void> {
     queuedJobs.sort((a, b) => a.authority.launchRecord.enqueueSequence - b.authority.launchRecord.enqueueSequence);
 
     let maxRecoverableSeq: number | null = null;
@@ -324,7 +345,12 @@ export function createRecoveryCoordinator({
             await finalization;
           } catch (error: unknown) {
             if ((error as { name?: string } | null)?.name === 'AbortError') throw error;
-            recordUnresolvedRecovery(jobId, 'Interrupted app-server recovery remains incomplete', error);
+            recordUnresolvedRecovery(
+              jobId,
+              'Interrupted app-server recovery remains incomplete',
+              error,
+              coordinatorCommit,
+            );
             continue;
           }
           signal.throwIfAborted();
@@ -384,7 +410,12 @@ export function createRecoveryCoordinator({
             );
           } catch (error: unknown) {
             if ((error as { name?: string } | null)?.name === 'AbortError') throw error;
-            recordUnresolvedRecovery(jobId, 'Interrupted durable recovery remains incomplete', error);
+            recordUnresolvedRecovery(
+              jobId,
+              'Interrupted durable recovery remains incomplete',
+              error,
+              coordinatorCommit,
+            );
             state.recoveryRegistry?.clearCancelled(jobId);
             continue;
           }
@@ -471,8 +502,8 @@ export function createRecoveryCoordinator({
           cleanup?.();
           throw error;
         }
-        log(`Failed to adopt running job ${jobId}: ${formatError(error)}\n`);
-        state.recoveryRegistry?.remove(jobId);
+        cleanup?.();
+        recordUnresolvedRecovery(jobId, 'Running recovery adoption failed', error, coordinatorCommit);
       }
     }
 
@@ -493,8 +524,7 @@ export function createRecoveryCoordinator({
         log(`Recovered queued job: ${jobId}\n`);
       } catch (error: unknown) {
         if ((error as { name?: string } | null)?.name === 'AbortError') throw error;
-        log(`Failed to recover queued job ${jobId}: ${formatError(error)}\n`);
-        state.recoveryRegistry?.remove(jobId);
+        recordUnresolvedRecovery(jobId, 'Queued recovery adoption failed', error, coordinatorCommit);
       }
     }
 
@@ -543,7 +573,17 @@ export function createRecoveryCoordinator({
         } catch (error: unknown) {
           logRecoveryActionFailure(action, error, log);
           if (action.type === 'registerQueued' || action.type === 'registerRunning') {
-            throw error;
+            if ((error as { name?: string } | null)?.name === 'AbortError') {
+              throw error;
+            }
+            recordUnresolvedRecovery(
+              action.jobId,
+              action.type === 'registerQueued'
+                ? 'Queued recovery registration failed'
+                : 'Running recovery registration failed',
+              error,
+              ctx.coordinatorCommit,
+            );
           }
         }
       };

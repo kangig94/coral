@@ -195,7 +195,7 @@ function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown
         boundProvider: { name: launchRecord.provider },
       },
     })),
-    finalizeProviderRecoveryBindingFailure: vi.fn(),
+    finalizeProviderRecoveryBindingFailure: vi.fn(() => 'released' as const),
     recoverQueuedJob: vi.fn(() => 'recovered-job'),
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),

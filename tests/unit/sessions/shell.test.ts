@@ -388,7 +388,7 @@ describe('sessions shell store', () => {
     const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     mgr.claimForJobSync(entry.sessionId, 'job-1');
 
-    mgr.releaseJob(entry.sessionId, 'job-1');
+    expect(mgr.releaseJob(entry.sessionId, 'job-1')).toBe('released');
 
     const stored = mgr.get('codex', entry.sessionId);
     expect(stored?.activeJobId).toBeUndefined();
@@ -884,10 +884,19 @@ describe('sessions shell store adversarial', () => {
     const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     mgr.claimForJobSync(entry.sessionId, 'job-correct');
 
-    mgr.releaseJob(entry.sessionId, 'job-WRONG');
+    expect(mgr.releaseJob(entry.sessionId, 'job-WRONG')).toBe('owned_by_another_job');
 
     const stored = mgr.get('codex', entry.sessionId);
     expect(stored?.activeJobId).toBe('job-correct');
+  });
+
+  it('releaseJob reports an absent claim without writing a release event', () => {
+    const { mgr, workDir } = setup('release-absent');
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
+
+    expect(mgr.releaseJob(entry.sessionId, 'job-1')).toBe('already_absent');
+    expect(mgr.releaseJob('missing-session', 'job-1')).toBe('already_absent');
+    expect(mgr.get('codex', entry.sessionId)?.version).toBe(entry.version);
   });
 
   it('list returns only sessions for the requested provider (no cross-provider leakage)', () => {

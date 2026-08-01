@@ -9,9 +9,14 @@ import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../../runti
 import { providerSessionProvider, type ProviderSession } from '../../../sessions/entry.js';
 import type { ProviderBindingCatalog } from '../../../providers/catalog.js';
 import type { ProviderBindingFailure } from '../../../providers/contracts/binding.js';
-import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPool } from '../../../jobs/contracts/admission.js';
+import type {
+  JobAdmissionPort,
+  JobLaunchRecoveryPort,
+  LaunchPool,
+  QueuedHandle,
+} from '../../../jobs/contracts/admission.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/contracts/job-store.js';
-import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
+import type { SessionJobClaimReleaseResult, SessionRecoveryPort } from '../../../sessions/contracts.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { BoundProvider, BoundProviderHostPreparationInput } from '../../../providers/bound-provider-contract.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
@@ -129,11 +134,13 @@ export class RecoveryService {
     return { ok: true, session, bound: binding.value, continuity: continuity.value };
   }
 
-  finalizeProviderRecoveryBindingFailure(launchRecord: JobLaunch, failure: ProviderBindingFailure): void {
+  finalizeProviderRecoveryBindingFailure(
+    launchRecord: JobLaunch,
+    failure: ProviderBindingFailure,
+  ): SessionJobClaimReleaseResult {
     requireProviderLaunchRecord(launchRecord, 'finalizeProviderRecoveryBindingFailure');
-    if (launchRecord.sessionId === null) return;
     const message = this.deps.providerRegistry.renderBindingFailure(failure);
-    this.completeRecoveredJob(
+    return this.completeRecoveredJob(
       launchRecord.jobId,
       launchRecord.sessionId,
       {
@@ -240,29 +247,34 @@ export class RecoveryService {
     const pool = launchRecord.pool;
     const jobId = launchRecord.jobId;
 
-    this.deps.jobPools.set(jobId, pool);
+    let queuedHandle: QueuedHandle | null = null;
+    try {
+      this.deps.jobPools.set(jobId, pool);
+      queuedHandle = this.deps.launchRecovery.restoreQueuedLaunch(
+        jobId,
+        launchRecord.provider,
+        launchRecord.owner,
+        pool,
+      );
+      this.deps.abortRegistry.register(jobId, () => {
+        queuedHandle?.cancel();
+      });
 
-    const queuedHandle = this.deps.launchRecovery.restoreQueuedLaunch(
-      jobId,
-      launchRecord.provider,
-      launchRecord.owner,
-      pool,
-    );
-    this.deps.abortRegistry.register(jobId, () => {
-      queuedHandle.cancel();
-    });
+      this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
 
-    this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
+      this.deps.launchOrchestrator.runRecoveredQueuedJob(
+        boundProvider,
+        launchRecord,
+        queuedHandle,
+        pool,
+        this.queuedRecoveryChildEnv(session, jobId),
+      );
 
-    this.deps.launchOrchestrator.runRecoveredQueuedJob(
-      boundProvider,
-      launchRecord,
-      queuedHandle,
-      pool,
-      this.queuedRecoveryChildEnv(session, jobId),
-    );
-
-    return jobId;
+      return jobId;
+    } catch (error: unknown) {
+      this.cleanupRecoveryRegistration(jobId, pool, queuedHandle);
+      throw error;
+    }
   }
 
   async finalizeInterruptedDurableJob(
@@ -310,15 +322,19 @@ export class RecoveryService {
     if (!isDurableCliRuntime(runtimeRecord)) {
       throw new Error(`Unsupported runtime transport for adoptRunningJob(${jobId}): ${runtimeRecord.transport}`);
     }
-    this.deps.jobPools.set(jobId, pool);
+    try {
+      this.deps.jobPools.set(jobId, pool);
+      this.deps.launchRecovery.restoreActiveLaunch(jobId, launchRecord.provider, launchRecord.owner, pool);
+      this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
 
-    this.deps.launchRecovery.restoreActiveLaunch(jobId, launchRecord.provider, launchRecord.owner, pool);
-    this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
-
-    const pid = runtimeRecord.pid;
-    this.deps.abortRegistry.register(jobId, () => {
-      this.deps.runtime.process.kill(pid, 'SIGTERM');
-    });
+      const pid = runtimeRecord.pid;
+      this.deps.abortRegistry.register(jobId, () => {
+        this.deps.runtime.process.kill(pid, 'SIGTERM');
+      });
+    } catch (error: unknown) {
+      this.cleanupRecoveryRegistration(jobId, pool);
+      throw error;
+    }
 
     let cleaned = false;
     return {
@@ -326,12 +342,19 @@ export class RecoveryService {
       cleanup: () => {
         if (cleaned) return;
         cleaned = true;
-        if (!this.deps.jobPools.has(jobId)) return;
-        this.deps.abortRegistry.remove(jobId);
-        this.deps.jobPools.delete(jobId);
-        this.deps.launchAdmission.releaseLaunch(jobId, pool);
+        this.cleanupRecoveryRegistration(jobId, pool);
       },
     };
+  }
+
+  private cleanupRecoveryRegistration(jobId: string, pool: LaunchPool, queuedHandle: QueuedHandle | null = null): void {
+    if (queuedHandle !== null) {
+      void queuedHandle.waitForPermit().catch(() => undefined);
+      queuedHandle.cancel();
+    }
+    this.deps.abortRegistry.remove(jobId);
+    this.deps.jobPools.delete(jobId);
+    this.deps.launchAdmission.releaseLaunch(jobId, pool);
   }
 
   completeRecoveredJob(
@@ -340,7 +363,7 @@ export class RecoveryService {
     result: JobTerminalInput,
     phase: JobPhase,
     options: TerminalWriteOptions & { pool: LaunchPool },
-  ): void {
+  ): SessionJobClaimReleaseResult {
     const currentStatus = this.deps.progressStore.readStatus(jobId);
     if (!currentStatus || !isTerminalPhase(currentStatus.phase)) {
       this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase, {
@@ -357,12 +380,13 @@ export class RecoveryService {
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${String(error)}`);
     }
-    this.deps.sessionManager.releaseJob(sessionId, jobId);
+    const releaseResult = this.deps.sessionManager.releaseJob(sessionId, jobId);
 
     const pool = this.deps.jobPools.get(jobId) ?? options.pool;
     this.deps.abortRegistry.remove(jobId);
     this.deps.jobPools.delete(jobId);
     this.deps.launchAdmission.releaseLaunch(jobId, pool);
+    return releaseResult;
   }
 
   private sessionProviderContinuity(

@@ -34,6 +34,7 @@ import type {
   SessionAllocateOptions,
   SessionArtifactHandleRecordOptions,
   SessionArtifactHandleRecordResult,
+  SessionJobClaimReleaseResult,
 } from './contracts.js';
 import { sessionsRegistry } from './events.js';
 import type {
@@ -810,9 +811,10 @@ export class SessionManager {
   }
 
   /** Release job claim: clear activeJobId. */
-  releaseJob(sessionId: string, jobId: string): void {
+  releaseJob(sessionId: string, jobId: string): SessionJobClaimReleaseResult {
     const entry = this.readEntry(sessionId);
-    if (!entry || entry.activeJobId !== jobId) return;
+    if (!entry || entry.activeJobId === undefined) return 'already_absent';
+    if (entry.activeJobId !== jobId) return 'owned_by_another_job';
     const now = nowIsoString(this.time);
     const clearedLease =
       entry.continuationLease?.status === 'claimed' && entry.continuationLease.resumedJobId === jobId
@@ -839,6 +841,7 @@ export class SessionManager {
       this.populateCache(sessionId, clearedEntry);
     }
     this.releaseEmitter({ sessionId, jobId });
+    return 'released';
   }
 
   /** Provider-scoped lookup. Returns null if sessionId not found or provider mismatch. */
