@@ -374,6 +374,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       });
       let kbRef: KbRuntime | null = null;
       const kb = createKbRuntime({
+        flavor: runtime.flavor,
         markdownRoot,
         runtimeDir,
         version: resolveVersion(options.version),

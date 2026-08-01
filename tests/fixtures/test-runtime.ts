@@ -56,6 +56,7 @@ export interface CreateTestKbRuntimeOptions {
 export function createTestKbRuntime(options: CreateTestKbRuntimeOptions): KbRuntime {
   const runtime = options.runtime ?? createRealRuntime('prod');
   return createKbRuntime({
+    flavor: runtime.flavor,
     markdownRoot: options.markdownRoot,
     runtimeDir: options.runtimeDir,
     version: options.version ?? 'dev',

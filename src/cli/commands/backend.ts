@@ -1,11 +1,13 @@
-import type { Command } from 'commander';
+import { InvalidArgumentError, type Command } from 'commander';
 
+import type { BuildFlavor } from '../../infra/build-flavor.js';
 import { getBackendStatusFull } from '../../transport/http/backend/status.js';
 import { shutdownBackend } from '../../transport/http/backend/shutdown.js';
 import { getPluginRoot } from '../dispatch.js';
 import { emitError } from '../emit.js';
 import { formatBackendStatus, formatShutdown } from '../format/backend.js';
 import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
+import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import {
   boundStoreResetCliError,
   listStoreResetIncidentsLocal,
@@ -17,11 +19,21 @@ export interface StoreResetCommandOperations {
   report(incidentId: string): ReturnType<typeof reportStoreResetIncidentLocal>;
 }
 
+export interface KbCommitCommandOperations {
+  quarantine(
+    flavor: BuildFlavor,
+    commitId: string,
+  ): Promise<{ readonly commitId: string; readonly quarantineDir: string }>;
+}
+
 export function registerBackendCommands(
   program: Command,
   storeReset: StoreResetCommandOperations = {
     list: listStoreResetIncidentsLocal,
     report: reportStoreResetIncidentLocal,
+  },
+  kbCommit: KbCommitCommandOperations = {
+    quarantine: quarantineKbCommitLocal,
   },
 ): void {
   const backend = program.command('backend').description('Backend administration and local incident inspection');
@@ -76,4 +88,24 @@ export function registerBackendCommands(
         emitError(boundStoreResetCliError(error));
       }
     });
+
+  const kbCommitCommand = backend.command('kb-commit').description('Operate on retained blocking KB commit evidence');
+  kbCommitCommand
+    .command('quarantine')
+    .description('Durably quarantine one blocking KB commit and its matching runtime evidence')
+    .requiredOption('--flavor <flavor>', 'Generated state flavor (prod or dev)', parseFlavor)
+    .requiredOption('--commit <id>', 'Blocking KB commit ID')
+    .action(async (options: { flavor: BuildFlavor; commit: string }) => {
+      try {
+        const result = await kbCommit.quarantine(options.flavor, options.commit);
+        process.stdout.write(`Quarantined KB commit '${result.commitId}' at ${result.quarantineDir}.\n`);
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    });
+}
+
+function parseFlavor(value: string): BuildFlavor {
+  if (value === 'prod' || value === 'dev') return value;
+  throw new InvalidArgumentError("Flavor must be 'prod' or 'dev'.");
 }
