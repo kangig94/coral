@@ -30,6 +30,8 @@ import type { Runtime } from '#src/runtime/ports.js';
 import {
   createBackendStoreResetAuthority,
   openOrResetBackendStoreDb,
+  publishBackendStoreResetIncident,
+  resumeInterruptedBackendStoreResetIncident,
   type BackendStoreResetAuthority,
 } from '#src/store/backend-store-reset.js';
 import { openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
@@ -157,6 +159,16 @@ function createMismatchStore(dbPath: string, fingerprint = `sha256:${'0'.repeat(
   }
 }
 
+function createVersionedStore(dbPath: string, fingerprint: string, productVersion: string): void {
+  createMismatchStore(dbPath, fingerprint);
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.prepare("INSERT INTO meta (key, value) VALUES ('store_product_version', ?)").run(productVersion);
+  } finally {
+    db.close();
+  }
+}
+
 function sha256(data: Buffer | string): string {
   return createHash('sha256').update(data).digest('hex');
 }
@@ -181,6 +193,20 @@ function authorityFor(runtime: Runtime, dbPath: string): BackendStoreResetAuthor
 
 function openReset(runtime: Runtime, dbPath: string) {
   return openOrResetBackendStoreDb(runtime, authorityFor(runtime, dbPath), {
+    path: dbPath,
+    storeFormat: STORE_FORMAT,
+  });
+}
+
+function publishReset(runtime: Runtime, dbPath: string) {
+  return publishBackendStoreResetIncident(runtime, authorityFor(runtime, dbPath), {
+    path: dbPath,
+    storeFormat: STORE_FORMAT,
+  });
+}
+
+function resumeReset(runtime: Runtime, dbPath: string) {
+  return resumeInterruptedBackendStoreResetIncident(runtime, authorityFor(runtime, dbPath), {
     path: dbPath,
     storeFormat: STORE_FORMAT,
   });
@@ -214,7 +240,7 @@ function createInterruptedReset(
     }
     unlinkSync(path);
   });
-  const error = captureError(() => openReset(runtime, dbPath));
+  const error = captureError(() => publishReset(runtime, dbPath));
   unlinkSpy.mockRestore();
   expectSetupCode(error, 'store_reset_quarantine_failed');
   expect(interrupted).toBe(true);
@@ -286,45 +312,20 @@ describe('openOrResetBackendStoreDb', () => {
     }
   });
 
-  it('resets a store with no format fingerprint', () => {
+  it('refuses a store with no format fingerprint without mutating it', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-missing-fingerprint-'), 'store.db');
     createMissingFingerprintStore(dbPath);
+    const before = readFileSync(dbPath);
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
-    const db = openReset(runtime, dbPath);
-    db.close();
+    const error = captureError(() => openReset(runtime, dbPath));
 
-    expect(readFormatFingerprint(dbPath)).toBe(STORE_FORMAT.fingerprint);
-    expect(tableExists(dbPath, 'events')).toBe(true);
-    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
-    const eventColumns = (() => {
-      const current = new DatabaseSync(dbPath);
-      try {
-        return current
-          .prepare('PRAGMA table_info(events)')
-          .all()
-          .map((row) => (row as { name: string }).name);
-      } finally {
-        current.close();
-      }
-    })();
-    expect(eventColumns).toEqual(
-      expect.arrayContaining(['seq', 'ts', 'type', 'stream_kind', 'stream_id', 'namespace', 'project', 'refs', 'body']),
-    );
-    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
-    const quarantineDir = join(quarantineRoot, retainedIncidentNames(quarantineRoot)[0]);
-    expect(tableExists(join(quarantineDir, 'store.db'), 'sentinel_before_reset')).toBe(true);
-    const manifest = JSON.parse(readFileSync(join(quarantineDir, 'reset-manifest.json'), 'utf-8')) as Record<
-      string,
-      unknown
-    >;
-    expect(manifest).toMatchObject({ reason: 'missing', storedFingerprint: null });
-    const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
-    expect(messages.some((message) => message.includes('is unavailable'))).toBe(true);
-    expect(
-      messages.some((message) => message.startsWith('audit ') && message.includes('"event":"store_reset_quarantine"')),
-    ).toBe(true);
+    expectSetupCode(error, 'store_corrupt_or_unsupported');
+    expect(readFileSync(dbPath)).toEqual(before);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
+    expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('leaves an already-current store in place without warning', () => {
@@ -342,20 +343,48 @@ describe('openOrResetBackendStoreDb', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('resets a mismatched marker and removes the old store contents', () => {
+  it('refuses a mismatched marker without mutating the store', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-mismatch-'), 'store.db');
     createMismatchStore(dbPath);
+    const before = readFileSync(dbPath);
 
-    const db = openReset(runtime, dbPath);
-    db.close();
+    const error = captureError(() => openReset(runtime, dbPath));
 
-    expect(readFormatFingerprint(dbPath)).toBe(STORE_FORMAT.fingerprint);
-    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
-    expect(tableExists(dbPath, 'events')).toBe(true);
+    expectSetupCode(error, 'store_corrupt_or_unsupported');
+    expect(readFileSync(dbPath)).toEqual(before);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
+    expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
   });
 
-  it('quarantines mismatched store files before creating the replacement store', () => {
+  it.each([
+    {
+      label: 'older incompatible',
+      fingerprint: `sha256:${'0'.repeat(64)}`,
+      version: '0.0.0-rc.1',
+      code: 'store_older_incompatible',
+    },
+    {
+      label: 'newer incompatible',
+      fingerprint: STORE_FORMAT.fingerprint,
+      version: '99.0.0',
+      code: 'store_newer_incompatible',
+    },
+  ])('returns the documented $label refusal without mutating bytes', ({ fingerprint, version, code }) => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-directional-refusal-'), 'store.db');
+    createVersionedStore(dbPath, fingerprint, version);
+    const before = readFileSync(dbPath);
+
+    const error = captureError(() => openReset(runtime, dbPath));
+
+    expectSetupCode(error, code);
+    expect(serializeCoralSetupError(error)).toMatchObject({ context: { version } });
+    expect(readFileSync(dbPath)).toEqual(before);
+    expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
+  });
+
+  it('keeps crash-safe quarantine available to the explicit operator boundary', () => {
     const runtime = createRuntime();
     const dbDir = makeTempRoot('coral-store-mismatch-quarantine-');
     const dbPath = join(dbDir, 'store.db');
@@ -397,8 +426,8 @@ describe('openOrResetBackendStoreDb', () => {
       renameSync(oldPath, newPath);
     });
 
-    const db = openReset(runtime, dbPath);
-    db.close();
+    const incident = publishReset(runtime, dbPath);
+    expect(incident).toBeDefined();
     expect(finalPublicationObserved).toBe(true);
 
     const quarantineRoot = join(dbDir, 'store-reset-quarantine');
@@ -415,9 +444,6 @@ describe('openOrResetBackendStoreDb', () => {
     const sourceSync = events.findIndex((event, index) => index > dbRemoval && event === `sync:${dbDir}`);
     const finalRename = events.indexOf(`rename:${stagingDirectory}->${quarantineDir}`);
     const finalRootSync = events.findIndex((event, index) => index > finalRename && event === `sync:${quarantineRoot}`);
-    const replacementFormatWrite = events.findIndex(
-      (event, index) => index > finalRootSync && event === `write:${dbPath}.format`,
-    );
     expect(dbCopy).toBeGreaterThanOrEqual(0);
     expect(dbCopy).toBeLessThan(manifestWrite);
     expect(manifestWrite).toBeLessThan(manifestSync);
@@ -425,7 +451,6 @@ describe('openOrResetBackendStoreDb', () => {
     expect(dbRemoval).toBeLessThan(sourceSync);
     expect(sourceSync).toBeLessThan(finalRename);
     expect(finalRename).toBeLessThan(finalRootSync);
-    expect(finalRootSync).toBeLessThan(replacementFormatWrite);
     expect(readFileSync(join(quarantineDir, 'store.db-wal'), 'utf-8')).toBe('dummy wal');
     expect(existsSync(join(quarantineDir, 'store.db-shm'))).toBe(true);
     const manifest = JSON.parse(readFileSync(join(quarantineDir, 'reset-manifest.json'), 'utf-8')) as {
@@ -476,45 +501,69 @@ describe('openOrResetBackendStoreDb', () => {
     rmSync(join(quarantineDir, 'store.db-wal'), { force: true });
     rmSync(join(quarantineDir, 'store.db-shm'), { force: true });
     expect(tableExists(join(quarantineDir, 'store.db'), 'sentinel_before_reset')).toBe(true);
-    expect(tableExists(dbPath, 'events')).toBe(true);
-    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+    expect(existsSync(dbPath)).toBe(false);
   });
 
-  it('resumes an interrupted durable quarantine before creating the replacement store', () => {
+  it('refuses an interrupted durable quarantine without resuming or mutating it', () => {
     const runtime = createRuntime();
     const dbDir = makeTempRoot('coral-store-interrupted-quarantine-');
     const dbPath = join(dbDir, 'store.db');
-    const { quarantineRoot, stagingRoot } = createInterruptedReset(runtime, dbPath);
+    const { quarantineRoot, stagingRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
     expect(existsSync(dbPath)).toBe(false);
-    expect(readdirSync(stagingRoot)).toHaveLength(1);
+    const stagingNames = readdirSync(stagingRoot);
+    const stagedDb = readFileSync(join(stagingDirectory, 'store.db'));
+    const stagedManifest = readFileSync(join(stagingDirectory, 'reset-manifest.json'));
+    const activeWal = readFileSync(`${dbPath}-wal`);
 
-    const db = openReset(runtime, dbPath);
-    db.close();
+    const error = captureError(() => openReset(runtime, dbPath));
 
+    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expect(serializeCoralSetupError(error)).toMatchObject({
+      context: { reason: 'interrupted', flavor: 'prod', incidentId: stagingNames[0] },
+      remediation: expect.stringContaining('coral-cli backend store-reset discard --target gen2 --flavor prod'),
+    });
+    expect(readdirSync(stagingRoot)).toEqual(stagingNames);
+    expect(readFileSync(join(stagingDirectory, 'store.db'))).toEqual(stagedDb);
+    expect(readFileSync(join(stagingDirectory, 'reset-manifest.json'))).toEqual(stagedManifest);
+    expect(readFileSync(`${dbPath}-wal`)).toEqual(activeWal);
+    expect(existsSync(dbPath)).toBe(false);
+    expect(retainedIncidentNames(quarantineRoot)).toEqual([]);
+
+    expect(resumeReset(runtime, dbPath)?.incidentId).toBe(stagingNames[0]);
     const entries = retainedIncidentNames(quarantineRoot);
     expect(entries).toHaveLength(1);
     expect(readdirSync(stagingRoot)).toEqual([]);
     expect(readFileSync(join(quarantineRoot, entries[0], 'store.db-wal'), 'utf-8')).toBe('durable wal evidence');
+    const db = openReset(runtime, dbPath);
+    db.close();
     expect(tableExists(dbPath, 'events')).toBe(true);
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
   });
 
-  it('resumes safely when a crash leaves matching active and staged names', () => {
+  it('refuses matching active and staged incident evidence until the operator resumes it', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-interrupted-duplicate-'), 'store.db');
     const { quarantineRoot, stagingRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
     copyFileSync(join(stagingDirectory, 'store.db'), dbPath);
+    const activeBefore = readFileSync(dbPath);
+    const stagedBefore = readFileSync(join(stagingDirectory, 'store.db'));
 
-    const db = openReset(runtime, dbPath);
-    db.close();
+    const error = captureError(() => openReset(runtime, dbPath));
 
+    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expect(readFileSync(dbPath)).toEqual(activeBefore);
+    expect(readFileSync(join(stagingDirectory, 'store.db'))).toEqual(stagedBefore);
+    expect(readdirSync(stagingRoot)).toHaveLength(1);
+    expect(resumeReset(runtime, dbPath)).not.toBeNull();
     expect(readdirSync(stagingRoot)).toEqual([]);
     expect(retainedIncidentNames(quarantineRoot)).toHaveLength(1);
+    const db = openReset(runtime, dbPath);
+    db.close();
     expect(tableExists(dbPath, 'events')).toBe(true);
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
   });
 
-  it('aborts a pre-manifest transaction containing only writer-owned residue', () => {
+  it('refuses pre-manifest writer-owned residue without deleting it', () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-pre-manifest-resume-');
     const dbPath = join(root, 'store.db');
@@ -526,14 +575,17 @@ describe('openOrResetBackendStoreDb', () => {
     copyFileSync(dbPath, join(stagingDirectory, 'store.db'));
     writeFileSync(join(stagingDirectory, 'reset-manifest.json.tmp'), 'partial manifest', 'utf-8');
 
-    const db = openReset(runtime, dbPath);
-    db.close();
+    const activeBefore = readFileSync(dbPath);
+    const stagedBefore = readFileSync(join(stagingDirectory, 'store.db'));
+    const error = captureError(() => openReset(runtime, dbPath));
 
+    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expect(readFileSync(dbPath)).toEqual(activeBefore);
+    expect(readFileSync(join(stagingDirectory, 'store.db'))).toEqual(stagedBefore);
+    expect(readFileSync(join(stagingDirectory, 'reset-manifest.json.tmp'), 'utf8')).toBe('partial manifest');
+    expect(resumeReset(runtime, dbPath)).toBeNull();
     expect(existsSync(stagingDirectory)).toBe(false);
-    expect(readdirSync(stagingRoot)).toEqual([]);
-    expect(retainedIncidentNames(join(root, 'store-reset-quarantine'))).toHaveLength(1);
-    expect(tableExists(dbPath, 'events')).toBe(true);
-    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+    expect(readFileSync(dbPath)).toEqual(activeBefore);
   });
 
   it('rejects a symlinked interrupted staging directory before touching active evidence', () => {
@@ -615,7 +667,7 @@ describe('openOrResetBackendStoreDb', () => {
     const original = readFileSync(dbPath);
     vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockReturnValue(false);
 
-    const error = captureError(() => openReset(runtime, dbPath));
+    const error = captureError(() => publishReset(runtime, dbPath));
 
     expectSetupCode(error, 'store_reset_quarantine_failed');
     expect(readFileSync(dbPath)).toEqual(original);
@@ -635,7 +687,7 @@ describe('openOrResetBackendStoreDb', () => {
       dirname(path) === stagingRoot ? false : syncDirectoryDurableSync(path),
     );
 
-    const error = captureError(() => openReset(runtime, dbPath));
+    const error = captureError(() => publishReset(runtime, dbPath));
 
     expectSetupCode(error, 'store_reset_quarantine_failed');
     expect(readFileSync(dbPath)).toEqual(original);
@@ -654,13 +706,14 @@ describe('openOrResetBackendStoreDb', () => {
       return syncDirectoryDurableSync(path);
     });
 
-    const firstError = captureError(() => openReset(runtime, dbPath));
+    const firstError = captureError(() => publishReset(runtime, dbPath));
     expectSetupCode(firstError, 'store_reset_quarantine_failed');
     expect(existsSync(dbPath)).toBe(false);
     const stagingRoot = join(dbDir, 'store-reset-quarantine', '.staging');
     expect(existsSync(join(stagingRoot, readdirSync(stagingRoot)[0], 'store.db'))).toBe(true);
 
     syncSpy.mockRestore();
+    expect(resumeReset(runtime, dbPath)).not.toBeNull();
     const db = openReset(runtime, dbPath);
     db.close();
     expect(tableExists(dbPath, 'events')).toBe(true);
@@ -679,7 +732,7 @@ describe('openOrResetBackendStoreDb', () => {
       return syncDirectoryDurableSync(path);
     });
 
-    const firstError = captureError(() => openReset(runtime, dbPath));
+    const firstError = captureError(() => publishReset(runtime, dbPath));
     expectSetupCode(firstError, 'store_reset_quarantine_failed');
     expect(existsSync(dbPath)).toBe(false);
     expect(retainedIncidentNames(quarantineRoot)).toHaveLength(1);
@@ -699,7 +752,7 @@ describe('openOrResetBackendStoreDb', () => {
     const original = readFileSync(dbPath);
     vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockReturnValue(false);
 
-    const error = captureError(() => openReset(runtime, dbPath));
+    const error = captureError(() => publishReset(runtime, dbPath));
 
     expectSetupCode(error, 'store_reset_quarantine_failed');
     expect(readFileSync(dbPath)).toEqual(original);
@@ -714,7 +767,7 @@ describe('openOrResetBackendStoreDb', () => {
     createMismatchStore(target);
     symlinkSync(target, dbPath);
 
-    const error = captureError(() => openReset(runtime, dbPath));
+    const error = captureError(() => publishReset(runtime, dbPath));
 
     expectSetupCode(error, 'store_reset_quarantine_failed');
     expect(tableExists(target, 'sentinel_before_reset')).toBe(true);
@@ -739,7 +792,7 @@ describe('openOrResetBackendStoreDb', () => {
       return openSync(path, flags);
     });
 
-    const error = captureError(() => openReset(runtime, dbPath));
+    const error = captureError(() => publishReset(runtime, dbPath));
 
     expectSetupCode(error, 'store_reset_quarantine_failed');
     expect(replaced).toBe(true);
@@ -763,19 +816,19 @@ describe('openOrResetBackendStoreDb', () => {
       unlinkSync(path);
     });
 
-    const db = openReset(runtime, dbPath);
-    db.close();
+    const incident = publishReset(runtime, dbPath);
 
+    expect(incident).toBeDefined();
     expect(mutated).toBe(true);
     const quarantineRoot = join(root, 'store-reset-quarantine');
     const entries = retainedIncidentNames(quarantineRoot);
     expect(entries).toHaveLength(1);
     const incidentId = entries[0];
     expect(readFileSync(join(quarantineRoot, incidentId, 'store.db'))).toEqual(original);
-    expect(tableExists(dbPath, 'events')).toBe(true);
+    expect(existsSync(dbPath)).toBe(false);
   });
 
-  it('resets a missing-fingerprint store on cold start without handoff authority', () => {
+  it('refuses a missing-fingerprint store on cold start without handoff authority', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-cold-missing-fingerprint-'), 'store.db');
     createMissingFingerprintStore(dbPath);
@@ -790,46 +843,35 @@ describe('openOrResetBackendStoreDb', () => {
       },
     );
 
-    const db = openOrResetBackendStoreDb(runtime, authority, {
-      path: dbPath,
-      storeFormat: STORE_FORMAT,
-    });
-    db.close();
+    const before = readFileSync(dbPath);
+    const error = captureError(() =>
+      openOrResetBackendStoreDb(runtime, authority, {
+        path: dbPath,
+        storeFormat: STORE_FORMAT,
+      }),
+    );
 
-    expect(readFormatFingerprint(dbPath)).toBe(STORE_FORMAT.fingerprint);
+    expectSetupCode(error, 'store_corrupt_or_unsupported');
+    expect(readFileSync(dbPath)).toEqual(before);
+    expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
   });
 
-  it('logs the live-work-loss warning for mismatched stores', () => {
+  it('refuses mismatched stores without a reset warning or incident', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-mismatch-warning-'), 'store.db');
     createMismatchStore(dbPath);
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
-    const db = openReset(runtime, dbPath);
-    db.close();
+    const before = readFileSync(dbPath);
+    const error = captureError(() => openReset(runtime, dbPath));
 
-    const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
-    const incidentId = retainedIncidentNames(join(dirname(dbPath), 'store-reset-quarantine'))[0];
-    expect(
-      messages.some(
-        (message) =>
-          message.includes('resetting backend store') &&
-          message.includes('Active Coral history/state is unavailable') &&
-          message.includes('KB Markdown is unaffected') &&
-          message.includes(`coral-cli backend store-reset report ${incidentId}`),
-      ),
-    ).toBe(true);
-    const audit = messages.find(
-      (message) => message.startsWith('audit ') && message.includes('"event":"store_reset_quarantine"'),
-    );
-    expect(audit).toBeDefined();
-    expect(audit).not.toContain(dbPath);
-    expect(audit).not.toContain('quarantineDir');
-    expect(audit).not.toContain('"files"');
-    expect(messages.join('\n')).not.toContain('Recover');
+    expectSetupCode(error, 'store_corrupt_or_unsupported');
+    expect(readFileSync(dbPath)).toEqual(before);
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
   });
 
-  it('cleans up stale WAL and SHM siblings during mismatch reset', () => {
+  it('does not delete WAL or SHM siblings when refusing a mismatched store', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-wal-shm-'), 'store.db');
     createMismatchStore(dbPath);
@@ -838,14 +880,16 @@ describe('openOrResetBackendStoreDb', () => {
     writeFileSync(walPath, 'dummy wal', 'utf-8');
     writeFileSync(shmPath, 'dummy shm', 'utf-8');
 
-    const db = openReset(runtime, dbPath);
-    db.close();
+    const dbBefore = readFileSync(dbPath);
+    const unlinkSpy = vi.spyOn(runtime.storage, 'unlinkSync');
+    const error = captureError(() => openReset(runtime, dbPath));
 
-    // unlink runs unconditionally during mismatch reset; if the new opener
-    // re-creates WAL/SHM (WAL mode), they must not contain the dummy bytes.
-    expect(existsSync(walPath) ? readFileSync(walPath, 'utf-8') : '').not.toBe('dummy wal');
-    expect(existsSync(shmPath) ? readFileSync(shmPath, 'utf-8') : '').not.toBe('dummy shm');
-    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+    expectSetupCode(error, 'store_corrupt_or_unsupported');
+    expect(readFileSync(dbPath)).toEqual(dbBefore);
+    expect(readFileSync(walPath, 'utf-8')).toBe('dummy wal');
+    expect(existsSync(shmPath)).toBe(true);
+    expect(unlinkSpy.mock.calls.some(([path]) => path === walPath || path === shmPath)).toBe(false);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
   });
 
   it('fails fast on fresh reset lock contention and leaves a fresh lock in place', () => {
@@ -889,13 +933,9 @@ describe('openOrResetBackendStoreDb', () => {
 
     const error = captureError(() => openReset(runtime, dbPath));
 
-    expect(error).toBeInstanceOf(Error);
-    // Reset is forbidden on corrupt files: the bytes must be byte-identical,
-    // and the error must NOT be one of the documented reset codes — those
-    // would imply the path attempted reset.
+    expectSetupCode(error, 'store_corrupt_or_unsupported');
     expect(readFileSync(dbPath, 'utf-8')).toBe(before);
-    const errorMessage = error instanceof Error ? error.message : '';
-    expect(errorMessage).not.toMatch(/store_reset_lock_contended|store_schema_outdated/);
+    expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
     expect(warnSpy).not.toHaveBeenCalled();
   });
 

@@ -256,12 +256,24 @@ describe('store reset discipline invariants', () => {
     }
   });
 
-  it('keeps store file quarantine in openOrResetBackendStoreDb behind BackendStoreResetAuthority', () => {
+  it('keeps openOrResetBackendStoreDb free of destructive store-reset calls', () => {
     const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
     const authorityParam = resetFunction.parameters[1];
     const calls = collectCalls(BACKEND_STORE_RESET_PATH);
-    const quarantineStoreFileCalls = calls
-      .filter((call) => call.callee === 'publishIncident')
+    const destructiveOpenCalls = calls
+      .filter((call) => call.enclosingFunctions.includes('openOrResetBackendStoreDb'))
+      .filter((call) =>
+        [
+          'discardUncommittedStaging',
+          'publishBackendStoreResetIncident',
+          'publishIncident',
+          'reconcileCommittedEvidence',
+          'resumeInterruptedBackendStoreResetIncident',
+          'resumeInterruptedIncident',
+          'rmSync',
+          'unlinkSync',
+        ].includes(call.callee),
+      )
       .map((call) => `${call.relativePath}:${call.line}:${call.enclosingFunctions[0] ?? '<top>'}`);
     const directStoreUnlinks = allSourcePaths()
       .flatMap((relativePath) =>
@@ -274,23 +286,24 @@ describe('store reset discipline invariants', () => {
 
     expect(authorityParam?.name.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('authority');
     expect(authorityParam?.type?.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('BackendStoreResetAuthority');
-    expect(quarantineStoreFileCalls).toEqual([
-      expect.stringMatching(/^src\/store\/backend-store-reset\.ts:\d+:openOrResetBackendStoreDb$/),
-    ]);
+    expect(destructiveOpenCalls).toEqual([]);
     expect(directStoreUnlinks).toEqual([]);
   });
 
-  it('keeps publishIncident ordered after reset-lock acquisition', () => {
+  it('detects interrupted reset state before classifying and never resumes it from open', () => {
     const source = sourceFile(BACKEND_STORE_RESET_PATH);
     const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
     const body = resetFunction.body;
     expect(body).toBeDefined();
     const bodyText = body?.getText(source) ?? '';
     const lockIndex = bodyText.indexOf('acquireDirectoryLockSync(');
-    const quarantineIndex = bodyText.indexOf('publishIncident(');
+    const interruptedIndex = bodyText.indexOf('refuseInterruptedIncident(');
+    const classificationIndex = bodyText.indexOf('classifyStoreFile(');
 
     expect(lockIndex).toBeGreaterThanOrEqual(0);
-    expect(quarantineIndex).toBeGreaterThan(lockIndex);
+    expect(interruptedIndex).toBeGreaterThan(lockIndex);
+    expect(classificationIndex).toBeGreaterThan(interruptedIndex);
+    expect(bodyText).not.toMatch(/publishIncident\(|resumeInterruptedIncident\(/u);
   });
 
   it('keeps every store-reset support import closure outside reset authority and generic DB openers', () => {

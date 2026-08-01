@@ -186,9 +186,14 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       'Retry shortly. If this persists after 30 seconds, stop the other Coral process or remove the stale store.db.reset.lock directory.',
   },
   store_reset_quarantine_failed: {
-    userMessage: 'Coral could not quarantine the old backend store before reset.',
-    remediation:
-      'Check permissions and free disk space in the Coral store directory, then retry. Do not move, delete, restore, or upload DB, WAL, or SHM evidence.',
+    userMessage: (context) =>
+      context?.reason === 'interrupted'
+        ? 'Coral detected an interrupted backend store reset and refused to resume it during startup.'
+        : 'Coral could not quarantine the old backend store before reset.',
+    remediation: (context) =>
+      context?.reason === 'interrupted'
+        ? `Run 'coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}' to resume the interrupted reset under explicit operator control. Startup leaves the active store and staged incident unchanged.`
+        : 'Check permissions and free disk space in the Coral store directory, then retry. Do not move, delete, restore, or upload DB, WAL, or SHM evidence.',
   },
   expansion_binary_corrupt: {
     userMessage: (context) =>
