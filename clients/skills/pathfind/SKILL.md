@@ -152,10 +152,20 @@ argument-hint: "<problem descriptions or symptoms>"
   - **When to choose**: ...
   ```
 
-  ## Step 5 — Pioneer
+  ## Step 5 — Pioneer (blocking barrier)
 
   Pioneer independently generates elegant directions for the same root causes.
   It is not evaluating pathfind's directions — it is finding its own.
+
+  Pioneer's directions are **candidates in** the Step 6 ranking, not a late addition to a
+  ranking already shown. Until pioneer has returned and its directions are in the artifact:
+
+  - Do NOT rank, score, or recommend.
+  - Do NOT ask the user to choose a direction.
+  - Do NOT enter Step 6.
+
+  Run it as a single **foreground blocking call** — never background it, never continue other
+  work while it runs.
 
   ```
   Agent({ subagent_type: "coral:pioneer",
@@ -170,7 +180,9 @@ argument-hint: "<problem descriptions or symptoms>"
       {root cause table from Step 3}" })
   ```
 
-  **If pioneer fails**: proceed with pathfind's directions only, note in artifact.
+  **If pioneer fails, is unreachable, or returns nothing usable**: proceed with pathfind's
+  directions only, note it in the artifact, and say so when presenting — never let a
+  pathfind-only candidate set stand as though pioneer had contributed.
 
   Add pioneer's directions as additional candidates alongside pathfind's directions.
   Tag each direction's origin: `[pathfind]` or `[pioneer]`.
@@ -182,6 +194,9 @@ argument-hint: "<problem descriptions or symptoms>"
   ```
 
   ## Step 6 — Evaluate
+
+  **Precondition**: Step 5 is settled — pioneer has returned and its directions are in the
+  artifact, or it failed and that is recorded. Rank **once**, over the complete candidate set.
 
   **Combine**: If two directions are complementary (each covers different root causes),
   create a composite direction tagged `[combined]`. Evaluate it as a single candidate.
@@ -278,6 +293,7 @@ argument-hint: "<problem descriptions or symptoms>"
   | Use scanner when investigating existing code | Use gap-finder for raw symptom diagnosis |
   | Generate one direction per orthogonal lane | Generate multiple variations of the same mechanism |
   | Let pioneer generate its own elegant directions | Use pioneer as an evaluator of pathfind's directions |
+  | Block on pioneer, then rank the full candidate set once | Rank or recommend while pioneer is still running |
   | Hand off to preplan with direction | Implement or plan directly |
   | Ask clarifying questions when confidence is low | Proceed blindly on vague input |
   | Delegate code bugs to /analyze or debugger | Self-diagnose code-level bugs |

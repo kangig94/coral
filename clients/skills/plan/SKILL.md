@@ -1,7 +1,7 @@
 ---
 name: plan
-description: 'Use when a task needs structured planning before implementation. Supports --delegate and round=N.'
-argument-hint: '[--delegate] [round=N] [task description]'
+description: 'Use when a task needs structured planning before implementation. Supports --delegate and round=N[,M].'
+argument-hint: '[--delegate] [round=N[,M]] [task description]'
 ---
 
 # Planning
@@ -14,11 +14,20 @@ Execute a multi-round planning session with architect/critic review.
 | -------------- | -------------------------------------------------------------------------------------------------- |
 | `<prompt>`     | Self-execute on current host (default)                                                             |
 | `--delegate`   | Add review pass on the other host (Codex when current is Claude, Claude when current is Codex; from SessionStart `Current host:`) |
-| `round=N`      | Review rounds per phase (default `1`). e.g. `round=3` for deeper iteration. |
+| `round=N`      | Review rounds for every applicable phase (default `1`). e.g. `round=3` for deeper iteration. |
+| `round=N,M`    | Per-phase budget: Phase 1 (`<other-host>`) gets `N` rounds, Phase 2 (`<current-host>`) gets `M`. **Turns `--delegate` on.** |
 | `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                         |
 
-Reviewers and the resolver always run — `round=N` only sets how many times each phase iterates.
-Parse `round=N` (default `1`), then strip `--delegate`, `round=N`, and `--no-handoff` tokens before passing the prompt to the execution path.
+Reviewers and the resolver always run — the round budget only sets how many times each phase iterates.
+
+**Parsing the round budget** (`round=…` and `--round=…` are the same token):
+
+- `round=N` → every applicable phase gets `N`. Does not affect `--delegate`.
+- `round=N,M` → `{maxRounds[1]}` = `N`, `{maxRounds[2]}` = `M`, and `--delegate` is on whether or not it was written. Phase 1 exists only under `--delegate`, so naming two budgets IS the request for both phases.
+- Absent → `1` for every phase.
+- Every value must be an integer ≥ 1. More than two values, a `0`, or a non-integer is a usage error: report it and stop. Do not clamp, drop the extras, or fall back to the default.
+
+Strip `--delegate`, the round token, and `--no-handoff` before passing the prompt to the execution path.
 
 <Planning_Protocol>
 <Role>
@@ -71,18 +80,18 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     ### 4. Review Loop
 
     Phase 0 always runs first. Phase 0b (Complexity Gate) may skip review phases.
-    Phase 1 runs only when `--delegate` flag is set (review on the other host). Phase 2 always runs (unless skipped by Complexity Gate; review on the current host).
+    Phase 1 runs only when `--delegate` is set — explicitly, or implied by a two-value `round=N,M` (review on the other host). Phase 2 always runs (unless skipped by Complexity Gate; review on the current host).
 
-    **Round budget**: `{maxRounds}` = the `round=N` argument value (default `1`). Each phase iterates up to `{maxRounds}` rounds. With the default `round=1`, each phase runs exactly one round and then exits (no iteration). Phase structure is unaffected — Phase 1 (if `--delegate`) and Phase 2 still run regardless of round budget.
+    **Round budget**: `{maxRounds[P]}` is phase P's own budget. `round=N` gives every phase `N`; `round=N,M` gives Phase 1 `N` and Phase 2 `M`; absent gives every phase `1`. Each phase iterates up to its own budget and then exits — a phase at budget `1` runs exactly one round with no iteration. Phase structure is independent of the budget: Phase 1 (if `--delegate`) and Phase 2 still run whatever the numbers are.
 
     **Task registration**: Before starting Phase 0, register one Task per applicable phase:
     - `TaskCreate({ subject: "Phase 0 — Frame Gate" })`
-    - `TaskCreate({ subject: "Phase 1 — <other-host> review" })` (only if `--delegate`)
+    - `TaskCreate({ subject: "Phase 1 — <other-host> review" })` (only if `--delegate`, explicit or implied)
     - `TaskCreate({ subject: "Phase 2 — <current-host> review" })`
     - `TaskCreate({ subject: "Execution Ordering" })`
 
     On phase start: `TaskUpdate({ taskId, status: "in_progress" })`.
-    On each round: `TaskUpdate({ taskId, subject: "Phase N — {label} (round M/{maxRounds})" })`.
+    On each round: `TaskUpdate({ taskId, subject: "Phase P — {label} (round M/{maxRounds[P]})" })`.
     On phase complete: `TaskUpdate({ taskId, status: "completed" })`.
 
     #### Phase 0 — Frame Gate (always)
@@ -117,12 +126,12 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     Let `<current-host>` come from SessionStart `Current host:`. Let `<other-host>` = the other of `codex`/`claude`.
 
-    | Phase | Condition | Provider | Round Label |
-    |-------|-----------|----------|-------------|
-    | 1 | `--delegate` only | `<other-host>` | `(<other-host capitalized>)` |
-    | 2 | always | `<current-host>` | `(<current-host capitalized>)` |
+    | Phase | Condition | Provider | Round Label | Budget |
+    |-------|-----------|----------|-------------|--------|
+    | 1 | `--delegate`, explicit or implied by `round=N,M` | `<other-host>` | `(<other-host capitalized>)` | `{maxRounds[1]}` |
+    | 2 | always | `<current-host>` | `(<current-host capitalized>)` | `{maxRounds[2]}` |
 
-    For each applicable phase, repeat (max `{maxRounds}` rounds; default 1):
+    Run the phases in order. For each applicable phase, repeat up to that phase's own `{maxRounds[P]}` rounds (default 1):
 
     **4a. Workflow Dispatch**
 
@@ -161,15 +170,15 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
       **Changes Applied**: [what was edited, with rationale for each change]
 
-      **Continue Decision**: **{Verdict}** — {Rationale} (from resolver). At round `{maxRounds}` the phase exits regardless of the verdict — note the round cap when it forces the exit.
+      **Continue Decision**: **{Verdict}** — {Rationale} (from resolver). At round `{maxRounds[P]}` the phase exits regardless of the verdict — note the round cap when it forces the exit.
 
     **4d. Exit Condition**
 
-    Follow the resolver's **Continue Decision** verdict — do not override or reinterpret it — but `{maxRounds}` is the outer bound:
-    - **Round < `{maxRounds}`**: Continue → 4a. Exit → fix remaining MEDIUM/LOW inline, then exit phase. Hard override: CRITICAL findings always Continue.
-    - **Round == `{maxRounds}`**: always proceed to the next phase (or Execution Order if this is the last phase), regardless of the verdict. Fix surviving MEDIUM inline; defer CRITICAL/HIGH to the next phase.
+    Follow the resolver's **Continue Decision** verdict — do not override or reinterpret it — but this phase's `{maxRounds[P]}` is the outer bound. A budget belongs to one phase: exhausting Phase 1 says nothing about Phase 2's.
+    - **Round < `{maxRounds[P]}`**: Continue → 4a. Exit → fix remaining MEDIUM/LOW inline, then exit phase. Hard override: CRITICAL findings always Continue.
+    - **Round == `{maxRounds[P]}`**: always proceed to the next phase (or Execution Order if this is the last phase), regardless of the verdict. Fix surviving MEDIUM inline; defer CRITICAL/HIGH to the next phase.
 
-    With the default `round=1`, every phase exits after its first round. Severity is never reclassified at exit — only during synthesis (4b). If the Continue Decision is missing, treat it as a protocol violation and re-evaluate from the resolver report's highest severity.
+    A phase at budget `1` exits after its first round. Severity is never reclassified at exit — only during synthesis (4b). If the Continue Decision is missing, treat it as a protocol violation and re-evaluate from the resolver report's highest severity.
 
     ### 4e. Execution Order
 
@@ -241,7 +250,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     | Use workflow for all review phases | Run reviewers sequentially |
     | Delegate synthesis to the resolver every round | Self-synthesize in the orchestrator or skip the resolver |
     | Cite file:line in plans | Write vague plans without references |
-    | Exit when the resolver says Exit, or at round `{maxRounds}` | Continue past the round budget |
+    | Exit when the resolver says Exit, or at that phase's `{maxRounds[P]}` | Continue past a phase's round budget, or spend one phase's budget on another |
     | Return plan file path | Implement within this protocol |
   </Constraints>
   <Output_Format>
@@ -251,7 +260,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     ### Review Summary
     - Phases: [0 (Frame Gate) + 1 (<other-host>) + 2 (<current-host>)] or [0 (Frame Gate) + 2 (<current-host>)]
-    - Rounds: N per phase
+    - Rounds: rounds actually run / budget, per phase — e.g. `Phase 1: 2/3, Phase 2: 1/1`
     - Final verdict: [APPROVED / APPROVED WITH CONDITIONS]
     - Key changes from review: [brief list]
     - ⚠️ **Unsatisfied Success Criteria**: [list with reasons] *(omit if all satisfied)*
