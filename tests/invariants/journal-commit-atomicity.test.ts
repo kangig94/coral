@@ -838,7 +838,7 @@ describe('journal commit atomicity invariant', () => {
       const captured = captureWorkflowIntents(realFinalizer);
       const message = "Step 0, atom 'architect' failed: exited with code 1";
 
-      await expect(resumeRecoveryHarness(harness, captured.finalizeWorkflow)).rejects.toThrow(message);
+      await expect(resumeRecoveryHarness(harness, captured.finalizeWorkflow)).resolves.toEqual([harness.workflowId]);
 
       expect(captured.intents).toEqual([
         {

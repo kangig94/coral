@@ -481,12 +481,29 @@ export function createRecoveryCoordinator({
               maybeReleaseRecoveryRegistry();
             })
             .catch((error: unknown) => {
-              if (retainedCleanup !== null) {
-                state.adoptedRunningJobCleanups.set(jobId, retainedCleanup);
+              if ((error as { name?: string } | null)?.name === 'AbortError') {
+                try {
+                  retainedCleanup?.();
+                } finally {
+                  maybeReleaseRecoveryRegistry();
+                }
+                return;
               }
-              state.recoveryRegistry?.register(jobId, launchRecord, adoptedRuntimeRecord);
-              runtimeState.setLaunchFenceActive(true);
-              log(`Failed to finalize adopted job ${jobId}: ${formatError(error)}\n`);
+              try {
+                recordUnresolvedRecovery(
+                  jobId,
+                  'Adopted durable recovery finalization failed',
+                  error,
+                  coordinatorCommit,
+                );
+                state.recoveryRegistry?.clearCancelled(jobId);
+              } finally {
+                try {
+                  retainedCleanup?.();
+                } finally {
+                  maybeReleaseRecoveryRegistry();
+                }
+              }
             });
           void finalization.catch((error: unknown) => {
             log(`Durable finalization cleanup failed for ${jobId}: ${formatError(error)}\n`);

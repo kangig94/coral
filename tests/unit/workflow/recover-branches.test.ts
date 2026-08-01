@@ -440,7 +440,7 @@ describe('workflow recovery branch rules', () => {
           finalizeWorkflow: vi.fn(),
           time: fixedTime,
         }),
-      ).rejects.toThrow('failed');
+      ).resolves.toEqual(['workflow-1']);
       expect(harness.executionSvc.resume).toHaveBeenCalledWith(
         harness.plan.slots[0].provider,
         expect.objectContaining({
@@ -494,7 +494,7 @@ describe('workflow recovery branch rules', () => {
           finalizeWorkflow: vi.fn(),
           time: fixedTime,
         }),
-      ).rejects.toThrow('failed');
+      ).resolves.toEqual(['workflow-1']);
       expect(harness.executionSvc.resume).toHaveBeenCalledTimes(1);
     } finally {
       harness.db.close();
@@ -526,7 +526,7 @@ describe('workflow recovery branch rules', () => {
           finalizeWorkflow: vi.fn(),
           time: fixedTime,
         }),
-      ).rejects.toThrow('failed');
+      ).resolves.toEqual(['workflow-1']);
       expect(harness.executionSvc.recordContinuationLease).toHaveBeenCalledWith(
         expect.objectContaining({
           sessionId: 'session-atom-1',
@@ -578,7 +578,17 @@ describe('workflow recovery branch rules', () => {
           finalizeWorkflow,
           time: fixedTime,
         }),
-      ).rejects.toThrow(`invalid child chain for slot '${slot.slotId}'`);
+      ).resolves.toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: 'failed',
+          workflowJobId: 'workflow-1',
+          lifecycleFault: expect.objectContaining({
+            kind: 'recovery_failed',
+            message: `Workflow recovery rejected invalid child chain for slot '${slot.slotId}' at job 'invalid-generation-2'.`,
+          }),
+        }),
+      );
       expect(harness.executionSvc.waitStream).not.toHaveBeenCalled();
     } finally {
       harness.db.close();
@@ -822,10 +832,7 @@ describe('workflow recovery branch rules', () => {
           finalizeWorkflow,
           time: fixedTime,
         }),
-      ).rejects.toMatchObject({
-        message: "Step 0, atom 'critic' launch failed: launch capacity unavailable",
-        failedSlotId: missingSlot.slotId,
-      });
+      ).resolves.toEqual(['workflow-1']);
 
       expect(harness.executionSvc.coralDispatch).toHaveBeenCalledTimes(1);
       expect(harness.executionSvc.coralDispatch).toHaveBeenCalledWith(
@@ -884,7 +891,7 @@ describe('workflow recovery branch rules', () => {
         },
       },
     });
-    const [completedSlot, missingSlot] = harness.plan.slots;
+    const [completedSlot] = harness.plan.slots;
     const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
     harness.executionSvc.coralDispatch.mockResolvedValue({
       status: 'rejected',
@@ -911,10 +918,7 @@ describe('workflow recovery branch rules', () => {
           finalizeWorkflow,
           time: fixedTime,
         }),
-      ).rejects.toMatchObject({
-        message: "Step 0, atom 'critic' launch failed: launch capacity unavailable",
-        failedSlotId: missingSlot.slotId,
-      });
+      ).resolves.toEqual(['workflow-1']);
 
       expect(harness.executionSvc.abort).toHaveBeenCalledWith([completedSlot.slotId]);
       expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
@@ -949,12 +953,7 @@ describe('workflow recovery branch rules', () => {
           finalizeWorkflow,
           time: fixedTime,
         }),
-      ).rejects.toMatchObject({
-        message: "Step 0, atom 'architect' failed: exited with code 1",
-        aborted: false,
-        failedAtom: 'architect',
-        failedJobId: harness.plan.slots[0].slotId,
-      });
+      ).resolves.toEqual(['workflow-1']);
 
       expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
       expect(finalizeWorkflow.mock.calls[0]?.[0]).toMatchObject({
@@ -996,12 +995,7 @@ describe('workflow recovery branch rules', () => {
           finalizeWorkflow,
           time: fixedTime,
         }),
-      ).rejects.toMatchObject({
-        message: "Step 0, atom 'critic' failed: exited with code 1",
-        aborted: false,
-        failedAtom: 'critic',
-        failedJobId: harness.plan.slots[1].slotId,
-      });
+      ).resolves.toEqual(['workflow-1']);
 
       expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
       expect(finalizeWorkflow.mock.calls[0]?.[0]).toMatchObject({
@@ -1050,9 +1044,16 @@ describe('workflow recovery branch rules', () => {
           finalizeWorkflow,
           time: fixedTime,
         }),
-      ).rejects.toThrow(`invalid durable relation for slot '${slot.slotId}'`);
+      ).resolves.toEqual(['workflow-1']);
       expect(finalizeWorkflow).toHaveBeenCalledWith(
-        expect.objectContaining({ outcome: 'failed', workflowJobId: 'workflow-1' }),
+        expect.objectContaining({
+          outcome: 'failed',
+          workflowJobId: 'workflow-1',
+          lifecycleFault: expect.objectContaining({
+            kind: 'recovery_failed',
+            message: `Workflow recovery rejected invalid durable relation for slot '${slot.slotId}' and job '${slot.slotId}'.`,
+          }),
+        }),
       );
       expect(harness.executionSvc.waitStream).not.toHaveBeenCalled();
     } finally {
@@ -1077,9 +1078,16 @@ describe('workflow recovery branch rules', () => {
           finalizeWorkflow,
           time: fixedTime,
         }),
-      ).rejects.toThrow(`could not find provider session 'session-atom-1' for slot '${slot.slotId}'`);
+      ).resolves.toEqual(['workflow-1']);
       expect(finalizeWorkflow).toHaveBeenCalledWith(
-        expect.objectContaining({ outcome: 'failed', workflowJobId: 'workflow-1' }),
+        expect.objectContaining({
+          outcome: 'failed',
+          workflowJobId: 'workflow-1',
+          lifecycleFault: expect.objectContaining({
+            kind: 'recovery_failed',
+            message: `Workflow recovery could not find provider session 'session-atom-1' for slot '${slot.slotId}'.`,
+          }),
+        }),
       );
       expect(harness.executionSvc.waitStream).not.toHaveBeenCalled();
     } finally {

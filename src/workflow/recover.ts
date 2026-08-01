@@ -1,6 +1,7 @@
 import type { Database } from '../store/db.js';
 
 import { errorMessage } from '../infra/error-format.js';
+import { isAbortError } from '../runtime/abort.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { TimePort } from '../infra/port-types.js';
 import { nowIsoString } from '../infra/time.js';
@@ -819,6 +820,7 @@ export async function resumeAll(options: {
   getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   finalizeWorkflow: (intent: WorkflowFinalizationIntent) => void;
+  log?: (message: string) => void;
   onProgress?: (workflowId: string, message: string) => void;
   staleTimeoutMs?: number;
   staleCheckIntervalMs?: number;
@@ -877,8 +879,13 @@ export async function resumeAll(options: {
         time,
       });
     } catch (error: unknown) {
+      if (isAbortError(error)) {
+        throw error;
+      }
       options.finalizeWorkflow(recoveryIntentFromError(jobId, error));
-      throw error;
+      options.log?.(`Workflow recovery finalized ${jobId} after recovery failed: ${errorMessage(error)}\n`);
+      resumedWorkflowIds.push(jobId);
+      continue;
     }
 
     if (recovered === null) {
@@ -886,8 +893,11 @@ export async function resumeAll(options: {
     }
 
     options.finalizeWorkflow(recovered.intent);
-    if (recovered.error) {
+    if (recovered.error?.aborted) {
       throw recovered.error;
+    }
+    if (recovered.error) {
+      options.log?.(`Workflow recovery finalized ${jobId} after recovery failed: ${errorMessage(recovered.error)}\n`);
     }
     resumedWorkflowIds.push(jobId);
   }

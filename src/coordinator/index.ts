@@ -511,6 +511,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           coordinatorCommit,
           log: identity.log,
         }),
+        log: identity.log,
         time: runtime.time,
         drainDeadlineMs: resolveDrainDeadlineMs(runtime.env),
         staleAbortTimeoutMs: resolveStaleAbortTimeoutMs(runtime.env),

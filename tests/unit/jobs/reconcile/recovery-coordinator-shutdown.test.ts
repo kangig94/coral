@@ -18,6 +18,15 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
+import { parseExpression } from '#src/workflow/parser.js';
+import { buildWorkflowPlan } from '#src/workflow/plan.js';
+import { commitWorkflowEvents } from '#src/workflow/projections.js';
+import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { commitJobTerminal } from '#tests/helpers/job-commits.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
+import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -56,6 +65,8 @@ async function loadModules() {
     pathsModule,
     sessionQueriesModule,
     providerRegistryModule,
+    workflowRecoverModule,
+    jobReadQueriesModule,
   ] = await Promise.all([
     import('#src/jobs/store.js'),
     import('#src/coordinator/lifecycle.js'),
@@ -64,6 +75,8 @@ async function loadModules() {
     import('#src/infra/plugin-identity.js'),
     import('#src/sessions/lookup.js'),
     import('#src/providers/registry.js'),
+    import('#src/workflow/recover.js'),
+    import('#src/jobs/read-queries.js'),
   ]);
 
   return {
@@ -74,6 +87,8 @@ async function loadModules() {
     pathsModule,
     sessionQueriesModule,
     providerRegistryModule,
+    workflowRecoverModule,
+    jobReadQueriesModule,
   };
 }
 
@@ -254,6 +269,98 @@ function stubRuntimeRecord(
     stdoutPath: join(jobsDir(runtime.env), options.jobId, 'stdout'),
     stderrPath: join(jobsDir(runtime.env), options.jobId, 'stderr'),
     startTime: options.startTime ?? '2026-04-17T00:00:00.000Z',
+  });
+}
+
+function stubRecoverableWorkflow(
+  progressStore: InstanceType<LoadedModules['progressStoreModule']['JobStore']>,
+  runtime: Runtime,
+  options: {
+    workflowId: string;
+    projectRoot: string;
+    backendNamespace: string;
+    completedAtom: boolean;
+  },
+): void {
+  const plan = buildWorkflowPlan(options.workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
+  commitWorkflowEvents(
+    progressStore.getDb(),
+    (c) => {
+      c.append(workflowPlanDeclaredEvent(options.workflowId, plan, TEST_PROVIDER_SCOPE));
+      return undefined;
+    },
+    runtime.time,
+    permissiveProviderLookupPort,
+  );
+  progressStore.appendLaunchRequested(options.workflowId, {
+    jobId: options.workflowId,
+    owner: { kind: 'workflow', id: options.workflowId },
+    sessionId: null,
+    provider: null,
+    projectRoot: options.projectRoot,
+    backendNamespace: options.backendNamespace,
+    jobKind: 'workflow',
+    pool: 'default',
+    enqueueSequence: progressStore.nextEnqueueSequence(),
+    request: {
+      prompt: '',
+      cwd: options.projectRoot,
+      bypassPermissions: false,
+      coralEnv: {},
+    },
+    createdAt: new Date(runtime.time.now()).toISOString(),
+  });
+  progressStore.commit((c) => {
+    c.append({
+      type: 'job.runtime.started',
+      stream: { kind: 'job', id: options.workflowId },
+      namespace: options.backendNamespace,
+      project: options.projectRoot,
+      refs: { jobId: options.workflowId, workflowId: options.workflowId },
+      body: { transport: 'workflow', startedAt: new Date(runtime.time.now()).toISOString() },
+    });
+    return undefined;
+  });
+
+  if (!options.completedAtom) {
+    return;
+  }
+
+  const slot = plan.slots[0];
+  const sessionId = `${options.workflowId}-session`;
+  seedTestSessionProjection(progressStore.getDb(), {
+    sessionId,
+    provider: slot.provider,
+    projectRoot: options.projectRoot,
+    backendNamespace: options.backendNamespace,
+    activeJobId: slot.slotId,
+  });
+  progressStore.appendLaunchRequested(slot.slotId, {
+    jobId: slot.slotId,
+    owner: { kind: 'workflow', id: options.workflowId },
+    sessionId,
+    provider: slot.provider,
+    projectRoot: options.projectRoot,
+    backendNamespace: options.backendNamespace,
+    jobKind: 'provider',
+    pool: 'default',
+    enqueueSequence: progressStore.nextEnqueueSequence(),
+    providerAction: 'exec',
+    parentWorkflowJobId: options.workflowId,
+    workflowSlotId: slot.slotId,
+    workflowSlotGeneration: 0,
+    request: {
+      prompt: '',
+      cwd: options.projectRoot,
+      bypassPermissions: false,
+      coralEnv: {},
+    },
+    createdAt: new Date(runtime.time.now()).toISOString(),
+  });
+  commitJobTerminal(progressStore, slot.slotId, sessionId, {
+    content: 'recovered output',
+    outcome: { kind: 'completed' },
+    durationMs: 0,
   });
 }
 
@@ -602,7 +709,79 @@ describe('recovery coordinator shutdown', () => {
     }
   });
 
-  it('re-fences and retains adopted ownership when durable finalization fails', async () => {
+  it('continues to the second workflow and lets start resolve after finalizing the first recovery failure', async () => {
+    const modules = await loadModules();
+    const runtime = createRealRuntime('prod');
+    const pluginRoot = createProjectRoot('plugin-workflow-isolation');
+    const failedProjectRoot = createProjectRoot('project-workflow-failure');
+    const resumedProjectRoot = createProjectRoot('project-workflow-resumed');
+    const backendNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const recoveryLog = vi.fn<(message: string) => void>();
+    const getExecutionService = vi.fn((ctx: { projectRoot: string }) => {
+      if (ctx.projectRoot === failedProjectRoot) {
+        throw new Error('failed workflow recovery');
+      }
+      return {} as WorkflowExecutionPort;
+    });
+    let resumedWorkflowIds: string[] = [];
+    const harness = createCoordinatorShutdownHarness({
+      modules,
+      runtime,
+      pluginRoot,
+      projectRoot: failedProjectRoot,
+      workflowResumeImpl: async () => {
+        resumedWorkflowIds = await modules.workflowRecoverModule.resumeAll({
+          db: harness.progressStore.getDb(),
+          progressStore: harness.progressStore,
+          loadJobDetails: modules.jobReadQueriesModule.loadJobProjectionDetails,
+          getExecutionService,
+          createInvocationContext: (projectRoot) => ({
+            projectRoot,
+            pluginRoot,
+            coralEnv: {},
+            principal: testProjectPrincipal(projectRoot),
+          }),
+          finalizeWorkflow,
+          log: recoveryLog,
+          time: runtime.time,
+        });
+      },
+    });
+    stubRecoverableWorkflow(harness.progressStore, runtime, {
+      workflowId: 'workflow-fails-recovery',
+      projectRoot: failedProjectRoot,
+      backendNamespace,
+      completedAtom: false,
+    });
+    stubRecoverableWorkflow(harness.progressStore, runtime, {
+      workflowId: 'workflow-resumes-after-failure',
+      projectRoot: resumedProjectRoot,
+      backendNamespace,
+      completedAtom: true,
+    });
+
+    try {
+      await harness.controller.start();
+      expect(resumedWorkflowIds).toEqual(['workflow-fails-recovery', 'workflow-resumes-after-failure']);
+      expect(getExecutionService).toHaveBeenCalledTimes(2);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'failed', workflowJobId: 'workflow-fails-recovery' }),
+      );
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'completed', workflowJobId: 'workflow-resumes-after-failure' }),
+      );
+      expect(recoveryLog).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'Workflow recovery finalized workflow-fails-recovery after recovery failed: failed workflow recovery',
+        ),
+      );
+    } finally {
+      await stopLifecycleController(harness.controller);
+    }
+  });
+
+  it('terminalizes the adopted job, releases its claim, cleans up, and leaves the launch fence open when finalization fails', async () => {
     const modules = await loadModules();
     const virtualRuntime = new SimulationRuntime();
     const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
@@ -639,11 +818,15 @@ describe('recovery coordinator shutdown', () => {
 
       await vi.waitFor(() => {
         expect(harness.fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledTimes(1);
-        expect(harness.runtimeState.getLaunchFenceActive()).toBe(true);
+        expect(harness.progressStore.readStatus('running-adoption-job')?.phase).toBe('error');
+        expect(cleanupSpy).toHaveBeenCalledTimes(1);
       });
-      expect(cleanupSpy).not.toHaveBeenCalled();
-      expect(harness.controller.getRecoveryRegistry()?.has('running-adoption-job')).toBe(true);
-      expect(harness.progressStore.readStatus('running-adoption-job')?.phase).toBe('running');
+      const recoveredSession = modules.sessionQueriesModule
+        .createProjectionSessionLookup(harness.progressStore.getDb())
+        .readProviderSession('running-adoption-session');
+      expect(recoveredSession?.activeJobId).toBeUndefined();
+      expect(harness.runtimeState.getLaunchFenceActive()).toBe(false);
+      expect(harness.controller.getRecoveryRegistry()).toBeNull();
     } finally {
       await stopLifecycleController(harness.controller);
     }
@@ -787,4 +970,4 @@ describe('recovery coordinator shutdown', () => {
     expect(((await startup) as Error).name).toBe('AbortError');
   });
 });
-import { seedTestJobSession } from '#tests/helpers/session.js';
+import { seedTestJobSession, seedTestSessionProjection } from '#tests/helpers/session.js';
