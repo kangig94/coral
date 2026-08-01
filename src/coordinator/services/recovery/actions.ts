@@ -114,23 +114,17 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
       const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
       signal.throwIfAborted();
       if (!captured.ok) {
+        // A rejected authority is a per-job fault, never a process verdict: throwing
+        // here is fatal to startup because the register loop runs outside the adoption
+        // try/catch, which would abandon every other job's recovery too.
         if (isDurableCliRuntime(action.runtimeRecord) && runtime.process.isAlive(action.runtimeRecord.pid)) {
           try {
             runtime.process.kill(action.runtimeRecord.pid, 'SIGTERM');
           } catch (error: unknown) {
-            throw new Error(
-              `Failed to stop rejected recovery process ${action.runtimeRecord.pid}: ${formatError(error)}`,
-              { cause: error },
-            );
+            // A failed stop is not a reason to refuse the whole daemon. The next boot
+            // observes the pid as dead and takes the dead-process path.
+            log(`Failed to stop rejected recovery process ${action.runtimeRecord.pid}: ${formatError(error)}\n`);
           }
-          throw new Error(
-            `Recovery authority rejected for live durable job ${action.jobId}; process stop requested and launch fence retained.`,
-          );
-        }
-        if (isAppServerRuntime(action.runtimeRecord)) {
-          throw new Error(
-            `Recovery authority rejected for app-server job ${action.jobId}; provider work cannot be stopped without the persisted binding.`,
-          );
         }
         service.finalizeProviderRecoveryBindingFailure(action.launchRecord, captured.failure);
         recoveryRegistry.remove(action.jobId);

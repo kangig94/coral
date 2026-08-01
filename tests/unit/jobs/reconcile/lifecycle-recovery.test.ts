@@ -1456,7 +1456,7 @@ describe('lifecycle recovery', () => {
     }
   });
 
-  it('11b. dead-on-start durable finalization failure retains registry ownership and the launch fence', async () => {
+  it('11b. dead-on-start durable finalization failure is a per-job fault, not a boot failure', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-dead-finalizer-blocked');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -1491,10 +1491,16 @@ describe('lifecycle recovery', () => {
     });
 
     try {
-      await expect(controller.start()).rejects.toThrow(`Interrupted durable recovery remains incomplete for ${jobId}`);
-      expect(runtimeState.getLaunchFenceActive()).toBe(true);
-      expect(controller.getRecoveryRegistry()?.has(jobId)).toBe(true);
-      expect(progressStore.readStatus(jobId)?.phase).toBe('running');
+      await controller.start();
+      expect(runtimeState.getLaunchFenceActive()).toBe(false);
+      expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
+      // `recovery_parse_failed` is a progress fault, so the terminal is `failed` and the
+      // reason is recorded on the job's own stream and referenced by a causeRef — the job
+      // is terminal with a queryable cause instead of stuck at `running` forever.
+      expect(progressStore.readStatus(jobId)).toMatchObject({
+        phase: 'error',
+        result: { outcome: { kind: 'failed', causeRef: expect.anything() } },
+      });
     } finally {
       await stopLifecycleController(controller);
     }
@@ -1743,7 +1749,7 @@ describe('lifecycle recovery', () => {
     }
   });
 
-  it('14c. interrupted app-server finalization failure retains the recovery registry and launch fence', async () => {
+  it('14c. interrupted app-server finalization failure is a per-job fault, not a boot failure', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-app-server-blocked');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -1786,18 +1792,84 @@ describe('lifecycle recovery', () => {
     });
 
     try {
-      await expect(controller.start()).rejects.toThrow(
-        `Interrupted app-server recovery remains incomplete for ${jobId}`,
-      );
-      expect(runtimeState.getLaunchFenceActive()).toBe(true);
-      expect(controller.getRecoveryRegistry()?.has(jobId)).toBe(true);
-      expect(progressStore.readStatus(jobId)?.phase).toBe('running');
+      await controller.start();
+      expect(runtimeState.getLaunchFenceActive()).toBe(false);
+      expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
+      // `recovery_parse_failed` is a progress fault, so the terminal is `failed` and the
+      // reason is recorded on the job's own stream and referenced by a causeRef — the job
+      // is terminal with a queryable cause instead of stuck at `running` forever.
+      expect(progressStore.readStatus(jobId)).toMatchObject({
+        phase: 'error',
+        result: { outcome: { kind: 'failed', causeRef: expect.anything() } },
+      });
     } finally {
       await stopLifecycleController(controller);
     }
   });
 
-  it('14d. app-server binding failure retains preregistration and the launch fence without terminalizing', async () => {
+  // Per-job isolation is the invariant `lifecycle.ts` documents ("corrupt sessions should
+  // not abort recovery") and did not have: one unresolvable job used to abandon every other
+  // job's recovery, discuss recovery, workflow recovery, and stale-job cleanup with it.
+  it('14c2. one unresolvable job does not abandon the recovery of another', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-app-server-isolation');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-app-server-isolation');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const blockedJobId = 'isolation-blocked-job';
+    const healthyJobId = 'isolation-healthy-job';
+    const fakeService = createFakeExecutionAndRecoveryService({
+      finalizeInterruptedAppServerJob: vi.fn(async (authority: { launchRecord: { jobId: string } }) => {
+        if (authority.launchRecord.jobId === blockedJobId) {
+          throw new Error('replacement host could not be opened');
+        }
+      }),
+    });
+
+    for (const jobId of [blockedJobId, healthyJobId]) {
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId: `${jobId}-session`,
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: namespace,
+      });
+      progressStore.appendRuntimeStarted(jobId, {
+        transport: 'app-server',
+        startTime: '2026-03-31T00:00:00.000Z',
+        providerMeta: { provider: 'codex', leaseState: 'waiting' },
+      });
+    }
+
+    const { controller, runtimeState } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      runtime,
+    });
+
+    try {
+      await controller.start();
+      expect(runtimeState.getLaunchFenceActive()).toBe(false);
+      // The healthy job's recovery ran even though the other one could not be resolved.
+      expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledTimes(2);
+      expect(progressStore.readStatus(blockedJobId)).toMatchObject({
+        phase: 'error',
+        result: { outcome: { kind: 'failed', causeRef: expect.anything() } },
+      });
+      expect(controller.getRecoveryRegistry()?.has(healthyJobId) ?? false).toBe(false);
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
+  it('14d. app-server binding failure terminalizes instead of failing the boot', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-provider-authority-blocked');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -1841,17 +1913,21 @@ describe('lifecycle recovery', () => {
     });
 
     try {
-      await expect(controller.start()).rejects.toThrow(`Recovery authority rejected for app-server job ${jobId}`);
-      expect(runtimeState.getLaunchFenceActive()).toBe(true);
-      expect(controller.getRecoveryRegistry()?.has(jobId)).toBe(true);
-      expect(progressStore.readStatus(jobId)?.phase).toBe('running');
-      expect(fakeService.finalizeProviderRecoveryBindingFailure).not.toHaveBeenCalled();
+      // No process to stop and a structurally unresolvable persisted hostRef, so this
+      // takes the same treatment as the dead-durable case rather than failing the boot.
+      await controller.start();
+      expect(runtimeState.getLaunchFenceActive()).toBe(false);
+      expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
+      expect(fakeService.finalizeProviderRecoveryBindingFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ jobId }),
+        { reason: 'subject-mismatch', provider: 'codex' },
+      );
     } finally {
       await stopLifecycleController(controller);
     }
   });
 
-  it('14e. live durable binding failure requests process stop before retaining the recovery fence', async () => {
+  it('14e. live durable binding failure requests process stop and then terminalizes', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-durable-binding-blocked');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -1892,20 +1968,17 @@ describe('lifecycle recovery', () => {
 
     try {
       expect(progressStore.readRuntimeProjection(jobId)).toMatchObject({ transport: 'durable-cli', pid });
-      const startError = await controller.start().then(
-        () => null,
-        (error: unknown) => error,
-      );
+      await controller.start();
       expect(fakeService.captureProviderRecoveryAuthority).toHaveBeenCalledTimes(1);
       expect(runtime.process.isAlive).toHaveBeenCalledWith(pid);
-      expect(startError).toEqual(
-        expect.objectContaining({ message: expect.stringContaining(`live durable job ${jobId}`) }),
-      );
+      // The stop request is still the point of this case; only the boot failure is gone.
       expect(kill).toHaveBeenCalledWith(pid, 'SIGTERM');
-      expect(fakeService.finalizeProviderRecoveryBindingFailure).not.toHaveBeenCalled();
-      expect(runtimeState.getLaunchFenceActive()).toBe(true);
-      expect(controller.getRecoveryRegistry()?.has(jobId)).toBe(true);
-      expect(progressStore.readStatus(jobId)?.phase).toBe('running');
+      expect(fakeService.finalizeProviderRecoveryBindingFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ jobId }),
+        { reason: 'subject-mismatch', provider: 'codex' },
+      );
+      expect(runtimeState.getLaunchFenceActive()).toBe(false);
+      expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
     } finally {
       await stopLifecycleController(controller);
     }

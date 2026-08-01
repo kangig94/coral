@@ -27,6 +27,9 @@ function serializeBootstrapError(error: unknown): Record<string, unknown> {
       name: error.name,
       message: error.message,
       ...(error.stack === undefined ? {} : { stack: error.stack }),
+      // A wrapper that carries the real reason in `cause` is useless without it: the
+      // operator sees a fatal, non-retryable failure and no way to learn why.
+      ...(error.cause === undefined || error.cause === null ? {} : { cause: serializeBootstrapError(error.cause) }),
     };
   }
   return {

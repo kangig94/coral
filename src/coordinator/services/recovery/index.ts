@@ -27,15 +27,6 @@ import type { SessionLookup } from '../../../sessions/lookup.js';
 
 const RECOVERY_POLL_MS = 500;
 
-class InterruptedRecoveryBlockedError extends Error {
-  readonly jobId: string;
-  constructor(jobId: string, message: string, cause: unknown) {
-    super(message, { cause });
-    this.name = 'InterruptedRecoveryBlockedError';
-    this.jobId = jobId;
-  }
-}
-
 type RecoveryCoordinatorState = {
   recoveryRegistry: RecoveryRegistry | null;
   cancelledRecoveryJobIds: Set<string>;
@@ -221,6 +212,28 @@ export function createRecoveryCoordinator({
     signal,
     interruptedAppServerReason,
   }: RecoveryAdoptionContext): Promise<void> {
+    /**
+     * A job whose recovery cannot be resolved is a per-job fault, never a process
+     * verdict. Terminalizing with the thrown reason keeps the cause queryable through
+     * the job's own cause chain instead of leaving the job at `running` forever, and
+     * `releaseJob` preserves `conversationRef`/`providerContinuity`, so the session
+     * stays resumable.
+     */
+    const recordUnresolvedRecovery = (jobId: string, summary: string, error: unknown): void => {
+      const status = progressStore.readStatus(jobId);
+      if (status !== null) {
+        markJobAsError(
+          progressStore,
+          status,
+          { kind: 'recovery_parse_failed', cause: { message: `${summary}: ${formatError(error)}` } },
+          runtime.time.now(),
+          log,
+        );
+      }
+      state.recoveryRegistry?.remove(jobId);
+      log(`${summary} for ${jobId}: ${formatError(error)}\n`);
+    };
+
     queuedJobs.sort((a, b) => a.authority.launchRecord.enqueueSequence - b.authority.launchRecord.enqueueSequence);
 
     let maxRecoverableSeq: number | null = null;
@@ -267,11 +280,8 @@ export function createRecoveryCoordinator({
             await finalization;
           } catch (error: unknown) {
             if ((error as { name?: string } | null)?.name === 'AbortError') throw error;
-            throw new InterruptedRecoveryBlockedError(
-              jobId,
-              `Interrupted app-server recovery remains incomplete for ${jobId}.`,
-              error,
-            );
+            recordUnresolvedRecovery(jobId, 'Interrupted app-server recovery remains incomplete', error);
+            continue;
           }
           signal.throwIfAborted();
           state.recoveryRegistry?.remove(jobId);
@@ -330,11 +340,9 @@ export function createRecoveryCoordinator({
             );
           } catch (error: unknown) {
             if ((error as { name?: string } | null)?.name === 'AbortError') throw error;
-            throw new InterruptedRecoveryBlockedError(
-              jobId,
-              `Interrupted durable recovery remains incomplete for ${jobId}.`,
-              error,
-            );
+            recordUnresolvedRecovery(jobId, 'Interrupted durable recovery remains incomplete', error);
+            state.recoveryRegistry?.clearCancelled(jobId);
+            continue;
           }
           state.recoveryRegistry?.remove(jobId);
           state.recoveryRegistry?.clearCancelled(jobId);
@@ -416,10 +424,6 @@ export function createRecoveryCoordinator({
         log(`Adopted running job: ${jobId} (pid=${runtimeRecord.pid})\n`);
       } catch (error: unknown) {
         if ((error as { name?: string } | null)?.name === 'AbortError') {
-          cleanup?.();
-          throw error;
-        }
-        if (error instanceof InterruptedRecoveryBlockedError) {
           cleanup?.();
           throw error;
         }
@@ -523,10 +527,6 @@ export function createRecoveryCoordinator({
         });
       } catch (error: unknown) {
         if ((error as { name?: string } | null)?.name === 'AbortError') {
-          throw error;
-        }
-        if (error instanceof InterruptedRecoveryBlockedError) {
-          log(`Recovery launch fence retained: ${formatError(error)}\n`);
           throw error;
         }
         log(`Recovery adoption failed: ${formatError(error)}\n`);
