@@ -6,7 +6,7 @@ import { acquireDirectoryLock, type DirectoryLockLease } from '../infra/fs-lock.
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 
-export type GenerationMutationKind = 'install' | 'update' | 'uninstall';
+export type GenerationMutationKind = 'install' | 'update' | 'uninstall' | 'kb-child';
 
 export interface GenerationReadinessCompletion {
   release(): void;
@@ -148,7 +148,7 @@ function writerLeaseName(runtime: Runtime, mutation: { readonly kind: Generation
 }
 
 function writerHolder(entry: string): { readonly pid: number; readonly description: string } | null {
-  const match = /^(\d+)-(install|update|uninstall)-(.+)\.lease-[^.]+\.lock$/u.exec(entry);
+  const match = /^(\d+)-(install|update|uninstall|kb-child)-(.+)\.lease-[^.]+\.lock$/u.exec(entry);
   if (match === null) return null;
   const pid = Number(match[1]);
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;

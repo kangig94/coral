@@ -26,6 +26,7 @@ import {
 } from '#src/cli/store-reset.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
+import { createKbDaemonWriteRuntimeHost } from '#src/kb-daemon/runtime-host.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createBackendStoreResetAuthority, publishBackendStoreResetIncident } from '#src/store/backend-store-reset.js';
 import { classifyStoreFile } from '#src/store/db.js';
@@ -37,6 +38,7 @@ import {
   type StoreResetIncidentManifestV2,
 } from '#src/store/reset-incident.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 
 const BUILD: StrictBundleManifest = {
   version: '0.9.16',
@@ -319,7 +321,7 @@ describe('operator store-reset discard', () => {
     expect(readFileSync(paths.storeDbPath)).toEqual(before);
   });
 
-  it('refuses while a writer lease cannot drain and leaves the store byte-identical', async () => {
+  it('refuses while a live installer writer lease cannot drain and leaves the store byte-identical', async () => {
     const baseDir = root();
     const runtime = createRealRuntime('prod', { baseDir });
     const dbPath = runtime.paths.coral.store.dbFile;
@@ -327,7 +329,7 @@ describe('operator store-reset discard', () => {
     const before = readFileSync(dbPath);
     const writer = await generationMutationCoordinationSeam.acquireWriterLease(runtime, {
       kind: 'install',
-      name: 'held-writer',
+      name: 'kiwi',
     });
 
     try {
@@ -348,6 +350,51 @@ describe('operator store-reset discard', () => {
       expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
     } finally {
       writer.release();
+    }
+  });
+
+  it('refuses while the KB child holds its writer lease and leaves the store byte-identical', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbPath = runtime.paths.coral.store.dbFile;
+    createMismatchStore(dbPath);
+    const before = readFileSync(dbPath);
+    const childDb = openTestStoreDb(runtime, ':memory:');
+    const child = createKbDaemonWriteRuntimeHost({
+      pluginRoot: join(baseDir, 'plugin'),
+      backendNamespace: 'store-reset-kb-child-test',
+      bundleHash: 'store-reset-kb-child-test',
+      curateUsageBudget: { isExhausted: async () => false },
+      runtime,
+      db: childDb,
+    });
+
+    try {
+      await child.withKb(() => undefined);
+
+      await expect(
+        discardStoreReset({
+          target: 'gen2',
+          runtime,
+          build: CURRENT_BUILD,
+          storeFormat: STORE_FORMAT,
+          acquireSocketGuard: noSocketGuard,
+          maintenanceTimeoutMs: 25,
+        }),
+      ).rejects.toMatchObject({
+        code: 'legacy_source_not_quiescent',
+        context: {
+          operation: 'store-reset',
+          holder: expect.stringContaining('kb-child:write-runtime'),
+          flavor: 'prod',
+          baseDir,
+        },
+      });
+      expect(readFileSync(dbPath)).toEqual(before);
+      expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
+    } finally {
+      await child.dispose();
+      childDb.close();
     }
   });
 

@@ -66,6 +66,7 @@ export type AdoptLegacyStoreOptions = {
   readonly acquireSocketGuard: (socketPath: string, flavor: Runtime['flavor']) => Promise<AdoptionSocketGuard>;
   readonly faults?: {
     readonly afterProvenanceCommitBeforeClose?: () => void;
+    readonly beforeRename?: () => void;
     readonly afterRename?: () => void;
   };
 };
@@ -385,6 +386,7 @@ export async function adoptLegacyStore({
           faults?.afterProvenanceCommitBeforeClose,
         );
         assertNoLegacyPackageLocks(runtime, paths);
+        faults?.beforeRename?.();
         runtime.storage.renameSync(paths.legacyFlavorRoot, paths.generatedFlavorRoot);
         try {
           faults?.afterRename?.();

@@ -276,6 +276,7 @@ describe('legacy store generation adoption', () => {
     const { runtime } = harness();
     createSameGenerationLegacyStore(runtime);
     const paths = resolveGenerationBoundaryPaths(runtime);
+    const sourceDb = storeDbPath(paths.legacyFlavorRoot);
     const now = vi.spyOn(runtime.time, 'now').mockReturnValue(Date.parse('2026-08-01T01:02:03.004Z'));
 
     await expect(
@@ -285,13 +286,30 @@ describe('legacy store generation adoption', () => {
         acquireSocketGuard: fakeSocketGuard(),
         faults: {
           afterProvenanceCommitBeforeClose() {
+            const observer = new DatabaseSync(sourceDb, { readOnly: true });
+            try {
+              expect(observer.prepare('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'wal' });
+              expect(existsSync(`${sourceDb}-wal`)).toBe(true);
+              expect(
+                observer
+                  .prepare(
+                    "SELECT key, value FROM meta WHERE key IN ('adopted_by_version', 'adopted_from_legacy_at', 'store_product_version') ORDER BY key",
+                  )
+                  .all(),
+              ).toEqual([
+                { key: 'adopted_by_version', value: STORE_FORMAT.productVersion },
+                { key: 'adopted_from_legacy_at', value: '2026-08-01T01:02:03.004Z' },
+                { key: 'store_product_version', value: STORE_FORMAT.productVersion },
+              ]);
+            } finally {
+              observer.close();
+            }
             throw new Error('post-commit fault');
           },
         },
       }),
     ).rejects.toThrow('post-commit fault');
 
-    const sourceDb = storeDbPath(paths.legacyFlavorRoot);
     const originalTimestamp = readMeta(sourceDb, 'adopted_from_legacy_at');
     expect(originalTimestamp).toBe('2026-08-01T01:02:03.004Z');
     expect(readMeta(sourceDb, 'adopted_by_version')).toBe(STORE_FORMAT.productVersion);
@@ -309,6 +327,38 @@ describe('legacy store generation adoption', () => {
       adoptedAt: originalTimestamp,
     });
     expect(readMeta(storeDbPath(paths.generatedFlavorRoot), 'adopted_from_legacy_at')).toBe(originalTimestamp);
+  });
+
+  it('retries an adoption crash immediately before rename from the committed prepared state', async () => {
+    const { runtime } = harness();
+    createSameGenerationLegacyStore(runtime);
+    const paths = resolveGenerationBoundaryPaths(runtime);
+    const rename = vi.spyOn(runtime.storage, 'renameSync');
+
+    await expect(
+      adoptLegacyStore({
+        runtime,
+        storeFormat: STORE_FORMAT,
+        acquireSocketGuard: fakeSocketGuard(),
+        faults: {
+          beforeRename() {
+            throw new Error('before-rename fault');
+          },
+        },
+      }),
+    ).rejects.toThrow('before-rename fault');
+
+    const sourceDb = storeDbPath(paths.legacyFlavorRoot);
+    const adoptedAt = readMeta(sourceDb, 'adopted_from_legacy_at');
+    expect(adoptedAt).not.toBeNull();
+    expect(readMeta(sourceDb, 'adopted_by_version')).toBe(STORE_FORMAT.productVersion);
+    expect(existsSync(paths.legacyFlavorRoot)).toBe(true);
+    expect(existsSync(paths.generatedFlavorRoot)).toBe(false);
+    expect(rename).not.toHaveBeenCalled();
+
+    await expect(
+      adoptLegacyStore({ runtime, storeFormat: STORE_FORMAT, acquireSocketGuard: fakeSocketGuard() }),
+    ).resolves.toMatchObject({ kind: 'adopted', sourceState: 'prepared-adoption', adoptedAt });
   });
 
   it('recovers after the rename from the complete generated target without consulting the legacy path', async () => {

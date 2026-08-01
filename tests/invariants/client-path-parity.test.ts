@@ -85,6 +85,10 @@ const mirroredStoreDbPath = loadMirrorFunction<(flavor: BuildFlavor, stateRoot: 
   'clients/hooks/pre-compact.mjs',
   'storeDbPath',
 );
+const mirroredStoreDiscardRemediation = loadMirrorFunction<(flavor: BuildFlavor) => string>(
+  'clients/hooks/pre-compact.mjs',
+  'storeDiscardRemediation',
+);
 const mirroredCoordinatorRunDir = loadMirrorFunction<(flavor: BuildFlavor, stateRoot: string) => string>(
   'clients/hooks/session-start.mjs',
   'coordinatorRunDir',
@@ -114,5 +118,11 @@ describe('self-contained client path parity', () => {
       join(engine.dataDir('codebase-memory'), 'codebase-memory-mcp'),
     );
     expect(mirroredCoordinatorInfoPath(HOME_DIR, flavor)).toBe(coordinator.infoFile);
+  });
+
+  it.each(FLAVORS)('renders the explicit %s pre-compact discard remediation', (flavor) => {
+    expect(mirroredStoreDiscardRemediation(flavor)).toBe(
+      `To deliberately discard this store, run 'coral-cli backend store-reset discard --target gen2 --flavor ${flavor}', then retry compaction.`,
+    );
   });
 });

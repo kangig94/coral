@@ -58,6 +58,10 @@ import { openWritableStoreDbNoReset, type Database } from '../store/db.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 import type { KbDaemonExpansionRequest, KbDaemonExpansionResult } from './protocol.js';
 import { cleanupRetiredExpansion } from './expansion/retirement.js';
+import {
+  generationMutationCoordinationSeam,
+  type GenerationWriterLease,
+} from '../store/generation-mutation-coordination.js';
 
 type KbDaemonWriteRuntimeOptions = {
   pluginRoot: string;
@@ -91,6 +95,7 @@ type KbDaemonWriteRuntimeState = {
   runtime: Runtime;
   db: WritableDatabase;
   ownsDb: boolean;
+  generationWriterLease: GenerationWriterLease;
   kbRuntime: DaemonKnowledgeBaseRuntime;
   consumerDriver: ConsumerDriver;
   expansionLifecycleService: ExpansionLifecycleService;
@@ -349,11 +354,17 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     const runtime = options.runtime ?? createRealRuntime(readBuildFlavor(options.pluginRoot));
     const ownsDb = options.db === undefined;
     let db: WritableDatabase | null = null;
+    let generationWriterLease: GenerationWriterLease | null = null;
     let consumerDriver: ConsumerDriver | null = null;
     let expansionLifecycleService: ExpansionLifecycleService | null = null;
     let daemonConsumerDriver: ConsumerDriver | null = null;
 
     try {
+      generationWriterLease = await generationMutationCoordinationSeam.acquireWriterLease(runtime, {
+        kind: 'kb-child',
+        name: 'write-runtime',
+      });
+      generationWriterLease.assertOwned();
       db =
         options.db ??
         (openWritableStoreDbNoReset(runtime, {
@@ -571,6 +582,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         runtime,
         db: activeDb,
         ownsDb,
+        generationWriterLease,
         kbRuntime,
         consumerDriver: activeConsumerDriver,
         expansionLifecycleService: activeExpansionLifecycleService,
@@ -591,6 +603,11 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         } catch {
           // Preserve the initialization error; a failed cleanup is secondary.
         }
+      }
+      try {
+        generationWriterLease?.release();
+      } catch {
+        // Preserve the initialization error; a failed lease cleanup is secondary.
       }
       throw error;
     }
@@ -754,6 +771,11 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         } catch (error: unknown) {
           closeError = error;
         }
+      }
+      try {
+        activeState.generationWriterLease.release();
+      } catch (error: unknown) {
+        cleanupError ??= error;
       }
     }
     if (cleanupError !== undefined) {
