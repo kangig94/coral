@@ -26,6 +26,12 @@ function storeDbPath(flavor = buildFlavor(), stateRoot = coralStateRoot()) {
   return join(stateRoot, 'gen2', dataDir, 'store', 'store.db');
 }
 
+function storeDiscardRemediation(flavor = buildFlavor()) {
+  return flavor === 'dev'
+    ? "To deliberately discard this store, run 'coral-cli backend store-reset discard --target gen2 --flavor dev', then retry compaction."
+    : "To deliberately discard this store, run 'coral-cli backend store-reset discard --target gen2 --flavor prod', then retry compaction.";
+}
+
 function snapshotDirForProject(projectDir) {
   return join(projectTmpDir(projectDir), 'hooks');
 }
@@ -76,7 +82,7 @@ await failOpen(async () => {
     logSnapshotSkipped(
       projectDir,
       'store format sidecar does not match the installed plugin',
-      'Let the next writable Coral daemon startup quarantine and reinitialize the store, then retry compaction.',
+      storeDiscardRemediation(),
     );
     return;
   }
@@ -95,7 +101,7 @@ await failOpen(async () => {
         logSnapshotSkipped(
           projectDir,
           'store format fingerprint mismatch',
-          'Let the next writable Coral daemon startup quarantine and reinitialize the store, then retry compaction.',
+          storeDiscardRemediation(),
         );
         return;
       }
@@ -128,7 +134,7 @@ await failOpen(async () => {
         logSnapshotSkipped(
           projectDir,
           'projection_jobs contains an unsafe job identifier',
-          'Restart Coral with a current-format store; inspect the quarantined store if history must be recovered.',
+          storeDiscardRemediation(),
         );
         return [];
       }
