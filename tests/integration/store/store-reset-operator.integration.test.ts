@@ -1,11 +1,11 @@
 import { createServer, type Server } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { discardStoreReset, resolveStoreResetTargetPaths, type StoreResetTarget } from '#src/cli/store-reset.js';
+import { discardStoreReset, resolveStoreResetTargetPaths } from '#src/cli/store-reset.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -56,31 +56,55 @@ afterEach(() => {
 });
 
 describe('store-reset operator socket exclusion', () => {
-  it.each<StoreResetTarget>(['legacy', 'gen2'])(
-    'refuses an incumbent %s coordinator without changing the targeted store',
-    async (target) => {
-      const baseDir = root();
-      const runtime = createRealRuntime('prod', { baseDir });
-      const paths = resolveStoreResetTargetPaths(runtime, target);
-      createMismatchStore(paths.storeDbPath);
-      const before = readFileSync(paths.storeDbPath);
-      const incumbent = createServer();
-      await expect(bindSocket(incumbent, paths.socketPath)).resolves.toEqual({ kind: 'bound' });
+  it('refuses legacy deterministically without touching an incumbent socket inode', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const paths = resolveStoreResetTargetPaths(runtime, 'legacy');
+    createMismatchStore(paths.storeDbPath);
+    const before = readFileSync(paths.storeDbPath);
+    const incumbent = createServer();
+    await expect(bindSocket(incumbent, paths.socketPath)).resolves.toEqual({ kind: 'bound' });
+    const socketInode = lstatSync(paths.socketPath, { bigint: true }).ino;
 
-      try {
-        const operation =
-          target === 'legacy'
-            ? discardStoreReset({ target, runtime })
-            : discardStoreReset({ target, runtime, build: BUILD, storeFormat: STORE_FORMAT });
-        await expect(operation).rejects.toMatchObject({
-          code: 'store_reset_lock_contended',
-          context: { target, flavor: 'prod', baseDir, socketPath: paths.socketPath },
-        });
-        expect(readFileSync(paths.storeDbPath)).toEqual(before);
-        expect(existsSync(paths.quarantineRoot)).toBe(false);
-      } finally {
-        await closeServer(incumbent);
-      }
-    },
-  );
+    try {
+      await expect(discardStoreReset({ target: 'legacy', runtime })).rejects.toMatchObject({
+        code: 'legacy_foreign_generation',
+        context: {
+          operation: 'discard',
+          legacyPath: runtime.paths.coral.generation.legacyDataRoot,
+          version: null,
+          flavor: 'prod',
+          baseDir,
+        },
+      });
+      expect(readFileSync(paths.storeDbPath)).toEqual(before);
+      expect(lstatSync(paths.socketPath, { bigint: true }).ino).toBe(socketInode);
+      expect(existsSync(paths.quarantineRoot)).toBe(false);
+    } finally {
+      await closeServer(incumbent);
+    }
+  });
+
+  it('refuses an incumbent gen2 coordinator without changing the targeted store', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const paths = resolveStoreResetTargetPaths(runtime, 'gen2');
+    createMismatchStore(paths.storeDbPath);
+    const before = readFileSync(paths.storeDbPath);
+    const incumbent = createServer();
+    await expect(bindSocket(incumbent, paths.socketPath)).resolves.toEqual({ kind: 'bound' });
+
+    try {
+      await expect(
+        discardStoreReset({ target: 'gen2', runtime, build: BUILD, storeFormat: STORE_FORMAT }),
+      ).rejects.toMatchObject({
+        code: 'store_reset_lock_contended',
+        context: { target: 'gen2', flavor: 'prod', baseDir, socketPath: paths.socketPath },
+      });
+      expect(readFileSync(paths.storeDbPath)).toEqual(before);
+      expect(existsSync(paths.quarantineRoot)).toBe(false);
+    } finally {
+      await closeServer(incumbent);
+    }
+  });
 });

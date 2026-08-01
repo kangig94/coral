@@ -7,7 +7,6 @@ import { acquireDirectoryLock, type DirectoryLockLease } from '../infra/fs-lock.
 import { validateProductVersion } from '../infra/product-version.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
-import { currentCoralStoreFormat } from '../store-format.js';
 import { classifyStoreFile } from './db.js';
 import type { StoreFormatClassification, StoreFormatDescription } from './format-fingerprint.js';
 
@@ -23,8 +22,13 @@ export interface GenerationWriterLease {
 }
 
 export interface GenerationMutationCoordination {
+  // `storeFormat` is threaded in rather than defaulted to `currentCoralStoreFormat()`:
+  // that default made this store module import `src/store-format.ts`, which drags the
+  // whole provider registry into the simulation's sealed import graph and breaks
+  // `npm run build`. Callers in the CLI already hold the description.
   completeReadiness(
     runtime: Runtime,
+    storeFormat: StoreFormatDescription,
     mutation: { readonly kind: GenerationMutationKind; readonly name: string },
   ): Promise<GenerationReadinessCompletion>;
   acquireWriterLease(
@@ -90,7 +94,7 @@ export function resolveGenerationBoundaryPaths(runtime: Pick<Runtime, 'paths'>):
 
 export function inspectGenerationReadiness(
   runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
-  storeFormat: StoreFormatDescription = currentCoralStoreFormat(),
+  storeFormat: StoreFormatDescription,
 ): GenerationReadiness {
   const paths = resolveGenerationBoundaryPaths(runtime);
   if (runtime.storage.existsSync(paths.generatedFlavorRoot)) {
@@ -163,7 +167,7 @@ async function acquireAdoptionLock(runtime: Runtime, paths: GenerationBoundaryPa
 
 export async function acquireGenerationAdoptionLease(
   runtime: Runtime,
-  storeFormat: StoreFormatDescription = currentCoralStoreFormat(),
+  storeFormat: StoreFormatDescription,
 ): Promise<GenerationAdoptionLease> {
   const paths = resolveGenerationBoundaryPaths(runtime);
   const releaseAdoption = await acquireAdoptionLock(runtime, paths);
@@ -248,8 +252,8 @@ function quiescenceError(runtime: Pick<Runtime, 'flavor'>, holder: string): Erro
 }
 
 export const generationMutationCoordinationSeam: GenerationMutationCoordination = {
-  async completeReadiness(runtime) {
-    return acquireGenerationAdoptionLease(runtime);
+  async completeReadiness(runtime, storeFormat) {
+    return acquireGenerationAdoptionLease(runtime, storeFormat);
   },
   async acquireWriterLease(runtime, mutation) {
     const paths = resolveGenerationBoundaryPaths(runtime);
@@ -330,9 +334,10 @@ export async function acquireGenerationMaintenanceLease(
 export async function acquireGenerationWriterLeaseAfterReadiness(
   coordination: GenerationMutationCoordination,
   runtime: Runtime,
+  storeFormat: StoreFormatDescription,
   mutation: { readonly kind: GenerationMutationKind; readonly name: string },
 ): Promise<GenerationWriterLease> {
-  const readiness = await coordination.completeReadiness(runtime, mutation);
+  const readiness = await coordination.completeReadiness(runtime, storeFormat, mutation);
   readiness.release();
   return coordination.acquireWriterLease(runtime, mutation);
 }

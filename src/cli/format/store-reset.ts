@@ -46,7 +46,7 @@ export function formatStoreResetReport(report: StoreResetPublicReport): string {
 export function formatStoreResetList(result: StoreResetIncidentListResult, target: 'legacy' | 'gen2'): string {
   if (result.incidents.length === 0) {
     return [
-      'No store-reset incidents.',
+      `No ${target} store-reset incidents.`,
       'If an unexpected reset warning included an incident ID, report that ID directly.',
       'Otherwise, file a Store-reset incident issue with this complete output; do not attach DB, WAL, SHM, or raw logs.',
     ].join('\n');

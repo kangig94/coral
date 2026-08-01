@@ -288,7 +288,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
   const readonly = options.readonly ?? false;
 
   if (readonly && options.path !== ':memory:' && !options.storage.existsSync(options.path)) {
-    throw storeSchemaOutdatedError(options.path, { kind: 'absent' }, options.storeFormat);
+    throw documentedCoralSetupError('store_not_initialized', { path: options.path });
   }
 
   if (!readonly && options.path !== ':memory:') {

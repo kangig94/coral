@@ -1,16 +1,18 @@
 import { createHash } from 'node:crypto';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -133,6 +135,40 @@ function createMismatchStore(path: string): void {
   } finally {
     db.close();
   }
+}
+
+function snapshotTree(rootPath: string): { readonly paths: readonly string[]; readonly sha256: string } {
+  const hash = createHash('sha256');
+  const paths: string[] = [];
+
+  const visit = (path: string): void => {
+    const relativePath = relative(rootPath, path) || '.';
+    const stat = lstatSync(path, { bigint: true });
+    let kind = 'unknown';
+    if (stat.isDirectory()) kind = 'directory';
+    else if (stat.isFile()) kind = 'file';
+    else if (stat.isSymbolicLink()) kind = 'symlink';
+    else if (stat.isSocket()) kind = 'socket';
+    else if (stat.isFIFO()) kind = 'fifo';
+    else if (stat.isBlockDevice()) kind = 'block-device';
+    else if (stat.isCharacterDevice()) kind = 'character-device';
+
+    paths.push(relativePath);
+    hash.update(`${relativePath}\0${kind}\0${stat.mode}\0${stat.ino}\0${stat.size}\0${stat.mtimeNs}\0`);
+
+    if (stat.isDirectory()) {
+      for (const name of readdirSync(path).sort((left, right) => left.localeCompare(right))) {
+        visit(join(path, name));
+      }
+    } else if (stat.isFile()) {
+      hash.update(readFileSync(path));
+    } else if (stat.isSymbolicLink()) {
+      hash.update(readlinkSync(path));
+    }
+  };
+
+  visit(rootPath);
+  return { paths, sha256: hash.digest('hex') };
 }
 
 function storeTableExists(path: string, table: string): boolean {
@@ -318,7 +354,7 @@ describe('local store-reset operations', () => {
 });
 
 describe('operator store-reset discard', () => {
-  it('refuses destructive legacy targeting after the socket guard and leaves the tree byte-identical', async () => {
+  it('refuses destructive legacy targeting before path resolution and leaves the tree byte-identical', async () => {
     const baseDir = root();
     const runtime = createRealRuntime('prod', { baseDir });
     const paths = resolveStoreResetTargetPaths(runtime, 'legacy');
@@ -329,18 +365,16 @@ describe('operator store-reset discard', () => {
     } finally {
       legacyDb.close();
     }
-    const before = readFileSync(paths.storeDbPath);
-    const release = vi.fn(() => Promise.resolve());
-    const acquireSocketGuard = vi.fn(async () => ({ release }));
+    const before = snapshotTree(baseDir);
 
-    await expect(discardStoreReset({ target: 'legacy', runtime, acquireSocketGuard })).rejects.toMatchObject({
+    await expect(discardStoreReset({ target: 'legacy', runtime })).rejects.toMatchObject({
       code: 'legacy_foreign_generation',
-      context: { operation: 'discard', legacyPath: join(baseDir, 'data'), version: '0.9.16', baseDir },
+      context: { operation: 'discard', legacyPath: join(baseDir, 'data'), version: null, baseDir },
     });
 
-    expect(acquireSocketGuard).toHaveBeenCalledOnce();
-    expect(release).toHaveBeenCalledOnce();
-    expect(readFileSync(paths.storeDbPath)).toEqual(before);
+    const after = snapshotTree(baseDir);
+    expect(after.paths).toEqual(before.paths);
+    expect(after.sha256).toBe(before.sha256);
   });
 
   it('refuses while a live installer writer lease cannot drain and leaves the store byte-identical', async () => {
@@ -491,6 +525,23 @@ describe('operator store-reset discard', () => {
 });
 
 describe('backend store-reset commands', () => {
+  it('identifies the selected target when no incidents are retained', async () => {
+    const operations: StoreResetCommandOperations = {
+      list: () => ({ incidents: [] }),
+      report: async () => publicReport(),
+      discard: operationsDiscard,
+    };
+
+    await runCommand(['backend', 'store-reset', 'list', '--target', 'legacy'], operations);
+    const legacyOutput = stdout;
+    stdout = '';
+    await runCommand(['backend', 'store-reset', 'list', '--target', 'gen2'], operations);
+
+    expect(legacyOutput).toContain('No legacy store-reset incidents.');
+    expect(stdout).toContain('No gen2 store-reset incidents.');
+    expect(stdout).not.toBe(legacyOutput);
+  });
+
   it('renders deterministic local list and report output', async () => {
     const report = publicReport();
     const operations: StoreResetCommandOperations = {

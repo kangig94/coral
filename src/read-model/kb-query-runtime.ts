@@ -124,7 +124,6 @@ function getDefaultKbQueryDb(context: KbQueryContext): ReadonlyDatabase {
 
 export function createDefaultKbQueryRuntime(context: KbQueryContext): KbReadQueryRuntime {
   const runtime = resolveQueryRuntime(context);
-  void getDefaultKbQueryDb(context);
 
   const markdownRoot = resolveQueryMarkdownRoot(context);
   const runtimeDir = runtime.paths.coral.kbRuntime.root;

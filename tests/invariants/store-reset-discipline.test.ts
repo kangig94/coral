@@ -345,6 +345,7 @@ describe('store reset discipline invariants', () => {
     const operatorSource = sourceFile(operatorPath);
     const topLevel = findFunction(operatorPath, 'discardStoreReset').body?.getText(operatorSource) ?? '';
     const generated = findFunction(operatorPath, 'discardGeneratedStore').body?.getText(operatorSource) ?? '';
+    const targetPathsIndex = topLevel.indexOf('resolveStoreResetTargetPaths(');
     const socketIndex = topLevel.indexOf('acquireSocketGuard ?? acquireStoreResetSocketGuard');
     const legacyRefusalIndex = topLevel.indexOf("options.target === 'legacy'");
     const generatedIndex = topLevel.indexOf('discardGeneratedStore(');
@@ -354,9 +355,10 @@ describe('store reset discipline invariants', () => {
     const resumeIndex = generated.indexOf('resumeInterruptedBackendStoreResetIncident(');
     const publishIndex = generated.indexOf('publishBackendStoreResetIncident(');
 
-    expect(socketIndex).toBeGreaterThanOrEqual(0);
-    expect(legacyRefusalIndex).toBeGreaterThan(socketIndex);
-    expect(generatedIndex).toBeGreaterThan(legacyRefusalIndex);
+    expect(legacyRefusalIndex).toBeGreaterThanOrEqual(0);
+    expect(targetPathsIndex).toBeGreaterThan(legacyRefusalIndex);
+    expect(socketIndex).toBeGreaterThan(targetPathsIndex);
+    expect(generatedIndex).toBeGreaterThan(socketIndex);
     expect(adoptionIndex).toBeGreaterThanOrEqual(0);
     expect(maintenanceIndex).toBeGreaterThan(adoptionIndex);
     expect(resetLockIndex).toBeGreaterThan(maintenanceIndex);

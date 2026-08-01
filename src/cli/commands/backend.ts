@@ -156,7 +156,11 @@ export function registerBackendCommands(
   storeResetCommand
     .command('discard')
     .description('Quarantine and replace an incompatible generated store under explicit operator control')
-    .requiredOption('--target <target>', 'Store generation to discard (legacy or gen2)', parseStoreResetTarget)
+    .requiredOption(
+      '--target <target>',
+      'Store generation to discard (gen2; legacy is inspection-only)',
+      parseStoreResetTarget,
+    )
     .requiredOption('--flavor <flavor>', 'Store flavor (prod or dev)', parseFlavor)
     .action(async (options: { target: StoreResetTarget; flavor: BuildFlavor }) => {
       try {

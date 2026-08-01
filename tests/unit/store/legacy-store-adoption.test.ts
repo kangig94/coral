@@ -164,7 +164,7 @@ describe('legacy store generation adoption', () => {
       return exists(path);
     });
 
-    expect(inspectGenerationReadiness(runtime)).toEqual({ kind: 'generated-ready' });
+    expect(inspectGenerationReadiness(runtime, STORE_FORMAT)).toEqual({ kind: 'generated-ready' });
   });
 
   it('permits coordinator initialization when both generation targets are absent', () => {
@@ -337,7 +337,7 @@ describe('legacy store generation adoption', () => {
     const paths = resolveGenerationBoundaryPaths(runtime);
 
     await expect(
-      generationMutationCoordinationSeam.completeReadiness(runtime, {
+      generationMutationCoordinationSeam.completeReadiness(runtime, STORE_FORMAT, {
         kind: 'install',
         name: 'kiwi',
       }),
@@ -495,7 +495,7 @@ describe('legacy store generation adoption', () => {
 
   it('refuses with the typed quiescence error while a generation writer lease is live', async () => {
     const { runtime } = harness();
-    const readiness = await generationMutationCoordinationSeam.completeReadiness(runtime, {
+    const readiness = await generationMutationCoordinationSeam.completeReadiness(runtime, STORE_FORMAT, {
       kind: 'install',
       name: 'kiwi',
     });

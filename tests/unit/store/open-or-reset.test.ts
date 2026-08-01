@@ -20,6 +20,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { backendLog } from '#src/infra/backend-log.js';
+import { BUNDLED_ENGINES } from '#src/expansion/bundled.js';
 import { createExpansionManifestCatalog } from '#src/expansion/manifest/catalog.js';
 import { readDefaultExpansionCatalog, readExpansionCatalog } from '#src/cli/expansion/catalog.js';
 import { openReadCoralStore } from '#src/cli/read-store.js';
@@ -1028,9 +1029,9 @@ describe('read-only store access', () => {
       }),
     );
 
-    expectSetupCode(portError, 'store_schema_outdated');
-    expectSetupCode(sharedError, 'store_schema_outdated');
-    expect(serializeCoralSetupError(portError)?.context).toMatchObject({ classification: 'absent', path: dbPath });
+    expectSetupCode(portError, 'store_not_initialized');
+    expectSetupCode(sharedError, 'store_not_initialized');
+    expect(serializeCoralSetupError(portError)?.context).toMatchObject({ path: dbPath });
     expect(existsSync(parent)).toBe(false);
     expect(existsSync(dbPath)).toBe(false);
   });
@@ -1057,7 +1058,24 @@ describe('read-only store access', () => {
     expect(readFileSync(mismatchPath)).toEqual(mismatchBefore);
   });
 
-  describe('does not mask store_schema_outdated in read-only callers', () => {
+  it('uses the bundled expansion catalog for an empty home', () => {
+    const home = makeTempRoot('coral-expansion-catalog-empty-home-');
+
+    expect(withEnv({ HOME: home, CLAUDE_PLUGIN_ROOT: REPO_ROOT }, () => readDefaultExpansionCatalog())).toEqual(
+      BUNDLED_ENGINES,
+    );
+  });
+
+  it('constructs a query runtime without consulting an incompatible store', () => {
+    const runtime = createRuntime();
+    createMismatchStore(runtime.paths.coral.store.dbFile);
+    const before = readFileSync(runtime.paths.coral.store.dbFile);
+
+    expect(() => createDefaultKbQueryRuntime({ pluginRoot: REPO_ROOT, runtime })).not.toThrow();
+    expect(readFileSync(runtime.paths.coral.store.dbFile)).toEqual(before);
+  });
+
+  describe('does not mask store_schema_outdated in store-backed read-only callers', () => {
     function makeMismatchHome() {
       const home = makeTempRoot('coral-store-readonly-callers-home-');
       const runtime = createRuntime(home);
@@ -1071,14 +1089,6 @@ describe('read-only store access', () => {
         withEnv({ HOME: home, CLAUDE_PLUGIN_ROOT: REPO_ROOT }, () =>
           captureError(() => openReadCoralStore(runtime.paths.projectSource('/tmp/project'))),
         ),
-        'store_schema_outdated',
-      );
-    });
-
-    it('createDefaultKbQueryRuntime', () => {
-      const { runtime } = makeMismatchHome();
-      expectSetupCode(
-        captureError(() => createDefaultKbQueryRuntime({ pluginRoot: REPO_ROOT, runtime })),
         'store_schema_outdated',
       );
     });
