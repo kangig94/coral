@@ -24,11 +24,8 @@ import type {
 } from '../../../jobs/reconcile/contracts.js';
 import { toProviderRequest } from '../../../jobs/provider-request.js';
 import type { InterruptedAppServerReason } from '../../../jobs/reconcile/interrupted-reason.js';
-import {
-  CHILD_PRINCIPAL_CAPABILITIES,
-  CORAL_CHILD_PRINCIPAL_HANDLE,
-  type ChildPrincipalRegistry,
-} from '../../child-principal-registry.js';
+import { CHILD_PRINCIPAL_CAPABILITIES, type ChildPrincipalRegistry } from '../../child-principal-registry.js';
+import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../../security/child-principal-env.js';
 import type { Principal } from '../../../security/principal.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
 import { snapshotProviderRecoveryAuthority } from './authority-snapshot.js';

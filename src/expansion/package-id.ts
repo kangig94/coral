@@ -4,8 +4,6 @@ import {
   type CanonicalExpansionPackageIdValidation,
 } from './canonical-package-id.js';
 
-export { validateCanonicalExpansionPackageId };
-
 export type ExpansionPackageIdValidation =
   | CanonicalExpansionPackageIdValidation
   | { readonly ok: false; readonly reason: 'reserved' };

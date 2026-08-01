@@ -1,16 +1,22 @@
 import { createHash } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
 import { dirname, join, resolve } from 'node:path';
 
 import { writeAuditEvent } from '../infra/audit-log.js';
 import { backendLog } from '../infra/backend-log.js';
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
+import { assertNever } from '../infra/error-format.js';
 import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
-import { classifyStoreFormat, openStoreDatabase, type Database, type StoreFormatClassification } from './db.js';
-import type { StoreFormatDescription, StoreFormatFingerprint } from './format-fingerprint.js';
+import { classifyStoreFile, openStoreDatabase, type Database } from './db.js';
+import {
+  isStoreFormatFingerprint,
+  type StoreFormatClassification,
+  type StoreFormatDescription,
+  type StoreFormatFingerprint,
+} from './format-fingerprint.js';
+import { formatLegacyForeignGenerationNotice, inspectGenerationReadiness } from './generation-mutation-coordination.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_INCIDENT_DIR_ENTRIES,
@@ -29,9 +35,12 @@ import {
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 const STEADY_STATE_BUSY_TIMEOUT_MS = 5_000;
-const STORE_FORMAT_FINGERPRINT_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 const BACKEND_STORE_RESET_AUTHORITY_BRAND: unique symbol = Symbol('BackendStoreResetAuthority');
+
+type ResettableStoreFormatClassification =
+  | { readonly kind: 'missing'; readonly current: StoreFormatFingerprint }
+  | { readonly kind: 'mismatch'; readonly current: StoreFormatFingerprint; readonly stored: string };
 
 export type BackendStoreResetAuthority = Readonly<{
   socketPath: string;
@@ -175,12 +184,32 @@ function assertResetAuthority(
   }
 }
 
-function storedFingerprint(
-  classification: Exclude<StoreFormatClassification, { kind: 'fresh' | 'current' }>,
-): string | null {
-  return classification.kind === 'mismatch' && STORE_FORMAT_FINGERPRINT_PATTERN.test(classification.stored)
+function storedFingerprint(classification: ResettableStoreFormatClassification): string | null {
+  return classification.kind === 'mismatch' && isStoreFormatFingerprint(classification.stored)
     ? classification.stored
     : null;
+}
+
+function resettableStoreFormatClassification(
+  classification: StoreFormatClassification,
+): ResettableStoreFormatClassification | null {
+  if (
+    classification.kind === 'absent' ||
+    classification.kind === 'fresh' ||
+    classification.kind === 'compatible' ||
+    classification.kind === 'legacy-adoptable'
+  ) {
+    return null;
+  }
+  const storedFingerprint = classification.storedFingerprint;
+  if (isStoreFormatFingerprint(storedFingerprint)) {
+    return {
+      kind: 'mismatch',
+      current: classification.currentFingerprint,
+      stored: storedFingerprint,
+    };
+  }
+  return { kind: 'missing', current: classification.currentFingerprint };
 }
 
 function sameFileIdentity(left: StorageBigIntStat, right: StorageBigIntStat): boolean {
@@ -415,16 +444,19 @@ function readManifestBounded(storage: StoragePort, path: string): Buffer {
 }
 
 function ensureQuarantineRoot(storage: StoragePort, root: string, platform: string): void {
-  if (storage.existsSync(root)) {
-    const stat = storage.lstatSync(root);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      throw new Error('Store reset quarantine root is not a directory.');
+  if (!storage.existsSync(root)) {
+    storage.mkdirSync(root);
+    if (platform !== 'win32') {
+      storage.chmodSync(root, 0o700);
     }
-    return;
   }
-  storage.mkdirSync(root);
-  if (platform !== 'win32') {
-    storage.chmodSync(root, 0o700);
+  assertQuarantineRoot(storage, root);
+}
+
+function assertQuarantineRoot(storage: StoragePort, root: string): void {
+  const stat = storage.lstatSync(root);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('Store reset quarantine root is not a directory.');
   }
 }
 
@@ -435,6 +467,10 @@ function ensurePrivateDirectory(storage: StoragePort, path: string, platform: st
       storage.chmodSync(path, 0o700);
     }
   }
+  assertPrivateDirectory(storage, path, platform);
+}
+
+function assertPrivateDirectory(storage: StoragePort, path: string, platform: string): void {
   const link = storage.lstatSync(path);
   const stat = storage.statSync(path, { bigint: true });
   if (
@@ -570,33 +606,14 @@ function resumeInterruptedIncident(
   runtime: Pick<Runtime, 'env' | 'storage'>,
   files: StoreFileSet,
 ): { readonly incident: BackendStoreResetIncident; readonly manifest: StoreResetIncidentManifestV2 } | null {
-  const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
-  if (!runtime.storage.existsSync(quarantineRoot)) return null;
-  ensureQuarantineRoot(runtime.storage, quarantineRoot, runtime.env.platform());
-  const stagingRoot = join(quarantineRoot, STORE_RESET_STAGING_DIRECTORY);
-  if (!runtime.storage.existsSync(stagingRoot)) return null;
-  ensurePrivateDirectory(runtime.storage, stagingRoot, runtime.env.platform());
-  const stagingRead = runtime.storage.readDirectoryBoundedSync(stagingRoot, 1);
-  if (stagingRead.overflow) throw new Error('Multiple interrupted store-reset publications exist.');
-  const stagingNames = stagingRead.entries.filter(isCanonicalStoreResetIncidentId);
-  if (stagingNames.length !== stagingRead.entries.length) {
-    throw new Error('Unexpected entry exists in the store-reset staging directory.');
-  }
-  if (stagingNames.length === 0) return null;
-
-  const stagingName = stagingNames[0];
-  const stagingDirectory = join(stagingRoot, stagingName);
-  const stagingIdentity = assertContainedDirectory(runtime.storage, stagingRoot, stagingDirectory);
-  const manifestPath = join(stagingDirectory, STORE_RESET_MANIFEST_FILE_NAME);
-  if (!runtime.storage.existsSync(manifestPath)) {
-    discardUncommittedStaging(runtime.storage, stagingDirectory, stagingRoot);
+  const interrupted = detectInterruptedIncident(runtime, files);
+  if (interrupted === null) return null;
+  if (interrupted.manifest === null) {
+    discardUncommittedStaging(runtime.storage, interrupted.stagingDirectory, interrupted.stagingRoot);
     return null;
   }
-  const manifest = parseStoreResetIncidentManifest(readManifestBounded(runtime.storage, manifestPath));
-  if (manifest.incidentId !== stagingName) {
-    throw new Error('Interrupted store-reset publication identity does not match its directory.');
-  }
-  validateStagingEntries(runtime.storage, stagingDirectory, manifest, true);
+
+  const { manifest, quarantineRoot, stagingDirectory, stagingIdentity, stagingRoot } = interrupted;
   reconcileCommittedEvidence(runtime.storage, files, stagingDirectory, stagingIdentity, manifest);
 
   validateStagingEntries(runtime.storage, stagingDirectory, manifest, true);
@@ -611,6 +628,62 @@ function resumeInterruptedIncident(
       fileCount: manifest.files.length,
     },
     manifest,
+  };
+}
+
+type InterruptedIncident = {
+  readonly incidentId: string;
+  readonly manifest: StoreResetIncidentManifestV2 | null;
+  readonly quarantineRoot: string;
+  readonly stagingDirectory: string;
+  readonly stagingIdentity: StorageBigIntStat;
+  readonly stagingRoot: string;
+};
+
+function detectInterruptedIncident(
+  runtime: Pick<Runtime, 'env' | 'storage'>,
+  files: StoreFileSet,
+): InterruptedIncident | null {
+  const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
+  if (!runtime.storage.existsSync(quarantineRoot)) return null;
+  assertQuarantineRoot(runtime.storage, quarantineRoot);
+  const stagingRoot = join(quarantineRoot, STORE_RESET_STAGING_DIRECTORY);
+  if (!runtime.storage.existsSync(stagingRoot)) return null;
+  assertPrivateDirectory(runtime.storage, stagingRoot, runtime.env.platform());
+  const stagingRead = runtime.storage.readDirectoryBoundedSync(stagingRoot, 1);
+  if (stagingRead.overflow) throw new Error('Multiple interrupted store-reset publications exist.');
+  const stagingNames = stagingRead.entries.filter(isCanonicalStoreResetIncidentId);
+  if (stagingNames.length !== stagingRead.entries.length) {
+    throw new Error('Unexpected entry exists in the store-reset staging directory.');
+  }
+  if (stagingNames.length === 0) return null;
+
+  const stagingName = stagingNames[0];
+  const stagingDirectory = join(stagingRoot, stagingName);
+  const stagingIdentity = assertContainedDirectory(runtime.storage, stagingRoot, stagingDirectory);
+  const manifestPath = join(stagingDirectory, STORE_RESET_MANIFEST_FILE_NAME);
+  if (!runtime.storage.existsSync(manifestPath)) {
+    return {
+      incidentId: stagingName,
+      manifest: null,
+      quarantineRoot,
+      stagingDirectory,
+      stagingIdentity,
+      stagingRoot,
+    };
+  }
+  const manifest = parseStoreResetIncidentManifest(readManifestBounded(runtime.storage, manifestPath));
+  if (manifest.incidentId !== stagingName) {
+    throw new Error('Interrupted store-reset publication identity does not match its directory.');
+  }
+  validateStagingEntries(runtime.storage, stagingDirectory, manifest, true);
+  return {
+    incidentId: manifest.incidentId,
+    manifest,
+    quarantineRoot,
+    stagingDirectory,
+    stagingIdentity,
+    stagingRoot,
   };
 }
 
@@ -664,7 +737,7 @@ function removeCommittedActiveEvidence(
 function createIncidentManifest(
   runtime: Pick<Runtime, 'env'>,
   authority: BackendStoreResetAuthority,
-  classification: Exclude<StoreFormatClassification, { kind: 'fresh' | 'current' }>,
+  classification: ResettableStoreFormatClassification,
   incidentId: string,
   resetAt: string,
   files: readonly StoreResetIncidentFile[],
@@ -719,7 +792,7 @@ function publishIncident(
   runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'storage' | 'time'>,
   authority: BackendStoreResetAuthority,
   files: StoreFileSet,
-  classification: Exclude<StoreFormatClassification, { kind: 'fresh' | 'current' }>,
+  classification: ResettableStoreFormatClassification,
 ): BackendStoreResetIncident | undefined {
   const candidates = activeEvidenceCandidates(runtime.storage, files);
   if (candidates.length === 0) {
@@ -798,35 +871,94 @@ function publishIncident(
   }
 }
 
-function warnBackendStoreReset(
-  classification: Exclude<StoreFormatClassification, { kind: 'fresh' | 'current' }>,
-  incident: BackendStoreResetIncident | undefined,
-): void {
-  backendLog.warn(
-    `Backend store format reset required (stored fingerprint ${storedFingerprint(classification) ?? 'missing'}, ` +
-      `expected ${classification.current}); resetting backend store. ` +
-      'Active Coral history/state is unavailable in the new store; ' +
-      'KB Markdown is unaffected. ' +
-      (incident === undefined
-        ? ''
-        : `Incident ${incident.incidentId} was recorded. If this reset was unexpected, run ` +
-          `coral-cli backend store-reset report ${incident.incidentId}.`),
-  );
+export function resumeInterruptedBackendStoreResetIncident(
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'paths' | 'storage'>,
+  authority: BackendStoreResetAuthority,
+  options: BackendStorePathOptions,
+): BackendStoreResetIncident | null {
+  assertResetAuthority(runtime, authority, options);
+  const files = resolveStoreFileSet(runtime, options);
+  if (files.dbFile === ':memory:') {
+    throw new Error('Store reset requires a real filesystem store path.');
+  }
+  return resumeInterruptedIncident(runtime, files)?.incident ?? null;
 }
 
-function classifyStoreFile(
-  path: string,
-  storage: Pick<StoragePort, 'existsSync'>,
-  storeFormat: StoreFormatDescription,
-): StoreFormatClassification {
-  if (path !== ':memory:' && !storage.existsSync(path)) {
-    return { kind: 'fresh' };
+export function publishBackendStoreResetIncident(
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'storage' | 'time'>,
+  authority: BackendStoreResetAuthority,
+  options: BackendStorePathOptions,
+): BackendStoreResetIncident | undefined {
+  assertResetAuthority(runtime, authority, options);
+  const files = resolveStoreFileSet(runtime, options);
+  if (files.dbFile === ':memory:') {
+    throw new Error('Store reset requires a real filesystem store path.');
   }
-  const db = new DatabaseSync(path, { readOnly: true }) as unknown as Database;
+  const classification = classifyStoreFile(files.dbFile, runtime.storage, options.storeFormat);
+  const resettableClassification = resettableStoreFormatClassification(classification);
+  return resettableClassification === null
+    ? undefined
+    : publishIncident(runtime, authority, files, resettableClassification);
+}
+
+function refuseInterruptedIncident(runtime: Pick<Runtime, 'env' | 'flavor' | 'storage'>, files: StoreFileSet): void {
+  let interrupted: InterruptedIncident | null;
   try {
-    return classifyStoreFormat(db, storeFormat.fingerprint);
-  } finally {
-    db.close();
+    interrupted = detectInterruptedIncident(runtime, files);
+  } catch (error: unknown) {
+    throw documentedCoralSetupError({
+      code: 'store_reset_quarantine_failed',
+      reason: 'interrupted',
+      flavor: runtime.flavor,
+      cause: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (interrupted !== null) {
+    throw documentedCoralSetupError({
+      code: 'store_reset_quarantine_failed',
+      reason: 'interrupted',
+      flavor: runtime.flavor,
+      incidentId: interrupted.incidentId,
+    });
+  }
+}
+
+function refuseIncompatibleStore(
+  runtime: Pick<Runtime, 'flavor'>,
+  files: StoreFileSet,
+  classification: StoreFormatClassification,
+): void {
+  const context = {
+    path: files.dbFile,
+    flavor: runtime.flavor,
+    classification: classification.kind,
+    ...('storedFingerprint' in classification ? { storedFingerprint: classification.storedFingerprint } : {}),
+  };
+  if (classification.kind === 'newer-incompatible') {
+    throw documentedCoralSetupError({
+      code: 'store_newer_incompatible',
+      ...context,
+      version: classification.storedProductVersion,
+    });
+  }
+  if (classification.kind === 'older-incompatible') {
+    throw documentedCoralSetupError({
+      code: 'store_older_incompatible',
+      ...context,
+      version: classification.storedProductVersion,
+    });
+  }
+  if (classification.kind === 'corrupt-or-unsupported') {
+    throw documentedCoralSetupError({
+      code: 'store_corrupt_or_unsupported',
+      ...context,
+    });
+  }
+  if (classification.kind === 'legacy-adoptable') {
+    throw documentedCoralSetupError({
+      code: 'store_schema_outdated',
+      ...context,
+    });
   }
 }
 
@@ -843,6 +975,25 @@ export function openOrResetBackendStoreDb(
   }
 
   assertResetAuthority(runtime, authority, options);
+  if (options.path === undefined) {
+    const readiness = inspectGenerationReadiness(runtime, options.storeFormat);
+    switch (readiness.kind) {
+      case 'generated-ready':
+      case 'no-legacy':
+        break;
+      case 'legacy-foreign':
+        backendLog.warn(formatLegacyForeignGenerationNotice(readiness));
+        break;
+      case 'legacy-adoptable':
+        throw documentedCoralSetupError({
+          code: 'legacy_adoption_required',
+          flavor: runtime.flavor,
+          legacyPath: readiness.legacyPath,
+        });
+      default:
+        assertNever(readiness);
+    }
+  }
   runtime.storage.mkdirSync(files.dbDir, { recursive: true });
 
   let releaseLock: (() => void) | null = null;
@@ -861,40 +1012,26 @@ export function openOrResetBackendStoreDb(
       throw error;
     }
 
-    let resumed: ReturnType<typeof resumeInterruptedIncident>;
+    refuseInterruptedIncident(runtime, files);
+
+    let classification: StoreFormatClassification;
     try {
-      resumed = resumeInterruptedIncident(runtime, files);
+      classification = classifyStoreFile(files.dbFile, runtime.storage, options.storeFormat);
     } catch (error: unknown) {
       throw documentedCoralSetupError({
-        code: 'store_reset_quarantine_failed',
+        code: 'store_corrupt_or_unsupported',
+        path: files.dbFile,
+        flavor: runtime.flavor,
         cause: error instanceof Error ? error.message : String(error),
       });
     }
-    if (resumed !== null) {
-      const classification =
-        resumed.manifest.reason === 'missing'
-          ? ({
-              kind: 'missing',
-              current: resumed.manifest.expectedFingerprint as StoreFormatFingerprint,
-            } as const)
-          : ({
-              kind: 'mismatch',
-              current: resumed.manifest.expectedFingerprint as StoreFormatFingerprint,
-              stored: resumed.manifest.storedFingerprint ?? 'missing',
-            } as const);
-      warnBackendStoreReset(classification, resumed.incident);
-    }
-
-    const classification = classifyStoreFile(files.dbFile, runtime.storage, options.storeFormat);
-    if (classification.kind === 'missing' || classification.kind === 'mismatch') {
-      const incident = publishIncident(runtime, authority, files, classification);
-      warnBackendStoreReset(classification, incident);
-    }
+    refuseIncompatibleStore(runtime, files, classification);
 
     const db = openStoreDatabase({
       path: files.dbFile,
       storage: runtime.storage,
       storeFormat: options.storeFormat,
+      flavor: runtime.flavor,
       busyTimeoutMs: startupBusyTimeoutMs,
     });
     db.exec(`PRAGMA busy_timeout = ${steadyStateBusyTimeoutMs}`);

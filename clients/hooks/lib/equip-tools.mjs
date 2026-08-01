@@ -36,10 +36,10 @@ const EQUIP_AGENT_TOOLS = [
   },
 ];
 
-// Engine data tree mirrors `src/infra/path/engine.ts`: <stateRoot>/<data|data-dev>/engines/<id>/.
-function engineBinaryPath(id, bin) {
-  const dataDir = buildFlavor() === 'dev' ? 'data-dev' : 'data';
-  return join(coralStateRoot(), dataDir, 'engines', id, bin);
+// Engine data tree mirrors `src/infra/path/engine.ts`: <stateRoot>/gen2/<data|data-dev>/engines/<id>/.
+function engineBinaryPath(id, bin, flavor = buildFlavor(), stateRoot = coralStateRoot()) {
+  const dataDir = flavor === 'dev' ? 'data-dev' : 'data';
+  return join(stateRoot, 'gen2', dataDir, 'engines', id, bin);
 }
 
 // Mirror `src/expansion/shell-installer.ts`: a tool counts as installed only when

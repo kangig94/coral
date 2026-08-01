@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { retrievalRoleDescriptorSchema } from '../../kb/search/contract.js';
 import { kbCapabilityDescriptorSchema, kbCapabilityNameSchema } from '../../kb/capability/contract.js';
 import type { EngineManifest } from '../contract.js';
-import { validateCanonicalExpansionPackageId, validateExpansionPackageId } from '../package-id.js';
+import { validateExpansionPackageId } from '../package-id.js';
+import { validateCanonicalExpansionPackageId } from '../canonical-package-id.js';
 
 const onboardingStepSchema = z.discriminatedUnion('kind', [
   z

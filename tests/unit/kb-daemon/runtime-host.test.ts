@@ -226,6 +226,7 @@ describe('KB daemon runtime host', () => {
     const root = createTempRoot();
     vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
     const runtime = createRealRuntime('prod', { baseDir: root });
+    openTestStoreDb(runtime).close();
     const pluginRoot = join(root, 'plugin');
     const runtimeDir = runtime.paths.coral.kbRuntime.root;
     const host = createKbDaemonWriteRuntimeHost({

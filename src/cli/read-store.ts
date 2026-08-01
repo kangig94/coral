@@ -2,7 +2,7 @@ import { pluginRootNamespace } from '../infra/plugin-identity.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { CoralStore } from '../read-model/coral-store.js';
-import { openWritableStoreDbNoReset, type Database } from '../store/db.js';
+import { openStoreDatabase, type Database } from '../store/db.js';
 import { openReadOnlyStoreDatabase } from '../store/read-port.js';
 import { createDefaultStoreReadContext } from '../read-model/read-context.js';
 import { resolvePluginRoot } from './plugin-root.js';
@@ -124,9 +124,11 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
     ? (openReadOnlyStoreDatabase(runtime, {
         storeFormat: currentCoralStoreFormat(),
       }) as unknown as Database)
-    : openWritableStoreDbNoReset(runtime, {
+    : openStoreDatabase({
         path: ':memory:',
+        storage: runtime.storage,
         storeFormat: currentCoralStoreFormat(),
+        flavor: runtime.flavor,
       });
 
   return {

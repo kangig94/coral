@@ -59,6 +59,22 @@ export function emptyIndex(): KbIndex {
   };
 }
 
+export function readKbIndexSnapshot(runtimeDir: string, storage: Pick<StoragePort, 'readFileSync'>): KbIndex | null {
+  let raw: string;
+  try {
+    raw = storage.readFileSync(join(runtimeDir, INDEX_FILE), 'utf-8');
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return null;
+    throw error;
+  }
+
+  try {
+    return parseIndex(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+}
+
 function defaultIndexState(): KbIndexState {
   return {
     contentSeq: 0,

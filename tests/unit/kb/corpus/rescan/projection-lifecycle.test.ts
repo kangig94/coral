@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -10,8 +10,11 @@ import { applyMutationLane, captureIndexStateSnapshot, withoutTextStaleReason } 
 import { INDEX_STATE_FILE } from '#src/kb/corpus/index/store.js';
 import { EMPTY_GENERATED_COMMUNITY_FRESHNESS } from '#src/kb/curate/community/generated-projection-store.js';
 import { noteEntryId } from '#src/kb/entry-types.js';
-import type { CorpusProjectionCommitFaultPhase } from '#src/kb/corpus/projection-lifecycle.js';
+import type { CorpusProjectionCommitFaultPhase, StagedCorpusProjection } from '#src/kb/corpus/projection-lifecycle.js';
 import { update } from '#src/kb/ops/update.js';
+import { CoralSetupError } from '#src/runtime/errors.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import type { Runtime } from '#src/runtime/ports.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 
@@ -79,28 +82,50 @@ async function loadLifecycleModule() {
   return import('#src/kb/corpus/rescan/index.js');
 }
 
-function createHarness(): { root: string; runtimeDir: string; db: Database; kb: KbRuntime } {
+type ProjectionHarness = {
+  root: string;
+  runtimeDir: string;
+  db: Database;
+  kb: KbRuntime;
+  runtime: Runtime;
+};
+
+function createHarness(): ProjectionHarness {
   const root = mkdtempSync(join(tmpdir(), 'coral-kb-projection-lifecycle-'));
-  const runtimeDir = join(root, 'runtime');
+  const runtime = createRealRuntime('prod', { baseDir: root });
+  const runtimeDir = runtime.paths.coral.kbRuntime.root;
   const markdownRoot = join(root, 'vault');
   mkdirSync(join(markdownRoot, 'notes'), { recursive: true });
   tempRoots.push(root);
   const db = createKbTestDb(runtimeDir);
   openDatabases.push(db);
-  const { kb } = createKbTestRuntime({ markdownRoot, runtimeDir, db });
-  return { root: markdownRoot, runtimeDir, db, kb };
+  const { kb } = createKbTestRuntime({ markdownRoot, runtimeDir, db, runtime });
+  return { root: markdownRoot, runtimeDir, db, kb, runtime };
 }
 
-function reopenHarness(input: { root: string; runtimeDir: string; db: Database }): { db: Database; kb: KbRuntime } {
+function closeHarnessDatabase(input: ProjectionHarness): void {
   input.db.close();
   const index = openDatabases.indexOf(input.db);
   if (index >= 0) {
     openDatabases.splice(index, 1);
   }
+}
+
+function openHarness(input: ProjectionHarness): { db: Database; kb: KbRuntime } {
   const db = createKbTestDb(input.runtimeDir);
   openDatabases.push(db);
-  const { kb } = createKbTestRuntime({ markdownRoot: input.root, runtimeDir: input.runtimeDir, db });
+  const { kb } = createKbTestRuntime({
+    markdownRoot: input.root,
+    runtimeDir: input.runtimeDir,
+    db,
+    runtime: input.runtime,
+  });
   return { db, kb };
+}
+
+function reopenHarness(input: ProjectionHarness): { db: Database; kb: KbRuntime } {
+  closeHarnessDatabase(input);
+  return openHarness(input);
 }
 
 function writeNote(root: string, slug: string, body: string): void {
@@ -147,6 +172,65 @@ function projectedNextState(kb: KbRuntime, externalMutation: Parameters<typeof a
   return applyMutationLane(withoutTextStaleReason(kb.readIndexState()), externalMutation);
 }
 
+async function createInterruptedPendingProjection(harness: ProjectionHarness): Promise<StagedCorpusProjection> {
+  const { deriveCorpusProjection, stageCorpusProjectionArtifacts, commitCorpusProjection } =
+    await loadLifecycleModule();
+  writeNote(harness.root, 'blocking-commit', 'Blocking commit evidence.');
+  const candidate = await deriveCorpusProjection(harness.kb, captureIndexStateSnapshot(harness.kb.readIndexState()));
+  const staged = stageCorpusProjectionArtifacts(harness.kb, candidate);
+  await expect(
+    commitCorpusProjection(harness.kb, staged, { faultInjection: { failAfterPhase: 'pending' } }),
+  ).rejects.toThrow(/Injected corpus projection commit fault/);
+  return staged;
+}
+
+function snapshotTree(root: string): readonly { readonly path: string; readonly bytes: string | null }[] {
+  const snapshot: Array<{ path: string; bytes: string | null }> = [];
+  const visit = (directory: string, relativeRoot: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      const relativePath = relativeRoot.length === 0 ? entry.name : join(relativeRoot, entry.name);
+      const absolutePath = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        snapshot.push({ path: `${relativePath}/`, bytes: null });
+        visit(absolutePath, relativePath);
+      } else {
+        snapshot.push({ path: relativePath, bytes: readFileSync(absolutePath).toString('base64') });
+      }
+    }
+  };
+  visit(root, '');
+  return snapshot;
+}
+
+function snapshotBaselineGenerations(db: Database): string {
+  return JSON.stringify({
+    active: db.prepare('SELECT * FROM kb_corpus_authority_baseline_active ORDER BY singleton').all(),
+    generations: db.prepare('SELECT * FROM kb_corpus_authority_baseline_generations ORDER BY generation_id').all(),
+    records: db.prepare('SELECT * FROM kb_corpus_authority_baseline_records ORDER BY generation_id, entry_id').all(),
+  });
+}
+
+function refuseHarnessBoot(input: ProjectionHarness): CoralSetupError {
+  closeHarnessDatabase(input);
+  const db = createKbTestDb(input.runtimeDir);
+  openDatabases.push(db);
+  input.db = db;
+  try {
+    createKbTestRuntime({
+      markdownRoot: input.root,
+      runtimeDir: input.runtimeDir,
+      db,
+      runtime: input.runtime,
+    });
+  } catch (error: unknown) {
+    expect(error).toBeInstanceOf(CoralSetupError);
+    return error as CoralSetupError;
+  }
+  throw new Error('Expected KB boot to refuse the blocking corpus projection commit.');
+}
+
 const CORPUS_PROJECTION_FAULT_PHASES = [
   'pending',
   'index_renamed',
@@ -157,6 +241,41 @@ const CORPUS_PROJECTION_FAULT_PHASES = [
   'state_written',
   'committed',
 ] as const satisfies readonly CorpusProjectionCommitFaultPhase[];
+
+const REFUSING_COMMIT_RECORD_CASES = [
+  {
+    label: 'missing record',
+    expectedContext: { parseResult: 'missing' },
+    mutate(recordPath: string) {
+      rmSync(recordPath);
+    },
+  },
+  {
+    label: 'malformed JSON',
+    expectedContext: { parseResult: 'malformed', reason: 'invalid-json' },
+    mutate(recordPath: string) {
+      writeFileSync(recordPath, '{not-json', 'utf-8');
+    },
+  },
+  {
+    label: 'malformed shape',
+    expectedContext: { parseResult: 'malformed', reason: 'invalid-shape' },
+    mutate(recordPath: string) {
+      const record = JSON.parse(readFileSync(recordPath, 'utf-8')) as Record<string, unknown>;
+      delete record.phase;
+      writeFileSync(recordPath, JSON.stringify(record), 'utf-8');
+    },
+  },
+  {
+    label: 'newer schemaVersion',
+    expectedContext: { parseResult: 'unsupported-newer', schemaVersion: 2 },
+    mutate(recordPath: string) {
+      const record = JSON.parse(readFileSync(recordPath, 'utf-8')) as Record<string, unknown>;
+      record.schemaVersion = 2;
+      writeFileSync(recordPath, JSON.stringify(record), 'utf-8');
+    },
+  },
+] as const;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -312,6 +431,64 @@ describe('corpus projection lifecycle', () => {
       status: 'committed',
     });
     expect(scanGate.forbiddenLockWork).toEqual([]);
+  });
+
+  it.each(REFUSING_COMMIT_RECORD_CASES)(
+    'refuses a $label without changing commit, index, or baseline evidence',
+    async ({ mutate, expectedContext }) => {
+      const harness = createHarness();
+      const staged = await createInterruptedPendingProjection(harness);
+      const commitDirectory = join(harness.runtimeDir, 'corpus-projection', 'commits', staged.commitId);
+      const recordPath = join(commitDirectory, 'commit.json');
+      const indexCommitDirectory = join(harness.runtimeDir, 'corpus-projection', 'index', 'commits', staged.commitId);
+      mutate(recordPath);
+
+      const commitBefore = snapshotTree(commitDirectory);
+      const indexBefore = snapshotTree(indexCommitDirectory);
+      const baselineBefore = snapshotBaselineGenerations(harness.db);
+      const error = refuseHarnessBoot(harness);
+
+      expect(error).toMatchObject({
+        code: 'kb_commit_corrupt_or_unsupported',
+        context: {
+          commitId: staged.commitId,
+          flavor: 'prod',
+          ...expectedContext,
+        },
+      });
+      expect(error.remediation).toContain(
+        `coral-cli backend kb-commit quarantine --flavor prod --commit ${staged.commitId}`,
+      );
+      expect(snapshotTree(commitDirectory)).toEqual(commitBefore);
+      expect(snapshotTree(indexCommitDirectory)).toEqual(indexBefore);
+      expect(snapshotBaselineGenerations(harness.db)).toBe(baselineBefore);
+    },
+  );
+
+  it.each([
+    { label: 'supported-current', schemaVersion: 1 },
+    { label: 'supported-older', schemaVersion: 0 },
+  ] as const)('reconciles a $label record', async ({ schemaVersion }) => {
+    const harness = createHarness();
+    const staged = await createInterruptedPendingProjection(harness);
+    const commitDirectory = join(harness.runtimeDir, 'corpus-projection', 'commits', staged.commitId);
+    const recordPath = join(commitDirectory, 'commit.json');
+    const indexCommitDirectory = join(harness.runtimeDir, 'corpus-projection', 'index', 'commits', staged.commitId);
+    const record = JSON.parse(readFileSync(recordPath, 'utf-8')) as Record<string, unknown>;
+    record.schemaVersion = schemaVersion;
+    writeFileSync(recordPath, JSON.stringify(record), 'utf-8');
+
+    const reopened = reopenHarness(harness);
+    harness.db = reopened.db;
+    harness.kb = reopened.kb;
+
+    expect(existsSync(commitDirectory)).toBe(false);
+    expect(existsSync(indexCommitDirectory)).toBe(false);
+    expect(
+      harness.db
+        .prepare('SELECT generation_id FROM kb_corpus_authority_baseline_generations WHERE generation_id = ?')
+        .get(staged.stagedBaseline.generationId),
+    ).toBeUndefined();
   });
 
   it.each(CORPUS_PROJECTION_FAULT_PHASES)(

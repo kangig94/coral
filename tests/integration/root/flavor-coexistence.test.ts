@@ -24,9 +24,9 @@ describe('flavor coexistence integration', () => {
     const prodEq = enginePaths('prod', { baseDir });
     const devEq = enginePaths('dev', { baseDir });
 
-    expect(prodEq.dataDir('vector')).toBe(join(baseDir, 'data', 'engines', 'vector'));
-    expect(devEq.dataDir('vector')).toBe(join(baseDir, 'data-dev', 'engines', 'vector'));
-    expect(prodEq.installLockPath('vector')).toBe(join(baseDir, 'data', 'engines', '.locks', 'vector.lock'));
-    expect(devEq.installLockPath('vector')).toBe(join(baseDir, 'data-dev', 'engines', '.locks', 'vector.lock'));
+    expect(prodEq.dataDir('vector')).toBe(join(baseDir, 'gen2', 'data', 'engines', 'vector'));
+    expect(devEq.dataDir('vector')).toBe(join(baseDir, 'gen2', 'data-dev', 'engines', 'vector'));
+    expect(prodEq.installLockPath('vector')).toBe(join(baseDir, 'gen2', 'data', 'engines', '.locks', 'vector.lock'));
+    expect(devEq.installLockPath('vector')).toBe(join(baseDir, 'gen2', 'data-dev', 'engines', '.locks', 'vector.lock'));
   });
 });

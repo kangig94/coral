@@ -17,7 +17,6 @@ import { providerScopeSchema } from '#src/infra/provider-scope.js';
 import { createCurrentStoreFormat } from '#src/store/current-format.js';
 import { journalEventEnvelopeSchema, journalEventRefsSchema } from '#src/store/envelope.js';
 import {
-  compareStoreFormatFingerprint,
   describeStoreFormat,
   persistedCodecNamesFromDdl,
   PersistedCodecRegistry,
@@ -356,16 +355,5 @@ describe('StoreFormatFingerprint', () => {
     expect(() => persistedCodecNamesFromDdl('payload TEXT -- @persisted-codec store.value')).toThrow(
       'DDL persisted codec on line 1 is not declared as a JSON boundary',
     );
-  });
-
-  it('classifies the persisted fingerprint for startup reset authority', () => {
-    const current = 'sha256:current';
-    expect(compareStoreFormatFingerprint(null, current)).toEqual({ kind: 'missing', current });
-    expect(compareStoreFormatFingerprint(current, current)).toEqual({ kind: 'current', current, stored: current });
-    expect(compareStoreFormatFingerprint('sha256:old', current)).toEqual({
-      kind: 'mismatch',
-      current,
-      stored: 'sha256:old',
-    });
   });
 });

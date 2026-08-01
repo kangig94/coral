@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as BackendDiscoveryModule from '#src/infra/backend-discovery.js';
 import type * as IpcClientModule from '#src/transport/ipc/client.js';
 import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { openStoreDatabase } from '#src/store/db.js';
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
@@ -50,6 +53,14 @@ function makeDiscoveryRecord(overrides: Partial<CoordinatorDiscoveryRecord> = {}
   };
 }
 
+function createCurrentStore(runtime: ReturnType<typeof createRealRuntime>): void {
+  openStoreDatabase({
+    path: runtime.paths.coral.store.dbFile,
+    storage: runtime.storage,
+    storeFormat: currentCoralStoreFormat(),
+  }).close();
+}
+
 describe('expansion activation', () => {
   const originalFlavor = process.env.CORAL_FLAVOR;
   const originalHome = process.env.HOME;
@@ -72,6 +83,7 @@ describe('expansion activation', () => {
     delete process.env.CORAL_CHILD_PRINCIPAL_HANDLE;
     delete process.env.CORAL_JOB_ID;
     delete process.env.CORAL_SESSION_ID;
+    createCurrentStore(createRealRuntime('prod'));
   });
 
   afterEach(() => {
@@ -357,6 +369,7 @@ describe('expansion activation', () => {
 
       process.env.CORAL_FLAVOR = 'dev';
       const runtime = createRealRuntime('dev');
+      createCurrentStore(runtime);
       writeDiscoveryRecord(
         makeDiscoveryRecord({
           flavor: 'dev',

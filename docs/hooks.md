@@ -91,7 +91,7 @@ The `tools.md` fragment's `{{EQUIPPED_TOOLS}}` placeholder lists agent-facing to
 
 `clients/hooks/session-start.mjs` renders the fragment bundle via `renderInject({ asOwner: true })` and returns it through `hookSpecificOutput.additionalContext`.
 
-KB wake-up cache support uses hook-local path helpers only: `kbRuntimeDir(flavor)` resolves `~/.coral/data/kb` or `~/.coral/data-dev/kb`, while `storeDbPath(flavor)` resolves the separate backend store DB at `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db`. The snapshot reader opens `kb_corpus_state` read-only from the store DB path, or from the sibling store DB when given a KB runtime dir, and fails open with `null` on any error.
+KB wake-up reads no runtime database. `readProjectScopedWakeUp()` reads the project wiki directly from the configured Markdown KB root and fails open with `null` on missing or malformed content. The separate PreCompact snapshot hook mirrors the canonical store path as `~/.coral/gen2/data/store/store.db` or `~/.coral/gen2/data-dev/store/store.db`; it validates the installed fingerprint before opening that projection read-only.
 
 Hook SQLite access goes through the supported Node runtime's built-in `node:sqlite` module. Missing or unreadable snapshot data fails open instead of breaking hook startup.
 

@@ -51,12 +51,20 @@ function sha256(value: Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+// The current generation lives under `gen2`; a pre-boundary build's tree is the
+// legacy one and is inspection-only. These fixtures are the current generation, so
+// every store-reset invocation below passes `--target gen2` — the canonical token
+// the CLI echoes back in its guidance, which these tests assert verbatim.
+function generationDataRoot(home: string, build: BuildManifest): string {
+  return join(home, '.coral', 'gen2', build.flavor === 'dev' ? 'data-dev' : 'data');
+}
+
 function quarantineRoot(home: string, build: BuildManifest): string {
-  return join(home, '.coral', build.flavor === 'dev' ? 'data-dev' : 'data', 'store', 'store-reset-quarantine');
+  return join(generationDataRoot(home, build), 'store', 'store-reset-quarantine');
 }
 
 function activeStorePath(home: string, build: BuildManifest): string {
-  return join(home, '.coral', build.flavor === 'dev' ? 'data-dev' : 'data', 'store', 'store.db');
+  return join(generationDataRoot(home, build), 'store', 'store.db');
 }
 
 function writeIncident(options: {
@@ -174,20 +182,20 @@ describe('bundled store-reset CLI', () => {
     }
     const fixture = writeIncident({ home });
 
-    const list = runCli(home, ['backend', 'store-reset', 'list']);
+    const list = runCli(home, ['backend', 'store-reset', 'list', '--target', 'gen2']);
     expect(list).toEqual({
       stdout:
         `Incident ID | Reset at | Reason | State | Files\n` +
         `${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | mismatch | ready | 1\n\n` +
         'States: ready produces a Markdown report; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.\n' +
-        'Next: coral-cli backend store-reset report <ready-incident-id>\n' +
+        'Next: coral-cli backend store-reset report --target gen2 <ready-incident-id>\n' +
         'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.\n' +
         'Non-ready evidence remains retained. Do not move, restore, delete, or upload DB, WAL, or SHM files.\n',
       stderr: '',
       status: 0,
     });
 
-    const report = runCli(home, ['backend', 'store-reset', 'report', INCIDENT_ID]);
+    const report = runCli(home, ['backend', 'store-reset', 'report', INCIDENT_ID, '--target', 'gen2']);
     expect(report.status, report.stderr).toBe(0);
     expect(report.stderr).toBe('');
     expect(report.stdout).toContain('# Coral store-reset incident report\n');
@@ -199,7 +207,10 @@ describe('bundled store-reset CLI', () => {
     expect(sha256(readFileSync(fixture.evidencePath))).toBe(fixture.evidenceHash);
   });
 
-  it('surfaces a real reset through the ordinary lazy CLI startup, then lists and reports it', async () => {
+  // Startup no longer destroys an unsupported store: it refuses and names the one
+  // command that may replace it. This walks that whole contract — refuse, prove the
+  // store survived, then reset only through the explicit operator command.
+  it('refuses on an unsupported store and resets only through the explicit operator command', async () => {
     const home = root('coral-store-reset-e2e-running-');
     const temp = join(home, 'tmp');
     mkdirSync(temp);
@@ -219,35 +230,41 @@ describe('bundled store-reset CLI', () => {
       { HOME: home, TMPDIR: temp },
       { baseDir: join(home, '.coral') },
     ).infoFile;
+    const hasPreResetTable = (): boolean => {
+      const db = new DatabaseSync(storePath, { readOnly: true });
+      try {
+        return db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'private_pre_reset'").get() !== undefined;
+      } finally {
+        db.close();
+      }
+    };
     try {
-      const trigger = runCli(home, ['abort', '--all'], CLI_BUNDLE, {
+      const refused = runCli(home, ['abort', '--all'], CLI_BUNDLE, {
         autostart: true,
         timeoutMs: 30_000,
       });
-      expect(trigger.status, trigger.stderr).toBe(0);
-      expect(trigger.stdout).toBe('No jobs aborted\n');
-      expect(trigger.stderr).toContain('Coral startup notice: Backend store format reset required');
-      await waitFor(() => existsSync(discovery));
-      const list = runCli(home, ['backend', 'store-reset', 'list']);
+      expect(refused.status, refused.stderr).not.toBe(0);
+      expect(refused.stderr).toContain('The current-generation store is corrupt or uses an unsupported format.');
+      expect(refused.stderr).toContain(`coral-cli backend store-reset discard --target gen2 --flavor ${build.flavor}`);
+      expect(refused.stderr).not.toContain('PRIVATE_DB_SENTINEL');
+      // The refusal must leave the operator's data intact — that is the whole point.
+      expect(hasPreResetTable()).toBe(true);
+
+      const discard = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
+      expect(discard.status, discard.stderr).toBe(0);
+      expect(hasPreResetTable()).toBe(false);
+
+      const list = runCli(home, ['backend', 'store-reset', 'list', '--target', 'gen2']);
       expect(list.status, list.stderr).toBe(0);
       const incidentId = list.stdout.match(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/)?.[0];
       expect(incidentId).toBeDefined();
-      expect(trigger.stderr).toContain(`coral-cli backend store-reset report ${incidentId}`);
+      expect(discard.stdout).toContain(incidentId ?? 'missing');
 
-      const report = runCli(home, ['backend', 'store-reset', 'report', incidentId ?? 'missing']);
+      const report = runCli(home, ['backend', 'store-reset', 'report', incidentId ?? 'missing', '--target', 'gen2']);
       expect(report.status, report.stderr).toBe(0);
       expect(report.stdout).toContain('# Coral store-reset incident report\n');
       expect(report.stdout).toContain(`- Incident ID: \`${incidentId}\``);
-      expect(report.stderr).toBe('');
-      const shutdown = runCli(home, ['backend', 'shutdown']);
-      expect(shutdown.status, shutdown.stderr).toBe(0);
-      await waitFor(() => !existsSync(discovery));
-      const current = new DatabaseSync(storePath, { readOnly: true });
-      try {
-        expect(current.prepare("SELECT 1 FROM sqlite_master WHERE name = 'private_pre_reset'").get()).toBeUndefined();
-      } finally {
-        current.close();
-      }
+      expect(report.stdout).not.toContain('PRIVATE_DB_SENTINEL');
     } finally {
       if (existsSync(discovery)) {
         runCli(home, ['backend', 'shutdown']);
@@ -259,18 +276,25 @@ describe('bundled store-reset CLI', () => {
   it('uses fixed envelopes for invalid IDs, malformed incidents, and wrong-build incidents', () => {
     const home = root('coral-store-reset-e2e-errors-');
     mkdirSync(join(home, 'tmp'));
-    const invalid = runCli(home, ['backend', 'store-reset', 'report', '../PRIVATE_ARGUMENT_SENTINEL']);
+    const invalid = runCli(home, [
+      'backend',
+      'store-reset',
+      'report',
+      '../PRIVATE_ARGUMENT_SENTINEL',
+      '--target',
+      'gen2',
+    ]);
     expect(invalid).toEqual({
       stdout: '',
       stderr:
         'Incident ID must be a canonical lowercase UUID. [code=invalid_store_reset_incident_id]\n' +
-        'remediation: Run `coral-cli backend store-reset list` and use the ID of an incident in the `ready` state.\n',
+        'remediation: Run `coral-cli backend store-reset list --target <legacy|gen2>` and use the ID of an incident in the `ready` state.\n',
       status: 2,
     });
     expect(`${invalid.stdout}${invalid.stderr}`).not.toContain('PRIVATE_ARGUMENT_SENTINEL');
 
     writeIncident({ home, malformedManifest: true });
-    const malformed = runCli(home, ['backend', 'store-reset', 'report', INCIDENT_ID]);
+    const malformed = runCli(home, ['backend', 'store-reset', 'report', INCIDENT_ID, '--target', 'gen2']);
     expect(malformed).toEqual({
       stdout: '',
       stderr:
@@ -288,7 +312,7 @@ describe('bundled store-reset CLI', () => {
         buildSetId: '323e4567-e89b-42d3-a456-426614174000',
       },
     });
-    const wrongBuild = runCli(home, ['backend', 'store-reset', 'report', INCIDENT_ID]);
+    const wrongBuild = runCli(home, ['backend', 'store-reset', 'report', INCIDENT_ID, '--target', 'gen2']);
     expect(wrongBuild).toEqual({
       stdout: '',
       stderr:
@@ -301,12 +325,20 @@ describe('bundled store-reset CLI', () => {
 
   it('does not treat the hidden identity probe as an ordinary command argument', () => {
     const home = root('coral-store-reset-e2e-probe-argument-');
-    const result = runCli(home, ['backend', 'store-reset', 'report', '--', '--print-store-reset-build-identity']);
+    const result = runCli(home, [
+      'backend',
+      'store-reset',
+      'report',
+      '--target',
+      'gen2',
+      '--',
+      '--print-store-reset-build-identity',
+    ]);
     expect(result).toEqual({
       stdout: '',
       stderr:
         'Incident ID must be a canonical lowercase UUID. [code=invalid_store_reset_incident_id]\n' +
-        'remediation: Run `coral-cli backend store-reset list` and use the ID of an incident in the `ready` state.\n',
+        'remediation: Run `coral-cli backend store-reset list --target <legacy|gen2>` and use the ID of an incident in the `ready` state.\n',
       status: 2,
     });
   });
@@ -315,7 +347,7 @@ describe('bundled store-reset CLI', () => {
     const home = root('coral-store-reset-e2e-corrupt-');
     mkdirSync(join(home, 'tmp'));
     const fixture = writeIncident({ home, corruptDb: true });
-    const report = runCli(home, ['backend', 'store-reset', 'report', INCIDENT_ID]);
+    const report = runCli(home, ['backend', 'store-reset', 'report', INCIDENT_ID, '--target', 'gen2']);
 
     expect(report.status, report.stderr).toBe(0);
     expect(report.stderr).toBe('');
@@ -333,7 +365,11 @@ describe('bundled store-reset CLI', () => {
     copyFileSync(CLAUDE_APPSERVER_BUNDLE, join(mixedBundle, 'coral-claude-appserver.cjs'));
     const manifest = readBuildManifest();
     writeFileSync(join(mixedBundle, 'manifest.json'), `${JSON.stringify(manifest)}\n`);
-    const coherent = runCli(home, ['backend', 'store-reset', 'list'], join(mixedBundle, 'coral-cli.cjs'));
+    const coherent = runCli(
+      home,
+      ['backend', 'store-reset', 'list', '--target', 'gen2'],
+      join(mixedBundle, 'coral-cli.cjs'),
+    );
     expect(coherent.status, coherent.stderr).toBe(0);
 
     writeFileSync(
@@ -344,7 +380,11 @@ describe('bundled store-reset CLI', () => {
       })}\n`,
     );
 
-    const result = runCli(home, ['backend', 'store-reset', 'list'], join(mixedBundle, 'coral-cli.cjs'));
+    const result = runCli(
+      home,
+      ['backend', 'store-reset', 'list', '--target', 'gen2'],
+      join(mixedBundle, 'coral-cli.cjs'),
+    );
     expect(result).toEqual({
       stdout: '',
       stderr:

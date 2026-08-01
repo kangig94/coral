@@ -40,8 +40,8 @@ export function hudFetchLockPath(cacheDir, key) {
   return join(cacheDir, `.coral-${key}.lock`);
 }
 
-export function coralBackendInfoPath(homeDir) {
-  return join(homeDir, '.coral', 'run', 'coordinator.json');
+export function coralBackendInfoPath(homeDir, flavor = 'prod') {
+  return join(homeDir, '.coral', 'gen2', flavor === 'dev' ? 'run-dev' : 'run', 'coordinator.json');
 }
 
 export function shouldUseClaudeKeychain(explicitConfigDir, platform) {

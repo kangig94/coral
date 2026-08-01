@@ -23,11 +23,11 @@ function baseDirOfLength(length: number): string {
 }
 
 function socketPathFor(baseDir: string, flavor: 'prod' | 'dev'): string {
-  return join(baseDir, flavor === 'dev' ? 'run-dev' : 'run', 'coordinator.sock');
+  return join(baseDir, 'gen2', flavor === 'dev' ? 'run-dev' : 'run', 'coordinator.sock');
 }
 
 function baseDirForSocketLength(targetLength: number, flavor: 'prod' | 'dev'): string {
-  const fixedSuffixLength = `/${flavor === 'dev' ? 'run-dev' : 'run'}/coordinator.sock`.length;
+  const fixedSuffixLength = `/gen2/${flavor === 'dev' ? 'run-dev' : 'run'}/coordinator.sock`.length;
   return baseDirOfLength(targetLength - fixedSuffixLength);
 }
 

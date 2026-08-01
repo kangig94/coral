@@ -21,9 +21,16 @@ import { exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin
 exitIfChildProcess();
 exitIfWrongFlavor();
 
-function storeDbPath() {
-  const dataDir = buildFlavor() === 'dev' ? 'data-dev' : 'data';
-  return join(coralStateRoot(), dataDir, 'store', 'store.db');
+// Self-contained mirror of the path authority in src/infra/path/store.ts.
+function storeDbPath(flavor = buildFlavor(), stateRoot = coralStateRoot()) {
+  const dataDir = flavor === 'dev' ? 'data-dev' : 'data';
+  return join(stateRoot, 'gen2', dataDir, 'store', 'store.db');
+}
+
+function storeDiscardRemediation(flavor = buildFlavor()) {
+  return flavor === 'dev'
+    ? "To deliberately discard this store, run 'coral-cli backend store-reset discard --target gen2 --flavor dev', then retry compaction."
+    : "To deliberately discard this store, run 'coral-cli backend store-reset discard --target gen2 --flavor prod', then retry compaction.";
 }
 
 function snapshotDirForProject(projectDir) {
@@ -76,7 +83,7 @@ await failOpen(async () => {
     logSnapshotSkipped(
       projectDir,
       'store format sidecar does not match the installed plugin',
-      'Let the next writable Coral daemon startup quarantine and reinitialize the store, then retry compaction.',
+      storeDiscardRemediation(),
     );
     return;
   }
@@ -95,7 +102,7 @@ await failOpen(async () => {
         logSnapshotSkipped(
           projectDir,
           'store format fingerprint mismatch',
-          'Let the next writable Coral daemon startup quarantine and reinitialize the store, then retry compaction.',
+          storeDiscardRemediation(),
         );
         return;
       }
@@ -128,7 +135,7 @@ await failOpen(async () => {
         logSnapshotSkipped(
           projectDir,
           'projection_jobs contains an unsafe job identifier',
-          'Restart Coral with a current-format store; inspect the quarantined store if history must be recovered.',
+          "Run 'coral-cli backend shutdown' and report this projection integrity failure. Do not edit the database or discard the store solely because of this row.",
         );
         return [];
       }

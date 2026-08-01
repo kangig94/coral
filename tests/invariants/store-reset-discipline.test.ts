@@ -7,6 +7,9 @@ const REPO_ROOT = process.cwd();
 const SRC_ROOT = join(REPO_ROOT, 'src');
 const BACKEND_STORE_RESET_PATH = 'src/store/backend-store-reset.ts';
 const READ_PORT_PATH = 'src/store/read-port.ts';
+const KB_QUERY_RUNTIME_PATH = 'src/read-model/kb-query-runtime.ts';
+const GENERATION_MUTATION_COORDINATION_PATH = 'src/store/generation-mutation-coordination.ts';
+const EXPANSION_INSTALL_PATH = 'src/cli/expansion/install.ts';
 
 type CallHit = {
   relativePath: string;
@@ -214,12 +217,63 @@ describe('store reset discipline invariants', () => {
     expect(forbiddenCalls).toEqual([]);
   });
 
-  it('keeps store file quarantine in openOrResetBackendStoreDb behind BackendStoreResetAuthority', () => {
+  it('keeps read-only store and KB-query construction non-creating and non-reconciling', () => {
+    const readPortSource = readFileSync(join(REPO_ROOT, READ_PORT_PATH), 'utf8');
+    const queryRuntimeSource = readFileSync(join(REPO_ROOT, KB_QUERY_RUNTIME_PATH), 'utf8');
+
+    expect(readPortSource).not.toMatch(/mkdirSync/u);
+    expect(queryRuntimeSource).not.toMatch(
+      /\bcreateKbRuntime\b|KbRuntimeImpl|mkdirSync|adoptStagedSurfaceHashes|reconcileCorpusProjectionCommits/u,
+    );
+  });
+
+  it('orders expansion mutations after readiness release and writer-lease acquisition', () => {
+    const coordinationSource = sourceFile(GENERATION_MUTATION_COORDINATION_PATH);
+    const acquireLease = findFunction(
+      GENERATION_MUTATION_COORDINATION_PATH,
+      'acquireGenerationWriterLeaseAfterReadiness',
+    );
+    const coordinationBody = acquireLease.body?.getText(coordinationSource) ?? '';
+    const completeIndex = coordinationBody.indexOf('coordination.completeReadiness(');
+    const releaseReadinessIndex = coordinationBody.indexOf('readiness.release()');
+    const writerLeaseIndex = coordinationBody.indexOf('coordination.acquireWriterLease(');
+
+    expect(completeIndex).toBeGreaterThanOrEqual(0);
+    expect(releaseReadinessIndex).toBeGreaterThan(completeIndex);
+    expect(writerLeaseIndex).toBeGreaterThan(releaseReadinessIndex);
+
+    const installSource = sourceFile(EXPANSION_INSTALL_PATH);
+    const coordinatedMutation = findFunction(EXPANSION_INSTALL_PATH, 'runGenerationCoordinatedMutation');
+    const coordinatedBody = coordinatedMutation.body?.getText(installSource) ?? '';
+    expect(coordinatedBody.indexOf('acquirePackageOperationLock(')).toBeGreaterThan(
+      coordinatedBody.indexOf('acquireGenerationWriterLeaseAfterReadiness('),
+    );
+
+    for (const functionName of ['installExpansion', 'uninstallExpansion']) {
+      const mutation = findFunction(EXPANSION_INSTALL_PATH, functionName);
+      const body = mutation.body?.getText(installSource) ?? '';
+      expect(body.indexOf('runGenerationCoordinatedMutation(')).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('keeps openOrResetBackendStoreDb free of destructive store-reset calls', () => {
     const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
     const authorityParam = resetFunction.parameters[1];
     const calls = collectCalls(BACKEND_STORE_RESET_PATH);
-    const quarantineStoreFileCalls = calls
-      .filter((call) => call.callee === 'publishIncident')
+    const destructiveOpenCalls = calls
+      .filter((call) => call.enclosingFunctions.includes('openOrResetBackendStoreDb'))
+      .filter((call) =>
+        [
+          'discardUncommittedStaging',
+          'publishBackendStoreResetIncident',
+          'publishIncident',
+          'reconcileCommittedEvidence',
+          'resumeInterruptedBackendStoreResetIncident',
+          'resumeInterruptedIncident',
+          'rmSync',
+          'unlinkSync',
+        ].includes(call.callee),
+      )
       .map((call) => `${call.relativePath}:${call.line}:${call.enclosingFunctions[0] ?? '<top>'}`);
     const directStoreUnlinks = allSourcePaths()
       .flatMap((relativePath) =>
@@ -232,28 +286,28 @@ describe('store reset discipline invariants', () => {
 
     expect(authorityParam?.name.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('authority');
     expect(authorityParam?.type?.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('BackendStoreResetAuthority');
-    expect(quarantineStoreFileCalls).toEqual([
-      expect.stringMatching(/^src\/store\/backend-store-reset\.ts:\d+:openOrResetBackendStoreDb$/),
-    ]);
+    expect(destructiveOpenCalls).toEqual([]);
     expect(directStoreUnlinks).toEqual([]);
   });
 
-  it('keeps publishIncident ordered after reset-lock acquisition', () => {
+  it('detects interrupted reset state before classifying and never resumes it from open', () => {
     const source = sourceFile(BACKEND_STORE_RESET_PATH);
     const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
     const body = resetFunction.body;
     expect(body).toBeDefined();
     const bodyText = body?.getText(source) ?? '';
     const lockIndex = bodyText.indexOf('acquireDirectoryLockSync(');
-    const quarantineIndex = bodyText.indexOf('publishIncident(');
+    const interruptedIndex = bodyText.indexOf('refuseInterruptedIncident(');
+    const classificationIndex = bodyText.indexOf('classifyStoreFile(');
 
     expect(lockIndex).toBeGreaterThanOrEqual(0);
-    expect(quarantineIndex).toBeGreaterThan(lockIndex);
+    expect(interruptedIndex).toBeGreaterThan(lockIndex);
+    expect(classificationIndex).toBeGreaterThan(interruptedIndex);
+    expect(bodyText).not.toMatch(/publishIncident\(|resumeInterruptedIncident\(/u);
   });
 
   it('keeps every store-reset support import closure outside reset authority and generic DB openers', () => {
     const supportRoots = [
-      'src/cli/store-reset.ts',
       'src/cli/format/store-reset.ts',
       'src/store/reset-incident-reader.ts',
       'src/store/reset-incident-diagnostic.ts',
@@ -262,20 +316,21 @@ describe('store reset discipline invariants', () => {
       'src/infra/store-reset-diagnostic-supervisor.ts',
     ];
     const supportClosure = importClosure(supportRoots);
-    const cliClosure = importClosure(['src/cli/bootstrap.ts']);
-
     expect(supportClosure.has(BACKEND_STORE_RESET_PATH)).toBe(false);
     expect(supportClosure.has('src/store/db.ts')).toBe(false);
-    expect(cliClosure.has(BACKEND_STORE_RESET_PATH)).toBe(false);
   });
 
-  it('keeps lifecycle as the sole production importer of the backend reset boundary', () => {
+  it('keeps backend reset access limited to lifecycle opening and the explicit operator service', () => {
     const importers = allSourcePaths()
       .filter((path) => sourceImports(path).includes(BACKEND_STORE_RESET_PATH))
       .sort();
-    expect(importers).toEqual(['src/coordinator/lifecycle.ts']);
+    expect(importers).toEqual(['src/coordinator/lifecycle.ts', 'src/store/operator-store-reset.ts']);
 
-    const symbolAllowlist = new Set([BACKEND_STORE_RESET_PATH, 'src/coordinator/lifecycle.ts']);
+    const symbolAllowlist = new Set([
+      BACKEND_STORE_RESET_PATH,
+      'src/coordinator/lifecycle.ts',
+      'src/store/operator-store-reset.ts',
+    ]);
     const forbiddenReferences = allSourcePaths()
       .filter((path) => !symbolAllowlist.has(path))
       .flatMap((path) => {
@@ -283,5 +338,47 @@ describe('store reset discipline invariants', () => {
         return /createBackendStoreResetAuthority|openOrResetBackendStoreDb|publishIncident/u.test(source) ? [path] : [];
       });
     expect(forbiddenReferences).toEqual([]);
+  });
+
+  it('keeps quarantine resume and publish reachable only through the direct-filesystem operator service', () => {
+    const operatorPath = 'src/store/operator-store-reset.ts';
+    const operatorSource = sourceFile(operatorPath);
+    const topLevel = findFunction(operatorPath, 'discardStoreReset').body?.getText(operatorSource) ?? '';
+    const generated = findFunction(operatorPath, 'discardGeneratedStore').body?.getText(operatorSource) ?? '';
+    const targetPathsIndex = topLevel.indexOf('resolveStoreResetTargetPaths(');
+    const socketIndex = topLevel.indexOf('options.acquireSocketGuard(');
+    const legacyRefusalIndex = topLevel.indexOf("options.target === 'legacy'");
+    const generatedIndex = topLevel.indexOf('discardGeneratedStore(');
+    const adoptionIndex = generated.indexOf('acquireGenerationAdoptionLease(');
+    const maintenanceIndex = generated.indexOf('acquireGenerationMaintenanceLease(');
+    const resetLockIndex = generated.indexOf('acquireStoreResetLock(');
+    const resumeIndex = generated.indexOf('resumeInterruptedBackendStoreResetIncident(');
+    const publishIndex = generated.indexOf('publishBackendStoreResetIncident(');
+
+    expect(legacyRefusalIndex).toBeGreaterThanOrEqual(0);
+    expect(targetPathsIndex).toBeGreaterThan(legacyRefusalIndex);
+    expect(socketIndex).toBeGreaterThan(targetPathsIndex);
+    expect(generatedIndex).toBeGreaterThan(socketIndex);
+    expect(adoptionIndex).toBeGreaterThanOrEqual(0);
+    expect(maintenanceIndex).toBeGreaterThan(adoptionIndex);
+    expect(resetLockIndex).toBeGreaterThan(maintenanceIndex);
+    expect(resumeIndex).toBeGreaterThan(resetLockIndex);
+    expect(publishIndex).toBeGreaterThan(resumeIndex);
+    expect(readFileSync(join(REPO_ROOT, operatorPath), 'utf8')).not.toMatch(/shutdownAndAwaitRelease/u);
+    expect(readFileSync(join(REPO_ROOT, operatorPath), 'utf8')).toContain(
+      'Destructive operator service used while the coordinator is deliberately',
+    );
+    expect(readFileSync(join(REPO_ROOT, 'src/cli/store-reset.ts'), 'utf8')).not.toContain('backend-store-reset.js');
+
+    const destructiveCallers = allSourcePaths()
+      .flatMap((path) =>
+        collectCalls(path)
+          .filter((call) =>
+            ['publishBackendStoreResetIncident', 'resumeInterruptedBackendStoreResetIncident'].includes(call.callee),
+          )
+          .map((call) => call.relativePath),
+      )
+      .sort();
+    expect(destructiveCallers).toEqual([operatorPath, operatorPath]);
   });
 });

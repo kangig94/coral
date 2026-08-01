@@ -16,6 +16,7 @@ import {
   type KbDaemonExpansionResult,
   type KbDaemonHealthResult,
   type KbDaemonControlMessage,
+  type KbDaemonErrorEnvelope,
   type KbDaemonRequestMessage,
   type KbDaemonParentResponseMessage,
 } from './protocol.js';
@@ -23,6 +24,7 @@ import { createKbDaemonRequestService } from './request-service.js';
 import { createKbDaemonWriteRuntimeHost } from './runtime-host.js';
 import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
 import { errorMessage } from '../infra/error-format.js';
+import { rehydrateCoralSetupError, serializeCoralSetupError } from '../runtime/errors.js';
 import { AbortError } from '../runtime/abort.js';
 import type { CurateAssistantPort } from '../kb/curate/assistant.js';
 import type { CurateUsageBudgetPort } from '../kb/curate/usage-budget.js';
@@ -54,6 +56,18 @@ function requestedBindingFromExpansionRequest(params: KbDaemonExpansionRequest):
 
 function writeControlMessage(message: KbDaemonControlMessage): void {
   process.stdout.write(encodeKbDaemonMessage(message));
+}
+
+function kbDaemonErrorEnvelope(error: unknown): KbDaemonErrorEnvelope {
+  const setupError = serializeCoralSetupError(error);
+  return {
+    message: errorMessage(error),
+    ...(setupError === null ? {} : { setupError }),
+  };
+}
+
+function throwParentResponseError(error: KbDaemonErrorEnvelope): never {
+  throw rehydrateCoralSetupError(error.setupError) ?? new Error(error.message);
 }
 
 export function resolveKbDaemonParentPid(value: string | undefined, selfPid = process.pid): number | null {
@@ -230,7 +244,7 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
         request.signal,
       );
       if (!response.ok) {
-        throw new Error(response.error.message);
+        throwParentResponseError(response.error);
       }
       if (typeof response.result !== 'string') {
         throw new Error('KB daemon parent returned malformed curate assistant result.');
@@ -241,7 +255,7 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
   const parentCurateUsageBudget: CurateUsageBudgetPort = {
     async isExhausted(signal) {
       const response = await sendParentRequest('curate.usage-budget.exhausted', undefined, signal);
-      if (!response.ok) throw new Error(response.error.message);
+      if (!response.ok) throwParentResponseError(response.error);
       if (typeof response.result !== 'boolean') {
         throw new Error('KB daemon parent returned malformed curate usage budget result.');
       }
@@ -433,7 +447,7 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
               type: KB_DAEMON_RESPONSE_MESSAGE,
               id: parsed.id,
               ok: false,
-              error: { message: errorMessage(error) },
+              error: kbDaemonErrorEnvelope(error),
             });
           });
           continue;

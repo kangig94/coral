@@ -58,6 +58,7 @@
     "graphology-communities-louvain": "^2.0.2",
     "kiwi-nlp": "0.23.0",
     "mammoth": "^1.12.0",
+    "semver": "^7.7.4",
     "smol-toml": "^1.7.0",
     "turndown": "^7.2.2",
     "yaml": "^2.4.2",
@@ -66,6 +67,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.19.7",
+    "@types/semver": "^7.7.1",
     "@types/turndown": "^5.0.6",
     "commander": "^14.0.3",
     "esbuild": "^0.27.2",

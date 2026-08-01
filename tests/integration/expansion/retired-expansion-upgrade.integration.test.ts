@@ -10,7 +10,7 @@ import { enginePaths } from '#src/infra/path/engine.js';
 import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { openWritableStoreDbNoReset } from '#src/store/db.js';
+import { openStoreDatabase } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import {
   buildArtifactsAvailable,
@@ -54,8 +54,9 @@ function writeSentinel(path: string, value: string): string {
 
 function seedRetiredExpansion(home: string, flavor: BuildFlavor): void {
   const runtime = createRealRuntime(flavor, { baseDir: coralRoot(home) });
-  const db = openWritableStoreDbNoReset(runtime, {
+  const db = openStoreDatabase({
     path: storeDbPathForHome(home, flavor),
+    storage: runtime.storage,
     storeFormat: currentCoralStoreFormat(),
   });
   try {
@@ -75,17 +76,23 @@ function seedRetiredExpansion(home: string, flavor: BuildFlavor): void {
 }
 
 function runBuiltCli(fixture: PluginFixture, home: string, flavor: BuildFlavor, args: readonly string[]): unknown {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    TMPDIR: home,
+    CLAUDE_PLUGIN_ROOT: fixture.root,
+    CORAL_FLAVOR: flavor,
+    CORAL_KB_EXTRA_LANGS: '',
+  };
+  delete env.CORAL_CHILD;
+  delete env.CORAL_CHILD_PRINCIPAL_HANDLE;
+  delete env.CORAL_JOB_ID;
+  delete env.CORAL_SESSION_ID;
+
   const result = spawnSync(process.execPath, [join(fixture.root, 'bridge', 'coral-cli.cjs'), ...args], {
     cwd: fixture.root,
-    env: {
-      ...process.env,
-      HOME: home,
-      USERPROFILE: home,
-      TMPDIR: home,
-      CLAUDE_PLUGIN_ROOT: fixture.root,
-      CORAL_FLAVOR: flavor,
-      CORAL_KB_EXTRA_LANGS: '',
-    },
+    env,
     encoding: 'utf-8',
     timeout: 20_000,
   });

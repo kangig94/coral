@@ -6,7 +6,7 @@ import { commitIndexUpdate, recordContentAndMetadataMutation } from '../../corpu
 import { buildSourceIndexEntry } from '../../corpus/index/records.js';
 import { readKnowledgeBaseListIndex } from '../../direct-read-index.js';
 import { assertWithin } from '../../paths.js';
-import type { KbRuntime } from '../../contract.js';
+import type { KbReadQueryRuntime, KbRuntime } from '../../contract.js';
 import {
   deleteEntry,
   isSourceEntry,
@@ -133,7 +133,7 @@ export async function deleteSource(rt: KbRuntime, input: KbSourceDeleteInput): P
   });
 }
 
-export async function listSources(kb: KbRuntime): Promise<KbSourceListResult> {
+export async function listSources(kb: KbReadQueryRuntime): Promise<KbSourceListResult> {
   const index = readKnowledgeBaseListIndex(kb);
   const entries: SourceEntry[] = [];
   for (const entry of Object.values(index.entries)) {

@@ -49,13 +49,17 @@ function rotateLogIfLarge(runDir) {
   }
 }
 
+function coordinatorRunDir(flavor = buildFlavor(), stateRoot = coralStateRoot()) {
+  return join(stateRoot, 'gen2', flavor === 'dev' ? 'run-dev' : 'run');
+}
+
 function spawnBackend(pluginRoot) {
   // Match `src/infra/path/coordinator.ts:coordinatorPaths(...)`: the daemon
   // reads/writes coordinator.json here, so its stderr log belongs alongside
   // the same runDir. Sharing the path with `src/transport/ipc/ensure.ts`'s
   // CLI-side spawn keeps logs unified across both spawn entry points and
   // benefits from the same rotation discipline.
-  const runDir = join(coralStateRoot(), buildFlavor() === 'dev' ? 'run-dev' : 'run');
+  const runDir = coordinatorRunDir();
 
   const backendBin = join(pluginRoot, 'bridge', 'coral-backend.cjs');
   let stderr = 'ignore';

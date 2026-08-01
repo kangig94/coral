@@ -148,7 +148,7 @@ The design is organized by authority role, not by a prescribed per-file layout:
 | Daemon-internal authority            | Named system scope                    | Bind the configured profile at each use; never fall back to daemon credentials                    |
 | Process routing                      | Provider runtime adapter              | Derive the closed execution environment only from the bound provider profile                      |
 
-This change is a destructive store epoch, not a migration. Durable journal and projection shapes expose no local migration versions and select no upcaster, old-format decoder, or compatibility path. One active `StoreFormatFingerprint` covers the exact executable SQL manifest, registered event type/stream/body/materializer mapping, append-validation semantics, complete job/session/cursor and selected KB authority rows, the component codecs used by other persisted rows, and provider-owned profile, binding, and continuity codecs. Reads use those same contracts before interpreting stored state; indexed hot paths run only after a full current-format authority audit. A missing or different database fingerprint quarantines the canonical DB/WAL/SHM and hook-safety format sidecar, then recreates the store.
+This change is a destructive store epoch, not a migration. Durable journal and projection shapes expose no local migration versions and select no upcaster, old-format decoder, or compatibility path. One active `StoreFormatFingerprint` covers the exact executable SQL manifest, registered event type/stream/body/materializer mapping, append-validation semantics, complete job/session/cursor and selected KB authority rows, the component codecs used by other persisted rows, and provider-owned profile, binding, and continuity codecs. Reads use those same contracts before interpreting stored state; indexed hot paths run only after a full current-format authority audit. A missing or incompatible database fingerprint makes ordinary startup refuse without mutation. Only the explicit operator discard command quarantines the canonical DB/WAL/SHM and hook-safety format sidecar before recreating the store.
 
 The quarantine is retained as a current-build **incident**, not as a recovery format. That distinction keeps the destructive epoch model honest: a report can explain which fingerprint/build reset occurred and whether retained bytes still match their manifest, but nothing can reopen those bytes as Coral state. The manifest has one exact schema guard and no body version, legacy layout, upcaster, or fallback reader. A per-build UUID binds the backend, CLI, adjacent package manifest, and incident so mixed or stale artifacts fail closed instead of interpreting evidence under another executable contract.
 
@@ -168,7 +168,7 @@ The metaphor: Link's base sword always works. Finding the bow is exciting becaus
 
 Two terms describe distinct facets, not synonyms:
 
-- **Engine** = data/source identity, the noun: source under `src/engines/<id>/`, rebuildable local state under `~/.coral/data/engines/<id>/`.
+- **Engine** = data/source identity, the noun: source under `src/engines/<id>/`, rebuildable local state under `~/.coral/gen2/data/engines/<id>/`.
 - **Expansion** = lifecycle pattern + user verb: the KB daemon invokes an `Expansion` body under a scope, and users run `coral-cli expansion equip <name>` (or the `/equip <name>` skill).
 
 Expansion-backed engines ship one Expansion. Install-only packages such as tokenizer/model artifacts can support an engine without registering an Expansion body.

@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 
 import type { BuildFlavor } from '../build-flavor.js';
-import { coralStateRoot } from './root.js';
+import { generationStateRoot } from './root.js';
 
 export interface StorePaths {
   dbDir: string;
@@ -15,8 +15,7 @@ export interface StorePathOptions {
 }
 
 export function storePaths(flavor: BuildFlavor, opts?: StorePathOptions): StorePaths {
-  const base = flavor === 'dev' ? 'data-dev/store' : 'data/store';
-  const dbDir = join(coralStateRoot(opts?.baseDir), base);
+  const dbDir = join(generationStateRoot(flavor, opts), 'store');
   const dbFile = join(dbDir, 'store.db');
   const walFile = join(dbDir, 'store.db-wal');
   const shmFile = join(dbDir, 'store.db-shm');

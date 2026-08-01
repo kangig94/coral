@@ -1,5 +1,3 @@
-import { dirname } from 'node:path';
-
 import type { Runtime } from '../runtime/ports.js';
 import { openStoreDatabase, type Database } from './db.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
@@ -35,18 +33,15 @@ export function asReadonlyDatabase(db: Database): ReadonlyDatabase {
 }
 
 export function openReadOnlyStoreDatabase(
-  runtime: Pick<Runtime, 'paths' | 'storage'>,
+  runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
   options: OpenReadOnlyStoreOptions,
 ): ReadonlyDatabase {
   const path = options.path ?? runtime.paths.coral.store.dbFile;
-  if (path !== ':memory:') {
-    runtime.storage.mkdirSync(dirname(path), { recursive: true });
-  }
-
   return openStoreDatabase({
     path: path,
     storage: runtime.storage,
     storeFormat: options.storeFormat,
+    flavor: runtime.flavor,
     readonly: true,
     busyTimeoutMs: options.busyTimeoutMs,
   });

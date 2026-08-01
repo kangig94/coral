@@ -8,13 +8,8 @@ import type { Runtime } from '../../runtime/ports.js';
 import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../../store/read-port.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
 
-const CATALOG_UNAVAILABLE_MESSAGE = /unable to open database file/i;
-
 function isCatalogUnavailableError(error: unknown): boolean {
-  if (serializeCoralSetupError(error) !== null) {
-    return false;
-  }
-  return error instanceof Error && CATALOG_UNAVAILABLE_MESSAGE.test(error.message);
+  return serializeCoralSetupError(error)?.code === 'store_not_initialized';
 }
 
 export function readExpansionCatalog(runtime: Runtime): readonly EngineManifest[] {

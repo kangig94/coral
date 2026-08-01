@@ -2,6 +2,7 @@ import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { isRecord } from '../infra/json.js';
 import { errorMessage } from '../infra/error-format.js';
+import { serializeCoralSetupError, type SerializedCoralSetupError } from '../runtime/errors.js';
 import {
   createDefaultKbReadPaths,
   createKbQueryHost,
@@ -89,7 +90,13 @@ type KbDaemonWriteRuntimeHost = {
   warmSearchRuntime?(): void;
   searchReadiness?():
     | { ready: true }
-    | { ready: false; reason: string; message: string; detail?: Record<string, unknown> };
+    | {
+        ready: false;
+        reason: string;
+        message: string;
+        detail?: Record<string, unknown>;
+        setupError?: SerializedCoralSetupError;
+      };
   createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   reindex(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   health(): KbDaemonKbReadHealth;
@@ -263,6 +270,17 @@ function invalidRequestFromError(error: unknown): KbToolResult {
 }
 
 function failed(error: unknown): KbToolResult {
+  const setupError = serializeCoralSetupError(error);
+  if (setupError !== null) {
+    return {
+      ok: false,
+      code: setupError.code,
+      message: setupError.userMessage,
+      remediation: setupError.remediation,
+      ...(setupError.context === undefined ? {} : { detail: setupError.context }),
+      setupError,
+    };
+  }
   return kbError('kb_error', errorMessage(error), error instanceof Error ? { message: error.message } : error);
 }
 
@@ -280,8 +298,19 @@ function getWriteRuntimeOrError(
 }
 
 function searchRuntimeNotReady(
-  readiness: { ready: false; reason: string; message: string; detail?: Record<string, unknown> } | undefined,
+  readiness:
+    | {
+        ready: false;
+        reason: string;
+        message: string;
+        detail?: Record<string, unknown>;
+        setupError?: SerializedCoralSetupError;
+      }
+    | undefined,
 ): KbToolResult {
+  if (readiness?.setupError !== undefined) {
+    return failed(readiness.setupError);
+  }
   return kbError(
     'kb_search_runtime_not_ready',
     readiness?.message ?? 'KB search runtime is not ready.',
@@ -436,14 +465,17 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
   let phase: KbDaemonKbReadHealth['phase'] = 'not_initialized';
   let initializedAt: number | undefined;
   let lastError: string | undefined;
+  let lastSetupError: SerializedCoralSetupError | undefined;
   const markReady = (): void => {
     phase = 'ready';
     initializedAt ??= now();
     lastError = undefined;
+    lastSetupError = undefined;
   };
   const markFailure = (error: unknown): void => {
     phase = 'failed';
     lastError = errorMessage(error);
+    lastSetupError = serializeCoralSetupError(error) ?? undefined;
   };
   const state: KbDaemonRequestServiceState = {
     pluginRoot: options.pluginRoot,
@@ -792,6 +824,7 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
     phase,
     ...(initializedAt === undefined ? {} : { initializedAt }),
     ...(lastError === undefined ? {} : { lastError }),
+    ...(lastSetupError === undefined ? {} : { setupError: lastSetupError }),
   });
   const warmup = async (): Promise<KbDaemonKbReadHealth> => {
     try {

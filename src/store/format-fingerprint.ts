@@ -27,22 +27,61 @@ export type StoreFormatManifest = {
   readonly codecs: readonly PersistedCodecManifestEntry[];
 };
 
-export type StoreFormatDescription = {
+export type StoreFormatFingerprintDescription = {
   readonly manifest: StoreFormatManifest;
   readonly canonicalManifest: string;
   readonly fingerprint: StoreFormatFingerprint;
 };
 
+export type StoreFormatDescription = StoreFormatFingerprintDescription & {
+  readonly productVersion: string;
+};
+
 export type StoreFormatFingerprint = `sha256:${string}`;
 
-export type StoreFormatFingerprintComparison =
-  | { readonly kind: 'missing'; readonly current: StoreFormatFingerprint }
-  | {
-      readonly kind: 'current';
-      readonly current: StoreFormatFingerprint;
-      readonly stored: StoreFormatFingerprint;
-    }
-  | { readonly kind: 'mismatch'; readonly current: StoreFormatFingerprint; readonly stored: string };
+type CurrentStoreFormatIdentity = {
+  readonly currentFingerprint: StoreFormatFingerprint;
+  readonly currentProductVersion: string;
+};
+
+type StoredStoreFormatIdentity = CurrentStoreFormatIdentity & {
+  readonly storedFingerprint: StoreFormatFingerprint;
+  readonly storedProductVersion: string;
+};
+
+/**
+ * Classification of an on-disk store against the current executable contract:
+ * `absent` has no database file; `fresh` has no user tables; `compatible` has
+ * the current fingerprint and a valid non-newer version; `legacy-adoptable`
+ * has the current fingerprint but no product-version row; `older-incompatible`
+ * and `newer-incompatible` have valid versions on the corresponding side of
+ * current SemVer precedence; `corrupt-or-unsupported` covers missing, malformed,
+ * or equal-version/different-fingerprint metadata that cannot be ordered safely.
+ */
+export type StoreFormatClassification =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'fresh' }
+  | (StoredStoreFormatIdentity & { readonly kind: 'compatible' })
+  | (CurrentStoreFormatIdentity & {
+      readonly kind: 'legacy-adoptable';
+      readonly storedFingerprint: StoreFormatFingerprint;
+    })
+  | (StoredStoreFormatIdentity & { readonly kind: 'older-incompatible' })
+  | (StoredStoreFormatIdentity & { readonly kind: 'newer-incompatible' })
+  | (CurrentStoreFormatIdentity & {
+      readonly kind: 'corrupt-or-unsupported';
+      readonly storedFingerprint: string | null;
+      readonly storedProductVersion: string | null;
+    });
+
+export const STORE_FORMAT_FINGERPRINT_META_KEY = 'store_format_fingerprint';
+export const STORE_PRODUCT_VERSION_META_KEY = 'store_product_version';
+
+const STORE_FORMAT_FINGERPRINT_PATTERN = /^sha256:[0-9a-f]{64}$/;
+
+export function isStoreFormatFingerprint(value: unknown): value is StoreFormatFingerprint {
+  return typeof value === 'string' && STORE_FORMAT_FINGERPRINT_PATTERN.test(value);
+}
 
 const CODEC_NAME = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 const PERSISTED_CODEC_ANNOTATION = /@persisted-codec\s+([a-z][a-z0-9]*(?:[._-][a-z0-9]+)*)/g;
@@ -470,7 +509,7 @@ export function describeStoreFormat(
   ddl: string,
   codecs: PersistedCodecRegistry,
   ddlFragments: readonly PersistedDdlFragment[] = [],
-): StoreFormatDescription {
+): StoreFormatFingerprintDescription {
   const entries = codecs.entries();
   const completeStoreDdl = completeDdl(ddl, ddlFragments);
   assertCodecCoverage(completeStoreDdl, entries);
@@ -485,13 +524,4 @@ export function describeStoreFormat(
     canonicalManifest,
     fingerprint: `sha256:${sha256Hex(canonicalManifest)}`,
   });
-}
-
-export function compareStoreFormatFingerprint(
-  stored: string | null,
-  current: StoreFormatFingerprint,
-): StoreFormatFingerprintComparison {
-  if (stored === null) return { kind: 'missing', current };
-  if (stored === current) return { kind: 'current', current, stored };
-  return { kind: 'mismatch', current, stored };
 }

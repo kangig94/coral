@@ -53,7 +53,7 @@ function coralProjectDir(homeDir: string, source: string): string {
 
 function seedCodebaseMemoryBinary(homeDir: string): void {
   for (const dataDir of ['data', 'data-dev']) {
-    const dir = join(homeDir, '.coral', dataDir, 'engines', 'codebase-memory');
+    const dir = join(homeDir, '.coral', 'gen2', dataDir, 'engines', 'codebase-memory');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'codebase-memory-mcp'), 'binary');
   }
@@ -768,8 +768,8 @@ describe('codex.json', () => {
 });
 
 describe('pre-compact.mjs', () => {
-  function seedStore(homeDir: string, projectRoot: string, fingerprint: string): void {
-    const storeDir = join(homeDir, '.coral', 'data', 'store');
+  function seedStore(homeDir: string, projectRoot: string, fingerprint: string, jobId = 'job-live'): void {
+    const storeDir = join(homeDir, '.coral', 'gen2', 'data', 'store');
     mkdirSync(storeDir, { recursive: true });
     const db = new DatabaseSync(join(storeDir, 'store.db'));
     try {
@@ -784,7 +784,7 @@ describe('pre-compact.mjs', () => {
       `);
       db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('store_format_fingerprint', fingerprint);
       db.prepare('INSERT INTO projection_jobs (job_id, phase, project_root, last_seq) VALUES (?, ?, ?, ?)').run(
-        'job-live',
+        jobId,
         'running',
         projectRoot,
         1,
@@ -889,7 +889,7 @@ describe('pre-compact.mjs', () => {
     cpSync(join(process.cwd(), 'clients', 'hooks'), hooksRoot, { recursive: true });
     const fingerprint = 'sha256:3333333333333333333333333333333333333333333333333333333333333333';
     seedStore(fixture.root, fixture.projectRoot, fingerprint);
-    const shmPath = join(fixture.root, '.coral', 'data', 'store', 'store.db-shm');
+    const shmPath = join(fixture.root, '.coral', 'gen2', 'data', 'store', 'store.db-shm');
     writeFileSync(shmPath, 'untouched-shm', 'utf8');
     const before = { bytes: readFileSync(shmPath), mtimeMs: statSync(shmPath).mtimeMs };
 
@@ -963,6 +963,37 @@ describe('pre-compact.mjs', () => {
       message: 'captured job snapshot',
       count: 1,
     });
+  });
+
+  it('does not prescribe a destructive store reset for one unsafe projected job ID', () => {
+    const fixture = createFixture();
+    const fingerprint = 'sha256:6666666666666666666666666666666666666666666666666666666666666666';
+    const hook = seedPluginManifest(fixture.pluginRoot, fingerprint);
+    seedStore(fixture.root, fixture.projectRoot, fingerprint, '../unsafe-job');
+
+    const result = runHook(
+      hook,
+      { cwd: fixture.projectRoot },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+        HOME: fixture.root,
+      },
+    );
+
+    const output = result.stderr
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .find((entry) => entry.message === 'compact snapshot skipped');
+    expect(output).toMatchObject({
+      hook: 'pre-compact',
+      message: 'compact snapshot skipped',
+      reason: 'projection_jobs contains an unsafe job identifier',
+    });
+    expect(output.remediation).toContain('report this projection integrity failure');
+    expect(output.remediation).not.toContain('store-reset discard');
   });
 });
 

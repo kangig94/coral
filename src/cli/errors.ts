@@ -20,13 +20,14 @@ export type StoreResetCliErrorCode =
 const STORE_RESET_ERRORS = {
   invalid_store_reset_incident_id: {
     message: 'Incident ID must be a canonical lowercase UUID.',
-    remediation: 'Run `coral-cli backend store-reset list` and use the ID of an incident in the `ready` state.',
+    remediation:
+      'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use the ID of an incident in the `ready` state.',
     exitCode: 2,
   },
   store_reset_incident_not_found: {
     message: 'Store-reset incident not found.',
     remediation:
-      'Run `coral-cli backend store-reset list`. If no incident is retained, file a Store-reset incident issue with this complete fixed error output; do not attach DB, WAL, SHM, or raw logs.',
+      'Run `coral-cli backend store-reset list --target <legacy|gen2>`. If no incident is retained, file a Store-reset incident issue with this complete fixed error output; do not attach DB, WAL, SHM, or raw logs.',
     exitCode: 1,
   },
   store_reset_incident_limit_exceeded: {
@@ -163,6 +164,20 @@ function structuredBodyError(
   value: unknown,
   fallback: { readonly code: string; readonly message: string; readonly httpStatus?: number },
 ): CliErrorResult {
+  const setupError = serializeCoralSetupError(value);
+  if (setupError !== null) {
+    return withExitCode(
+      {
+        error: true,
+        code: setupError.code,
+        message: setupError.userMessage,
+        remediation: setupError.remediation,
+        ...(setupError.context === undefined ? {} : { detail: setupError.context }),
+      },
+      errorCodeToExit(setupError.code, fallback.httpStatus),
+    );
+  }
+
   const body = isRecord(value) ? value : null;
   const code = body && typeof body.code === 'string' ? body.code : fallback.code;
   const message = body && typeof body.message === 'string' ? body.message : fallback.message;

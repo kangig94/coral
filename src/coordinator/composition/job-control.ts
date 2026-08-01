@@ -94,6 +94,14 @@ export function createCoordinatorControl({
         continue;
       }
 
+      const belongsToCurrentNamespace = belongsToNamespace(status, currentNamespace);
+      const belongsToRecovery = recoveryRegistry?.has(jobId) === true;
+      if (!belongsToCurrentNamespace && !belongsToRecovery) {
+        valid.push(jobId);
+        missing.push(jobId);
+        continue;
+      }
+
       // KB jobs run against the shared corpus and belong to no single project,
       // so they stay abortable from any project's cwd (namespace still applies).
       if (status.projectRoot !== projectRoot && status.jobKind !== 'kb') {
@@ -101,17 +109,7 @@ export function createCoordinatorControl({
         continue;
       }
 
-      if (belongsToNamespace(status, currentNamespace)) {
-        valid.push(jobId);
-        continue;
-      }
-
-      if (recoveryRegistry?.has(jobId)) {
-        valid.push(jobId);
-        continue;
-      }
-
-      mismatch.push(jobId);
+      valid.push(jobId);
     }
 
     return { valid, missing, mismatch };

@@ -3,9 +3,6 @@ import type { Capability } from '../security/capability.js';
 import type { Principal } from '../security/principal.js';
 import { principalFromWire, principalToWire, type PrincipalWire } from '../security/principal-wire.js';
 import type { IdPort } from '../runtime/ports.js';
-import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../security/child-principal-env.js';
-
-export { CORAL_CHILD_PRINCIPAL_HANDLE };
 
 const CHILD_PRINCIPAL_TTL_MS = 24 * 60 * 60 * 1000;
 export const CHILD_PRINCIPAL_CAPABILITIES = [

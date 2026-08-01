@@ -101,6 +101,7 @@ export const commandClassMap = {
 
 export const commandContainerPaths = new Set<string>([
   'backend',
+  'backend kb-commit',
   'backend store-reset',
   'discuss',
   'expansion',
@@ -115,8 +116,11 @@ export const commandContainerPaths = new Set<string>([
 export const commandClassExemptions = {
   'backend status': 'local operational health probe',
   'backend shutdown': 'local operational drain request',
+  'backend store-adopt': 'operator-only local same-generation store adoption',
+  'backend kb-commit quarantine': 'operator-only local KB evidence quarantine',
   'backend store-reset list': 'local operational incident inspection',
   'backend store-reset report': 'local operational incident inspection',
+  'backend store-reset discard': 'operator-only direct-filesystem store quarantine',
 } as const;
 
 const providerCommandFamily = new WeakSet<Command>();

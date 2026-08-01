@@ -42,7 +42,7 @@ function tmpHome(): string {
 // hardcoding a path that could silently drift from the code under test.
 function codebaseMemoryBinDir(): string {
   const dataDir = buildFlavor() === 'dev' ? 'data-dev' : 'data';
-  return join(coralStateRoot(), dataDir, 'engines', 'codebase-memory');
+  return join(coralStateRoot(), 'gen2', dataDir, 'engines', 'codebase-memory');
 }
 
 describe('resolveEquippedTools', () => {

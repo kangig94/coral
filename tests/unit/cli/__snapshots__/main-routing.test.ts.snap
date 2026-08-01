@@ -6,13 +6,16 @@ exports[`cli main routing > preserves help output for 'backend' via snapshot 1`]
 Backend administration and local incident inspection
 
 Options:
-  -h, --help      display help for command
+  -h, --help             display help for command
 
 Commands:
-  status          Show backend daemon status
-  shutdown        Gracefully shut down backend daemon
-  store-reset     Inspect retained store-reset incidents
-  help [command]  display help for command
+  status                 Show backend daemon status
+  shutdown               Gracefully shut down backend daemon
+  store-adopt [options]  Adopt a same-generation legacy store into the generated
+                         state boundary
+  store-reset            Inspect retained store-reset incidents
+  kb-commit              Operate on retained blocking KB commit evidence
+  help [command]         display help for command
 "
 `;
 

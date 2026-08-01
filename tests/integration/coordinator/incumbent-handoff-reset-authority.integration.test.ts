@@ -2,7 +2,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { createServer as createNetServer, type Server as NetServer } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -14,6 +14,7 @@ import type { CoordinatorStoreServices } from '#src/coordinator/composition/stor
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { serializeCoralSetupError } from '#src/runtime/errors.js';
 import type { Database } from '#src/store/db.js';
 import { closeIpcServer, listenIpcServer, type IpcListener } from '#src/transport/ipc/server.js';
 import {
@@ -226,13 +227,14 @@ afterEach(async () => {
 });
 
 describe('incumbent handoff reset authority', () => {
-  it('serves pre-service health/errors and waits for incumbent handoff before resetting the old store', async () => {
+  it('serves pre-service health/errors and refuses the old store unchanged after incumbent handoff', async () => {
     const runtime = createRuntime();
     const token = 'test-token';
     const bootToken = 'test-boot-token';
     const shutdownToken = 'test-shutdown-token';
     const dbPath = runtime.paths.coral.store.dbFile;
     createMismatchStore(dbPath);
+    const storeBefore = readFileSync(dbPath);
     const incumbentStore = new DatabaseSync(dbPath);
     let shutdownReceived = false;
     const processStartedAt = probeProcessStartedAtSeconds(process.pid, runtime.env.platform() as NodeJS.Platform) ?? 1;
@@ -347,32 +349,17 @@ describe('incumbent handoff reset authority', () => {
       incumbentStore.close();
       await closeNet(incumbent);
 
-      await startPromise;
+      const startupError = await startPromise.then(
+        () => null,
+        (error: unknown) => error,
+      );
 
-      expect(core.storeServicesRef.tryGet()).not.toBeNull();
-      expect(readStoreFormatFingerprint(dbPath)).toBe(currentCoralStoreFormat().fingerprint);
-      expect(tableExists(dbPath, 'incumbent_owned_store')).toBe(false);
-
-      const postResetStore = core.storeServicesRef.get().progressStore;
-      postResetStore.appendLaunchRequested('post-reset-kb-job', {
-        jobId: 'post-reset-kb-job',
-        owner: { kind: 'system-task', id: 'kb.reindex:post-reset-kb-job' },
-        sessionId: null,
-        provider: null,
-        projectRoot: '/post-reset',
-        backendNamespace: 'ns',
-        jobKind: 'kb',
-        pool: 'curate',
-        enqueueSequence: postResetStore.nextEnqueueSequence(),
-        operation: 'kb.reindex',
-        request: {},
-        createdAt: '2026-07-23T00:00:00.000Z',
-      });
-      expect(postResetStore.readStatus('post-reset-kb-job')).toMatchObject({
-        phase: 'launching',
-        backendNamespace: 'ns',
-        jobKind: 'kb',
-      });
+      expect(serializeCoralSetupError(startupError)).toMatchObject({ code: 'store_corrupt_or_unsupported' });
+      expect(core.storeServicesRef.tryGet()).toBeNull();
+      expect(readFileSync(dbPath)).toEqual(storeBefore);
+      expect(readStoreFormatFingerprint(dbPath)).toBe('sha256:obsolete');
+      expect(tableExists(dbPath, 'incumbent_owned_store')).toBe(true);
+      expect(runtime.storage.existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
     } finally {
       try {
         incumbentStore.close();

@@ -35,7 +35,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_SYSTEM_PROVIDER_SCOPE`         | _(none)_                                       | Strict JSON named system scope used by HTTP and daemon-internal provider work. The object must have `origin: "system"`, a non-empty `name`, and one provider-owned canonical profile per provider. It is read and validated at daemon boot; changing it requires a restart. If unset, HTTP/internal provider launch is disabled rather than falling back to daemon credentials                                                                                                                                                                                                      |
 | `CODEX_HOME`                          | caller home + `/.codex`                        | Codex credential home selected by each local CLI invocation. Coral requires an absolute path, resolves it to its physical directory, binds the provider session to the workspace identity in that profile, and uses that same binding for launch, resume, recovery, and artifact cleanup                                                                                                                                                                                                                                                                                            |
 | `CLAUDE_CONFIG_DIR`                   | caller home + `/.claude`                       | Claude credential/config directory selected by each local CLI invocation. Coral requires an absolute path and persists a profile-level binding. An explicit selector is injected as `CLAUDE_CONFIG_DIR`; the caller-local default is reproduced with its exact bound `HOME` and no inherited `CLAUDE_CONFIG_DIR`. Daemon boot state is never provider authority                                                                                                                                                                                                                     |
-| `CORAL_KB_PATH`                       | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | KB markdown-root override. Runtime KB state remains flavor-separated under `~/.coral/data/kb/` or `~/.coral/data-dev/kb/`                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `CORAL_KB_PATH`                       | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | KB markdown-root override. Runtime KB state remains flavor-separated under `~/.coral/gen2/data/kb/` or `~/.coral/gen2/data-dev/kb/`                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `CORAL_KB_IMPORT_MAX_BYTES`           | `1073741824` (1 GiB)                           | Admin KB source-import cap in bytes, read from the backend daemon's environment at startup. `0` or `unlimited` disables the admin byte cap. Changing it requires exporting the var and restarting the backend daemon; setting it in an ad-hoc CLI shell does not affect an already-running daemon                                                                                                                                                                                                                                                                                   |
 | `CORAL_KB_GIT_SYNC`                   | `0`                                            | Enable KB git sync                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `CORAL_KB_ENABLE`                     | _(unset → enabled)_                            | Set `0` to boot the daemon without spawning the KB daemon — no corpus indexing, curate, retrieval, or KB content injected into sessions/agents. `1` or unset enables it; a malformed value warns once and leaves KB enabled. Read from the daemon's environment at startup like `CORAL_KB_IMPORT_MAX_BYTES`. Flipping `0`→`1` and running any `kb …` command transparently restarts the daemon to bring KB online (that one command waits for daemon-ready; KB daemon boot remains non-blocking)                                                                                    |
@@ -114,7 +114,7 @@ Provider-routing failures are intentionally distinct so the operator can repair 
 
 See [CLI Errors](./cli-errors.md) for the wire envelope and exit-code behavior.
 
-`ProviderBindingEnvelope`, `ProviderScope`, journal events, and projections carry no migration versions. Coral provides no upcaster, dual reader, default fill, or old-format decoder. The active `StoreFormatFingerprint` covers the executable SQL manifest, explicit event body/materializer and append-validator semantic contracts, persisted decoder contracts, and each provider's profile, binding, and continuity codecs. Startup quarantines the DB/WAL/SHM plus the redundant hook-safety format sidecar and creates a fresh store whenever the database fingerprint is missing or differs; it never translates old durable state.
+`ProviderBindingEnvelope`, `ProviderScope`, journal events, and projections carry no migration versions. Coral provides no upcaster, dual reader, default fill, or old-format decoder. The active `StoreFormatFingerprint` covers the executable SQL manifest, explicit event body/materializer and append-validator semantic contracts, persisted decoder contracts, and each provider's profile, binding, and continuity codecs. Startup refuses a generated store whose fingerprint or product version is missing, unsupported, older-incompatible, or newer-incompatible; it never translates or quarantines old durable state implicitly. Only the explicit `backend store-reset discard` operator command quarantines DB/WAL/SHM plus the redundant hook-safety format sidecar before initializing an empty store.
 
 #### Upgrade cutover
 
@@ -253,16 +253,24 @@ Per-client hook registration, each referenced by its own `plugin.json` (`.claude
 
 ### Store-reset incidents
 
-A reset is unconditional and needs no confirmation. Active Coral history and state from the previous store are unavailable after the reset; KB Markdown is unaffected. The backend copies and durably verifies DB/WAL/SHM/format evidence under the private `store-reset-quarantine/.staging/<incident-id>/` transaction, durably publishes its manifest, removes the matching active files, then publishes `store-reset-quarantine/<incident-id>/`. An ordinary CLI command that starts this backend prints the reset notice on stderr before continuing. A completed incident is retained indefinitely as support evidence, not recoverable product state. Coral provides no restore, migration, compatibility reader, upload, telemetry, pruning, or automatic issue creation.
+A reset is unconditional and needs no confirmation, but it occurs only when an operator explicitly runs `backend store-reset discard`; ordinary startup refuses incompatible state without moving any files. Active Coral history and state from the previous store are unavailable after the reset; KB Markdown is unaffected. The operator service copies and durably verifies DB/WAL/SHM/format evidence under the private `store-reset-quarantine/.staging/<incident-id>/` transaction, durably publishes its manifest, removes the matching active files, then publishes `store-reset-quarantine/<incident-id>/`. The discard command prints the incident ID and warns that retained evidence is diagnostic-only and cannot restore active state. A completed incident is retained indefinitely as support evidence, not recoverable product state. Coral provides no restore, migration, compatibility reader, upload, telemetry, pruning, or automatic issue creation.
 
-Use the daemon-independent local commands:
+The daemon-independent operator commands require `--flavor` because the stopped daemon cannot supply that value ambiently:
 
 ```bash
-coral-cli backend store-reset list
-coral-cli backend store-reset report <incident-id>
+coral-cli backend store-adopt --flavor <prod|dev>
+coral-cli backend store-reset discard --target <current|gen2> --flavor <prod|dev>
+coral-cli backend kb-commit quarantine --flavor <prod|dev> --commit <commit-id>
+coral-cli backend store-reset list --target <legacy|current>
+coral-cli backend store-reset report --target <legacy|current> <incident-id>
 ```
 
-They work whether the daemon is stopped, unhealthy, or running. Reports are accepted only when the incident and the embedded/adjacent identities and hashes of the backend, CLI, and Claude helper belong to the exact current build set. Upgrading may therefore make an older retained incident unreadable by design.
+- `store-adopt` performs the one forward-only, whole-flavor-root rename for compatible legacy history. Startup names it through `legacy_adoption_required`; after success, retry the command that starts the backend.
+- `store-reset discard` is the only command that creates an incident. `current` maps to the internal `gen2` generation; `legacy` is inspection-only and a discard request always refuses before path resolution or socket binding.
+- `kb-commit quarantine` accepts the exact safe single-segment commit ID from `kb_commit_corrupt_or_unsupported` and moves only that commit plus matching index evidence.
+- `store-reset list` performs bounded local discovery for the selected generation. `store-reset report` validates one canonical incident ID, verifies retained evidence, and produces public-safe Markdown.
+
+Run `store-adopt`, `store-reset discard`, and `kb-commit quarantine` only after `coral-cli backend shutdown`; they prove exclusivity by holding the coordinator socket and generation locks. List and report are read-only and work whether the daemon is stopped, unhealthy, or running. Reports are accepted only when the incident and the embedded/adjacent identities and hashes of the backend, CLI, and Claude helper belong to the exact current build set. Upgrading may therefore make an older retained incident unreadable by design.
 
 The generated Markdown contains only allowlisted build/reset metadata, recorded file sizes and hashes, fixed verification states, and a fixed SQLite integrity state. It excludes paths, namespace and process identifiers, rows, prompts, event bodies, environment values, credentials, account/workspace identifiers, child output, and raw exception or SQLite text. If a report cannot be generated, the fixed CLI error includes a public-safe next step and the issue form accepts that complete error output instead. Never attach DB/WAL/SHM files, `.env` or settings files, credentials, tokens, or unredacted logs.
 
@@ -272,8 +280,8 @@ Inspection is intentionally bounded: list reads at most 4,097 root entries and r
 
 | Path                                                                   | Purpose                               |
 | ---------------------------------------------------------------------- | ------------------------------------- |
-| `~/.coral/run/coordinator.json` or `~/.coral/run-dev/coordinator.json` | Active coordinator discovery record   |
-| `~/.coral/run/coordinator.lock` or `~/.coral/run-dev/coordinator.lock` | Per-flavor singleton coordinator lock |
+| `~/.coral/gen2/run/coordinator.json` or `~/.coral/gen2/run-dev/coordinator.json` | Active coordinator discovery record   |
+| `~/.coral/gen2/run/coordinator.lock` or `~/.coral/gen2/run-dev/coordinator.lock` | Per-flavor singleton coordinator lock |
 
 ### Session state
 
@@ -286,7 +294,7 @@ Discuss sessions are Journal events projected into `projection_discuss`. The sou
 ### KB state
 
 - Markdown root defaults: `~/.coral/kb/` for prod, `~/.coral/kb-dev/` for dev
-- Runtime state defaults: `~/.coral/data/kb/` for prod, `~/.coral/data-dev/kb/` for dev
+- Runtime state defaults: `~/.coral/gen2/data/kb/` for prod, `~/.coral/gen2/data-dev/kb/` for dev
 - `CORAL_KB_PATH` still overrides the markdown root only
 - `<runtime-state>/orama/` stores the derived base retrieval snapshot when the Orama CorpusConsumer has applied the current Corpus snapshot
 - `<runtime-state>/<engine-id>/` and `<runtime-state>/<engine-id>-staging/` are the canonical projection and staging locations exposed to an expansion as `host.kb.ownProjectionDir` and `host.kb.ownProjectionStagingDir`
@@ -349,8 +357,9 @@ clients/bridge/coral-cli.cjs                    -> CLI bundle
 clients/bridge/coral-claude-appserver.cjs       -> Claude broker helper bundle
 clients/bridge/manifest.json                    -> embedded build identity + hashes for backend, CLI, and Claude helper
 
-~/.coral/run*/coordinator.json                 -> active coordinator discovery record
-~/.coral/run*/coordinator.lock                 -> per-flavor coordinator singleton lock
+~/.coral/gen2/run*/coordinator.json            -> active coordinator discovery record
+~/.coral/gen2/run*/coordinator.lock            -> per-flavor coordinator singleton lock
+~/.coral/gen2/data*/store/store.db              -> Journal authority and projections by flavor
 projection_sessions in store.db                -> projected provider session continuity and scope
 projection_discuss in store.db                 -> projected discuss snapshots and source indexes
 projection_jobs.diagnostics in store.db        -> projected job terminal diagnostics, including canonical usage summaries
@@ -358,7 +367,7 @@ projection_jobs.diagnostics in store.db        -> projected job terminal diagnos
 ~/.coral/exports-dev/jobs/<jobId>/result.md    -> durable job result export (dev)
 <os-tmpdir>/coral-jobs/<jobId>/                -> live job scratch artifacts
 ~/.coral/kb/ or ~/.coral/kb-dev/               -> KB markdown storage by flavor
-~/.coral/data/kb/ or ~/.coral/data-dev/kb/     -> KB runtime artifacts, Orama and installed-engine projections, source-import staging
+~/.coral/gen2/data/kb/ or ~/.coral/gen2/data-dev/kb/ -> KB runtime artifacts, Orama and installed-engine projections, source-import staging
 ```
 
 The important config distinction is simple: Coral is configured as a plugin plus hooks plus CLI-accessible bundles, and flavor-bearing state keeps prod and dev runtimes from reusing the wrong backend or KB data.

@@ -4,9 +4,8 @@ import {
   ChildPrincipalBindingError,
   childPrincipalAuthFromEnv,
   childPrincipalAuthOptions,
-  CORAL_CHILD_PRINCIPAL_HANDLE,
 } from '#src/transport/ipc/child-principal-auth.js';
-import { isCoralChildEnvironment } from '#src/security/child-principal-env.js';
+import { CORAL_CHILD_PRINCIPAL_HANDLE, isCoralChildEnvironment } from '#src/security/child-principal-env.js';
 
 describe('isCoralChildEnvironment', () => {
   it('recognizes the child marker and non-empty complete or partial bindings', () => {

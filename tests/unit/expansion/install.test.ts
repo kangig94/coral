@@ -11,7 +11,6 @@ import { kiwiWasmManifestPath } from '#src/engines/kiwi/paths.js';
 import { publishKiwiWasmArtifact } from '#src/engines/kiwi/wasm-artifact.js';
 import { KIWI_MODEL_FILES, type KiwiModelFileName } from '#src/engines/kiwi/constants.js';
 import { installResponseSchema, type InstallMethod } from '#src/expansion/rpc-contract.js';
-import { enginePaths } from '#src/infra/path/engine.js';
 import { acquirePackageOperationLockAtPath } from '#src/infra/package-operation-lock.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -36,13 +35,18 @@ function createFixture() {
   return { root, homeDir, baseDir };
 }
 
+// `baseDir` scopes the WHOLE path tree to the fixture. Patching only
+// `paths.coral.engine` used to suffice because generation coordination
+// reverse-derived its root from `engineRoot`; once the generation family became
+// published path authority, a partial override let the install pipeline take its
+// adoption lock in the developer's real ~/.coral. The env override stays — the
+// install pipeline still needs a fixture HOME.
 function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Runtime {
-  const realRuntime = createRealRuntime('prod');
+  const realRuntime = createRealRuntime('prod', { baseDir: fixture.baseDir });
   const envRecord: Record<string, string> = {
     HOME: fixture.homeDir,
     USERPROFILE: fixture.homeDir,
   };
-  const fixtureEngine = enginePaths('prod', { baseDir: fixture.baseDir });
 
   return {
     ...realRuntime,
@@ -53,12 +57,6 @@ function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Run
       cwd: () => fixture.root,
       fullSnapshot: () => envRecord,
       coralSnapshot: () => ({}),
-    },
-    paths: {
-      ...realRuntime.paths,
-      get coral() {
-        return { ...realRuntime.paths.coral, engine: fixtureEngine };
-      },
     },
   };
 }

@@ -12,7 +12,14 @@ import type { Runtime } from '../../runtime/ports.js';
 import { openWritableStoreDbNoReset } from '../../store/db.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
 import { isDirectoryLockTimeoutError } from '../../infra/fs-lock.js';
-import { acquirePackageOperationLock, PACKAGE_OPERATION_LOCK_TIMEOUT_MS } from '../../expansion/package-lock.js';
+import { acquirePackageOperationLock } from '../../expansion/package-lock.js';
+import { PACKAGE_OPERATION_LOCK_TIMEOUT_MS } from '../../infra/package-operation-lock.js';
+import {
+  acquireGenerationWriterLeaseAfterReadiness,
+  generationMutationCoordinationSeam,
+  type GenerationMutationCoordination,
+  type GenerationMutationKind,
+} from '../../store/generation-mutation-coordination.js';
 import {
   installErrorSchema,
   installResponseSchema,
@@ -22,8 +29,12 @@ import {
 
 export type InstallExpansionOptions = Partial<
   Pick<EngineInstallerOptions, 'runtime' | 'logger' | 'lockTimeoutMs' | 'update'>
->;
-export type UninstallExpansionOptions = Partial<Pick<EngineInstallerOptions, 'runtime' | 'logger' | 'lockTimeoutMs'>>;
+> & { readonly generationCoordination?: GenerationMutationCoordination };
+export type UninstallExpansionOptions = Partial<
+  Pick<EngineInstallerOptions, 'runtime' | 'logger' | 'lockTimeoutMs'>
+> & {
+  readonly generationCoordination?: GenerationMutationCoordination;
+};
 
 export function resolveRuntime(runtime?: Runtime): Runtime {
   return runtime ?? createRealRuntime(resolveBuildFlavor(process.env));
@@ -129,6 +140,53 @@ function assertCanonicalInstallerTarget(result: InstallResponse, runtime: Runtim
   }
 }
 
+async function runGenerationCoordinatedMutation(
+  runtime: Runtime,
+  name: string,
+  kind: GenerationMutationKind,
+  generationCoordination: GenerationMutationCoordination,
+  lockTimeoutMs: number | undefined,
+  mutate: (assertLocksOwned: () => void) => Promise<InstallResponse>,
+): Promise<InstallResponse> {
+  const writerLease = await acquireGenerationWriterLeaseAfterReadiness(
+    generationCoordination,
+    runtime,
+    currentCoralStoreFormat(),
+    { kind, name },
+  );
+  try {
+    writerLease.assertOwned();
+    let releasePackageLock: Awaited<ReturnType<typeof acquirePackageOperationLock>>;
+    try {
+      releasePackageLock = await acquirePackageOperationLock(
+        runtime,
+        name,
+        lockTimeoutMs ?? PACKAGE_OPERATION_LOCK_TIMEOUT_MS,
+      );
+    } catch (error) {
+      if (isDirectoryLockTimeoutError(error)) {
+        return toInstallError('expansion_install_lock_contended', name);
+      }
+      throw error;
+    }
+
+    try {
+      const assertLocksOwned = () => {
+        writerLease.assertOwned();
+        releasePackageLock.assertOwned();
+      };
+      assertLocksOwned();
+      const result = await mutate(assertLocksOwned);
+      assertLocksOwned();
+      return result;
+    } finally {
+      releasePackageLock();
+    }
+  } finally {
+    writerLease.release();
+  }
+}
+
 export async function installExpansion(name: string, opts: InstallExpansionOptions = {}): Promise<InstallResponse> {
   const pkg = resolveInstallerPackage(name);
   if (!pkg) {
@@ -136,35 +194,30 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
   }
 
   const runtime = resolveRuntime(opts.runtime);
-  let release: Awaited<ReturnType<typeof acquirePackageOperationLock>>;
-  try {
-    release = await acquirePackageOperationLock(runtime, name, opts.lockTimeoutMs ?? PACKAGE_OPERATION_LOCK_TIMEOUT_MS);
-  } catch (error) {
-    if (isDirectoryLockTimeoutError(error)) {
-      return toInstallError('expansion_install_lock_contended', name);
-    }
-    throw error;
-  }
-  try {
-    const result = installResponseSchema.parse(
-      await pkg.installer.install({
-        name,
-        version: pkg.version,
-        runtime,
-        logger: opts.logger,
-        lockTimeoutMs: opts.lockTimeoutMs,
-        update: opts.update,
-        operationLockHeld: true,
-      }),
-    );
-    assertCanonicalInstallerTarget(result, runtime, name);
-    release.assertOwned();
-    const finalized = await applyPostInstallCatalogActions(result, runtime, name, () => release.assertOwned());
-    release.assertOwned();
-    return finalized;
-  } finally {
-    release();
-  }
+  const kind: GenerationMutationKind = opts.update === true ? 'update' : 'install';
+  return runGenerationCoordinatedMutation(
+    runtime,
+    name,
+    kind,
+    opts.generationCoordination ?? generationMutationCoordinationSeam,
+    opts.lockTimeoutMs,
+    async (assertLocksOwned) => {
+      const result = installResponseSchema.parse(
+        await pkg.installer.install({
+          name,
+          version: pkg.version,
+          runtime,
+          logger: opts.logger,
+          lockTimeoutMs: opts.lockTimeoutMs,
+          update: opts.update,
+          generationWriterLeaseHeld: true,
+          operationLockHeld: true,
+        }),
+      );
+      assertCanonicalInstallerTarget(result, runtime, name);
+      return applyPostInstallCatalogActions(result, runtime, name, assertLocksOwned);
+    },
+  );
 }
 
 export async function uninstallExpansion(name: string, opts: UninstallExpansionOptions = {}): Promise<InstallResponse> {
@@ -174,29 +227,23 @@ export async function uninstallExpansion(name: string, opts: UninstallExpansionO
   }
 
   const runtime = resolveRuntime(opts.runtime);
-  let release: Awaited<ReturnType<typeof acquirePackageOperationLock>>;
-  try {
-    release = await acquirePackageOperationLock(runtime, name, opts.lockTimeoutMs ?? PACKAGE_OPERATION_LOCK_TIMEOUT_MS);
-  } catch (error) {
-    if (isDirectoryLockTimeoutError(error)) {
-      return toInstallError('expansion_install_lock_contended', name);
-    }
-    throw error;
-  }
-  try {
-    const result = installResponseSchema.parse(
-      await pkg.installer.uninstall({
-        name,
-        version: pkg.version,
-        runtime,
-        logger: opts.logger,
-        lockTimeoutMs: opts.lockTimeoutMs,
-        operationLockHeld: true,
-      }),
-    );
-    release.assertOwned();
-    return result;
-  } finally {
-    release();
-  }
+  return runGenerationCoordinatedMutation(
+    runtime,
+    name,
+    'uninstall',
+    opts.generationCoordination ?? generationMutationCoordinationSeam,
+    opts.lockTimeoutMs,
+    async () =>
+      installResponseSchema.parse(
+        await pkg.installer.uninstall({
+          name,
+          version: pkg.version,
+          runtime,
+          logger: opts.logger,
+          lockTimeoutMs: opts.lockTimeoutMs,
+          generationWriterLeaseHeld: true,
+          operationLockHeld: true,
+        }),
+      ),
+  );
 }

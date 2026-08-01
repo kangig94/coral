@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { StoreResetCliError, UsageError, buildErrorEnvelope, errorCodeToExit } from '#src/cli/errors.js';
+import { documentedCoralSetupError, serializeCoralSetupError } from '#src/runtime/errors.js';
+import { buildTransportErrorResponse } from '#src/transport/error-response.js';
 import { ChildPrincipalBindingError } from '#src/transport/ipc/child-principal-auth.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
 
@@ -130,13 +132,13 @@ describe('cli errors', () => {
       [
         'invalid_store_reset_incident_id',
         'Incident ID must be a canonical lowercase UUID.',
-        'Run `coral-cli backend store-reset list` and use the ID of an incident in the `ready` state.',
+        'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use the ID of an incident in the `ready` state.',
         2,
       ],
       [
         'store_reset_incident_not_found',
         'Store-reset incident not found.',
-        'Run `coral-cli backend store-reset list`. If no incident is retained, file a Store-reset incident issue with this complete fixed error output; do not attach DB, WAL, SHM, or raw logs.',
+        'Run `coral-cli backend store-reset list --target <legacy|gen2>`. If no incident is retained, file a Store-reset incident issue with this complete fixed error output; do not attach DB, WAL, SHM, or raw logs.',
         1,
       ],
       [
@@ -187,6 +189,45 @@ describe('cli errors', () => {
       [{ code: 'not_found', message: 'Not found' }, 404, 1],
     ])('uses backend code/status combinations %j / %i -> %i', (body, statusCode, exitCode) => {
       expect(buildErrorEnvelope(new BackendToolHttpError(body.message, statusCode, body)).exitCode).toBe(exitCode);
+    });
+
+    it.each([
+      ['legacy_foreign_generation', { legacyPath: '/legacy', version: '0.9.16' }, 409],
+      ['legacy_adoption_required', { legacyPath: '/legacy', flavor: 'prod' }, 409],
+      ['legacy_source_not_quiescent', { holder: 'install:kiwi (pid 42)', flavor: 'prod' }, 409],
+      ['store_newer_incompatible', { version: '99.0.0', flavor: 'prod' }, 409],
+      ['store_older_incompatible', { version: '0.0.1', flavor: 'prod' }, 409],
+      ['store_corrupt_or_unsupported', { flavor: 'prod' }, 409],
+      ['store_not_initialized', { path: '/store/store.db' }, 409],
+      ['kb_commit_corrupt_or_unsupported', { commitId: 'blocking-commit', flavor: 'prod' }, 409],
+      ['kb_commit_id_invalid', { commitId: '../bad' }, 400],
+      ['kb_commit_not_found', { commitId: 'missing' }, 409],
+      ['kb_commit_already_quarantined', { commitId: 'retained', quarantineDir: '/retained' }, 409],
+      ['kb_commit_quarantine_failed', { commitId: 'blocking-commit' }, 409],
+      ['coordinator_socket_in_use', { operation: 'store reset', retryCommand: 'retry' }, 409],
+      ['coordinator_socket_bind_failed', { operation: 'store reset', retryCommand: 'retry' }, 409],
+      ['legacy_adoption_source_unreadable', { legacyPath: '/legacy' }, 409],
+      ['legacy_adoption_state_changed', { observation: 'target appeared' }, 409],
+      ['legacy_adoption_durability_failed', { path: '/generation', flavor: 'prod' }, 409],
+    ] as const)('keeps %s at exit 1 over IPC and HTTP', (code, context, statusCode) => {
+      const setupError = documentedCoralSetupError(code, context);
+      const serialized = serializeCoralSetupError(setupError);
+      if (serialized === null) throw new Error(`Expected ${code} to serialize`);
+      const response = buildTransportErrorResponse(setupError);
+
+      expect(response.statusCode).toBe(statusCode);
+      expect(
+        buildErrorEnvelope(
+          new IpcRpcError({
+            code: -32603,
+            message: serialized.userMessage,
+            data: serialized,
+          }),
+        ).exitCode,
+      ).toBe(1);
+      expect(
+        buildErrorEnvelope(new BackendToolHttpError(response.message, response.statusCode, response.body)).exitCode,
+      ).toBe(1);
     });
   });
 

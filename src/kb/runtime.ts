@@ -1,7 +1,9 @@
 import { join } from 'node:path';
 
+import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { Database } from '../store/db.js';
 import { createRuntimeBinding } from '../runtime/binding.js';
+import { documentedCoralSetupError } from '../runtime/errors.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import { isRecord } from '../infra/json.js';
 import type { EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
@@ -94,6 +96,7 @@ import type {
 } from './corpus/projection-lifecycle.js';
 
 export interface CreateKbRuntimeOptions {
+  flavor: BuildFlavor;
   markdownRoot: string;
   runtimeDir: string;
   /** Daemon build version, surfaced on the runtime for KB commit provenance. */
@@ -126,8 +129,24 @@ const CORPUS_PROJECTION_DIR = KB_RUNTIME_AUTHORITY.corpusProjection;
 const CORPUS_PROJECTION_COMMITS_DIR = 'commits';
 const CORPUS_PROJECTION_COMMIT_FILE = 'commit.json';
 const CORPUS_PROJECTION_COMMIT_SCHEMA_VERSION = 1;
+const SUPPORTED_OLDER_CORPUS_PROJECTION_COMMIT_SCHEMA_VERSIONS = new Set<number>([0]);
+type SupportedOlderCorpusProjectionCommitSchemaVersion = 0;
+
+type CorpusProjectionCommitParseResult =
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'malformed'; readonly reason: 'invalid-json' | 'invalid-shape' }
+  | { readonly kind: 'unsupported-newer'; readonly schemaVersion: number }
+  | { readonly kind: 'supported-current'; readonly record: CorpusProjectionCommitRecord }
+  | {
+      readonly kind: 'supported-older';
+      readonly schemaVersion: SupportedOlderCorpusProjectionCommitSchemaVersion;
+      readonly record: CorpusProjectionCommitRecord;
+    };
+
+type CorpusProjectionCommitRecordPayload = Omit<CorpusProjectionCommitRecord, 'schemaVersion'>;
 
 class KbRuntimeImpl implements KbRuntime {
+  readonly flavor: BuildFlavor;
   readonly markdownRoot: string;
   readonly version: string;
   readonly runtimeDir: string;
@@ -172,6 +191,7 @@ class KbRuntimeImpl implements KbRuntime {
   private readonly generatedCommunityProjectionCallbacks?: KbGeneratedCommunityProjectionCallbacks;
 
   constructor({
+    flavor,
     markdownRoot,
     runtimeDir,
     version,
@@ -187,6 +207,7 @@ class KbRuntimeImpl implements KbRuntime {
     engineArtifactRegistry,
     generatedCommunityProjectionCallbacks,
   }: CreateKbRuntimeOptions) {
+    this.flavor = flavor;
     this.markdownRoot = markdownRoot;
     this.version = version;
     this.runtimeDir = runtimeDir;
@@ -763,13 +784,18 @@ class KbRuntimeImpl implements KbRuntime {
     }
 
     for (const commitId of commitIds) {
-      const record = this.readCorpusProjectionCommitRecord(commitId);
-      if (record === null) {
-        this.storagePort.rmSync(this.corpusProjectionCommitDir(commitId), { recursive: true, force: true });
-        this.indexStore.cleanupIndexCommit(commitId);
-        this.corpusAuthorityBaseline.cleanupInactiveGenerations();
-        continue;
+      const parsed = this.readCorpusProjectionCommitRecord(commitId);
+      if (parsed.kind !== 'supported-current' && parsed.kind !== 'supported-older') {
+        throw documentedCoralSetupError({
+          code: 'kb_commit_corrupt_or_unsupported',
+          commitId,
+          flavor: this.flavor,
+          parseResult: parsed.kind,
+          ...(parsed.kind === 'malformed' ? { reason: parsed.reason } : {}),
+          ...(parsed.kind === 'unsupported-newer' ? { schemaVersion: parsed.schemaVersion } : {}),
+        });
       }
+      const record = parsed.record;
 
       if (this.corpusProjectionStateReachedCommitPoint(record)) {
         this.finishCommittedCorpusProjectionRecord(record);
@@ -828,18 +854,28 @@ class KbRuntimeImpl implements KbRuntime {
     writeJsonAtomic(this, this.corpusProjectionCommitRecordPath(record.commitId), record);
   }
 
-  private readCorpusProjectionCommitRecord(commitId: string): CorpusProjectionCommitRecord | null {
+  private readCorpusProjectionCommitRecord(commitId: string): CorpusProjectionCommitParseResult {
+    let source: string;
     try {
-      const parsed = JSON.parse(
-        this.storagePort.readFileSync(this.corpusProjectionCommitRecordPath(commitId), 'utf-8'),
-      ) as unknown;
-      return isCorpusProjectionCommitRecord(parsed) ? parsed : null;
+      source = this.storagePort.readFileSync(this.corpusProjectionCommitRecordPath(commitId), 'utf-8');
     } catch (error: unknown) {
       if (isNoEntryError(error)) {
-        return null;
+        return { kind: 'missing' };
       }
       throw error;
     }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(source) as unknown;
+    } catch (error: unknown) {
+      if (error instanceof SyntaxError) {
+        return { kind: 'malformed', reason: 'invalid-json' };
+      }
+      throw error;
+    }
+
+    return parseCorpusProjectionCommitRecord(parsed, commitId);
   }
 
   private corpusProjectionCommitRoot(): string {
@@ -958,10 +994,8 @@ function isCorpusProjectionCommitPhase(value: unknown): value is CorpusProjectio
   );
 }
 
-function isCorpusProjectionCommitRecord(value: unknown): value is CorpusProjectionCommitRecord {
-  if (!isRecord(value) || value.schemaVersion !== CORPUS_PROJECTION_COMMIT_SCHEMA_VERSION) {
-    return false;
-  }
+function isCorpusProjectionCommitRecordPayload(value: unknown): value is CorpusProjectionCommitRecordPayload {
+  if (!isRecord(value)) return false;
   if (
     typeof value.commitId !== 'string' ||
     !isCorpusProjectionSeq(value.startSeq) ||
@@ -982,6 +1016,66 @@ function isCorpusProjectionCommitRecord(value: unknown): value is CorpusProjecti
     typeof value.stagedIndex.previousIndexPath === 'string' &&
     typeof value.stagedIndex.hadPreviousIndex === 'boolean'
   );
+}
+
+function decodeCorpusProjectionCommitRecord(value: unknown): CorpusProjectionCommitRecord | null {
+  if (!isCorpusProjectionCommitRecordPayload(value)) return null;
+  return {
+    schemaVersion: CORPUS_PROJECTION_COMMIT_SCHEMA_VERSION,
+    commitId: value.commitId,
+    startSeq: value.startSeq,
+    previousState: value.previousState,
+    nextState: value.nextState,
+    stagedIndex: value.stagedIndex,
+    stagedBaselineGenerationId: value.stagedBaselineGenerationId,
+    previousBaselineGenerationId: value.previousBaselineGenerationId,
+    stagedManifestCommitId: value.stagedManifestCommitId,
+    previousManifestCommitId: value.previousManifestCommitId,
+    phase: value.phase,
+  };
+}
+
+const SUPPORTED_OLDER_CORPUS_PROJECTION_COMMIT_DECODERS = {
+  0: decodeCorpusProjectionCommitRecord,
+} satisfies Record<
+  SupportedOlderCorpusProjectionCommitSchemaVersion,
+  (value: unknown) => CorpusProjectionCommitRecord | null
+>;
+
+function parseCorpusProjectionCommitRecord(
+  value: unknown,
+  expectedCommitId: string,
+): CorpusProjectionCommitParseResult {
+  if (
+    !isRecord(value) ||
+    typeof value.schemaVersion !== 'number' ||
+    !Number.isSafeInteger(value.schemaVersion) ||
+    value.schemaVersion < 0
+  ) {
+    return { kind: 'malformed', reason: 'invalid-shape' };
+  }
+
+  const schemaVersion = value.schemaVersion;
+  if (schemaVersion > CORPUS_PROJECTION_COMMIT_SCHEMA_VERSION) {
+    return { kind: 'unsupported-newer', schemaVersion };
+  }
+
+  if (schemaVersion === CORPUS_PROJECTION_COMMIT_SCHEMA_VERSION) {
+    const record = decodeCorpusProjectionCommitRecord(value);
+    return record !== null && record.commitId === expectedCommitId
+      ? { kind: 'supported-current', record }
+      : { kind: 'malformed', reason: 'invalid-shape' };
+  }
+
+  if (SUPPORTED_OLDER_CORPUS_PROJECTION_COMMIT_SCHEMA_VERSIONS.has(schemaVersion)) {
+    const supportedSchemaVersion = schemaVersion as SupportedOlderCorpusProjectionCommitSchemaVersion;
+    const record = SUPPORTED_OLDER_CORPUS_PROJECTION_COMMIT_DECODERS[supportedSchemaVersion](value);
+    return record !== null && record.commitId === expectedCommitId
+      ? { kind: 'supported-older', schemaVersion: supportedSchemaVersion, record }
+      : { kind: 'malformed', reason: 'invalid-shape' };
+  }
+
+  return { kind: 'malformed', reason: 'invalid-shape' };
 }
 
 function corpusProjectionIndexStatesEqual(left: KbIndexState | null, right: KbIndexState | null): boolean {

@@ -3,6 +3,8 @@ import { join } from 'node:path';
 
 import type { BuildFlavor } from '../build-flavor.js';
 
+const STATE_GENERATION = 'gen2';
+
 /**
  * Resolves the Coral root directory (`~/.coral` by default). Tests pass an
  * explicit `baseDir` override to point at a tmp dir.
@@ -34,6 +36,18 @@ export function resolveClaudeConfigDir(rawConfigDir: string | undefined, homeDir
 /** Account-neutral root for all Coral-owned state. */
 export function coralStateRoot(baseDir?: string): string {
   return coralRoot(baseDir);
+}
+
+export interface GenerationPathOptions {
+  readonly baseDir?: string;
+}
+
+export function generationRoot(opts?: GenerationPathOptions): string {
+  return join(coralStateRoot(opts?.baseDir), STATE_GENERATION);
+}
+
+export function generationStateRoot(flavor: BuildFlavor, opts?: GenerationPathOptions): string {
+  return join(generationRoot(opts), flavor === 'dev' ? 'data-dev' : 'data');
 }
 
 export interface KbVaultRootOptions {

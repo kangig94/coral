@@ -10,6 +10,7 @@ import { enginePaths } from '#src/infra/path/engine.js';
 import { resolveInstallOnlyManifest } from '#src/expansion/install-only.js';
 import { installResponseSchema } from '#src/expansion/rpc-contract.js';
 import { inspectExpansionInstallState, installExpansion, uninstallExpansion } from '#src/cli/expansion/install.js';
+import type { GenerationMutationCoordination } from '#src/store/generation-mutation-coordination.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
 const PACKAGE = 'codebase-memory';
@@ -32,18 +33,13 @@ function createFixture(homeName = 'home') {
   return { root, homeDir, baseDir };
 }
 
+// Scope the WHOLE path tree to the fixture, not just the engine family. Overriding
+// `engine` alone used to work only because generation coordination reverse-derived
+// its root from `engineRoot`; once the generation family became published path
+// authority, a partial override let the install pipeline take its adoption lock in
+// the developer's real ~/.coral.
 function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Runtime {
-  const realRuntime = createRealRuntime('prod');
-  const fixtureEngine = enginePaths('prod', { baseDir: fixture.baseDir });
-  return {
-    ...realRuntime,
-    paths: {
-      ...realRuntime.paths,
-      get coral() {
-        return { ...realRuntime.paths.coral, engine: fixtureEngine };
-      },
-    },
-  };
+  return createRealRuntime('prod', { baseDir: fixture.baseDir });
 }
 
 function dataDir(baseDir: string): string {
@@ -96,6 +92,32 @@ function pathExists(path: string): boolean {
   }
 }
 
+function recordGenerationCoordination(events: string[]): GenerationMutationCoordination {
+  return {
+    async completeReadiness(_runtime, _storeFormat, mutation) {
+      events.push(`readiness:${mutation.kind}`);
+      return {
+        release() {
+          events.push('readiness-release');
+        },
+      };
+    },
+    async acquireWriterLease(_runtime, mutation) {
+      events.push(`writer:${mutation.kind}`);
+      let owned = true;
+      return {
+        assertOwned() {
+          if (!owned) throw new Error('test writer lease released early');
+        },
+        release() {
+          owned = false;
+          events.push('writer-release');
+        },
+      };
+    },
+  };
+}
+
 async function waitForCondition(check: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     if (check()) return;
@@ -105,6 +127,48 @@ async function waitForCondition(check: () => boolean): Promise<void> {
 }
 
 describe('install-only codebase-memory', () => {
+  it.each([
+    { operation: 'install', kind: 'install' },
+    { operation: 'update', kind: 'update' },
+    { operation: 'install-only unequip', kind: 'uninstall' },
+  ] as const)(
+    'orders $operation as readiness release, writer lease, then first package mkdir',
+    async ({ operation, kind }) => {
+      const fixture = createFixture();
+      const runtime = createRuntimeForFixture(fixture);
+      const events: string[] = [];
+      const generationCoordination = recordGenerationCoordination(events);
+
+      if (operation === 'install-only unequip') {
+        mkdirSync(dataDir(fixture.baseDir), { recursive: true });
+        writeFileSync(binaryPath(fixture.baseDir), 'binary');
+        vi.spyOn(runtime.process, 'exec').mockResolvedValue({ stdout: '', stderr: '', status: 0 });
+      } else {
+        stubSuccessfulInstall(runtime);
+      }
+
+      const mkdir = runtime.storage.mkdirSync.bind(runtime.storage);
+      vi.spyOn(runtime.storage, 'mkdirSync').mockImplementation((path, options) => {
+        events.push('mkdir');
+        mkdir(path, options);
+      });
+
+      if (operation === 'install-only unequip') {
+        await uninstallExpansion(PACKAGE, { runtime, generationCoordination });
+      } else {
+        await installExpansion(PACKAGE, {
+          runtime,
+          generationCoordination,
+          ...(operation === 'update' ? { update: true } : {}),
+        });
+      }
+
+      expect(events.slice(0, 3)).toEqual([`readiness:${kind}`, 'readiness-release', `writer:${kind}`]);
+      expect(events.indexOf('mkdir')).toBeGreaterThan(events.indexOf(`writer:${kind}`));
+      expect(events.at(-1)).toBe('writer-release');
+    },
+  );
+
   it('runs the install pipeline and reports the installed binary path', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);

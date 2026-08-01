@@ -35,7 +35,7 @@ Claude Code
 clients/bridge/coral-cli.cjs
   ├── Provider commands (`codex`, `claude`)
   ├── Workflow commands (`workflow`, `jobs`, `wait`, `abort`)
-  ├── Admin commands (`backend status|shutdown`, `backend store-reset list|report`)
+  ├── Admin commands (`backend status|shutdown`, `backend store-adopt`, `backend store-reset list|report|discard`, `backend kb-commit quarantine`)
   ├── Discuss commands (`discuss *`)
   └── KB commands (`kb *`)
       │
@@ -189,13 +189,15 @@ Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin ro
 3. `coral-cli abort jobs <id...>` dispatches `jobs.abort` over IPC for local calls
 4. `coral-cli abort --all` or `coral-cli abort --phase <phase> [--provider <name>]` first resolves matching live jobs through the same read surface, then aborts the resulting job IDs
 
-### Store-reset incident inspection
+### Generation boundary and operator recovery
 
-1. Backend startup classifies the active store fingerprint; missing or mismatched fingerprints always enter the reset path.
-2. Under the reset lock, the backend creates a private `.staging/<uuid>/` transaction, copies and durably verifies each canonical DB/WAL/SHM/format file without changing the active store, then durably publishes its exact current-build manifest. Only after that commit point does it remove the matching active files with source-directory synchronization. It atomically publishes `<uuid>/`, durably synchronizes that publication, and only then creates the fresh active store.
-3. The warning exposes the fingerprint comparison, reset impact, incident ID, and local report command. KB Markdown remains unaffected; prior active Coral history/state is unavailable.
-4. `coral-cli backend store-reset list` performs a bounded current-flavor directory read. `report <incident-id>` validates containment and descriptor identity, recomputes bounded hashes, optionally diagnoses a private SQLite copy, then renders deterministic public-safe Markdown.
-5. Incidents remain indefinitely, but only the exact current build schema/build set is readable. There is no restore, compatibility, upload, or automatic issue path.
+1. Pre-boundary state remains under `data[-dev]` and `run[-dev]`; generated state lives under `gen2/data[-dev]` and `gen2/run[-dev]`. Current code never mutates or binds the legacy generation during ordinary startup.
+2. Before generated initialization, readiness is one of four states: `generated-ready` proceeds; `no-legacy` initializes; `legacy-foreign` leaves legacy bytes untouched and may initialize empty generated state while reporting the stored version or `unknown`; `legacy-adoptable` refuses with `legacy_adoption_required` until the operator runs `coral-cli backend store-adopt --flavor <prod|dev>`.
+3. A generated store is classified by fingerprint plus SemVer. Compatible state opens in place. Newer, older, corrupt, or unsupported state refuses startup with a stable code; startup never quarantines it implicitly.
+4. `backend store-adopt --flavor <prod|dev>` is the only forward adoption path. With the daemon down, it holds the coordinator socket, adoption lock, and exclusive maintenance lease; verifies the legacy source and package locks; stamps durable adoption provenance; then atomically renames the complete flavor root into `gen2/` and synchronizes both parents. The explicit flavor is required because no running daemon can supply it ambiently.
+5. `backend store-reset discard --target <current|gen2> --flavor <prod|dev>` is the only path that creates a store-reset incident. It holds the coordinator socket, adoption lock, exclusive maintenance lease after writer leases drain, and reset lock in that order. Under the reset lock it creates and verifies a private `.staging/<uuid>/` transaction, publishes the exact-build manifest, removes only matching active evidence, publishes `<uuid>/`, and initializes an empty current store. `--target legacy` always refuses before path resolution or socket binding.
+6. `backend store-reset list --target <legacy|current>` performs a bounded local directory read. `backend store-reset report --target <legacy|current> <incident-id>` validates containment and descriptor identity, recomputes bounded hashes, optionally diagnoses a private SQLite copy, and renders deterministic public-safe Markdown. Retained evidence is diagnostic-only and cannot restore active state.
+7. `backend kb-commit quarantine --flavor <prod|dev> --commit <id>` is the explicit recovery for a `kb_commit_corrupt_or_unsupported` refusal. After `backend shutdown`, it holds the same socket → adoption → maintenance boundary, validates the single-segment commit ID before acquisition, and durably moves only that commit and matching index evidence to retained quarantine.
 
 ### Workflow
 
@@ -333,30 +335,30 @@ KB runtime
 
 Foundation layer
   -> Infra/runtime/causality primitives consumed by higher layers
-  -> Strict current-codec decoding; incompatible durable state is reset at boot
+  -> Strict current-codec decoding; incompatible durable state refuses until explicit operator recovery
 ```
 
 ## Runtime State
 
 | Path                                                                                       | Purpose                                                                                                          |
 | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `~/.coral/run/coordinator.json` or `~/.coral/run-dev/coordinator.json`                     | Active coordinator discovery record                                                                              |
-| `~/.coral/run/coordinator.lock` or `~/.coral/run-dev/coordinator.lock`                     | Per-flavor singleton coordinator lock                                                                            |
-| `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db`                       | Journal authority and projection tables                                                                          |
-| `~/.coral/data/store/store-reset-quarantine/.staging/` (or the `data-dev` equivalent)      | Private bounded reset transaction area; copied evidence and manifest are durable before active files are removed |
-| `~/.coral/data/store/store-reset-quarantine/<uuid>/` (or the `data-dev` equivalent)        | Indefinitely retained current-build reset evidence; support-only, never restored as active state                 |
+| `~/.coral/gen2/run/coordinator.json` or `~/.coral/gen2/run-dev/coordinator.json`            | Active coordinator discovery record                                                                              |
+| `~/.coral/gen2/run/coordinator.lock` or `~/.coral/gen2/run-dev/coordinator.lock`            | Per-flavor singleton coordinator lock                                                                            |
+| `~/.coral/gen2/data/store/store.db` or `~/.coral/gen2/data-dev/store/store.db`              | Journal authority and projection tables                                                                          |
+| `~/.coral/gen2/data/store/store-reset-quarantine/.staging/` (or the `data-dev` equivalent) | Private bounded reset transaction area; copied evidence and manifest are durable before active files are removed |
+| `~/.coral/gen2/data/store/store-reset-quarantine/<uuid>/` (or the `data-dev` equivalent)   | Indefinitely retained current-build reset evidence; support-only, never restored as active state                 |
 | `projection_sessions` in `store.db`                                                        | Projected provider sessions, continuation profiles, and project `scope_key`                                      |
 | `projection_discuss` in `store.db`                                                         | Projected discuss snapshots and source-scoped discovery/summary state                                            |
 | `~/.coral/exports/jobs/<jobId>/result.md` or `~/.coral/exports-dev/jobs/<jobId>/result.md` | Durable wait/follow result artifact                                                                              |
 | `<os-tmpdir>/coral-jobs/<jobId>/`                                                          | Live job scratch artifacts such as stdout/stderr/intermediates                                                   |
 | `~/.coral/kb/` or `~/.coral/kb-dev/`                                                       | Corpus-authoritative markdown KB                                                                                 |
-| `~/.coral/data/kb/` or `~/.coral/data-dev/kb/`                                             | KB runtime artifacts: text index state, Orama snapshots, source-import staging, and installed-engine projections |
+| `~/.coral/gen2/data/kb/` or `~/.coral/gen2/data-dev/kb/`                                   | KB runtime artifacts: text index state, Orama snapshots, source-import staging, and installed-engine projections |
 
 Daemon-owned state is account-neutral. The `store`, `coordinator`, `exports`, `engine`, `projects`, and KB runtime families use one canonical tree per flavor; `CODEX_HOME` and `CLAUDE_CONFIG_DIR` never participate in path composition. Account selection crosses the transport boundary as validated request context. A real `ProviderSession` stores the immutable binding for one provider conversation; workflow and discussion roots persist the complete provider scope used to create future children. Recovery rehydrates those durable values and never lets the daemon boot environment choose later requests. See design-rationale §5.4.
 
 The core architectural boundary is simple: the CLI is the only local command surface, the backend is the only daemon surface, and all long-running or resumable work is tracked as backend jobs.
 
-Store-reset reporting is a deliberate local operational carveout. Backend startup alone owns reset authority and atomic incident publication under the reset lock. `backend store-reset list|report` does not call daemon discovery, `ensure()`, IPC, HTTP, or the active-store opener; it resolves the current flavor locally, validates the executing CLI against its adjacent build manifest, and traverses the quarantine through a narrow read-only filesystem port. The public renderer accepts only a branded allowlisted projection. SQLite diagnosis copies verified DB/WAL/SHM evidence to a private temp directory and supervises a fixed read-only child protocol; active and quarantined files are never opened by SQLite.
+Store-reset operation and reporting are deliberate local carveouts for times when the daemon refuses to boot. The destructive service lives in `src/store/operator-store-reset.ts`; the CLI only validates flags, supplies current runtime/build identity, and renders the result. `backend store-reset list|report` does not call daemon discovery, `ensure()`, IPC, HTTP, or the active-store opener; it validates the executing CLI against its adjacent build manifest and traverses quarantine through a narrow read-only filesystem port. The public renderer accepts only a branded allowlisted projection. SQLite diagnosis copies verified DB/WAL/SHM evidence to a private temp directory and supervises a fixed read-only child protocol; active and quarantined files are never opened by SQLite.
 
 Ordinary builds generate one build-set UUID and one store-format fingerprint embedded across the backend, CLI, and Claude helper, then write the authoritative adjacent `clients/build/manifest.json` with hashes for all three artifacts. Releases copy every artifact byte-for-byte into `clients/bridge`; they do not regenerate identity. Hidden package probes and the build/release contract verifiers execute all three artifacts against that manifest, verify all three artifact hashes, require byte equality between build and release copies, and enforce the package file allowlist.
 

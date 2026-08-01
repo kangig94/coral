@@ -2,6 +2,7 @@ import { discussRegistry } from './discuss/event-registry.js';
 import { persistedDiscussSnapshotSchema } from './discuss/projections.js';
 import { persistedDeclarativeEngineManifestSchema } from './expansion/manifest/schema.js';
 import { providerScopeSchema } from './infra/provider-scope.js';
+import { currentProductVersion } from './infra/product-version.js';
 import { jobsRegistry } from './jobs/events.js';
 import { jobPhaseSchema } from './jobs/phase.js';
 import { jobKindSchema } from './jobs/records.js';
@@ -35,7 +36,7 @@ import { workflowPlanSchema } from './workflow/plan.js';
 
 /** Describe the SQL contract contributed by one complete provider registry. */
 export function describeCoralStoreFormat(providerRegistry: ProviderRegistry): StoreFormatDescription {
-  return createCurrentStoreFormat(
+  const format = createCurrentStoreFormat(
     composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
     {
       eventEnvelope: journalEventEnvelopeSchema,
@@ -76,6 +77,7 @@ export function describeCoralStoreFormat(providerRegistry: ProviderRegistry): St
       ...providerRegistry.sealPersistedCodecComponents(),
     ],
   );
+  return Object.freeze({ ...format, productVersion: currentProductVersion() });
 }
 
 let builtInStoreFormat: StoreFormatDescription | undefined;

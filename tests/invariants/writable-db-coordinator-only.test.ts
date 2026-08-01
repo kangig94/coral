@@ -152,11 +152,11 @@ describe('writable DB opens stay coordinator-owned', () => {
     expect(violations).toEqual([]);
   });
 
-  it('keeps read-store as the canonical static-proof no-disk fallback example', () => {
+  it('keeps read-store as the canonical static-proof in-memory fallback example', () => {
     const readStoreCalls = collectDbOpenCalls().filter((call) => call.relativePath === 'src/cli/read-store.ts');
 
     expect(readStoreCalls).toEqual([
-      expect.objectContaining({ callee: 'openWritableStoreDbNoReset', staticallyReadOnlyOrMemory: true }),
+      expect.objectContaining({ callee: 'openStoreDatabase', staticallyReadOnlyOrMemory: true }),
     ]);
   });
 

@@ -1,9 +1,9 @@
 import { readKnowledgeBaseListIndex } from '../../direct-read-index.js';
 import { isWikiEntry, type KbWikiListItem, type WikiEntry } from '../../entry-types.js';
 import { compareLocale } from '../../validation.js';
-import type { KbRuntime } from '../../contract.js';
+import type { KbReadQueryRuntime } from '../../contract.js';
 
-export async function listWikis(kb: KbRuntime): Promise<KbWikiListItem[]> {
+export async function listWikis(kb: KbReadQueryRuntime): Promise<KbWikiListItem[]> {
   const index = readKnowledgeBaseListIndex(kb);
   const entries: WikiEntry[] = [];
   for (const entry of Object.values(index.entries)) {

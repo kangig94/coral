@@ -1,10 +1,16 @@
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
+import type { BuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../infra/bundle-manifest.js';
-import { composeCoralPaths } from '../infra/path/index.js';
 import { createNodeStoreResetDiagnosticSupervisor } from '../infra/store-reset-diagnostic-supervisor.js';
 import { createStoreResetInspectionFs } from '../infra/store-reset-inspection-fs.js';
+import { createRealRuntime } from '../runtime/real.js';
+import {
+  discardStoreReset,
+  resolveStoreResetTargetPaths,
+  type StoreResetDiscardResult,
+  type StoreResetTarget,
+} from '../store/operator-store-reset.js';
 import {
   createStoreResetIncidentDiagnosticRunner,
   type StoreResetIncidentDiagnosticRunner,
@@ -18,17 +24,18 @@ import {
 } from '../store/reset-incident-reader.js';
 import {
   isCanonicalStoreResetIncidentId,
-  STORE_RESET_QUARANTINE_DIRECTORY,
   type StoreResetIncidentListResult,
   type StoreResetPublicReport,
 } from '../store/reset-incident.js';
+import { currentCoralStoreFormat } from '../store-format.js';
 import { StoreResetCliError } from './errors.js';
+import { acquireStoreResetSocketGuard } from './store-reset-socket.js';
 
 export interface StoreResetCliDependencies {
   resolveIdentity(): { readonly ok: true; readonly manifest: StrictBundleManifest } | { readonly ok: false };
   createInspectionFs(): StoreResetInspectionFs;
   createDiagnosticRunner(): StoreResetIncidentDiagnosticRunner;
-  quarantineRoot(manifest: StrictBundleManifest): string;
+  quarantineRoot(manifest: StrictBundleManifest, target: StoreResetTarget): string;
 }
 
 function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDependencies {
@@ -42,19 +49,43 @@ function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDepende
         executable: process.execPath,
         supervisor: createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
       }),
-    quarantineRoot: (manifest) =>
-      join(composeCoralPaths(manifest.flavor).store.dbDir, STORE_RESET_QUARANTINE_DIRECTORY),
+    quarantineRoot: (manifest, target) => {
+      const runtime = createRealRuntime(manifest.flavor);
+      return resolveStoreResetTargetPaths(runtime, target).quarantineRoot;
+    },
   };
 }
 
 export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal): {
-  readonly list: () => StoreResetIncidentListResult;
-  readonly report: (incidentId: string) => Promise<StoreResetPublicReport>;
+  readonly list: (target: StoreResetTarget) => StoreResetIncidentListResult;
+  readonly report: (target: StoreResetTarget, incidentId: string) => Promise<StoreResetPublicReport>;
+  readonly discard: (target: StoreResetTarget, flavor: BuildFlavor) => Promise<StoreResetDiscardResult>;
 } {
+  const dependencies = defaultDependencies(shutdownSignal);
   return {
-    list: () => listStoreResetIncidentsLocal(defaultDependencies(shutdownSignal)),
-    report: (incidentId) => reportStoreResetIncidentLocal(incidentId, defaultDependencies(shutdownSignal)),
+    list: (target) => listStoreResetIncidentsLocal(target, dependencies),
+    report: (target, incidentId) => reportStoreResetIncidentLocal(target, incidentId, dependencies),
+    discard: discardStoreResetLocal,
   };
+}
+
+export function discardStoreResetLocal(
+  target: StoreResetTarget,
+  flavor: BuildFlavor,
+): Promise<StoreResetDiscardResult> {
+  const runtime = createRealRuntime(flavor);
+  if (target === 'legacy') return discardStoreReset({ target, runtime });
+  const identity = resolveStrictBundleIdentity();
+  if (!identity.ok || identity.manifest.flavor !== flavor) {
+    throw new StoreResetCliError('store_reset_build_mismatch');
+  }
+  return discardStoreReset({
+    target,
+    runtime,
+    build: identity.manifest,
+    storeFormat: currentCoralStoreFormat(),
+    acquireSocketGuard: acquireStoreResetSocketGuard,
+  });
 }
 
 function requireCurrentBuild(dependencies: StoreResetCliDependencies): StrictBundleManifest {
@@ -71,13 +102,14 @@ function mapReportFailure(result: Exclude<StoreResetIncidentReportResult, { read
 }
 
 export function listStoreResetIncidentsLocal(
+  target: StoreResetTarget,
   dependencies: StoreResetCliDependencies = defaultDependencies(),
 ): StoreResetIncidentListResult {
   const manifest = requireCurrentBuild(dependencies);
   try {
     return readStoreResetIncidentList({
       fs: dependencies.createInspectionFs(),
-      quarantineRoot: dependencies.quarantineRoot(manifest),
+      quarantineRoot: dependencies.quarantineRoot(manifest, target),
       expectedBuild: manifest,
     });
   } catch (error: unknown) {
@@ -90,6 +122,7 @@ export function listStoreResetIncidentsLocal(
 }
 
 export async function reportStoreResetIncidentLocal(
+  target: StoreResetTarget,
   incidentId: string,
   dependencies: StoreResetCliDependencies = defaultDependencies(),
 ): Promise<StoreResetPublicReport> {
@@ -101,7 +134,7 @@ export async function reportStoreResetIncidentLocal(
   try {
     result = await readStoreResetIncidentReport({
       fs: dependencies.createInspectionFs(),
-      quarantineRoot: dependencies.quarantineRoot(manifest),
+      quarantineRoot: dependencies.quarantineRoot(manifest, target),
       incidentId,
       expectedBuild: manifest,
       diagnose: dependencies.createDiagnosticRunner(),

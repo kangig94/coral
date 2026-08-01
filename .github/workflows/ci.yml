@@ -34,6 +34,7 @@ jobs:
       - run: npm run test:store-reset:integration
       - run: npm run verify:store-reset-build
       - run: npm run test:e2e:store-reset:build
+      - run: npm run test:e2e:lifecycle
 
   network-test:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

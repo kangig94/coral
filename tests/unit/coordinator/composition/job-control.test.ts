@@ -48,6 +48,27 @@ describe('createCoordinatorControl.abortJobs', () => {
 });
 
 describe('createCoordinatorControl.scopeCheckJobs', () => {
+  it('reports jobs from another namespace as missing', () => {
+    const runtime = new SimulationRuntime();
+    const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
+    const world = { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld;
+    const control = createCoordinatorControl({
+      world,
+      listExecutionServices: () => [],
+      getLifecycleController: () => null,
+      backendNamespace: 'test-ns',
+      getProgressStore: () =>
+        ({
+          readStatus: () => ({ projectRoot: '/current/project', jobKind: 'provider', backendNamespace: 'other-ns' }),
+        }) as never,
+      internalJobAbortRegistry,
+    });
+
+    const result = control.scopeCheckJobs(['foreign-job'], '/current/project', 'test-ns');
+
+    expect(result).toEqual({ valid: ['foreign-job'], missing: ['foreign-job'], mismatch: [] });
+  });
+
   it('keeps KB jobs in scope from any project but rejects foreign non-KB jobs', () => {
     const runtime = new SimulationRuntime();
     const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
