@@ -13,7 +13,7 @@ Structured problem-definition conversation with the user before planning begins.
 | Argument     | Mode                                                                                                                                                    |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `<prompt>`   | Self-execute on current host (default)                                                                                                                  |
-| `--deep`     | Enable pioneer review for elegant alternatives                                                                                                          |
+| `--deep`     | Enable pioneer review for elegant alternatives. Blocks Step 3 until pioneer returns.                                                                    |
 | `--delegate` | Delegate pioneer to the other host (Codex when current is Claude, Claude when current is Codex; from SessionStart `Current host:`). Activates `--deep`. |
 
 Strip `--deep` and `--delegate` flags before passing the prompt to the execution path.
@@ -108,28 +108,50 @@ items with the "unconfirmed" marker, then seek user feedback.
     **RECOMMENDED**: When filling Assumptions (#4), consider applying
     `CORAL_METHODS/HOW-ELICIT.md` Lens 3 (Assumption Surfacing).
 
-    ### 2. Pioneer (`--deep` or `--delegate`)
+    ### 2. Pioneer (`--deep` or `--delegate`) — blocking barrier
 
     **Skip this step unless `--deep` or `--delegate` is set.** Without either flag, proceed
     directly to Step 3 — the orchestrator fills the three-point spectrum from its own analysis.
 
-    Dispatch pioneer to find the most elegant alternatives. Let `<other-host>` = Codex if current host is Claude; Claude if current host is Codex.
+    When either flag IS set, pioneer's output is an **input to** the Step 3 draft, not a parallel
+    commentary on it. Until pioneer has returned and its findings are written into the agreement file:
+
+    - Do NOT present the draft.
+    - Do NOT ask the user to decide, confirm, or react — no `AskUserQuestion`, no alternatives table,
+      no "silence is consent".
+    - Do NOT enter Step 4.
+
+    A draft shown before pioneer returns is a partial draft, and every decision the user makes on it
+    is made against the alternatives Step 2 was supposed to supply. If it happens anyway: withdraw the
+    request, wait for pioneer, re-present once.
+
+    Run pioneer as a single **foreground blocking call** — never background it, never continue other
+    work while it runs. Let `<other-host>` = Codex if current host is Claude; Claude if current host is Codex.
 
     ```
-    // --deep (without --delegate): self-execute
+    // --deep (without --delegate): self-execute, blocking
     output = Agent({ subagent_type: "coral:pioneer", prompt: <draft file content> })
 
-    // --delegate: dispatch to the other host
+    // --delegate: dispatch to the other host, then block on the wait
     launch = Bash(`coral-cli <other-host> pioneer -i "<draft file content>" --work-dir "<work_dir>" -d`)
     job = parse `Job <job> <launchState> (session <session>)` from launch
-    terminal = Bash(`coral-cli wait jobs ${job} --embed`)
+    terminal = Bash(`coral-cli wait jobs ${job} --embed`)   // foreground; blocks until terminal
     output = Read(<path from the terminal's `Result path:` line>)
     ```
 
-    For items where pioneer identifies a genuinely more elegant form: mark the sub-item
-    unconfirmed and add the three-point spectrum (default, minimal, elegant).
+    Then consume `output`: for items where pioneer identifies a genuinely more elegant form, mark the
+    sub-item unconfirmed and add the three-point spectrum (default, minimal, elegant) with pioneer's
+    form as the elegant tier. Write them into `CORAL_PROJECT/plans/pre-{topic}.md` before Step 3.
+
+    **If pioneer fails, is unreachable, or returns nothing usable**: fill the spectrum from your own
+    analysis and state the miss when presenting. Never let an orchestrator-only spectrum stand as
+    pioneer-reviewed.
 
     ### 3. Present Draft
+
+    **Precondition**: Step 2 is settled — with `--deep`/`--delegate` that means pioneer has returned
+    and its findings are already in the agreement file; without either flag it means Step 2 was
+    skipped by rule. Present **once**, complete. Never an interim draft followed by a revision.
 
     Present complete draft. The user's role is to **correct**, not to fill from scratch.
 
@@ -183,6 +205,8 @@ items with the "unconfirmed" marker, then seek user feedback.
     | Run Q&A gate when any axis fails the gate-criteria check | Skip gate and draft on shaky framing |
     | Print Q&A preview table before AskUserQuestion | Call AskUserQuestion directly without preview table |
     | Fill the 7 agreement items autonomously before asking | Ask item-by-item like a form |
+    | Block on pioneer, fold its findings in, then present once | Present the draft or solicit decisions while pioneer is still running |
+    | Say so when pioneer was skipped, failed, or unreachable | Pass an orchestrator-only spectrum off as pioneer-reviewed |
     | Commit to the best choice per unconfirmed sub-item, offer minimal + elegant alternatives | Leave unconfirmed items blank or offer alternatives per section |
     | Mark uncertain items as "unconfirmed" | Present guesses as confirmed facts |
     | Flag ambiguous items explicitly to the user | Assume the user noticed uncertainty |
