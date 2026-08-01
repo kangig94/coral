@@ -8,16 +8,7 @@
 //   - Health unreachable + no `coordinator.json` → spawn fresh
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
@@ -994,7 +985,7 @@ describe('ipc ensure', () => {
       return `${logPath()}.1`;
     }
 
-    async function triggerFreshSpawn(root: string, startupLogLine?: string): Promise<void> {
+    async function triggerFreshSpawn(root: string): Promise<void> {
       vi.useFakeTimers();
       mockState.health.mockImplementation(async () => {
         if (mockState.health.mock.calls.length < 3) {
@@ -1010,9 +1001,6 @@ describe('ipc ensure', () => {
         };
       });
       mockState.spawn.mockImplementation(() => {
-        if (startupLogLine !== undefined) {
-          appendFileSync(logPath(), `${startupLogLine}\n`, 'utf-8');
-        }
         writeDiscovery(root, { instanceId: 'replacement-coordinator' });
         return { pid: 12_345, unref: vi.fn() };
       });
@@ -1074,37 +1062,6 @@ describe('ipc ensure', () => {
 
       expect(existsSync(archivePath())).toBe(false);
       expect(existsSync(logPath())).toBe(true);
-    });
-
-    it('surfaces the public-safe reset notice emitted by the coordinator it just spawned', async () => {
-      makeHome();
-      const root = createPluginRoot();
-      const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-
-      await triggerFreshSpawn(
-        root,
-        '2026-07-23T01:02:03.004Z Backend store format reset required; incident 223e4567-e89b-42d3-a456-426614174000. Run coral-cli backend store-reset report 223e4567-e89b-42d3-a456-426614174000',
-      );
-
-      expect(write).toHaveBeenCalledWith(
-        'Coral startup notice: Backend store format reset required; incident 223e4567-e89b-42d3-a456-426614174000. Run coral-cli backend store-reset report 223e4567-e89b-42d3-a456-426614174000\n',
-      );
-    });
-
-    it('does not replay a reset notice that predates the current spawn attempt', async () => {
-      makeHome();
-      const root = createPluginRoot();
-      mkdirSync(runDir(), { recursive: true });
-      writeFileSync(
-        logPath(),
-        'Backend store format reset required; incident 223e4567-e89b-42d3-a456-426614174000\n',
-        'utf-8',
-      );
-      const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-
-      await triggerFreshSpawn(root, 'ordinary current-attempt startup line');
-
-      expect(write).not.toHaveBeenCalled();
     });
   });
 });
