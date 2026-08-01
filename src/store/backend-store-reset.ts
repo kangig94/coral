@@ -10,6 +10,7 @@ import type { Runtime } from '../runtime/ports.js';
 import { classifyStoreFile, openStoreDatabase, type Database } from './db.js';
 import type { StoreFormatClassification } from './format-fingerprint.js';
 import type { StoreFormatDescription, StoreFormatFingerprint } from './format-fingerprint.js';
+import { inspectGenerationReadiness } from './generation-mutation-coordination.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_INCIDENT_DIR_ENTRIES,
@@ -963,6 +964,9 @@ export function openOrResetBackendStoreDb(
   }
 
   assertResetAuthority(runtime, authority, options);
+  if (options.path === undefined) {
+    inspectGenerationReadiness(runtime);
+  }
   runtime.storage.mkdirSync(files.dbDir, { recursive: true });
 
   let releaseLock: (() => void) | null = null;
