@@ -43,6 +43,16 @@ export const PRE_TURN_MAILBOX_CAP = 64;
 // the diagnostic message goes into `note`. See spec §7.1 `provider_exit`.
 const CODEX_RPC_FAILURE_EXIT_CODE = 1;
 
+// An operator abort must not depend on the app-server answering. `ensureInterrupt`
+// is itself an RPC and `lease.closed` only settles when the host process exits, so
+// an alive-but-unresponsive app-server leaves every leg of the abort race pending
+// forever: the job stays `running`, reports no events, and no further abort can
+// free it. After this deadline the kernel stops waiting for confirmation and
+// terminalizes locally, preserving the recovery snapshot so a later boot can still
+// probe the turn. Only the abort path is bounded — a turn that nobody asked to
+// cancel still runs as long as it needs.
+const ABORT_CONFIRMATION_DEADLINE_MS = 10_000;
+
 type PreTurnMailboxStatus = {
   pending: number;
   dropped: number;
@@ -1004,16 +1014,35 @@ async function finishAbortedStart(
   state: CodexTurnState,
   attempt: TurnAttempt,
 ): Promise<CodexKernelResult> {
-  const outcome = await Promise.race([
-    ensureInterrupt(lease, state, attempt).then((interrupted) => ({ kind: 'interrupt' as const, interrupted })),
-    lease.closed.then(() => ({ kind: 'closed' as const })),
-  ]);
-  if (outcome.kind === 'closed') {
-    return transportClosedResult(runtime, attempt, undefined);
+  let deadlineTimer: ReturnType<TimePort['setTimeout']> | undefined;
+  const deadline = new Promise<{ kind: 'deadline' }>((resolve) => {
+    deadlineTimer = state.time.setTimeout(() => resolve({ kind: 'deadline' }), ABORT_CONFIRMATION_DEADLINE_MS);
+  });
+  try {
+    const outcome = await Promise.race([
+      ensureInterrupt(lease, state, attempt).then((interrupted) => ({ kind: 'interrupt' as const, interrupted })),
+      lease.closed.then(() => ({ kind: 'closed' as const })),
+      deadline,
+    ]);
+    if (outcome.kind === 'deadline') {
+      return {
+        kind: 'aborted',
+        reason: 'signal_abort',
+        preserveRecoverySnapshot: attempt.turnId !== null,
+        attempt,
+      };
+    }
+    if (outcome.kind === 'closed') {
+      return transportClosedResult(runtime, attempt, undefined);
+    }
+    return outcome.interrupted === 'confirmed'
+      ? { kind: 'aborted', reason: 'signal_abort', attempt }
+      : { kind: 'suspended', reason: 'interrupt_unconfirmed', attempt };
+  } finally {
+    if (deadlineTimer !== undefined) {
+      state.time.clearTimeout(deadlineTimer);
+    }
   }
-  return outcome.interrupted === 'confirmed'
-    ? { kind: 'aborted', reason: 'signal_abort', attempt }
-    : { kind: 'suspended', reason: 'interrupt_unconfirmed', attempt };
 }
 
 async function waitForTurnResult(

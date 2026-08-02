@@ -84,7 +84,7 @@ function makeRuntime(
     cwd: '/workspace/persisted',
     threadId: 'thread-1',
   },
-  overrides: Partial<Pick<CodexRuntime, 'signal' | 'storage' | 'env' | 'continuityBridge'>> = {},
+  overrides: Partial<Pick<CodexRuntime, 'signal' | 'storage' | 'env' | 'continuityBridge' | 'time'>> = {},
 ): CodexRuntime {
   const prepared = buildCodexExecutionPlan({
     access: TEST_CODEX_ACCESS,
@@ -96,7 +96,7 @@ function makeRuntime(
   return {
     transport: 'app-server',
     signal: overrides.signal ?? new AbortController().signal,
-    time: {
+    time: overrides.time ?? {
       now: () => Date.now(),
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       clearTimeout: (handle) => {
@@ -1387,6 +1387,52 @@ describe('codexThreadProvider', () => {
     const events = await eventsPromise;
     expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
     expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome: { kind: 'aborted' } } });
+    const continuity = events.flatMap((event) => (event.kind === 'continuity' ? [event.providerContinuity] : []));
+    expect(continuity.at(-1)?.turnId).toBe('turn-1');
+  });
+
+  it('terminalizes an abort when the app-server neither confirms the interrupt nor closes', async () => {
+    const controller = new AbortController();
+    const wedgedInterrupt = createDeferred<unknown>();
+    const lease = makeLease(async (method) => {
+      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
+      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
+      // The wedged host: accepts the interrupt and never answers it. The lease is
+      // also never closed, so both legs of the abort race stay pending — this is
+      // the state that left five jobs `running` and unabortable for an hour.
+      if (method === 'turn/interrupt') return wedgedInterrupt.promise;
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const requestedDelaysMs: number[] = [];
+    const runtime = makeRuntime(
+      lease,
+      { cwd: '/workspace/persisted', threadId: 'thread-1' },
+      {
+        signal: controller.signal,
+        time: {
+          now: () => Date.now(),
+          // Record the real deadline so the test pins it, then fire promptly
+          // instead of waiting it out.
+          setTimeout: (fn, ms) => {
+            requestedDelaysMs.push(ms);
+            return setTimeout(fn, 1);
+          },
+          clearTimeout: (handle) => {
+            if (handle !== null) clearTimeout(handle as ReturnType<typeof setTimeout>);
+          },
+        },
+      },
+    );
+    const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
+    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
+
+    controller.abort();
+    const events = await eventsPromise;
+
+    expect(requestedDelaysMs).toContain(10_000);
+    expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome: { kind: 'aborted' } } });
+    // The snapshot survives so a later boot can still probe the turn.
     const continuity = events.flatMap((event) => (event.kind === 'continuity' ? [event.providerContinuity] : []));
     expect(continuity.at(-1)?.turnId).toBe('turn-1');
   });

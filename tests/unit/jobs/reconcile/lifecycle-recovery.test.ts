@@ -2433,6 +2433,66 @@ describe('lifecycle recovery', () => {
     },
   );
 
+  it('14c7. a job whose status cannot be decoded is contained, not fatal to the boot', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-registration-status-decode-fails');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-registration-status-decode-fails');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const db = openTestStoreDb(runtime, ':memory:');
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db,
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const jobId = 'registration-status-decode-fails-job';
+    const sessionId = `${jobId}-session`;
+    const fakeService = createFakeExecutionAndRecoveryService({
+      captureProviderRecoveryAuthority: vi.fn(async () => {
+        throw new Error('authority capture failed first');
+      }),
+    });
+    const log = vi.fn<(message: string) => void>();
+
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    appendQueuedEvent(progressStore, jobId, sessionId, namespace, projectRoot);
+
+    // `readStatus` decodes the persisted projection, so a malformed row makes it
+    // throw for exactly the job whose recovery already failed. That read used to
+    // sit outside the containment frame, so it abandoned the whole batch.
+    const readStatusDirect = progressStore.readStatus.bind(progressStore);
+    vi.spyOn(progressStore, 'readStatus').mockImplementation((id: string) => {
+      if (id === jobId) {
+        throw new Error('projection row decode failed');
+      }
+      return readStatusDirect(id);
+    });
+
+    const { controller } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      log,
+    });
+
+    try {
+      await controller.start();
+      const messages = log.mock.calls.flat().join('');
+      expect(messages).toContain('job status was unavailable');
+      expect(messages).toContain('status decode failed: projection row decode failed');
+      expect(messages).toContain('no terminal or session claim could be updated');
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
   it('14c6. a terminal-write failure is logged and leaves the session claim in place', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-registration-terminal-write-fails');
@@ -2475,7 +2535,9 @@ describe('lifecycle recovery', () => {
     });
 
     try {
-      await expect(controller.start()).rejects.toThrow('terminal journal unavailable');
+      // Boot survives: a job whose terminal write fails is still one job. The
+      // recovery-state disposition below is the whole of the fallout.
+      await controller.start();
       expect(progressStore.readStatus(jobId)?.phase).toBe('queued');
       expect(
         new modules.sessionManagerModule.SessionManager(

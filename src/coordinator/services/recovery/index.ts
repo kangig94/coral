@@ -256,13 +256,29 @@ export function createRecoveryCoordinator({
     coordinatorCommit: CommitEventsFn,
     hydrationFallback?: RecoveryHydrationFallback,
   ): void => {
-    const status = hydrationFallback?.status ?? progressStore.readStatus(jobId);
+    let status: JobStatus | null = hydrationFallback?.status ?? null;
+    let statusReadError: unknown = null;
+    if (status === null) {
+      try {
+        status = progressStore.readStatus(jobId);
+      } catch (readError: unknown) {
+        // Reading the status decodes the persisted projection, so it throws on
+        // exactly the malformed row that usually produced `error`. Six of the
+        // seven callers pass no fallback, so this is their live path — letting it
+        // escape would abandon the rest of the batch and fail the boot, which is
+        // the failure this function exists to contain.
+        statusReadError = readError;
+        status = null;
+      }
+    }
     if (status === null) {
       try {
         state.recoveryRegistry?.remove(jobId);
       } finally {
+        const unavailability =
+          statusReadError === null ? '' : ` (status decode failed: ${errorMessage(statusReadError)})`;
         log(
-          `${summary} for ${jobId}: ${errorMessage(error)}; job status was unavailable, so no terminal or session claim could be updated.\n`,
+          `${summary} for ${jobId}: ${errorMessage(error)}; job status was unavailable${unavailability}, so no terminal or session claim could be updated.\n`,
         );
       }
       return;
@@ -309,8 +325,13 @@ export function createRecoveryCoordinator({
         });
       }
     } catch (updateError: unknown) {
+      // Containment belongs in this frame, not at the call sites. Every caller
+      // invokes this from its own `catch` and then continues to the next job, so
+      // a throw from here escapes that `catch` and abandons the rest of the
+      // batch — and the two unwrapped `hydrateRecoveryJobDetails` calls turn it
+      // into a boot failure for every project. The `finally` below reports the
+      // incomplete disposition, which is the whole of what a caller could add.
       recoveryUpdateError = updateError;
-      throw updateError;
     } finally {
       const terminalDisposition = alreadyTerminal
         ? 'job was already terminal'
