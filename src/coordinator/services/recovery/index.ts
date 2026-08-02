@@ -309,8 +309,13 @@ export function createRecoveryCoordinator({
         });
       }
     } catch (updateError: unknown) {
+      // Containment belongs in this frame, not at the call sites. Every caller
+      // invokes this from its own `catch` and then continues to the next job, so
+      // a throw from here escapes that `catch` and abandons the rest of the
+      // batch — and the two unwrapped `hydrateRecoveryJobDetails` calls turn it
+      // into a boot failure for every project. The `finally` below reports the
+      // incomplete disposition, which is the whole of what a caller could add.
       recoveryUpdateError = updateError;
-      throw updateError;
     } finally {
       const terminalDisposition = alreadyTerminal
         ? 'job was already terminal'

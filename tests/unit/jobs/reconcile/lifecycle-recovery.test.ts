@@ -2475,7 +2475,9 @@ describe('lifecycle recovery', () => {
     });
 
     try {
-      await expect(controller.start()).rejects.toThrow('terminal journal unavailable');
+      // Boot survives: a job whose terminal write fails is still one job. The
+      // recovery-state disposition below is the whole of the fallout.
+      await controller.start();
       expect(progressStore.readStatus(jobId)?.phase).toBe('queued');
       expect(
         new modules.sessionManagerModule.SessionManager(
