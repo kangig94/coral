@@ -4,7 +4,6 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { quarantineKbCommit } from '#src/cli/kb-commit-quarantine.js';
-import { acquireStoreAdoptionSocketGuard } from '#src/cli/store-adopt.js';
 import { acquireStoreResetSocketGuard } from '#src/cli/store-reset-socket.js';
 import { serializeCoralSetupError } from '#src/runtime/errors.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -31,7 +30,7 @@ afterEach(() => {
 });
 
 describe('operator coordinator socket bind failures', () => {
-  it.each(['store-adopt', 'store-reset', 'kb-commit'] as const)(
+  it.each(['store-reset', 'kb-commit'] as const)(
     'translates a non-EADDRINUSE bind failure for %s',
     async (command) => {
       const runtime = createRealRuntime('prod', { baseDir: root() });
@@ -39,9 +38,7 @@ describe('operator coordinator socket bind failures', () => {
 
       let refusal: unknown;
       try {
-        if (command === 'store-adopt') {
-          await acquireStoreAdoptionSocketGuard(runtime.paths.coral.coordinator.socketPath, runtime.flavor);
-        } else if (command === 'store-reset') {
+        if (command === 'store-reset') {
           await acquireStoreResetSocketGuard(resolveStoreResetTargetPaths(runtime, 'gen2'), runtime.flavor);
         } else {
           await quarantineKbCommit({ runtime, commitId: 'blocking-commit' });

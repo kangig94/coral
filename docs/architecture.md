@@ -35,7 +35,7 @@ Claude Code
 clients/bridge/coral-cli.cjs
   ├── Provider commands (`codex`, `claude`)
   ├── Workflow commands (`workflow`, `jobs`, `wait`, `abort`)
-  ├── Admin commands (`backend status|shutdown`, `backend store-adopt`, `backend store-reset list|report|discard`, `backend kb-commit quarantine`)
+  ├── Admin commands (`backend status|shutdown`, `backend store-reset list|report|discard`, `backend kb-commit quarantine`)
   ├── Discuss commands (`discuss *`)
   └── KB commands (`kb *`)
       │
@@ -192,12 +192,11 @@ Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin ro
 ### Generation boundary and operator recovery
 
 1. Pre-boundary state remains under `data[-dev]` and `run[-dev]`; generated state lives under `gen2/data[-dev]` and `gen2/run[-dev]`. Current code never mutates or binds the legacy generation during ordinary startup.
-2. Before generated initialization, readiness is one of four states: `generated-ready` proceeds; `no-legacy` initializes; `legacy-foreign` leaves legacy bytes untouched and may initialize empty generated state while reporting the stored version or `unknown`; `legacy-adoptable` refuses with `legacy_adoption_required` until the operator runs `coral-cli backend store-adopt --flavor <prod|dev>`.
+2. Before generated initialization, readiness is one of three states: `generated-ready` proceeds; `no-legacy` initializes; `legacy-ignored` leaves legacy bytes untouched, reports the stored version or `unknown`, and initializes this generation's own state. A previous generation is never a precondition for startup and is never imported: the boundary exists to end that coupling, so whether this build could read the legacy store makes no difference to whether it boots.
 3. A generated store is classified by fingerprint plus SemVer. Compatible state opens in place. Newer, older, corrupt, or unsupported state refuses startup with a stable code; startup never quarantines it implicitly.
-4. `backend store-adopt --flavor <prod|dev>` is the only forward adoption path. With the daemon down, it holds the coordinator socket, adoption lock, and exclusive maintenance lease; verifies the legacy source and package locks; stamps durable adoption provenance; then atomically renames the complete flavor root into `gen2/` and synchronizes both parents. The explicit flavor is required because no running daemon can supply it ambiently.
-5. `backend store-reset discard --target <current|gen2> --flavor <prod|dev>` is the only path that creates a store-reset incident. It holds the coordinator socket, adoption lock, exclusive maintenance lease after writer leases drain, and reset lock in that order. Under the reset lock it creates and verifies a private `.staging/<uuid>/` transaction, publishes the exact-build manifest, removes only matching active evidence, publishes `<uuid>/`, and initializes an empty current store. `--target legacy` always refuses before path resolution or socket binding.
-6. `backend store-reset list --target <legacy|current>` performs a bounded local directory read. `backend store-reset report --target <legacy|current> <incident-id>` validates containment and descriptor identity, recomputes bounded hashes, optionally diagnoses a private SQLite copy, and renders deterministic public-safe Markdown. Retained evidence is diagnostic-only and cannot restore active state.
-7. `backend kb-commit quarantine --flavor <prod|dev> --commit <id>` is the explicit recovery for a `kb_commit_corrupt_or_unsupported` refusal. After `backend shutdown`, it holds the same socket → adoption → maintenance boundary, validates the single-segment commit ID before acquisition, and durably moves only that commit and matching index evidence to retained quarantine.
+4. `backend store-reset discard --target <current|gen2> --flavor <prod|dev>` is the only path that creates a store-reset incident. It holds the coordinator socket, adoption lock, exclusive maintenance lease after writer leases drain, and reset lock in that order. Under the reset lock it creates and verifies a private `.staging/<uuid>/` transaction, publishes the exact-build manifest, removes only matching active evidence, publishes `<uuid>/`, and initializes an empty current store. `--target legacy` always refuses before path resolution or socket binding.
+5. `backend store-reset list --target <legacy|current>` performs a bounded local directory read. `backend store-reset report --target <legacy|current> <incident-id>` validates containment and descriptor identity, recomputes bounded hashes, optionally diagnoses a private SQLite copy, and renders deterministic public-safe Markdown. Retained evidence is diagnostic-only and cannot restore active state.
+6. `backend kb-commit quarantine --flavor <prod|dev> --commit <id>` is the explicit recovery for a `kb_commit_corrupt_or_unsupported` refusal. After `backend shutdown`, it holds the same socket → adoption → maintenance boundary, validates the single-segment commit ID before acquisition, and durably moves only that commit and matching index evidence to retained quarantine.
 
 ### Workflow
 

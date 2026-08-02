@@ -22,7 +22,6 @@ function setupErrorStatusCode(code: string): number {
     case 'workflow_completed_duplicate':
     case 'workflow_lifecycle_invalid':
     case 'legacy_foreign_generation':
-    case 'legacy_adoption_required':
     case 'legacy_source_not_quiescent':
     case 'store_newer_incompatible':
     case 'store_older_incompatible':
@@ -34,9 +33,6 @@ function setupErrorStatusCode(code: string): number {
     case 'kb_commit_not_found':
     case 'kb_commit_already_quarantined':
     case 'kb_commit_quarantine_failed':
-    case 'legacy_adoption_source_unreadable':
-    case 'legacy_adoption_state_changed':
-    case 'legacy_adoption_durability_failed':
       return 409;
     case 'kb_commit_id_invalid':
       return 400;

@@ -16,7 +16,7 @@ import {
   type StoreFormatDescription,
   type StoreFormatFingerprint,
 } from './format-fingerprint.js';
-import { formatLegacyForeignGenerationNotice, inspectGenerationReadiness } from './generation-mutation-coordination.js';
+import { formatLegacyGenerationIgnoredNotice, inspectGenerationReadiness } from './generation-mutation-coordination.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_INCIDENT_DIR_ENTRIES,
@@ -981,15 +981,12 @@ export function openOrResetBackendStoreDb(
       case 'generated-ready':
       case 'no-legacy':
         break;
-      case 'legacy-foreign':
-        backendLog.warn(formatLegacyForeignGenerationNotice(readiness));
+      case 'legacy-ignored':
+        // Startup never depends on a previous generation. Refusing here made the
+        // old tree a precondition for booting, which is the coupling the
+        // generation boundary exists to remove.
+        backendLog.warn(formatLegacyGenerationIgnoredNotice(readiness));
         break;
-      case 'legacy-adoptable':
-        throw documentedCoralSetupError({
-          code: 'legacy_adoption_required',
-          flavor: runtime.flavor,
-          legacyPath: readiness.legacyPath,
-        });
       default:
         assertNever(readiness);
     }

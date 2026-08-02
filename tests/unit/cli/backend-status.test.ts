@@ -40,10 +40,10 @@ afterEach(() => {
 });
 
 describe('backend status generation readiness', () => {
-  it('prints the read-only foreign-generation notice directly in the CLI', async () => {
+  it('prints the ignored-legacy-generation notice directly in the CLI', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({
-        kind: 'legacy-foreign',
+        kind: 'legacy-ignored',
         legacyPath: '/state/data',
         generatedPath: '/state/gen2/data',
         storedProductVersion: '0.9.16',
@@ -52,12 +52,12 @@ describe('backend status generation readiness', () => {
     };
     const program = new Command();
     program.exitOverride();
-    registerBackendCommands(program, storeReset, undefined, undefined, status);
+    registerBackendCommands(program, storeReset, undefined, status);
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(stderr).toBe(
-      'Legacy Coral history remains at /state/data; its stored Coral version is 0.9.16. This generation will initialize empty state at /state/gen2/data without changing the legacy tree.\n',
+      'Legacy Coral history remains at /state/data (stored Coral version 0.9.16) and is left untouched. This generation initializes its own state at /state/gen2/data.\n',
     );
     expect(stdout).toContain('Backend not running.');
   });
@@ -72,7 +72,7 @@ describe('backend status generation readiness', () => {
     };
     const program = new Command();
     program.exitOverride();
-    registerBackendCommands(program, storeReset, undefined, undefined, status);
+    registerBackendCommands(program, storeReset, undefined, status);
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
@@ -120,6 +120,40 @@ describe('backend startup diagnostic classification', () => {
     });
   });
 
+  it('carries the authored cause and remediation of a documented setup failure', () => {
+    expect(
+      statusFromStartupDiagnostic(
+        {
+          schemaVersion: 1,
+          phase: 'startup_failed',
+          state: 'stopped_with_diagnostic',
+          retryable: false,
+          pid: 4242,
+          recordedAt: '2026-08-02T11:59:30.000Z',
+          exitCode: 1,
+          error: {
+            kind: 'coral_setup_error',
+            code: 'store_newer_incompatible',
+            userMessage: 'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
+            remediation: "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
+            // Context is deliberately not forwarded: only the two rendered
+            // strings are authored per code and safe to show.
+            context: { flavor: 'prod', version: '0.11.0' },
+          },
+        },
+        now,
+      ),
+    ).toEqual({
+      status: 'recent_failure',
+      phase: 'startup_failed',
+      setupError: {
+        code: 'store_newer_incompatible',
+        userMessage: 'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
+        remediation: "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
+      },
+    });
+  });
+
   it('does not render credentials from a serialized diagnostic cause', async () => {
     const secret = 'sk-proj-secret-value';
     const classified = statusFromStartupDiagnostic(
@@ -146,7 +180,7 @@ describe('backend startup diagnostic classification', () => {
     };
     const program = new Command();
     program.exitOverride();
-    registerBackendCommands(program, storeReset, undefined, undefined, status);
+    registerBackendCommands(program, storeReset, undefined, status);
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 

@@ -1,0 +1,169 @@
+name: Unrelease
+
+# Manual rollback of a release that should never have shipped: deletes the GitHub
+# release, deletes the tag, and force-pushes main back past the release commit so
+# no trace of the version remains. Triggered from the Actions tab.
+#
+# Version numbers only move forward and a tag is never reused, so a bad release
+# cannot be corrected by re-tagging. Removing it completely is the only way to
+# publish a corrected build under the same version, and that is only safe while
+# nobody has installed it — hence a manual, immediate action rather than a revert
+# commit, which would leave the tag and the release in place.
+#
+# The single safety condition: main's tip must be exactly the release commit the
+# Release workflow authored for this version. If anything has landed on top, the
+# release is no longer removable this way and the run refuses — reverting history
+# under someone else's commits is not this workflow's job.
+#
+# Authenticates as the same GitHub App as Release (secrets RELEASE_APP_ID +
+# RELEASE_APP_PRIVATE_KEY), which is in the "protect main" ruleset Bypass list
+# with "Always" mode. That bypass is what permits the non-fast-forward push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to remove completely — semver, no leading v (e.g. 0.10.4)'
+        required: true
+        type: string
+
+concurrency:
+  # Shares the Release group so an unrelease can never interleave with a release.
+  group: release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  unrelease:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="$INPUT_VERSION"
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::Invalid version '$version' (expected semver like 0.10.4, no leading v)"
+            exit 1
+          fi
+          {
+            echo "VERSION=$version"
+            echo "TAG=v$version"
+          } >> "$GITHUB_ENV"
+
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Resolve App committer identity
+        id: committer
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          uid=$(gh api "/users/${APP_SLUG}[bot]" --jq .id)
+          echo "name=${APP_SLUG}[bot]" >> "$GITHUB_OUTPUT"
+          echo "email=${uid}+${APP_SLUG}[bot]@users.noreply.github.com" >> "$GITHUB_OUTPUT"
+
+      # Every check below must hold. Each one alone is too weak: the subject can be
+      # written by hand, and a matching subject on a human commit must not authorize
+      # a force-push. Identity plus tip position plus tag agreement is what makes
+      # this removable without judgement.
+      - name: Require main's tip to be this version's release commit
+        env:
+          EXPECTED_NAME: ${{ steps.committer.outputs.name }}
+          EXPECTED_EMAIL: ${{ steps.committer.outputs.email }}
+        run: |
+          git fetch --tags --force --quiet
+          head_sha=$(git rev-parse HEAD)
+
+          subject=$(git log -1 --format=%s "$head_sha")
+          if [ "$subject" != "Release v$VERSION" ]; then
+            echo "::error::main's tip is '$subject', not 'Release v$VERSION'. Nothing was changed."
+            exit 1
+          fi
+
+          committer_name=$(git log -1 --format=%cn "$head_sha")
+          committer_email=$(git log -1 --format=%ce "$head_sha")
+          if [ "$committer_name" != "$EXPECTED_NAME" ] || [ "$committer_email" != "$EXPECTED_EMAIL" ]; then
+            echo "::error::main's tip was committed by '$committer_name <$committer_email>', not the release App '$EXPECTED_NAME <$EXPECTED_EMAIL>'. Refusing to rewrite a commit this workflow did not author."
+            exit 1
+          fi
+
+          if ! git rev-parse -q --verify "$head_sha^" >/dev/null; then
+            echo "::error::The release commit has no parent; there is nothing to roll back to."
+            exit 1
+          fi
+          parent_sha=$(git rev-parse "$head_sha^")
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            tag_sha=$(git rev-parse "refs/tags/$TAG^{commit}")
+            if [ "$tag_sha" != "$head_sha" ]; then
+              echo "::error::Tag $TAG points at $tag_sha, not main's tip $head_sha. Resolve that disagreement by hand."
+              exit 1
+            fi
+          else
+            echo "::notice::Tag $TAG is already absent; continuing to remove the commit."
+          fi
+
+          {
+            echo "HEAD_SHA=$head_sha"
+            echo "PARENT_SHA=$parent_sha"
+          } >> "$GITHUB_ENV"
+          echo "::notice::Will remove $head_sha and reset main to $parent_sha."
+
+      - name: Delete the GitHub release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes
+            echo "::notice::Deleted GitHub release $TAG."
+          else
+            echo "::notice::No GitHub release $TAG to delete."
+          fi
+
+      - name: Delete the tag
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git push origin ":refs/tags/$TAG"
+            echo "::notice::Deleted tag $TAG."
+          else
+            echo "::notice::No remote tag $TAG to delete."
+          fi
+
+      # --force-with-lease pins the expected tip, so a release landing between the
+      # guard and this push aborts instead of discarding it.
+      - name: Force main past the release commit
+        run: |
+          git push --force-with-lease="main:$HEAD_SHA" origin "$PARENT_SHA:refs/heads/main"
+
+      - name: Verify nothing remains
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          remote_main=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$remote_main" != "$PARENT_SHA" ]; then
+            echo "::error::main is $remote_main, expected $PARENT_SHA."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG still exists."
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::GitHub release $TAG still exists."
+            exit 1
+          fi
+          echo "::notice::v$VERSION is fully removed. main is $PARENT_SHA."

@@ -258,19 +258,17 @@ A reset is unconditional and needs no confirmation, but it occurs only when an o
 The daemon-independent operator commands require `--flavor` because the stopped daemon cannot supply that value ambiently:
 
 ```bash
-coral-cli backend store-adopt --flavor <prod|dev>
 coral-cli backend store-reset discard --target <current|gen2> --flavor <prod|dev>
 coral-cli backend kb-commit quarantine --flavor <prod|dev> --commit <commit-id>
 coral-cli backend store-reset list --target <legacy|current>
 coral-cli backend store-reset report --target <legacy|current> <incident-id>
 ```
 
-- `store-adopt` performs the one forward-only, whole-flavor-root rename for compatible legacy history. Startup names it through `legacy_adoption_required`; after success, retry the command that starts the backend.
 - `store-reset discard` is the only command that creates an incident. `current` maps to the internal `gen2` generation; `legacy` is inspection-only and a discard request always refuses before path resolution or socket binding.
 - `kb-commit quarantine` accepts the exact safe single-segment commit ID from `kb_commit_corrupt_or_unsupported` and moves only that commit plus matching index evidence.
 - `store-reset list` performs bounded local discovery for the selected generation. `store-reset report` validates one canonical incident ID, verifies retained evidence, and produces public-safe Markdown.
 
-Run `store-adopt`, `store-reset discard`, and `kb-commit quarantine` only after `coral-cli backend shutdown`; they prove exclusivity by holding the coordinator socket and generation locks. List and report are read-only and work whether the daemon is stopped, unhealthy, or running. Reports are accepted only when the incident and the embedded/adjacent identities and hashes of the backend, CLI, and Claude helper belong to the exact current build set. Upgrading may therefore make an older retained incident unreadable by design.
+Run `store-reset discard` and `kb-commit quarantine` only after `coral-cli backend shutdown`; they prove exclusivity by holding the coordinator socket and generation locks. List and report are read-only and work whether the daemon is stopped, unhealthy, or running. Reports are accepted only when the incident and the embedded/adjacent identities and hashes of the backend, CLI, and Claude helper belong to the exact current build set. Upgrading may therefore make an older retained incident unreadable by design.
 
 The generated Markdown contains only allowlisted build/reset metadata, recorded file sizes and hashes, fixed verification states, and a fixed SQLite integrity state. It excludes paths, namespace and process identifiers, rows, prompts, event bodies, environment values, credentials, account/workspace identifiers, child output, and raw exception or SQLite text. If a report cannot be generated, the fixed CLI error includes a public-safe next step and the issue form accepts that complete error output instead. Never attach DB/WAL/SHM files, `.env` or settings files, credentials, tokens, or unredacted logs.
 

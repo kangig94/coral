@@ -49,16 +49,24 @@ export type GenerationBoundaryPaths = {
   readonly writersRoot: string;
 };
 
+/**
+ * A previous generation's tree is never a precondition for this one. Whether its
+ * store is readable by this build or not makes no difference to startup: the
+ * generation boundary exists to end the coupling, so legacy bytes are left where
+ * they are and this generation initializes its own state. `legacy-ignored`
+ * therefore covers both a foreign store and one this build happens to be able to
+ * read — the distinction only ever mattered to a migration path that no longer
+ * exists.
+ */
 export type GenerationReadiness =
   | { readonly kind: 'generated-ready' }
   | { readonly kind: 'no-legacy' }
   | {
-      readonly kind: 'legacy-foreign';
+      readonly kind: 'legacy-ignored';
       readonly legacyPath: string;
       readonly generatedPath: string;
       readonly storedProductVersion: string | null;
-    }
-  | { readonly kind: 'legacy-adoptable'; readonly legacyPath: string };
+    };
 
 export interface GenerationMaintenanceLease {
   assertOwned(): void;
@@ -104,41 +112,39 @@ export function inspectGenerationReadiness(
     return { kind: 'no-legacy' };
   }
 
-  let classification: StoreFormatClassification;
-  try {
-    classification = classifyStoreFile(join(paths.legacyFlavorRoot, 'store', 'store.db'), runtime.storage, storeFormat);
-  } catch {
-    return {
-      kind: 'legacy-foreign',
-      legacyPath: paths.legacyFlavorRoot,
-      generatedPath: paths.generatedFlavorRoot,
-      storedProductVersion: null,
-    };
-  }
+  // The stored version is read for the notice only. Nothing branches on whether
+  // this build could read the legacy store, because nothing imports it — an
+  // unreadable one is reported as unknown rather than diagnosed.
+  const storedProductVersion = ((): string | null => {
+    try {
+      const classification: StoreFormatClassification = classifyStoreFile(
+        join(paths.legacyFlavorRoot, 'store', 'store.db'),
+        runtime.storage,
+        storeFormat,
+      );
+      return 'storedProductVersion' in classification && classification.storedProductVersion !== null
+        ? validateProductVersion(classification.storedProductVersion)
+        : null;
+    } catch {
+      return null;
+    }
+  })();
 
-  if ('storedFingerprint' in classification && classification.storedFingerprint === storeFormat.fingerprint) {
-    return { kind: 'legacy-adoptable', legacyPath: paths.legacyFlavorRoot };
-  }
-
-  const storedProductVersion =
-    'storedProductVersion' in classification && classification.storedProductVersion !== null
-      ? validateProductVersion(classification.storedProductVersion)
-      : null;
   return {
-    kind: 'legacy-foreign',
+    kind: 'legacy-ignored',
     legacyPath: paths.legacyFlavorRoot,
     generatedPath: paths.generatedFlavorRoot,
     storedProductVersion,
   };
 }
 
-export function formatLegacyForeignGenerationNotice(
-  readiness: Extract<GenerationReadiness, { readonly kind: 'legacy-foreign' }>,
+export function formatLegacyGenerationIgnoredNotice(
+  readiness: Extract<GenerationReadiness, { readonly kind: 'legacy-ignored' }>,
 ): string {
   return (
-    `Legacy Coral history remains at ${readiness.legacyPath}; its stored Coral version is ` +
-    `${readiness.storedProductVersion ?? 'unknown'}. This generation will initialize empty state at ` +
-    `${readiness.generatedPath} without changing the legacy tree.`
+    `Legacy Coral history remains at ${readiness.legacyPath} (stored Coral version ` +
+    `${readiness.storedProductVersion ?? 'unknown'}) and is left untouched. This generation initializes ` +
+    `its own state at ${readiness.generatedPath}.`
   );
 }
 
@@ -196,15 +202,9 @@ export async function acquireGenerationAdoptionLease(
       case 'generated-ready':
       case 'no-legacy':
         break;
-      case 'legacy-foreign':
-        backendLog.warn(formatLegacyForeignGenerationNotice(readiness));
+      case 'legacy-ignored':
+        backendLog.warn(formatLegacyGenerationIgnoredNotice(readiness));
         break;
-      case 'legacy-adoptable':
-        throw documentedCoralSetupError({
-          code: 'legacy_adoption_required',
-          flavor: runtime.flavor,
-          legacyPath: readiness.legacyPath,
-        });
       default:
         assertNever(readiness);
     }

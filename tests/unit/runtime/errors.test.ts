@@ -80,12 +80,6 @@ describe('CoralSetupError', () => {
       'Close every older-version session that may use /state/data; stored Coral version: unknown. Then remove that tree yourself. This command refused without changing it. Active baseDir: /state.',
     ],
     [
-      'legacy_adoption_required',
-      { legacyPath: '/state/data', flavor: 'prod' },
-      'Compatible legacy Coral history at /state/data must be adopted before this generation can initialize.',
-      "Run 'coral-cli backend store-adopt --flavor prod', then retry the command that starts the backend.",
-    ],
-    [
       'legacy_source_not_quiescent',
       { operation: 'store-reset', holder: 'install:kiwi (pid 42)', flavor: 'prod', baseDir: '/state' },
       'The generation-boundary operation cannot proceed while install:kiwi (pid 42) remains active.',

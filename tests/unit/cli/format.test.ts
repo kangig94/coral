@@ -732,6 +732,27 @@ describe('cli format', () => {
       );
     });
 
+    it('formats a documented startup failure with its authored cause and remediation', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recent_failure',
+          phase: 'startup_failed',
+          setupError: {
+            code: 'store_newer_incompatible',
+            userMessage: 'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
+            remediation: "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
+          },
+        }),
+      ).toBe(
+        [
+          'Backend is not running after a recent coordinator failure.',
+          'Phase: startup_failed',
+          'Cause: The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build. [code=store_newer_incompatible]',
+          "Next step: Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
+        ].join('\n'),
+      );
+    });
+
     it('formats a shutting-down backend status', () => {
       expect(formatBackendStatus({ status: 'shutting_down' })).toBe('Backend shutting down');
     });
