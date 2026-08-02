@@ -1014,7 +1014,7 @@ async function finishAbortedStart(
   state: CodexTurnState,
   attempt: TurnAttempt,
 ): Promise<CodexKernelResult> {
-  let deadlineTimer: ReturnType<typeof state.time.setTimeout> | undefined;
+  let deadlineTimer: ReturnType<TimePort['setTimeout']> | undefined;
   const deadline = new Promise<{ kind: 'deadline' }>((resolve) => {
     deadlineTimer = state.time.setTimeout(() => resolve({ kind: 'deadline' }), ABORT_CONFIRMATION_DEADLINE_MS);
   });

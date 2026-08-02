@@ -1820,6 +1820,7 @@ describe('execution backend server', () => {
       throw new Error('Expected idle watcher callback');
     }
 
+    const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
     try {
       // Baseline first, so the armed `false` can only come from the throw.
       expect(checkIdle()).toBe(true);
@@ -1829,7 +1830,13 @@ describe('execution backend server', () => {
       // and no process-level uncaughtException listener, so an escaping throw
       // would exit a healthy daemon. Unknown liveness never authorizes retirement.
       expect(checkIdle()).toBe(false);
+      // The other half of the contract: the failure is reported, not swallowed.
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Idle probe failed — treating the daemon as active',
+        expect.objectContaining({ message: 'idle probe read failed' }),
+      );
     } finally {
+      errorSpy.mockRestore();
       probeShouldFail = false;
       await backend.controller.shutdown('test');
       await backend.controller.waitForShutdown();

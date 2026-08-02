@@ -256,13 +256,29 @@ export function createRecoveryCoordinator({
     coordinatorCommit: CommitEventsFn,
     hydrationFallback?: RecoveryHydrationFallback,
   ): void => {
-    const status = hydrationFallback?.status ?? progressStore.readStatus(jobId);
+    let status: JobStatus | null = hydrationFallback?.status ?? null;
+    let statusReadError: unknown = null;
+    if (status === null) {
+      try {
+        status = progressStore.readStatus(jobId);
+      } catch (readError: unknown) {
+        // Reading the status decodes the persisted projection, so it throws on
+        // exactly the malformed row that usually produced `error`. Six of the
+        // seven callers pass no fallback, so this is their live path — letting it
+        // escape would abandon the rest of the batch and fail the boot, which is
+        // the failure this function exists to contain.
+        statusReadError = readError;
+        status = null;
+      }
+    }
     if (status === null) {
       try {
         state.recoveryRegistry?.remove(jobId);
       } finally {
+        const unavailability =
+          statusReadError === null ? '' : ` (status decode failed: ${errorMessage(statusReadError)})`;
         log(
-          `${summary} for ${jobId}: ${errorMessage(error)}; job status was unavailable, so no terminal or session claim could be updated.\n`,
+          `${summary} for ${jobId}: ${errorMessage(error)}; job status was unavailable${unavailability}, so no terminal or session claim could be updated.\n`,
         );
       }
       return;
