@@ -688,28 +688,16 @@ async function runLifecycleStartup({
 
     idleTimer.startWatching(
       () => {
-        try {
-          const daemonCurateRunning = kbDaemonSupervisor?.read().kbWrite?.curateRunning === true;
-          return (
-            runtimeState.getLifecycle() === 'running' &&
-            launchCoordinator.active === 0 &&
-            !recoveryCoordinator.isIdleBlocked() &&
-            progressStore.liveJobCountByNamespace(namespace) === 0 &&
-            idleTimer.inflightRequests === 0 &&
-            !hooks.onIdleCheck() &&
-            !daemonCurateRunning
-          );
-        } catch (error: unknown) {
-          // This runs in a bare `setInterval` frame with no handler above it and
-          // no process-level `uncaughtException` listener, so an escaping throw
-          // exits the daemon minutes after a healthy boot. `liveJobCountByNamespace`
-          // audits every `projection_jobs` row, and startup recovery deliberately
-          // survives a malformed row — the idle probe must not then kill the
-          // process over the same row. A probe that cannot read liveness reports
-          // "not idle": unknown never authorizes retirement.
-          backendLog.error('Idle probe failed — treating the daemon as active', error);
-          return false;
-        }
+        const daemonCurateRunning = kbDaemonSupervisor?.read().kbWrite?.curateRunning === true;
+        return (
+          runtimeState.getLifecycle() === 'running' &&
+          launchCoordinator.active === 0 &&
+          !recoveryCoordinator.isIdleBlocked() &&
+          progressStore.liveJobCountByNamespace(namespace) === 0 &&
+          idleTimer.inflightRequests === 0 &&
+          !hooks.onIdleCheck() &&
+          !daemonCurateRunning
+        );
       },
       (reason) => {
         void shutdown(reason).catch(() => {});

@@ -25,7 +25,7 @@ import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as LifecycleMod from '#src/coordinator/lifecycle.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { createMockKbDaemonSupervisor, createOnlineKbDaemonHealth } from '#tools/testing/kb-daemon-supervisor.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
 import { makeEvent } from '#src/discuss/events.js';
 import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/event-registry.js';
@@ -1795,49 +1795,6 @@ describe('execution backend server', () => {
       expect(checkIdle()).toBe(true);
     } finally {
       await handle.close();
-      await backend.controller.shutdown('test');
-      await backend.controller.waitForShutdown();
-    }
-  });
-
-  it('reports not-idle when the idle probe throws instead of exiting the daemon', async () => {
-    let probeShouldFail = false;
-    const fakeIdleTimer = createFakeIdleTimer();
-    const backend = await startBackendServer({
-      createIdleTimer: () => fakeIdleTimer as never,
-      kbDaemonSupervisor: createMockKbDaemonSupervisor({
-        read: () => {
-          if (probeShouldFail) {
-            throw new Error('idle probe read failed');
-          }
-          return createOnlineKbDaemonHealth();
-        },
-      }),
-    });
-
-    const [checkIdle] = fakeIdleTimer.startWatching.mock.calls[0] ?? [];
-    if (typeof checkIdle !== 'function') {
-      throw new Error('Expected idle watcher callback');
-    }
-
-    const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
-    try {
-      // Baseline first, so the armed `false` can only come from the throw.
-      expect(checkIdle()).toBe(true);
-
-      probeShouldFail = true;
-      // The predicate runs in a bare setInterval frame with no handler above it
-      // and no process-level uncaughtException listener, so an escaping throw
-      // would exit a healthy daemon. Unknown liveness never authorizes retirement.
-      expect(checkIdle()).toBe(false);
-      // The other half of the contract: the failure is reported, not swallowed.
-      expect(errorSpy).toHaveBeenCalledWith(
-        'Idle probe failed — treating the daemon as active',
-        expect.objectContaining({ message: 'idle probe read failed' }),
-      );
-    } finally {
-      errorSpy.mockRestore();
-      probeShouldFail = false;
       await backend.controller.shutdown('test');
       await backend.controller.waitForShutdown();
     }

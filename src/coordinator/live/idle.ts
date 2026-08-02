@@ -1,3 +1,4 @@
+import { backendLog } from '../../infra/backend-log.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { parsePositiveInt } from './worker-limits.js';
 
@@ -18,6 +19,7 @@ export class IdleTimer {
   private drainReason: string | null = null;
   private checkIdle: (() => boolean) | null = null;
   private onIdle: ((reason: string) => void) | null = null;
+  private probeFailing = false;
 
   constructor(options: { time: TimePort; timeoutMs?: number }) {
     this.time = options.time;
@@ -54,6 +56,7 @@ export class IdleTimer {
   startWatching(checkIdle: () => boolean, onIdle: (reason: string) => void): void {
     this.stopWatching();
     this.idleTriggered = false;
+    this.probeFailing = false;
     this.checkIdle = checkIdle;
     this.onIdle = onIdle;
 
@@ -61,7 +64,28 @@ export class IdleTimer {
       if (this.idleTriggered) return;
       if (this.inflight !== 0) return;
       if (this.drainReason === null && this.time.now() - this.lastActiveAt <= this.idleTimeoutMs) return;
-      if (!this.checkIdle?.()) return;
+
+      let idle: boolean;
+      try {
+        idle = this.checkIdle?.() === true;
+      } catch (error: unknown) {
+        // This callback is the top of its own stack and the process installs no
+        // `uncaughtException` listener, so a throwing predicate would exit a
+        // daemon that booted successfully. Containment belongs here rather than in
+        // each predicate: this class owns the unguarded frame, so every predicate
+        // any caller supplies is protected by construction. A probe that cannot
+        // read liveness is not evidence of idleness — never retire on an
+        // indeterminate answer. Predicate failures are usually sticky (the
+        // projection audit caches per `data_version`), so report the transition
+        // instead of once per poll.
+        if (!this.probeFailing) {
+          this.probeFailing = true;
+          backendLog.error('Idle probe failed — treating the daemon as active', error);
+        }
+        return;
+      }
+      this.probeFailing = false;
+      if (!idle) return;
 
       this.idleTriggered = true;
       this.onIdle?.(this.drainReason ?? 'idle');
