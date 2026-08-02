@@ -1,6 +1,13 @@
 import { errorMessage, formatError } from '../../../infra/error-format.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
-import { isAppServerRuntime } from '../../../jobs/records.js';
+import { isAppServerRuntime, type JobLaunch, type JobStatus } from '../../../jobs/records.js';
+import {
+  decodeProjectionJobExecutionOwner,
+  decodeProjectionJobStoredRow,
+  decodeProjectionJobTerminal,
+  PROJECTION_JOB_COLUMNS,
+  type ProjectionJobStoredRow,
+} from '../../../jobs/projection-row.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { JobStore } from '../../../jobs/store.js';
@@ -49,6 +56,7 @@ type RecoveryCoordinatorState = {
 
 export interface RecoveryCoordinator {
   runStartupRecovery(ctx: StartupRecoveryContext): Promise<void>;
+  releaseAdoptedJob(jobId: string): void;
   getRecoveryRegistry(): RecoveryRegistry | null;
   isIdleBlocked(): boolean;
   teardown(): Promise<void>;
@@ -86,6 +94,36 @@ type RecoveryAdoptionContext = {
   coordinatorCommit: CommitEventsFn;
   interruptedAppServerReason: InterruptedAppServerReason;
 };
+
+type RecoveryHydrationFallback = {
+  status: JobStatus;
+  launchCreatedAt: string;
+};
+
+function candidateJobId(raw: unknown): string | null {
+  if (typeof raw !== 'object' || raw === null || !('job_id' in raw)) {
+    return null;
+  }
+  return typeof raw.job_id === 'string' && raw.job_id.length > 0 ? raw.job_id : null;
+}
+
+function recoveryStatusFromProjectionRow(row: ProjectionJobStoredRow): JobStatus {
+  const result = decodeProjectionJobTerminal(row);
+  return {
+    jobId: row.job_id,
+    owner: decodeProjectionJobExecutionOwner(row),
+    sessionId: row.session_id,
+    provider: row.provider,
+    projectRoot: row.project_root,
+    backendNamespace: row.backend_namespace,
+    ...(row.bundle_hash === null ? {} : { bundleHash: row.bundle_hash }),
+    jobKind: row.job_kind,
+    phase: row.phase,
+    updatedAt: row.created_at,
+    lastSeq: row.last_seq,
+    ...(result === null ? {} : { result }),
+  };
+}
 
 export function createRecoveryCoordinator({
   progressStore,
@@ -154,17 +192,18 @@ export function createRecoveryCoordinator({
     return cleanup;
   };
 
+  const maybeReleaseRecoveryRegistry = (): void => {
+    if (state.adoptedRunningPids.size === 0 && state.recoveryRegistry?.size === 0) {
+      state.recoveryRegistry = null;
+    }
+  };
+
   const releaseAdoptedJob = (jobId: string): void => {
     clearRecoveryPoller(jobId);
     state.adoptedRunningPids.delete(jobId);
     state.recoveryRegistry?.clearCancelled(jobId);
     takeAdoptedJobCleanup(jobId)?.();
-  };
-
-  const maybeReleaseRecoveryRegistry = (): void => {
-    if (state.adoptedRunningPids.size === 0 && state.recoveryRegistry?.size === 0) {
-      state.recoveryRegistry = null;
-    }
+    maybeReleaseRecoveryRegistry();
   };
 
   const resetRecoveryState = (options: { forceRegistryRelease?: boolean } = {}): void => {
@@ -215,8 +254,9 @@ export function createRecoveryCoordinator({
     summary: string,
     error: unknown,
     coordinatorCommit: CommitEventsFn,
+    hydrationFallback?: RecoveryHydrationFallback,
   ): void => {
-    const status = progressStore.readStatus(jobId);
+    const status = hydrationFallback?.status ?? progressStore.readStatus(jobId);
     if (status === null) {
       try {
         state.recoveryRegistry?.remove(jobId);
@@ -234,8 +274,15 @@ export function createRecoveryCoordinator({
     let recoveryUpdateError: unknown = null;
     try {
       if (!alreadyTerminal) {
+        const terminalStore =
+          hydrationFallback === undefined
+            ? progressStore
+            : ({
+                commit: (cb) => [...(coordinatorCommit(cb) ?? [])],
+                readLaunchProjection: () => ({ createdAt: hydrationFallback.launchCreatedAt }) as JobLaunch,
+              } satisfies Pick<JobStore, 'commit' | 'readLaunchProjection'>);
         markJobAsError(
-          progressStore,
+          terminalStore,
           status,
           {
             kind: 'recovery_parse_failed',
@@ -280,7 +327,9 @@ export function createRecoveryCoordinator({
               : 'session claim release failed';
       const nextStep =
         recoveryUpdateError === null
-          ? `Run coral-cli jobs detail ${jobId} for the recorded reason.`
+          ? hydrationFallback === undefined
+            ? `Run coral-cli jobs detail ${jobId} for the recorded reason.`
+            : 'The persisted-detail decode failure is included in this log.'
           : `Recovery state update failed: ${errorMessage(recoveryUpdateError)}. Resolve the store write failure and restart the coordinator.`;
       try {
         state.recoveryRegistry?.remove(jobId);
@@ -290,6 +339,70 @@ export function createRecoveryCoordinator({
         );
       }
     }
+  };
+
+  const hydrateRecoveryJobDetails = (
+    coordinatorCommit: CommitEventsFn,
+    excludedJobIds: ReadonlySet<string> = new Set(),
+  ): {
+    detailsByJob: Map<string, ReturnType<JobStore['loadJobProjectionDetail']>>;
+    excludedJobIds: Set<string>;
+  } => {
+    const detailsByJob = new Map<string, ReturnType<JobStore['loadJobProjectionDetail']>>();
+    const excluded = new Set(excludedJobIds);
+    const rawRows = progressStore
+      .getDb()
+      .prepare(`SELECT ${PROJECTION_JOB_COLUMNS} FROM projection_jobs ORDER BY job_id ASC`)
+      .all();
+    const rows: ProjectionJobStoredRow[] = [];
+    let sawUndecodableProjection = false;
+
+    for (const raw of rawRows) {
+      const possibleJobId = candidateJobId(raw);
+      if (possibleJobId !== null && excluded.has(possibleJobId)) {
+        continue;
+      }
+
+      let row: ProjectionJobStoredRow;
+      try {
+        row = decodeProjectionJobStoredRow(raw);
+      } catch (error: unknown) {
+        sawUndecodableProjection = true;
+        if (possibleJobId === null) {
+          log(`Skipped malformed persisted job projection with no decodable job id: ${errorMessage(error)}\n`);
+        } else {
+          log(
+            `Skipped malformed persisted job projection with unverified job id ${possibleJobId}: ${errorMessage(error)}; recovery authority could not be decoded, so no terminal or session claim was updated.\n`,
+          );
+          excluded.add(possibleJobId);
+        }
+        continue;
+      }
+
+      rows.push(row);
+    }
+
+    for (const row of rows) {
+      if (sawUndecodableProjection && row.job_kind === 'workflow') {
+        excluded.add(row.job_id);
+        log(
+          `Skipped hydrating workflow job ${row.job_id} after another persisted job projection could not be decoded; no terminal or session claim was updated for ${row.job_id}.\n`,
+        );
+        continue;
+      }
+
+      try {
+        detailsByJob.set(row.job_id, progressStore.loadJobProjectionDetail(row.job_id));
+      } catch (error: unknown) {
+        excluded.add(row.job_id);
+        recordUnresolvedRecovery(row.job_id, 'Persisted job recovery hydration failed', error, coordinatorCommit, {
+          status: recoveryStatusFromProjectionRow(row),
+          launchCreatedAt: row.created_at,
+        });
+      }
+    }
+
+    return { detailsByJob, excludedJobIds: excluded };
   };
 
   async function runRecoveryAdoption({
@@ -561,12 +674,30 @@ export function createRecoveryCoordinator({
       const queuedRecoverable: QueuedRecoverableJob[] = [];
       const runningRecoverable: RunningRecoverableJob[] = [];
 
-      const adoptedCount = adoptOrphanedCrossNamespaceJobs(namespace, progressStore, runtime.time.now(), log);
+      const initialHydration = hydrateRecoveryJobDetails(ctx.coordinatorCommit);
+      let adoptedCount = 0;
+      try {
+        adoptedCount = adoptOrphanedCrossNamespaceJobs(namespace, progressStore, runtime.time.now(), log);
+      } catch (error: unknown) {
+        log(
+          `Cross-namespace adoption could not inspect every persisted job projection: ${errorMessage(error)}; startup recovery will continue with the individually hydrated jobs.\n`,
+        );
+      }
       if (adoptedCount > 0) {
         log(`Adopted ${adoptedCount} orphaned cross-namespace job(s)\n`);
       }
 
-      const snapshot = buildRecoverySnapshot(progressStore, namespace, log, ctx.sessionLookup, runtime.process);
+      const { detailsByJob } = hydrateRecoveryJobDetails(ctx.coordinatorCommit, initialHydration.excludedJobIds);
+      const hydratedProgressStore = Object.create(progressStore) as JobStore;
+      hydratedProgressStore.listJobIds = () => [...detailsByJob.keys()];
+      hydratedProgressStore.loadJobProjectionDetail = (jobId) => {
+        const detail = detailsByJob.get(jobId);
+        if (detail === undefined) {
+          throw new Error(`Recovery snapshot requested job ${jobId} outside the hydrated job set.`);
+        }
+        return detail;
+      };
+      const snapshot = buildRecoverySnapshot(hydratedProgressStore, namespace, log, ctx.sessionLookup, runtime.process);
       const plan = planRecovery(snapshot);
 
       const applyPlanAction = async (action: Parameters<typeof applyRecoveryAction>[0]): Promise<void> => {
@@ -612,7 +743,11 @@ export function createRecoveryCoordinator({
         await applyPlanAction(action);
       }
 
-      cleanupStaleJobs(bundleHash);
+      try {
+        cleanupStaleJobs(bundleHash);
+      } catch (error: unknown) {
+        log(`Stale job artifact cleanup did not complete: ${errorMessage(error)}; startup recovery will continue.\n`);
+      }
 
       if (queuedRecoverable.length === 0 && runningRecoverable.length === 0) {
         resetRecoveryState();
@@ -667,6 +802,7 @@ export function createRecoveryCoordinator({
         resetRecoveryState({ forceRegistryRelease: true });
       }
     },
+    releaseAdoptedJob,
     getRecoveryRegistry: () => state.recoveryRegistry,
     isIdleBlocked: () => state.adoptedRunningPids.size > 0 || (state.recoveryRegistry?.size ?? 0) > 0,
     teardown,

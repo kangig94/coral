@@ -1910,6 +1910,126 @@ describe('lifecycle recovery', () => {
     }
   });
 
+  it('recovers a valid job while containing attributable and unattributable malformed persisted records', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-job-hydration-isolation');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-job-hydration-isolation');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const db = openTestStoreDb(runtime, ':memory:');
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db,
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const malformedJobId = 'malformed-runtime-record-job';
+    const healthyJobId = 'healthy-runtime-record-job';
+    const finalizeInterruptedAppServerJob = vi.fn(async () => {});
+    const fakeService = createFakeExecutionAndRecoveryService({ finalizeInterruptedAppServerJob });
+    const log = vi.fn<(message: string) => void>();
+
+    for (const jobId of [malformedJobId, healthyJobId]) {
+      stubLaunchRecord(progressStore, {
+        jobId,
+        sessionId: `${jobId}-session`,
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: namespace,
+      });
+      progressStore.appendRuntimeStarted(jobId, {
+        transport: 'app-server',
+        startTime: '2026-03-31T00:00:00.000Z',
+        providerMeta: { provider: 'codex', leaseState: 'waiting' },
+      });
+    }
+    db.prepare("UPDATE events SET body = ? WHERE stream_id = ? AND type = 'job.runtime.started'").run(
+      Buffer.from('not a stored event body'),
+      malformedJobId,
+    );
+    db.prepare(
+      `INSERT INTO projection_jobs (
+         job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
+         project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+         workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
+       )
+       SELECT
+         '', execution_owner, phase, terminal, diagnostics, session_id, provider,
+         project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+         workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
+       FROM projection_jobs
+       WHERE job_id = ?`,
+    ).run(healthyJobId);
+
+    const { controller, runtimeState } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      runtime,
+      log,
+    });
+
+    try {
+      await controller.start();
+      expect(runtimeState.getLaunchFenceActive()).toBe(false);
+      expect(controller.getRecoveryRegistry()?.has(malformedJobId) ?? false).toBe(false);
+      expect(finalizeInterruptedAppServerJob).toHaveBeenCalledTimes(1);
+      expect(finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
+        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId: healthyJobId }) }),
+        expect.anything(),
+        expect.anything(),
+      );
+
+      const terminalRow = db
+        .prepare<
+          [string],
+          { seq: number }
+        >("SELECT seq FROM events WHERE stream_id = ? AND type = 'job.terminal.recorded' ORDER BY seq DESC LIMIT 1")
+        .get(malformedJobId);
+      expect(terminalRow).toBeDefined();
+      if (terminalRow === undefined) return;
+      const terminalEvent = getEvent(db, { kind: 'job', id: malformedJobId }, terminalRow.seq, progressStore);
+      const terminalBody = terminalEvent?.body as
+        | {
+            terminal?: { outcome?: { kind?: string; causeRef?: { stream: { kind: 'job'; id: string }; seq: number } } };
+          }
+        | undefined;
+      expect(terminalBody?.terminal?.outcome?.kind).toBe('failed');
+      const causeRef = terminalBody?.terminal?.outcome?.causeRef;
+      expect(causeRef).toBeDefined();
+      if (causeRef === undefined) return;
+      expect(getEvent(db, causeRef.stream, causeRef.seq, progressStore)?.body).toMatchObject({
+        kind: 'recovery_parse_failed',
+        cause: { message: expect.stringContaining('Failed to decode events.body JSON') },
+      });
+
+      const sessionReader = new modules.sessionManagerModule.SessionManager(
+        projectRoot,
+        runtime,
+        undefined,
+        undefined,
+        db,
+        permissiveProviderLookupPort,
+      );
+      expect(sessionReader.get('codex', `${malformedJobId}-session`)?.activeJobId).toBeUndefined();
+      const messages = log.mock.calls.flat().join('');
+      expect(messages).toContain(`Persisted job recovery hydration failed for ${malformedJobId}`);
+      expect(messages).toContain('The persisted-detail decode failure is included in this log.');
+      expect(messages).not.toContain(`Run coral-cli jobs detail ${malformedJobId}`);
+      expect(messages).toContain('Skipped malformed persisted job projection with no decodable job id');
+      expect(
+        db
+          .prepare<
+            [string],
+            { seq: number }
+          >("SELECT seq FROM events WHERE stream_id = ? AND type = 'job.terminal.recorded' LIMIT 1")
+          .get(''),
+      ).toBeUndefined();
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
   // BLOCKING finding from tier review: terminalizing without releasing the claim left
   // `activeJobId` pointed at a terminal job, so every later launch on that session was
   // rejected `session_busy` ("wait for it to complete or abort it first" — both false)

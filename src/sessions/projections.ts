@@ -453,6 +453,7 @@ export function listProjectionSessionEntries(
   db: ReadonlyDatabase,
   provider?: string,
   scopeKey?: string,
+  onInvalidRow?: (sessionId: string | null, error: unknown) => void,
 ): ProviderSession[] {
   const rows = db
     .prepare(
@@ -462,7 +463,21 @@ export function listProjectionSessionEntries(
     )
     .all();
 
-  const decoded = rows.map(decodeProjectionSessionAuthorityRow);
+  const decoded = rows.flatMap((raw) => {
+    try {
+      return [decodeProjectionSessionAuthorityRow(raw)];
+    } catch (error: unknown) {
+      if (onInvalidRow === undefined) {
+        throw error;
+      }
+      const sessionId =
+        typeof raw === 'object' && raw !== null && 'session_id' in raw && typeof raw.session_id === 'string'
+          ? raw.session_id
+          : null;
+      onInvalidRow(sessionId, error);
+      return [];
+    }
+  });
   const scoped = scopeKey === undefined ? decoded : decoded.filter(({ row }) => row.scope_key === scopeKey);
   const entries = scoped.map(({ entry }) => entry);
   return provider === undefined ? entries : entries.filter((entry) => providerSessionProvider(entry) === provider);

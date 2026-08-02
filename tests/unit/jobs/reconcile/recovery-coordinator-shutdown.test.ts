@@ -743,6 +743,7 @@ describe('recovery coordinator shutdown', () => {
             principal: testProjectPrincipal(projectRoot),
           }),
           finalizeWorkflow,
+          releaseFailedWorkflowDescendants: () => [],
           log: recoveryLog,
           time: runtime.time,
         });

@@ -57,6 +57,7 @@ import { coordinatorPaths } from '../../../src/infra/path/coordinator.js';
 import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';
 import { createWorkflowRecoveryFinalizer } from '../../../src/coordinator/services/workflow-recovery-finalizer.js';
+import { createFailedWorkflowDescendantReleaser } from '../../../src/coordinator/services/workflow-recovery-descendants.js';
 import { jobsReconcile } from '../../../src/jobs/startup.js';
 import { openStoreDatabase } from '../../../src/store/db.js';
 import { createEventBodyCodec } from '../../../src/store/event-body-codec.js';
@@ -812,6 +813,15 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
           progressStore,
           coordinatorCommit: (cb) => progressStore.commit(cb),
           log: identity.log,
+        }),
+        releaseFailedWorkflowDescendants: createFailedWorkflowDescendantReleaser({
+          progressStore,
+          runtime,
+          coordinatorCommit: (cb) => progressStore.commit(cb),
+          getExecutionService,
+          createInvocationContext,
+          releaseAdoptedJob: recoveryCoordinator.releaseAdoptedJob,
+          emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
         }),
         time: runtime.time,
       });

@@ -9,6 +9,13 @@ export function formatBackendStatus(result: BackendStatusFull): string {
       return formatRunningStatus(result.health);
     case 'not_running':
       return 'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.';
+    case 'recent_failure':
+      return [
+        'Backend is not running after a recent coordinator failure.',
+        `Phase: ${result.phase}`,
+        `Reason: ${result.reason}`,
+        'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
+      ].join('\n');
     case 'shutting_down':
       return 'Backend shutting down';
     case 'unauthorized':

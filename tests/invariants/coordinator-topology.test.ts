@@ -70,6 +70,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/terminal-materializer.ts',
   'src/coordinator/services/workflow-execution.ts',
   'src/coordinator/services/workflow-finalization.ts',
+  'src/coordinator/services/workflow-recovery-descendants.ts',
   'src/coordinator/services/workflow-recovery-finalizer.ts',
   'src/coordinator/shutdown.ts',
 ]);

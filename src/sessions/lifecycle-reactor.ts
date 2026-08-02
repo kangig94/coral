@@ -163,7 +163,7 @@ export class LifecycleReactor {
       }),
     );
     this.enqueueWork(
-      readSessionRetentionWorkForEntries(db, this.options.readCtx, listProjectionSessionEntries(db), {
+      readSessionRetentionWorkForEntries(db, this.options.readCtx, this.listLifecycleSessionEntries(db), {
         nowMs: this.options.time.now(),
       }),
     );
@@ -471,10 +471,17 @@ export class LifecycleReactor {
   }
 
   private pendingContinuationLeaseEntries(): Array<ProviderSession & { continuationLease: PendingContinuationLease }> {
-    return listProjectionSessionEntries(this.options.db()).filter(
+    return this.listLifecycleSessionEntries(this.options.db()).filter(
       (entry): entry is ProviderSession & { continuationLease: PendingContinuationLease } =>
         entry.continuationLease?.status === 'pending',
     );
+  }
+
+  private listLifecycleSessionEntries(db: ReadonlyDatabase): ProviderSession[] {
+    return listProjectionSessionEntries(db, undefined, undefined, (sessionId, error) => {
+      const subject = sessionId === null ? 'with no decodable session id' : `for ${sessionId}`;
+      this.log(`Skipped malformed session projection ${subject} during lifecycle processing: ${errorMessage(error)}`);
+    });
   }
 
   private expireOverdueContinuationLeases(): string[] {

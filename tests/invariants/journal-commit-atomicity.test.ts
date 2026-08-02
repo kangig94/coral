@@ -546,6 +546,7 @@ async function resumeRecoveryHarness(
     getExecutionService: () => executionSvc,
     createInvocationContext: createRecoveryInvocationContext,
     finalizeWorkflow,
+    releaseFailedWorkflowDescendants: () => [],
     time: harness.runtime.time,
   });
 }

@@ -39,6 +39,7 @@ import { ConsumerDrainTimeout, ConsumerDriver } from '../projection-consumers/in
 import type { KbCorpusPublication, KbCorpusSnapshot } from '../kb/contract.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
+import { createFailedWorkflowDescendantReleaser } from './services/workflow-recovery-descendants.js';
 import { assertDescriberCoverage } from '../read-model/event-describers.js';
 import { aggregateWorkflowUsage } from '../jobs/workflow-usage.js';
 import { JobStore } from '../jobs/store.js';
@@ -510,6 +511,15 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           progressStore,
           coordinatorCommit,
           log: identity.log,
+        }),
+        releaseFailedWorkflowDescendants: createFailedWorkflowDescendantReleaser({
+          progressStore,
+          runtime,
+          coordinatorCommit,
+          getExecutionService,
+          createInvocationContext,
+          releaseAdoptedJob: recoveryCoordinator.releaseAdoptedJob,
+          emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
         }),
         log: identity.log,
         time: runtime.time,

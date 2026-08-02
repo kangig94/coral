@@ -212,6 +212,7 @@ describe('workflow handoff (cross-domain integration)', () => {
           getExecutionService: () => stubExecution,
           createInvocationContext,
           finalizeWorkflow,
+          releaseFailedWorkflowDescendants: () => [],
           time: harness.runtime.time,
         });
         resumedIds.push(...resumed);

@@ -1009,6 +1009,43 @@ describe('LifecycleReactor retention enforcement', () => {
     ]);
   });
 
+  it('continues startup retention processing for a valid session when another projection cannot be decoded', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const malformedJobId = 'job-startup-scan-malformed-session';
+    const validJobId = 'job-startup-scan-valid-session';
+    const malformedSessionId = await openClaimedSession(harness, malformedJobId);
+    const validSessionId = await openClaimedSession(harness, validJobId);
+
+    for (const [jobId, sessionId] of [
+      [malformedJobId, malformedSessionId],
+      [validJobId, validSessionId],
+    ] as const) {
+      initRunningJob(harness, jobId, sessionId);
+      completeJob(harness, jobId, sessionId);
+      harness.sessionManager.releaseJob(sessionId, jobId);
+    }
+    await harness.reactor.waitForIdle();
+    harness.db
+      .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
+      .run('not valid session json', malformedSessionId);
+
+    await harness.reactor.scanStartup();
+
+    await expectRetentionEvents(harness, validSessionId, [
+      { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
+      {
+        type: 'session.retention.discard.completed',
+        attempt: 1,
+        handles: [],
+        outcome: 'skipped_no_handles',
+      },
+    ]);
+    expect(harness.logs.join('\n')).toContain(
+      `Skipped malformed session projection for ${malformedSessionId} during lifecycle processing`,
+    );
+    expect(readRetentionEvents(harness, malformedSessionId)).toEqual([]);
+  });
+
   it('expires a pending continuation lease by timer and discards without later terminal or release events', async () => {
     const harness = createHarness({ autoObserveCoordinator: false });
     const jobId = 'job-lease-timer';
