@@ -748,6 +748,24 @@ describe('architecture boundary guard', () => {
   it('infra/paths.ts is permanently retired (use infra/path/index and per-domain path modules)', () => {
     expect(existsSync(resolve(REPO_ROOT, 'src/infra/paths.ts'))).toBe(false);
   });
+  it('legacy-generation adoption is permanently retired (a previous generation is never imported)', () => {
+    // The generation boundary exists to end the coupling to a previous
+    // generation, so `gen2` builds its own state and leaves the legacy tree
+    // alone. An import path is what made the old tree a precondition for
+    // booting, which is the failure this deletion removes. It cannot come back
+    // partially either: startup initializes the generated target, and adoption
+    // renames the legacy root onto that same target, so any restored adoption
+    // command would be dead on arrival.
+    expect(existsSync(resolve(REPO_ROOT, 'src/store/legacy-store-adoption.ts'))).toBe(false);
+    expect(existsSync(resolve(REPO_ROOT, 'src/cli/store-adopt.ts'))).toBe(false);
+    // `'legacy-adoptable'` also names a StoreFormatClassification variant, which
+    // is a store-file concern (equal fingerprint, no version row) and unrelated
+    // to importing a generation. Only the adoption vocabulary is banned.
+    const offenders = PRODUCTION_FILE_PATHS.filter((file) =>
+      /\badoptLegacyStore\b|\blegacy_adoption_\w+|\bstore-adopt\b/u.test(readFileSync(file, 'utf-8')),
+    ).map((file) => toCanonicalSrcPath(REPO_ROOT, file));
+    expect(offenders).toEqual([]);
+  });
   it('production src/ imports infra/path/ subdir only via index.ts (sibling files stay subdir-internal)', () => {
     // The infra/path/ subdir is the path component: index.ts is the public
     // composer (used by runtime port construction); root/store/coordinator/

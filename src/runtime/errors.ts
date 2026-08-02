@@ -27,7 +27,6 @@ export type DocumentedCoralSetupErrorCode =
   | 'coordinator_socket_bind_failed'
   | 'store_schema_outdated'
   | 'legacy_foreign_generation'
-  | 'legacy_adoption_required'
   | 'legacy_source_not_quiescent'
   | 'store_newer_incompatible'
   | 'store_older_incompatible'
@@ -38,9 +37,6 @@ export type DocumentedCoralSetupErrorCode =
   | 'kb_commit_not_found'
   | 'kb_commit_already_quarantined'
   | 'kb_commit_quarantine_failed'
-  | 'legacy_adoption_source_unreadable'
-  | 'legacy_adoption_state_changed'
-  | 'legacy_adoption_durability_failed'
   | 'store_reset_lock_contended'
   | 'store_reset_quarantine_failed'
   | 'expansion_binary_corrupt'
@@ -163,12 +159,6 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
         ? `Close every older-version session that may use ${stringContextValue(context, 'legacyPath', '<legacy-path>')}; stored Coral version: ${stringContextValue(context, 'version', 'unknown')}. Then remove that tree yourself. This command refused without changing it. Active baseDir: ${stringContextValue(context, 'baseDir', '<base-dir>')}.`
         : `Use the Coral version that owns the history at ${stringContextValue(context, 'legacyPath', '<legacy-path>')} (stored version: ${stringContextValue(context, 'version', 'unknown')}). This build leaves that foreign-generation tree untouched.`,
   },
-  legacy_adoption_required: {
-    userMessage: (context) =>
-      `Compatible legacy Coral history at ${stringContextValue(context, 'legacyPath', '<legacy-path>')} must be adopted before this generation can initialize.`,
-    remediation: (context) =>
-      `Run 'coral-cli backend store-adopt --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}', then retry the command that starts the backend.`,
-  },
   legacy_source_not_quiescent: {
     userMessage: (context) =>
       `The generation-boundary operation cannot proceed while ${stringContextValue(context, 'holder', '<writer-lease-holder>')} remains active.`,
@@ -178,7 +168,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
         'retryCommand',
         context?.operation === 'store-reset'
           ? `coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}`
-          : `coral-cli backend store-adopt --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}`,
+          : 'the operator command you ran',
       );
       return `Run this build's own 'coral-cli backend shutdown'. Wait for '${stringContextValue(context, 'holder', '<writer-lease-holder>')}' to exit and release its lease or lock, then retry '${retry}'.`;
     },
@@ -242,24 +232,6 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       `Coral could not durably quarantine KB commit '${stringContextValue(context, 'commitId', '<commit>')}'.`,
     remediation:
       'Check permissions and free disk space in the generated KB runtime directory, then retry the quarantine command. Preserve active, staging, and retained quarantine evidence.',
-  },
-  legacy_adoption_source_unreadable: {
-    userMessage: (context) =>
-      `Coral could not inspect the legacy adoption source at ${stringContextValue(context, 'legacyPath', '<legacy-path>')}: ${stringContextValue(context, 'observation', 'the store could not be read')}.`,
-    remediation:
-      "Run 'coral-cli backend shutdown', verify that the legacy tree contains a readable store/store.db owned by the expected Coral installation, then retry store-adopt. This build left the tree unchanged; do not replace or delete it based on a fabricated generation diagnosis.",
-  },
-  legacy_adoption_state_changed: {
-    userMessage: (context) =>
-      `Legacy adoption refused because ${stringContextValue(context, 'observation', 'the source or target changed during the operation')}.`,
-    remediation:
-      "Run 'coral-cli backend shutdown' and preserve both the legacy and generated trees. Retry store-adopt only after confirming no Coral process is changing either tree; if the generated target remains incomplete, report this code and its context instead of merging or deleting either tree.",
-  },
-  legacy_adoption_durability_failed: {
-    userMessage: (context) =>
-      `Legacy adoption could not durably synchronize ${stringContextValue(context, 'path', '<generation-directory>')} after the rename.`,
-    remediation: (context) =>
-      `Do not move or delete either generation tree. Run 'coral-cli backend shutdown', then retry 'coral-cli backend store-adopt --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}' so Coral can recognize the completed rename and synchronize it again.`,
   },
   store_reset_lock_contended: {
     userMessage: (context) =>

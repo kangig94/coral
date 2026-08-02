@@ -5,8 +5,7 @@ import { assertNever } from '../../infra/error-format.js';
 import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import {
-  formatLegacyAdoptableGenerationNotice,
-  formatLegacyForeignGenerationNotice,
+  formatLegacyGenerationIgnoredNotice,
   inspectGenerationReadiness,
   type GenerationReadiness,
 } from '../../store/generation-mutation-coordination.js';
@@ -18,7 +17,6 @@ import { emitError } from '../emit.js';
 import { formatBackendStatus, formatShutdown } from '../format/backend.js';
 import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
-import { adoptLegacyStoreLocal } from '../store-adopt.js';
 import type { StoreResetTarget } from '../../store/operator-store-reset.js';
 import {
   boundStoreResetCliError,
@@ -45,10 +43,6 @@ export interface KbCommitCommandOperations {
   ): Promise<{ readonly commitId: string; readonly quarantineDir: string }>;
 }
 
-export interface StoreAdoptCommandOperations {
-  adopt: typeof adoptLegacyStoreLocal;
-}
-
 export interface BackendStatusCommandOperations {
   inspectReadiness(): GenerationReadiness;
   getStatus(): Promise<BackendStatusFull>;
@@ -63,9 +57,6 @@ export function registerBackendCommands(
   },
   kbCommit: KbCommitCommandOperations = {
     quarantine: quarantineKbCommitLocal,
-  },
-  storeAdopt: StoreAdoptCommandOperations = {
-    adopt: adoptLegacyStoreLocal,
   },
   backendStatus: BackendStatusCommandOperations = {
     inspectReadiness: () =>
@@ -83,14 +74,8 @@ export function registerBackendCommands(
         case 'generated-ready':
         case 'no-legacy':
           break;
-        case 'legacy-adoptable':
-          // The daemon cannot start at all in this state, and the startup
-          // diagnostic that would say so expires. Readiness does not, so this is
-          // the only report an operator who returns later will see.
-          process.stderr.write(`${formatLegacyAdoptableGenerationNotice(readiness, resolveBuildFlavor(process.env))}\n`);
-          break;
-        case 'legacy-foreign':
-          process.stderr.write(`${formatLegacyForeignGenerationNotice(readiness)}\n`);
+        case 'legacy-ignored':
+          process.stderr.write(`${formatLegacyGenerationIgnoredNotice(readiness)}\n`);
           break;
         default:
           assertNever(readiness);
@@ -119,31 +104,6 @@ export function registerBackendCommands(
       emitError(error);
     }
   });
-
-  backend
-    .command('store-adopt')
-    .description('Adopt a same-generation legacy store into the generated state boundary')
-    .requiredOption('--flavor <flavor>', OFFLINE_OPERATOR_FLAVOR_HELP, parseFlavor)
-    .action(async (options: { flavor: BuildFlavor }) => {
-      try {
-        const result = await storeAdopt.adopt(options.flavor);
-        if (result.kind === 'no-legacy-source') {
-          process.stdout.write(`No legacy ${result.flavor} store exists at ${result.source}.\n`);
-          return;
-        }
-        if (result.kind === 'already-adopted') {
-          process.stdout.write(
-            `Legacy ${result.flavor} store was already adopted at ${result.destination}. Retry the command that starts the backend.\n`,
-          );
-          return;
-        }
-        process.stdout.write(
-          `Adopted legacy ${result.flavor} store from ${result.source} to ${result.destination}. Retry the command that starts the backend.\n`,
-        );
-      } catch (error: unknown) {
-        emitError(error);
-      }
-    });
 
   const storeResetCommand = backend.command('store-reset').description('Inspect retained store-reset incidents');
   storeResetCommand

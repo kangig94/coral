@@ -125,9 +125,9 @@ describe('session-start.mjs startup failure notice', () => {
       exitCode: 1,
       error: {
         kind: 'coral_setup_error',
-        code: 'legacy_adoption_required',
-        userMessage: 'Compatible legacy Coral history at /tmp/legacy must be adopted before this generation can initialize.',
-        remediation: "Run 'coral-cli backend store-adopt --flavor prod', then retry the command that starts the backend.",
+        code: 'store_newer_incompatible',
+        userMessage: 'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
+        remediation: "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
       },
     };
   }
@@ -151,8 +151,8 @@ describe('session-start.mjs startup failure notice', () => {
       const context = await contextFor(fixture, 'test-session-notice');
 
       expect(context).toContain('Coral backend is NOT running');
-      expect(context).toContain('must be adopted before this generation can initialize');
-      expect(context).toContain('coral-cli backend store-adopt --flavor prod');
+      expect(context).toContain('written by newer Coral 0.11.0');
+      expect(context).toContain('coral-cli backend store-reset discard --target gen2 --flavor prod');
     },
     WARM_START_TIMEOUT_MS,
   );

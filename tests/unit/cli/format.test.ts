@@ -738,17 +738,17 @@ describe('cli format', () => {
           status: 'recent_failure',
           phase: 'startup_failed',
           setupError: {
-            code: 'legacy_adoption_required',
-            userMessage: 'Compatible legacy Coral history at /home/u/.coral/data must be adopted before this generation can initialize.',
-            remediation: "Run 'coral-cli backend store-adopt --flavor prod', then retry the command that starts the backend.",
+            code: 'store_newer_incompatible',
+            userMessage: 'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
+            remediation: "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
           },
         }),
       ).toBe(
         [
           'Backend is not running after a recent coordinator failure.',
           'Phase: startup_failed',
-          'Cause: Compatible legacy Coral history at /home/u/.coral/data must be adopted before this generation can initialize. [code=legacy_adoption_required]',
-          "Next step: Run 'coral-cli backend store-adopt --flavor prod', then retry the command that starts the backend.",
+          'Cause: The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build. [code=store_newer_incompatible]',
+          "Next step: Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
         ].join('\n'),
       );
     });

@@ -62,11 +62,7 @@ This only affects malformed or truncated backend responses. In normal operation 
 | `coordinator_socket_in_use`           | An offline operator command found the coordinator socket owned; shut down the daemon before retrying                                                                                                                                                                    |
 | `coordinator_socket_bind_failed`      | An offline operator command could not bind the coordinator socket because of a path, permission, or platform failure                                                                                                                                                    |
 | `legacy_foreign_generation`           | The legacy tree belongs to a different or unreadable generation; adoption and legacy discard leave it untouched                                                                                                                                                         |
-| `legacy_adoption_required`            | Compatible legacy history exists and must be adopted explicitly before generated state can initialize                                                                                                                                                                  |
 | `legacy_source_not_quiescent`         | A generation-boundary operation could not acquire its lock or drain a live writer lease                                                                                                                                                                                 |
-| `legacy_adoption_source_unreadable`   | `store-adopt` could not open or classify the legacy source read-only                                                                                                                                                                                                     |
-| `legacy_adoption_state_changed`       | The legacy source or generated target changed between adoption checks                                                                                                                                                                                                   |
-| `legacy_adoption_durability_failed`   | Adoption renamed the generation tree but could not durably synchronize a parent directory                                                                                                                                                                               |
 | `store_newer_incompatible`            | The active generated store has a valid product version newer than this build                                                                                                                                                                                             |
 | `store_older_incompatible`            | The active generated store has an older product version and a different format fingerprint                                                                                                                                                                              |
 | `store_corrupt_or_unsupported`        | The active generated store has missing, malformed, corrupt, or otherwise unsupported format metadata                                                                                                                                                                    |
@@ -101,11 +97,7 @@ Generation-boundary and offline-operator refusals keep the same CLI exit whether
 | `coordinator_socket_in_use`         | `1`                   | `409`       | `1`                      |
 | `coordinator_socket_bind_failed`    | `1`                   | `409`       | `1`                      |
 | `legacy_foreign_generation`         | `1`                   | `409`       | `1`                      |
-| `legacy_adoption_required`          | `1`                   | `409`       | `1`                      |
 | `legacy_source_not_quiescent`       | `1`                   | `409`       | `1`                      |
-| `legacy_adoption_source_unreadable` | `1`                   | `409`       | `1`                      |
-| `legacy_adoption_state_changed`     | `1`                   | `409`       | `1`                      |
-| `legacy_adoption_durability_failed` | `1`                   | `409`       | `1`                      |
 | `store_newer_incompatible`          | `1`                   | `409`       | `1`                      |
 | `store_older_incompatible`          | `1`                   | `409`       | `1`                      |
 | `store_corrupt_or_unsupported`      | `1`                   | `409`       | `1`                      |
