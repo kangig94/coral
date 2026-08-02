@@ -39,12 +39,15 @@ type BackendStatus =
     };
 
 /**
- * The user-facing half of a documented setup failure. Only
- * `documentedCoralSetupError` codes reach here: their `userMessage` and
- * `remediation` are authored per code and interpolate a fixed context, so they
- * carry no caller-supplied data. An arbitrary bootstrap exception's `message`
- * and `stack` can carry provider payloads or credentials and stay in the
- * coordinator log, which is why this is a summary rather than the raw error.
+ * The user-facing half of a documented setup failure. Two things make it safe to
+ * print, and neither is "it contains no interpolated values" — the authored
+ * templates do interpolate Coral's own identifiers (a legacy path, a lease
+ * holder, a base dir, a stored version). What holds the boundary is that the
+ * sentences are authored per code rather than assembled from an exception, and
+ * that `context` is dropped here: `serializeBootstrapError` persists it, and at
+ * least one site deliberately stashes a raw `error.message` in it. An arbitrary
+ * bootstrap exception's `message` and `stack` therefore stay in the coordinator
+ * log. Widening this projection past these three fields reopens that path.
  */
 export type PublicSetupErrorSummary = {
   readonly code: string;

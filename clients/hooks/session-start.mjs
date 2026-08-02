@@ -93,23 +93,36 @@ function isCoordinatorAlive(runDir) {
 
 // The spawn above is detached, so this hook never learns whether it worked, and a
 // failure has until now been invisible: the daemon writes a diagnostic and exits,
-// the hook fails open, and the session proceeds as if Coral were healthy. A
-// non-retryable setup failure is deterministic, so a recent one with nothing
-// currently answering predicts the spawn we just issued. Nothing ever deletes the
-// diagnostic, which is why both the recency window and the liveness check matter.
+// the hook fails open, and the session proceeds as if Coral were healthy.
+//
+// The notice deliberately does not claim the backend is currently down. It cannot
+// know: the spawn issued moments ago has not had time to bind, so no daemon is
+// answering yet on every session start, and nothing ever deletes the diagnostic.
+// Predicting from those signals is wrong exactly on the recovery path — someone
+// who just fixed the cause would be told it is still broken. Reporting the last
+// failure and its remedy is true whether or not it has since been resolved.
+//
+// The recency and liveness filters remain, as noise control rather than proof: an
+// answering daemon or an old diagnostic means the report is not worth making. The
+// window is deliberately wider than the daemon's own 5-minute probe horizon
+// (`statusFromStartupDiagnostic`) because a session may start minutes after the
+// user's last attempt; that divergence is intended, not drift.
 function readRecentStartupFailureNotice(runDir) {
   try {
     if (isCoordinatorAlive(runDir) !== false) return null;
     const diagnostic = JSON.parse(readFileSync(join(runDir, 'startup-diagnostic.json'), 'utf-8'));
-    if (diagnostic?.schemaVersion !== 1 || diagnostic.retryable !== false) return null;
+    if (diagnostic?.schemaVersion !== 1) return null;
+    if (diagnostic.state !== 'stopped_with_diagnostic' || diagnostic.retryable !== false) return null;
     const recordedAt = Date.parse(diagnostic.recordedAt);
-    if (!Number.isFinite(recordedAt) || Date.now() - recordedAt > STARTUP_FAILURE_NOTICE_WINDOW_MS) return null;
+    if (!Number.isFinite(recordedAt)) return null;
+    const age = Date.now() - recordedAt;
+    if (age < 0 || age > STARTUP_FAILURE_NOTICE_WINDOW_MS) return null;
     const error = diagnostic.error;
     // Only documented setup errors carry authored, user-safe text; an arbitrary
     // bootstrap exception's message stays in the coordinator log.
     if (error?.kind !== 'coral_setup_error') return null;
     if (typeof error.userMessage !== 'string' || typeof error.remediation !== 'string') return null;
-    return `Coral backend is NOT running — its last start failed and will fail the same way until this is fixed.\nCause: ${error.userMessage}\nFix: ${error.remediation}`;
+    return `Coral backend: the most recent start attempt failed, and a fresh attempt was just issued. If Coral turns out to be unavailable this session, this is the cause and the remedy — it may already be resolved.\nCause: ${error.userMessage}\nRemedy: ${error.remediation}`;
   } catch {
     return null;
   }

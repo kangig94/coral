@@ -150,7 +150,7 @@ describe('session-start.mjs startup failure notice', () => {
 
       const context = await contextFor(fixture, 'test-session-notice');
 
-      expect(context).toContain('Coral backend is NOT running');
+      expect(context).toContain('the most recent start attempt failed');
       expect(context).toContain('written by newer Coral 0.11.0');
       expect(context).toContain('coral-cli backend store-reset discard --target gen2 --flavor prod');
     },
@@ -165,7 +165,7 @@ describe('session-start.mjs startup failure notice', () => {
 
       const context = await contextFor(fixture, 'test-session-stale');
 
-      expect(context).not.toContain('Coral backend is NOT running');
+      expect(context).not.toContain('the most recent start attempt failed');
     },
     WARM_START_TIMEOUT_MS,
   );
@@ -181,7 +181,7 @@ describe('session-start.mjs startup failure notice', () => {
 
       const context = await contextFor(fixture, 'test-session-undocumented');
 
-      expect(context).not.toContain('Coral backend is NOT running');
+      expect(context).not.toContain('the most recent start attempt failed');
       expect(context).not.toContain('super-secret');
     },
     WARM_START_TIMEOUT_MS,

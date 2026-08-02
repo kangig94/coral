@@ -35,6 +35,8 @@ npm run dev          # tsc --watch
 **Releasing**:
 Releases are cut by the manual **Release** GitHub Action (Actions → Run workflow → version), which runs tests, bumps the version, rebuilds `clients/bridge/`, makes a single `Release v<ver>` commit, tags `v<ver>`, and pushes to `main`. Do NOT bump the version or rebuild `clients/bridge/` in a feature PR — feature PRs carry source only. (Locally, `npm version <ver> --no-git-tag-version` updates `package.json`/`package-lock.json`, and `npm run build:release` then syncs the version into `clients/.claude-plugin/plugin.json`, the root `.claude-plugin/marketplace.json`, `clients/.codex-plugin/plugin.json`, rebuilds `clients/bridge/`, and injects `__VERSION__` — but the workflow is the canonical path.)
 
+A release that should not have shipped is removed by the manual **Unrelease** Action, which deletes the release, the tag, and the `Release v<ver>` commit so the same version can carry a corrected build. It only acts when that commit is still `main`'s tip **and** was authored by the release App.
+
 Rules in `.claude/rules/` are auto-loaded. Domain-specific rules activate based on file paths being edited via `paths:` frontmatter.
 
 Good code guides readers naturally — structure reveals intent without requiring explanation.

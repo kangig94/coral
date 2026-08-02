@@ -14,6 +14,7 @@ import { createBackendStoreResetAuthority, openOrResetBackendStoreDb } from '#sr
 import { openStoreDatabase } from '#src/store/db.js';
 import {
   formatLegacyGenerationIgnoredNotice,
+  generationMutationCoordinationSeam,
   inspectGenerationReadiness,
   resolveGenerationBoundaryPaths,
 } from '#src/store/generation-mutation-coordination.js';
@@ -226,6 +227,26 @@ describe('generation readiness', () => {
 
     expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
     expect(hashTree(paths.legacyFlavorRoot)).toBe(before);
+  });
+
+  it('grants the generation coordination lease beside legacy history', async () => {
+    // `acquireGenerationAdoptionLease` carries its own copy of the readiness
+    // switch and gates `store-reset`, `kb-commit quarantine`, and `expansion
+    // install` — not the daemon boot path the tests above cover. It used to reject
+    // with `legacy_adoption_required` here too, so a regression in only this copy
+    // would reproduce the same lockout for those three commands.
+    const { runtime } = harness();
+    createSameGenerationLegacyStore(runtime);
+    vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+
+    const completion = await generationMutationCoordinationSeam.completeReadiness(runtime, STORE_FORMAT, {
+      kind: 'install',
+      name: 'generation-readiness-test',
+    });
+
+    // Resolving at all is the assertion: this used to reject.
+    expect(typeof completion.release).toBe('function');
+    completion.release();
   });
 
   it('names both paths and the stored version in the notice', () => {

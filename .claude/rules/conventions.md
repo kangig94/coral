@@ -34,6 +34,12 @@ Releases are cut by the manual **Release** GitHub Action, not by a PR:
 
 The plugin installs from the tag (`marketplace.json` `source` is a `git-subdir` into `clients/` with `ref = v<version>` on `main` as the "latest" pointer; each tag carries the exact `clients/bridge/` for its version). The version level (patch/minor/major) is decided when cutting the release, not per PR.
 
+## Unreleasing
+
+Versions only move forward and a tag is never reused, so a release that should not have shipped cannot be corrected by re-tagging — it has to be removed completely before the same number can carry a corrected build. The manual **Unrelease** GitHub Action (Actions → **Unrelease** → *Run workflow* → version) deletes the GitHub release, deletes the tag, and force-pushes `main` past the `Release v<ver>` commit so no trace of the version remains.
+
+It refuses unless `main`'s tip **is** that version's release commit, authored by the release App. Anything landing on top makes the release unremovable this way, by design: rewriting history under someone else's commits is a decision for a person, not a workflow. Use it while a bad release is fresh; once it has been installed, ship a forward version instead.
+
 The GitHub release body is generated automatically (`gh release create --generate-notes`) from every PR merged since the previous release, grouped by the PR type labels above (see [PR Labels](#pr-labels)). The changelog is therefore only as good as the PR titles and labels — keep both correct.
 
 ## Commit Style
