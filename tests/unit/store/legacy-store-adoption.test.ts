@@ -24,6 +24,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { createBackendStoreResetAuthority, openOrResetBackendStoreDb } from '#src/store/backend-store-reset.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import {
+  formatLegacyAdoptableGenerationNotice,
   generationMutationCoordinationSeam,
   inspectGenerationReadiness,
   resolveGenerationBoundaryPaths,
@@ -177,6 +178,24 @@ describe('legacy store generation adoption', () => {
     openGeneratedStore(runtime);
 
     expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
+  });
+
+  it('renders the adoption-required guidance without raising it', () => {
+    const { runtime } = harness();
+    createSameGenerationLegacyStore(runtime);
+    const paths = resolveGenerationBoundaryPaths(runtime);
+    const readiness = inspectGenerationReadiness(runtime, STORE_FORMAT);
+    if (readiness.kind !== 'legacy-adoptable') {
+      throw new Error(`Expected legacy-adoptable readiness, received ${readiness.kind}`);
+    }
+
+    const notice = formatLegacyAdoptableGenerationNotice(readiness, 'prod');
+
+    // The same wording the boot failure would raise, so a status probe and a
+    // failed start cannot disagree about what to do.
+    expect(notice).toContain(paths.legacyFlavorRoot);
+    expect(notice).toContain('must be adopted before this generation can initialize');
+    expect(notice).toContain("Run 'coral-cli backend store-adopt --flavor prod'");
   });
 
   it('boots only after same-generation legacy history is explicitly adopted', async () => {

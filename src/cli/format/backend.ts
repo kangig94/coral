@@ -9,12 +9,21 @@ export function formatBackendStatus(result: BackendStatusFull): string {
       return formatRunningStatus(result.health);
     case 'not_running':
       return 'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.';
-    case 'recent_failure':
-      return [
-        'Backend is not running after a recent coordinator failure.',
-        `Phase: ${result.phase}`,
-        'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
-      ].join('\n');
+    case 'recent_failure': {
+      const lines = ['Backend is not running after a recent coordinator failure.', `Phase: ${result.phase}`];
+      if (result.setupError === undefined) {
+        // Undocumented failures have no authored remediation, and their raw
+        // message can carry provider payloads or credentials, so the log stays
+        // the only place it is rendered.
+        lines.push(
+          'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
+        );
+      } else {
+        lines.push(`Cause: ${result.setupError.userMessage} [code=${result.setupError.code}]`);
+        lines.push(`Next step: ${result.setupError.remediation}`);
+      }
+      return lines.join('\n');
+    }
     case 'shutting_down':
       return 'Backend shutting down';
     case 'unauthorized':

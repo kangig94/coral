@@ -32,6 +32,9 @@ import { isKbEnabled } from './lib/kb-toggle.mjs';
 
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 const PROJECT_IGNORE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore.mjs');
+// Long enough to still catch the failure when a session starts minutes after the
+// user's last attempt, short enough that a cured problem stops being reported.
+const STARTUP_FAILURE_NOTICE_WINDOW_MS = 10 * 60 * 1000;
 
 function rotateLogIfLarge(runDir) {
   const path = join(runDir, 'coordinator.log');
@@ -77,6 +80,41 @@ function spawnBackend(pluginRoot) {
   } catch {}
 }
 
+function isCoordinatorAlive(runDir) {
+  try {
+    const record = JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf-8'));
+    if (typeof record?.pid !== 'number') return null;
+    process.kill(record.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// The spawn above is detached, so this hook never learns whether it worked, and a
+// failure has until now been invisible: the daemon writes a diagnostic and exits,
+// the hook fails open, and the session proceeds as if Coral were healthy. A
+// non-retryable setup failure is deterministic, so a recent one with nothing
+// currently answering predicts the spawn we just issued. Nothing ever deletes the
+// diagnostic, which is why both the recency window and the liveness check matter.
+function readRecentStartupFailureNotice(runDir) {
+  try {
+    if (isCoordinatorAlive(runDir) !== false) return null;
+    const diagnostic = JSON.parse(readFileSync(join(runDir, 'startup-diagnostic.json'), 'utf-8'));
+    if (diagnostic?.schemaVersion !== 1 || diagnostic.retryable !== false) return null;
+    const recordedAt = Date.parse(diagnostic.recordedAt);
+    if (!Number.isFinite(recordedAt) || Date.now() - recordedAt > STARTUP_FAILURE_NOTICE_WINDOW_MS) return null;
+    const error = diagnostic.error;
+    // Only documented setup errors carry authored, user-safe text; an arbitrary
+    // bootstrap exception's message stays in the coordinator log.
+    if (error?.kind !== 'coral_setup_error') return null;
+    if (typeof error.userMessage !== 'string' || typeof error.remediation !== 'string') return null;
+    return `Coral backend is NOT running — its last start failed and will fail the same way until this is fixed.\nCause: ${error.userMessage}\nFix: ${error.remediation}`;
+  } catch {
+    return null;
+  }
+}
+
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -114,8 +152,10 @@ try {
   const migrationNotice = ignoreMaintenance?.migrated
     ? '\n\nCoral migration: moved the generated coral ignore rule from the Git-root .gitignore into .claude/.gitignore.'
     : '';
+  const startupFailureNotice = readRecentStartupFailureNotice(coordinatorRunDir());
   const head = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}${migrationNotice}`;
-  const additionalContext = wakeUpPayload === null ? head : `${head}\n\n${wakeUpPayload}`;
+  const body = wakeUpPayload === null ? head : `${head}\n\n${wakeUpPayload}`;
+  const additionalContext = startupFailureNotice === null ? body : `${startupFailureNotice}\n\n${body}`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {

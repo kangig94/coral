@@ -732,6 +732,27 @@ describe('cli format', () => {
       );
     });
 
+    it('formats a documented startup failure with its authored cause and remediation', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recent_failure',
+          phase: 'startup_failed',
+          setupError: {
+            code: 'legacy_adoption_required',
+            userMessage: 'Compatible legacy Coral history at /home/u/.coral/data must be adopted before this generation can initialize.',
+            remediation: "Run 'coral-cli backend store-adopt --flavor prod', then retry the command that starts the backend.",
+          },
+        }),
+      ).toBe(
+        [
+          'Backend is not running after a recent coordinator failure.',
+          'Phase: startup_failed',
+          'Cause: Compatible legacy Coral history at /home/u/.coral/data must be adopted before this generation can initialize. [code=legacy_adoption_required]',
+          "Next step: Run 'coral-cli backend store-adopt --flavor prod', then retry the command that starts the backend.",
+        ].join('\n'),
+      );
+    });
+
     it('formats a shutting-down backend status', () => {
       expect(formatBackendStatus({ status: 'shutting_down' })).toBe('Backend shutting down');
     });

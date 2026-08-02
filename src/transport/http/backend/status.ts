@@ -4,6 +4,7 @@ import { isRecord } from '../../../infra/json.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
 import type { StoragePort } from '../../../infra/port-types.js';
 import { parseIsoTimestamp } from '../../../infra/time.js';
+import { isSerializedCoralSetupError } from '../../../runtime/errors.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isBackendHealth, isBackendPing, type BackendHealth } from './health.js';
@@ -37,10 +38,24 @@ type BackendStatus =
       status: 'shutting_down';
     };
 
+/**
+ * The user-facing half of a documented setup failure. Only
+ * `documentedCoralSetupError` codes reach here: their `userMessage` and
+ * `remediation` are authored per code and interpolate a fixed context, so they
+ * carry no caller-supplied data. An arbitrary bootstrap exception's `message`
+ * and `stack` can carry provider payloads or credentials and stay in the
+ * coordinator log, which is why this is a summary rather than the raw error.
+ */
+export type PublicSetupErrorSummary = {
+  readonly code: string;
+  readonly userMessage: string;
+  readonly remediation: string;
+};
+
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
   | { status: 'shutting_down' | 'unauthorized' | 'not_running' }
-  | { status: 'recent_failure'; phase: PublicDiagnosticPhase };
+  | { status: 'recent_failure'; phase: PublicDiagnosticPhase; setupError?: PublicSetupErrorSummary };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
 
@@ -81,7 +96,17 @@ export function statusFromStartupDiagnostic(
     return null;
   }
 
-  return { status: 'recent_failure', phase: value.phase };
+  const error = value.error;
+  const setupError: PublicSetupErrorSummary | null =
+    error.kind === 'coral_setup_error' && isSerializedCoralSetupError(error)
+      ? { code: error.code, userMessage: error.userMessage, remediation: error.remediation }
+      : null;
+
+  return {
+    status: 'recent_failure',
+    phase: value.phase,
+    ...(setupError === null ? {} : { setupError }),
+  };
 }
 
 function noDaemonStatus(

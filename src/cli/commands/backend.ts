@@ -5,6 +5,7 @@ import { assertNever } from '../../infra/error-format.js';
 import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import {
+  formatLegacyAdoptableGenerationNotice,
   formatLegacyForeignGenerationNotice,
   inspectGenerationReadiness,
   type GenerationReadiness,
@@ -81,7 +82,12 @@ export function registerBackendCommands(
       switch (readiness.kind) {
         case 'generated-ready':
         case 'no-legacy':
+          break;
         case 'legacy-adoptable':
+          // The daemon cannot start at all in this state, and the startup
+          // diagnostic that would say so expires. Readiness does not, so this is
+          // the only report an operator who returns later will see.
+          process.stderr.write(`${formatLegacyAdoptableGenerationNotice(readiness, resolveBuildFlavor(process.env))}\n`);
           break;
         case 'legacy-foreign':
           process.stderr.write(`${formatLegacyForeignGenerationNotice(readiness)}\n`);

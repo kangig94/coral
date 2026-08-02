@@ -120,6 +120,40 @@ describe('backend startup diagnostic classification', () => {
     });
   });
 
+  it('carries the authored cause and remediation of a documented setup failure', () => {
+    expect(
+      statusFromStartupDiagnostic(
+        {
+          schemaVersion: 1,
+          phase: 'startup_failed',
+          state: 'stopped_with_diagnostic',
+          retryable: false,
+          pid: 4242,
+          recordedAt: '2026-08-02T11:59:30.000Z',
+          exitCode: 1,
+          error: {
+            kind: 'coral_setup_error',
+            code: 'legacy_adoption_required',
+            userMessage: 'Compatible legacy Coral history at /home/u/.coral/data must be adopted before this generation can initialize.',
+            remediation: "Run 'coral-cli backend store-adopt --flavor prod', then retry the command that starts the backend.",
+            // Context is deliberately not forwarded: only the two rendered
+            // strings are authored per code and safe to show.
+            context: { flavor: 'prod', legacyPath: '/home/u/.coral/data' },
+          },
+        },
+        now,
+      ),
+    ).toEqual({
+      status: 'recent_failure',
+      phase: 'startup_failed',
+      setupError: {
+        code: 'legacy_adoption_required',
+        userMessage: 'Compatible legacy Coral history at /home/u/.coral/data must be adopted before this generation can initialize.',
+        remediation: "Run 'coral-cli backend store-adopt --flavor prod', then retry the command that starts the backend.",
+      },
+    });
+  });
+
   it('does not render credentials from a serialized diagnostic cause', async () => {
     const secret = 'sk-proj-secret-value';
     const classified = statusFromStartupDiagnostic(

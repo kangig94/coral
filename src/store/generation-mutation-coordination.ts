@@ -142,6 +142,24 @@ export function formatLegacyForeignGenerationNotice(
   );
 }
 
+/**
+ * Renders the adoption-required guidance without raising it, for callers that
+ * only observe readiness (`coral-cli backend status`) rather than initialize.
+ * The wording is taken from the documented code so the notice and the boot
+ * failure cannot drift apart.
+ */
+export function formatLegacyAdoptableGenerationNotice(
+  readiness: Extract<GenerationReadiness, { readonly kind: 'legacy-adoptable' }>,
+  flavor: Runtime['flavor'],
+): string {
+  const documented = documentedCoralSetupError({
+    code: 'legacy_adoption_required',
+    flavor,
+    legacyPath: readiness.legacyPath,
+  });
+  return `${documented.userMessage} ${documented.remediation}`;
+}
+
 function directoryLockDeps(runtime: Runtime) {
   return {
     storage: runtime.storage,
