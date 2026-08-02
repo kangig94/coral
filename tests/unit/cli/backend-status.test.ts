@@ -68,7 +68,6 @@ describe('backend status generation readiness', () => {
       getStatus: async () => ({
         status: 'recent_failure',
         phase: 'startup_failed',
-        reason: 'job recovery could not hydrate job-42',
       }),
     };
     const program = new Command();
@@ -82,7 +81,6 @@ describe('backend status generation readiness', () => {
       [
         'Backend is not running after a recent coordinator failure.',
         'Phase: startup_failed',
-        'Reason: job recovery could not hydrate job-42',
         'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
         '',
       ].join('\n'),
@@ -93,7 +91,7 @@ describe('backend status generation readiness', () => {
 describe('backend startup diagnostic classification', () => {
   const now = Date.parse('2026-08-02T12:00:00.000Z');
 
-  it('reports the deepest public-safe cause from a recent failure', () => {
+  it('classifies a recent failure without returning serialized exception text', () => {
     expect(
       statusFromStartupDiagnostic(
         {
@@ -119,8 +117,42 @@ describe('backend startup diagnostic classification', () => {
     ).toEqual({
       status: 'recent_failure',
       phase: 'startup_failed',
-      reason: 'Could not hydrate job-42',
     });
+  });
+
+  it('does not render credentials from a serialized diagnostic cause', async () => {
+    const secret = 'sk-proj-secret-value';
+    const classified = statusFromStartupDiagnostic(
+      {
+        schemaVersion: 1,
+        phase: 'startup_failed',
+        state: 'stopped_with_diagnostic',
+        retryable: false,
+        pid: 4242,
+        recordedAt: '2026-08-02T11:59:30.000Z',
+        attemptId: 'attempt-1',
+        exitCode: 1,
+        error: {
+          message: 'Coordinator startup failed',
+          cause: { message: `Provider rejected credential ${secret}` },
+        },
+      },
+      now,
+    );
+    if (classified === null) throw new Error('expected recent startup failure');
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => classified,
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, storeReset, undefined, undefined, status);
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).not.toContain(secret);
+    expect(stdout).not.toContain('Provider rejected credential');
+    expect(stdout).toContain('Next step: inspect the coordinator log');
   });
 
   it('treats a diagnostic left from days ago as a genuine absence', () => {
@@ -152,6 +184,25 @@ describe('backend startup diagnostic classification', () => {
         },
         now,
         Date.parse('2026-08-02T11:59:45.000Z'),
+      ),
+    ).toBeNull();
+  });
+
+  it('rejects a diagnostic whose pid differs from the discovered pid', () => {
+    expect(
+      statusFromStartupDiagnostic(
+        {
+          schemaVersion: 1,
+          phase: 'startup_failed',
+          state: 'stopped_with_diagnostic',
+          retryable: false,
+          pid: 5151,
+          recordedAt: '2026-08-02T11:59:50.000Z',
+          error: { message: 'new contender failed' },
+        },
+        now,
+        Date.parse('2026-08-02T11:59:00.000Z'),
+        4242,
       ),
     ).toBeNull();
   });

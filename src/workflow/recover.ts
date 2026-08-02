@@ -1,7 +1,6 @@
 import type { Database } from '../store/db.js';
 
 import { errorMessage } from '../infra/error-format.js';
-import { isAbortError } from '../runtime/abort.js';
 import { describeSessionJobClaimReleaseResult } from '../sessions/job-release.js';
 import type { SessionJobClaimReleaseResult } from '../sessions/contracts.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
@@ -829,6 +828,7 @@ export async function resumeAll(options: {
   createInvocationContext: (projectRoot: string) => InvocationContext;
   finalizeWorkflow: (intent: WorkflowFinalizationIntent) => void;
   releaseFailedWorkflowDescendants: (workflowId: string) => readonly WorkflowRecoveryDescendantRelease[];
+  signal?: AbortSignal;
   log?: (message: string) => void;
   onProgress?: (workflowId: string, message: string) => void;
   staleTimeoutMs?: number;
@@ -846,6 +846,7 @@ export async function resumeAll(options: {
   const resumedWorkflowIds: string[] = [];
 
   for (const jobId of options.progressStore.listJobIds()) {
+    options.signal?.throwIfAborted();
     const status = options.progressStore.readStatus(jobId);
     if (!status || status.jobKind !== 'workflow') continue;
     if (status.phase === 'completed' || status.phase === 'error' || status.phase === 'aborted') continue;
@@ -881,25 +882,26 @@ export async function resumeAll(options: {
         });
       }
     } catch (error: unknown) {
-      if (isAbortError(error)) {
-        throw error;
-      }
+      options.signal?.throwIfAborted();
       containedFailure = { error };
       recovered = { intent: recoveryIntentFromError(jobId, error) };
     }
 
+    options.signal?.throwIfAborted();
     if (recovered === null) {
       continue;
     }
 
     options.finalizeWorkflow(recovered.intent);
-    if (containedFailure !== null) {
+    if (containedFailure !== null || recovered.error !== undefined) {
       const releasedDescendants = options.releaseFailedWorkflowDescendants(jobId);
       for (const released of releasedDescendants) {
         options.log?.(
           `Workflow recovery child ${released.jobId} session claim ${released.sessionId} disposition: ${describeSessionJobClaimReleaseResult(released.sessionClaimRelease)}.\n`,
         );
       }
+    }
+    if (containedFailure !== null) {
       const outcomeDescription =
         recovered.intent.outcome === 'failed'
           ? 'after recovery failed'

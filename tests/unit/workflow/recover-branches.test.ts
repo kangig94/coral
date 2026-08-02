@@ -273,7 +273,7 @@ function createHarness(options: {
     principal: testProjectPrincipal(projectRoot),
   });
 
-  return { db, plan, progressStore, executionSvc, createInvocationContext, waitRequests };
+  return { db, plan, progressStore, executionSvc, createInvocationContext, waitRequests, runtime };
 }
 
 function appendRecoverableWorkflowRoot(progressStore: JobStore, workflowId: string, projectRoot: string): void {
@@ -1419,6 +1419,7 @@ describe('workflow recovery branch rules', () => {
         createInvocationContext: backend.createInvocationContext,
         releaseAdoptedJob: recoveryCoordinator.releaseAdoptedJob,
         emitSessionReleased,
+        log,
       });
       let workflowServiceCalls = 0;
 
@@ -1469,7 +1470,98 @@ describe('workflow recovery branch rules', () => {
     }
   });
 
-  it('returns after emitting an aborted finalization intent', async () => {
+  it('retains an unconfirmed live descendant claim and continues releasing later descendants', () => {
+    const harness = createHarness({
+      expression: '(architect, reviewer)',
+      atomPhase: 'running',
+      projectionPhase: 'running',
+    });
+    const failedJobId = harness.plan.slots[0].slotId;
+    const failedSessionId = 'session-atom-1';
+    const nextJobId = harness.plan.slots[1].slotId;
+    const nextSessionId = 'session-atom-2';
+    const stopError = new Error('descendant stop failed');
+    const abort = vi.fn((jobIds: string[]) => {
+      if (jobIds[0] === failedJobId) throw stopError;
+      return { aborted: jobIds, notFound: [] };
+    });
+    const releaseAdoptedJob = vi.fn();
+    const emitSessionReleased = vi.fn();
+    const log = vi.fn<(message: string) => void>();
+    const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
+      progressStore: harness.progressStore,
+      runtime: harness.runtime,
+      coordinatorCommit: (cb) => harness.progressStore.commit(cb),
+      getExecutionService: () => ({ abort }),
+      createInvocationContext: harness.createInvocationContext,
+      releaseAdoptedJob,
+      emitSessionReleased,
+      log,
+    });
+
+    try {
+      expect(releaseFailedWorkflowDescendants('workflow-1')).toEqual([
+        { jobId: nextJobId, sessionId: nextSessionId, sessionClaimRelease: 'released' },
+      ]);
+      expect(abort).toHaveBeenCalledWith([failedJobId]);
+      expect(abort).toHaveBeenCalledWith([nextJobId]);
+      expect(releaseAdoptedJob).not.toHaveBeenCalledWith(failedJobId);
+      expect(releaseAdoptedJob).toHaveBeenCalledWith(nextJobId);
+      expect(createProjectionSessionLookup(harness.db).readProviderSession(failedSessionId)?.activeJobId).toBe(
+        failedJobId,
+      );
+      expect(createProjectionSessionLookup(harness.db).readProviderSession(nextSessionId)?.activeJobId).toBeUndefined();
+      expect(emitSessionReleased).toHaveBeenCalledWith({ sessionId: nextSessionId, jobId: nextJobId });
+      expect(log).toHaveBeenCalledWith(
+        `Workflow recovery could not confirm child ${failedJobId} stopped; retained adopted runtime ownership and session claim ${failedSessionId}: ${stopError.message}\n`,
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('releases descendants after a returned workflow failure', async () => {
+    const harness = createHarness({
+      atomPhase: 'running',
+      projectionPhase: null,
+      atomTerminals: {
+        0: {
+          content: '',
+          outcome: {
+            kind: 'job_fault',
+            fault: { kind: 'wrapper_crashed', cause: { message: 'workflow child failed' } },
+          },
+          durationMs: 0,
+        },
+      },
+    });
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const releaseFailedWorkflowDescendants = vi.fn(() => []);
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => harness.executionSvc,
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          releaseFailedWorkflowDescendants,
+          signal: new AbortController().signal,
+          time: fixedTime,
+        }),
+      ).resolves.toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'failed', workflowJobId: 'workflow-1' }),
+      );
+      expect(releaseFailedWorkflowDescendants).toHaveBeenCalledWith('workflow-1');
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('releases descendants after emitting a returned aborted finalization intent', async () => {
     const harness = createHarness({
       atomPhase: 'running',
       projectionPhase: null,
@@ -1492,13 +1584,14 @@ describe('workflow recovery branch rules', () => {
           finalizeWorkflow,
           releaseFailedWorkflowDescendants,
           log,
+          signal: new AbortController().signal,
           time: fixedTime,
         }),
       ).resolves.toEqual(['workflow-1']);
       expect(finalizeWorkflow).toHaveBeenCalledWith(
         expect.objectContaining({ outcome: 'aborted', workflowJobId: 'workflow-1' }),
       );
-      expect(releaseFailedWorkflowDescendants).not.toHaveBeenCalled();
+      expect(releaseFailedWorkflowDescendants).toHaveBeenCalledWith('workflow-1');
       expect(log).toHaveBeenCalledWith(expect.stringContaining('with aborted outcome'));
       expect(log.mock.calls.flat().join('')).not.toContain('after recovery failed');
     } finally {
@@ -1524,12 +1617,44 @@ describe('workflow recovery branch rules', () => {
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow,
           releaseFailedWorkflowDescendants,
+          signal: new AbortController().signal,
           time: fixedTime,
         }),
       ).resolves.toEqual(['workflow-1']);
       expect(finalizeWorkflow).toHaveBeenCalledWith(
         expect.objectContaining({ outcome: 'aborted', workflowJobId: 'workflow-1' }),
       );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('contains an item-local AbortError while the coordinator signal is live', async () => {
+    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const releaseFailedWorkflowDescendants = vi.fn(() => []);
+    const localAbort = new AbortError({ stage: 'workflow child lookup' });
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => {
+            throw localAbort;
+          },
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          releaseFailedWorkflowDescendants,
+          signal: new AbortController().signal,
+          time: fixedTime,
+        }),
+      ).resolves.toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'failed', workflowJobId: 'workflow-1' }),
+      );
+      expect(releaseFailedWorkflowDescendants).toHaveBeenCalledWith('workflow-1');
     } finally {
       harness.db.close();
     }
@@ -1555,6 +1680,7 @@ describe('workflow recovery branch rules', () => {
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow,
           releaseFailedWorkflowDescendants,
+          signal: new AbortController().signal,
           time: fixedTime,
         }),
       ).rejects.toBe(finalizerError);
@@ -1569,7 +1695,9 @@ describe('workflow recovery branch rules', () => {
     const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
     const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
     const releaseFailedWorkflowDescendants = vi.fn(() => []);
-    const cancellation = new AbortError({ stage: 'workflow recovery' });
+    const cancellation = new Error('coordinator stopped workflow recovery');
+    const controller = new AbortController();
+    controller.abort(cancellation);
     harness.executionSvc.waitStream.mockReturnValue(failWait(cancellation));
 
     try {
@@ -1582,6 +1710,7 @@ describe('workflow recovery branch rules', () => {
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow,
           releaseFailedWorkflowDescendants,
+          signal: controller.signal,
           time: fixedTime,
         }),
       ).rejects.toBe(cancellation);

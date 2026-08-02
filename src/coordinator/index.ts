@@ -474,7 +474,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       ]);
       signal.throwIfAborted();
 
-      await jobsReconcile.runStartup({
+      const recoveryProgressStore = await jobsReconcile.runStartup({
         recoveryCoordinator,
         namespace: identity.namespace,
         bundleHash: identity.bundleHash,
@@ -502,7 +502,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
       await workflowRecover.resumeAll({
         db,
-        progressStore,
+        progressStore: recoveryProgressStore,
         loadJobDetails: loadJobProjectionDetails,
         getExecutionService: (ctx) => getExecutionService(ctx) as never,
         createInvocationContext,
@@ -513,14 +513,16 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           log: identity.log,
         }),
         releaseFailedWorkflowDescendants: createFailedWorkflowDescendantReleaser({
-          progressStore,
+          progressStore: recoveryProgressStore,
           runtime,
           coordinatorCommit,
           getExecutionService,
           createInvocationContext,
           releaseAdoptedJob: recoveryCoordinator.releaseAdoptedJob,
           emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
+          log: identity.log,
         }),
+        signal,
         log: identity.log,
         time: runtime.time,
         drainDeadlineMs: resolveDrainDeadlineMs(runtime.env),

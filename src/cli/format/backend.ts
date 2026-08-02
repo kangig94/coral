@@ -13,7 +13,6 @@ export function formatBackendStatus(result: BackendStatusFull): string {
       return [
         'Backend is not running after a recent coordinator failure.',
         `Phase: ${result.phase}`,
-        `Reason: ${result.reason}`,
         'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
       ].join('\n');
     case 'shutting_down':

@@ -776,7 +776,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       cleanupStaleJobs,
       recoverPersistedDiscussFn,
     }) => {
-      await jobsReconcile.runStartup({
+      const recoveryProgressStore = await jobsReconcile.runStartup({
         recoveryCoordinator,
         namespace: identity.namespace,
         bundleHash: identity.bundleHash,
@@ -804,7 +804,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
 
       await workflowRecover.resumeAll({
         db: storeDb,
-        progressStore,
+        progressStore: recoveryProgressStore,
         loadJobDetails: loadJobProjectionDetails,
         getExecutionService: (ctx) => getExecutionService(ctx) as never,
         createInvocationContext,
@@ -815,14 +815,16 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
           log: identity.log,
         }),
         releaseFailedWorkflowDescendants: createFailedWorkflowDescendantReleaser({
-          progressStore,
+          progressStore: recoveryProgressStore,
           runtime,
           coordinatorCommit: (cb) => progressStore.commit(cb),
           getExecutionService,
           createInvocationContext,
           releaseAdoptedJob: recoveryCoordinator.releaseAdoptedJob,
           emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
+          log: identity.log,
         }),
+        signal,
         time: runtime.time,
       });
       signal.throwIfAborted();

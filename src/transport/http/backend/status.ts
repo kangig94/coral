@@ -11,6 +11,8 @@ import { TransientHttpError } from '../../../infra/http-errors.js';
 
 const RECENT_STARTUP_DIAGNOSTIC_MS = 5 * 60_000;
 
+type PublicDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootstrap_unhandled_rejection';
+
 type BackendStatus =
   | {
       // CLI-level verdict. The daemon-side coarse lifecycle field
@@ -38,23 +40,28 @@ type BackendStatus =
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
   | { status: 'shutting_down' | 'unauthorized' | 'not_running' }
-  | { status: 'recent_failure'; phase: string; reason: string };
+  | { status: 'recent_failure'; phase: PublicDiagnosticPhase };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
+
+function isPublicDiagnosticPhase(value: unknown): value is PublicDiagnosticPhase {
+  return value === 'startup_failed' || value === 'fatal_shutdown_error' || value === 'bootstrap_unhandled_rejection';
+}
 
 export function statusFromStartupDiagnostic(
   value: unknown,
   now: number,
   earliestRecordedAt = Number.NEGATIVE_INFINITY,
+  expectedPid?: number,
 ): RecentFailureStatus | null {
   if (
     !isRecord(value) ||
     value.schemaVersion !== 1 ||
     value.state !== 'stopped_with_diagnostic' ||
     value.retryable !== false ||
-    typeof value.phase !== 'string' ||
-    value.phase.length === 0 ||
-    typeof value.recordedAt !== 'string'
+    !isPublicDiagnosticPhase(value.phase) ||
+    typeof value.recordedAt !== 'string' ||
+    !isRecord(value.error)
   ) {
     return null;
   }
@@ -68,25 +75,13 @@ export function statusFromStartupDiagnostic(
     !Number.isFinite(recordedAt) ||
     recordedAt < earliestRecordedAt ||
     recordedAt > now ||
-    now - recordedAt > RECENT_STARTUP_DIAGNOSTIC_MS
+    now - recordedAt > RECENT_STARTUP_DIAGNOSTIC_MS ||
+    (expectedPid !== undefined && value.pid !== expectedPid)
   ) {
     return null;
   }
 
-  const reason = deepestDiagnosticErrorMessage(value.error);
-  return reason === null ? null : { status: 'recent_failure', phase: value.phase, reason };
-}
-
-function deepestDiagnosticErrorMessage(error: unknown): string | null {
-  let current = error;
-  let reason: string | null = null;
-  while (isRecord(current)) {
-    if (typeof current.message === 'string' && current.message.trim().length > 0) {
-      reason = current.message.trim().replace(/\s+/g, ' ');
-    }
-    current = current.cause;
-  }
-  return reason;
+  return { status: 'recent_failure', phase: value.phase };
 }
 
 function noDaemonStatus(
@@ -94,10 +89,11 @@ function noDaemonStatus(
   diagnosticFile: string,
   now: number,
   earliestRecordedAt?: number,
+  expectedPid?: number,
 ): BackendStatusFull {
   try {
     const value: unknown = JSON.parse(storage.readFileSync(diagnosticFile, 'utf-8'));
-    return statusFromStartupDiagnostic(value, now, earliestRecordedAt) ?? { status: 'not_running' };
+    return statusFromStartupDiagnostic(value, now, earliestRecordedAt, expectedPid) ?? { status: 'not_running' };
   } catch {
     return { status: 'not_running' };
   }
@@ -116,6 +112,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       runtime.paths.coral.coordinator.startupDiagnosticFile,
       runtime.time.now(),
       info?.startedAt,
+      info?.pid,
     );
   }
 
@@ -125,6 +122,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       runtime.paths.coral.coordinator.startupDiagnosticFile,
       runtime.time.now(),
       info.startedAt,
+      info.pid,
     );
 
   try {

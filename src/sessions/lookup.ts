@@ -8,14 +8,14 @@ type SessionLookupRef = {
 };
 
 export interface SessionLookup {
-  listSessionRefs(): SessionLookupRef[];
+  listSessionRefs(onInvalidRow?: (sessionId: string | null, error: unknown) => void): SessionLookupRef[];
   readProviderSession(sessionId: string): ProviderSession | null;
 }
 
 export function createProjectionSessionLookup(db: ReadonlyDatabase): SessionLookup {
   return {
-    listSessionRefs(): SessionLookupRef[] {
-      return listProjectionSessionEntries(db).map((entry) => ({
+    listSessionRefs(onInvalidRow): SessionLookupRef[] {
+      return listProjectionSessionEntries(db, undefined, undefined, onInvalidRow).map((entry) => ({
         sessionId: entry.sessionId,
         provider: providerSessionProvider(entry),
       }));

@@ -717,18 +717,16 @@ describe('cli format', () => {
       );
     });
 
-    it('formats a recent coordinator failure with its phase, reason, and next step', () => {
+    it('formats a recent coordinator failure with its phase and log guidance', () => {
       expect(
         formatBackendStatus({
           status: 'recent_failure',
           phase: 'startup_failed',
-          reason: 'Could not hydrate job-42',
         }),
       ).toBe(
         [
           'Backend is not running after a recent coordinator failure.',
           'Phase: startup_failed',
-          'Reason: Could not hydrate job-42',
           'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
         ].join('\n'),
       );

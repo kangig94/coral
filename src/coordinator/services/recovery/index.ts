@@ -55,7 +55,7 @@ type RecoveryCoordinatorState = {
 };
 
 export interface RecoveryCoordinator {
-  runStartupRecovery(ctx: StartupRecoveryContext): Promise<void>;
+  runStartupRecovery(ctx: StartupRecoveryContext): Promise<JobStore>;
   releaseAdoptedJob(jobId: string): void;
   getRecoveryRegistry(): RecoveryRegistry | null;
   isIdleBlocked(): boolean;
@@ -330,7 +330,7 @@ export function createRecoveryCoordinator({
           ? hydrationFallback === undefined
             ? `Run coral-cli jobs detail ${jobId} for the recorded reason.`
             : 'The persisted-detail decode failure is included in this log.'
-          : `Recovery state update failed: ${errorMessage(recoveryUpdateError)}. Resolve the store write failure and restart the coordinator.`;
+          : `Recovery state disposition did not complete: ${errorMessage(recoveryUpdateError)}. Inspect the persisted state and coordinator log before restarting.`;
       try {
         state.recoveryRegistry?.remove(jobId);
       } finally {
@@ -355,7 +355,6 @@ export function createRecoveryCoordinator({
       .prepare(`SELECT ${PROJECTION_JOB_COLUMNS} FROM projection_jobs ORDER BY job_id ASC`)
       .all();
     const rows: ProjectionJobStoredRow[] = [];
-    let sawUndecodableProjection = false;
 
     for (const raw of rawRows) {
       const possibleJobId = candidateJobId(raw);
@@ -367,7 +366,6 @@ export function createRecoveryCoordinator({
       try {
         row = decodeProjectionJobStoredRow(raw);
       } catch (error: unknown) {
-        sawUndecodableProjection = true;
         if (possibleJobId === null) {
           log(`Skipped malformed persisted job projection with no decodable job id: ${errorMessage(error)}\n`);
         } else {
@@ -383,14 +381,6 @@ export function createRecoveryCoordinator({
     }
 
     for (const row of rows) {
-      if (sawUndecodableProjection && row.job_kind === 'workflow') {
-        excluded.add(row.job_id);
-        log(
-          `Skipped hydrating workflow job ${row.job_id} after another persisted job projection could not be decoded; no terminal or session claim was updated for ${row.job_id}.\n`,
-        );
-        continue;
-      }
-
       try {
         detailsByJob.set(row.job_id, progressStore.loadJobProjectionDetail(row.job_id));
       } catch (error: unknown) {
@@ -664,7 +654,7 @@ export function createRecoveryCoordinator({
   }
 
   return {
-    async runStartupRecovery(ctx: StartupRecoveryContext): Promise<void> {
+    async runStartupRecovery(ctx: StartupRecoveryContext): Promise<JobStore> {
       const { namespace, bundleHash, runtime, progressStore, signal, log, cleanupStaleJobs } = ctx;
       const interruptedAppServerReason: InterruptedAppServerReason = ctx.interruptedAppServerReason ?? 'restart';
       state.teardownRequested = false;
@@ -751,7 +741,7 @@ export function createRecoveryCoordinator({
 
       if (queuedRecoverable.length === 0 && runningRecoverable.length === 0) {
         resetRecoveryState();
-        return;
+        return hydratedProgressStore;
       }
 
       try {
@@ -801,6 +791,7 @@ export function createRecoveryCoordinator({
         }
         resetRecoveryState({ forceRegistryRelease: true });
       }
+      return hydratedProgressStore;
     },
     releaseAdoptedJob,
     getRecoveryRegistry: () => state.recoveryRegistry,

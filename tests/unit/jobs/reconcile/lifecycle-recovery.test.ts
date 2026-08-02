@@ -73,6 +73,10 @@ async function loadModules() {
     workflowEventsModule,
     jobsEventsModule,
     reducersModule,
+    recoveryCoordinatorModule,
+    jobsStartupModule,
+    workflowRecoverModule,
+    jobsReadQueriesModule,
   ] = await Promise.all([
     import('#src/jobs/store.js'),
     import('#src/sessions/shell.js'),
@@ -90,6 +94,10 @@ async function loadModules() {
     import('#src/workflow/events.js'),
     import('#src/jobs/events.js'),
     import('#src/store/reducers.js'),
+    import('#src/coordinator/services/recovery/index.js'),
+    import('#src/jobs/startup.js'),
+    import('#src/workflow/recover.js'),
+    import('#src/jobs/read-queries.js'),
   ]);
 
   return {
@@ -109,6 +117,10 @@ async function loadModules() {
     workflowEventsModule,
     jobsEventsModule,
     reducersModule,
+    recoveryCoordinatorModule,
+    jobsStartupModule,
+    workflowRecoverModule,
+    jobsReadQueriesModule,
   };
 }
 
@@ -1910,6 +1922,166 @@ describe('lifecycle recovery', () => {
     }
   });
 
+  it('passes safe job enumeration from job recovery into workflow recovery', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-safe-workflow-enumeration');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-safe-workflow-enumeration');
+    const workflowId = 'workflow-safe-enumeration';
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const db = openTestStoreDb(runtime, ':memory:');
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db,
+      eventBus,
+      providers: permissiveProviderLookupPort,
+      reducers: modules.reducersModule.composeReducers(
+        modules.jobsEventsModule.jobsRegistry,
+        modules.workflowEventsModule.workflowRegistry,
+      ),
+    });
+    stubLaunchRecord(progressStore, {
+      jobId: workflowId,
+      sessionId: 'unused-workflow-session',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+      jobKind: 'workflow',
+    });
+    db.prepare(
+      `INSERT INTO projection_jobs (
+         job_id, execution_owner, phase, terminal, diagnostics, session_id, provider,
+         project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+         workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
+       )
+       SELECT
+         '', execution_owner, phase, terminal, diagnostics, session_id, provider,
+         project_root, backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
+         workflow_slot, workflow_slot_generation, replaces_workflow_job_id, created_at, last_seq
+       FROM projection_jobs
+       WHERE job_id = ?`,
+    ).run(workflowId);
+    const service = createFakeExecutionAndRecoveryService();
+    const log = vi.fn<(message: string) => void>();
+    const coordinatorCommit = createTestJobJournalDeps(progressStore, runtime).coordinatorCommit;
+    const recoveryCoordinator = modules.recoveryCoordinatorModule.createRecoveryCoordinator({
+      progressStore,
+      runtime,
+      runtimeState: { setLaunchFenceActive: vi.fn() },
+      eventBus,
+      getRecoveryService: () => service as never,
+      createInvocationContext: (root: string) => ({
+        projectRoot: root,
+        pluginRoot,
+        coralEnv: {},
+        principal: testProjectPrincipal(root),
+      }),
+      log,
+    });
+    const signal = new AbortController().signal;
+
+    try {
+      const recoveryProgressStore = await modules.jobsStartupModule.jobsReconcile.runStartup({
+        namespace,
+        bundleHash: 'test-bundle',
+        runtime,
+        progressStore,
+        providerRegistry: createRecoveryProviderRegistry(modules),
+        getRecoveryService: () => service as never,
+        createInvocationContext: (root: string) => ({
+          projectRoot: root,
+          pluginRoot,
+          coralEnv: {},
+          principal: testProjectPrincipal(root),
+        }),
+        signal,
+        log,
+        cleanupStaleJobs: () => {},
+        sessionLookup: modules.sessionLookupModule.createProjectionSessionLookup(db),
+        coordinatorCommit,
+        recoveryCoordinator,
+      });
+      expect(() => progressStore.listJobIds()).toThrow();
+      expect(recoveryProgressStore.listJobIds()).toContain(workflowId);
+      const finalizeWorkflow = vi.fn();
+      await expect(
+        modules.workflowRecoverModule.resumeAll({
+          db,
+          progressStore: recoveryProgressStore,
+          loadJobDetails: modules.jobsReadQueriesModule.loadJobProjectionDetails,
+          getExecutionService: () => service as never,
+          createInvocationContext: (root: string) => ({
+            projectRoot: root,
+            pluginRoot,
+            coralEnv: {},
+            principal: testProjectPrincipal(root),
+          }),
+          finalizeWorkflow,
+          releaseFailedWorkflowDescendants: () => [],
+          signal,
+          time: runtime.time,
+        }),
+      ).resolves.toEqual([workflowId]);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(expect.objectContaining({ workflowJobId: workflowId }));
+      expect(log.mock.calls.flat().join('')).not.toContain(`Skipped hydrating workflow job ${workflowId}`);
+    } finally {
+      await recoveryCoordinator.teardown();
+      db.close();
+    }
+  });
+
+  it('recovers a valid job while a different session projection is malformed', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-session-enumeration-isolation');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-session-enumeration-isolation');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const db = openTestStoreDb(runtime, ':memory:');
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db,
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const healthyJobId = 'healthy-job-with-malformed-session-row';
+    const healthySessionId = `${healthyJobId}-session`;
+    stubLaunchRecord(progressStore, {
+      jobId: healthyJobId,
+      sessionId: healthySessionId,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    stubAppServerRuntime(progressStore, healthyJobId, 'codex');
+    db.prepare(
+      `INSERT INTO projection_sessions (
+         session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
+       )
+       SELECT ?, controller, resumable, conversation_ref, scope_key, '{', last_seq
+       FROM projection_sessions
+       WHERE session_id = ?`,
+    ).run('malformed-recovery-session', healthySessionId);
+    const finalizeInterruptedAppServerJob = vi.fn(async () => {});
+    const fakeService = createFakeExecutionAndRecoveryService({ finalizeInterruptedAppServerJob });
+    const log = vi.fn<(message: string) => void>();
+    const { controller } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      runtime,
+      log,
+    });
+
+    try {
+      await controller.start();
+      expect(finalizeInterruptedAppServerJob).toHaveBeenCalledOnce();
+      expect(log.mock.calls.flat().join('')).toContain(
+        'Skipped malformed session projection for malformed-recovery-session during recovery snapshot',
+      );
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
   it('recovers a valid job while containing attributable and unattributable malformed persisted records', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-job-hydration-isolation');
@@ -2318,7 +2490,8 @@ describe('lifecycle recovery', () => {
       const messages = log.mock.calls.flat().join('');
       expect(messages).toContain('could not terminalize as recovery_parse_failed');
       expect(messages).toContain('session claim release was not attempted because terminalization failed');
-      expect(messages).toContain('Resolve the store write failure and restart the coordinator');
+      expect(messages).toContain('Recovery state disposition did not complete');
+      expect(messages).toContain('Inspect the persisted state and coordinator log before restarting');
     } finally {
       await stopLifecycleController(controller);
     }
