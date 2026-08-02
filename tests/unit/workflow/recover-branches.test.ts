@@ -5,8 +5,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { JobStore } from '#src/jobs/store.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { createSimulationBackend } from '#tools/simulation/core/backend.js';
+import { AbortError } from '#src/runtime/abort.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import type { JobTerminal } from '#src/jobs/records.js';
+import type { JobLaunch, JobTerminal } from '#src/jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -17,7 +19,7 @@ import { buildWorkflowPlan, type WorkflowPlan } from '#src/workflow/plan.js';
 import { commitWorkflowEvents } from '#src/workflow/projections.js';
 import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
 import { resumeAll } from '#src/workflow/recover.js';
-import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
+import { createWorkflowExecutionError, type WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
@@ -29,6 +31,11 @@ import { composeReducers } from '#src/store/reducers.js';
 import { sessionContinuationLeaseClaimedEvent } from '#src/sessions/continuation-lease-events.js';
 import { jobLaunchRequestedEvent } from '#src/jobs/store.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
+import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
+import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
+import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
+import { createFailedWorkflowDescendantReleaser } from '#src/coordinator/services/workflow-recovery-descendants.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
 // NOTE: "running" and "queued" branches today share the same code path
 // (both hit waitForAtoms). We retain two tests so that if phase-differentiated
@@ -50,6 +57,7 @@ const fixedTime = {
 
 const PROJECT_ROOT = '/tmp/coral-workflow-project';
 const BACKEND_NAMESPACE = 'workflow-test-ns';
+const noFailedWorkflowDescendants = () => [];
 
 function running(jobId: string, sessionId: string) {
   return {
@@ -76,6 +84,10 @@ async function* emit(events: WaitStreamEvent[]): AsyncGenerator<WaitStreamEvent>
   for (const event of events) {
     yield event;
   }
+}
+
+async function* failWait(error: unknown): AsyncGenerator<WaitStreamEvent> {
+  throw error;
 }
 
 function createWorkflowPlan(expression = 'architect'): WorkflowPlan {
@@ -261,7 +273,45 @@ function createHarness(options: {
     principal: testProjectPrincipal(projectRoot),
   });
 
-  return { db, plan, progressStore, executionSvc, createInvocationContext, waitRequests };
+  return { db, plan, progressStore, executionSvc, createInvocationContext, waitRequests, runtime };
+}
+
+function appendRecoverableWorkflowRoot(progressStore: JobStore, workflowId: string, projectRoot: string): void {
+  const plan = buildWorkflowPlan(workflowId, parseExpression('architect'), { defaultProvider: 'codex' });
+  commitWorkflowEvents(
+    progressStore.getDb(),
+    (c) => {
+      c.append(workflowPlanDeclaredEvent(workflowId, plan, TEST_PROVIDER_SCOPE));
+      return undefined;
+    },
+    fixedTime,
+    permissiveProviderLookupPort,
+  );
+  progressStore.appendLaunchRequested(workflowId, {
+    jobId: workflowId,
+    owner: { kind: 'workflow', id: workflowId },
+    sessionId: null,
+    provider: null,
+    projectRoot,
+    backendNamespace: BACKEND_NAMESPACE,
+    jobKind: 'workflow',
+    pool: 'default',
+    enqueueSequence: progressStore.nextEnqueueSequence(),
+    request: { prompt: '', cwd: projectRoot, bypassPermissions: false, coralEnv: {} },
+    createdAt: '2026-04-27T00:00:00.000Z',
+  });
+  progressStore.commit((c) => {
+    c.append({
+      type: 'job.runtime.started',
+      stream: { kind: 'job', id: workflowId },
+      namespace: BACKEND_NAMESPACE,
+      project: projectRoot,
+      refs: { jobId: workflowId, workflowId },
+      body: { transport: 'workflow', startedAt: '2026-04-27T00:00:00.000Z' },
+    });
+    return undefined;
+  });
+  progressStore.getDb().prepare('DELETE FROM projection_workflows WHERE workflow_id = ?').run(workflowId);
 }
 
 function setPendingReplacementLease(
@@ -399,6 +449,7 @@ describe('workflow recovery branch rules', () => {
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow,
+          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
       ).resolves.toEqual(['workflow-1']);
@@ -438,9 +489,10 @@ describe('workflow recovery branch rules', () => {
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow: vi.fn(),
+          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
-      ).rejects.toThrow('failed');
+      ).resolves.toEqual(['workflow-1']);
       expect(harness.executionSvc.resume).toHaveBeenCalledWith(
         harness.plan.slots[0].provider,
         expect.objectContaining({
@@ -492,9 +544,10 @@ describe('workflow recovery branch rules', () => {
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow: vi.fn(),
+          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
-      ).rejects.toThrow('failed');
+      ).resolves.toEqual(['workflow-1']);
       expect(harness.executionSvc.resume).toHaveBeenCalledTimes(1);
     } finally {
       harness.db.close();
@@ -524,9 +577,10 @@ describe('workflow recovery branch rules', () => {
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow: vi.fn(),
+          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
-      ).rejects.toThrow('failed');
+      ).resolves.toEqual(['workflow-1']);
       expect(harness.executionSvc.recordContinuationLease).toHaveBeenCalledWith(
         expect.objectContaining({
           sessionId: 'session-atom-1',
@@ -576,9 +630,20 @@ describe('workflow recovery branch rules', () => {
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow,
+          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
-      ).rejects.toThrow(`invalid child chain for slot '${slot.slotId}'`);
+      ).resolves.toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: 'failed',
+          workflowJobId: 'workflow-1',
+          lifecycleFault: expect.objectContaining({
+            kind: 'recovery_failed',
+            message: `Workflow recovery rejected invalid child chain for slot '${slot.slotId}' at job 'invalid-generation-2'.`,
+          }),
+        }),
+      );
       expect(harness.executionSvc.waitStream).not.toHaveBeenCalled();
     } finally {
       harness.db.close();
@@ -595,6 +660,7 @@ describe('workflow recovery branch rules', () => {
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow: vi.fn(),
+        releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
         time: fixedTime,
       });
 
@@ -622,6 +688,7 @@ describe('workflow recovery branch rules', () => {
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow: vi.fn(),
+        releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
         time: fixedTime,
       });
 
@@ -655,6 +722,7 @@ describe('workflow recovery branch rules', () => {
         getExecutionService,
         createInvocationContext: createReplacementContext,
         finalizeWorkflow: vi.fn(),
+        releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
         time: fixedTime,
       });
 
@@ -734,6 +802,7 @@ describe('workflow recovery branch rules', () => {
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow,
+        releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
         time: fixedTime,
       });
 
@@ -820,12 +889,10 @@ describe('workflow recovery branch rules', () => {
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow,
+          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
-      ).rejects.toMatchObject({
-        message: "Step 0, atom 'critic' launch failed: launch capacity unavailable",
-        failedSlotId: missingSlot.slotId,
-      });
+      ).resolves.toEqual(['workflow-1']);
 
       expect(harness.executionSvc.coralDispatch).toHaveBeenCalledTimes(1);
       expect(harness.executionSvc.coralDispatch).toHaveBeenCalledWith(
@@ -884,7 +951,7 @@ describe('workflow recovery branch rules', () => {
         },
       },
     });
-    const [completedSlot, missingSlot] = harness.plan.slots;
+    const [completedSlot] = harness.plan.slots;
     const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
     harness.executionSvc.coralDispatch.mockResolvedValue({
       status: 'rejected',
@@ -909,12 +976,10 @@ describe('workflow recovery branch rules', () => {
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow,
+          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
-      ).rejects.toMatchObject({
-        message: "Step 0, atom 'critic' launch failed: launch capacity unavailable",
-        failedSlotId: missingSlot.slotId,
-      });
+      ).resolves.toEqual(['workflow-1']);
 
       expect(harness.executionSvc.abort).toHaveBeenCalledWith([completedSlot.slotId]);
       expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
@@ -947,14 +1012,10 @@ describe('workflow recovery branch rules', () => {
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow,
+          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
-      ).rejects.toMatchObject({
-        message: "Step 0, atom 'architect' failed: exited with code 1",
-        aborted: false,
-        failedAtom: 'architect',
-        failedJobId: harness.plan.slots[0].slotId,
-      });
+      ).resolves.toEqual(['workflow-1']);
 
       expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
       expect(finalizeWorkflow.mock.calls[0]?.[0]).toMatchObject({
@@ -994,14 +1055,10 @@ describe('workflow recovery branch rules', () => {
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow,
+          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
-      ).rejects.toMatchObject({
-        message: "Step 0, atom 'critic' failed: exited with code 1",
-        aborted: false,
-        failedAtom: 'critic',
-        failedJobId: harness.plan.slots[1].slotId,
-      });
+      ).resolves.toEqual(['workflow-1']);
 
       expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
       expect(finalizeWorkflow.mock.calls[0]?.[0]).toMatchObject({
@@ -1048,11 +1105,19 @@ describe('workflow recovery branch rules', () => {
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow,
+          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
-      ).rejects.toThrow(`invalid durable relation for slot '${slot.slotId}'`);
+      ).resolves.toEqual(['workflow-1']);
       expect(finalizeWorkflow).toHaveBeenCalledWith(
-        expect.objectContaining({ outcome: 'failed', workflowJobId: 'workflow-1' }),
+        expect.objectContaining({
+          outcome: 'failed',
+          workflowJobId: 'workflow-1',
+          lifecycleFault: expect.objectContaining({
+            kind: 'recovery_failed',
+            message: `Workflow recovery rejected invalid durable relation for slot '${slot.slotId}' and job '${slot.slotId}'.`,
+          }),
+        }),
       );
       expect(harness.executionSvc.waitStream).not.toHaveBeenCalled();
     } finally {
@@ -1075,16 +1140,584 @@ describe('workflow recovery branch rules', () => {
           getExecutionService: () => harness.executionSvc,
           createInvocationContext: harness.createInvocationContext,
           finalizeWorkflow,
+          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
           time: fixedTime,
         }),
-      ).rejects.toThrow(`could not find provider session 'session-atom-1' for slot '${slot.slotId}'`);
+      ).resolves.toEqual(['workflow-1']);
       expect(finalizeWorkflow).toHaveBeenCalledWith(
-        expect.objectContaining({ outcome: 'failed', workflowJobId: 'workflow-1' }),
+        expect.objectContaining({
+          outcome: 'failed',
+          workflowJobId: 'workflow-1',
+          lifecycleFault: expect.objectContaining({
+            kind: 'recovery_failed',
+            message: `Workflow recovery could not find provider session 'session-atom-1' for slot '${slot.slotId}'.`,
+          }),
+        }),
       );
       expect(harness.executionSvc.waitStream).not.toHaveBeenCalled();
     } finally {
       harness.db.close();
     }
   });
+
+  it.each([
+    ['plan', '{'],
+    ['provider_scope', '{'],
+    ['lifecycle', 'invalid-lifecycle'],
+  ] as const)('contains malformed workflow %s hydration and visits the next workflow', async (column, value) => {
+    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+    appendRecoverableWorkflowRoot(harness.progressStore, 'workflow-2', '/tmp/coral-workflow-project-2');
+    harness.db.prepare(`UPDATE projection_workflows SET ${column} = ? WHERE workflow_id = ?`).run(value, 'workflow-1');
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const releaseFailedWorkflowDescendants = vi.fn(() => []);
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => harness.executionSvc,
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          releaseFailedWorkflowDescendants,
+          time: fixedTime,
+        }),
+      ).resolves.toEqual(['workflow-1', 'workflow-2']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: 'failed',
+          workflowJobId: 'workflow-1',
+          lifecycleFault: expect.objectContaining({ kind: 'recovery_failed' }),
+        }),
+      );
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: 'failed',
+          workflowJobId: 'workflow-2',
+          lifecycleFault: expect.objectContaining({
+            kind: 'recovery_failed',
+            message: 'Workflow recovery could not find a workflow projection.',
+          }),
+        }),
+      );
+      expect(releaseFailedWorkflowDescendants).toHaveBeenCalledWith('workflow-1');
+      expect(releaseFailedWorkflowDescendants).toHaveBeenCalledWith('workflow-2');
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('contains invocation-context construction failure and visits the next workflow', async () => {
+    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+    appendRecoverableWorkflowRoot(harness.progressStore, 'workflow-2', '/tmp/coral-workflow-project-2');
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const releaseFailedWorkflowDescendants = vi.fn(() => []);
+    const getExecutionService = vi.fn(() => harness.executionSvc);
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService,
+          createInvocationContext: () => {
+            throw new Error('invocation context unavailable');
+          },
+          finalizeWorkflow,
+          releaseFailedWorkflowDescendants,
+          time: fixedTime,
+        }),
+      ).resolves.toEqual(['workflow-1', 'workflow-2']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: 'failed',
+          workflowJobId: 'workflow-1',
+          lifecycleFault: expect.objectContaining({
+            kind: 'recovery_failed',
+            message: 'invocation context unavailable',
+          }),
+        }),
+      );
+      expect(getExecutionService).not.toHaveBeenCalled();
+      expect(releaseFailedWorkflowDescendants).toHaveBeenCalledWith('workflow-1');
+      expect(releaseFailedWorkflowDescendants).toHaveBeenCalledWith('workflow-2');
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('releases real adopted child state and continues to a healthy workflow after recovery fails', async () => {
+    const backend = createSimulationBackend();
+    const failedWorkflowId = 'workflow-adopted-child';
+    const healthyWorkflowId = 'workflow-after-adopted-child';
+    const failedPlan = buildWorkflowPlan(failedWorkflowId, parseExpression('architect'), {
+      defaultProvider: 'codex',
+    });
+    const healthyPlan = buildWorkflowPlan(healthyWorkflowId, parseExpression('architect'), {
+      defaultProvider: 'codex',
+    });
+    const childJobId = failedPlan.slots[0].slotId;
+    const healthyChildJobId = healthyPlan.slots[0].slotId;
+    const sessionId = 'session-adopted-child';
+    const healthySessionId = 'session-healthy-child';
+    const providerScope = backend.createInvocationContext().providerScope;
+    if (providerScope === undefined) throw new Error('expected simulation provider scope');
+    expect(childJobId.startsWith(`${failedWorkflowId}:`)).toBe(true);
+
+    const appendWorkflowRoot = (workflowId: string, plan: WorkflowPlan): void => {
+      commitWorkflowEvents(
+        backend.progressStore.getDb(),
+        (c) => {
+          c.append(workflowPlanDeclaredEvent(workflowId, plan, providerScope));
+          return undefined;
+        },
+        backend.runtime.time,
+        permissiveProviderLookupPort,
+      );
+      backend.progressStore.appendLaunchRequested(workflowId, {
+        jobId: workflowId,
+        owner: { kind: 'workflow', id: workflowId },
+        sessionId: null,
+        provider: null,
+        projectRoot: backend.projectRoot,
+        backendNamespace: backend.namespace,
+        jobKind: 'workflow',
+        pool: 'default',
+        enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+        request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+        createdAt: '2026-04-27T00:00:00.000Z',
+      });
+      backend.progressStore.commit((c) => {
+        c.append({
+          type: 'job.runtime.started',
+          stream: { kind: 'job', id: workflowId },
+          namespace: backend.namespace,
+          project: backend.projectRoot,
+          refs: { jobId: workflowId, workflowId },
+          body: { transport: 'workflow', startedAt: '2026-04-27T00:00:00.000Z' },
+        });
+        return undefined;
+      });
+    };
+
+    appendWorkflowRoot(failedWorkflowId, failedPlan);
+    seedTestSessionProjection(backend.progressStore.getDb(), {
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      activeJobId: childJobId,
+    });
+    const sessionRow = backend.progressStore
+      .getDb()
+      .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
+      .get(sessionId);
+    if (sessionRow === undefined) throw new Error('expected adopted child session');
+    const sessionEntry = JSON.parse(sessionRow.entry) as ProviderSession;
+    sessionEntry.binding = {
+      provider: 'codex',
+      kind: 'profile',
+      binding: {
+        profile: { canonicalLocation: '/tmp/sim/accounts/codex', routing: { kind: 'home' } },
+        guarantee: 'profile-only',
+      },
+    };
+    backend.progressStore
+      .getDb()
+      .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
+      .run(JSON.stringify(sessionEntry), sessionId);
+
+    backend.runtime.spawner.enqueueDurable({ pid: 41_424, exit: null });
+    const durable = await backend.runtime.process.durable.launch({
+      provider: 'codex',
+      command: 'codex',
+      args: ['exec'],
+      jobDir: backend.progressStore.jobDir(childJobId),
+    });
+    const childLaunch: JobLaunch = {
+      jobId: childJobId,
+      owner: { kind: 'workflow', id: failedWorkflowId },
+      sessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+      providerAction: 'exec',
+      parentWorkflowJobId: failedWorkflowId,
+      workflowSlotId: childJobId,
+      workflowSlotGeneration: 0,
+      request: { prompt: '', cwd: backend.projectRoot, bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-04-27T00:00:00.000Z',
+    };
+    backend.progressStore.appendLaunchRequested(childJobId, childLaunch);
+    backend.progressStore.appendRuntimeStarted(childJobId, durable.runtimeRecord);
+
+    appendWorkflowRoot(healthyWorkflowId, healthyPlan);
+    seedTestSessionProjection(backend.progressStore.getDb(), {
+      sessionId: healthySessionId,
+      provider: 'codex',
+      projectRoot: backend.projectRoot,
+      backendNamespace: backend.namespace,
+      activeJobId: healthyChildJobId,
+    });
+    backend.progressStore.appendLaunchRequested(healthyChildJobId, {
+      ...childLaunch,
+      jobId: healthyChildJobId,
+      owner: { kind: 'workflow', id: healthyWorkflowId },
+      sessionId: healthySessionId,
+      parentWorkflowJobId: healthyWorkflowId,
+      workflowSlotId: healthyChildJobId,
+      enqueueSequence: backend.progressStore.nextEnqueueSequence(),
+    });
+    commitJobTerminal(backend.progressStore, healthyChildJobId, healthySessionId, {
+      content: 'healthy recovery',
+      outcome: { kind: 'completed' },
+      durationMs: 0,
+    });
+    const log = vi.fn<(message: string) => void>();
+    const emitSessionReleased = vi.fn();
+    const restoreActiveLaunch = vi.spyOn(backend.launchCoordinator, 'restoreActiveLaunch');
+    const releaseLaunch = vi.spyOn(backend.launchCoordinator, 'releaseLaunch');
+    const kill = vi.spyOn(backend.runtime.process, 'kill');
+    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => backend.progressStore.commit(cb);
+    const recoveryCoordinator = createRecoveryCoordinator({
+      progressStore: backend.progressStore,
+      runtime: backend.runtime,
+      runtimeState: { setLaunchFenceActive: vi.fn() },
+      eventBus: backend.eventBus,
+      getRecoveryService: () => backend.service,
+      createInvocationContext: backend.createInvocationContext,
+      log,
+    });
+
+    try {
+      await recoveryCoordinator.runStartupRecovery({
+        namespace: backend.namespace,
+        bundleHash: 'test-bundle',
+        runtime: backend.runtime,
+        progressStore: backend.progressStore,
+        getRecoveryService: () => backend.service,
+        createInvocationContext: backend.createInvocationContext,
+        signal: new AbortController().signal,
+        log,
+        cleanupStaleJobs: () => {},
+        sessionLookup: createProjectionSessionLookup(backend.progressStore.getDb()),
+        coordinatorCommit,
+      });
+      expect(restoreActiveLaunch).toHaveBeenCalledWith(childJobId, 'codex', childLaunch.owner, 'default');
+      expect(backend.launchCoordinator.getActiveJobIds()).toContain(childJobId);
+
+      const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
+        progressStore: backend.progressStore,
+        runtime: backend.runtime,
+        coordinatorCommit,
+        getExecutionService: () => backend.service,
+        createInvocationContext: backend.createInvocationContext,
+        releaseAdoptedJob: recoveryCoordinator.releaseAdoptedJob,
+        emitSessionReleased,
+        log,
+      });
+      let workflowServiceCalls = 0;
+
+      await expect(
+        resumeAll({
+          db: backend.progressStore.getDb(),
+          progressStore: backend.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => {
+            workflowServiceCalls += 1;
+            if (workflowServiceCalls === 1) {
+              throw new Error('workflow recovery failed after child adoption');
+            }
+            return backend.service as never;
+          },
+          createInvocationContext: backend.createInvocationContext,
+          finalizeWorkflow: createWorkflowRecoveryFinalizer({
+            runtime: backend.runtime,
+            progressStore: backend.progressStore,
+            coordinatorCommit,
+            log,
+          }),
+          releaseFailedWorkflowDescendants,
+          log,
+          time: backend.runtime.time,
+        }),
+      ).resolves.toEqual([failedWorkflowId, healthyWorkflowId]);
+
+      expect(backend.progressStore.readStatus(failedWorkflowId)?.phase).toBe('error');
+      expect(backend.progressStore.readStatus(healthyWorkflowId)?.phase).toBe('completed');
+      expect(kill).toHaveBeenCalledWith(durable.pid, 'SIGTERM');
+      expect(releaseLaunch).toHaveBeenCalledWith(childJobId, 'default');
+      expect(backend.launchCoordinator.getActiveJobIds()).not.toContain(childJobId);
+      expect(backend.service.abort([childJobId])).toEqual({ aborted: [], notFound: [childJobId] });
+      expect(
+        createProjectionSessionLookup(backend.progressStore.getDb()).readProviderSession(sessionId)?.activeJobId,
+      ).toBe(undefined);
+      expect(emitSessionReleased).toHaveBeenCalledWith({ sessionId, jobId: childJobId });
+      expect(log).toHaveBeenCalledWith(
+        `Workflow recovery child ${childJobId} session claim ${sessionId} disposition: released.\n`,
+      );
+      expect(releaseFailedWorkflowDescendants(failedWorkflowId)).toEqual([
+        { jobId: childJobId, sessionId, sessionClaimRelease: 'already_absent' },
+      ]);
+    } finally {
+      await recoveryCoordinator.teardown();
+      await backend.backend.shutdown('test cleanup');
+    }
+  });
+
+  it('retains an unconfirmed live descendant claim and continues releasing later descendants', () => {
+    const harness = createHarness({
+      expression: '(architect, reviewer)',
+      atomPhase: 'running',
+      projectionPhase: 'running',
+    });
+    const failedJobId = harness.plan.slots[0].slotId;
+    const failedSessionId = 'session-atom-1';
+    const nextJobId = harness.plan.slots[1].slotId;
+    const nextSessionId = 'session-atom-2';
+    const stopError = new Error('descendant stop failed');
+    const abort = vi.fn((jobIds: string[]) => {
+      if (jobIds[0] === failedJobId) throw stopError;
+      return { aborted: jobIds, notFound: [] };
+    });
+    const releaseAdoptedJob = vi.fn();
+    const emitSessionReleased = vi.fn();
+    const log = vi.fn<(message: string) => void>();
+    const releaseFailedWorkflowDescendants = createFailedWorkflowDescendantReleaser({
+      progressStore: harness.progressStore,
+      runtime: harness.runtime,
+      coordinatorCommit: (cb) => harness.progressStore.commit(cb),
+      getExecutionService: () => ({ abort }),
+      createInvocationContext: harness.createInvocationContext,
+      releaseAdoptedJob,
+      emitSessionReleased,
+      log,
+    });
+
+    try {
+      expect(releaseFailedWorkflowDescendants('workflow-1')).toEqual([
+        { jobId: nextJobId, sessionId: nextSessionId, sessionClaimRelease: 'released' },
+      ]);
+      expect(abort).toHaveBeenCalledWith([failedJobId]);
+      expect(abort).toHaveBeenCalledWith([nextJobId]);
+      expect(releaseAdoptedJob).not.toHaveBeenCalledWith(failedJobId);
+      expect(releaseAdoptedJob).toHaveBeenCalledWith(nextJobId);
+      expect(createProjectionSessionLookup(harness.db).readProviderSession(failedSessionId)?.activeJobId).toBe(
+        failedJobId,
+      );
+      expect(createProjectionSessionLookup(harness.db).readProviderSession(nextSessionId)?.activeJobId).toBeUndefined();
+      expect(emitSessionReleased).toHaveBeenCalledWith({ sessionId: nextSessionId, jobId: nextJobId });
+      expect(log).toHaveBeenCalledWith(
+        `Workflow recovery could not confirm child ${failedJobId} stopped; retained adopted runtime ownership and session claim ${failedSessionId}: ${stopError.message}\n`,
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('releases descendants after a returned workflow failure', async () => {
+    const harness = createHarness({
+      atomPhase: 'running',
+      projectionPhase: null,
+      atomTerminals: {
+        0: {
+          content: '',
+          outcome: {
+            kind: 'job_fault',
+            fault: { kind: 'wrapper_crashed', cause: { message: 'workflow child failed' } },
+          },
+          durationMs: 0,
+        },
+      },
+    });
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const releaseFailedWorkflowDescendants = vi.fn(() => []);
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => harness.executionSvc,
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          releaseFailedWorkflowDescendants,
+          signal: new AbortController().signal,
+          time: fixedTime,
+        }),
+      ).resolves.toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'failed', workflowJobId: 'workflow-1' }),
+      );
+      expect(releaseFailedWorkflowDescendants).toHaveBeenCalledWith('workflow-1');
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('releases descendants after emitting a returned aborted finalization intent', async () => {
+    const harness = createHarness({
+      atomPhase: 'running',
+      projectionPhase: null,
+      atomTerminals: {
+        0: { content: '', outcome: { kind: 'aborted', reason: 'user_abort' }, durationMs: 0 },
+      },
+    });
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const releaseFailedWorkflowDescendants = vi.fn(() => []);
+    const log = vi.fn<(message: string) => void>();
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => harness.executionSvc,
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          releaseFailedWorkflowDescendants,
+          log,
+          signal: new AbortController().signal,
+          time: fixedTime,
+        }),
+      ).resolves.toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'aborted', workflowJobId: 'workflow-1' }),
+      );
+      expect(releaseFailedWorkflowDescendants).toHaveBeenCalledWith('workflow-1');
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('with aborted outcome'));
+      expect(log.mock.calls.flat().join('')).not.toContain('after recovery failed');
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('contains a thrown workflow execution abort and emits an aborted finalization intent', async () => {
+    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const releaseFailedWorkflowDescendants = vi.fn(() => []);
+    const workflowAbort = createWorkflowExecutionError('workflow child aborted', true, []);
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => {
+            throw workflowAbort;
+          },
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          releaseFailedWorkflowDescendants,
+          signal: new AbortController().signal,
+          time: fixedTime,
+        }),
+      ).resolves.toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'aborted', workflowJobId: 'workflow-1' }),
+      );
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('contains an item-local AbortError while the coordinator signal is live', async () => {
+    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const releaseFailedWorkflowDescendants = vi.fn(() => []);
+    const localAbort = new AbortError({ stage: 'workflow child lookup' });
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => {
+            throw localAbort;
+          },
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          releaseFailedWorkflowDescendants,
+          signal: new AbortController().signal,
+          time: fixedTime,
+        }),
+      ).resolves.toEqual(['workflow-1']);
+      expect(finalizeWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'failed', workflowJobId: 'workflow-1' }),
+      );
+      expect(releaseFailedWorkflowDescendants).toHaveBeenCalledWith('workflow-1');
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('propagates a failed workflow finalizer without releasing descendants', async () => {
+    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+    const finalizerError = new Error('workflow finalizer unavailable');
+    const finalizeWorkflow = vi.fn(() => {
+      throw finalizerError;
+    });
+    const releaseFailedWorkflowDescendants = vi.fn(() => []);
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => {
+            throw new Error('workflow execution recovery failed');
+          },
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          releaseFailedWorkflowDescendants,
+          signal: new AbortController().signal,
+          time: fixedTime,
+        }),
+      ).rejects.toBe(finalizerError);
+      expect(finalizeWorkflow).toHaveBeenCalledOnce();
+      expect(releaseFailedWorkflowDescendants).not.toHaveBeenCalled();
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('propagates coordinator cancellation without invoking the workflow finalizer', async () => {
+    const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    const releaseFailedWorkflowDescendants = vi.fn(() => []);
+    const cancellation = new Error('coordinator stopped workflow recovery');
+    const controller = new AbortController();
+    controller.abort(cancellation);
+    harness.executionSvc.waitStream.mockReturnValue(failWait(cancellation));
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => harness.executionSvc,
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          releaseFailedWorkflowDescendants,
+          signal: controller.signal,
+          time: fixedTime,
+        }),
+      ).rejects.toBe(cancellation);
+      expect(finalizeWorkflow).not.toHaveBeenCalled();
+      expect(releaseFailedWorkflowDescendants).not.toHaveBeenCalled();
+    } finally {
+      harness.db.close();
+    }
+  });
 });
-import { seedTestSessionProjection } from '#tests/helpers/session.js';

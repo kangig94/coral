@@ -1,10 +1,17 @@
 import { readBackendInfo } from '../../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
+import { isRecord } from '../../../infra/json.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
+import type { StoragePort } from '../../../infra/port-types.js';
+import { parseIsoTimestamp } from '../../../infra/time.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isBackendHealth, isBackendPing, type BackendHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
+
+const RECENT_STARTUP_DIAGNOSTIC_MS = 5 * 60_000;
+
+type PublicDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootstrap_unhandled_rejection';
 
 type BackendStatus =
   | {
@@ -32,7 +39,65 @@ type BackendStatus =
 
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
-  | { status: 'shutting_down' | 'unauthorized' | 'not_running' };
+  | { status: 'shutting_down' | 'unauthorized' | 'not_running' }
+  | { status: 'recent_failure'; phase: PublicDiagnosticPhase };
+
+type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
+
+function isPublicDiagnosticPhase(value: unknown): value is PublicDiagnosticPhase {
+  return value === 'startup_failed' || value === 'fatal_shutdown_error' || value === 'bootstrap_unhandled_rejection';
+}
+
+export function statusFromStartupDiagnostic(
+  value: unknown,
+  now: number,
+  earliestRecordedAt = Number.NEGATIVE_INFINITY,
+  expectedPid?: number,
+): RecentFailureStatus | null {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 1 ||
+    value.state !== 'stopped_with_diagnostic' ||
+    value.retryable !== false ||
+    !isPublicDiagnosticPhase(value.phase) ||
+    typeof value.recordedAt !== 'string' ||
+    !isRecord(value.error)
+  ) {
+    return null;
+  }
+
+  const recordedAt = parseIsoTimestamp(value.recordedAt);
+  // A status probe has no spawn-attempt ID to compare. Five minutes covers the
+  // 5s bind and 15s readiness budgets plus operator handoff, while proving only
+  // a recent failed attempt, not an ongoing loop. The discovery start time also
+  // prevents a prior attempt's diagnostic from describing a newer daemon.
+  if (
+    !Number.isFinite(recordedAt) ||
+    recordedAt < earliestRecordedAt ||
+    recordedAt > now ||
+    now - recordedAt > RECENT_STARTUP_DIAGNOSTIC_MS ||
+    (expectedPid !== undefined && value.pid !== expectedPid)
+  ) {
+    return null;
+  }
+
+  return { status: 'recent_failure', phase: value.phase };
+}
+
+function noDaemonStatus(
+  storage: Pick<StoragePort, 'readFileSync'>,
+  diagnosticFile: string,
+  now: number,
+  earliestRecordedAt?: number,
+  expectedPid?: number,
+): BackendStatusFull {
+  try {
+    const value: unknown = JSON.parse(storage.readFileSync(diagnosticFile, 'utf-8'));
+    return statusFromStartupDiagnostic(value, now, earliestRecordedAt, expectedPid) ?? { status: 'not_running' };
+  } catch {
+    return { status: 'not_running' };
+  }
+}
 
 export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
@@ -41,7 +106,24 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     env: runtime.env,
     paths: runtime.paths,
   });
-  if (!info || !isProcessAlive(info.pid)) return { status: 'not_running' };
+  if (!info || !isProcessAlive(info.pid)) {
+    return noDaemonStatus(
+      runtime.storage,
+      runtime.paths.coral.coordinator.startupDiagnosticFile,
+      runtime.time.now(),
+      info?.startedAt,
+      info?.pid,
+    );
+  }
+
+  const unreachableStatus = (): BackendStatusFull =>
+    noDaemonStatus(
+      runtime.storage,
+      runtime.paths.coral.coordinator.startupDiagnosticFile,
+      runtime.time.now(),
+      info.startedAt,
+      info.pid,
+    );
 
   try {
     const pingResponse = await fetch(`http://${info.host}:${info.port}/health`, {
@@ -51,7 +133,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     const pingBody = await parseJsonResponse(pingResponse);
     if (pingResponse.status === 200) {
       if (!isBackendPing(pingBody) || pingBody.namespace !== info.namespace || pingBody.flavor !== info.flavor) {
-        return { status: 'not_running' };
+        return unreachableStatus();
       }
       if (pingBody.status === 'draining') {
         return { status: 'shutting_down' };
@@ -59,7 +141,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     } else if (pingResponse.status === 503 || TransientHttpError.isTransientStatus(pingResponse.status)) {
       return { status: 'shutting_down' };
     } else {
-      return { status: 'not_running' };
+      return unreachableStatus();
     }
 
     const healthResponse = await fetch(`http://${info.host}:${info.port}/health?detailed=1`, {
@@ -70,7 +152,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     const body = await parseJsonResponse(healthResponse);
     if (healthResponse.status === 200) {
       if (!isBackendHealth(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
-        return { status: 'not_running' };
+        return unreachableStatus();
       }
       if (body.status === 'draining') {
         return { status: 'shutting_down' };
@@ -82,8 +164,8 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       return { status: 'shutting_down' };
     }
     if (healthResponse.status === 401) return { status: 'unauthorized' };
-    return { status: 'not_running' };
+    return unreachableStatus();
   } catch {
-    return { status: 'not_running' };
+    return unreachableStatus();
   }
 }

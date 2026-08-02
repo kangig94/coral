@@ -59,8 +59,9 @@ describe('coordinator startup ordering', () => {
       await Promise.resolve();
       order.push('waitFreshUntil:resolved');
     });
-    const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async () => {
+    const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async (options) => {
       order.push('jobsReconcile.runStartup');
+      return options.progressStore;
     });
     const kbDaemonSupervisor = createMockKbDaemonSupervisor();
 
@@ -135,8 +136,9 @@ describe('coordinator startup ordering', () => {
         const consumerId = typeof args[0] === 'string' ? args[2] : args[1];
         order.push(`waitFreshUntil:${consumerId}`);
       });
-    const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async () => {
+    const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async (options) => {
       order.push('jobsReconcile.runStartup');
+      return options.progressStore;
     });
     const resumeAll = vi.spyOn(workflowRecover, 'resumeAll').mockImplementation(async () => {
       order.push('workflowRecover.resumeAll');
@@ -281,6 +283,7 @@ describe('coordinator startup ordering', () => {
         c.append(sessionContinuationLeaseRecordedEvent(pending, lease));
         return undefined;
       });
+      return options.progressStore;
     });
     const resumeAll = vi.spyOn(workflowRecover, 'resumeAll').mockImplementation(async (options) => {
       order.push('workflowRecover.resumeAll');

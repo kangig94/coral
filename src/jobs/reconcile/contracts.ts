@@ -7,6 +7,7 @@ import type { LaunchPool } from '../contracts/admission.js';
 import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { ProviderBindingFailure } from '../../providers/contracts/binding.js';
+import type { SessionJobClaimReleaseResult } from '../../sessions/contracts.js';
 
 export type ProviderRecoveryLaunch = JobLaunch & {
   readonly sessionId: string;
@@ -45,7 +46,10 @@ export type ProviderRecoveryAuthorityCapture =
 
 export interface RecoveryCapableService {
   captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthorityCapture>;
-  finalizeProviderRecoveryBindingFailure(launchRecord: JobLaunch, failure: ProviderBindingFailure): void;
+  finalizeProviderRecoveryBindingFailure(
+    launchRecord: JobLaunch,
+    failure: ProviderBindingFailure,
+  ): SessionJobClaimReleaseResult;
   finalizeInterruptedAppServerJob(
     authority: ProviderRecoveryAuthority,
     runtimeRecord: AppServerRuntime,
@@ -73,5 +77,5 @@ export interface RecoveryCapableService {
     result: JobTerminalInput,
     phase: JobPhase,
     options: TerminalWriteOptions & { pool: LaunchPool },
-  ): void;
+  ): SessionJobClaimReleaseResult;
 }

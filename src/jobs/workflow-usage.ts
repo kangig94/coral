@@ -2,7 +2,6 @@ import type { Database } from '../store/db.js';
 
 import { USAGE_TOKEN_FIELDS, type UsageSummary } from '../providers/contract.js';
 import { jobDiagnosticsSchema } from './terminal/result.js';
-import { readProjectionJobRows } from './projection-row.js';
 
 const TOKEN_FIELDS = USAGE_TOKEN_FIELDS;
 
@@ -26,9 +25,14 @@ function hasUsageValue(usage: UsageSummary): boolean {
 export function aggregateWorkflowUsage(db: Database, workflowJobId: string): UsageSummary | undefined {
   // Workflow aggregates intentionally sum direct child jobs only; nested
   // workflow jobs contribute through their own terminal diagnostics.
-  const rows: WorkflowUsageRow[] = readProjectionJobRows(db).filter(
-    (row) => row.parent_workflow_job_id === workflowJobId,
-  );
+  const rows = db
+    .prepare<[string], WorkflowUsageRow>(
+      `SELECT diagnostics
+         FROM projection_jobs
+        WHERE parent_workflow_job_id = ?
+        ORDER BY job_id ASC`,
+    )
+    .all(workflowJobId);
 
   const result: UsageSummary = {};
   let sawUsage = false;

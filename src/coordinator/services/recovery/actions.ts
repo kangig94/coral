@@ -1,4 +1,4 @@
-import { formatError } from '../../../infra/error-format.js';
+import { errorMessage, formatError } from '../../../infra/error-format.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobRuntime } from '../../../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
@@ -10,13 +10,14 @@ import type { RecoveryAction } from '../../../jobs/reconcile/plan.js';
 import type { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { SessionLookup } from '../../../sessions/lookup.js';
-import { releaseSessionJobClaim } from '../../../sessions/job-release.js';
+import { describeSessionJobClaimReleaseResult, releaseSessionJobClaim } from '../../../sessions/job-release.js';
 import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import type { RecoveryCommitFence } from '../../../jobs/reconcile/contracts.js';
 import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import type { CommitEventsFn } from '../../../store/append.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
+import { gracefulKillByPid } from '../../live/process-supervision.js';
 
 export type QueuedRecoverableJob = { jobId: string; authority: ProviderRecoveryAuthority };
 export type RunningRecoverableJob = {
@@ -99,9 +100,11 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
       const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
       signal.throwIfAborted();
       if (!captured.ok) {
-        service.finalizeProviderRecoveryBindingFailure(action.launchRecord, captured.failure);
+        const releaseResult = service.finalizeProviderRecoveryBindingFailure(action.launchRecord, captured.failure);
         recoveryRegistry.remove(action.jobId);
-        log(`Rejected queued recovery with invalid provider authority: ${action.jobId}\n`);
+        log(
+          `Rejected queued recovery with invalid provider authority: ${action.jobId}; session claim disposition: ${describeSessionJobClaimReleaseResult(releaseResult)}.\n`,
+        );
         return;
       }
       const { authority } = captured;
@@ -114,27 +117,23 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
       const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
       signal.throwIfAborted();
       if (!captured.ok) {
+        // A rejected authority is a per-job fault, never a process verdict: throwing
+        // here is fatal to startup because the register loop runs outside the adoption
+        // try/catch, which would abandon every other job's recovery too.
         if (isDurableCliRuntime(action.runtimeRecord) && runtime.process.isAlive(action.runtimeRecord.pid)) {
           try {
-            runtime.process.kill(action.runtimeRecord.pid, 'SIGTERM');
+            gracefulKillByPid(runtime, action.runtimeRecord.pid);
           } catch (error: unknown) {
-            throw new Error(
-              `Failed to stop rejected recovery process ${action.runtimeRecord.pid}: ${formatError(error)}`,
-              { cause: error },
+            log(
+              `Failed to send SIGTERM to rejected recovery process ${action.runtimeRecord.pid} for job ${action.jobId}; recovery finalization will continue: ${errorMessage(error)}\n`,
             );
           }
-          throw new Error(
-            `Recovery authority rejected for live durable job ${action.jobId}; process stop requested and launch fence retained.`,
-          );
         }
-        if (isAppServerRuntime(action.runtimeRecord)) {
-          throw new Error(
-            `Recovery authority rejected for app-server job ${action.jobId}; provider work cannot be stopped without the persisted binding.`,
-          );
-        }
-        service.finalizeProviderRecoveryBindingFailure(action.launchRecord, captured.failure);
+        const releaseResult = service.finalizeProviderRecoveryBindingFailure(action.launchRecord, captured.failure);
         recoveryRegistry.remove(action.jobId);
-        log(`Rejected running recovery with invalid provider authority: ${action.jobId}\n`);
+        log(
+          `Rejected running recovery with invalid provider authority: terminalized ${action.jobId}; session claim disposition: ${describeSessionJobClaimReleaseResult(releaseResult)}. Run coral-cli jobs detail ${action.jobId} for the recorded reason.\n`,
+        );
         return;
       }
       const { authority } = captured;
@@ -162,7 +161,7 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
         return;
       }
 
-      releaseSessionJobClaim({
+      const releaseResult = releaseSessionJobClaim({
         projectRoot: session.projectRoot,
         runtime,
         emitSessionReleased,
@@ -173,9 +172,13 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
       });
       const status = progressStore.readStatus(action.jobId);
       if (status && isTerminalPhase(status.phase)) {
-        log(`Released terminal session claim: ${action.sessionId}\n`);
+        log(
+          `Terminal session claim ${action.sessionId} disposition: ${describeSessionJobClaimReleaseResult(releaseResult)}.\n`,
+        );
       } else {
-        log(`Released orphaned session claim: ${action.sessionId}\n`);
+        log(
+          `Orphaned session claim ${action.sessionId} disposition: ${describeSessionJobClaimReleaseResult(releaseResult)}.\n`,
+        );
       }
       return;
     }

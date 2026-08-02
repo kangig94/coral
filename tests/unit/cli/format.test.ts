@@ -717,6 +717,21 @@ describe('cli format', () => {
       );
     });
 
+    it('formats a recent coordinator failure with its phase and log guidance', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recent_failure',
+          phase: 'startup_failed',
+        }),
+      ).toBe(
+        [
+          'Backend is not running after a recent coordinator failure.',
+          'Phase: startup_failed',
+          'Next step: inspect the coordinator log, fix the reported cause, then retry a coral-cli mutating command to relaunch it.',
+        ].join('\n'),
+      );
+    });
+
     it('formats a shutting-down backend status', () => {
       expect(formatBackendStatus({ status: 'shutting_down' })).toBe('Backend shutting down');
     });

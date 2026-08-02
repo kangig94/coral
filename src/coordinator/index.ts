@@ -39,6 +39,7 @@ import { ConsumerDrainTimeout, ConsumerDriver } from '../projection-consumers/in
 import type { KbCorpusPublication, KbCorpusSnapshot } from '../kb/contract.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
+import { createFailedWorkflowDescendantReleaser } from './services/workflow-recovery-descendants.js';
 import { assertDescriberCoverage } from '../read-model/event-describers.js';
 import { aggregateWorkflowUsage } from '../jobs/workflow-usage.js';
 import { JobStore } from '../jobs/store.js';
@@ -473,7 +474,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       ]);
       signal.throwIfAborted();
 
-      await jobsReconcile.runStartup({
+      const recoveryProgressStore = await jobsReconcile.runStartup({
         recoveryCoordinator,
         namespace: identity.namespace,
         bundleHash: identity.bundleHash,
@@ -501,7 +502,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
       await workflowRecover.resumeAll({
         db,
-        progressStore,
+        progressStore: recoveryProgressStore,
         loadJobDetails: loadJobProjectionDetails,
         getExecutionService: (ctx) => getExecutionService(ctx) as never,
         createInvocationContext,
@@ -511,6 +512,18 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
           coordinatorCommit,
           log: identity.log,
         }),
+        releaseFailedWorkflowDescendants: createFailedWorkflowDescendantReleaser({
+          progressStore: recoveryProgressStore,
+          runtime,
+          coordinatorCommit,
+          getExecutionService,
+          createInvocationContext,
+          releaseAdoptedJob: recoveryCoordinator.releaseAdoptedJob,
+          emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
+          log: identity.log,
+        }),
+        signal,
+        log: identity.log,
         time: runtime.time,
         drainDeadlineMs: resolveDrainDeadlineMs(runtime.env),
         staleAbortTimeoutMs: resolveStaleAbortTimeoutMs(runtime.env),

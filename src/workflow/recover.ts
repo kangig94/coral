@@ -1,6 +1,8 @@
 import type { Database } from '../store/db.js';
 
 import { errorMessage } from '../infra/error-format.js';
+import { describeSessionJobClaimReleaseResult } from '../sessions/job-release.js';
+import type { SessionJobClaimReleaseResult } from '../sessions/contracts.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { TimePort } from '../infra/port-types.js';
 import { nowIsoString } from '../infra/time.js';
@@ -45,6 +47,12 @@ type WorkflowSlotJobRow = ProjectionJobStoredRow & { workflow_slot: string };
 type RecoveredWorkflowFinalization = {
   intent: WorkflowFinalizationIntent;
   error?: WorkflowExecutionError;
+};
+
+export type WorkflowRecoveryDescendantRelease = {
+  jobId: string;
+  sessionId: string;
+  sessionClaimRelease: SessionJobClaimReleaseResult;
 };
 
 /**
@@ -819,6 +827,9 @@ export async function resumeAll(options: {
   getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   finalizeWorkflow: (intent: WorkflowFinalizationIntent) => void;
+  releaseFailedWorkflowDescendants: (workflowId: string) => readonly WorkflowRecoveryDescendantRelease[];
+  signal?: AbortSignal;
+  log?: (message: string) => void;
   onProgress?: (workflowId: string, message: string) => void;
   staleTimeoutMs?: number;
   staleCheckIntervalMs?: number;
@@ -835,59 +846,74 @@ export async function resumeAll(options: {
   const resumedWorkflowIds: string[] = [];
 
   for (const jobId of options.progressStore.listJobIds()) {
+    options.signal?.throwIfAborted();
     const status = options.progressStore.readStatus(jobId);
     if (!status || status.jobKind !== 'workflow') continue;
     if (status.phase === 'completed' || status.phase === 'error' || status.phase === 'aborted') continue;
 
-    const projection = readWorkflowProjection(options.db, jobId);
-    if (!projection) {
-      options.finalizeWorkflow({
-        outcome: 'failed',
-        workflowJobId: jobId,
-        lifecycleFault: {
-          kind: 'recovery_failed',
-          message: 'Workflow recovery could not find a workflow projection.',
-        },
-        stepDetails: [],
-      });
-      resumedWorkflowIds.push(jobId);
-      continue;
-    }
-
-    const baseCtx = options.createInvocationContext(status.projectRoot);
-    const ctx: InvocationContext = {
-      ...baseCtx,
-      providerScope: projection.providerScope,
-    };
     let recovered: RecoveredWorkflowFinalization | null;
+    let containedFailure: { error: unknown } | null = null;
     try {
-      recovered = await resumeWorkflow({
-        db: options.db,
-        progressStore: options.progressStore,
-        loadJobDetails: options.loadJobDetails,
-        executionSvc: options.getExecutionService(ctx),
-        ctx,
-        workflowId: jobId,
-        plan: projection.plan,
-        onProgress,
-        staleTimeoutMs,
-        staleCheckIntervalMs,
-        staleAbortTimeoutMs,
-        drainDeadlineMs,
-        time,
-      });
+      const projection = readWorkflowProjection(options.db, jobId);
+      if (!projection) {
+        const error = new Error('Workflow recovery could not find a workflow projection.');
+        containedFailure = { error };
+        recovered = { intent: recoveryIntentFromError(jobId, error) };
+      } else {
+        const baseCtx = options.createInvocationContext(status.projectRoot);
+        const ctx: InvocationContext = {
+          ...baseCtx,
+          providerScope: projection.providerScope,
+        };
+        recovered = await resumeWorkflow({
+          db: options.db,
+          progressStore: options.progressStore,
+          loadJobDetails: options.loadJobDetails,
+          executionSvc: options.getExecutionService(ctx),
+          ctx,
+          workflowId: jobId,
+          plan: projection.plan,
+          onProgress,
+          staleTimeoutMs,
+          staleCheckIntervalMs,
+          staleAbortTimeoutMs,
+          drainDeadlineMs,
+          time,
+        });
+      }
     } catch (error: unknown) {
-      options.finalizeWorkflow(recoveryIntentFromError(jobId, error));
-      throw error;
+      options.signal?.throwIfAborted();
+      containedFailure = { error };
+      recovered = { intent: recoveryIntentFromError(jobId, error) };
     }
 
+    options.signal?.throwIfAborted();
     if (recovered === null) {
       continue;
     }
 
     options.finalizeWorkflow(recovered.intent);
+    if (containedFailure !== null || recovered.error !== undefined) {
+      const releasedDescendants = options.releaseFailedWorkflowDescendants(jobId);
+      for (const released of releasedDescendants) {
+        options.log?.(
+          `Workflow recovery child ${released.jobId} session claim ${released.sessionId} disposition: ${describeSessionJobClaimReleaseResult(released.sessionClaimRelease)}.\n`,
+        );
+      }
+    }
+    if (containedFailure !== null) {
+      const outcomeDescription =
+        recovered.intent.outcome === 'failed'
+          ? 'after recovery failed'
+          : `with ${recovered.intent.outcome} outcome after recovery error`;
+      options.log?.(
+        `Workflow recovery finalized ${jobId} ${outcomeDescription}: ${errorMessage(containedFailure.error)}\n`,
+      );
+    }
     if (recovered.error) {
-      throw recovered.error;
+      options.log?.(
+        `Workflow recovery finalized ${jobId} with ${recovered.intent.outcome} outcome: ${errorMessage(recovered.error)}\n`,
+      );
     }
     resumedWorkflowIds.push(jobId);
   }

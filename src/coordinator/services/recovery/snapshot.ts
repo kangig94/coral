@@ -34,7 +34,11 @@ export function buildRecoverySnapshot(
   const sessionRefs: Array<{ sessionId: string; provider: string }> = [];
   const sessionsById = new Map<string, RecoverySessionFacts | null>();
 
-  for (const sessionRef of sessionLookup.listSessionRefs()) {
+  const listedSessionRefs = sessionLookup.listSessionRefs((sessionId, error) => {
+    const subject = sessionId === null ? 'with no decodable session id' : `for ${sessionId}`;
+    log(`Skipped malformed session projection ${subject} during recovery snapshot: ${formatError(error)}\n`);
+  });
+  for (const sessionRef of listedSessionRefs) {
     try {
       const entry = sessionLookup.readProviderSession(sessionRef.sessionId);
       let sessionFacts: RecoverySessionFacts | null = null;

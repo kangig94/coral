@@ -29,6 +29,7 @@ export type SessionAllocateOptions = {
 
 export type SessionJobContinuityCheckpointResult = { ok: true; nextVersion: number } | { ok: false };
 export type SessionArtifactHandleRecordResult = { ok: true; nextVersion: number } | { ok: false };
+export type SessionJobClaimReleaseResult = 'released' | 'already_absent' | 'owned_by_another_job';
 
 export type SessionArtifactHandleRecordOptions = {
   expectedActiveJobId: string;
@@ -43,7 +44,7 @@ export interface SessionJobReadPort {
 }
 
 export interface SessionJobClaimPort extends SessionJobReadPort {
-  releaseJob(sessionId: string, jobId: string): void;
+  releaseJob(sessionId: string, jobId: string): SessionJobClaimReleaseResult;
   checkpointJobContinuityAtomic(
     sessionId: string,
     options: {
@@ -91,7 +92,7 @@ export interface SessionExecutionPort extends SessionInitialLaunchPort {
   allocate(options: SessionAllocateOptions): ProviderSession;
   get(provider: string, sessionId: string): ProviderSession | null;
   list(provider: string): ProviderSession[];
-  releaseJob(sessionId: string, jobId: string): void;
+  releaseJob(sessionId: string, jobId: string): SessionJobClaimReleaseResult;
   recordContinuationLease(input: RecordContinuationLeaseInput): void;
   clearContinuationLease(input: ClearContinuationLeaseInput): Promise<boolean>;
 }
@@ -99,7 +100,7 @@ export interface SessionExecutionPort extends SessionInitialLaunchPort {
 export interface SessionRecoveryPort {
   get(provider: string, sessionId: string): ProviderSession | null;
   readById(sessionId: string, options?: { forceFresh?: boolean }): ProviderSession | null;
-  releaseJob(sessionId: string, jobId: string): void;
+  releaseJob(sessionId: string, jobId: string): SessionJobClaimReleaseResult;
   finalizeJobContinuityAtomic(
     sessionId: string,
     options: {

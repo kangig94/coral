@@ -271,8 +271,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
   finalizeProviderRecoveryBindingFailure(
     launchRecord: JobLaunch,
     failure: Parameters<RecoveryService['finalizeProviderRecoveryBindingFailure']>[1],
-  ): void {
-    this.recoveryService.finalizeProviderRecoveryBindingFailure(launchRecord, failure);
+  ): ReturnType<RecoveryService['finalizeProviderRecoveryBindingFailure']> {
+    return this.recoveryService.finalizeProviderRecoveryBindingFailure(launchRecord, failure);
   }
 
   adoptRunningJob(
@@ -288,8 +288,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     result: JobTerminalInput,
     phase: JobPhase,
     options: TerminalWriteOptions & { pool: LaunchPool },
-  ): void {
-    this.recoveryService.completeRecoveredJob(jobId, sessionId, result, phase, options);
+  ): ReturnType<RecoveryService['completeRecoveredJob']> {
+    return this.recoveryService.completeRecoveredJob(jobId, sessionId, result, phase, options);
   }
 
   async finalizeInterruptedDurableJob(

@@ -33,15 +33,15 @@ type JobsStartupContext = {
 };
 
 interface JobsRecoveryCoordinator {
-  runStartupRecovery(ctx: JobsStartupContext): Promise<void>;
+  runStartupRecovery(ctx: JobsStartupContext): Promise<JobStore>;
 }
 
 type JobsStartupDeps = JobsStartupContext & {
   recoveryCoordinator: JobsRecoveryCoordinator;
 };
 
-async function runJobsStartup({ recoveryCoordinator, ...deps }: JobsStartupDeps): Promise<void> {
-  await recoveryCoordinator.runStartupRecovery(deps);
+async function runJobsStartup({ recoveryCoordinator, ...deps }: JobsStartupDeps): Promise<JobStore> {
+  return recoveryCoordinator.runStartupRecovery(deps);
 }
 
 export const jobsReconcile = {

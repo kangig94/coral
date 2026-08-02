@@ -108,7 +108,7 @@ export function describeJobProgressFault(fault: JobProgressFault): string {
       return 'Job status record is missing its launch record; dropping.';
     case 'recovery_parse_failed':
       return appendCauseStack(
-        `Provider recovery could not parse resumed state: ${fault.cause.message}.`,
+        `Provider recovery could not resolve resumed state: ${fault.cause.message}.`,
         fault.cause.stack,
       );
     default:

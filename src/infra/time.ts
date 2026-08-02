@@ -13,6 +13,10 @@ export function nowIsoString(timeOrEpoch: TimeNowPort | number): string {
   return new Date(epochMs).toISOString();
 }
 
+export function parseIsoTimestamp(value: string): number {
+  return Date.parse(value);
+}
+
 export function createRealTimePort(): TimePort {
   return {
     now: () => Date.now(),

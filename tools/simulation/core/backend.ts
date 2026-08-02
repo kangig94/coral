@@ -57,6 +57,7 @@ import { coordinatorPaths } from '../../../src/infra/path/coordinator.js';
 import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';
 import { createWorkflowRecoveryFinalizer } from '../../../src/coordinator/services/workflow-recovery-finalizer.js';
+import { createFailedWorkflowDescendantReleaser } from '../../../src/coordinator/services/workflow-recovery-descendants.js';
 import { jobsReconcile } from '../../../src/jobs/startup.js';
 import { openStoreDatabase } from '../../../src/store/db.js';
 import { createEventBodyCodec } from '../../../src/store/event-body-codec.js';
@@ -775,7 +776,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       cleanupStaleJobs,
       recoverPersistedDiscussFn,
     }) => {
-      await jobsReconcile.runStartup({
+      const recoveryProgressStore = await jobsReconcile.runStartup({
         recoveryCoordinator,
         namespace: identity.namespace,
         bundleHash: identity.bundleHash,
@@ -803,7 +804,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
 
       await workflowRecover.resumeAll({
         db: storeDb,
-        progressStore,
+        progressStore: recoveryProgressStore,
         loadJobDetails: loadJobProjectionDetails,
         getExecutionService: (ctx) => getExecutionService(ctx) as never,
         createInvocationContext,
@@ -813,6 +814,17 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
           coordinatorCommit: (cb) => progressStore.commit(cb),
           log: identity.log,
         }),
+        releaseFailedWorkflowDescendants: createFailedWorkflowDescendantReleaser({
+          progressStore: recoveryProgressStore,
+          runtime,
+          coordinatorCommit: (cb) => progressStore.commit(cb),
+          getExecutionService,
+          createInvocationContext,
+          releaseAdoptedJob: recoveryCoordinator.releaseAdoptedJob,
+          emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
+          log: identity.log,
+        }),
+        signal,
         time: runtime.time,
       });
       signal.throwIfAborted();
