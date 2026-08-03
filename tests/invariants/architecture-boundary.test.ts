@@ -1535,9 +1535,24 @@ function createRecoveryFixtureProgram(): ts.Program {
     skipLibCheck: true,
     noEmit: true,
   };
+  // Module resolution skips a directory it believes does not exist, so a virtual fixture file is
+  // invisible unless its containing directories are reported too. Without this the fixtures resolve
+  // only when some unrelated empty directory happens to be left on disk, which is not a test.
+  const fixtureDirectories = new Set<string>();
+  for (const fixturePath of fixtureSources.keys()) {
+    for (let directory = dirname(fixturePath); directory.startsWith(RECOVERY_FIXTURE_ROOT); ) {
+      fixtureDirectories.add(directory);
+      const parent = dirname(directory);
+      if (parent === directory) break;
+      directory = parent;
+    }
+  }
+
   const defaultHost = ts.createCompilerHost(options, true);
   const host: ts.CompilerHost = {
     ...defaultHost,
+    directoryExists: (directoryName) =>
+      fixtureDirectories.has(directoryName) || (defaultHost.directoryExists?.(directoryName) ?? false),
     fileExists: (fileName) => fixtureSources.has(fileName) || defaultHost.fileExists(fileName),
     readFile: (fileName) => fixtureSources.get(fileName) ?? defaultHost.readFile(fileName),
     getSourceFile: (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
