@@ -195,6 +195,8 @@ export async function runShutdownSequence({
 
   const drainDeadline = runtime.time.now() + drainTimeout;
   const remainingDrain = (): number => Math.max(0, drainDeadline - runtime.time.now());
+  const waitForObservedShutdownTask = (task: Promise<void>): Promise<void> =>
+    Promise.race([task, runtime.time.sleep(remainingDrain())]);
   const runBudgetedStep = (label: string, task: (signal: AbortSignal) => Promise<void>): Promise<void> =>
     runStep(label, () => withBudget(label, task, remainingDrain, runtime.time, log));
 
@@ -210,7 +212,7 @@ export async function runShutdownSequence({
   for (const stream of streamResponses) {
     await runStep('stream response close', () => stream.end());
   }
-  await Promise.race([serverClosed, runtime.time.sleep(remainingDrain())]);
+  await waitForObservedShutdownTask(serverClosed);
   await runStep('recovery coordinator teardown', teardownRecoveryCoordinator);
   await runStep('ownership checker teardown', () => state.ownershipCheckerTeardown?.());
   state.ownershipCheckerTeardown = null;
@@ -265,7 +267,7 @@ export async function runShutdownSequence({
       'IPC socket release',
       Promise.resolve().then(() => closeIpcServerFn(ipcServer)),
     );
-    await Promise.race([ipcServerClosed, runtime.time.sleep(remainingDrain())]);
+    await waitForObservedShutdownTask(ipcServerClosed);
   }
 
   throwShutdownFailures(failures);

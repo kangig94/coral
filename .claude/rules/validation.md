@@ -16,7 +16,7 @@ Work CANNOT be marked complete if any fail.
 | **Session** | Discuss session writes use atomic pattern (`writeStateAtomic`) | integration-guardian |
 | **Process** | Child processes tracked in `activeChildren` set | integration-guardian |
 | **Process** | Timeout kills use SIGTERM then SIGKILL after delay (use `gracefulKill`; enforced by `tests/invariants/timeout-kill-escalation.test.ts`) | integration-guardian |
-| **Process** | `killAllChildren()` called on server shutdown | integration-guardian |
+| **Process** | `killAllChildren()` called on server shutdown (enforced by `tests/invariants/shutdown-teardown-containment.test.ts`) | integration-guardian |
 | **Elegance** | Elegance Score >= 7 (code quality gate) | code-critic |
 | **Elegance** | Follows established codebase patterns | code-critic |
 
