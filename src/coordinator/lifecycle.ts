@@ -63,14 +63,17 @@ import {
   type RecoveryObligationId,
   type RecoveryPolicy,
   type RecoverySettlementFact,
+  type RecoverySubject,
 } from '../recovery/containment.js';
+import type { RecoveryRetryPolicy, RecoverySourceFactoryPlan } from '../recovery/source-registry.js';
 import { RecoveryQuarantineStore } from '../recovery/quarantine.js';
 import {
   crashedJobTerminalizationSource,
   type RawCrashedJobRow,
 } from '../jobs/crashed-job-terminalization-recovery-source.js';
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
-import { runShutdownCrashTerminalization, runStartupStaleArtifactPrune } from './startup-recovery.js';
+import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
+import { runStartupStaleArtifactPrune } from './startup-recovery.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
@@ -334,26 +337,32 @@ function hydrateCrashedJob(raw: RawCrashedJobRow, progressStore: JobStore): Cras
   };
 }
 
-/**
- * Prune terminal jobs' export artifacts (`<exports>/jobs/<id>/`). These dirs are a
- * rebuildable cache of the journal — `JobStore.ensureResultArtifact` regenerates
- * `result.md` from the journal terminal event on the next read — so pruning only
- * reclaims disk; `jobs list`/`detail` keep working from the journal projection.
- * A terminal job is pruned when it is left over from a previous bundle version OR
- * older than the retention window. Live jobs are never touched.
- */
-export async function cleanupStaleJobs(
-  progressStore: JobStore,
-  currentBundleHash: string,
-  log: (message: string) => void,
-  storage: Pick<Runtime['storage'], 'rmSync'>,
-  nowMs: number,
-  retentionMs: number,
-  signal: AbortSignal,
-): Promise<void> {
-  const policy: RecoveryPolicy<RawStaleJobCleanupRow, StaleJobCleanupItem> = {
-    signal,
-    quarantine: new RecoveryQuarantineStore(progressStore.getDb(), { now: () => nowMs }),
+type StaleJobCleanupPolicyContext = {
+  readonly progressStore: JobStore;
+  readonly currentBundleHash: string;
+  readonly log: (message: string) => void;
+  readonly storage: Pick<Runtime['storage'], 'rmSync'>;
+  readonly nowMs: number;
+  readonly retentionMs: number;
+};
+
+type CrashedJobTerminalizationPolicyContext = {
+  readonly progressStore: JobStore;
+  readonly message: string;
+  readonly storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>;
+  readonly jobsRoot: string;
+  readonly endTimeMs: number;
+  readonly coordinatorCommit: CommitEventsFn;
+};
+
+const staleJobCleanupRetryContexts = new WeakMap<Database, StaleJobCleanupPolicyContext>();
+const crashedJobTerminalizationRetryContexts = new WeakMap<Database, CrashedJobTerminalizationPolicyContext>();
+
+function createStaleJobCleanupPolicy(
+  context: StaleJobCleanupPolicyContext,
+): RecoveryRetryPolicy<RawStaleJobCleanupRow, StaleJobCleanupItem> {
+  const { progressStore, currentBundleHash, log, storage, nowMs, retentionMs } = context;
+  return {
     processLocalCleanup: { kind: 'not-required' },
     hydrate: hydrateStaleJobCleanup,
     requiredObligations: () => [STALE_ARTIFACT_PRUNE_OBLIGATION],
@@ -388,25 +397,13 @@ export async function cleanupStaleJobs(
       return { kind: 'quarantine', detail: 'stale job artifact cleanup failed' };
     },
   };
-  await runStartupStaleArtifactPrune({
-    source: staleJobCleanupSource(progressStore.getDb()),
-    policy,
-  });
 }
 
-export async function markJobsAsError(
-  progressStore: JobStore,
-  namespace: string,
-  message: string,
-  storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>,
-  jobsRoot: string,
-  endTimeMs: number,
-  signal: AbortSignal,
-  coordinatorCommit: CommitEventsFn,
-): Promise<void> {
-  const policy: RecoveryPolicy<RawCrashedJobRow, CrashedJobTerminalizationItem> = {
-    signal,
-    quarantine: new RecoveryQuarantineStore(progressStore.getDb(), { now: () => endTimeMs }),
+function createCrashedJobTerminalizationPolicy(
+  context: CrashedJobTerminalizationPolicyContext,
+): RecoveryRetryPolicy<RawCrashedJobRow, CrashedJobTerminalizationItem> {
+  const { progressStore, message, storage, jobsRoot, endTimeMs, coordinatorCommit } = context;
+  return {
     processLocalCleanup: { kind: 'not-required' },
     hydrate: (raw) => hydrateCrashedJob(raw, progressStore),
     requiredObligations: () => [CRASH_TERMINALIZATION_OBLIGATION],
@@ -452,6 +449,108 @@ export async function markJobsAsError(
       if (fault.stage === 'scan') return { kind: 'fatal', error: fault.error };
       return { kind: 'quarantine', detail: 'crashed job terminalization failed' };
     },
+  };
+}
+
+/** Returns the exact-subject stale-artifact retry plan owned by coordinator lifecycle. */
+export function createStaleJobCleanupRetryPlan(
+  db: Database,
+  subject: RecoverySubject,
+): RecoverySourceFactoryPlan<RawStaleJobCleanupRow, StaleJobCleanupItem> {
+  let resolvedPolicy: RecoveryRetryPolicy<RawStaleJobCleanupRow, StaleJobCleanupItem> | undefined;
+  const policy = (): RecoveryRetryPolicy<RawStaleJobCleanupRow, StaleJobCleanupItem> => {
+    if (resolvedPolicy === undefined) {
+      const context = staleJobCleanupRetryContexts.get(db);
+      if (context === undefined) throw new Error('Stale job cleanup retry policy is not initialized.');
+      resolvedPolicy = createStaleJobCleanupPolicy(context);
+    }
+    return resolvedPolicy;
+  };
+  return {
+    source: staleJobCleanupSource(db, subject),
+    policy: {
+      processLocalCleanup: { kind: 'not-required' },
+      hydrate: (raw) => policy().hydrate(raw),
+      requiredObligations: (item) => policy().requiredObligations(item),
+      settle: (item) => policy().settle(item),
+      onFault: (fault) => policy().onFault(fault),
+    },
+  };
+}
+
+/** Returns the exact-subject crash-terminalization retry plan owned by coordinator lifecycle. */
+export function createCrashedJobTerminalizationRetryPlan(
+  db: Database,
+  namespace: string,
+  subject: RecoverySubject,
+): RecoverySourceFactoryPlan<RawCrashedJobRow, CrashedJobTerminalizationItem> {
+  let resolvedPolicy: RecoveryRetryPolicy<RawCrashedJobRow, CrashedJobTerminalizationItem> | undefined;
+  const policy = (): RecoveryRetryPolicy<RawCrashedJobRow, CrashedJobTerminalizationItem> => {
+    if (resolvedPolicy === undefined) {
+      const context = crashedJobTerminalizationRetryContexts.get(db);
+      if (context === undefined) throw new Error('Crashed job terminalization retry policy is not initialized.');
+      resolvedPolicy = createCrashedJobTerminalizationPolicy(context);
+    }
+    return resolvedPolicy;
+  };
+  return {
+    source: crashedJobTerminalizationSource(db, namespace, subject),
+    policy: {
+      processLocalCleanup: { kind: 'not-required' },
+      hydrate: (raw) => policy().hydrate(raw),
+      requiredObligations: (item) => policy().requiredObligations(item),
+      settle: (item) => policy().settle(item),
+      onFault: (fault) => policy().onFault(fault),
+    },
+  };
+}
+
+/**
+ * Prune terminal jobs' export artifacts (`<exports>/jobs/<id>/`). These dirs are a
+ * rebuildable cache of the journal — `JobStore.ensureResultArtifact` regenerates
+ * `result.md` from the journal terminal event on the next read — so pruning only
+ * reclaims disk; `jobs list`/`detail` keep working from the journal projection.
+ * A terminal job is pruned when it is left over from a previous bundle version OR
+ * older than the retention window. Live jobs are never touched.
+ */
+export async function cleanupStaleJobs(
+  progressStore: JobStore,
+  currentBundleHash: string,
+  log: (message: string) => void,
+  storage: Pick<Runtime['storage'], 'rmSync'>,
+  nowMs: number,
+  retentionMs: number,
+  signal: AbortSignal,
+): Promise<void> {
+  const context = { progressStore, currentBundleHash, log, storage, nowMs, retentionMs };
+  staleJobCleanupRetryContexts.set(progressStore.getDb(), context);
+  const policy: RecoveryPolicy<RawStaleJobCleanupRow, StaleJobCleanupItem> = {
+    signal,
+    quarantine: new RecoveryQuarantineStore(progressStore.getDb(), { now: () => nowMs }),
+    ...createStaleJobCleanupPolicy(context),
+  };
+  await runStartupStaleArtifactPrune({
+    source: staleJobCleanupSource(progressStore.getDb()),
+    policy,
+  });
+}
+
+export async function markJobsAsError(
+  progressStore: JobStore,
+  namespace: string,
+  message: string,
+  storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>,
+  jobsRoot: string,
+  endTimeMs: number,
+  signal: AbortSignal,
+  coordinatorCommit: CommitEventsFn,
+): Promise<void> {
+  const context = { progressStore, message, storage, jobsRoot, endTimeMs, coordinatorCommit };
+  crashedJobTerminalizationRetryContexts.set(progressStore.getDb(), context);
+  const policy: RecoveryPolicy<RawCrashedJobRow, CrashedJobTerminalizationItem> = {
+    signal,
+    quarantine: new RecoveryQuarantineStore(progressStore.getDb(), { now: () => endTimeMs }),
+    ...createCrashedJobTerminalizationPolicy(context),
   };
   await runShutdownCrashTerminalization({
     source: crashedJobTerminalizationSource(progressStore.getDb(), namespace),
@@ -556,7 +655,7 @@ export type LifecycleDeps = {
   readonly providerHostManager: Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
   readonly kbDaemonSupervisor?: KbDaemonSupervisor;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
-  readonly disposeLifecycleReactor?: () => void;
+  readonly disposeLifecycleReactor?: () => void | Promise<void>;
   readonly createKbHealthComponentFn: CreateKbHealthComponentFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;

@@ -6,6 +6,7 @@ import {
   type CoordinatorStoreServices,
 } from '#src/coordinator/composition/store-services-ref.js';
 import { createLifecycle, STARTUP_STORE_BUSY_TIMEOUT_MS, type LifecycleDeps } from '#src/coordinator/lifecycle.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as HandoffMod from '#src/coordinator/handoff.js';
@@ -458,5 +459,93 @@ describe('lifecycle reset authority and finalizer order', () => {
       mockState.events.indexOf('storeDb.close'),
     );
     expect(servicesRef.tryGet()).toBeNull();
+  });
+
+  it('releases socket and discovery after provider-host shutdown rejects', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    const discussDispose = vi.fn();
+    const reactorDispose = vi.fn(async () => {});
+    const deps: LifecycleDeps = {
+      ...baseDeps,
+      disposeLifecycleReactor: reactorDispose,
+      providerHostManager: {
+        ...baseDeps.providerHostManager,
+        shutdown: vi.fn(async () => {
+          throw new Error('injected provider-host shutdown failure');
+        }),
+      },
+    };
+    deps.discussStores.set('fixture', { dispose: discussDispose } as never);
+    const lifecycle = createLifecycle(deps);
+
+    await lifecycle.start();
+    await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);
+
+    expect(deps.terminateAllFn).toHaveBeenCalledOnce();
+    expect(deps.runtimeState.components.disposeAll).toHaveBeenCalledOnce();
+    expect(deps.hooks.onShutdown).toHaveBeenCalledOnce();
+    expect(discussDispose).toHaveBeenCalledOnce();
+    expect(reactorDispose).toHaveBeenCalledOnce();
+    expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
+    expect(deps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
+  });
+
+  it('releases socket and discovery after child termination throws', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    const discussDispose = vi.fn();
+    const reactorDispose = vi.fn(async () => {});
+    const deps: LifecycleDeps = {
+      ...baseDeps,
+      disposeLifecycleReactor: reactorDispose,
+      terminateAllFn: vi.fn(() => {
+        throw new Error('injected child termination failure');
+      }),
+    };
+    deps.discussStores.set('fixture', { dispose: discussDispose } as never);
+    const lifecycle = createLifecycle(deps);
+
+    await lifecycle.start();
+    await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);
+
+    expect(deps.providerHostManager.shutdown).toHaveBeenCalledOnce();
+    expect(deps.runtimeState.components.disposeAll).toHaveBeenCalledOnce();
+    expect(deps.hooks.onShutdown).toHaveBeenCalledOnce();
+    expect(discussDispose).toHaveBeenCalledOnce();
+    expect(reactorDispose).toHaveBeenCalledOnce();
+    expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
+    expect(deps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
+  });
+
+  it('continues child cleanup and releases socket and discovery when one cleanup handle throws', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    const launchCoordinator = new LaunchCoordinator({ runtime: baseDeps.runtime });
+    const cleanupHandles = (launchCoordinator as unknown as { readonly cleanupHandles: Map<symbol, () => void> })
+      .cleanupHandles;
+    const laterChildCleanup = vi.fn();
+    cleanupHandles.set(Symbol('throwing-child'), () => {
+      throw new Error('injected child cleanup failure');
+    });
+    cleanupHandles.set(Symbol('later-child'), laterChildCleanup);
+    const discussDispose = vi.fn();
+    const reactorDispose = vi.fn(async () => {});
+    const deps: LifecycleDeps = {
+      ...baseDeps,
+      disposeLifecycleReactor: reactorDispose,
+      terminateAllFn: vi.fn(() => launchCoordinator.terminateAll()),
+    };
+    deps.discussStores.set('fixture', { dispose: discussDispose } as never);
+    const lifecycle = createLifecycle(deps);
+
+    await lifecycle.start();
+    await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);
+
+    expect(laterChildCleanup).toHaveBeenCalledOnce();
+    expect(cleanupHandles.size).toBe(0);
+    expect(deps.runtimeState.components.disposeAll).toHaveBeenCalledOnce();
+    expect(deps.hooks.onShutdown).toHaveBeenCalledOnce();
+    expect(discussDispose).toHaveBeenCalledOnce();
+    expect(reactorDispose).toHaveBeenCalledOnce();
+    expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
+    expect(deps.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('test-instance');
   });
 });

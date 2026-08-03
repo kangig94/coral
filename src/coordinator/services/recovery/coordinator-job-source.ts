@@ -6,6 +6,7 @@ import {
   defineRecoverySource,
   type RecoveryRevisionField,
   type RecoverySource,
+  type RecoverySubject,
 } from '../../../recovery/containment.js';
 import {
   EVENT_COLUMNS,
@@ -129,15 +130,15 @@ function coordinatorJobRecoverySubject(raw: RawCoordinatorJobRecoveryEnvelope) {
 /** Creates the raw item-granular coordinator job recovery source. */
 export function coordinatorJobRecoverySource(
   db: Database,
-  options: Readonly<{ subjectKey?: string }> = {},
+  options: Readonly<{ subjectKey?: string; subject?: RecoverySubject }> = {},
 ): RecoverySource<RawCoordinatorJobRecoveryEnvelope> {
   return defineRecoverySource({
     boundary: 'coordinator-job-recovery',
-    scanSubject: {
+    scanSubject: options.subject ?? {
       key: options.subjectKey ?? 'coordinator-job-recovery-discovery',
       revision: { kind: 'until-cleared' },
     },
-    scan: () => scanCoordinatorJobRecoveryEnvelopes(db, options.subjectKey),
+    scan: () => scanCoordinatorJobRecoveryEnvelopes(db, options.subject?.key ?? options.subjectKey),
     subject: coordinatorJobRecoverySubject,
   });
 }

@@ -1,5 +1,10 @@
 import type { Database } from '../store/db.js';
-import { canonicalRecoveryRevision, defineRecoverySource, type RecoverySource } from '../recovery/containment.js';
+import {
+  canonicalRecoveryRevision,
+  defineRecoverySource,
+  type RecoverySource,
+  type RecoverySubject,
+} from '../recovery/containment.js';
 import { PROJECTION_SESSION_COLUMNS, projectionSessionRevisionFields } from '../recovery/row-revision-fields.js';
 import type { PendingContinuationLease, ProviderSession } from './entry.js';
 import type { RawSessionProjectionRow } from './session-projection-recovery-source.js';
@@ -15,7 +20,20 @@ export type SessionContinuationLeaseComponent = {
   readonly overdueLease: PendingContinuationLease | null;
 };
 
-function scanPendingContinuationLeaseRows(db: Database): readonly RawPendingContinuationLeaseRow[] {
+function scanPendingContinuationLeaseRows(
+  db: Database,
+  subjectKey?: string,
+): readonly RawPendingContinuationLeaseRow[] {
+  if (subjectKey !== undefined) {
+    return db
+      .prepare<[string], RawPendingContinuationLeaseRow>(
+        `SELECT ${PROJECTION_SESSION_COLUMNS}
+           FROM projection_sessions
+          WHERE instr(entry, '"continuationLease"') > 0
+            AND session_id = ?`,
+      )
+      .all(subjectKey);
+  }
   return db
     .prepare<[], RawPendingContinuationLeaseRow>(
       `SELECT ${PROJECTION_SESSION_COLUMNS}
@@ -34,11 +52,15 @@ function pendingLeaseSubject(row: RawPendingContinuationLeaseRow) {
 }
 
 /** Creates the row-granular pending continuation-lease source. */
-export function sessionContinuationLeaseRecoverySource(db: Database): RecoverySource<RawPendingContinuationLeaseRow> {
+export function sessionContinuationLeaseRecoverySource(
+  db: Database,
+  subject?: RecoverySubject,
+  subjectKey?: string,
+): RecoverySource<RawPendingContinuationLeaseRow> {
   return defineRecoverySource({
     boundary: 'session-continuation-lease',
-    scanSubject: { key: 'session-continuation-lease-discovery', revision: { kind: 'until-cleared' } },
-    scan: () => scanPendingContinuationLeaseRows(db),
+    scanSubject: subject ?? { key: 'session-continuation-lease-discovery', revision: { kind: 'until-cleared' } },
+    scan: () => scanPendingContinuationLeaseRows(db, subject?.key ?? subjectKey),
     subject: pendingLeaseSubject,
   });
 }

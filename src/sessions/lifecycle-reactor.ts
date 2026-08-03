@@ -14,12 +14,18 @@ import {
   type RecoveryDisposition,
   type RecoveryFault,
   type RecoveryObligationId,
-  type RecoveryPolicy,
+  type RecoveryQuarantinePort,
+  type RecoveryReceipt,
   type RecoverySettlementFact,
   type RecoverySubject,
 } from '../recovery/containment.js';
+import type { RecoveryRetryPolicy, RecoverySourceFactoryPlan } from '../recovery/source-registry.js';
 import { rawRetentionContinuationRowSchema, RecoveryQuarantineStore } from '../recovery/quarantine.js';
-import { retentionWorkItemRecoverySource } from './retention-work-item-recovery-source.js';
+import {
+  retentionWorkItemRecoverySource,
+  type P4RetentionComponent,
+  type RawRetentionWorkItem,
+} from './retention-work-item-recovery-source.js';
 import {
   retentionReleasePairComponentSource,
   type RawRetentionReleaseAndTerminalRow,
@@ -101,6 +107,7 @@ export type LifecycleReactorOptions = {
   readonly runtime: ArtifactCleanupRuntime;
   readonly time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   readonly commitEvents: CommitEventsFn;
+  readonly signal: AbortSignal;
   readonly log?: (message: string) => void;
 };
 
@@ -303,6 +310,8 @@ function isRetentionSkippedOrCancelled(event: AppendedEvent): boolean {
   return (event.body as { outcome?: unknown }).outcome === 'skipped_protected';
 }
 
+const lifecycleReactorsByDatabase = new WeakMap<Database, LifecycleReactor>();
+
 export class LifecycleReactor {
   private readonly pendingBySession = new Map<string, Set<string>>();
   private readonly inFlightPairs = new Set<string>();
@@ -312,10 +321,13 @@ export class LifecycleReactor {
   private recoveryRerunRequested = false;
   private containedRecoveryDepth = 0;
   private continuationLeaseTimer: TimerHandle | null = null;
+  private readonly disposeAbort = new AbortController();
+  private readonly lifetimeSignal: AbortSignal;
 
   private readonly options: LifecycleReactorOptions;
   constructor(options: LifecycleReactorOptions) {
     this.options = options;
+    this.lifetimeSignal = AbortSignal.any([options.signal, this.disposeAbort.signal]);
   }
 
   private async readyBoundProvider(entry: ProviderSession, operation: string): Promise<BoundProvider | null> {
@@ -342,6 +354,7 @@ export class LifecycleReactor {
   }
 
   readonly observe: PostCommitObserver = (appended) => {
+    if (this.lifetimeSignal.aborted) return;
     const queuePairs = new Map<string, SessionRetentionPair>();
     const skippedSessionIds = new Set<string>();
     let sawContinuationLeaseEvent = false;
@@ -360,7 +373,7 @@ export class LifecycleReactor {
     }
 
     if (sawContinuationLeaseEvent) {
-      void this.runContainedRecovery().catch((error: unknown) => {
+      void this.runContainedRecovery(this.lifetimeSignal).catch((error: unknown) => {
         this.log(`Continuation lease recovery failed: ${errorMessage(error)}`);
       });
     }
@@ -372,12 +385,12 @@ export class LifecycleReactor {
     this.scheduleDrain();
   };
 
-  async scanStartup(signal: AbortSignal = new AbortController().signal): Promise<void> {
-    await this.runContainedRecovery(signal);
+  async scanStartup(signal: AbortSignal): Promise<void> {
+    await this.runContainedRecovery(AbortSignal.any([this.lifetimeSignal, signal]));
     await this.waitForIdle();
   }
 
-  private runContainedRecovery(signal: AbortSignal = new AbortController().signal): Promise<void> {
+  private runContainedRecovery(signal: AbortSignal): Promise<void> {
     if (this.recoveryPromise !== null) {
       this.recoveryRerunRequested = true;
       return this.recoveryPromise;
@@ -394,128 +407,147 @@ export class LifecycleReactor {
     return promise;
   }
 
-  private async performContainedRecovery(signal: AbortSignal): Promise<void> {
-    const db = this.options.db();
-    const quarantine = new RecoveryQuarantineStore(db, this.options.time);
-    const timerCandidates: SessionContinuationLeaseComponent[] = [];
-    const sessionsPolicy: RecoveryPolicy<RawSessionProjectionEnvelope, SessionProjectionComponent> = {
-      signal,
-      quarantine,
-      processLocalCleanup: { kind: 'not-required' },
-      issueReceipts: true,
-      hydrate: hydrateSessionProjectionComponent,
-      requiredObligations: () => [SESSION_COMPONENT_OBLIGATION],
-      settle: (component) => ({
-        kind: 'advanced',
-        outcome: 'settled',
-        facts: [recoveryFact(SESSION_COMPONENT_OBLIGATION, 'done', `projection_sessions:${component.row.session_id}`)],
-        detail: 'session projection component hydrated',
-      }),
-      onFault: componentFaultDisposition,
-    };
-    const continuationLeasePolicy: RecoveryPolicy<RawPendingContinuationLeaseRow, SessionContinuationLeaseComponent> = {
-      signal,
-      quarantine,
-      processLocalCleanup: { kind: 'not-required' },
-      issueReceipts: true,
-      hydrate: (raw) => hydrateSessionContinuationLeaseComponent(raw, this.options.time.now()),
-      requiredObligations: () => [LEASE_COMPONENT_OBLIGATION, LEASE_EXPIRY_OBLIGATION],
-      settle: (component) => {
-        if (component.overdueLease === null) {
-          if (component.persistedEntry.continuationLease?.status === 'pending') timerCandidates.push(component);
+  createRecoveryPolicies(
+    quarantine: RecoveryQuarantinePort,
+    timerCandidates: SessionContinuationLeaseComponent[],
+  ): {
+    readonly sessions: RecoveryRetryPolicy<RawSessionProjectionEnvelope, SessionProjectionComponent>;
+    readonly continuationLeases: RecoveryRetryPolicy<RawPendingContinuationLeaseRow, SessionContinuationLeaseComponent>;
+    readonly terminalOutcomes: RecoveryRetryPolicy<RawTerminalRetentionOutcomeRow, TerminalRetentionOutcomeComponent>;
+    readonly releasePairs: RecoveryRetryPolicy<RawRetentionReleaseAndTerminalRow, RetentionReleasePairComponent>;
+    readonly retentionWork: RecoveryRetryPolicy<RawRetentionWorkItem, RecoverySessionRetentionWork>;
+  } {
+    return {
+      sessions: {
+        processLocalCleanup: { kind: 'not-required' },
+        issueReceipts: true,
+        hydrate: hydrateSessionProjectionComponent,
+        requiredObligations: () => [SESSION_COMPONENT_OBLIGATION],
+        settle: (component) => ({
+          kind: 'advanced',
+          outcome: 'settled',
+          facts: [
+            recoveryFact(SESSION_COMPONENT_OBLIGATION, 'done', `projection_sessions:${component.row.session_id}`),
+          ],
+          detail: 'session projection component hydrated',
+        }),
+        onFault: componentFaultDisposition,
+      },
+      continuationLeases: {
+        processLocalCleanup: { kind: 'not-required' },
+        issueReceipts: true,
+        hydrate: (raw) => hydrateSessionContinuationLeaseComponent(raw, this.options.time.now()),
+        requiredObligations: () => [LEASE_COMPONENT_OBLIGATION, LEASE_EXPIRY_OBLIGATION],
+        settle: (component) => {
+          if (component.overdueLease === null) {
+            if (component.persistedEntry.continuationLease?.status === 'pending') timerCandidates.push(component);
+            return {
+              kind: 'advanced',
+              outcome: 'settled',
+              facts: [
+                recoveryFact(LEASE_COMPONENT_OBLIGATION, 'done', `projection_sessions:${component.row.session_id}`),
+                recoveryFact(LEASE_EXPIRY_OBLIGATION, 'not-applicable'),
+              ],
+              detail: 'continuation lease hydrated for timer scheduling',
+            };
+          }
+          const expiredLease = component.effectiveEntry.continuationLease;
+          if (expiredLease?.status !== 'expired') {
+            throw new Error(`Continuation lease '${component.row.session_id}' did not hydrate an expiry transition.`);
+          }
+          this.options.commitEvents((commit) => {
+            commit.append(sessionContinuationLeaseExpiredEvent(component.effectiveEntry, expiredLease));
+            return undefined;
+          });
           return {
             kind: 'advanced',
             outcome: 'settled',
             facts: [
               recoveryFact(LEASE_COMPONENT_OBLIGATION, 'done', `projection_sessions:${component.row.session_id}`),
-              recoveryFact(LEASE_EXPIRY_OBLIGATION, 'not-applicable'),
+              recoveryFact(
+                LEASE_EXPIRY_OBLIGATION,
+                'done',
+                `session.continuation_lease.expired:${component.row.session_id}`,
+              ),
             ],
-            detail: 'continuation lease hydrated for timer scheduling',
+            detail: 'overdue continuation lease expired atomically',
           };
-        }
-        const expiredLease = component.effectiveEntry.continuationLease;
-        if (expiredLease?.status !== 'expired') {
-          throw new Error(`Continuation lease '${component.row.session_id}' did not hydrate an expiry transition.`);
-        }
-        this.options.commitEvents((commit) => {
-          commit.append(sessionContinuationLeaseExpiredEvent(component.effectiveEntry, expiredLease));
-          return undefined;
-        });
-        return {
+        },
+        onFault: componentFaultDisposition,
+      },
+      terminalOutcomes: {
+        processLocalCleanup: { kind: 'not-required' },
+        issueReceipts: true,
+        hydrate: (raw) => hydrateTerminalRetentionOutcomeComponent(raw, this.options.readCtx),
+        requiredObligations: () => [OUTCOME_COMPONENT_OBLIGATION],
+        settle: (component) => ({
           kind: 'advanced',
           outcome: 'settled',
-          facts: [
-            recoveryFact(LEASE_COMPONENT_OBLIGATION, 'done', `projection_sessions:${component.row.session_id}`),
-            recoveryFact(
-              LEASE_EXPIRY_OBLIGATION,
-              'done',
-              `session.continuation_lease.expired:${component.row.session_id}`,
-            ),
-          ],
-          detail: 'overdue continuation lease expired atomically',
-        };
+          facts: [recoveryFact(OUTCOME_COMPONENT_OBLIGATION, 'done', `events:${component.row.seq}`)],
+          detail: 'terminal retention outcome hydrated',
+        }),
+        onFault: componentFaultDisposition,
       },
-      onFault: componentFaultDisposition,
+      releasePairs: {
+        processLocalCleanup: { kind: 'not-required' },
+        issueReceipts: true,
+        hydrate: (raw) => hydrateRetentionReleasePairComponent(raw, this.options.readCtx),
+        requiredObligations: () => [RELEASE_COMPONENT_OBLIGATION],
+        settle: (component) => ({
+          kind: 'advanced',
+          outcome: 'settled',
+          facts: [recoveryFact(RELEASE_COMPONENT_OBLIGATION, 'done', `events:${component.row.seq}`)],
+          detail: 'release or terminal component hydrated',
+        }),
+        onFault: componentFaultDisposition,
+      },
+      retentionWork: {
+        processLocalCleanup: { kind: 'not-required' },
+        hydrate: hydrateRecoverySessionRetentionWork,
+        requiredObligations: () => RETENTION_WORK_OBLIGATIONS,
+        settle: (work) => this.enforceRetention(work),
+        onFault: (fault) => {
+          if (
+            fault.error instanceof ProviderArtifactArchiveInvariantError ||
+            fault.error instanceof ProviderArtifactProtocolInvariantError
+          ) {
+            return { kind: 'fatal', error: fault.error };
+          }
+          return componentFaultDisposition(fault);
+        },
+      },
     };
-    const terminalOutcomePolicy: RecoveryPolicy<RawTerminalRetentionOutcomeRow, TerminalRetentionOutcomeComponent> = {
-      signal,
-      quarantine,
-      processLocalCleanup: { kind: 'not-required' },
-      issueReceipts: true,
-      hydrate: (raw) => hydrateTerminalRetentionOutcomeComponent(raw, this.options.readCtx),
-      requiredObligations: () => [OUTCOME_COMPONENT_OBLIGATION],
-      settle: (component) => ({
-        kind: 'advanced',
-        outcome: 'settled',
-        facts: [recoveryFact(OUTCOME_COMPONENT_OBLIGATION, 'done', `events:${component.row.seq}`)],
-        detail: 'terminal retention outcome hydrated',
-      }),
-      onFault: componentFaultDisposition,
-    };
-    const releasePairPolicy: RecoveryPolicy<RawRetentionReleaseAndTerminalRow, RetentionReleasePairComponent> = {
-      signal,
-      quarantine,
-      processLocalCleanup: { kind: 'not-required' },
-      issueReceipts: true,
-      hydrate: (raw) => hydrateRetentionReleasePairComponent(raw, this.options.readCtx),
-      requiredObligations: () => [RELEASE_COMPONENT_OBLIGATION],
-      settle: (component) => ({
-        kind: 'advanced',
-        outcome: 'settled',
-        facts: [recoveryFact(RELEASE_COMPONENT_OBLIGATION, 'done', `events:${component.row.seq}`)],
-        detail: 'release or terminal component hydrated',
-      }),
-      onFault: componentFaultDisposition,
-    };
+  }
+
+  private async performContainedRecovery(signal: AbortSignal): Promise<void> {
+    const db = this.options.db();
+    const quarantine = new RecoveryQuarantineStore(db, this.options.time);
+    const timerCandidates: SessionContinuationLeaseComponent[] = [];
+    const policies = this.createRecoveryPolicies(quarantine, timerCandidates);
+    lifecycleReactorsByDatabase.set(db, this);
 
     this.containedRecoveryDepth += 1;
     try {
       await runSessionStartupRecovery({
-        sessions: { source: sessionProjectionRecoverySource(db), policy: sessionsPolicy },
+        sessions: { source: sessionProjectionRecoverySource(db), policy: { signal, quarantine, ...policies.sessions } },
         continuationLeases: {
           source: sessionContinuationLeaseRecoverySource(db),
-          policy: continuationLeasePolicy,
+          policy: { signal, quarantine, ...policies.continuationLeases },
         },
-        terminalOutcomes: { source: terminalRetentionOutcomeRecoverySource(db), policy: terminalOutcomePolicy },
-        releasePairs: { source: retentionReleasePairComponentSource(db), policy: releasePairPolicy },
+        terminalOutcomes: {
+          source: terminalRetentionOutcomeRecoverySource(db),
+          policy: { signal, quarantine, ...policies.terminalOutcomes },
+        },
+        releasePairs: {
+          source: retentionReleasePairComponentSource(db),
+          policy: { signal, quarantine, ...policies.releasePairs },
+        },
         retentionWork: {
           settle: async (receipts) => {
             await RecoveryContainment.each(retentionWorkItemRecoverySource(receipts), {
               signal,
               quarantine,
-              processLocalCleanup: { kind: 'not-required' },
-              hydrate: hydrateRecoverySessionRetentionWork,
-              requiredObligations: () => RETENTION_WORK_OBLIGATIONS,
-              settle: (work) => this.enforceRetention(work),
-              onFault: (fault) => {
-                if (
-                  fault.error instanceof ProviderArtifactArchiveInvariantError ||
-                  fault.error instanceof ProviderArtifactProtocolInvariantError
-                ) {
-                  return { kind: 'fatal', error: fault.error };
-                }
-                return componentFaultDisposition(fault);
-              },
+              ...policies.retentionWork,
             });
           },
         },
@@ -526,8 +558,12 @@ export class LifecycleReactor {
     }
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
+    this.disposeAbort.abort();
     this.clearContinuationLeaseTimer();
+    while (this.drainPromise !== null || this.recoveryPromise !== null) {
+      await Promise.allSettled([this.drainPromise, this.recoveryPromise].filter((promise) => promise !== null));
+    }
   }
 
   async waitForIdle(): Promise<void> {
@@ -1164,7 +1200,7 @@ export class LifecycleReactor {
       this.inFlightPairs.add(key);
       let completed = false;
       try {
-        await this.runContainedRecovery();
+        await this.runContainedRecovery(this.lifetimeSignal);
         completed = true;
         if (!this.rerunPairs.delete(key)) this.releasePendingPair(pair);
       } finally {
@@ -1214,7 +1250,7 @@ export class LifecycleReactor {
     this.continuationLeaseTimer = this.options.time.setTimeout(
       () => {
         this.continuationLeaseTimer = null;
-        void this.runContainedRecovery().catch((error: unknown) => {
+        void this.runContainedRecovery(this.lifetimeSignal).catch((error: unknown) => {
           this.log(`Continuation lease timer recovery failed: ${errorMessage(error)}`);
         });
       },
@@ -1234,6 +1270,178 @@ export class LifecycleReactor {
 
 function isRecoveryRetentionWork(work: SessionRetentionWork): work is RecoverySessionRetentionWork {
   return typeof (work as { readonly recovery?: unknown }).recovery === 'object';
+}
+
+function deferredSessionRetryPolicy<Raw, Item>(
+  resolve: () => RecoveryRetryPolicy<Raw, Item>,
+  issueReceipts = false,
+): RecoveryRetryPolicy<Raw, Item> {
+  let resolvedPolicy: RecoveryRetryPolicy<Raw, Item> | undefined;
+  const policy = (): RecoveryRetryPolicy<Raw, Item> => {
+    resolvedPolicy ??= resolve();
+    return resolvedPolicy;
+  };
+  return {
+    processLocalCleanup: { kind: 'not-required' },
+    ...(issueReceipts ? { issueReceipts: true } : {}),
+    hydrate: (raw) => policy().hydrate(raw),
+    requiredObligations: (item) => policy().requiredObligations(item),
+    settle: (item) => policy().settle(item),
+    onFault: (fault) => policy().onFault(fault),
+  };
+}
+
+function retryReactor(db: Database): LifecycleReactor {
+  const reactor = lifecycleReactorsByDatabase.get(db);
+  if (reactor === undefined) throw new Error('Session recovery retry policy is not initialized.');
+  return reactor;
+}
+
+/** Returns the exact-subject session-projection retry plan. */
+export function createSessionProjectionRetryPlan(
+  db: Database,
+  subject: RecoverySubject,
+  quarantine: RecoveryQuarantinePort,
+): RecoverySourceFactoryPlan<RawSessionProjectionEnvelope, SessionProjectionComponent> {
+  const policy = () => retryReactor(db).createRecoveryPolicies(quarantine, []).sessions;
+  return {
+    source: sessionProjectionRecoverySource(db, subject),
+    policy: deferredSessionRetryPolicy(policy, true),
+  };
+}
+
+/** Returns the exact-subject continuation-lease retry plan. */
+export function createSessionContinuationLeaseRetryPlan(
+  db: Database,
+  subject: RecoverySubject,
+  quarantine: RecoveryQuarantinePort,
+): RecoverySourceFactoryPlan<RawPendingContinuationLeaseRow, SessionContinuationLeaseComponent> {
+  const policy = () => retryReactor(db).createRecoveryPolicies(quarantine, []).continuationLeases;
+  return {
+    source: sessionContinuationLeaseRecoverySource(db, subject),
+    policy: deferredSessionRetryPolicy(policy, true),
+  };
+}
+
+/** Returns the exact-subject terminal-outcome retry plan. */
+export function createTerminalRetentionOutcomeRetryPlan(
+  db: Database,
+  subject: RecoverySubject,
+  quarantine: RecoveryQuarantinePort,
+): RecoverySourceFactoryPlan<RawTerminalRetentionOutcomeRow, TerminalRetentionOutcomeComponent> {
+  const policy = () => retryReactor(db).createRecoveryPolicies(quarantine, []).terminalOutcomes;
+  return {
+    source: terminalRetentionOutcomeRecoverySource(db, subject),
+    policy: deferredSessionRetryPolicy(policy, true),
+  };
+}
+
+/** Returns the exact-subject release/terminal-component retry plan. */
+export function createRetentionReleasePairRetryPlan(
+  db: Database,
+  subject: RecoverySubject,
+  quarantine: RecoveryQuarantinePort,
+): RecoverySourceFactoryPlan<RawRetentionReleaseAndTerminalRow, RetentionReleasePairComponent> {
+  const policy = () => retryReactor(db).createRecoveryPolicies(quarantine, []).releasePairs;
+  return {
+    source: retentionReleasePairComponentSource(db, subject),
+    policy: deferredSessionRetryPolicy(policy, true),
+  };
+}
+
+function retentionWorkPair(subject: RecoverySubject): Readonly<{ sessionId: string; jobId: string }> | null {
+  const separator = subject.key.indexOf('\u0000');
+  if (separator <= 0 || separator === subject.key.length - 1) return null;
+  return { sessionId: subject.key.slice(0, separator), jobId: subject.key.slice(separator + 1) };
+}
+
+function hasRetentionWorkInputs(db: Database, pair: Readonly<{ sessionId: string; jobId: string }>): boolean {
+  const session = db
+    .prepare<[string], { readonly present: number }>(
+      `SELECT 1 AS present
+         FROM projection_sessions
+        WHERE session_id = ?`,
+    )
+    .get(pair.sessionId);
+  const release = db
+    .prepare<[string, string], { readonly present: number }>(
+      `SELECT 1 AS present
+         FROM events
+        WHERE type = 'session.claim.released'
+          AND stream_id = ?
+          AND json_extract(refs, '$.jobId') = ?
+        LIMIT 1`,
+    )
+    .get(pair.sessionId, pair.jobId);
+  const terminal = db
+    .prepare<[string, string], { readonly present: number }>(
+      `SELECT 1 AS present
+         FROM events
+        WHERE type = 'job.terminal.recorded'
+          AND stream_id = ?
+          AND json_extract(refs, '$.sessionId') = ?
+        LIMIT 1`,
+    )
+    .get(pair.jobId, pair.sessionId);
+  return session !== undefined && release !== undefined && terminal !== undefined;
+}
+
+/** Returns the exact-subject composite retention-work retry plan. */
+export async function createRetentionWorkRetryPlan(
+  db: Database,
+  subject: RecoverySubject,
+  signal: AbortSignal,
+  quarantine: RecoveryQuarantinePort,
+): Promise<RecoverySourceFactoryPlan<RawRetentionWorkItem, RecoverySessionRetentionWork>> {
+  const reactor = lifecycleReactorsByDatabase.get(db);
+  const policy = () => retryReactor(db).createRecoveryPolicies(quarantine, []).retentionWork;
+  const pair = retentionWorkPair(subject);
+  if (reactor === undefined) {
+    if (pair !== null && hasRetentionWorkInputs(db, pair)) {
+      throw new Error('Session retention retry policy is not initialized for an existing work item.');
+    }
+    return {
+      source: retentionWorkItemRecoverySource([], subject),
+      policy: deferredSessionRetryPolicy(policy),
+    };
+  }
+
+  if (pair === null) {
+    return {
+      source: retentionWorkItemRecoverySource([], subject),
+      policy: reactor.createRecoveryPolicies(quarantine, []).retentionWork,
+    };
+  }
+
+  const policies = reactor.createRecoveryPolicies(quarantine, []);
+  let receipts: readonly RecoveryReceipt<P4RetentionComponent>[] = [];
+  await runSessionStartupRecovery({
+    sessions: {
+      source: sessionProjectionRecoverySource(db, undefined, pair.sessionId),
+      policy: { signal, quarantine, ...policies.sessions },
+    },
+    continuationLeases: {
+      source: sessionContinuationLeaseRecoverySource(db, undefined, pair.sessionId),
+      policy: { signal, quarantine, ...policies.continuationLeases },
+    },
+    terminalOutcomes: {
+      source: terminalRetentionOutcomeRecoverySource(db, undefined, pair.sessionId),
+      policy: { signal, quarantine, ...policies.terminalOutcomes },
+    },
+    releasePairs: {
+      source: retentionReleasePairComponentSource(db, undefined, pair),
+      policy: { signal, quarantine, ...policies.releasePairs },
+    },
+    retentionWork: {
+      settle: async (values) => {
+        receipts = values;
+      },
+    },
+  });
+  return {
+    source: retentionWorkItemRecoverySource(receipts, subject),
+    policy: policies.retentionWork,
+  };
 }
 
 export function createLifecycleReactor(options: LifecycleReactorOptions): LifecycleReactor {

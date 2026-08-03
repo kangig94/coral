@@ -1,4 +1,10 @@
-import { serializeCoralSetupError, type SerializedCoralSetupError } from '../runtime/errors.js';
+import { RecoveryQuarantineClearError } from '../recovery/source-registry.js';
+import {
+  documentedCoralSetupError,
+  serializeCoralSetupError,
+  type CoralSetupError,
+  type SerializedCoralSetupError,
+} from '../runtime/errors.js';
 
 export type TransportErrorResponse = {
   readonly message: string;
@@ -33,6 +39,10 @@ function setupErrorStatusCode(code: string): number {
     case 'kb_commit_not_found':
     case 'kb_commit_already_quarantined':
     case 'kb_commit_quarantine_failed':
+    case 'recovery_quarantine_boundary_not_registered':
+    case 'recovery_quarantine_revision_changed':
+    case 'recovery_quarantine_continuation_pending':
+    case 'recovery_quarantine_retry_in_progress':
       return 409;
     case 'kb_commit_id_invalid':
       return 400;
@@ -46,8 +56,26 @@ function setupErrorStatusCode(code: string): number {
   }
 }
 
+function publicRecoveryQuarantineError(error: unknown): CoralSetupError | null {
+  if (!(error instanceof RecoveryQuarantineClearError)) {
+    return null;
+  }
+  switch (error.code) {
+    case 'boundary-not-registered':
+      return documentedCoralSetupError('recovery_quarantine_boundary_not_registered');
+    case 'revision-mismatch':
+      return documentedCoralSetupError('recovery_quarantine_revision_changed');
+    case 'continuation-not-active':
+      return documentedCoralSetupError('recovery_quarantine_continuation_pending');
+    case 'retry-in-progress':
+      return documentedCoralSetupError('recovery_quarantine_retry_in_progress');
+    default:
+      return null;
+  }
+}
+
 export function buildTransportErrorResponse(error: unknown): TransportErrorResponse {
-  const setupError = serializeCoralSetupError(error);
+  const setupError = serializeCoralSetupError(publicRecoveryQuarantineError(error) ?? error);
   if (setupError === null) {
     return {
       message: 'Internal error',

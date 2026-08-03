@@ -36,7 +36,8 @@ export interface RecoverySourceFactoryPlan<Raw, Item> {
 export type RepeatableRecoverySourceFactory<Raw, Item> = (
   subject: RecoverySubject,
   signal: AbortSignal,
-) => RecoverySourceFactoryPlan<Raw, Item>;
+  quarantine: RecoveryQuarantinePort,
+) => RecoverySourceFactoryPlan<Raw, Item> | Promise<RecoverySourceFactoryPlan<Raw, Item>>;
 
 type RegisteredRecoverySourceFactory = (
   retry: RecoveryRetry,
@@ -72,7 +73,7 @@ export function createRecoverySourceRegistry(): RecoverySourceRegistry {
         throw new Error(`Recovery source factory is already registered for ${boundary}`);
       }
       factories.set(boundary, async (retry, quarantine, signal) => {
-        const plan = factory(retry.subject, signal);
+        const plan = await factory(retry.subject, signal, quarantine);
         if (plan.source.boundary !== boundary) {
           throw new Error(`Recovery source factory for ${boundary} returned boundary ${plan.source.boundary}`);
         }
@@ -98,6 +99,19 @@ export function createRecoverySourceRegistry(): RecoverySourceRegistry {
       return factory(retry, quarantine, signal);
     },
   };
+}
+
+/** Fails composition unless the runtime registry exactly matches the repeatable-boundary manifest. */
+export function assertRecoverySourceRegistryComplete(sources: RecoverySourceRegistry): void {
+  const boundaries = sources.boundaries();
+  if (
+    boundaries.length !== repeatableRecoveryBoundaryIds.length ||
+    boundaries.some((boundary, index) => boundary !== repeatableRecoveryBoundaryIds[index])
+  ) {
+    throw new Error(
+      `Recovery source registry is incomplete: expected ${repeatableRecoveryBoundaryIds.join(', ')}, received ${boundaries.join(', ')}`,
+    );
+  }
 }
 
 export type RecoveryQuarantineClearRequest = {

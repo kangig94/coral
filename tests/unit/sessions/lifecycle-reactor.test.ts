@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type * as SessionStartupRecoveryModule from '#src/sessions/startup-recovery.js';
 
 import { JobStore } from '#src/jobs/store.js';
 import type { JobLaunch, AppServerRuntime, JobTerminalInput } from '#src/jobs/records.js';
@@ -20,6 +21,7 @@ import { SessionManager } from '#src/sessions/shell.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
+import { runSessionStartupRecovery } from '#src/sessions/startup-recovery.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import {
   appendRetentionDiscardCompleted,
@@ -53,6 +55,11 @@ import {
 import type { CauseRef } from '#src/causality/cause-ref.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
+vi.mock('#src/sessions/startup-recovery.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof SessionStartupRecoveryModule>();
+  return { ...actual, runSessionStartupRecovery: vi.fn(actual.runSessionStartupRecovery) };
+});
+
 const openDbs = new Set<Database>();
 
 afterEach(() => {
@@ -74,6 +81,7 @@ type Harness = {
   readonly sessionManager: SessionManager;
   readonly coordinatorCommit: CommitEventsFn;
   readonly reactor: ReturnType<typeof createLifecycleReactor>;
+  readonly reactorLifetime: AbortController;
   readonly discardCalls: Array<readonly string[]>;
   readonly logs: string[];
   readonly appendedBatches: AppendedEvent[][];
@@ -174,6 +182,7 @@ function createHarness(
   const bodyCodec = createEventBodyCodec();
   const logs: string[] = [];
   const appendedBatches: AppendedEvent[][] = [];
+  const reactorLifetime = new AbortController();
   const coordinatorCommit: CommitEventsFn = (cb) => {
     const appended = commit(db, cb, {
       now: () => new Date(runtime.time.now()),
@@ -195,6 +204,7 @@ function createHarness(
     runtime,
     time: runtime.time,
     commitEvents: coordinatorCommit,
+    signal: reactorLifetime.signal,
     log: (message) => logs.push(message),
   });
   const progressStore = new JobStore(namespace, runtime, bodyCodec, {
@@ -216,6 +226,7 @@ function createHarness(
     sessionManager,
     coordinatorCommit,
     reactor,
+    reactorLifetime,
     discardCalls,
     logs,
     appendedBatches,
@@ -437,6 +448,47 @@ async function expectRetentionEvents(
 }
 
 describe('LifecycleReactor retention enforcement', () => {
+  it('observes lifetime cancellation and settles recovery before the store closes', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    let recoverySignal: AbortSignal | undefined;
+    let releaseRecovery!: () => void;
+    let markRecoveryStarted!: () => void;
+    const recoveryStarted = new Promise<void>((resolve) => {
+      markRecoveryStarted = resolve;
+    });
+    const recoveryReleased = new Promise<void>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    vi.mocked(runSessionStartupRecovery).mockImplementationOnce(async (walks) => {
+      recoverySignal = walks.sessions.policy.signal;
+      markRecoveryStarted();
+      await recoveryReleased;
+      walks.sessions.policy.signal.throwIfAborted();
+      throw new Error('expected cancellation');
+    });
+
+    const startupSignal = new AbortController().signal;
+    const recoveryWalk = harness.reactor.scanStartup(startupSignal);
+    await recoveryStarted;
+
+    let storeClosed = false;
+    const shutdown = (async () => {
+      harness.reactorLifetime.abort();
+      await harness.reactor.dispose();
+      harness.db.close();
+      openDbs.delete(harness.db);
+      storeClosed = true;
+    })();
+
+    expect(recoverySignal?.aborted).toBe(true);
+    await Promise.resolve();
+    expect(storeClosed).toBe(false);
+
+    releaseRecovery();
+    await expect(recoveryWalk).rejects.toMatchObject({ name: 'AbortError' });
+    await shutdown;
+    expect(storeClosed).toBe(true);
+  });
   it('enforces a terminal and release pair once and coalesces repeated appended events', async () => {
     const harness = createHarness();
     const jobId = 'job-pair-once';
@@ -823,7 +875,7 @@ describe('LifecycleReactor retention enforcement', () => {
       continuation_kind: 'retention-discard.v1',
     });
 
-    await harness.reactor.scanStartup();
+    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
     expect(harness.discardCalls).toEqual([[handle]]);
     expect(readRetentionEvents(harness, sessionId).map((event) => event.type)).toEqual([
       'session.retention.discard.requested',
@@ -1339,7 +1391,7 @@ describe('LifecycleReactor retention enforcement', () => {
 
     expect(readRetentionEvents(harness, sessionId)).toEqual([]);
 
-    await harness.reactor.scanStartup();
+    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
 
     await expectRetentionEvents(harness, sessionId, [
       { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
@@ -1372,7 +1424,7 @@ describe('LifecycleReactor retention enforcement', () => {
       .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
       .run('not valid session json', malformedSessionId);
 
-    await harness.reactor.scanStartup();
+    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
 
     await expectRetentionEvents(harness, validSessionId, [
       { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
@@ -1411,7 +1463,7 @@ describe('LifecycleReactor retention enforcement', () => {
     harness.sessionManager.releaseJob(sessionId, jobId);
     recordContinuationLease(harness, sessionId, jobId, harness.runtime.time.now() + 100);
 
-    await harness.reactor.scanStartup();
+    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
     await harness.reactor.waitForIdle();
     expect(readRetentionEvents(harness, sessionId)).toEqual([]);
     expect(harness.discardCalls).toEqual([]);
@@ -1428,7 +1480,7 @@ describe('LifecycleReactor retention enforcement', () => {
       },
     ]);
     expect(harness.discardCalls).toEqual([['/tmp/rollout-lease-timer.jsonl']]);
-    harness.reactor.dispose();
+    await harness.reactor.dispose();
   });
 
   it('expires overdue pending continuation leases during startup scan', async () => {
@@ -1441,7 +1493,7 @@ describe('LifecycleReactor retention enforcement', () => {
     harness.sessionManager.releaseJob(sessionId, jobId);
     recordContinuationLease(harness, sessionId, jobId, harness.runtime.time.now() - 1);
 
-    await harness.reactor.scanStartup();
+    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
 
     await expectRetentionEvents(harness, sessionId, [
       { type: 'session.retention.discard.requested', attempt: 1, handles: ['/tmp/rollout-lease-restart.jsonl'] },
@@ -1453,7 +1505,7 @@ describe('LifecycleReactor retention enforcement', () => {
       },
     ]);
     expect(harness.discardCalls).toEqual([['/tmp/rollout-lease-restart.jsonl']]);
-    harness.reactor.dispose();
+    await harness.reactor.dispose();
   });
 
   it('reschedules the continuation lease timer for the earliest pending expiry', async () => {
@@ -1473,7 +1525,7 @@ describe('LifecycleReactor retention enforcement', () => {
     recordContinuationLease(harness, firstSessionId, firstJobId, harness.runtime.time.now() + 1_000);
     recordContinuationLease(harness, secondSessionId, secondJobId, harness.runtime.time.now() + 100);
 
-    await harness.reactor.scanStartup();
+    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
     harness.runtime.time.tick(100);
     await harness.reactor.waitForIdle();
 
@@ -1496,7 +1548,7 @@ describe('LifecycleReactor retention enforcement', () => {
       },
     ]);
     expect(harness.discardCalls).toEqual([['/tmp/rollout-lease-early.jsonl'], ['/tmp/rollout-lease-late.jsonl']]);
-    harness.reactor.dispose();
+    await harness.reactor.dispose();
   });
 
   it('quarantines a malformed lease while a valid timer sibling expires and settles', async () => {
@@ -1530,7 +1582,7 @@ describe('LifecycleReactor retention enforcement', () => {
       .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
       .run(JSON.stringify(malformedEntry), malformedSessionId);
 
-    await harness.reactor.scanStartup();
+    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
     expect(readRetentionEvents(harness, malformedSessionId)).toEqual([]);
     expect(
       harness.db
@@ -1563,7 +1615,7 @@ describe('LifecycleReactor retention enforcement', () => {
       },
     ]);
     expect(harness.discardCalls).toEqual([['/tmp/rollout-lease-valid-sibling.jsonl']]);
-    harness.reactor.dispose();
+    await harness.reactor.dispose();
   });
 
   it('quarantines one expiry append failure and keeps the valid sibling timer live', async () => {
@@ -1594,7 +1646,7 @@ describe('LifecycleReactor retention enforcement', () => {
       END;
     `);
 
-    await harness.reactor.scanStartup();
+    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
     expect(readRetentionEvents(harness, failedSessionId)).toEqual([]);
     expect(
       harness.db
@@ -1638,7 +1690,7 @@ describe('LifecycleReactor retention enforcement', () => {
       },
     ]);
     expect(harness.discardCalls).toEqual([['/tmp/rollout-expiry-append-sibling.jsonl']]);
-    harness.reactor.dispose();
+    await harness.reactor.dispose();
   });
 
   it('observes startup recovery markError releases through the observer-aware entry point', async () => {

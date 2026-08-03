@@ -128,6 +128,21 @@ describe('cli errors', () => {
       });
     });
 
+    it('drops documented setup-error context from the CLI envelope', () => {
+      const error = documentedCoralSetupError('store_reset_interrupted_foreign', {
+        flavor: 'prod',
+        cause: 'raw filesystem failure that must stay private',
+      });
+
+      expect(buildErrorEnvelope(error).envelope).toEqual({
+        error: true,
+        code: 'store_reset_interrupted_foreign',
+        message: 'Coral found an unrecognized entry in the interrupted backend store-reset staging area.',
+        remediation:
+          "Run 'coral-cli backend store-reset discard --target gen2 --flavor prod' to resume the interrupted reset under explicit operator control. Startup leaves the active store and staged incident unchanged.",
+      });
+    });
+
     it.each([
       [
         'invalid_store_reset_incident_id',

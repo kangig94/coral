@@ -172,7 +172,6 @@ function structuredBodyError(
         code: setupError.code,
         message: setupError.userMessage,
         remediation: setupError.remediation,
-        ...(setupError.context === undefined ? {} : { detail: setupError.context }),
       },
       errorCodeToExit(setupError.code, fallback.httpStatus),
     );
@@ -260,7 +259,6 @@ export function buildErrorEnvelope(error: unknown): CliErrorResult {
         code: setupError.code,
         message: setupError.userMessage,
         remediation: setupError.remediation,
-        ...(setupError.context === undefined ? {} : { detail: setupError.context }),
       },
       errorCodeToExit(setupError.code),
     );

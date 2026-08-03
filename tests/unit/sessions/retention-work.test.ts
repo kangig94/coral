@@ -201,6 +201,7 @@ type SettlementHarness = {
   readonly capabilityCalls: ArtifactActionCall[];
   readonly providerEffects: ArtifactActionOptions[];
   readonly logs: string[];
+  readonly signal: AbortSignal;
   reactor: ReturnType<typeof createLifecycleReactor>;
   restart(): ReturnType<typeof createLifecycleReactor>;
 };
@@ -262,6 +263,7 @@ function createSettlementHarness(
   const reducers = composeReducers(jobsRegistry, sessionsRegistry);
   const bodyCodec = createEventBodyCodec();
   const logs: string[] = [];
+  const signal = new AbortController().signal;
   const commitEvents: CommitEventsFn = (callback) =>
     commit(db, callback, {
       now: () => new Date(runtime.time.now()),
@@ -277,6 +279,7 @@ function createSettlementHarness(
       runtime,
       time: runtime.time,
       commitEvents,
+      signal,
       log: (message) => logs.push(message),
     });
   const harness: SettlementHarness = {
@@ -295,6 +298,7 @@ function createSettlementHarness(
     capabilityCalls,
     providerEffects,
     logs,
+    signal,
     reactor: createReactor(),
     restart: () => {
       harness.reactor = createReactor();
@@ -697,7 +701,7 @@ describe('sessions retention-work', () => {
       nativeContent: 'retention first\n',
     });
 
-    await harness.reactor.scanStartup();
+    await harness.reactor.scanStartup(harness.signal);
     const beforeOnDemand = readOnlyActionManifest(harness, jobId);
     await harness.reactor.discardSessionArtifacts(sessionId);
     const afterOnDemand = readOnlyActionManifest(harness, jobId);
@@ -725,7 +729,7 @@ describe('sessions retention-work', () => {
 
     await harness.reactor.discardSessionArtifacts(sessionId);
     const beforeRetention = readOnlyActionManifest(harness, jobId);
-    await harness.reactor.scanStartup();
+    await harness.reactor.scanStartup(harness.signal);
     const afterRetention = readOnlyActionManifest(harness, jobId);
 
     expect(readRetentionEvents(harness, sessionId).map(({ type }) => type)).toEqual([
@@ -758,7 +762,7 @@ describe('sessions retention-work', () => {
       nativeContent: 'archive published\n',
     });
 
-    await harness.reactor.scanStartup();
+    await harness.reactor.scanStartup(harness.signal);
     const continuation = readContinuation(harness, sessionId, jobId);
     const publishedManifest = readManifest(harness.runtime, continuation.descriptor);
     expect(continuation.stage).toBe('discard-pending');
@@ -770,7 +774,7 @@ describe('sessions retention-work', () => {
     reconciliation = { kind: 'not-applied' };
     const callsBeforeRestart = harness.capabilityCalls.length;
     harness.restart();
-    await harness.reactor.scanStartup();
+    await harness.reactor.scanStartup(harness.signal);
     const retryCalls = harness.capabilityCalls.slice(callsBeforeRestart);
     const retriedManifest = readManifest(harness.runtime, continuation.descriptor);
 
@@ -819,7 +823,7 @@ describe('sessions retention-work', () => {
     harness.db.exec('DROP TRIGGER crash_after_native_discard');
     const callsBeforeRestart = harness.capabilityCalls.length;
     harness.restart();
-    await harness.reactor.scanStartup();
+    await harness.reactor.scanStartup(harness.signal);
 
     expect(harness.capabilityCalls.slice(callsBeforeRestart).map(({ kind }) => kind)).toEqual(['reconcile']);
     expect(harness.providerEffects).toHaveLength(1);

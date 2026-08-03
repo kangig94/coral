@@ -1,7 +1,12 @@
 import { PROJECTION_JOB_COLUMNS, type ProjectionJobStoredRow } from './projection-row.js';
 import type { Database } from '../store/db.js';
 import type { EventsRow } from '../store/schema.js';
-import { canonicalRecoveryRevision, defineRecoverySource, type RecoverySource } from '../recovery/containment.js';
+import {
+  canonicalRecoveryRevision,
+  defineRecoverySource,
+  type RecoverySource,
+  type RecoverySubject,
+} from '../recovery/containment.js';
 import {
   EVENT_COLUMNS,
   eventRevisionFields,
@@ -14,16 +19,26 @@ export type RawStaleJobCleanupRow = {
   readonly statusEvents: readonly EventsRow[];
 };
 
-function scanStaleJobCleanupRows(db: Database): readonly RawStaleJobCleanupRow[] {
+function scanStaleJobCleanupRows(db: Database, subjectKey?: string): readonly RawStaleJobCleanupRow[] {
   return withConsistentRead(db, () => {
-    const projections = db
-      .prepare<[], ProjectionJobStoredRow>(
-        `SELECT ${PROJECTION_JOB_COLUMNS}
-           FROM projection_jobs
-          WHERE phase NOT IN ('queued', 'launching', 'running')
-          ORDER BY job_id ASC`,
-      )
-      .all();
+    const projections =
+      subjectKey === undefined
+        ? db
+            .prepare<[], ProjectionJobStoredRow>(
+              `SELECT ${PROJECTION_JOB_COLUMNS}
+                 FROM projection_jobs
+                WHERE phase NOT IN ('queued', 'launching', 'running')
+                ORDER BY job_id ASC`,
+            )
+            .all()
+        : db
+            .prepare<[string], ProjectionJobStoredRow>(
+              `SELECT ${PROJECTION_JOB_COLUMNS}
+                 FROM projection_jobs
+                WHERE phase NOT IN ('queued', 'launching', 'running')
+                  AND job_id = ?`,
+            )
+            .all(subjectKey);
     const readStatusEvents = db.prepare<[string], EventsRow>(
       `SELECT ${EVENT_COLUMNS}
          FROM events
@@ -54,11 +69,11 @@ function staleJobCleanupSubject(raw: RawStaleJobCleanupRow) {
 }
 
 /** Creates the raw row-granular terminal-job artifact cleanup source. */
-export function staleJobCleanupSource(db: Database): RecoverySource<RawStaleJobCleanupRow> {
+export function staleJobCleanupSource(db: Database, subject?: RecoverySubject): RecoverySource<RawStaleJobCleanupRow> {
   return defineRecoverySource({
     boundary: 'stale-job-cleanup',
-    scanSubject: { key: 'stale-job-cleanup-discovery', revision: { kind: 'until-cleared' } },
-    scan: () => scanStaleJobCleanupRows(db),
+    scanSubject: subject ?? { key: 'stale-job-cleanup-discovery', revision: { kind: 'until-cleared' } },
+    scan: () => scanStaleJobCleanupRows(db, subject?.key),
     subject: staleJobCleanupSubject,
   });
 }

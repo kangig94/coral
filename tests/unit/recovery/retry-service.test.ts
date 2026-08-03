@@ -14,6 +14,7 @@ import { sessionProjectionRecoverySource } from '#src/sessions/session-projectio
 import { terminalRetentionOutcomeRecoverySource } from '#src/sessions/terminal-retention-outcome-recovery-source.js';
 import { workflowRecoverySource } from '#src/workflow/recovery-source.js';
 import {
+  assertRecoverySourceRegistryComplete,
   createRecoveryQuarantineRetryService,
   createRecoverySourceRegistry,
   repeatableRecoveryBoundaryIds,
@@ -55,6 +56,16 @@ function advanced(detail = 'settled by retry'): RecoveryDisposition {
     outcome: 'settled',
     facts: [],
     detail,
+  };
+}
+
+function passThroughPolicy<Raw>(): RecoveryRetryPolicy<Raw, Raw> {
+  return {
+    processLocalCleanup: { kind: 'not-required' },
+    hydrate: (raw) => raw,
+    requiredObligations: () => [],
+    settle: () => advanced(),
+    onFault: (fault) => ({ kind: 'quarantine', detail: `retry ${fault.stage} failed` }),
   };
 }
 
@@ -148,7 +159,7 @@ describe('recovery quarantine retry service', () => {
     revision: 'revision-1',
   } as const;
 
-  it('should keep the typed boundary IDs equal to every registered source boundary', () => {
+  it('should keep the runtime registry equal to every manifest boundary', () => {
     expect(repeatableRecoveryBoundaryIds).toEqual([
       'coordinator-job-recovery',
       'discussion-source',
@@ -178,6 +189,55 @@ describe('recovery quarantine retry service', () => {
 
     expect(new Set(registeredSourceBoundaries)).toEqual(new Set(repeatableRecoveryBoundaryIds));
     expect(registeredSourceBoundaries).toHaveLength(repeatableRecoveryBoundaryIds.length);
+
+    const runtimeRegistry = createRecoverySourceRegistry();
+    runtimeRegistry.register('coordinator-job-recovery', (retrySubject) => ({
+      source: coordinatorJobRecoverySource(db, { subject: retrySubject }),
+      policy: passThroughPolicy(),
+    }));
+    runtimeRegistry.register('discussion-source', (retrySubject) => ({
+      source: discussionSourceRecoverySource(db, retrySubject),
+      policy: passThroughPolicy(),
+    }));
+    runtimeRegistry.register('discussion-candidate', (retrySubject) => ({
+      source: discussionCandidateRecoverySource(db, retrySubject),
+      policy: passThroughPolicy(),
+    }));
+    runtimeRegistry.register('session-projection', (retrySubject) => ({
+      source: sessionProjectionRecoverySource(db, retrySubject),
+      policy: passThroughPolicy(),
+    }));
+    runtimeRegistry.register('session-continuation-lease', (retrySubject) => ({
+      source: sessionContinuationLeaseRecoverySource(db, retrySubject),
+      policy: passThroughPolicy(),
+    }));
+    runtimeRegistry.register('terminal-retention-outcome', (retrySubject) => ({
+      source: terminalRetentionOutcomeRecoverySource(db, retrySubject),
+      policy: passThroughPolicy(),
+    }));
+    runtimeRegistry.register('retention-release-pair', (retrySubject) => ({
+      source: retentionReleasePairComponentSource(db, retrySubject),
+      policy: passThroughPolicy(),
+    }));
+    runtimeRegistry.register('session-retention-work', (retrySubject) => ({
+      source: retentionWorkItemRecoverySource([], retrySubject),
+      policy: passThroughPolicy(),
+    }));
+    runtimeRegistry.register('workflow-recovery', (retrySubject) => ({
+      source: workflowRecoverySource(db, retrySubject),
+      policy: passThroughPolicy(),
+    }));
+    runtimeRegistry.register('stale-job-cleanup', (retrySubject) => ({
+      source: staleJobCleanupSource(db, retrySubject),
+      policy: passThroughPolicy(),
+    }));
+    runtimeRegistry.register('crashed-job-terminalization', (retrySubject) => ({
+      source: crashedJobTerminalizationSource(db, 'test-namespace', retrySubject),
+      policy: passThroughPolicy(),
+    }));
+
+    expect(() => assertRecoverySourceRegistryComplete(runtimeRegistry)).not.toThrow();
+    expect(runtimeRegistry.boundaries()).toEqual(repeatableRecoveryBoundaryIds);
   });
 
   it('should delete the retained row after successful settlement', async () => {

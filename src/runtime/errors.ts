@@ -45,6 +45,10 @@ export type DocumentedCoralSetupErrorCode =
   | 'store_reset_interrupted_malformed'
   | 'store_reset_interrupted_non_resettable'
   | 'store_reset_quarantine_failed'
+  | 'recovery_quarantine_boundary_not_registered'
+  | 'recovery_quarantine_revision_changed'
+  | 'recovery_quarantine_continuation_pending'
+  | 'recovery_quarantine_retry_in_progress'
   | 'expansion_binary_corrupt'
   | 'installer_payload_invalid'
   | 'unknown_expansion'
@@ -294,6 +298,26 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
         : context?.reason === 'classified_evidence_missing'
           ? "Retry startup once. If the store is classified for reset again without any active files, run 'coral-cli backend status' and report this code. Do not create, move, delete, restore, or upload DB, WAL, or SHM evidence."
           : 'Check permissions and free disk space in the Coral store directory, then retry. Do not move, delete, restore, or upload DB, WAL, or SHM evidence.',
+  },
+  recovery_quarantine_boundary_not_registered: {
+    userMessage: 'That recovery boundary is not available for operator retry.',
+    remediation:
+      'Run `coral-cli backend recovery-quarantine list` and copy the boundary from a retained row. If the listed boundary is still rejected, update Coral and retry.',
+  },
+  recovery_quarantine_revision_changed: {
+    userMessage: 'That recovery quarantine coordinate is stale because its revision changed.',
+    remediation:
+      'Run `coral-cli backend recovery-quarantine list`, copy the row’s current boundary, key, and revision, then retry clear with that exact coordinate.',
+  },
+  recovery_quarantine_continuation_pending: {
+    userMessage: 'That recovery quarantine row is a durable continuation and cannot be cleared directly.',
+    remediation:
+      'Run `coral-cli backend recovery-quarantine list` to inspect the continuation. Leave it retained for the owning recovery flow; do not repeat clear with the same coordinate.',
+  },
+  recovery_quarantine_retry_in_progress: {
+    userMessage: 'A recovery retry is already in progress for that quarantine row.',
+    remediation:
+      'Wait for the coordinator to finish the retry, then run `coral-cli backend recovery-quarantine list`. Retry clear only if the row returns to the active state.',
   },
   expansion_binary_corrupt: {
     userMessage: (context) =>

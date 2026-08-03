@@ -138,6 +138,7 @@ function createHarness(): {
     runtime,
     time: runtime.time,
     commitEvents: coordinatorCommit,
+    signal: new AbortController().signal,
   });
   reactorRef.current = reactor;
   return {
@@ -252,7 +253,7 @@ describe('continuation lease retention integration', () => {
 
       expect(discardCalls).toEqual([['/tmp/job-stale.jsonl']]);
     } finally {
-      reactor.dispose();
+      await reactor.dispose();
       db.close();
     }
   });
@@ -288,7 +289,7 @@ describe('continuation lease retention integration', () => {
       await reactor.waitForIdle();
       expect(discardCalls).toEqual([['/tmp/job-rejected-resume.jsonl']]);
     } finally {
-      reactor.dispose();
+      await reactor.dispose();
       db.close();
     }
   });
@@ -347,7 +348,7 @@ describe('continuation lease retention integration', () => {
       await reactor.waitForIdle();
       expect(discardCalls).toEqual([['/tmp/job-launch-failure-stale.jsonl']]);
     } finally {
-      reactor.dispose();
+      await reactor.dispose();
       db.close();
     }
   });

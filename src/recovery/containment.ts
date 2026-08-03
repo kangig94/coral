@@ -313,7 +313,7 @@ async function each<Raw, Item>(
     // originating cause, and throwing from a `finally` would silently replace it with whatever the
     // release reported. Both abort the walk, so precedence is the only thing at stake — and losing the
     // origin is exactly the diagnostic loss this boundary exists to prevent.
-    let settlementError: unknown = null;
+    let settlementFailure: { readonly error: unknown } | null = null;
     try {
       const settlement = await settlePhase(definition.boundary, hydration.value, policy);
       await applyDisposition(report, policy, {
@@ -326,19 +326,18 @@ async function each<Raw, Item>(
         obligations: settlement.obligations,
       });
     } catch (error: unknown) {
-      settlementError = error;
+      settlementFailure = { error };
     }
 
     const cleanup = await releaseBoundaryOwnership(policy, hydration.value.item);
-    if (settlementError !== null && cleanup.kind === 'incomplete') {
+    if (settlementFailure !== null && cleanup.kind === 'incomplete') {
       throwIfAborted(policy.signal);
       throw new AggregateError(
-        [settlementError, cleanup.error],
+        [settlementFailure.error, cleanup.error],
         `Recovery settlement failed and process-local cleanup did not complete for ${definition.boundary}:${scanned.subject.key}`,
       );
     }
-    // eslint-disable-next-line @typescript-eslint/only-throw-error -- caught values must be rethrown unchanged so the original settlement failure is preserved
-    if (settlementError !== null) throw settlementError;
+    if (settlementFailure !== null) throw settlementFailure.error;
     if (cleanup.kind === 'incomplete') {
       const cleanupContext = `Recovery process-local cleanup did not complete for ${definition.boundary}:${scanned.subject.key}`;
       if (cleanup.error instanceof Error) {

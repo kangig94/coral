@@ -145,28 +145,43 @@ function readCandidateEnvelope(
   };
 }
 
-function scanDiscussionCandidateEnvelopes(db: Database): readonly RawDiscussionCandidateEnvelope[] {
+function scanDiscussionCandidateEnvelopes(
+  db: Database,
+  subjectKey?: string,
+): readonly RawDiscussionCandidateEnvelope[] {
   return withConsistentRead(db, () => {
-    const discussions = db
-      .prepare<[], RawDiscussionCandidateEnvelope['discussion']>(
-        `SELECT discuss_id, state, last_seq
-           FROM projection_discuss
-          ORDER BY discuss_id ASC`,
-      )
-      .all();
+    const discussions =
+      subjectKey === undefined
+        ? db
+            .prepare<[], RawDiscussionCandidateEnvelope['discussion']>(
+              `SELECT discuss_id, state, last_seq
+                 FROM projection_discuss
+                ORDER BY discuss_id ASC`,
+            )
+            .all()
+        : db
+            .prepare<[string], RawDiscussionCandidateEnvelope['discussion']>(
+              `SELECT discuss_id, state, last_seq
+                 FROM projection_discuss
+                WHERE discuss_id = ?`,
+            )
+            .all(subjectKey);
     return discussions.map((discussion) => readCandidateEnvelope(db, discussion));
   });
 }
 
 /** Creates the complete raw discussion candidate source. */
-export function discussionCandidateRecoverySource(db: Database): RecoverySource<RawDiscussionCandidateEnvelope> {
+export function discussionCandidateRecoverySource(
+  db: Database,
+  subject?: RecoverySubject,
+): RecoverySource<RawDiscussionCandidateEnvelope> {
   return defineRecoverySource({
     boundary: CANDIDATE_BOUNDARY,
-    scanSubject: {
+    scanSubject: subject ?? {
       key: 'discussion-candidate-discovery',
       revision: { kind: 'until-cleared' },
     },
-    scan: () => scanDiscussionCandidateEnvelopes(db),
+    scan: () => scanDiscussionCandidateEnvelopes(db, subject?.key),
     subject: (raw) => raw.subject,
   });
 }

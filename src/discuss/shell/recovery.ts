@@ -22,7 +22,9 @@ import {
   type RecoveryQuarantinePort,
   type RecoveryReceipt,
   type RecoverySettlementFact,
+  type RecoverySubject,
 } from '../../recovery/containment.js';
+import type { RecoveryRetryPolicy, RecoverySourceFactoryPlan } from '../../recovery/source-registry.js';
 import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
 import {
   discussionCandidateRecoverySource,
@@ -787,34 +789,25 @@ type DiscussStartupDeps = {
   readonly signal: AbortSignal;
 };
 
-export type DiscussRunStartup = (deps: DiscussStartupDeps) => Promise<RecoveredDiscussResume[]>;
+type DiscussionRecoveryPolicyContext = {
+  readonly runtime: DiscussionStartupRuntime;
+  readonly quarantine: RecoveryQuarantinePort;
+  readonly resolveContext: (snapshot: PersistedDiscussSnapshot) => DiscussContext;
+  readonly resolveInvocationContext: (snapshot: PersistedDiscussSnapshot) => InvocationContext;
+};
 
-export const runStartup: DiscussRunStartup = async (deps) => {
+function discussionRecoveryRuntime(deps: Pick<DiscussStartupDeps, 'getDiscussContext'>): DiscussionStartupRuntime {
   const runtime = discussionStartupRuntimes.get(deps.getDiscussContext);
   if (runtime === undefined) {
     throw new Error('Discussion startup recovery runtime is not registered.');
   }
-  const db = runtime.getDatabase();
-  const quarantine = new RecoveryQuarantineStore(db, runtime.time);
-  const source = discussionSourceRecoverySource(db);
-  const resolveContext = (snapshot: PersistedDiscussSnapshot): DiscussContext => {
-    const base = deps.createInvocationContext(snapshot.projectRoot);
-    return deps.getDiscussContext({
-      ...base,
-      providerScope: snapshot.providerScope,
-    });
-  };
-  const resolveInvocationContext = (snapshot: PersistedDiscussSnapshot): InvocationContext => {
-    const base = deps.createInvocationContext(snapshot.projectRoot);
-    return {
-      ...base,
-      providerScope: snapshot.providerScope,
-    };
-  };
+  return runtime;
+}
 
-  const sourcePolicy: RecoveryPolicy<RawDiscussionSourceRow, DiscussionSourceCoordinate> = {
-    signal: deps.signal,
-    quarantine,
+function createDiscussionSourcePolicy(
+  runtime: DiscussionStartupRuntime,
+): RecoveryRetryPolicy<RawDiscussionSourceRow, DiscussionSourceCoordinate> {
+  return {
     processLocalCleanup: { kind: 'not-required' },
     issueReceipts: true,
     hydrate: (raw) => {
@@ -839,6 +832,80 @@ export const runStartup: DiscussRunStartup = async (deps) => {
       detail: `discussion source ${fault.stage} failed: ${errorMessage(fault.error)}`,
     }),
   };
+}
+
+function createDiscussionCandidatePolicy(
+  context: DiscussionRecoveryPolicyContext,
+): RecoveryRetryPolicy<RawDiscussionCandidateEnvelope, HydratedDiscussionCandidate> {
+  const { runtime, quarantine, resolveContext, resolveInvocationContext } = context;
+  const boundary = 'discussion-candidate';
+  return {
+    processLocalCleanup: {
+      kind: 'boundary-required',
+      release: (candidate) => releaseCandidateAttachment(boundary, candidate, quarantine, runtime),
+    },
+    hydrate: (envelope) => hydrateDiscussionCandidate(envelope, runtime.resolveProjectSource),
+    requiredObligations: () => CANDIDATE_OBLIGATIONS,
+    settle: (candidate) =>
+      settleDiscussionCandidate(boundary, candidate, quarantine, runtime, resolveContext, resolveInvocationContext),
+    onFault: candidateFaultDisposition,
+  };
+}
+
+function discussionPolicyContext(
+  deps: DiscussStartupDeps,
+  quarantine: RecoveryQuarantinePort,
+): DiscussionRecoveryPolicyContext {
+  const runtime = discussionRecoveryRuntime(deps);
+  const resolveContext = (snapshot: PersistedDiscussSnapshot): DiscussContext => {
+    const base = deps.createInvocationContext(snapshot.projectRoot);
+    return deps.getDiscussContext({ ...base, providerScope: snapshot.providerScope });
+  };
+  const resolveInvocationContext = (snapshot: PersistedDiscussSnapshot): InvocationContext => {
+    const base = deps.createInvocationContext(snapshot.projectRoot);
+    return { ...base, providerScope: snapshot.providerScope };
+  };
+  return { runtime, quarantine, resolveContext, resolveInvocationContext };
+}
+
+/** Returns the exact-subject discussion-source retry plan. */
+export function createDiscussionSourceRetryPlan(
+  deps: DiscussStartupDeps,
+  subject: RecoverySubject,
+): RecoverySourceFactoryPlan<RawDiscussionSourceRow, DiscussionSourceCoordinate> {
+  const runtime = discussionRecoveryRuntime(deps);
+  return {
+    source: discussionSourceRecoverySource(runtime.getDatabase(), subject),
+    policy: createDiscussionSourcePolicy(runtime),
+  };
+}
+
+/** Returns the exact-subject discussion-candidate retry plan. */
+export function createDiscussionCandidateRetryPlan(
+  deps: DiscussStartupDeps,
+  subject: RecoverySubject,
+  quarantine: RecoveryQuarantinePort,
+): RecoverySourceFactoryPlan<RawDiscussionCandidateEnvelope, HydratedDiscussionCandidate> {
+  const context = discussionPolicyContext(deps, quarantine);
+  return {
+    source: discussionCandidateRecoverySource(context.runtime.getDatabase(), subject),
+    policy: createDiscussionCandidatePolicy(context),
+  };
+}
+
+export type DiscussRunStartup = (deps: DiscussStartupDeps) => Promise<RecoveredDiscussResume[]>;
+
+export const runStartup: DiscussRunStartup = async (deps) => {
+  const runtime = discussionRecoveryRuntime(deps);
+  const db = runtime.getDatabase();
+  const quarantine = new RecoveryQuarantineStore(db, runtime.time);
+  const source = discussionSourceRecoverySource(db);
+  const context = discussionPolicyContext(deps, quarantine);
+  const sourcePolicy: RecoveryPolicy<RawDiscussionSourceRow, DiscussionSourceCoordinate> = {
+    signal: deps.signal,
+    quarantine,
+    ...createDiscussionSourcePolicy(runtime),
+  };
 
   await runDiscussionStartupRecovery({
     source,
@@ -847,26 +914,10 @@ export const runStartup: DiscussRunStartup = async (deps) => {
       settle: async (receipts: readonly RecoveryReceipt<DiscussionSourceCoordinate>[]) => {
         if (receipts.length === 0) return;
         const candidateSource = discussionCandidateRecoverySource(db);
-        const boundary = candidateSource.boundary;
         await RecoveryContainment.each(candidateSource, {
           signal: deps.signal,
           quarantine,
-          processLocalCleanup: {
-            kind: 'boundary-required',
-            release: (candidate) => releaseCandidateAttachment(boundary, candidate, quarantine, runtime),
-          },
-          hydrate: (envelope) => hydrateDiscussionCandidate(envelope, runtime.resolveProjectSource),
-          requiredObligations: () => CANDIDATE_OBLIGATIONS,
-          settle: (candidate) =>
-            settleDiscussionCandidate(
-              boundary,
-              candidate,
-              quarantine,
-              runtime,
-              resolveContext,
-              resolveInvocationContext,
-            ),
-          onFault: candidateFaultDisposition,
+          ...createDiscussionCandidatePolicy(context),
         });
       },
     },

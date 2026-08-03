@@ -1,7 +1,12 @@
 import { PROJECTION_JOB_COLUMNS, type ProjectionJobStoredRow } from './projection-row.js';
 import type { Database } from '../store/db.js';
 import type { EventsRow } from '../store/schema.js';
-import { canonicalRecoveryRevision, defineRecoverySource, type RecoverySource } from '../recovery/containment.js';
+import {
+  canonicalRecoveryRevision,
+  defineRecoverySource,
+  type RecoverySource,
+  type RecoverySubject,
+} from '../recovery/containment.js';
 import {
   EVENT_COLUMNS,
   eventRevisionFields,
@@ -14,17 +19,28 @@ export type RawCrashedJobRow = {
   readonly launchEvent: EventsRow | null;
 };
 
-function scanCrashedJobRows(db: Database, namespace: string): readonly RawCrashedJobRow[] {
+function scanCrashedJobRows(db: Database, namespace: string, subjectKey?: string): readonly RawCrashedJobRow[] {
   return withConsistentRead(db, () => {
-    const projections = db
-      .prepare<[string], ProjectionJobStoredRow>(
-        `SELECT ${PROJECTION_JOB_COLUMNS}
-           FROM projection_jobs
-          WHERE backend_namespace = ?
-            AND phase NOT IN ('completed', 'error', 'aborted')
-          ORDER BY job_id ASC`,
-      )
-      .all(namespace);
+    const projections =
+      subjectKey === undefined
+        ? db
+            .prepare<[string], ProjectionJobStoredRow>(
+              `SELECT ${PROJECTION_JOB_COLUMNS}
+                 FROM projection_jobs
+                WHERE backend_namespace = ?
+                  AND phase NOT IN ('completed', 'error', 'aborted')
+                ORDER BY job_id ASC`,
+            )
+            .all(namespace)
+        : db
+            .prepare<[string, string], ProjectionJobStoredRow>(
+              `SELECT ${PROJECTION_JOB_COLUMNS}
+                 FROM projection_jobs
+                WHERE backend_namespace = ?
+                  AND phase NOT IN ('completed', 'error', 'aborted')
+                  AND job_id = ?`,
+            )
+            .all(namespace, subjectKey);
     const readLaunchEvent = db.prepare<[string], EventsRow>(
       `SELECT ${EVENT_COLUMNS}
          FROM events
@@ -60,11 +76,15 @@ function crashedJobSubject(raw: RawCrashedJobRow) {
 }
 
 /** Creates the raw row-granular live-job crash terminalization source. */
-export function crashedJobTerminalizationSource(db: Database, namespace: string): RecoverySource<RawCrashedJobRow> {
+export function crashedJobTerminalizationSource(
+  db: Database,
+  namespace: string,
+  subject?: RecoverySubject,
+): RecoverySource<RawCrashedJobRow> {
   return defineRecoverySource({
     boundary: 'crashed-job-terminalization',
-    scanSubject: { key: 'crashed-job-terminalization-discovery', revision: { kind: 'until-cleared' } },
-    scan: () => scanCrashedJobRows(db, namespace),
+    scanSubject: subject ?? { key: 'crashed-job-terminalization-discovery', revision: { kind: 'until-cleared' } },
+    scan: () => scanCrashedJobRows(db, namespace, subject?.key),
     subject: crashedJobSubject,
   });
 }

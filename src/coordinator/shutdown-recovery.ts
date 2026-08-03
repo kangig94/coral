@@ -5,7 +5,9 @@ type LifecycleRecoveryWalk<Raw, Item> = {
   readonly policy: RecoveryPolicy<Raw, Item>;
 };
 
-/** Runs the AC13 stale-artifact prune walk during startup. */
-export async function runStartupStaleArtifactPrune<Raw, Item>(walk: LifecycleRecoveryWalk<Raw, Item>): Promise<void> {
+/** Runs the AC13 crashed-job terminalization walk during hard shutdown. */
+export async function runShutdownCrashTerminalization<Raw, Item>(
+  walk: LifecycleRecoveryWalk<Raw, Item>,
+): Promise<void> {
   await RecoveryContainment.each(walk.source, walk.policy);
 }

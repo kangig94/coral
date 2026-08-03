@@ -1260,6 +1260,7 @@ describe('lifecycle recovery', () => {
           runtime,
           time: runtime.time,
           commitEvents: coordinatorCommit,
+          signal,
         });
         await sessionReactor.scanStartup(signal);
         return [];
@@ -1309,7 +1310,7 @@ describe('lifecycle recovery', () => {
           .get(valid.sessionId),
       ).toEqual({ count: 1 });
     } finally {
-      sessionReactor?.dispose();
+      await sessionReactor?.dispose();
       await stopLifecycleController(controller);
     }
   });

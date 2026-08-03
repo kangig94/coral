@@ -1275,6 +1275,12 @@ type RecoveryStartupBoundary = {
   readonly compositionSite: string;
 };
 
+type RecoveryShutdownBoundary = {
+  readonly boundary: string;
+  readonly shutdownRoot: { readonly file: string; readonly symbol: string };
+  readonly compositionSite: string;
+};
+
 const RECOVERY_STARTUP_BOUNDARIES: readonly RecoveryStartupBoundary[] = [
   {
     boundary: 'coordinator job recovery',
@@ -1309,7 +1315,7 @@ const RECOVERY_STARTUP_BOUNDARIES: readonly RecoveryStartupBoundary[] = [
     compositionSite: 'src/workflow/recover.ts',
   },
   {
-    boundary: 'AC13 lifecycle walks',
+    boundary: 'AC13 stale-artifact prune',
     startupRoot: {
       file: 'src/coordinator/startup-recovery.ts',
       symbol: 'runStartupStaleArtifactPrune',
@@ -1317,6 +1323,22 @@ const RECOVERY_STARTUP_BOUNDARIES: readonly RecoveryStartupBoundary[] = [
     compositionSite: 'src/coordinator/lifecycle.ts',
   },
 ];
+
+const RECOVERY_SHUTDOWN_BOUNDARIES: readonly RecoveryShutdownBoundary[] = [
+  {
+    boundary: 'AC13 crashed-job terminalization',
+    shutdownRoot: {
+      file: 'src/coordinator/shutdown-recovery.ts',
+      symbol: 'runShutdownCrashTerminalization',
+    },
+    compositionSite: 'src/coordinator/lifecycle.ts',
+  },
+];
+
+const RECOVERY_COMPOSITION_BOUNDARIES = [
+  ...RECOVERY_STARTUP_BOUNDARIES.map(({ boundary, compositionSite }) => ({ boundary, compositionSite })),
+  ...RECOVERY_SHUTDOWN_BOUNDARIES.map(({ boundary, compositionSite }) => ({ boundary, compositionSite })),
+] as const;
 
 const RECOVERY_FATAL_STARTUP_ROOT = {
   file: 'src/coordinator/index.ts',
@@ -1402,13 +1424,13 @@ const RECOVERY_SOURCE_MATRIX: readonly RecoverySourceMatrixRow[] = [
     rawAuthorities: ['scanWorkflowRecoveryEnvelopes'],
   },
   {
-    boundary: 'AC13 lifecycle walks',
+    boundary: 'AC13 stale-artifact prune',
     factory: 'staleJobCleanupSource',
     sourceModule: 'src/jobs/stale-job-cleanup-recovery-source.ts',
     rawAuthorities: ['scanStaleJobCleanupRows'],
   },
   {
-    boundary: 'AC13 lifecycle walks',
+    boundary: 'AC13 crashed-job terminalization',
     factory: 'crashedJobTerminalizationSource',
     sourceModule: 'src/jobs/crashed-job-terminalization-recovery-source.ts',
     rawAuthorities: ['scanCrashedJobRows'],
@@ -1418,7 +1440,7 @@ const RECOVERY_SOURCE_MATRIX: readonly RecoverySourceMatrixRow[] = [
 const RECOVERY_SOURCE_FACTORIES = RECOVERY_SOURCE_MATRIX.map((row) => ({
   name: row.factory,
   module: row.sourceModule,
-  compositionSite: RECOVERY_STARTUP_BOUNDARIES.find((entry) => entry.boundary === row.boundary)!.compositionSite,
+  compositionSite: RECOVERY_COMPOSITION_BOUNDARIES.find((entry) => entry.boundary === row.boundary)!.compositionSite,
   composite: row.composite === true,
 }));
 
@@ -1968,6 +1990,7 @@ function inspectRecoveryFactories(
 ): RecoveryFactoryInspection[] {
   const recoverySourceSymbol = exportedSymbol(context, RECOVERY_CONTAINMENT_MODULE, 'RecoverySource');
   const recoveryReceiptSymbol = exportedSymbol(context, RECOVERY_CONTAINMENT_MODULE, 'RecoveryReceipt');
+  const recoverySubjectSymbol = exportedSymbol(context, RECOVERY_CONTAINMENT_MODULE, 'RecoverySubject');
   const defineSourceSymbol = exportedSymbol(context, RECOVERY_CONTAINMENT_MODULE, 'defineRecoverySource');
   const defineCompositeSymbol = exportedSymbol(context, RECOVERY_CONTAINMENT_MODULE, 'defineCompositeRecoverySource');
   const inspections: RecoveryFactoryInspection[] = [];
@@ -2026,7 +2049,12 @@ function inspectRecoveryFactories(
     if (functionLike) {
       if (manifest.composite) {
         const exactCompositeInput =
-          functionLike.parameters.length === 1 &&
+          (functionLike.parameters.length === 1 ||
+            (functionLike.parameters.length === 2 &&
+              functionLike.parameters[1].type !== undefined &&
+              ts.isTypeReferenceNode(functionLike.parameters[1].type) &&
+              symbolAt(context, functionLike.parameters[1].type.typeName) === recoverySubjectSymbol &&
+              functionLike.parameters[1].type.typeArguments === undefined)) &&
           isExactReadonlyReceiptArray(context, functionLike.parameters[0].type, recoveryReceiptSymbol);
         if (reportPhase1Violations && !exactCompositeInput) {
           violations.push(
@@ -2034,7 +2062,7 @@ function inspectRecoveryFactories(
               context,
               functionLike.parameters[0] ?? functionLike,
               symbol,
-              'lazy-factory: the registered composite factory accepts only readonly RecoveryReceipt<T>[]',
+              'lazy-factory: the registered composite factory accepts only readonly RecoveryReceipt<T>[] and an optional exact RecoverySubject',
               manifest.compositionSite,
             ),
           );
@@ -2959,10 +2987,20 @@ describe('recovery authority boundary', () => {
         compositionSite: 'src/workflow/recover.ts',
       },
       {
-        boundary: 'AC13 lifecycle walks',
+        boundary: 'AC13 stale-artifact prune',
         startupRoot: {
           file: 'src/coordinator/startup-recovery.ts',
           symbol: 'runStartupStaleArtifactPrune',
+        },
+        compositionSite: 'src/coordinator/lifecycle.ts',
+      },
+    ]);
+    expect(RECOVERY_SHUTDOWN_BOUNDARIES).toEqual([
+      {
+        boundary: 'AC13 crashed-job terminalization',
+        shutdownRoot: {
+          file: 'src/coordinator/shutdown-recovery.ts',
+          symbol: 'runShutdownCrashTerminalization',
         },
         compositionSite: 'src/coordinator/lifecycle.ts',
       },
@@ -2976,6 +3014,13 @@ describe('recovery authority boundary', () => {
       expect(sourceFileAt(RECOVERY_PRODUCTION_CONTEXT, boundary.startupRoot.file)).toBeDefined();
       expect(
         exportedSymbol(RECOVERY_PRODUCTION_CONTEXT, boundary.startupRoot.file, boundary.startupRoot.symbol),
+      ).toBeDefined();
+      expect(sourceFileAt(RECOVERY_PRODUCTION_CONTEXT, boundary.compositionSite)).toBeDefined();
+    }
+    for (const boundary of RECOVERY_SHUTDOWN_BOUNDARIES) {
+      expect(sourceFileAt(RECOVERY_PRODUCTION_CONTEXT, boundary.shutdownRoot.file)).toBeDefined();
+      expect(
+        exportedSymbol(RECOVERY_PRODUCTION_CONTEXT, boundary.shutdownRoot.file, boundary.shutdownRoot.symbol),
       ).toBeDefined();
       expect(sourceFileAt(RECOVERY_PRODUCTION_CONTEXT, boundary.compositionSite)).toBeDefined();
     }

@@ -40,15 +40,24 @@ function continuationSessionId(subjectKey: string): string | null {
   return separator > 0 ? subjectKey.slice(0, separator) : null;
 }
 
-function scanSessionProjectionRows(db: Database): readonly RawSessionProjectionEnvelope[] {
+function scanSessionProjectionRows(db: Database, subjectKey?: string): readonly RawSessionProjectionEnvelope[] {
   return withConsistentRead(db, () => {
-    const rows = db
-      .prepare<[], RawSessionProjectionRow>(
-        `SELECT ${PROJECTION_SESSION_COLUMNS}
-           FROM projection_sessions
-          ORDER BY session_id ASC`,
-      )
-      .all();
+    const rows =
+      subjectKey === undefined
+        ? db
+            .prepare<[], RawSessionProjectionRow>(
+              `SELECT ${PROJECTION_SESSION_COLUMNS}
+                 FROM projection_sessions
+                ORDER BY session_id ASC`,
+            )
+            .all()
+        : db
+            .prepare<[string], RawSessionProjectionRow>(
+              `SELECT ${PROJECTION_SESSION_COLUMNS}
+                 FROM projection_sessions
+                WHERE session_id = ?`,
+            )
+            .all(subjectKey);
     const continuations = db
       .prepare<[string], RawRetentionContinuationRow>(
         `SELECT subject_key, subject_revision, continuation_kind, continuation_key
@@ -82,11 +91,15 @@ function sessionProjectionSubject(raw: RawSessionProjectionEnvelope): RecoverySu
 }
 
 /** Creates the raw row-granular session projection source. */
-export function sessionProjectionRecoverySource(db: Database): RecoverySource<RawSessionProjectionEnvelope> {
+export function sessionProjectionRecoverySource(
+  db: Database,
+  subject?: RecoverySubject,
+  subjectKey?: string,
+): RecoverySource<RawSessionProjectionEnvelope> {
   return defineRecoverySource({
     boundary: 'session-projection',
-    scanSubject: { key: 'session-projection-discovery', revision: { kind: 'until-cleared' } },
-    scan: () => scanSessionProjectionRows(db),
+    scanSubject: subject ?? { key: 'session-projection-discovery', revision: { kind: 'until-cleared' } },
+    scan: () => scanSessionProjectionRows(db, subject?.key ?? subjectKey),
     subject: sessionProjectionSubject,
   });
 }

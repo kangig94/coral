@@ -236,7 +236,7 @@ describe('runShutdownSequence drain budget', () => {
       harness.callLog.push('terminateAllFn');
     };
 
-    await expect(runShutdownSequence(harness.ctx)).resolves.toBeUndefined();
+    await expect(runShutdownSequence(harness.ctx)).rejects.toBeInstanceOf(AggregateError);
 
     expect(terminalizationSignal).toBeInstanceOf(AbortSignal);
     expect(harness.callLog).toContain('providerHostManager.shutdown');

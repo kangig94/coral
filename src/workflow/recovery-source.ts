@@ -173,27 +173,41 @@ function readWorkflowEnvelope(db: Database, projection: ProjectionJobStoredRow):
   };
 }
 
-function scanWorkflowRecoveryEnvelopes(db: Database): readonly RawWorkflowRecoveryEnvelope[] {
+function scanWorkflowRecoveryEnvelopes(db: Database, subjectKey?: string): readonly RawWorkflowRecoveryEnvelope[] {
   return withConsistentRead(db, () => {
-    const projections = db
-      .prepare<[], ProjectionJobStoredRow>(
-        `SELECT ${PROJECTION_JOB_COLUMNS}
-         FROM projection_jobs
-         WHERE job_kind = 'workflow'
-           AND phase NOT IN ('completed', 'error', 'aborted')
-          ORDER BY job_id ASC`,
-      )
-      .all();
+    const projections =
+      subjectKey === undefined
+        ? db
+            .prepare<[], ProjectionJobStoredRow>(
+              `SELECT ${PROJECTION_JOB_COLUMNS}
+                 FROM projection_jobs
+                WHERE job_kind = 'workflow'
+                  AND phase NOT IN ('completed', 'error', 'aborted')
+                ORDER BY job_id ASC`,
+            )
+            .all()
+        : db
+            .prepare<[string], ProjectionJobStoredRow>(
+              `SELECT ${PROJECTION_JOB_COLUMNS}
+                 FROM projection_jobs
+                WHERE job_kind = 'workflow'
+                  AND phase NOT IN ('completed', 'error', 'aborted')
+                  AND job_id = ?`,
+            )
+            .all(subjectKey);
     return projections.map((projection) => readWorkflowEnvelope(db, projection));
   });
 }
 
 /** Creates the complete raw workflow recovery source. */
-export function workflowRecoverySource(db: Database): RecoverySource<RawWorkflowRecoveryEnvelope> {
+export function workflowRecoverySource(
+  db: Database,
+  subject?: RecoverySubject,
+): RecoverySource<RawWorkflowRecoveryEnvelope> {
   return defineRecoverySource({
     boundary: WORKFLOW_RECOVERY_BOUNDARY,
-    scanSubject: { key: 'workflow-recovery-discovery', revision: { kind: 'until-cleared' } },
-    scan: () => scanWorkflowRecoveryEnvelopes(db),
+    scanSubject: subject ?? { key: 'workflow-recovery-discovery', revision: { kind: 'until-cleared' } },
+    scan: () => scanWorkflowRecoveryEnvelopes(db, subject?.key),
     subject: (raw) => raw.subject,
   });
 }

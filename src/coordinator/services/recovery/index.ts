@@ -28,9 +28,13 @@ import { RecoveryQuarantineStore } from '../../../recovery/quarantine.js';
 import type {
   RecoveryDisposition,
   RecoveryFault,
+  RecoveryQuarantinePort,
   RecoveryReport,
   RecoverySettlementFact,
+  RecoverySubject,
 } from '../../../recovery/containment.js';
+import type { RecoveryRetryPolicy, RecoverySourceFactoryPlan } from '../../../recovery/source-registry.js';
+import type { Database } from '../../../store/db.js';
 import { runCoordinatorJobRecovery } from './startup-recovery.js';
 import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
 import { appendJobRecoveryFaultTerminalInCommit } from '../terminal-materializer.js';
@@ -100,6 +104,73 @@ type RecoveryAdoptionContext = {
   coordinatorCommit: CommitEventsFn;
   interruptedAppServerReason: InterruptedAppServerReason;
 };
+
+type CoordinatorRecoveryControls = {
+  report(message: string): void;
+  setProcessLocalCleanup(cleanup: () => void): void;
+  clearProcessLocalCleanup(): void;
+};
+
+type CoordinatorWalkOptions = {
+  subjectKey?: string;
+  signal: AbortSignal;
+  coordinatorCommit: CommitEventsFn;
+  summary: string;
+  settle(
+    item: CoordinatorRecoveryItem,
+    controls: CoordinatorRecoveryControls,
+  ): RecoveryDisposition | Promise<RecoveryDisposition>;
+  settleFailure?(
+    item: CoordinatorRecoveryItem,
+    error: unknown,
+    controls: CoordinatorRecoveryControls,
+  ): RecoveryDisposition | Promise<RecoveryDisposition>;
+};
+
+const coordinatorJobRetryPolicies = new WeakMap<
+  Database,
+  (
+    signal: AbortSignal,
+    quarantine: RecoveryQuarantinePort,
+  ) => RecoveryRetryPolicy<RawCoordinatorJobRecoveryEnvelope, CoordinatorRecoveryItem>
+>();
+
+/** Returns the exact-subject coordinator-job retry plan. */
+export function createCoordinatorJobRecoveryRetryPlan(
+  db: Database,
+  subject: RecoverySubject,
+  signal: AbortSignal,
+  quarantine: RecoveryQuarantinePort,
+): RecoverySourceFactoryPlan<RawCoordinatorJobRecoveryEnvelope, CoordinatorRecoveryItem> {
+  let resolvedPolicy: RecoveryRetryPolicy<RawCoordinatorJobRecoveryEnvelope, CoordinatorRecoveryItem> | undefined;
+  const policy = (): RecoveryRetryPolicy<RawCoordinatorJobRecoveryEnvelope, CoordinatorRecoveryItem> => {
+    if (resolvedPolicy === undefined) {
+      const createPolicy = coordinatorJobRetryPolicies.get(db);
+      if (createPolicy === undefined) throw new Error('Coordinator job recovery retry policy is not initialized.');
+      resolvedPolicy = createPolicy(signal, quarantine);
+    }
+    return resolvedPolicy;
+  };
+  return {
+    source: coordinatorJobRecoverySource(db, { subject }),
+    policy: {
+      processLocalCleanup: {
+        kind: 'boundary-required',
+        release: (item) => {
+          const cleanup = policy().processLocalCleanup;
+          if (cleanup.kind !== 'boundary-required') {
+            throw new Error('Coordinator job retry policy lost its cleanup contract.');
+          }
+          return cleanup.release(item);
+        },
+      },
+      hydrate: (raw) => policy().hydrate(raw),
+      requiredObligations: (item) => policy().requiredObligations(item),
+      settle: (item) => policy().settle(item),
+      onFault: (fault) => policy().onFault(fault),
+    },
+  };
+}
 
 type CoordinatorTerminalSettlement =
   | Readonly<{ kind: 'none' }>
@@ -403,31 +474,60 @@ export function createRecoveryCoordinator({
     };
   };
 
-  const runCoordinatorWalk = async (options: {
-    subjectKey?: string;
-    signal: AbortSignal;
-    coordinatorCommit: CommitEventsFn;
-    summary: string;
-    settle(
-      item: CoordinatorRecoveryItem,
-      controls: {
-        report(message: string): void;
-        setProcessLocalCleanup(cleanup: () => void): void;
-        clearProcessLocalCleanup(): void;
-      },
-    ): RecoveryDisposition | Promise<RecoveryDisposition>;
-    settleFailure?(
-      item: CoordinatorRecoveryItem,
-      error: unknown,
-      controls: {
-        report(message: string): void;
-        setProcessLocalCleanup(cleanup: () => void): void;
-        clearProcessLocalCleanup(): void;
-      },
-    ): RecoveryDisposition | Promise<RecoveryDisposition>;
-  }): Promise<RecoveryReport<CoordinatorRecoveryItem>> => {
-    const messages: string[] = [];
+  const createCoordinatorJobRecoveryPolicy = (
+    options: CoordinatorWalkOptions,
+    messages: string[],
+  ): RecoveryRetryPolicy<RawCoordinatorJobRecoveryEnvelope, CoordinatorRecoveryItem> => {
     let processLocalCleanup: (() => void) | null = null;
+    return {
+      processLocalCleanup: {
+        kind: 'boundary-required',
+        release: () => {
+          try {
+            processLocalCleanup?.();
+            return { kind: 'released' as const };
+          } catch (error: unknown) {
+            return { kind: 'incomplete' as const, error };
+          } finally {
+            processLocalCleanup = null;
+          }
+        },
+      },
+      hydrate: (raw) => hydrateCoordinatorRecoveryItem(raw, progressStore),
+      requiredObligations: () => [COORDINATOR_TERMINAL_OBLIGATION, COORDINATOR_CLAIM_RELEASE_OBLIGATION],
+      settle: async (item) => {
+        const controls: CoordinatorRecoveryControls = {
+          report: (message: string) => messages.push(message),
+          setProcessLocalCleanup: (cleanup: () => void) => {
+            processLocalCleanup = cleanup;
+          },
+          clearProcessLocalCleanup: () => {
+            processLocalCleanup = null;
+          },
+        };
+        try {
+          return await options.settle(item, controls);
+        } catch (error: unknown) {
+          if (
+            options.signal.aborted ||
+            options.settleFailure === undefined ||
+            error instanceof CoordinatorRecoveryCommitError ||
+            error instanceof InterruptedRecoveryCommitError ||
+            error instanceof RecoveryOwnershipReleaseError
+          ) {
+            throw error;
+          }
+          return options.settleFailure(item, error, controls);
+        }
+      },
+      onFault: faultDisposition,
+    };
+  };
+
+  const runCoordinatorWalk = async (
+    options: CoordinatorWalkOptions,
+  ): Promise<RecoveryReport<CoordinatorRecoveryItem>> => {
+    const messages: string[] = [];
     const report = await runCoordinatorJobRecovery({
       source: coordinatorJobRecoverySource(progressStore.getDb(), {
         ...(options.subjectKey === undefined ? {} : { subjectKey: options.subjectKey }),
@@ -435,47 +535,7 @@ export function createRecoveryCoordinator({
       policy: {
         signal: options.signal,
         quarantine,
-        processLocalCleanup: {
-          kind: 'boundary-required',
-          release: () => {
-            try {
-              processLocalCleanup?.();
-              return { kind: 'released' as const };
-            } catch (error: unknown) {
-              return { kind: 'incomplete' as const, error };
-            } finally {
-              processLocalCleanup = null;
-            }
-          },
-        },
-        hydrate: (raw) => hydrateCoordinatorRecoveryItem(raw, progressStore),
-        requiredObligations: () => [COORDINATOR_TERMINAL_OBLIGATION, COORDINATOR_CLAIM_RELEASE_OBLIGATION],
-        settle: async (item) => {
-          const controls = {
-            report: (message: string) => messages.push(message),
-            setProcessLocalCleanup: (cleanup: () => void) => {
-              processLocalCleanup = cleanup;
-            },
-            clearProcessLocalCleanup: () => {
-              processLocalCleanup = null;
-            },
-          };
-          try {
-            return await options.settle(item, controls);
-          } catch (error: unknown) {
-            if (
-              options.signal.aborted ||
-              options.settleFailure === undefined ||
-              error instanceof CoordinatorRecoveryCommitError ||
-              error instanceof InterruptedRecoveryCommitError ||
-              error instanceof RecoveryOwnershipReleaseError
-            ) {
-              throw error;
-            }
-            return options.settleFailure(item, error, controls);
-          }
-        },
-        onFault: faultDisposition,
+        ...createCoordinatorJobRecoveryPolicy(options, messages),
       },
     });
     reportCoordinatorRecovery(options.summary, report, messages);
@@ -840,6 +900,20 @@ export function createRecoveryCoordinator({
   return {
     async runStartupRecovery(ctx: StartupRecoveryContext): Promise<JobStore> {
       const { namespace, runtime, progressStore, signal } = ctx;
+      coordinatorJobRetryPolicies.set(progressStore.getDb(), (retrySignal) =>
+        createCoordinatorJobRecoveryPolicy(
+          {
+            signal: retrySignal,
+            coordinatorCommit: ctx.coordinatorCommit,
+            summary: 'Coordinator job operator retry',
+            settle: () => ({
+              kind: 'quarantine',
+              detail: 'coordinator job requires a fresh recovery reconciliation',
+            }),
+          },
+          [],
+        ),
+      );
       const interruptedAppServerReason: InterruptedAppServerReason = ctx.interruptedAppServerReason ?? 'restart';
       state.teardownRequested = false;
       runtimeState.setLaunchFenceActive(true);

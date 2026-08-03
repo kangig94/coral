@@ -74,7 +74,7 @@ export function formatRecoveryQuarantineClear(result: RecoveryQuarantineClearRes
     case 'quarantined':
       return `Recovery retry failed again; the subject is still quarantined: ${coordinate}. Run coral-cli backend recovery-quarantine list to inspect the updated error.`;
     case 'continuation':
-      return `Recovery retry made partial progress: ${coordinate}. Run clear again with this exact coordinate to finish.`;
+      return `Recovery retry made partial progress: ${coordinate}. Run coral-cli backend recovery-quarantine list to inspect the durable continuation; do not run clear again with this coordinate.`;
     default:
       return assertNever(result.disposition);
   }

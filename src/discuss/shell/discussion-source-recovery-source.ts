@@ -1,5 +1,10 @@
 import type { Database } from '../../store/db.js';
-import { canonicalRecoveryRevision, defineRecoverySource, type RecoverySource } from '../../recovery/containment.js';
+import {
+  canonicalRecoveryRevision,
+  defineRecoverySource,
+  type RecoverySource,
+  type RecoverySubject,
+} from '../../recovery/containment.js';
 
 export type RawDiscussionSourceRow = {
   readonly discuss_id: string;
@@ -12,7 +17,17 @@ export type DiscussionSourceCoordinate = {
   readonly sourceId: string;
 };
 
-function scanDiscussionSourceRows(db: Database): readonly RawDiscussionSourceRow[] {
+function scanDiscussionSourceRows(db: Database, subjectKey?: string): readonly RawDiscussionSourceRow[] {
+  if (subjectKey !== undefined) {
+    const row = db
+      .prepare<[string], RawDiscussionSourceRow>(
+        `SELECT discuss_id, state, last_seq
+           FROM projection_discuss
+          WHERE discuss_id = ?`,
+      )
+      .get(subjectKey);
+    return row === undefined ? [] : [row];
+  }
   return db
     .prepare<[], RawDiscussionSourceRow>(
       `SELECT discuss_id, state, last_seq
@@ -23,14 +38,17 @@ function scanDiscussionSourceRows(db: Database): readonly RawDiscussionSourceRow
 }
 
 /** Creates the raw row-granular source used for discussion source discovery. */
-export function discussionSourceRecoverySource(db: Database): RecoverySource<RawDiscussionSourceRow> {
+export function discussionSourceRecoverySource(
+  db: Database,
+  subject?: RecoverySubject,
+): RecoverySource<RawDiscussionSourceRow> {
   return defineRecoverySource({
     boundary: 'discussion-source',
-    scanSubject: {
+    scanSubject: subject ?? {
       key: 'discussion-source-discovery',
       revision: { kind: 'until-cleared' },
     },
-    scan: () => scanDiscussionSourceRows(db),
+    scan: () => scanDiscussionSourceRows(db, subject?.key),
     subject: (row) => ({
       key: row.discuss_id,
       revision: canonicalRecoveryRevision([

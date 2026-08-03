@@ -366,6 +366,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     lifecycleReactor.observe(appended);
     return appended;
   };
+  const lifecycleReactorLifetime = new AbortController();
   const lifecycleReactor = createLifecycleReactor({
     db: getQueryDb,
     readCtx,
@@ -373,7 +374,14 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     runtime,
     time: runtime.time,
     commitEvents: coordinatorCommit,
+    signal: lifecycleReactorLifetime.signal,
   });
+  let lifecycleReactorDisposal: Promise<void> | null = null;
+  const disposeLifecycleReactor = (): Promise<void> => {
+    lifecycleReactorLifetime.abort();
+    lifecycleReactorDisposal ??= lifecycleReactor.dispose();
+    return lifecycleReactorDisposal;
+  };
   handleKbDaemonEvent = (message: KbDaemonEventMessage): void => {
     if (message.event === 'journal') {
       if (!isAppendedEventArray(message.appended)) {
@@ -409,7 +417,9 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     runtime,
     storeFormat,
     discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId),
-    disposeLifecycleReactor: () => lifecycleReactor.dispose(),
+    disposeLifecycleReactor: () => {
+      void disposeLifecycleReactor();
+    },
     createStoreServicesFromDbFn,
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
     getTextProjectionState: textProjectionHealth.read,
@@ -537,7 +547,13 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       // Pending workflow replacement intents must be examined before the
       // retention reactor can expire them. Workflow recovery renews or consumes
       // the intent deterministically; only the remainder is eligible for expiry.
-      await lifecycleReactor.scanStartup();
+      const abortReactorLifetime = () => lifecycleReactorLifetime.abort();
+      signal.addEventListener('abort', abortReactorLifetime, { once: true });
+      try {
+        await lifecycleReactor.scanStartup(signal);
+      } finally {
+        signal.removeEventListener('abort', abortReactorLifetime);
+      }
       signal.throwIfAborted();
 
       return recoveredDiscussResumes;
@@ -550,10 +566,20 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   return {
     server: coordinatorCore.server,
     start: () => coordinatorCore.lifecycleController.start(),
-    shutdown: (reason) => coordinatorCore.lifecycleController.shutdown(reason),
+    shutdown: async (reason) => {
+      try {
+        await coordinatorCore.lifecycleController.shutdown(reason);
+      } finally {
+        await disposeLifecycleReactor();
+      }
+    },
     waitForShutdown: async () => {
-      await coordinatorCore.lifecycleController.waitForShutdown();
-      await finalizeStoreServices(coordinatorCore.storeServicesRef);
+      try {
+        await coordinatorCore.lifecycleController.waitForShutdown();
+      } finally {
+        await disposeLifecycleReactor();
+        await finalizeStoreServices(coordinatorCore.storeServicesRef);
+      }
     },
     getLifecycle: () => coordinatorCore.runtimeState.getLifecycle(),
     getIdleTimer: () => coordinatorCore.idleTimer,

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createIpcClient } from '#src/transport/ipc/client.js';
+import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { repeatableRecoveryBoundaryIds } from '#src/recovery/source-registry.js';
 import {
   createHandoffCoresHarness,
   type HandoffCoresHarness,
@@ -34,7 +36,50 @@ describe('recovery quarantine composition', () => {
     }
 
     expect(caught).toBeInstanceOf(Error);
-    expect(caught).toMatchObject({ message: 'Internal error' });
-    expect(caught).not.toMatchObject({ code: 'recovery_quarantine_unavailable' });
+    expect(caught).toMatchObject({
+      code: 'recovery_quarantine_boundary_not_registered',
+      message: 'That recovery boundary is not available for operator retry.',
+    });
   });
+
+  it.each(repeatableRecoveryBoundaryIds)(
+    'should clear an absent subject retained for registered production boundary %s',
+    async (boundary) => {
+      harness = createHandoffCoresHarness();
+      const coordinator = await harness.bootCore({ instanceId: `recovery-quarantine-${boundary}` });
+      const quarantine = new RecoveryQuarantineStore(harness.db, harness.runtime.time);
+      const subject = {
+        key: `absent-${boundary}`,
+        revision: { kind: 'fingerprint' as const, value: 'revision-1' },
+      };
+      expect(
+        quarantine.upsert({
+          boundary,
+          subject,
+          state: 'active',
+          stage: 'hydrate',
+          errorMessage: 'retained recovery failure',
+          detail: 'operator retry required',
+        }),
+      ).toBe(true);
+      const client = createIpcClient(coordinator.serverInfo.socketPath, harness.runtime.time, {
+        kind: 'boot',
+        token: coordinator.serverInfo.bootToken,
+      });
+
+      await expect(
+        client.request('coordinator.recovery_quarantine.clear', {
+          boundary,
+          key: subject.key,
+          revision: subject.revision.value,
+        }),
+      ).resolves.toEqual({
+        boundary,
+        key: subject.key,
+        revision: subject.revision.value,
+        disposition: 'advanced',
+      });
+      expect(quarantine.read(boundary, subject.key)).toBeNull();
+    },
+  );
 });

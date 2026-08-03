@@ -50,7 +50,9 @@ import type {
   RecoveryObligationId,
   RecoveryQuarantinePort,
   RecoverySettlementFact,
+  RecoverySubject,
 } from '../recovery/containment.js';
+import type { RecoveryRetryPolicy, RecoverySourceFactoryPlan } from '../recovery/source-registry.js';
 import { RecoveryQuarantineStore } from '../recovery/quarantine.js';
 import { workflowRecoverySource, type RawWorkflowRecoveryEnvelope } from './recovery-source.js';
 import { runWorkflowStartupRecovery } from './startup-recovery.js';
@@ -1285,6 +1287,8 @@ type ResumeAllOptions = {
   time: Pick<TimePort, 'now'>;
 };
 
+const workflowRetryOptions = new WeakMap<Database, ResumeAllOptions>();
+
 function finalizationRecording(item: HydratedWorkflowRecovery): WorkflowRecoveryAtomicClose['recording'] {
   const status = item.rootDetail.status;
   const runtime = item.rootDetail.runtime;
@@ -1475,58 +1479,104 @@ async function settleWorkflowRecovery(
   return settledWorkflowResult(item, 'workflow recovery finalized and descendant claims released');
 }
 
+function createWorkflowRecoveryPolicy(
+  options: ResumeAllOptions,
+  quarantine: RecoveryQuarantineStore,
+  resumedWorkflowIds: string[],
+): RecoveryRetryPolicy<RawWorkflowRecoveryEnvelope, HydratedWorkflowRecovery> {
+  return {
+    processLocalCleanup: {
+      kind: 'boundary-required',
+      release: (item) => {
+        if (!item.cleanupRequired) return { kind: 'released' };
+        const releaser = atomicReleaser(options.releaseFailedWorkflowDescendants);
+        if (releaser === null) {
+          return {
+            kind: 'incomplete',
+            error: new Error(`Workflow recovery has no descendant cleanup capability.`),
+          };
+        }
+        try {
+          releaser.cleanup(item.descendants);
+          item.cleanupRequired = false;
+          return { kind: 'released' };
+        } catch (error) {
+          return { kind: 'incomplete', error };
+        }
+      },
+    },
+    hydrate: (raw) => hydrateWorkflowRecovery(raw, options.progressStore),
+    requiredObligations: () => [RESUME_OBLIGATION, FINALIZE_OBLIGATION, DESCENDANT_RELEASE_OBLIGATION],
+    settle: (item) => settleWorkflowRecovery(item, options, quarantine, resumedWorkflowIds),
+    onFault: (fault) => {
+      if (fault.stage === 'scan') return { kind: 'fatal', error: fault.error };
+      if (fault.stage === 'hydrate') {
+        return { kind: 'quarantine', detail: 'workflow recovery hydration failed' };
+      }
+      if (
+        fault.item.deferredReason === 'close-failed' ||
+        (fault.item.deferredReason === 'unknown-external' && fault.item.continuationDurable)
+      ) {
+        return {
+          kind: 'deferred',
+          continuation: continuationToken(fault.item),
+          detail:
+            fault.item.deferredReason === 'close-failed'
+              ? 'workflow recovery durable close remains pending'
+              : 'workflow external recovery outcome remains unknown',
+        };
+      }
+      return { kind: 'quarantine', detail: 'workflow recovery settlement failed before durable close' };
+    },
+  };
+}
+
+/** Returns the exact-subject workflow retry plan owned by workflow recovery. */
+export function createWorkflowRecoveryRetryPlan(
+  db: Database,
+  subject: RecoverySubject,
+): RecoverySourceFactoryPlan<RawWorkflowRecoveryEnvelope, HydratedWorkflowRecovery> {
+  let resolvedPolicy: RecoveryRetryPolicy<RawWorkflowRecoveryEnvelope, HydratedWorkflowRecovery> | undefined;
+  const policy = (): RecoveryRetryPolicy<RawWorkflowRecoveryEnvelope, HydratedWorkflowRecovery> => {
+    if (resolvedPolicy === undefined) {
+      const options = workflowRetryOptions.get(db);
+      if (options === undefined) throw new Error('Workflow recovery retry policy is not initialized.');
+      resolvedPolicy = createWorkflowRecoveryPolicy(options, new RecoveryQuarantineStore(db, options.time), []);
+    }
+    return resolvedPolicy;
+  };
+  return {
+    source: workflowRecoverySource(db, subject),
+    policy: {
+      processLocalCleanup: {
+        kind: 'boundary-required',
+        release: (item) => {
+          const cleanup = policy().processLocalCleanup;
+          if (cleanup.kind !== 'boundary-required') {
+            throw new Error('Workflow retry policy lost its cleanup contract.');
+          }
+          return cleanup.release(item);
+        },
+      },
+      hydrate: (raw) => policy().hydrate(raw),
+      requiredObligations: (item) => policy().requiredObligations(item),
+      settle: (item) => policy().settle(item),
+      onFault: (fault) => policy().onFault(fault),
+    },
+  };
+}
+
 export async function resumeAll(options: ResumeAllOptions): Promise<string[]> {
   const resumedWorkflowIds: string[] = [];
   const signal = options.signal ?? new AbortController().signal;
   const quarantine = new RecoveryQuarantineStore(options.db, options.time);
+  workflowRetryOptions.set(options.db, options);
   await runWorkflowStartupRecovery<RawWorkflowRecoveryEnvelope, HydratedWorkflowRecovery>({
     source: workflowRecoverySource(options.db),
     policy: {
       signal,
       quarantine,
-      processLocalCleanup: {
-        kind: 'boundary-required',
-        release: (item) => {
-          if (!item.cleanupRequired) return { kind: 'released' };
-          const releaser = atomicReleaser(options.releaseFailedWorkflowDescendants);
-          if (releaser === null) {
-            return {
-              kind: 'incomplete',
-              error: new Error(`Workflow recovery has no descendant cleanup capability.`),
-            };
-          }
-          try {
-            releaser.cleanup(item.descendants);
-            item.cleanupRequired = false;
-            return { kind: 'released' };
-          } catch (error) {
-            return { kind: 'incomplete', error };
-          }
-        },
-      },
-      hydrate: (raw) => hydrateWorkflowRecovery(raw, options.progressStore),
-      requiredObligations: () => [RESUME_OBLIGATION, FINALIZE_OBLIGATION, DESCENDANT_RELEASE_OBLIGATION],
-      settle: (item) => settleWorkflowRecovery(item, options, quarantine, resumedWorkflowIds),
-      onFault: (fault) => {
-        if (fault.stage === 'scan') return { kind: 'fatal', error: fault.error };
-        if (fault.stage === 'hydrate') {
-          return { kind: 'quarantine', detail: 'workflow recovery hydration failed' };
-        }
-        if (
-          fault.item.deferredReason === 'close-failed' ||
-          (fault.item.deferredReason === 'unknown-external' && fault.item.continuationDurable)
-        ) {
-          return {
-            kind: 'deferred',
-            continuation: continuationToken(fault.item),
-            detail:
-              fault.item.deferredReason === 'close-failed'
-                ? 'workflow recovery durable close remains pending'
-                : 'workflow external recovery outcome remains unknown',
-          };
-        }
-        return { kind: 'quarantine', detail: 'workflow recovery settlement failed before durable close' };
-      },
+      ...createWorkflowRecoveryPolicy(options, quarantine, resumedWorkflowIds),
     },
   });
   return resumedWorkflowIds;

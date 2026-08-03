@@ -230,7 +230,10 @@ function buildRetentionWorkItem(input: {
   };
 }
 
-function scanRetentionWorkRows(composed: ComposedRetentionWorkReceipts): readonly RawRetentionWorkItem[] {
+function scanRetentionWorkRows(
+  composed: ComposedRetentionWorkReceipts,
+  subjectKey?: string,
+): readonly RawRetentionWorkItem[] {
   const rows: RawRetentionWorkItem[] = [];
   for (const sessionReceipt of composed.sessions) {
     const session = sessionReceipt.payload;
@@ -259,7 +262,7 @@ function scanRetentionWorkRows(composed: ComposedRetentionWorkReceipts): readonl
         pairKey,
         releaseReceipt,
       });
-      if (row !== null) rows.push(row);
+      if (row !== null && (subjectKey === undefined || row.subject.key === subjectKey)) rows.push(row);
     }
   }
   return rows;
@@ -268,11 +271,12 @@ function scanRetentionWorkRows(composed: ComposedRetentionWorkReceipts): readonl
 /** Creates the sole registered P4 composite from boundary-issued component receipts. */
 export function retentionWorkItemRecoverySource(
   receipts: readonly RecoveryReceipt<P4RetentionComponent>[],
+  subject?: RecoverySubject,
 ): RecoverySource<RawRetentionWorkItem> {
   return defineCompositeRecoverySource(receipts, {
     boundary: RETENTION_WORK_BOUNDARY,
-    scanSubject: { key: 'session-retention-work-composition', revision: { kind: 'until-cleared' } },
-    scan: (values) => scanRetentionWorkRows(composeRetentionWorkItemReceipts(values)),
+    scanSubject: subject ?? { key: 'session-retention-work-composition', revision: { kind: 'until-cleared' } },
+    scan: (values) => scanRetentionWorkRows(composeRetentionWorkItemReceipts(values), subject?.key),
     subject: (raw) => raw.subject,
   });
 }

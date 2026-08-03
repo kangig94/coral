@@ -206,7 +206,7 @@ describe('backend recovery-quarantine commands', () => {
   it.each([
     ['advanced', 'resolved and removed', ''],
     ['quarantined', 'still quarantined', 'recovery-quarantine list'],
-    ['continuation', 'partial progress', 'Run clear again'],
+    ['continuation', 'partial progress', 'recovery-quarantine list'],
   ] as const)('should render %s as an actionable operator outcome', (disposition, outcome, recovery) => {
     const formatted = formatRecoveryQuarantineClear({
       boundary: 'workflow-recovery',
@@ -250,7 +250,38 @@ describe('backend recovery-quarantine commands', () => {
     });
     expect(stdout).toBe(`${formatRecoveryQuarantineClear(expected)}\n`);
     expect(stdout).toContain('partial progress');
-    expect(stdout).toContain('Run clear again');
+    expect(stdout).toContain('recovery-quarantine list');
+    expect(stderr).toBe('');
+  });
+
+  it('should execute the continuation instruction and show the durable continuation', async () => {
+    const instruction = 'coral-cli backend recovery-quarantine list';
+    const continuation = {
+      boundary: 'workflow-recovery',
+      subject: { key: 'workflow-1', revision: { kind: 'fingerprint' as const, value: 'revision-1' } },
+      state: 'continuation' as const,
+      stage: 'settle' as const,
+      errorMessage: 'workflow settlement remains partial',
+      detail: 'durable continuation retained',
+      retry: null,
+      continuation: { kind: 'workflow-recovery.v1', key: 'workflow-1' },
+      detectedAt: '2026-08-03T00:00:00.000Z',
+      updatedAt: '2026-08-03T00:00:01.000Z',
+    };
+    const formatted = formatRecoveryQuarantineClear({
+      boundary: continuation.boundary,
+      key: continuation.subject.key,
+      revision: continuation.subject.revision.value,
+      disposition: 'continuation',
+    });
+    expect(formatted).toContain(`Run ${instruction}`);
+
+    const clear = vi.fn();
+    await programWith({ list: () => [continuation], clear }).parseAsync(['node', ...instruction.split(' ')]);
+
+    expect(clear).not.toHaveBeenCalled();
+    expect(stdout).toContain('state=continuation');
+    expect(stdout).toContain('continuation_kind="workflow-recovery.v1"');
     expect(stderr).toBe('');
   });
 
