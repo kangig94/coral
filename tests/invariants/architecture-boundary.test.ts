@@ -2330,37 +2330,61 @@ function collectRawAuthorityViolations(
   inspections: readonly RecoveryFactoryInspection[],
   violations: RecoveryAuthorityViolation[],
 ): void {
+  // Resolve every authority up front and key them by symbol, so the production tree is walked once
+  // instead of once per authority. Walking per authority meant 12 full passes over 655 files with a
+  // `getSymbolAtLocation` per identifier, which is what pushed this past the CI timeout.
+  const authorities = new Map<
+    ts.Symbol,
+    {
+      readonly declaration: ts.Node;
+      readonly allowedScanBodies: readonly ts.Node[];
+      readonly allowedScanBody: string;
+    }
+  >();
   for (const manifest of RECOVERY_RAW_AUTHORITIES) {
     const authority = topLevelDeclarationSymbol(context, manifest.module, manifest.name);
     const declaration = authority?.valueDeclaration ?? authority?.declarations?.[0];
     if (!authority || !declaration) {
       continue;
     }
-    const allowedScanBodies =
-      inspections.find((inspection) => inspection.manifest.name === manifest.factory)?.scanBodies ?? [];
+    authorities.set(authority, {
+      declaration,
+      allowedScanBodies:
+        inspections.find((inspection) => inspection.manifest.name === manifest.factory)?.scanBodies ?? [],
+      allowedScanBody: manifest.allowedScanBody,
+    });
+  }
+  if (authorities.size === 0) return;
 
-    for (const sourceFile of context.productionSourceFiles) {
-      visitNodes(sourceFile, (node) => {
-        if (!ts.isIdentifier(node) && !ts.isElementAccessExpression(node)) {
-          return;
-        }
-        if (symbolAt(context, node) !== authority) {
-          return;
-        }
-        if (isNodeWithin(node, declaration) || allowedScanBodies.some((scanBody) => isNodeWithin(node, scanBody))) {
-          return;
-        }
-        violations.push(
-          makeRecoveryViolation(
-            context,
-            node,
-            authority,
-            'raw-authority: value references are forbidden outside the exact inverse allowlist',
-            manifest.allowedScanBody,
-          ),
-        );
-      });
-    }
+  for (const sourceFile of context.productionSourceFiles) {
+    visitNodes(sourceFile, (node) => {
+      if (!ts.isIdentifier(node) && !ts.isElementAccessExpression(node)) {
+        return;
+      }
+      const symbol = symbolAt(context, node);
+      if (symbol === undefined) {
+        return;
+      }
+      const authority = authorities.get(symbol);
+      if (authority === undefined) {
+        return;
+      }
+      if (
+        isNodeWithin(node, authority.declaration) ||
+        authority.allowedScanBodies.some((scanBody) => isNodeWithin(node, scanBody))
+      ) {
+        return;
+      }
+      violations.push(
+        makeRecoveryViolation(
+          context,
+          node,
+          symbol,
+          'raw-authority: value references are forbidden outside the exact inverse allowlist',
+          authority.allowedScanBody,
+        ),
+      );
+    });
   }
 }
 
@@ -3117,7 +3141,11 @@ describe('recovery authority boundary', () => {
       startupInputSeal: true,
     });
     assertNoRecoveryViolations(violations);
-  }, 30_000);
+    // Type-aware whole-program analysis over every production source, so this budget is hardware-bound
+    // rather than a hang signal — CI runners take roughly 6x a dev machine, and the previous 30s turned
+    // that into a failure that read like a violation. Measured locally: startup-input seal ~4.8s
+    // (type expansion), phase 1 ~2.9s, raw authority ~0.4s.
+  }, 120_000);
 
   it('accepts a fully sealed synthetic source, composite, and startup surface', () => {
     const violations = analyzeRecoveryAuthorityBoundary(recoveryFixtureContext('valid'), {
