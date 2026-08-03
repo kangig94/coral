@@ -1,0 +1,7 @@
+import { defineRecoverySource, type RecoverySource } from '../recovery/containment.js';
+
+type RawSession = { readonly id: string };
+
+export function sessionProjectionRecoverySource(rows: readonly RawSession[]): RecoverySource<RawSession> {
+  return defineRecoverySource({ boundary: 'session-projection', scan: () => rows });
+}

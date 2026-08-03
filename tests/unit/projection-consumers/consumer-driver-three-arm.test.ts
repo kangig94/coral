@@ -35,6 +35,11 @@ const SNAPSHOT: KbCorpusSnapshot = {
   metadataManifestHash: 'metadata-hash-1',
 };
 
+const STALE_CORPUS_FRESHNESS = {
+  projectionIdentityHash: () => 'three-arm-test-v1',
+  readAuthoritativeFreshness: async () => ({ kind: 'stale', reason: 'artifact-missing' }) as const,
+};
+
 describe('ConsumerDriver three-arm discriminator contract (Phase 7)', () => {
   it('statusFor() narrows correctly across journal-cursor, corpus-apply, and stateless arms', () => {
     const db = createDb();
@@ -52,6 +57,7 @@ describe('ConsumerDriver three-arm discriminator contract (Phase 7)', () => {
         kind: 'apply',
         registrationKind: 'expansion',
         corpusInterest: 'content',
+        ...STALE_CORPUS_FRESHNESS,
         apply: async () => {},
       });
       const statelessHandle = driver.register({
@@ -99,6 +105,7 @@ describe('ConsumerDriver three-arm discriminator contract (Phase 7)', () => {
         kind: 'apply',
         registrationKind: 'expansion',
         corpusInterest: 'content',
+        ...STALE_CORPUS_FRESHNESS,
         apply: async () => {},
       });
       driver.register({

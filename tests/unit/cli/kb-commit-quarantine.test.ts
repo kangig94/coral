@@ -48,7 +48,7 @@ describe('backend kb-commit quarantine command', () => {
     }));
     const program = new Command();
     program.exitOverride();
-    registerBackendCommands(program, storeReset, { quarantine });
+    registerBackendCommands(program, { storeReset, kbCommit: { quarantine } });
 
     await program.parseAsync([
       'node',
@@ -72,7 +72,7 @@ describe('backend kb-commit quarantine command', () => {
       const quarantine = vi.fn<KbCommitCommandOperations['quarantine']>();
       const program = new Command();
       program.exitOverride();
-      registerBackendCommands(program, storeReset, { quarantine });
+      registerBackendCommands(program, { storeReset, kbCommit: { quarantine } });
 
       let refusal: unknown;
       try {

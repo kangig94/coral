@@ -1,0 +1,14 @@
+import { defineRecoverySource } from '../../recovery/containment.js';
+
+type RawDiscussion = { readonly id: string };
+
+function scanDiscussionSourceRows(): readonly RawDiscussion[] {
+  return [];
+}
+
+const buildDiscussionSource = () =>
+  defineRecoverySource({ boundary: 'discussion-source', scan: () => scanDiscussionSourceRows() });
+
+export const discussionSourceRecoverySource = Object.assign(buildDiscussionSource, {
+  scan: scanDiscussionSourceRows,
+});

@@ -3,7 +3,6 @@ import type { RecoveryCapableService } from './reconcile/contracts.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../providers/catalog.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { SessionLookup } from '../sessions/lookup.js';
 import type { InterruptedAppServerReason } from './reconcile/interrupted-reason.js';
 import type { CommitEventsFn } from '../store/append.js';
 
@@ -17,8 +16,6 @@ type JobsStartupContext = {
   createInvocationContext: (projectRoot: string) => InvocationContext;
   signal: AbortSignal;
   log: (message: string) => void;
-  cleanupStaleJobs: (currentBundleHash: string) => void;
-  sessionLookup: SessionLookup;
   coordinatorCommit: CommitEventsFn;
   /**
    * Why the recovery is finalizing app-server jobs:

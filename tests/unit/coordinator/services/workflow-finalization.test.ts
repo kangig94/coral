@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { CauseRef, CauseRefToken } from '#src/causality/cause-ref.js';
 import type { CommitContext } from '#src/store/append.js';
 import type { ResolvableCoralEventInput } from '#src/store/envelope.js';
 import { selectFinalCauseRef } from '#src/coordinator/services/workflow-finalization.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
+import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
+import type { AtomicFailedWorkflowDescendantReleaser, WorkflowRecoveryDescendant } from '#src/workflow/recover.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 type RecordedInput = {
   readonly input: ResolvableCoralEventInput<unknown, unknown>;
@@ -70,5 +73,64 @@ describe('selectFinalCauseRef precedence', () => {
       body: { kind: 'wrapper_crashed', message: 'wrapper exploded' },
     });
     expect(result).toBe(appended[0].token);
+  });
+
+  it('composes workflow finalization, exact descendant release, and continuation clear in one commit', () => {
+    const runtime = new SimulationRuntime();
+    const { appended, c } = createContextRecorder();
+    const order: string[] = [];
+    const coordinatorCommit = vi.fn((cb: (context: CommitContext<unknown>) => unknown) => {
+      order.push('commit:start');
+      cb(c);
+      order.push('commit:end');
+    });
+    const finalizer = createWorkflowRecoveryFinalizer({
+      runtime,
+      progressStore: {
+        readStatus: () => null,
+        readRuntimeProjection: () => null,
+      },
+      coordinatorCommit: coordinatorCommit as never,
+    });
+    const descendants: readonly WorkflowRecoveryDescendant[] = [
+      {
+        jobId: 'workflow-1:slot:0',
+        sessionId: 'session-1',
+        projectRoot: '/project',
+        expectedSessionVersion: 4,
+      },
+    ];
+    const releaseDescendants = (() => []) as unknown as AtomicFailedWorkflowDescendantReleaser;
+    releaseDescendants.composeAtomic = (_commit, received) => {
+      order.push('descendants');
+      expect(received).toBe(descendants);
+      return [{ jobId: 'workflow-1:slot:0', sessionId: 'session-1', sessionClaimRelease: 'released' }];
+    };
+    releaseDescendants.cleanup = () => {};
+    const intent: WorkflowFinalizationIntent = {
+      outcome: 'failed',
+      workflowJobId: 'workflow-1',
+      lifecycleFault: { kind: 'recovery_failed', message: 'decoded domain error' },
+      stepDetails: [],
+    };
+
+    const releases = finalizer.atomicClose?.({
+      intent,
+      recording: { namespace: 'ns', project: '/project', startedAt: new Date(runtime.time.now()).toISOString() },
+      descendants,
+      releaseDescendants,
+      clearContinuation: () => {
+        order.push('continuation');
+        return true;
+      },
+    });
+
+    expect(releases).toEqual([{ jobId: 'workflow-1:slot:0', sessionId: 'session-1', sessionClaimRelease: 'released' }]);
+    expect(order).toEqual(['commit:start', 'descendants', 'continuation', 'commit:end']);
+    expect(appended.map(({ input }) => input.type)).toEqual([
+      'workflow.lifecycle_fault',
+      'workflow.completed',
+      'job.terminal.recorded',
+    ]);
   });
 });

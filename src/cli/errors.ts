@@ -31,9 +31,9 @@ const STORE_RESET_ERRORS = {
     exitCode: 1,
   },
   store_reset_incident_limit_exceeded: {
-    message: 'Too many retained store-reset entries to list safely; report a known incident ID directly.',
+    message: 'Too many retained store-reset entries to list safely.',
     remediation:
-      'Use an incident ID from the reset warning. If none is available, file a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
+      'File a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
     exitCode: 1,
   },
   store_reset_build_mismatch: {
@@ -172,7 +172,6 @@ function structuredBodyError(
         code: setupError.code,
         message: setupError.userMessage,
         remediation: setupError.remediation,
-        ...(setupError.context === undefined ? {} : { detail: setupError.context }),
       },
       errorCodeToExit(setupError.code, fallback.httpStatus),
     );
@@ -260,7 +259,6 @@ export function buildErrorEnvelope(error: unknown): CliErrorResult {
         code: setupError.code,
         message: setupError.userMessage,
         remediation: setupError.remediation,
-        ...(setupError.context === undefined ? {} : { detail: setupError.context }),
       },
       errorCodeToExit(setupError.code),
     );

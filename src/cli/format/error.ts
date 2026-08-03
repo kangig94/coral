@@ -13,8 +13,5 @@ export function formatErrorEnvelope(envelope: CliErrorEnvelope, statusCode?: num
   if (envelope.remediation !== undefined) {
     lines.push(`remediation: ${envelope.remediation}`);
   }
-  if (envelope.detail !== undefined) {
-    lines.push(`Detail: ${JSON.stringify(envelope.detail)}`);
-  }
   return lines.join('\n');
 }

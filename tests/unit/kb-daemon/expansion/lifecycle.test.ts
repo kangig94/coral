@@ -325,6 +325,8 @@ describe('disposeExpansionScope ordering', () => {
         authority: 'corpus',
         kind: 'apply',
         corpusInterest: 'content',
+        projectionIdentityHash: () => 'order-test-engine-v1',
+        readAuthoritativeFreshness: async () => ({ kind: 'stale', reason: 'artifact-missing' }),
         apply: async () => {},
       },
       scope,

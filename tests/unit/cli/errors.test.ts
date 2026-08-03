@@ -128,6 +128,21 @@ describe('cli errors', () => {
       });
     });
 
+    it('drops documented setup-error context from the CLI envelope', () => {
+      const error = documentedCoralSetupError('store_reset_interrupted_foreign', {
+        flavor: 'prod',
+        cause: 'raw filesystem failure that must stay private',
+      });
+
+      expect(buildErrorEnvelope(error).envelope).toEqual({
+        error: true,
+        code: 'store_reset_interrupted_foreign',
+        message: 'Coral found an unrecognized entry in the interrupted backend store-reset staging area.',
+        remediation:
+          "Run 'coral-cli backend store-reset discard --target gen2 --flavor prod' to resume the interrupted reset under explicit operator control. Startup leaves the active store and staged incident unchanged.",
+      });
+    });
+
     it.each([
       [
         'invalid_store_reset_incident_id',
@@ -143,8 +158,8 @@ describe('cli errors', () => {
       ],
       [
         'store_reset_incident_limit_exceeded',
-        'Too many retained store-reset entries to list safely; report a known incident ID directly.',
-        'Use an incident ID from the reset warning. If none is available, file a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
+        'Too many retained store-reset entries to list safely.',
+        'File a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
         1,
       ],
       [

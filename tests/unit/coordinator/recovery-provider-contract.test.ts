@@ -20,6 +20,10 @@ import type { ProviderSession } from '#src/sessions/entry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { bindingSuccess } from '#src/providers/contracts/binding.js';
 import { validatedTestContinuityBlob } from '#tests/helpers/session.js';
+import {
+  finalizeInterruptedAppServerRecovery,
+  RecoveryOwnershipReleaseError,
+} from '#src/coordinator/services/recovery/interrupted-finalizer.js';
 
 const launchRecord = {
   jobId: 'job-recovery-contract',
@@ -385,5 +389,127 @@ describe('interrupted provider HostRef recovery', () => {
       probeOutcome: 'unavailable',
     });
     expect(openReplacement).not.toHaveBeenCalled();
+  });
+});
+
+describe('interrupted recovery settlement ownership', () => {
+  const status = {
+    jobId: launchRecord.jobId,
+    owner: launchRecord.owner,
+    sessionId: launchRecord.sessionId,
+    provider: launchRecord.provider,
+    projectRoot: launchRecord.projectRoot,
+    backendNamespace: launchRecord.backendNamespace,
+    jobKind: launchRecord.jobKind,
+    phase: 'running',
+    updatedAt: launchRecord.createdAt,
+    lastSeq: 1,
+  } as const;
+
+  function finalizerFixture(options: { releaseError?: Error; artifactNextVersion?: number } = {}) {
+    const runtime = new SimulationRuntime();
+    const finalizeJobContinuityAtomic = vi.fn(async () => true);
+    // Crash-discovered artifact handles are persisted before the session is finalized, so finalize
+    // must use the exact version returned by that write or idempotent replay.
+    const recordArtifactHandleAtomic = vi.fn(async () => ({
+      ok: true as const,
+      nextVersion: options.artifactNextVersion ?? session.version + 1,
+    }));
+    const abortRegistry = {
+      remove: vi.fn(() => {
+        if (options.releaseError !== undefined) throw options.releaseError;
+      }),
+    };
+    const launchAdmission = { releaseLaunch: vi.fn() };
+    const jobPools = new Map([[launchRecord.jobId, launchRecord.pool]]);
+    const plan = planInterruptedAppServerRecovery(
+      {
+        launchRecord,
+        session,
+        boundProvider: { name: 'fixture' } as BoundProvider,
+      } as ProviderRecoveryAuthority,
+      waitingRuntime,
+      'restart',
+      { recovery: true, probe: false },
+    );
+    const performed = {
+      kind: 'resolved',
+      mutation: { kind: 'preserve' },
+      probeOutcome: 'waiting',
+      recoveryConversationRef: undefined,
+      artifactHandles: [{ handle: '/derived/report', identity: { kind: 'fixture' }, sourceJobId: launchRecord.jobId }],
+    } as const;
+    return {
+      plan,
+      performed,
+      finalizeJobContinuityAtomic,
+      recordArtifactHandleAtomic,
+      abortRegistry,
+      launchAdmission,
+      jobPools,
+      deps: {
+        runtime,
+        sessionManager: { finalizeJobContinuityAtomic, recordArtifactHandleAtomic },
+        abortRegistry,
+        launchAdmission,
+        jobPools,
+      },
+    };
+  }
+
+  it('persists artifact handles before final settlement with the exact returned CAS version', async () => {
+    const fixture = finalizerFixture();
+
+    await finalizeInterruptedAppServerRecovery(fixture.plan, fixture.performed, status, fixture.deps as never);
+
+    expect(fixture.recordArtifactHandleAtomic).toHaveBeenCalledOnce();
+    expect(fixture.recordArtifactHandleAtomic).toHaveBeenCalledWith(
+      session.sessionId,
+      expect.objectContaining({
+        expectedActiveJobId: launchRecord.jobId,
+        expectedVersion: session.version,
+        handle: '/derived/report',
+        sourceJobId: launchRecord.jobId,
+      }),
+    );
+    expect(fixture.finalizeJobContinuityAtomic).toHaveBeenCalledOnce();
+    expect(fixture.finalizeJobContinuityAtomic).toHaveBeenCalledWith(
+      session.sessionId,
+      expect.objectContaining({
+        expectedActiveJobId: launchRecord.jobId,
+        // The artifact write advanced the session, so finalize must CAS on the post-write version.
+        expectedVersion: session.version + 1,
+        appendBeforeRelease: expect.any(Function),
+      }),
+    );
+    expect(fixture.recordArtifactHandleAtomic.mock.invocationCallOrder[0]).toBeLessThan(
+      fixture.finalizeJobContinuityAtomic.mock.invocationCallOrder[0],
+    );
+    expect(fixture.abortRegistry.remove).toHaveBeenCalledWith(launchRecord.jobId);
+    expect(fixture.launchAdmission.releaseLaunch).toHaveBeenCalledWith(launchRecord.jobId, launchRecord.pool);
+  });
+
+  it('uses an unchanged artifact replay version for the final settlement CAS', async () => {
+    const fixture = finalizerFixture({ artifactNextVersion: session.version });
+
+    await finalizeInterruptedAppServerRecovery(fixture.plan, fixture.performed, status, fixture.deps as never);
+
+    expect(fixture.recordArtifactHandleAtomic).toHaveBeenCalledWith(
+      session.sessionId,
+      expect.objectContaining({ expectedVersion: session.version }),
+    );
+    expect(fixture.finalizeJobContinuityAtomic).toHaveBeenCalledWith(
+      session.sessionId,
+      expect.objectContaining({ expectedVersion: session.version }),
+    );
+  });
+
+  it('surfaces incomplete process-local release as fatal after durable settlement', async () => {
+    const fixture = finalizerFixture({ releaseError: new Error('abort registry unavailable') });
+
+    await expect(
+      finalizeInterruptedAppServerRecovery(fixture.plan, fixture.performed, status, fixture.deps as never),
+    ).rejects.toBeInstanceOf(RecoveryOwnershipReleaseError);
+    expect(fixture.finalizeJobContinuityAtomic).toHaveBeenCalledOnce();
   });
 });

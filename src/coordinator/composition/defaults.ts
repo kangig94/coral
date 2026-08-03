@@ -46,8 +46,8 @@ type BackendEagerDefaults = {
 
 type BackendWorldBoundDefaults = {
   readonly listenFn: NonNullable<CoordinatorCoreOptions['listenFn']>;
-  readonly cleanupStaleJobsFn: NonNullable<CoordinatorCoreOptions['cleanupStaleJobsFn']>;
-  readonly markJobsAsErrorFn: NonNullable<CoordinatorCoreOptions['markJobsAsErrorFn']>;
+  readonly cleanupStaleJobsFn: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
+  readonly markJobsAsErrorFn: (namespace: string, message: string, signal: AbortSignal) => void | Promise<void>;
   readonly terminateAllFn: NonNullable<CoordinatorCoreOptions['terminateAllFn']>;
 };
 
@@ -131,32 +131,35 @@ export function resolveCoordinatorDefaults(
       const listenFn =
         options.listenFn ?? ((server) => defaultListen(server, bindings.bindHost, bindings.advertiseHost));
       const jobRetentionMs = resolveJobRetentionMs(runtime.env.get('CORAL_JOBS_RETENTION_DAYS'));
-      const cleanupStaleJobsFn =
+      const cleanupStaleJobsFn: BackendWorldBoundDefaults['cleanupStaleJobsFn'] =
         options.cleanupStaleJobsFn ??
-        ((currentBundleHash: string) => {
+        ((currentBundleHash, signal) => {
           const progressStore = bindings.getProgressStore();
           if (progressStore === null) return;
-          cleanupStaleJobs(
+          return cleanupStaleJobs(
             progressStore,
             currentBundleHash,
             bindings.log,
             runtime.storage,
             runtime.time.now(),
             jobRetentionMs,
+            signal,
           );
         });
-      const markJobsAsErrorFn =
+      const markJobsAsErrorFn: BackendWorldBoundDefaults['markJobsAsErrorFn'] =
         options.markJobsAsErrorFn ??
-        ((currentNamespace: string, message: string) => {
+        ((currentNamespace, message, signal) => {
           const progressStore = bindings.getProgressStore();
           if (progressStore === null) return;
-          markJobsAsError(
+          return markJobsAsError(
             progressStore,
             currentNamespace,
             message,
             runtime.storage,
             runtime.paths.coral.exports.jobsRoot,
             runtime.time.now(),
+            signal,
+            (cb) => progressStore.commit(cb),
           );
         });
       const terminateAllFn = options.terminateAllFn ?? (() => bindings.launchCoordinator.terminateAll());

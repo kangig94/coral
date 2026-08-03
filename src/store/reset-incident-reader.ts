@@ -16,7 +16,7 @@ import {
   type StoreResetIncidentLocalReport,
   type StoreResetIncidentListEntry,
   type StoreResetIncidentListResult,
-  type StoreResetIncidentManifestV2,
+  type StoreResetIncidentManifest,
   type StoreResetPublicReport,
 } from './reset-incident.js';
 import {
@@ -125,7 +125,7 @@ function readManifestBytes(
   return contents;
 }
 
-function buildMatches(manifest: StoreResetIncidentManifestV2, expected: StrictBundleManifest): boolean {
+function buildMatches(manifest: StoreResetIncidentManifest, expected: StrictBundleManifest): boolean {
   return (
     manifest.build.version === expected.version &&
     manifest.build.buildSetId === expected.buildSetId &&
@@ -144,6 +144,8 @@ function unavailableEntry(
     state,
     resetAt: null,
     reason: null,
+    schemaVersion: null,
+    resetPolicyCause: null,
     fileCount: null,
   };
 }
@@ -182,6 +184,8 @@ function readListEntry(
       state: 'ready',
       resetAt: manifest.resetAt,
       reason: manifest.reason,
+      schemaVersion: manifest.schemaVersion,
+      resetPolicyCause: manifest.schemaVersion === 3 ? manifest.resetPolicyCause : null,
       fileCount: manifest.files.length,
     };
   } catch (error: unknown) {

@@ -37,7 +37,14 @@ import {
 } from '#src/store/backend-store-reset.js';
 import { openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
-import { MAX_RESET_MANIFEST_BYTES } from '#src/store/reset-incident.js';
+import {
+  MAX_RESET_MANIFEST_BYTES,
+  parseStoreResetIncidentManifest,
+  serializeStoreResetIncidentManifest,
+  type StoreResetIncidentManifestV2,
+  type StoreResetIncidentManifestV3,
+  type StoreResetPolicyCause,
+} from '#src/store/reset-incident.js';
 import { pragmaSimple } from '#tests/helpers/test-db.js';
 
 const REPO_ROOT = process.cwd();
@@ -46,6 +53,17 @@ const BUILD_SET_ID = '123e4567-e89b-42d3-a456-426614174000';
 const BUNDLE_HASH = '0123456789abcdef';
 const NAMESPACE = 'test-namespace';
 const STORE_FORMAT = currentCoralStoreFormat();
+const RESET_POLICY_CAUSES = [
+  'older-incompatible',
+  'corrupt-or-unsupported',
+  'newer-incompatible-invalid-target',
+] as const;
+const MANIFEST_RESUME_CUTS = [
+  'manifest-publication',
+  'active-file-quarantine',
+  'staging-to-final-publication',
+  'final-incident-publication',
+] as const;
 
 function buildIdentity(bundleHash = BUNDLE_HASH) {
   return {
@@ -63,6 +81,18 @@ const tempRoots: string[] = [];
 
 function retainedIncidentNames(quarantineRoot: string): string[] {
   return readdirSync(quarantineRoot).filter((name) => name !== '.staging');
+}
+
+function retainedManifest(dbPath: string): StoreResetIncidentManifestV3 {
+  const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+  const incidents = retainedIncidentNames(quarantineRoot);
+  expect(incidents).toHaveLength(1);
+  const manifest = parseStoreResetIncidentManifest(
+    readFileSync(join(quarantineRoot, incidents[0], 'reset-manifest.json')),
+  );
+  expect(manifest.schemaVersion).toBe(3);
+  if (manifest.schemaVersion !== 3) throw new Error('Expected a V3 store-reset incident.');
+  return manifest;
 }
 
 function makeTempRoot(prefix: string): string {
@@ -257,6 +287,36 @@ function createInterruptedReset(
   };
 }
 
+function setInterruptedResetCause(
+  stagingDirectory: string,
+  resetPolicyCause: StoreResetPolicyCause,
+): StoreResetIncidentManifestV3 {
+  const manifestPath = join(stagingDirectory, 'reset-manifest.json');
+  const parsed = parseStoreResetIncidentManifest(readFileSync(manifestPath));
+  if (parsed.schemaVersion !== 3) throw new Error('Expected a V3 store-reset incident.');
+  const manifest: StoreResetIncidentManifestV3 = {
+    ...parsed,
+    resetPolicyCause,
+    resetPolicyEvidence:
+      resetPolicyCause === 'newer-incompatible-invalid-target'
+        ? {
+            validationFailure: { code: 'target_hash_mismatch' },
+            observedTarget: {
+              version: '99.0.0',
+              buildSetId: '323e4567-e89b-42d3-a456-426614174000',
+              bundleHash: 'fedcba9876543210',
+              flavor: 'prod',
+              storeFormatFingerprint: `sha256:${'e'.repeat(64)}`,
+              executablePathSha256: 'c'.repeat(64),
+              executableSha256: 'd'.repeat(64),
+            },
+          }
+        : null,
+  };
+  writeFileSync(manifestPath, serializeStoreResetIncidentManifest(manifest));
+  return manifest;
+}
+
 function expectSetupCode(error: unknown, code: string): void {
   expect(serializeCoralSetupError(error)).toMatchObject({ code });
 }
@@ -313,20 +373,19 @@ describe('openOrResetBackendStoreDb', () => {
     }
   });
 
-  it('refuses a store with no format fingerprint without mutating it', () => {
+  it('quarantines a store with no format fingerprint and boots fresh state', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-missing-fingerprint-'), 'store.db');
     createMissingFingerprintStore(dbPath);
-    const before = readFileSync(dbPath);
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
-    const error = captureError(() => openReset(runtime, dbPath));
+    const db = openReset(runtime, dbPath);
+    db.close();
 
-    expectSetupCode(error, 'store_corrupt_or_unsupported');
-    expect(readFileSync(dbPath)).toEqual(before);
-    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
-    expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
-    expect(warnSpy).not.toHaveBeenCalled();
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+    expect(tableExists(dbPath, 'events')).toBe(true);
+    expect(retainedManifest(dbPath).resetPolicyCause).toBe('corrupt-or-unsupported');
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 
   it('leaves an already-current store in place without warning', () => {
@@ -344,43 +403,40 @@ describe('openOrResetBackendStoreDb', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('refuses a mismatched marker without mutating the store', () => {
+  it('quarantines an equal-version mismatched marker and boots fresh state', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-mismatch-'), 'store.db');
     createMismatchStore(dbPath);
-    const before = readFileSync(dbPath);
 
-    const error = captureError(() => openReset(runtime, dbPath));
+    const db = openReset(runtime, dbPath);
+    db.close();
 
-    expectSetupCode(error, 'store_corrupt_or_unsupported');
-    expect(readFileSync(dbPath)).toEqual(before);
-    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
-    expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+    expect(retainedManifest(dbPath).resetPolicyCause).toBe('corrupt-or-unsupported');
   });
 
-  it.each([
-    {
-      label: 'older incompatible',
-      fingerprint: `sha256:${'0'.repeat(64)}`,
-      version: '0.0.0-rc.1',
-      code: 'store_older_incompatible',
-    },
-    {
-      label: 'newer incompatible',
-      fingerprint: STORE_FORMAT.fingerprint,
-      version: '99.0.0',
-      code: 'store_newer_incompatible',
-    },
-  ])('returns the documented $label refusal without mutating bytes', ({ fingerprint, version, code }) => {
+  it('quarantines an older incompatible store and boots fresh state', () => {
     const runtime = createRuntime();
-    const dbPath = join(makeTempRoot('coral-store-directional-refusal-'), 'store.db');
-    createVersionedStore(dbPath, fingerprint, version);
+    const dbPath = join(makeTempRoot('coral-store-older-automatic-reset-'), 'store.db');
+    createVersionedStore(dbPath, `sha256:${'0'.repeat(64)}`, '0.0.0-rc.1');
+
+    const db = openReset(runtime, dbPath);
+    db.close();
+
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+    expect(retainedManifest(dbPath).resetPolicyCause).toBe('older-incompatible');
+  });
+
+  it('keeps the existing newer-incompatible refusal without mutating bytes', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-newer-refusal-'), 'store.db');
+    createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
     const before = readFileSync(dbPath);
 
     const error = captureError(() => openReset(runtime, dbPath));
 
-    expectSetupCode(error, code);
-    expect(serializeCoralSetupError(error)).toMatchObject({ context: { version } });
+    expectSetupCode(error, 'store_newer_incompatible');
+    expect(serializeCoralSetupError(error)).toMatchObject({ context: { version: '99.0.0' } });
     expect(readFileSync(dbPath)).toEqual(before);
     expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
   });
@@ -470,9 +526,11 @@ describe('openOrResetBackendStoreDb', () => {
       }>;
     };
     expect(manifest).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       incidentId: quarantineEntries[0],
       reason: 'mismatch',
+      resetPolicyCause: 'corrupt-or-unsupported',
+      resetPolicyEvidence: null,
       storedFingerprint: `sha256:${'0'.repeat(64)}`,
       expectedFingerprint: STORE_FORMAT.fingerprint,
       build: {
@@ -505,66 +563,232 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(dbPath)).toBe(false);
   });
 
-  it('refuses an interrupted durable quarantine without resuming or mutating it', () => {
+  it('automatically resumes an interrupted V3 quarantine and boots fresh state', () => {
     const runtime = createRuntime();
     const dbDir = makeTempRoot('coral-store-interrupted-quarantine-');
     const dbPath = join(dbDir, 'store.db');
-    const { quarantineRoot, stagingRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
+    const { quarantineRoot, stagingRoot } = createInterruptedReset(runtime, dbPath);
     expect(existsSync(dbPath)).toBe(false);
     const stagingNames = readdirSync(stagingRoot);
-    const stagedDb = readFileSync(join(stagingDirectory, 'store.db'));
-    const stagedManifest = readFileSync(join(stagingDirectory, 'reset-manifest.json'));
-    const activeWal = readFileSync(`${dbPath}-wal`);
-
-    const error = captureError(() => openReset(runtime, dbPath));
-
-    expectSetupCode(error, 'store_reset_quarantine_failed');
-    expect(serializeCoralSetupError(error)).toMatchObject({
-      context: { reason: 'interrupted', flavor: 'prod', incidentId: stagingNames[0] },
-      remediation: expect.stringContaining('coral-cli backend store-reset discard --target gen2 --flavor prod'),
-    });
-    expect(readdirSync(stagingRoot)).toEqual(stagingNames);
-    expect(readFileSync(join(stagingDirectory, 'store.db'))).toEqual(stagedDb);
-    expect(readFileSync(join(stagingDirectory, 'reset-manifest.json'))).toEqual(stagedManifest);
-    expect(readFileSync(`${dbPath}-wal`)).toEqual(activeWal);
-    expect(existsSync(dbPath)).toBe(false);
-    expect(retainedIncidentNames(quarantineRoot)).toEqual([]);
-
-    expect(resumeReset(runtime, dbPath)?.incidentId).toBe(stagingNames[0]);
-    const entries = retainedIncidentNames(quarantineRoot);
-    expect(entries).toHaveLength(1);
-    expect(readdirSync(stagingRoot)).toEqual([]);
-    expect(readFileSync(join(quarantineRoot, entries[0], 'store.db-wal'), 'utf-8')).toBe('durable wal evidence');
     const db = openReset(runtime, dbPath);
     db.close();
+
+    const entries = retainedIncidentNames(quarantineRoot);
+    expect(entries).toEqual(stagingNames);
+    expect(readdirSync(stagingRoot)).toEqual([]);
+    expect(readFileSync(join(quarantineRoot, entries[0], 'store.db-wal'), 'utf-8')).toBe('durable wal evidence');
     expect(tableExists(dbPath, 'events')).toBe(true);
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
   });
 
-  it('refuses matching active and staged incident evidence until the operator resumes it', () => {
+  it.each(
+    RESET_POLICY_CAUSES.flatMap((resetPolicyCause) => MANIFEST_RESUME_CUTS.map((cut) => ({ resetPolicyCause, cut }))),
+  )('retains the same $resetPolicyCause V3 incident after the $cut cut', ({ resetPolicyCause, cut }) => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-policy-resume-cut-'), 'store.db');
+    const { quarantineRoot, stagingRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
+    const manifest = setInterruptedResetCause(stagingDirectory, resetPolicyCause);
+
+    if (cut === 'manifest-publication') {
+      copyFileSync(join(stagingDirectory, 'store.db'), dbPath);
+    } else if (cut === 'staging-to-final-publication' || cut === 'final-incident-publication') {
+      rmSync(`${dbPath}-wal`);
+    }
+    if (cut === 'final-incident-publication') {
+      renameFileSync(stagingDirectory, join(quarantineRoot, manifest.incidentId));
+    }
+
+    const db = openReset(runtime, dbPath);
+    db.close();
+
+    expect(readdirSync(stagingRoot)).toEqual([]);
+    expect(retainedIncidentNames(quarantineRoot)).toEqual([manifest.incidentId]);
+    const retained = parseStoreResetIncidentManifest(
+      readFileSync(join(quarantineRoot, manifest.incidentId, 'reset-manifest.json')),
+    );
+    expect(retained).toEqual(manifest);
+    expect(tableExists(dbPath, 'events')).toBe(true);
+  });
+
+  it.each(RESET_POLICY_CAUSES)(
+    'retains the %s incident across a fresh-schema publication failure',
+    (resetPolicyCause) => {
+      const runtime = createRuntime();
+      const dbPath = join(makeTempRoot('coral-store-fresh-schema-crash-'), 'store.db');
+      let expectedIncidentId: string | null = null;
+      if (resetPolicyCause === 'older-incompatible') {
+        createVersionedStore(dbPath, `sha256:${'0'.repeat(64)}`, '0.0.0-rc.1');
+      } else if (resetPolicyCause === 'corrupt-or-unsupported') {
+        createMismatchStore(dbPath);
+      } else {
+        const interrupted = createInterruptedReset(runtime, dbPath);
+        expectedIncidentId = setInterruptedResetCause(interrupted.stagingDirectory, resetPolicyCause).incidentId;
+      }
+
+      const writeAtomicDurableSync = runtime.storage.writeAtomicDurableSync;
+      let freshPublicationFailed = false;
+      const publicationSpy = vi
+        .spyOn(runtime.storage, 'writeAtomicDurableSync')
+        .mockImplementation((path, data, options) => {
+          if (path === `${dbPath}.format` && !freshPublicationFailed) {
+            freshPublicationFailed = true;
+            return false;
+          }
+          return writeAtomicDurableSync(path, data, options);
+        });
+
+      expect(() => openReset(runtime, dbPath)).toThrow('Failed to publish store format sidecar');
+      expect(freshPublicationFailed).toBe(true);
+      publicationSpy.mockRestore();
+      const retainedBeforeRestart = retainedManifest(dbPath);
+      expect(retainedBeforeRestart.resetPolicyCause).toBe(resetPolicyCause);
+      if (expectedIncidentId !== null) expect(retainedBeforeRestart.incidentId).toBe(expectedIncidentId);
+
+      const db = openReset(runtime, dbPath);
+      db.close();
+
+      const retainedAfterRestart = retainedManifest(dbPath);
+      expect(retainedAfterRestart).toEqual(retainedBeforeRestart);
+      expect(tableExists(dbPath, 'events')).toBe(true);
+    },
+  );
+
+  it('fails closed on an interrupted V2 incident and retains its evidence', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-v2-resume-refusal-'), 'store.db');
+    const { stagingRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
+    const parsed = parseStoreResetIncidentManifest(readFileSync(join(stagingDirectory, 'reset-manifest.json')));
+    const manifest: StoreResetIncidentManifestV2 = {
+      schemaVersion: 2,
+      incidentId: parsed.incidentId,
+      resetAt: parsed.resetAt,
+      reason: parsed.reason,
+      storedFingerprint: parsed.storedFingerprint,
+      expectedFingerprint: parsed.expectedFingerprint,
+      build: parsed.build,
+      runtime: parsed.runtime,
+      handoff: parsed.handoff,
+      files: parsed.files,
+    };
+    writeFileSync(join(stagingDirectory, 'reset-manifest.json'), serializeStoreResetIncidentManifest(manifest));
+    const before = readFileSync(join(stagingDirectory, 'store.db'));
+
+    const error = captureError(() => openReset(runtime, dbPath));
+
+    expectSetupCode(error, 'store_reset_interrupted_non_resettable');
+    expect(readdirSync(stagingRoot)).toEqual([manifest.incidentId]);
+    expect(readFileSync(join(stagingDirectory, 'store.db'))).toEqual(before);
+    expect(existsSync(`${dbPath}-wal`)).toBe(true);
+  });
+
+  it('fails closed on a foreign V3 incident and retains its evidence', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-foreign-v3-resume-refusal-'), 'store.db');
+    const { stagingRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
+    const parsed = parseStoreResetIncidentManifest(readFileSync(join(stagingDirectory, 'reset-manifest.json')));
+    if (parsed.schemaVersion !== 3) throw new Error('Expected a V3 store-reset incident.');
+    const foreign: StoreResetIncidentManifestV3 = {
+      ...parsed,
+      build: { ...parsed.build, buildSetId: '323e4567-e89b-42d3-a456-426614174000' },
+    };
+    writeFileSync(join(stagingDirectory, 'reset-manifest.json'), serializeStoreResetIncidentManifest(foreign));
+
+    const error = captureError(() => openReset(runtime, dbPath));
+
+    expectSetupCode(error, 'store_reset_interrupted_authority_mismatch');
+    expect(readdirSync(stagingRoot)).toEqual([foreign.incidentId]);
+    expect(existsSync(`${dbPath}-wal`)).toBe(true);
+  });
+
+  it('fails closed when a V3 incident targets another canonical store', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-target-v3-resume-refusal-'), 'store.db');
+    const { stagingRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
+    const parsed = parseStoreResetIncidentManifest(readFileSync(join(stagingDirectory, 'reset-manifest.json')));
+    if (parsed.schemaVersion !== 3) throw new Error('Expected a V3 store-reset incident.');
+    const mismatched: StoreResetIncidentManifestV3 = {
+      ...parsed,
+      target: { ...parsed.target, storeDbPath: `${dbPath}.other` },
+    };
+    writeFileSync(join(stagingDirectory, 'reset-manifest.json'), serializeStoreResetIncidentManifest(mismatched));
+
+    const error = captureError(() => openReset(runtime, dbPath));
+
+    expectSetupCode(error, 'store_reset_interrupted_authority_mismatch');
+    expect(readdirSync(stagingRoot)).toEqual([mismatched.incidentId]);
+    expect(existsSync(`${dbPath}-wal`)).toBe(true);
+  });
+
+  it('fails closed on a malformed V3 cause without deleting evidence', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-malformed-v3-resume-refusal-'), 'store.db');
+    const { stagingRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
+    const manifestPath = join(stagingDirectory, 'reset-manifest.json');
+    const malformed = JSON.parse(readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>;
+    malformed.resetPolicyCause = 'operator-override';
+    writeFileSync(manifestPath, JSON.stringify(malformed));
+
+    const error = captureError(() => openReset(runtime, dbPath));
+
+    expectSetupCode(error, 'store_reset_interrupted_malformed');
+    expect(readdirSync(stagingRoot)).toHaveLength(1);
+    expect(existsSync(join(stagingDirectory, 'store.db'))).toBe(true);
+    expect(existsSync(`${dbPath}-wal`)).toBe(true);
+  });
+
+  it('fails closed when the manifest identity does not match its staging directory', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-identity-mismatch-resume-refusal-'), 'store.db');
+    const { stagingRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
+    const manifestPath = join(stagingDirectory, 'reset-manifest.json');
+    const parsed = parseStoreResetIncidentManifest(readFileSync(manifestPath));
+    if (parsed.schemaVersion !== 3) throw new Error('Expected a V3 store-reset incident.');
+    writeFileSync(
+      manifestPath,
+      serializeStoreResetIncidentManifest({
+        ...parsed,
+        incidentId: '423e4567-e89b-42d3-a456-426614174000',
+      }),
+    );
+
+    const error = captureError(() => openReset(runtime, dbPath));
+
+    expectSetupCode(error, 'store_reset_interrupted_mismatched');
+    expect(readdirSync(stagingRoot)).toHaveLength(1);
+    expect(existsSync(join(stagingDirectory, 'store.db'))).toBe(true);
+    expect(existsSync(`${dbPath}-wal`)).toBe(true);
+  });
+
+  it('fails closed on a foreign staging entry and retains it', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-foreign-staging-resume-refusal-'), 'store.db');
+    const { stagingRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
+    const foreignDirectory = join(stagingRoot, 'foreign-publication');
+    renameFileSync(stagingDirectory, foreignDirectory);
+
+    const error = captureError(() => openReset(runtime, dbPath));
+
+    expectSetupCode(error, 'store_reset_interrupted_foreign');
+    expect(readdirSync(stagingRoot)).toEqual(['foreign-publication']);
+    expect(existsSync(join(foreignDirectory, 'store.db'))).toBe(true);
+    expect(existsSync(`${dbPath}-wal`)).toBe(true);
+  });
+
+  it('reconciles matching active and staged V3 evidence during automatic resume', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-interrupted-duplicate-'), 'store.db');
     const { quarantineRoot, stagingRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
     copyFileSync(join(stagingDirectory, 'store.db'), dbPath);
-    const activeBefore = readFileSync(dbPath);
-    const stagedBefore = readFileSync(join(stagingDirectory, 'store.db'));
-
-    const error = captureError(() => openReset(runtime, dbPath));
-
-    expectSetupCode(error, 'store_reset_quarantine_failed');
-    expect(readFileSync(dbPath)).toEqual(activeBefore);
-    expect(readFileSync(join(stagingDirectory, 'store.db'))).toEqual(stagedBefore);
-    expect(readdirSync(stagingRoot)).toHaveLength(1);
-    expect(resumeReset(runtime, dbPath)).not.toBeNull();
-    expect(readdirSync(stagingRoot)).toEqual([]);
-    expect(retainedIncidentNames(quarantineRoot)).toHaveLength(1);
     const db = openReset(runtime, dbPath);
     db.close();
+
+    expect(readdirSync(stagingRoot)).toEqual([]);
+    expect(retainedIncidentNames(quarantineRoot)).toHaveLength(1);
     expect(tableExists(dbPath, 'events')).toBe(true);
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
   });
 
-  it('refuses pre-manifest writer-owned residue without deleting it', () => {
+  it('discards uncommitted pre-manifest staging before classifying the active store', () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-pre-manifest-resume-');
     const dbPath = join(root, 'store.db');
@@ -576,17 +800,12 @@ describe('openOrResetBackendStoreDb', () => {
     copyFileSync(dbPath, join(stagingDirectory, 'store.db'));
     writeFileSync(join(stagingDirectory, 'reset-manifest.json.tmp'), 'partial manifest', 'utf-8');
 
-    const activeBefore = readFileSync(dbPath);
-    const stagedBefore = readFileSync(join(stagingDirectory, 'store.db'));
-    const error = captureError(() => openReset(runtime, dbPath));
+    const db = openReset(runtime, dbPath);
+    db.close();
 
-    expectSetupCode(error, 'store_reset_quarantine_failed');
-    expect(readFileSync(dbPath)).toEqual(activeBefore);
-    expect(readFileSync(join(stagingDirectory, 'store.db'))).toEqual(stagedBefore);
-    expect(readFileSync(join(stagingDirectory, 'reset-manifest.json.tmp'), 'utf8')).toBe('partial manifest');
-    expect(resumeReset(runtime, dbPath)).toBeNull();
     expect(existsSync(stagingDirectory)).toBe(false);
-    expect(readFileSync(dbPath)).toEqual(activeBefore);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+    expect(retainedManifest(dbPath).resetPolicyCause).toBe('corrupt-or-unsupported');
   });
 
   it('rejects a symlinked interrupted staging directory before touching active evidence', () => {
@@ -600,7 +819,7 @@ describe('openOrResetBackendStoreDb', () => {
 
     const error = captureError(() => openReset(runtime, dbPath));
 
-    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expectSetupCode(error, 'store_reset_interrupted_foreign');
     expect(existsSync(`${dbPath}-wal`)).toBe(true);
     expect(existsSync(dbPath)).toBe(false);
     expect(tableExists(join(outside, 'store.db'), 'sentinel_before_reset')).toBe(true);
@@ -621,7 +840,7 @@ describe('openOrResetBackendStoreDb', () => {
 
     const error = captureError(() => openReset(runtime, dbPath));
 
-    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expectSetupCode(error, 'store_reset_interrupted_malformed');
     expect(manifestOpenCount).toBe(0);
     expect(existsSync(`${dbPath}-wal`)).toBe(true);
     expect(existsSync(dbPath)).toBe(false);
@@ -635,7 +854,7 @@ describe('openOrResetBackendStoreDb', () => {
 
     const error = captureError(() => openReset(runtime, dbPath));
 
-    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expectSetupCode(error, 'store_reset_interrupted_foreign');
     expect(existsSync(join(stagingDirectory, 'unexpected.bin'))).toBe(true);
     expect(existsSync(dbPath)).toBe(false);
   });
@@ -654,7 +873,7 @@ describe('openOrResetBackendStoreDb', () => {
 
     const error = captureError(() => openReset(runtime, dbPath));
 
-    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expectSetupCode(error, 'store_reset_interrupted_ambiguous');
     expect(reads).toContainEqual({ path: stagingRoot, limit: 1 });
     expect(existsSync(`${dbPath}-wal`)).toBe(true);
     expect(existsSync(dbPath)).toBe(false);
@@ -829,7 +1048,7 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(dbPath)).toBe(false);
   });
 
-  it('refuses a missing-fingerprint store on cold start without handoff authority', () => {
+  it('resets a missing-fingerprint store on cold start without handoff authority', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-cold-missing-fingerprint-'), 'store.db');
     createMissingFingerprintStore(dbPath);
@@ -844,35 +1063,30 @@ describe('openOrResetBackendStoreDb', () => {
       },
     );
 
-    const before = readFileSync(dbPath);
-    const error = captureError(() =>
-      openOrResetBackendStoreDb(runtime, authority, {
-        path: dbPath,
-        storeFormat: STORE_FORMAT,
-      }),
-    );
+    const db = openOrResetBackendStoreDb(runtime, authority, {
+      path: dbPath,
+      storeFormat: STORE_FORMAT,
+    });
+    db.close();
 
-    expectSetupCode(error, 'store_corrupt_or_unsupported');
-    expect(readFileSync(dbPath)).toEqual(before);
-    expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+    expect(retainedManifest(dbPath).resetPolicyCause).toBe('corrupt-or-unsupported');
   });
 
-  it('refuses mismatched stores without a reset warning or incident', () => {
+  it('resets mismatched stores with one retained-incident audit warning', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-mismatch-warning-'), 'store.db');
     createMismatchStore(dbPath);
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
-    const before = readFileSync(dbPath);
-    const error = captureError(() => openReset(runtime, dbPath));
+    const db = openReset(runtime, dbPath);
+    db.close();
 
-    expectSetupCode(error, 'store_corrupt_or_unsupported');
-    expect(readFileSync(dbPath)).toEqual(before);
-    expect(warnSpy).not.toHaveBeenCalled();
-    expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(retainedManifest(dbPath).resetPolicyCause).toBe('corrupt-or-unsupported');
   });
 
-  it('does not delete WAL or SHM siblings when refusing a mismatched store', () => {
+  it('retains WAL and SHM siblings inside the automatic reset incident', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-wal-shm-'), 'store.db');
     createMismatchStore(dbPath);
@@ -881,16 +1095,18 @@ describe('openOrResetBackendStoreDb', () => {
     writeFileSync(walPath, 'dummy wal', 'utf-8');
     writeFileSync(shmPath, 'dummy shm', 'utf-8');
 
-    const dbBefore = readFileSync(dbPath);
-    const unlinkSpy = vi.spyOn(runtime.storage, 'unlinkSync');
-    const error = captureError(() => openReset(runtime, dbPath));
+    const db = openReset(runtime, dbPath);
+    db.close();
 
-    expectSetupCode(error, 'store_corrupt_or_unsupported');
-    expect(readFileSync(dbPath)).toEqual(dbBefore);
-    expect(readFileSync(walPath, 'utf-8')).toBe('dummy wal');
-    expect(existsSync(shmPath)).toBe(true);
-    expect(unlinkSpy.mock.calls.some(([path]) => path === walPath || path === shmPath)).toBe(false);
-    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
+    const manifest = retainedManifest(dbPath);
+    const incidentPath = join(dirname(dbPath), 'store-reset-quarantine', manifest.incidentId);
+    expect(readFileSync(join(incidentPath, 'store.db-wal'), 'utf-8')).toBe('dummy wal');
+    const retainedShm = readFileSync(join(incidentPath, 'store.db-shm'));
+    expect(retainedShm.length).toBeGreaterThan(0);
+    expect(manifest.files.find((file) => file.name === 'store.db-shm')?.sha256).toBe(sha256(retainedShm));
+    expect(existsSync(walPath)).toBe(false);
+    expect(existsSync(shmPath)).toBe(false);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
   });
 
   it('fails fast on fresh reset lock contention and leaves a fresh lock in place', () => {
@@ -909,6 +1125,32 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(lockDir)).toBe(true);
   });
 
+  it('prevents two openers from publishing or resuming the same reset concurrently', () => {
+    const runtime = createRuntime();
+    const contenderRuntime = createRuntime();
+    const dbDir = makeTempRoot('coral-store-reset-opener-contention-');
+    const dbPath = join(dbDir, 'store.db');
+    createVersionedStore(dbPath, `sha256:${'0'.repeat(64)}`, '0.0.0-rc.1');
+    const unlinkSync = runtime.storage.unlinkSync;
+    let contenderError: unknown = null;
+    let contenderAttempted = false;
+    vi.spyOn(runtime.storage, 'unlinkSync').mockImplementation((path) => {
+      if (path === dbPath && !contenderAttempted) {
+        contenderAttempted = true;
+        contenderError = captureError(() => openReset(contenderRuntime, dbPath));
+      }
+      unlinkSync(path);
+    });
+
+    const db = openReset(runtime, dbPath);
+    db.close();
+
+    expect(contenderAttempted).toBe(true);
+    expectSetupCode(contenderError, 'store_reset_lock_contended');
+    expect(retainedIncidentNames(join(dbDir, 'store-reset-quarantine'))).toHaveLength(1);
+    expect(tableExists(dbPath, 'events')).toBe(true);
+  });
+
   it('removes a stale reset lock and acquires the reset lock successfully', () => {
     const runtime = createRuntime();
     const dbDir = makeTempRoot('coral-store-stale-lock-');
@@ -925,19 +1167,18 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(lockDir)).toBe(false);
   });
 
-  it('does not reset a corrupt store file', () => {
+  it('quarantines a corrupt store file and boots fresh state', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-corrupt-reset-'), 'store.db');
     createCorruptStore(dbPath);
-    const before = readFileSync(dbPath, 'utf-8');
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
-    const error = captureError(() => openReset(runtime, dbPath));
+    const db = openReset(runtime, dbPath);
+    db.close();
 
-    expectSetupCode(error, 'store_corrupt_or_unsupported');
-    expect(readFileSync(dbPath, 'utf-8')).toBe(before);
-    expect(existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
-    expect(warnSpy).not.toHaveBeenCalled();
+    expect(tableExists(dbPath, 'events')).toBe(true);
+    expect(retainedManifest(dbPath).resetPolicyCause).toBe('corrupt-or-unsupported');
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 
   it('rejects mismatched authority and does not unlink the existing DB', () => {

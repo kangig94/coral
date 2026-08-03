@@ -203,6 +203,8 @@ describe('store reset incident listing', () => {
         state: 'ready',
         resetAt: '2026-07-23T01:02:03.004Z',
         reason: 'mismatch',
+        schemaVersion: 2,
+        resetPolicyCause: null,
         fileCount: 1,
       },
       {
@@ -210,6 +212,8 @@ describe('store reset incident listing', () => {
         state: 'ready',
         resetAt: '2026-07-22T01:02:03.004Z',
         reason: 'mismatch',
+        schemaVersion: 2,
+        resetPolicyCause: null,
         fileCount: 1,
       },
     ]);
@@ -235,6 +239,8 @@ describe('store reset incident listing', () => {
         state: 'malformed',
         resetAt: null,
         reason: null,
+        schemaVersion: null,
+        resetPolicyCause: null,
         fileCount: null,
       },
       {
@@ -242,6 +248,8 @@ describe('store reset incident listing', () => {
         state: 'build_mismatch',
         resetAt: null,
         reason: null,
+        schemaVersion: null,
+        resetPolicyCause: null,
         fileCount: null,
       },
     ]);

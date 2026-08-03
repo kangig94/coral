@@ -1,7 +1,7 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
 import { EMPTY_GENERATED_COMMUNITY_FRESHNESS } from '#src/kb/curate/community/generated-projection-store.js';
@@ -10,7 +10,12 @@ import { CoralSetupError } from '#src/runtime/errors.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
-import type { CorpusConsumerRegistration, JournalConsumerRegistration } from '#src/store/consumer-contract.js';
+import type {
+  CorpusAuthoritativeFreshness,
+  CorpusAuthoritativeFreshnessTarget,
+  CorpusConsumerRegistration,
+  JournalConsumerRegistration,
+} from '#src/store/consumer-contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 interface CursorRow {
   consumer_id: string;
@@ -40,6 +45,18 @@ function createDb(): Database {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
+}
+
+const TEST_PROJECTION_IDENTITY_HASH = 'test-corpus-projection-v1';
+
+function staleFreshnessCapability(): Pick<
+  CorpusConsumerRegistration,
+  'projectionIdentityHash' | 'readAuthoritativeFreshness'
+> {
+  return {
+    projectionIdentityHash: () => TEST_PROJECTION_IDENTITY_HASH,
+    readAuthoritativeFreshness: async () => ({ kind: 'stale', reason: 'artifact-missing' }),
+  };
 }
 
 function readCursorRow(db: Database, consumerId: string): CursorRow {
@@ -102,6 +119,7 @@ describe('ConsumerDriver corpus registrations', () => {
         kind: 'apply',
         registrationKind: 'base',
         corpusInterest: 'both',
+        ...staleFreshnessCapability(),
         async apply({ projectionInput }) {
           applyInputs.push(projectionInput);
         },
@@ -149,6 +167,7 @@ describe('ConsumerDriver corpus registrations', () => {
         registrationKind: 'base',
         corpusInterest: 'both',
         projectionSync: 'text-index',
+        ...staleFreshnessCapability(),
         async apply() {
           events.push('apply:start');
           applyStarted.resolve();
@@ -205,6 +224,7 @@ describe('ConsumerDriver corpus registrations', () => {
       kind: 'apply',
       registrationKind: 'expansion',
       corpusInterest: 'content',
+      ...staleFreshnessCapability(),
       async apply({ snapshot }) {
         calls.push({ id: 'content', snapshot });
       },
@@ -215,6 +235,7 @@ describe('ConsumerDriver corpus registrations', () => {
       kind: 'apply',
       registrationKind: 'expansion',
       corpusInterest: 'metadata',
+      ...staleFreshnessCapability(),
       async apply({ snapshot }) {
         calls.push({ id: 'metadata', snapshot });
       },
@@ -350,6 +371,7 @@ describe('ConsumerDriver corpus registrations', () => {
           kind: 'apply',
           registrationKind: 'expansion',
           corpusInterest: 'both',
+          ...staleFreshnessCapability(),
           async apply() {},
         }),
       ).not.toThrow();
@@ -380,6 +402,7 @@ describe('ConsumerDriver corpus registrations', () => {
         kind: 'apply',
         registrationKind: 'expansion',
         corpusInterest: 'content',
+        ...staleFreshnessCapability(),
         async apply() {},
       });
       expect(() =>
@@ -389,6 +412,7 @@ describe('ConsumerDriver corpus registrations', () => {
           kind: 'apply',
           registrationKind: 'expansion',
           corpusInterest: 'metadata',
+          ...staleFreshnessCapability(),
           async apply() {},
         }),
       ).toThrow(/interest mismatch/i);
@@ -426,6 +450,7 @@ describe('ConsumerDriver corpus registrations', () => {
         kind: 'apply',
         registrationKind: 'expansion',
         corpusInterest: 'both',
+        ...staleFreshnessCapability(),
         async apply({ snapshot }) {
           calls.push(snapshot);
           if (calls.length === 1) {
@@ -486,6 +511,7 @@ describe('ConsumerDriver corpus registrations', () => {
         kind: 'apply',
         registrationKind: 'expansion',
         corpusInterest: 'both',
+        ...staleFreshnessCapability(),
         async apply({ snapshot }) {
           if (snapshot.snapshotId === 'snapshot-fail') {
             calls.push({ snapshot, outcome: 'fail' });
@@ -546,6 +572,7 @@ describe('ConsumerDriver corpus registrations', () => {
         kind: 'apply',
         registrationKind: 'expansion',
         corpusInterest: 'both',
+        ...staleFreshnessCapability(),
         async apply({ snapshot }) {
           calls.push(snapshot);
         },
@@ -568,4 +595,122 @@ describe('ConsumerDriver corpus registrations', () => {
       db.close();
     }
   });
+
+  it('repairs a reset cursor from an installed consumer current proof without invoking apply again', async () => {
+    const db = createDb();
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
+    const snapshot = buildSnapshot({
+      snapshotId: 'installed-current',
+      contentSeq: 8,
+      metadataSeq: 13,
+      contentManifestHash: 'content-hash-8',
+      metadataManifestHash: 'metadata-hash-13',
+    });
+    let storedFreshness: CorpusAuthoritativeFreshness = { kind: 'stale', reason: 'artifact-missing' };
+    const freshnessTargets: CorpusAuthoritativeFreshnessTarget[] = [];
+    const apply = vi.fn(async ({ snapshot: appliedSnapshot, projectionInput }) => {
+      storedFreshness = {
+        kind: 'current',
+        appliedSnapshot,
+        generatedCommunityGeneration: projectionInput.generatedCommunityGeneration,
+        generatedCommunityDocsHash: projectionInput.generatedCommunityDocsHash,
+        projectionIdentityHash: TEST_PROJECTION_IDENTITY_HASH,
+      };
+    });
+
+    try {
+      const handle = driver.register({
+        id: 'installed-fixture',
+        authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'expansion',
+        corpusInterest: 'both',
+        projectionIdentityHash: () => TEST_PROJECTION_IDENTITY_HASH,
+        readAuthoritativeFreshness: async (target) => {
+          freshnessTargets.push(target);
+          return storedFreshness;
+        },
+        apply,
+      });
+
+      driver.notify('corpus', snapshot);
+      await driver.drainAll();
+      expect(apply).toHaveBeenCalledTimes(1);
+
+      db.prepare(
+        `
+          UPDATE consumer_cursors
+             SET snapshot_id = '',
+                 content_seq = 0,
+                 metadata_seq = 0,
+                 content_manifest_hash = '',
+                 metadata_manifest_hash = ''
+           WHERE consumer_id = ?
+        `,
+      ).run('installed-fixture');
+
+      const waits = [
+        driver.waitFreshUntil('corpus', snapshot, 'installed-fixture', 5000),
+        driver.waitFreshUntil('corpus', snapshot, 'installed-fixture', 5000),
+      ];
+      driver.notify('corpus', snapshot);
+      await Promise.all(waits);
+      await driver.drainAll();
+
+      expect(apply).toHaveBeenCalledTimes(1);
+      expect(freshnessTargets.at(-1)).toEqual({
+        snapshot,
+        corpusInterest: 'both',
+        ...EMPTY_GENERATED_COMMUNITY_FRESHNESS,
+        projectionIdentityHash: TEST_PROJECTION_IDENTITY_HASH,
+      });
+      expect(handle.status()).toMatchObject({
+        authority: 'corpus',
+        snapshotId: snapshot.snapshotId,
+        contentSeq: snapshot.contentSeq,
+        metadataSeq: snapshot.metadataSeq,
+        pending: false,
+        lastApplyError: null,
+      });
+    } finally {
+      await driver.shutdown();
+      db.close();
+    }
+  });
+
+  it.each(['artifact-missing', 'lane-behind', 'generated-community-changed', 'projection-identity-changed'] as const)(
+    'invokes apply normally for stale authoritative freshness: %s',
+    async (reason) => {
+      const db = createDb();
+      const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
+      const apply = vi.fn(async () => {});
+      const snapshot = buildSnapshot({ snapshotId: `stale-${reason}`, contentSeq: 1, metadataSeq: 1 });
+
+      try {
+        driver.register({
+          id: `stale-${reason}`,
+          authority: 'corpus',
+          kind: 'apply',
+          registrationKind: 'expansion',
+          corpusInterest: 'both',
+          projectionIdentityHash: () => TEST_PROJECTION_IDENTITY_HASH,
+          readAuthoritativeFreshness: async () => ({ kind: 'stale', reason }),
+          apply,
+        });
+
+        driver.notify('corpus', snapshot);
+        await driver.drainAll();
+
+        expect(apply).toHaveBeenCalledTimes(1);
+        expect(readCursorRow(db, `stale-${reason}`)).toMatchObject({
+          snapshot_id: snapshot.snapshotId,
+          content_seq: snapshot.contentSeq,
+          metadata_seq: snapshot.metadataSeq,
+        });
+      } finally {
+        await driver.shutdown();
+        db.close();
+      }
+    },
+  );
 });

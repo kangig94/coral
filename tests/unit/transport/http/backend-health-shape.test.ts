@@ -70,6 +70,20 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth(degraded)).toBe(true);
   });
 
+  it('accepts a degraded recovery component with a quarantine count', () => {
+    const degraded: BackendHealth = {
+      ...HEALTHY_BASE,
+      components: [
+        {
+          id: 'recovery',
+          phase: 'degraded',
+          reason: { kind: 'recovery-quarantine', count: 2, lastError: 'workflow hydration failed' },
+        },
+      ],
+    };
+    expect(isBackendHealth(degraded)).toBe(true);
+  });
+
   it('accepts an offline component with reason and last log line', () => {
     const offline: BackendHealth = {
       ...HEALTHY_BASE,
@@ -258,6 +272,33 @@ describe('/health typed shape (AC10a)', () => {
   it('rejects a degraded component missing the reason object', () => {
     const malformed = { ...HEALTHY_BASE, components: [{ id: 'kb', phase: 'degraded' }] };
     expect(isBackendHealth(malformed)).toBe(false);
+  });
+
+  it('rejects a recovery quarantine reason with an invalid count or missing last error', () => {
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        components: [
+          {
+            id: 'recovery',
+            phase: 'degraded',
+            reason: { kind: 'recovery-quarantine', count: -1, lastError: 'failed' },
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        components: [
+          {
+            id: 'recovery',
+            phase: 'degraded',
+            reason: { kind: 'recovery-quarantine', count: 1 },
+          },
+        ],
+      }),
+    ).toBe(false);
   });
 
   it('rejects a malformed offline component diagnostic', () => {

@@ -1,0 +1,26 @@
+import {
+  defineCompositeRecoverySource,
+  type RecoveryReceipt,
+  type RecoverySource,
+} from '../recovery/containment.js';
+
+type RawRetention = { readonly id: string };
+
+function composeRetentionWorkItemReceipts(
+  receipts: readonly RecoveryReceipt<RawRetention>[],
+): readonly RawRetention[] {
+  return receipts.map((_receipt, index) => ({ id: String(index) }));
+}
+
+function scanRetentionWorkRows(rows: readonly RawRetention[]): readonly RawRetention[] {
+  return rows;
+}
+
+export function retentionWorkItemRecoverySource(
+  receipts: readonly RecoveryReceipt<RawRetention>[],
+): RecoverySource<RawRetention> {
+  return defineCompositeRecoverySource(receipts, {
+    boundary: 'retention-work',
+    scan: () => scanRetentionWorkRows(composeRetentionWorkItemReceipts(receipts)),
+  });
+}

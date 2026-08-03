@@ -261,6 +261,7 @@ describe('real store reset inspection filesystem', () => {
     const walPath = join(cumulative.incidentPath, 'store.db-wal');
     writeFileSync(walPath, 'small wal');
     const originalManifest = parseStoreResetIncidentManifest(readFileSync(cumulative.manifestPath));
+    if (originalManifest.schemaVersion !== 2) throw new Error('Expected a V2 fixture manifest.');
     const perFile = 600 * 1024 * 1024;
     const cumulativeManifest: StoreResetIncidentManifestV2 = {
       ...originalManifest,
@@ -374,6 +375,7 @@ describe('real store reset inspection filesystem', () => {
     const evidenceStat = fs.lstat(paths.evidencePath);
     if (evidenceStat === null) throw new Error('SQLite evidence missing');
     const previous = parseStoreResetIncidentManifest(readFileSync(paths.manifestPath));
+    if (previous.schemaVersion !== 2) throw new Error('Expected a V2 fixture manifest.');
     const manifest: StoreResetIncidentManifestV2 = {
       ...previous,
       files: [

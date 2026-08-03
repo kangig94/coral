@@ -1,6 +1,6 @@
 # CLI Errors
 
-`coral-cli` writes a text error envelope to `stderr` for all commands. The envelope is human/LLM-facing: parsers should locate `\nDetail: ` as the boundary between the head and the JSON detail payload when detail is present, and should not assume the message/head portion is single-line because Commander-surfaced errors may contain newlines.
+`coral-cli` writes a text error envelope to `stderr` for all commands. The envelope is human/LLM-facing and contains only the public message, stable tags, and optional authored remediation. Backend diagnostic context stays out of this default text surface. Parsers should not assume the message/head portion is single-line because Commander-surfaced errors may contain newlines.
 
 `wait` and follow-mode commands keep successful human-readable text on `stdout`. Only failures move to `stderr`.
 
@@ -10,22 +10,20 @@ CLI errors use this shape:
 
 ```text
 timeoutSeconds: Number must be less than or equal to 1200 [code=invalid_request, http=400]
-Detail: {"issues":[{"code":"too_big","path":["timeoutSeconds"],"message":"Number must be less than or equal to 1200"}]}
 ```
 
 Fields:
 
-| Field         | Type                   | Meaning                                                                                                                                                                  |
-| ------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `message`     | string                 | Human-readable summary. It is not guaranteed to stay on one line                                                                                                         |
-| `code`        | string                 | Stable programmatic error code, emitted inside the trailing tag block                                                                                                    |
-| `http`        | number, optional       | HTTP status when the error came from a backend HTTP response                                                                                                             |
-| `remediation` | string, optional       | Operator-actionable hint included by backend error paths (e.g. `kb_initializing`, `kb_offline`). Surfaced after the message so wrappers can present a concrete next step |
-| `detail`      | JSON payload, optional | Extra structured detail emitted after the `Detail: ` prefix. For backend schema validation this includes `detail.issues` from Zod                                        |
+| Field         | Type             | Meaning                                                                                                                                                                  |
+| ------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `message`     | string           | Human-readable summary. It is not guaranteed to stay on one line                                                                                                         |
+| `code`        | string           | Stable programmatic error code, emitted inside the trailing tag block                                                                                                    |
+| `http`        | number, optional | HTTP status when the error came from a backend HTTP response                                                                                                             |
+| `remediation` | string, optional | Operator-actionable hint included by backend error paths (e.g. `kb_initializing`, `kb_offline`). Surfaced after the message so wrappers can present a concrete next step |
 
-Backend HTTP errors are lifted into the same envelope. There is no nested `body` wrapper in the CLI detail payload.
+Backend HTTP errors are lifted into the same envelope. Transport-only diagnostic fields are not rendered.
 
-Backend IPC errors are lifted the same way. Mutating and live commands reach the coordinator over IPC, and a JSON-RPC rejection carries its public `{code, message, remediation?, detail?}` in the error data. The CLI reads that payload, so an IPC rejection surfaces its own code and exit code rather than a generic internal failure. When an IPC rejection carries no recognized `code`, the CLI falls back to `ipc_rpc_error`.
+Backend IPC errors are lifted the same way. Mutating and live commands reach the coordinator over IPC, and a JSON-RPC rejection carries its public `{code, message, remediation?}` in the error data. The CLI reads that payload, so an IPC rejection surfaces its own code and exit code rather than a generic internal failure. When an IPC rejection carries no recognized `code`, the CLI falls back to `ipc_rpc_error`.
 
 When a backend HTTP response body is missing, non-JSON, or does not carry a `code`/`message` field, the CLI falls back to:
 
@@ -72,6 +70,10 @@ This only affects malformed or truncated backend responses. In normal operation 
 | `kb_commit_not_found`                 | The requested KB commit is absent from the active blocking evidence                                                                                                                                                                                                      |
 | `kb_commit_already_quarantined`       | Retained quarantine evidence already exists for the requested KB commit                                                                                                                                                                                                  |
 | `kb_commit_quarantine_failed`         | Coral could not durably move and publish the requested KB commit quarantine                                                                                                                                                                                              |
+| `recovery_quarantine_boundary_not_registered` | The requested recovery boundary is not registered for operator retry                                                                                                                                                                                      |
+| `recovery_quarantine_revision_changed`         | The copied recovery coordinate is stale because the retained revision changed                                                                                                                                                                             |
+| `recovery_quarantine_continuation_pending`     | The retained row is a durable continuation and direct clear is unsupported                                                                                                                                                                                |
+| `recovery_quarantine_retry_in_progress`        | The canonical coordinator already owns an in-flight retry for the retained row                                                                                                                                                                             |
 | `invalid_store_reset_incident_id`     | `backend store-reset report` received anything other than a canonical lowercase UUID                                                                                                                                                                                     |
 | `store_reset_incident_not_found`      | No retained incident exists for the requested canonical UUID                                                                                                                                                                                                             |
 | `store_reset_incident_limit_exceeded` | The retained root exceeded the bounded list-entry limit; direct report by known UUID remains available                                                                                                                                                                   |
@@ -108,7 +110,7 @@ Generation-boundary and offline-operator refusals keep the same CLI exit whether
 | `kb_commit_already_quarantined`     | `1`                   | `409`       | `1`                      |
 | `kb_commit_quarantine_failed`       | `1`                   | `409`       | `1`                      |
 
-Store-reset errors never carry `http` or `detail`; they carry only a fixed public-safe `remediation` selected by code. They never interpolate the supplied incident argument or a low-level filesystem/SQLite/child-process message. The successful report is written only to `stdout`; Coral creates no report file and performs no upload. If reporting itself fails, paste the complete fixed error output into the Store-reset incident issue form instead of attaching evidence or raw logs.
+Store-reset errors never carry `http` or diagnostic context; they carry only a fixed public-safe `remediation` selected by code. They never interpolate the supplied incident argument or a low-level filesystem/SQLite/child-process message. The successful report is written only to `stdout`; Coral creates no report file and performs no upload. If reporting itself fails, paste the complete fixed error output into the Store-reset incident issue form instead of attaching evidence or raw logs.
 
 Provider-routing errors retain one stable code per failed authority check:
 
@@ -137,11 +139,10 @@ Client-caught example: local CLI validation (e.g. `parseIntegerFlag`) fails befo
 --<flag> must be an integer [code=invalid_usage]
 ```
 
-Server-caught example: the CLI accepts the flag shape, but backend Zod schema validation rejects the value. The call reaches the backend, which returns `invalid_request` and exit code `1` with the full issue list.
+Server-caught example: the CLI accepts the flag shape, but backend Zod schema validation rejects the value. The call reaches the backend, which returns an authored `invalid_request` message and exit code `1`; the raw issue list is not printed by the default CLI formatter.
 
 ```text
 <field>: <constraint> [code=invalid_request, http=400]
-Detail: {"issues":[{"code":"<zod-code>","path":["<field>"],"message":"<constraint>"}]}
 ```
 
 The input is wrong in both cases. The exit code differs because `invalid_usage` is rejected locally, while `invalid_request` is rejected by backend schema validation.
@@ -205,21 +206,16 @@ case "$stderr_text" in
 esac
 ```
 
-Branch in an LLM/tool wrapper by `code` after splitting on `\nDetail: `:
+Branch in an LLM/tool wrapper by the trailing `code` tag:
 
 ```ts
-type CliError = { message: string; code: string; detail?: unknown };
+type CliError = { message: string; code: string };
 
 function parseCliError(stderr: string): CliError {
-  const boundary = '\nDetail: ';
-  const splitAt = stderr.indexOf(boundary);
-  const head = splitAt === -1 ? stderr : stderr.slice(0, splitAt);
-  const detailText = splitAt === -1 ? undefined : stderr.slice(splitAt + boundary.length);
-  const match = head.match(/\[code=([^,\]]+)/);
+  const match = stderr.match(/\[code=([^,\]]+)/);
   return {
-    message: head,
+    message: stderr,
     code: match?.[1] ?? 'unknown',
-    detail: detailText === undefined ? undefined : JSON.parse(detailText),
   };
 }
 

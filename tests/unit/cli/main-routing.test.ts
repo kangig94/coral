@@ -1301,7 +1301,7 @@ describe('cli main routing', () => {
     expect(mockState.launchAndFollow).not.toHaveBeenCalled();
   });
 
-  it('emits a text envelope for non-KB command-path tool errors with detail and does not follow them', async () => {
+  it('emits an authored text envelope without backend diagnostics and does not follow it', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
@@ -1317,9 +1317,7 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'codex', '-i', 'hi']);
 
     expect(stdout).toBe('');
-    expect(stderr).toBe(
-      'Missing prompt [code=bad_request, http=400]\n' + 'Detail: {"field":"prompt","reason":"required"}\n',
-    );
+    expect(stderr).toBe('Missing prompt [code=bad_request, http=400]\n');
     expect(process.exitCode).toBe(1);
     expect(mockState.launchAndFollow).not.toHaveBeenCalled();
   });

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ORAMA_INTL_TOKENIZER_IDENTITY,
@@ -15,17 +15,23 @@ import {
 } from '#src/engines/orama/artifact-port.js';
 import { OramaBaseProjection } from '#src/engines/orama/base-projection.js';
 import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
+import { createOramaCorpusConsumerRegistration } from '#src/engines/orama/index.js';
 import { oramaIndexMetadataPath } from '#src/engines/orama/paths.js';
 import { ORAMA_SCHEMA } from '#src/engines/orama/schema.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import { sha256Hex } from '#src/infra/hash.js';
+import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { detectProjectionArtifactLag } from '#src/kb/corpus/rescan/drift.js';
 import { buildCommunityIndexEntry, buildNoteIndexEntry } from '#src/kb/corpus/index/records.js';
 import { communityEntryId, noteEntryId, type KbIndex } from '#src/kb/entry-types.js';
-import type { KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
+import type { KbCorpusSnapshot, KbProjectionArtifactFilePort, KbRuntime } from '#src/kb/contract.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
-import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
+import type { CorpusAuthoritativeFreshnessTarget, CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
 import { createEmptyGeneratedCommunityProjectionStore, createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];
@@ -131,6 +137,7 @@ function generatedCommunityRaw(body: string): string {
 async function applyCurrentSnapshot(kb: KbRuntime): Promise<{
   readonly snapshotStore: OramaSnapshotStore;
   readonly snapshot: KbCorpusSnapshot;
+  readonly projection: OramaBaseProjection;
 }> {
   const snapshot = seedNote(kb);
   const snapshotStore = new OramaSnapshotStore(
@@ -139,7 +146,7 @@ async function applyCurrentSnapshot(kb: KbRuntime): Promise<{
   );
   const projection = new OramaBaseProjection(kb, snapshotStore);
   await projection.apply(makeContext(kb, snapshot));
-  return { snapshotStore, snapshot };
+  return { snapshotStore, snapshot, projection };
 }
 
 function metadataPath(kb: KbRuntime): string {
@@ -312,5 +319,216 @@ describe('Orama AC1 projection metadata', () => {
       generatedCommunityDocsHash: 'generated-docs-b',
     });
     expect(secondMetadata.entryManifest[entryId]?.contentHash).not.toBe(firstManifestEntry?.contentHash);
+  });
+});
+
+function authoritativeTarget(
+  artifactPort: ReturnType<typeof createOramaArtifactPort>,
+  metadata: OramaProjectionMetadata,
+  overrides: Partial<CorpusAuthoritativeFreshnessTarget> = {},
+): CorpusAuthoritativeFreshnessTarget {
+  if (metadata.generatedCommunityGeneration === undefined || metadata.generatedCommunityDocsHash === undefined) {
+    throw new Error('test requires complete generated-community freshness');
+  }
+  return {
+    snapshot: {
+      snapshotId: metadata.snapshotId,
+      contentSeq: metadata.contentSeq,
+      metadataSeq: metadata.metadataSeq,
+      contentManifestHash: metadata.contentManifestHash,
+      metadataManifestHash: metadata.metadataManifestHash,
+    },
+    corpusInterest: 'both',
+    generatedCommunityGeneration: metadata.generatedCommunityGeneration,
+    generatedCommunityDocsHash: metadata.generatedCommunityDocsHash,
+    projectionIdentityHash: artifactPort.projectionIdentityHash(),
+    ...overrides,
+  };
+}
+
+describe('Orama authoritative freshness', () => {
+  it('repairs a reset built-in cursor from persisted metadata without invoking apply', async () => {
+    const kb = createRuntime(allocateRoot('coral-orama-cursor-repair-'));
+    const { snapshot, projection } = await applyCurrentSnapshot(kb);
+    const artifactPort = createOramaArtifactPort(kb.projectionArtifacts.files, kb.projectionArtifacts.runtimeDir, []);
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
+    const apply = vi.spyOn(projection, 'apply');
+
+    try {
+      const handle = driver.register({
+        ...createOramaCorpusConsumerRegistration(projection, artifactPort),
+        registrationKind: 'base',
+      });
+      db.prepare(
+        `
+          UPDATE consumer_cursors
+             SET snapshot_id = ?,
+                 content_seq = ?,
+                 metadata_seq = ?,
+                 content_manifest_hash = ?,
+                 metadata_manifest_hash = ?
+           WHERE consumer_id = ?
+        `,
+      ).run(
+        snapshot.snapshotId,
+        snapshot.contentSeq,
+        snapshot.metadataSeq,
+        snapshot.contentManifestHash,
+        snapshot.metadataManifestHash,
+        projection.id,
+      );
+      db.prepare(
+        `
+          UPDATE consumer_cursors
+             SET snapshot_id = '',
+                 content_seq = 0,
+                 metadata_seq = 0,
+                 content_manifest_hash = '',
+                 metadata_manifest_hash = ''
+           WHERE consumer_id = ?
+        `,
+      ).run(projection.id);
+
+      const wait = driver.waitFreshUntil('corpus', snapshot, projection.id, 5000);
+      driver.notify('corpus', snapshot);
+      await wait;
+      await driver.drainAll();
+
+      expect(apply).not.toHaveBeenCalled();
+      expect(handle.status()).toMatchObject({
+        authority: 'corpus',
+        snapshotId: snapshot.snapshotId,
+        contentSeq: snapshot.contentSeq,
+        metadataSeq: snapshot.metadataSeq,
+        pending: false,
+      });
+    } finally {
+      await driver.shutdown();
+      db.close();
+    }
+  });
+
+  it.each([
+    {
+      name: 'content lane behind',
+      mutateTarget: (target: CorpusAuthoritativeFreshnessTarget): CorpusAuthoritativeFreshnessTarget => ({
+        ...target,
+        snapshot: {
+          ...target.snapshot,
+          snapshotId: 'content-lane-newer',
+          contentSeq: target.snapshot.contentSeq + 1,
+          contentManifestHash: 'new-content-hash',
+        },
+      }),
+      expected: { kind: 'stale', reason: 'lane-behind' },
+    },
+    {
+      name: 'metadata lane behind',
+      mutateTarget: (target: CorpusAuthoritativeFreshnessTarget): CorpusAuthoritativeFreshnessTarget => ({
+        ...target,
+        snapshot: {
+          ...target.snapshot,
+          snapshotId: 'metadata-lane-newer',
+          metadataSeq: target.snapshot.metadataSeq + 1,
+          metadataManifestHash: 'new-metadata-hash',
+        },
+      }),
+      expected: { kind: 'stale', reason: 'lane-behind' },
+    },
+    {
+      name: 'generated-community freshness changed',
+      mutateTarget: (target: CorpusAuthoritativeFreshnessTarget): CorpusAuthoritativeFreshnessTarget => ({
+        ...target,
+        generatedCommunityGeneration: target.generatedCommunityGeneration + 1,
+        generatedCommunityDocsHash: 'new-generated-docs-hash',
+      }),
+      expected: { kind: 'stale', reason: 'generated-community-changed' },
+    },
+    {
+      name: 'projection identity changed',
+      mutateTarget: (target: CorpusAuthoritativeFreshnessTarget): CorpusAuthoritativeFreshnessTarget => ({
+        ...target,
+        projectionIdentityHash: 'new-projection-identity',
+      }),
+      expected: { kind: 'stale', reason: 'projection-identity-changed' },
+    },
+  ])('never reports false current when $name', async ({ mutateTarget, expected }) => {
+    const kb = createRuntime(allocateRoot('coral-orama-stale-proof-'));
+    await applyCurrentSnapshot(kb);
+    const artifactPort = createOramaArtifactPort(kb.projectionArtifacts.files, kb.projectionArtifacts.runtimeDir, []);
+    const target = mutateTarget(authoritativeTarget(artifactPort, readMetadata(kb)));
+
+    await expect(artifactPort.readAuthoritativeFreshness(target)).resolves.toEqual(expected);
+  });
+
+  it('classifies missing metadata as stale artifact-missing', async () => {
+    const kb = createRuntime(allocateRoot('coral-orama-missing-metadata-'));
+    await applyCurrentSnapshot(kb);
+    const artifactPort = createOramaArtifactPort(kb.projectionArtifacts.files, kb.projectionArtifacts.runtimeDir, []);
+    const target = authoritativeTarget(artifactPort, readMetadata(kb));
+    rmSync(metadataPath(kb));
+
+    await expect(artifactPort.readAuthoritativeFreshness(target)).resolves.toEqual({
+      kind: 'stale',
+      reason: 'artifact-missing',
+    });
+  });
+
+  it('classifies malformed metadata as unavailable', async () => {
+    const kb = createRuntime(allocateRoot('coral-orama-malformed-metadata-'));
+    await applyCurrentSnapshot(kb);
+    const artifactPort = createOramaArtifactPort(kb.projectionArtifacts.files, kb.projectionArtifacts.runtimeDir, []);
+    const target = authoritativeTarget(artifactPort, readMetadata(kb));
+    writeFileSync(metadataPath(kb), '{not-json', 'utf-8');
+
+    await expect(artifactPort.readAuthoritativeFreshness(target)).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'malformed',
+    });
+  });
+
+  it('classifies probe failure as unavailable', async () => {
+    const root = allocateRoot('coral-orama-probe-failed-');
+    const files: Pick<KbProjectionArtifactFilePort, 'existsSync' | 'readFileSync'> = {
+      existsSync: () => true,
+      readFileSync: () => {
+        throw new Error('injected read failure');
+      },
+    };
+    const artifactPort = createOramaArtifactPort(files, root, []);
+    const target: CorpusAuthoritativeFreshnessTarget = {
+      snapshot: {
+        snapshotId: 'authority',
+        contentSeq: 1,
+        metadataSeq: 1,
+        contentManifestHash: 'content-hash',
+        metadataManifestHash: 'metadata-hash',
+      },
+      corpusInterest: 'both',
+      generatedCommunityGeneration: 0,
+      generatedCommunityDocsHash: '',
+      projectionIdentityHash: artifactPort.projectionIdentityHash(),
+    };
+
+    await expect(artifactPort.readAuthoritativeFreshness(target)).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'probe-failed',
+    });
+  });
+
+  it('classifies metadata ahead of authority as unavailable', async () => {
+    const kb = createRuntime(allocateRoot('coral-orama-ahead-of-authority-'));
+    await applyCurrentSnapshot(kb);
+    const artifactPort = createOramaArtifactPort(kb.projectionArtifacts.files, kb.projectionArtifacts.runtimeDir, []);
+    const metadata = readMetadata(kb);
+    const target = authoritativeTarget(artifactPort, metadata);
+    writeMetadata(kb, { ...metadata, contentSeq: metadata.contentSeq + 1 });
+
+    await expect(artifactPort.readAuthoritativeFreshness(target)).resolves.toEqual({
+      kind: 'unavailable',
+      reason: 'ahead-of-authority',
+    });
   });
 });

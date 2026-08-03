@@ -54,13 +54,13 @@ type RunShutdownSequenceContext = {
   streamResponses: Set<ServerResponse>;
   runtime: Runtime;
   namespace: string;
-  markJobsAsErrorFn: (namespace: string, message: string) => void;
+  markJobsAsErrorFn: (namespace: string, message: string, signal: AbortSignal) => void | Promise<void>;
   providerHostManager: ProviderHostLifecycle;
   kbDaemonSupervisor?: KbDaemonSupervisor;
   storeServicesRef: StoreServicesRef;
   terminateAllFn: () => void;
   handoffQuiescePorts: () => readonly HandoffQuiescePort[];
-  disposeLifecycleReactor: () => void;
+  disposeLifecycleReactor: () => void | Promise<void>;
   hooks: { onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void> };
   discussStores: Map<string, DiscussSessionStore>;
   log: (message: string) => void;
@@ -109,6 +109,53 @@ async function withBudget<T>(
   }
 }
 
+type ShutdownFailure = {
+  readonly label: string;
+  readonly error: unknown;
+};
+
+function recordShutdownFailure(
+  failures: ShutdownFailure[],
+  label: string,
+  error: unknown,
+  log: (message: string) => void,
+): void {
+  failures.push({ label, error });
+  log(`${label} failed during shutdown: ${formatError(error)}\n`);
+}
+
+async function runShutdownStep(
+  failures: ShutdownFailure[],
+  label: string,
+  task: () => unknown | Promise<unknown>,
+  log: (message: string) => void,
+): Promise<void> {
+  try {
+    await task();
+  } catch (error: unknown) {
+    recordShutdownFailure(failures, label, error, log);
+  }
+}
+
+function observeShutdownTask(
+  failures: ShutdownFailure[],
+  label: string,
+  task: Promise<void>,
+  log: (message: string) => void,
+): Promise<void> {
+  return task.catch((error: unknown) => {
+    recordShutdownFailure(failures, label, error, log);
+  });
+}
+
+function throwShutdownFailures(failures: readonly ShutdownFailure[]): void {
+  if (failures.length === 0) return;
+  throw new AggregateError(
+    failures.map(({ label, error }) => new Error(`${label}: ${formatError(error)}`, { cause: error })),
+    `Coral backend shutdown completed with ${failures.length} finalizer failure${failures.length === 1 ? '' : 's'}.`,
+  );
+}
+
 export async function runShutdownSequence({
   reason,
   state,
@@ -134,6 +181,11 @@ export async function runShutdownSequence({
   discussStores,
   log,
 }: RunShutdownSequenceContext): Promise<void> {
+  const failures: ShutdownFailure[] = [];
+  const runStep = (label: string, task: () => unknown | Promise<unknown>): Promise<void> =>
+    runShutdownStep(failures, label, task, log);
+  const observeTask = (label: string, task: Promise<void>): Promise<void> =>
+    observeShutdownTask(failures, label, task, log);
   const mode = shutdownModeFromReason(reason);
   const drainTimeout = mode === 'handoff' ? HANDOFF_DRAIN_TIMEOUT_MS : SHUTDOWN_DRAIN_TIMEOUT_MS;
 
@@ -143,91 +195,80 @@ export async function runShutdownSequence({
 
   const drainDeadline = runtime.time.now() + drainTimeout;
   const remainingDrain = (): number => Math.max(0, drainDeadline - runtime.time.now());
+  const waitForObservedShutdownTask = (task: Promise<void>): Promise<void> =>
+    Promise.race([task, runtime.time.sleep(remainingDrain())]);
+  const runBudgetedStep = (label: string, task: (signal: AbortSignal) => Promise<void>): Promise<void> =>
+    runStep(label, () => withBudget(label, task, remainingDrain, runtime.time, log));
 
   // Stop accepting HTTP/user-facing work first; the IPC socket stays bound
   // until all handoff finalizers complete or consume the budget, so the
   // replacement daemon cannot run startup recovery against partial state.
-  const serverClosed = closeServerFn(server);
-  // Consumed via Promise.race against the drain timer below. If the timer wins,
-  // a later rejection from serverClosed would have no handler and surface as an
-  // unhandledRejection — attach a swallow-and-log handler so it never does.
-  serverClosed.catch((error: unknown) => {
-    log(`server close failed during drain: ${formatError(error)}\n`);
-  });
-  await waitForInflightDrain(idleTimer, remainingDrain(), runtime.time);
-  server.closeAllConnections();
+  const serverClosed = observeTask(
+    'server close',
+    Promise.resolve().then(() => closeServerFn(server)),
+  );
+  await runStep('inflight drain', () => waitForInflightDrain(idleTimer, remainingDrain(), runtime.time));
+  await runStep('server connection close', () => server.closeAllConnections());
   for (const stream of streamResponses) {
-    stream.end();
+    await runStep('stream response close', () => stream.end());
   }
-  await Promise.race([serverClosed, runtime.time.sleep(remainingDrain())]);
-  await teardownRecoveryCoordinator();
-  state.ownershipCheckerTeardown?.();
+  await waitForObservedShutdownTask(serverClosed);
+  await runStep('recovery coordinator teardown', teardownRecoveryCoordinator);
+  await runStep('ownership checker teardown', () => state.ownershipCheckerTeardown?.());
   state.ownershipCheckerTeardown = null;
 
   if (kbDaemonSupervisor !== undefined) {
-    await withBudget(
-      'kb child shutdown',
-      async (signal) => {
-        await kbDaemonSupervisor.dispose(reason, { signal });
-      },
-      remainingDrain,
-      runtime.time,
-      log,
-    );
+    await runBudgetedStep('kb child shutdown', async (signal) => {
+      await kbDaemonSupervisor.dispose(reason, { signal });
+    });
   }
 
   if (mode === 'hard') {
-    if (storeServicesRef.tryGet() !== null) {
-      markJobsAsErrorFn(namespace, 'Backend shutting down');
+    let storeServicesAvailable = false;
+    await runStep('store services availability check', () => {
+      storeServicesAvailable = storeServicesRef.tryGet() !== null;
+    });
+    if (storeServicesAvailable) {
+      await runBudgetedStep('crashed job terminalization', async (signal) => {
+        await markJobsAsErrorFn(namespace, 'Backend shutting down', signal);
+      });
     }
-    await withBudget(
-      'provider host shutdown',
-      async (signal) => providerHostManager.shutdown(signal),
-      remainingDrain,
-      runtime.time,
-      log,
-    );
-    terminateAllFn();
+    await runBudgetedStep('provider host shutdown', async (signal) => providerHostManager.shutdown(signal));
+    await runStep('child termination', terminateAllFn);
   } else {
     // Phase A2 is a durability fence, not a best-effort drain. Admission is
     // closed synchronously, then every write already admitted by the old daemon
     // settles before host shutdown or replacement recovery may proceed.
-    for (const port of handoffQuiescePorts()) {
-      await port.quiesceAppServerJobsForHandoff();
+    let quiescePorts: readonly HandoffQuiescePort[] = [];
+    await runStep('app-server handoff quiesce discovery', () => {
+      quiescePorts = handoffQuiescePorts();
+    });
+    for (const port of quiescePorts) {
+      await runStep('app-server handoff quiesce', () => port.quiesceAppServerJobsForHandoff());
     }
-    await withBudget(
-      'provider host drain for handoff',
-      async (signal) => providerHostManager.drainForHandoff(signal),
-      remainingDrain,
-      runtime.time,
-      log,
+    await runBudgetedStep('provider host drain for handoff', async (signal) =>
+      providerHostManager.drainForHandoff(signal),
     );
   }
 
-  await withBudget(
-    'components disposeAll',
-    async (signal) => runtimeState.components.disposeAll(signal),
-    remainingDrain,
-    runtime.time,
-    log,
-  );
-  await withBudget(
-    'hooks.onShutdown',
-    async (signal) => hooks.onShutdown(mode, signal),
-    remainingDrain,
-    runtime.time,
-    log,
-  );
-  for (const store of discussStores.values()) {
-    store.dispose();
+  await runBudgetedStep('components disposeAll', async (signal) => runtimeState.components.disposeAll(signal));
+  await runBudgetedStep('hooks.onShutdown', async (signal) => hooks.onShutdown(mode, signal));
+  for (const [source, store] of discussStores) {
+    await runStep(`discuss store '${source}' dispose`, () => store.dispose());
   }
-  disposeLifecycleReactor();
+  await runStep('lifecycle reactor dispose', disposeLifecycleReactor);
 
   // Socket release is the last step before lifecycle stop / process exit.
   // No async work may run between this resolution and `onStopped()`; that
   // structural invariant is what makes "socket bound = old daemon authority"
   // hold across the handoff window.
   if (ipcServer && closeIpcServerFn) {
-    await Promise.race([closeIpcServerFn(ipcServer), runtime.time.sleep(remainingDrain())]);
+    const ipcServerClosed = observeTask(
+      'IPC socket release',
+      Promise.resolve().then(() => closeIpcServerFn(ipcServer)),
+    );
+    await waitForObservedShutdownTask(ipcServerClosed);
   }
+
+  throwShutdownFailures(failures);
 }

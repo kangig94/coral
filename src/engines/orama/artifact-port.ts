@@ -8,6 +8,11 @@ import type {
 } from '../../kb/corpus/artifact-port.js';
 import type { KbCorpusSnapshot, KbProjectionArtifactFilePort } from '../../kb/contract.js';
 import type { KbDeclaredAnalyzer } from '../../kb/extra-langs.js';
+import type {
+  CorpusAuthoritativeFreshness,
+  CorpusAuthoritativeFreshnessTarget,
+  CorpusLaneHint,
+} from '../../store/consumer-contract.js';
 import { ORAMA_SCHEMA } from './schema.js';
 import { oramaIndexMetadataPath, oramaIndexPath } from './paths.js';
 
@@ -122,6 +127,8 @@ export type OramaProjectionMismatchClassification = 'match' | 'tier-only-upgrade
 
 type OramaArtifactFiles = Pick<KbProjectionArtifactFilePort, 'existsSync' | 'readFileSync'>;
 
+class MalformedOramaProjectionArtifactError extends Error {}
+
 export type OramaProjectionArtifactRead = {
   readonly artifactRaw: string;
   readonly metadata: OramaProjectionMetadata;
@@ -168,6 +175,10 @@ function isOptionalNumber(value: unknown): boolean {
   return value === undefined || typeof value === 'number';
 }
 
+function isNonnegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
 function isOptionalString(value: unknown): boolean {
   return value === undefined || typeof value === 'string';
 }
@@ -181,16 +192,23 @@ function isOptionalStringArray(value: unknown): value is readonly string[] | und
 }
 
 function isOramaProjectionMetadata(value: unknown): value is OramaProjectionMetadata {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const hasGeneratedCommunityFreshness =
+    value.generatedCommunityGeneration === undefined && value.generatedCommunityDocsHash === undefined
+      ? true
+      : isNonnegativeInteger(value.generatedCommunityGeneration) &&
+        typeof value.generatedCommunityDocsHash === 'string';
   return (
-    isRecord(value) &&
     typeof value.snapshotId === 'string' &&
-    typeof value.contentSeq === 'number' &&
-    typeof value.metadataSeq === 'number' &&
+    isNonnegativeInteger(value.contentSeq) &&
+    isNonnegativeInteger(value.metadataSeq) &&
     typeof value.contentManifestHash === 'string' &&
     typeof value.metadataManifestHash === 'string' &&
     typeof value.projectionIdentityHash === 'string' &&
-    isOptionalNumber(value.generatedCommunityGeneration) &&
-    isOptionalString(value.generatedCommunityDocsHash) &&
+    hasGeneratedCommunityFreshness &&
     isOptionalNumber(value.identitySchemaVersion) &&
     isOptionalNumber(value.schemaVersion) &&
     isOptionalString(value.schemaDigest) &&
@@ -408,16 +426,26 @@ export function readOramaProjectionArtifact(
 
   const artifactDigest = computeOramaArtifactDigest(artifactRaw);
   if (metadata.artifactDigest !== artifactDigest) {
-    throw new Error('projection artifact digest does not match metadata sidecar');
+    throw new MalformedOramaProjectionArtifactError('projection artifact digest does not match metadata sidecar');
   }
 
   return { artifactRaw, metadata };
 }
 
 export function readOramaProjectionMetadata(files: OramaArtifactFiles, metadataPath: string): OramaProjectionMetadata {
-  const metadata = JSON.parse(files.readFileSync(metadataPath, 'utf-8')) as unknown;
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(files.readFileSync(metadataPath, 'utf-8')) as unknown;
+  } catch (error: unknown) {
+    if (error instanceof SyntaxError) {
+      throw new MalformedOramaProjectionArtifactError('projection metadata sidecar is not valid JSON');
+    }
+    throw error;
+  }
   if (!isOramaProjectionMetadata(metadata)) {
-    throw new Error('projection metadata sidecar is missing required identity or manifest fields');
+    throw new MalformedOramaProjectionArtifactError(
+      'projection metadata sidecar is missing required identity or manifest fields',
+    );
   }
 
   return metadata;
@@ -440,7 +468,7 @@ export class OramaArtifactPort implements EngineArtifactPort {
     this.effectiveDeclaredAnalyzers = effectiveDeclaredAnalyzers;
   }
 
-  private projectionIdentityHash(): string {
+  projectionIdentityHash(): string {
     return ORAMA_PROJECTION_IDENTITY_HASH(
       createOramaProjectionIdentityInput(
         this.declaredAnalyzers,
@@ -480,6 +508,53 @@ export class OramaArtifactPort implements EngineArtifactPort {
     ];
   }
 
+  async readAuthoritativeFreshness(target: CorpusAuthoritativeFreshnessTarget): Promise<CorpusAuthoritativeFreshness> {
+    const artifactPath = oramaIndexPath(this.runtimeDir);
+    const metadataPath = oramaIndexMetadataPath(this.runtimeDir);
+    try {
+      if (!this.files.existsSync(artifactPath) || !this.files.existsSync(metadataPath)) {
+        return { kind: 'stale', reason: 'artifact-missing' };
+      }
+
+      const { metadata } = readOramaProjectionArtifact(this.files, artifactPath, metadataPath);
+      const lanes = corpusLanes(target.corpusInterest);
+      if (lanes.some((lane) => corpusLaneAhead(metadata, target.snapshot, lane))) {
+        return { kind: 'unavailable', reason: 'ahead-of-authority' };
+      }
+      if (
+        lanes.some((lane) => !corpusLaneMatches(metadata, target.snapshot, lane)) ||
+        (target.corpusInterest === 'both' && metadata.snapshotId !== target.snapshot.snapshotId)
+      ) {
+        return { kind: 'stale', reason: 'lane-behind' };
+      }
+      if (
+        metadata.generatedCommunityGeneration !== target.generatedCommunityGeneration ||
+        metadata.generatedCommunityDocsHash !== target.generatedCommunityDocsHash
+      ) {
+        return { kind: 'stale', reason: 'generated-community-changed' };
+      }
+      if (metadata.projectionIdentityHash !== target.projectionIdentityHash) {
+        return { kind: 'stale', reason: 'projection-identity-changed' };
+      }
+
+      return {
+        kind: 'current',
+        appliedSnapshot: snapshotFromMetadata(metadata),
+        generatedCommunityGeneration: metadata.generatedCommunityGeneration,
+        generatedCommunityDocsHash: metadata.generatedCommunityDocsHash,
+        projectionIdentityHash: metadata.projectionIdentityHash,
+      };
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        return { kind: 'stale', reason: 'artifact-missing' };
+      }
+      if (error instanceof MalformedOramaProjectionArtifactError) {
+        return { kind: 'unavailable', reason: 'malformed' };
+      }
+      return { kind: 'unavailable', reason: 'probe-failed' };
+    }
+  }
+
   private readPresentFreshness(artifactPath: string, metadataPath: string): EngineArtifactDescriptor['freshness'] {
     try {
       const { metadata } = readOramaProjectionArtifact(this.files, artifactPath, metadataPath);
@@ -508,6 +583,31 @@ export class OramaArtifactPort implements EngineArtifactPort {
       return { status: 'corrupt', diagnostic };
     }
   }
+}
+
+function corpusLanes(interest: CorpusAuthoritativeFreshnessTarget['corpusInterest']): readonly CorpusLaneHint[] {
+  return interest === 'both' ? ['content', 'metadata'] : [interest];
+}
+
+function corpusLaneAhead(applied: OramaProjectionMetadata, target: KbCorpusSnapshot, lane: CorpusLaneHint): boolean {
+  return lane === 'content' ? applied.contentSeq > target.contentSeq : applied.metadataSeq > target.metadataSeq;
+}
+
+function corpusLaneMatches(applied: OramaProjectionMetadata, target: KbCorpusSnapshot, lane: CorpusLaneHint): boolean {
+  if (lane === 'content') {
+    return applied.contentSeq === target.contentSeq && applied.contentManifestHash === target.contentManifestHash;
+  }
+  return applied.metadataSeq === target.metadataSeq && applied.metadataManifestHash === target.metadataManifestHash;
+}
+
+function snapshotFromMetadata(metadata: OramaProjectionMetadata): KbCorpusSnapshot {
+  return {
+    snapshotId: metadata.snapshotId,
+    contentSeq: metadata.contentSeq,
+    metadataSeq: metadata.metadataSeq,
+    contentManifestHash: metadata.contentManifestHash,
+    metadataManifestHash: metadata.metadataManifestHash,
+  };
 }
 
 export function createOramaArtifactPort(

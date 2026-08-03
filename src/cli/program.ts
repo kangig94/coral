@@ -5,7 +5,7 @@ import { Command } from 'commander';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { assertCommandClassCoverage } from './classify.js';
-import { registerBackendCommands } from './commands/backend.js';
+import { createRecoveryQuarantineCommandOperations, registerBackendCommands } from './commands/backend.js';
 import { createStoreResetCommandOperations } from './store-reset.js';
 import { registerDiscussCommands } from './commands/discuss.js';
 import { registerExpansionCommands } from './commands/expansion.js';
@@ -29,7 +29,10 @@ export function buildProgram(
   registerProviderCommands(program, providerRegistry);
   registerSessionCommands(program, providerRegistry);
   registerWorkflowCommands(program);
-  registerBackendCommands(program, createStoreResetCommandOperations(options.shutdownSignal));
+  registerBackendCommands(program, {
+    storeReset: createStoreResetCommandOperations(options.shutdownSignal),
+    recoveryQuarantine: createRecoveryQuarantineCommandOperations(options.shutdownSignal),
+  });
   registerDiscussCommands(program);
   registerKbCommands(program);
   registerExpansionCommands(program);

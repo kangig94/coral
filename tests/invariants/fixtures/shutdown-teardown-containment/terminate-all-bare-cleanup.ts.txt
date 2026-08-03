@@ -1,0 +1,7 @@
+class LaunchCoordinator {
+  terminateAll(): void {
+    for (const cleanup of this.cleanupHandles.values()) {
+      cleanup();
+    }
+  }
+}

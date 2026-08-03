@@ -19,7 +19,9 @@ type TransportRuntimeComponentStatus =
   | {
       id: string;
       phase: 'degraded';
-      reason: { kind: 'curate-publish'; consecutiveFailures: number; lastError: string };
+      reason:
+        | { kind: 'curate-publish'; consecutiveFailures: number; lastError: string }
+        | { kind: 'recovery-quarantine'; count: number; lastError: string };
     }
   | {
       id: string;
@@ -168,13 +170,18 @@ function isConsumerStuck(value: unknown): value is NonNullable<BackendHealth['di
 
 function isDegradedReason(
   value: unknown,
-): value is { kind: 'curate-publish'; consecutiveFailures: number; lastError: string } {
-  return (
-    isRecord(value) &&
-    value.kind === 'curate-publish' &&
-    Number.isFinite(value.consecutiveFailures) &&
-    typeof value.lastError === 'string'
-  );
+): value is Extract<TransportRuntimeComponentStatus, { phase: 'degraded' }>['reason'] {
+  if (!isRecord(value) || typeof value.lastError !== 'string') {
+    return false;
+  }
+  switch (value.kind) {
+    case 'curate-publish':
+      return Number.isFinite(value.consecutiveFailures);
+    case 'recovery-quarantine':
+      return isNonNegativeInteger(value.count);
+    default:
+      return false;
+  }
 }
 
 function isOfflineDiagnostic(

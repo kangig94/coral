@@ -1,10 +1,139 @@
-import { sqlPlaceholders } from '../store/db.js';
-import type { ReadonlyDatabase } from '../store/read-port.js';
-import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
-import { decodeEventRefs } from '../store/envelope.js';
-import type { EventsRow } from '../store/schema.js';
-import { hasUnterminalRetentionDiscardRequest, isProtectiveContinuationLease, type ProviderSession } from './entry.js';
-import { readProjectionSessionEntriesById } from './projections.js';
+import { z } from 'zod';
+
+import { causeRefSchema, type CauseRef } from '../causality/cause-ref.js';
+import { providerArtifactIdentitySchema } from '../providers/artifact-identity.js';
+import type { RecoveryObligationId, RecoverySettlementFact, RecoverySubject } from '../recovery/containment.js';
+import type { RawRetentionWorkItem } from './retention-work-item-recovery-source.js';
+import type { ProviderSession } from './entry.js';
+import type { ProviderArtifactActionDescriptor } from './provider-artifact-archive.js';
+
+export const RETENTION_PROVIDER_DISCARD_OBLIGATION = 'session.retention.provider-discard' as RecoveryObligationId;
+export const RETENTION_ATTEMPT_OBLIGATION = 'session.retention.attempt' as RecoveryObligationId;
+export const RETENTION_TERMINAL_OBLIGATION = 'session.retention.terminal' as RecoveryObligationId;
+export const RETENTION_WORK_OBLIGATIONS = [
+  RETENTION_PROVIDER_DISCARD_OBLIGATION,
+  RETENTION_ATTEMPT_OBLIGATION,
+  RETENTION_TERMINAL_OBLIGATION,
+] as const;
+export const RETENTION_DISCARD_CONTINUATION_KIND = 'retention-discard.v1';
+
+const canonicalArtifactHandleSchema = z
+  .object({
+    handle: z.string().min(1),
+    sourceJobId: z.string().min(1),
+    identity: providerArtifactIdentitySchema.optional(),
+  })
+  .strict();
+
+const artifactActionDescriptorSchema = z
+  .object({
+    operationId: z.string().min(1),
+    sessionId: z.string().min(1),
+    jobId: z.string().min(1),
+    provider: z.string().min(1),
+    sourceRevision: z.string().min(1),
+    handles: z.array(canonicalArtifactHandleSchema),
+    archiveActionId: z.string().min(1),
+    archivePayloadHash: z.string().min(1),
+    discardActionId: z.string().min(1),
+    discardPayloadHash: z.string().min(1),
+    archivedAt: z.string().datetime({ offset: true }),
+  })
+  .strict();
+
+const retentionObligationSchema = z.enum([
+  RETENTION_PROVIDER_DISCARD_OBLIGATION,
+  RETENTION_ATTEMPT_OBLIGATION,
+  RETENTION_TERMINAL_OBLIGATION,
+]);
+
+const retentionDiscardContinuationSchema = z
+  .object({
+    v: z.literal(1),
+    sessionId: z.string().min(1),
+    jobId: z.string().min(1),
+    sourceRevision: z.string().min(1),
+    attempt: z.number().int().positive(),
+    handles: z.array(z.string()),
+    descriptor: artifactActionDescriptorSchema,
+    terminalCauseRef: causeRefSchema.optional(),
+    completedObligationIds: z.array(retentionObligationSchema),
+    stage: z.enum(['prepared', 'requested', 'discard-pending', 'discard-applied']),
+    observedOutcome: z
+      .discriminatedUnion('kind', [
+        z.object({ kind: z.literal('applied'), outcome: z.string().min(1) }).strict(),
+        z.object({ kind: z.literal('definitive-failure'), reason: z.string() }).strict(),
+      ])
+      .optional(),
+  })
+  .strict();
+
+type ParsedRetentionDiscardContinuation = z.infer<typeof retentionDiscardContinuationSchema>;
+
+export type RetentionDiscardContinuation = Omit<
+  ParsedRetentionDiscardContinuation,
+  'handles' | 'descriptor' | 'completedObligationIds'
+> & {
+  readonly handles: readonly string[];
+  readonly descriptor: ProviderArtifactActionDescriptor;
+  readonly completedObligationIds: readonly RecoveryObligationId[];
+};
+
+export type RecoverySessionRetentionWork = SessionRetentionWork & {
+  readonly recovery: {
+    readonly subject: RecoverySubject;
+    readonly sourceRevision: string;
+    readonly terminalCauseRef: CauseRef;
+    readonly archivedAt: string;
+    readonly continuation: RetentionDiscardContinuation | null;
+  };
+};
+
+export function retentionRecoveryFact(
+  obligation: RecoveryObligationId,
+  outcome: RecoverySettlementFact['outcome'],
+  authorityRef?: string,
+): RecoverySettlementFact {
+  return {
+    obligation,
+    outcome,
+    ...(authorityRef === undefined ? {} : { authorityRef }),
+  };
+}
+
+/** Hydrates the composite continuation only after every nested component has been contained. */
+export function hydrateRecoverySessionRetentionWork(raw: RawRetentionWorkItem): RecoverySessionRetentionWork {
+  let continuation: RetentionDiscardContinuation | null = null;
+  if (raw.continuation !== null) {
+    if (
+      raw.continuation.continuation_kind !== RETENTION_DISCARD_CONTINUATION_KIND ||
+      raw.continuation.continuation_key === null
+    ) {
+      throw new TypeError(`Retention work '${raw.subject.key}' has an invalid continuation kind.`);
+    }
+    continuation = retentionDiscardContinuationSchema.parse(
+      JSON.parse(raw.continuation.continuation_key) as unknown,
+    ) as RetentionDiscardContinuation;
+    if (continuation.sessionId !== raw.sessionId || continuation.jobId !== raw.jobId) {
+      throw new TypeError(`Retention work '${raw.subject.key}' continuation names another subject.`);
+    }
+    if (new Set(continuation.completedObligationIds).size !== continuation.completedObligationIds.length) {
+      throw new TypeError(`Retention work '${raw.subject.key}' continuation repeats an obligation.`);
+    }
+  }
+  return {
+    sessionId: raw.sessionId,
+    jobId: raw.jobId,
+    entry: raw.entry,
+    recovery: {
+      subject: raw.subject,
+      sourceRevision: continuation?.sourceRevision ?? raw.sourceRevision,
+      terminalCauseRef: { stream: { kind: 'job', id: raw.jobId }, seq: raw.terminal.row.seq },
+      archivedAt: continuation?.descriptor.archivedAt ?? raw.terminal.row.ts,
+      continuation,
+    },
+  };
+}
 
 export type SessionRetentionPair = {
   readonly sessionId: string;
@@ -15,207 +144,6 @@ export type SessionRetentionWork = SessionRetentionPair & {
   readonly entry: ProviderSession;
 };
 
-export type RetentionSelectionOptions = {
-  readonly nowMs?: number;
-};
-
 export function sessionRetentionWorkKey(sessionId: string, jobId: string): string {
   return `${sessionId}\u0000${jobId}`;
-}
-
-export function readSessionRetentionWorkForSessionIds(
-  db: ReadonlyDatabase,
-  readCtx: StoreReadContext,
-  sessionIds: readonly string[],
-  options: RetentionSelectionOptions = {},
-): SessionRetentionWork[] {
-  const entriesBySession = readProjectionSessionEntriesById(db, sessionIds);
-  const entries: ProviderSession[] = [];
-  for (const sessionId of uniqueStrings(sessionIds)) {
-    const entry = entriesBySession.get(sessionId);
-    if (entry !== undefined) {
-      entries.push(entry);
-    }
-  }
-  return readSessionRetentionWorkForEntries(db, readCtx, entries, options);
-}
-
-export function readSessionRetentionWorkForEntries(
-  db: ReadonlyDatabase,
-  readCtx: StoreReadContext,
-  entries: readonly ProviderSession[],
-  options: RetentionSelectionOptions = {},
-): SessionRetentionWork[] {
-  const retainedEntries = uniqueRetainedEntries(entries, retentionSelectionNow(options));
-  if (retainedEntries.length === 0) {
-    return [];
-  }
-
-  const sessionIds = retainedEntries.map((entry) => entry.sessionId);
-  const terminalOutcomeSessions = readTerminalOutcomeSessions(db, readCtx, sessionIds);
-  const terminalReleasePairs = readTerminalReleasePairsBySession(db, readCtx, sessionIds);
-  const work: SessionRetentionWork[] = [];
-  for (const entry of retainedEntries) {
-    if (terminalOutcomeSessions.has(entry.sessionId)) {
-      continue;
-    }
-    const jobIds = terminalReleasePairs.get(entry.sessionId);
-    if (jobIds === undefined) {
-      continue;
-    }
-    for (const jobId of jobIds) {
-      work.push({ sessionId: entry.sessionId, jobId, entry });
-    }
-  }
-  return work;
-}
-
-export function readSessionRetentionWorkForPairs(
-  db: ReadonlyDatabase,
-  readCtx: StoreReadContext,
-  pairs: readonly SessionRetentionPair[],
-  options: RetentionSelectionOptions = {},
-): Map<string, SessionRetentionWork> {
-  const sessionIds = uniqueStrings(pairs.map((pair) => pair.sessionId));
-  if (sessionIds.length === 0) {
-    return new Map();
-  }
-
-  const entriesBySession = readProjectionSessionEntriesById(db, sessionIds);
-  const terminalOutcomeSessions = readTerminalOutcomeSessions(db, readCtx, sessionIds);
-  const terminalReleasePairs = readTerminalReleasePairsBySession(db, readCtx, sessionIds);
-  const workByPair = new Map<string, SessionRetentionWork>();
-  const nowMs = retentionSelectionNow(options);
-  for (const pair of pairs) {
-    const entry = entriesBySession.get(pair.sessionId);
-    if (
-      entry === undefined ||
-      !isRetentionEligibleEntry(entry, nowMs) ||
-      terminalOutcomeSessions.has(pair.sessionId) ||
-      !terminalReleasePairs.get(pair.sessionId)?.has(pair.jobId)
-    ) {
-      continue;
-    }
-    workByPair.set(sessionRetentionWorkKey(pair.sessionId, pair.jobId), {
-      sessionId: pair.sessionId,
-      jobId: pair.jobId,
-      entry,
-    });
-  }
-  return workByPair;
-}
-
-function retentionSelectionNow(options: RetentionSelectionOptions): number {
-  return options.nowMs ?? Date.now();
-}
-
-function isRetentionEligibleEntry(entry: ProviderSession, nowMs: number): boolean {
-  return (
-    entry.retention === 'discard_provider_artifacts_on_terminal' &&
-    entry.activeJobId === undefined &&
-    !isProtectiveContinuationLease(entry.continuationLease, nowMs) &&
-    !hasUnterminalRetentionDiscardRequest(entry)
-  );
-}
-
-function uniqueRetainedEntries(entries: readonly ProviderSession[], nowMs: number): ProviderSession[] {
-  const retainedEntries: ProviderSession[] = [];
-  const seenSessionIds = new Set<string>();
-  for (const entry of entries) {
-    if (!isRetentionEligibleEntry(entry, nowMs) || seenSessionIds.has(entry.sessionId)) {
-      continue;
-    }
-    retainedEntries.push(entry);
-    seenSessionIds.add(entry.sessionId);
-  }
-  return retainedEntries;
-}
-
-function readTerminalOutcomeSessions(
-  db: ReadonlyDatabase,
-  readCtx: StoreReadContext,
-  sessionIds: readonly string[],
-): Set<string> {
-  if (sessionIds.length === 0) {
-    return new Set();
-  }
-
-  const rows = db
-    .prepare<unknown[], EventsRow>(
-      `SELECT *
-         FROM events
-        WHERE type IN ('session.retention.discard.failed', 'session.retention.discard.completed')
-          AND stream_id IN (${sqlPlaceholders(sessionIds.length)})`,
-    )
-    .all(...sessionIds);
-
-  const terminalSessionIds = new Set<string>();
-  for (const row of rows) {
-    const body = decodeStoredBody(row, readCtx) as { outcome?: unknown };
-    if (row.type === 'session.retention.discard.failed' || body.outcome !== 'skipped_protected') {
-      terminalSessionIds.add(row.stream_id);
-    }
-  }
-  return terminalSessionIds;
-}
-
-function readTerminalReleasePairsBySession(
-  db: ReadonlyDatabase,
-  readCtx: StoreReadContext,
-  sessionIds: readonly string[],
-): Map<string, Set<string>> {
-  if (sessionIds.length === 0) {
-    return new Map();
-  }
-
-  const sessionIdSet = new Set(sessionIds);
-  const releaseRows = db
-    .prepare<unknown[], EventsRow>(
-      `SELECT * FROM events
-        WHERE type = 'session.claim.released'
-          AND stream_id IN (${sqlPlaceholders(sessionIds.length)})
-        ORDER BY seq ASC`,
-    )
-    .all(...sessionIds);
-  const releasedPairs = new Set<string>();
-  const releasedJobIds = new Set<string>();
-  for (const row of releaseRows) {
-    decodeStoredBody(row, readCtx);
-    const refs = decodeEventRefs(row);
-    const sessionId = refs?.sessionId ?? row.stream_id;
-    if (!sessionIdSet.has(sessionId)) continue;
-    if (refs?.jobId === undefined) {
-      throw new Error(`Stored session.claim.released event ${row.seq} has no refs.jobId.`);
-    }
-    releasedPairs.add(sessionRetentionWorkKey(sessionId, refs.jobId));
-    releasedJobIds.add(refs.jobId);
-  }
-
-  if (releasedJobIds.size === 0) return new Map();
-
-  const candidateJobIds = [...releasedJobIds];
-  const terminalRows = db
-    .prepare<unknown[], EventsRow>(
-      `SELECT * FROM events
-        WHERE type = 'job.terminal.recorded'
-          AND stream_id IN (${sqlPlaceholders(candidateJobIds.length)})
-        ORDER BY seq ASC`,
-    )
-    .all(...candidateJobIds);
-
-  const pairsBySession = new Map<string, Set<string>>();
-  for (const row of terminalRows) {
-    decodeStoredBody(row, readCtx);
-    const sessionId = decodeEventRefs(row)?.sessionId;
-    if (sessionId === undefined || !sessionIdSet.has(sessionId)) continue;
-    if (!releasedPairs.has(sessionRetentionWorkKey(sessionId, row.stream_id))) continue;
-    const jobIds = pairsBySession.get(sessionId) ?? new Set<string>();
-    jobIds.add(row.stream_id);
-    pairsBySession.set(sessionId, jobIds);
-  }
-  return pairsBySession;
-}
-
-function uniqueStrings(values: readonly string[]): string[] {
-  return [...new Set(values)];
 }

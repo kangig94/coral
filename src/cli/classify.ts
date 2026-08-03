@@ -9,6 +9,8 @@ export type StaticCommandPath =
   | 'abort'
   | 'abort jobs'
   | 'workflow'
+  | 'backend recovery-quarantine list'
+  | 'backend recovery-quarantine clear'
   | 'expansion list'
   | 'expansion equip'
   | 'expansion unequip'
@@ -57,6 +59,8 @@ export const commandClassMap = {
   abort: 'mutate',
   'abort jobs': 'mutate',
   workflow: 'mutate',
+  'backend recovery-quarantine list': 'directRead',
+  'backend recovery-quarantine clear': 'mutate',
   'expansion list': 'directRead',
   'expansion equip': 'mutate',
   'expansion unequip': 'mutate',
@@ -102,6 +106,7 @@ export const commandClassMap = {
 export const commandContainerPaths = new Set<string>([
   'backend',
   'backend kb-commit',
+  'backend recovery-quarantine',
   'backend store-reset',
   'discuss',
   'expansion',

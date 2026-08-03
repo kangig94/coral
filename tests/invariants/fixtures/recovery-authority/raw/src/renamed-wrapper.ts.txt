@@ -1,0 +1,7 @@
+import { renamedRawAuthority as hiddenEnumerator } from './raw-barrel.js';
+
+const wrapper = () => hiddenEnumerator();
+
+export function enumerateThroughWrapper(): unknown {
+  return wrapper();
+}

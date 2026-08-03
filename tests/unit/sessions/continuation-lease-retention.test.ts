@@ -68,6 +68,22 @@ function applyMinimalSchema(db: ReturnType<typeof newRawDatabase>): void {
       entry TEXT NOT NULL,
       last_seq INTEGER NOT NULL
     );
+    CREATE TABLE recovery_quarantine (
+      boundary_id TEXT NOT NULL,
+      subject_key TEXT NOT NULL,
+      subject_revision TEXT,
+      state TEXT NOT NULL CHECK (state IN ('active', 'retrying', 'continuation')),
+      stage TEXT NOT NULL CHECK (stage IN ('scan', 'hydrate', 'settle')),
+      retry_token TEXT,
+      retry_owner TEXT,
+      continuation_kind TEXT,
+      continuation_key TEXT,
+      error_message TEXT NOT NULL,
+      disposition_detail TEXT NOT NULL,
+      detected_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (boundary_id, subject_key)
+    );
   `);
 }
 
@@ -122,6 +138,7 @@ function createHarness(): {
     runtime,
     time: runtime.time,
     commitEvents: coordinatorCommit,
+    signal: new AbortController().signal,
   });
   reactorRef.current = reactor;
   return {
@@ -236,7 +253,7 @@ describe('continuation lease retention integration', () => {
 
       expect(discardCalls).toEqual([['/tmp/job-stale.jsonl']]);
     } finally {
-      reactor.dispose();
+      await reactor.dispose();
       db.close();
     }
   });
@@ -272,7 +289,7 @@ describe('continuation lease retention integration', () => {
       await reactor.waitForIdle();
       expect(discardCalls).toEqual([['/tmp/job-rejected-resume.jsonl']]);
     } finally {
-      reactor.dispose();
+      await reactor.dispose();
       db.close();
     }
   });
@@ -331,7 +348,7 @@ describe('continuation lease retention integration', () => {
       await reactor.waitForIdle();
       expect(discardCalls).toEqual([['/tmp/job-launch-failure-stale.jsonl']]);
     } finally {
-      reactor.dispose();
+      await reactor.dispose();
       db.close();
     }
   });

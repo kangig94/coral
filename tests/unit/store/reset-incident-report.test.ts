@@ -56,7 +56,9 @@ describe('store reset public report', () => {
 
       - Incident ID: \`123e4567-e89b-12d3-a456-426614174000\`
       - Reset at: \`2026-07-23T01:02:03.004Z\`
+      - Manifest schema: \`V2\`
       - Reason: \`mismatch\`
+      - Reset policy cause: legacy-v2
       - Stored fingerprint: \`sha256:1111111111111111111111111111111111111111111111111111111111111111\`
       - Expected fingerprint: \`sha256:2222222222222222222222222222222222222222222222222222222222222222\`
       - Coral version: \`0.9.16\`
@@ -107,6 +109,9 @@ describe('store reset public report', () => {
       'incidentId',
       'resetAt',
       'reason',
+      'schemaVersion',
+      'resetPolicyCause',
+      'resetPolicyEvidence',
       'storedFingerprint',
       'expectedFingerprint',
       'build',

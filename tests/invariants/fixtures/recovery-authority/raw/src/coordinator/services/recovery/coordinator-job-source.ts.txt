@@ -1,0 +1,14 @@
+import { defineRecoverySource, type RecoverySource } from '../../../recovery/containment.js';
+
+export type RawJob = { readonly id: string };
+
+export function scanCoordinatorJobRecoveryEnvelopes(): readonly RawJob[] {
+  return [];
+}
+
+export function coordinatorJobRecoverySource(): RecoverySource<RawJob> {
+  return defineRecoverySource({
+    boundary: 'coordinator-job',
+    scan: () => scanCoordinatorJobRecoveryEnvelopes(),
+  });
+}

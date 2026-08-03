@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
-import { none } from '#src/providers/capability.js';
+import { managed, none } from '#src/providers/capability.js';
 import { zodPersistedParser, zodValueParser } from '#src/providers/binding-parser.js';
 import { bindingFailure, bindingSuccess } from '#src/providers/contracts/binding.js';
 import type {
@@ -13,10 +13,12 @@ import type {
   ProviderServerSpec,
   AppServerTransport,
 } from '#src/providers/contract.js';
+import { PROVIDER_ARTIFACT_DISCARD_PROTOCOL } from '#src/providers/contract.js';
 import { defineProvider, ProviderRegistry, type ProviderDefinition } from '#src/providers/registry.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
 import type { ProviderExecutionPlan } from '#src/providers/execution-plan.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 type EmptyPlan = ProviderExecutionPlan<undefined, undefined, undefined>;
 const TEST_PREPARATION_STORAGE = { existsSync: () => false } as const;
@@ -367,11 +369,15 @@ describe('ProviderRegistry', () => {
     let observedHandles: readonly string[] | undefined;
     const artifacts = {
       kind: 'managed' as const,
+      protocol: PROVIDER_ARTIFACT_DISCARD_PROTOCOL,
       state: { implementation: 'captured', artifact: '/captured-artifact' },
       async discardArtifacts(options: { handles: readonly string[] }) {
         observedReceiver = this !== artifacts;
         observedHandles = options.handles;
         return { kind: 'discarded' as const, details: { implementation: this.state.implementation } };
+      },
+      async reconcileDiscard() {
+        return { kind: 'not-applied' as const };
       },
       locateArtifact() {
         observedReceiver = observedReceiver && this !== artifacts;
@@ -394,7 +400,14 @@ describe('ProviderRegistry', () => {
     expect(registered?.kind).toBe('managed');
     if (registered?.kind !== 'managed') throw new Error('managed fixture capability was lost');
     const handles = ['/captured-artifact'];
-    await expect(registered.discardArtifacts({ handles, runtime: {} as never })).resolves.toEqual({
+    await expect(
+      registered.discardArtifacts({
+        handles,
+        actionId: 'test-action',
+        payloadHash: 'test-payload',
+        runtime: {} as never,
+      }),
+    ).resolves.toEqual({
       kind: 'discarded',
       details: { implementation: 'captured' },
     });
@@ -406,6 +419,48 @@ describe('ProviderRegistry', () => {
       '/captured-artifact',
     );
     expect(observedReceiver).toBe(true);
+  });
+
+  it('rejects managed artifact declarations missing the versioned protocol or reconciliation', () => {
+    const withoutProtocol = {
+      kind: 'managed',
+      discardArtifacts: async () => ({ kind: 'discarded' }),
+      reconcileDiscard: async () => ({ kind: 'not-applied' }),
+    } as never;
+    const withoutReconciliation = {
+      kind: 'managed',
+      protocol: PROVIDER_ARTIFACT_DISCARD_PROTOCOL,
+      discardArtifacts: async () => ({ kind: 'discarded' }),
+    } as never;
+
+    expect(() =>
+      new ProviderRegistry().register(makeSpec('missing-artifact-protocol', { artifacts: withoutProtocol })),
+    ).toThrow(PROVIDER_ARTIFACT_DISCARD_PROTOCOL);
+    expect(() =>
+      new ProviderRegistry().register(
+        makeSpec('missing-artifact-reconciliation', { artifacts: withoutReconciliation }),
+      ),
+    ).toThrow(PROVIDER_ARTIFACT_DISCARD_PROTOCOL);
+  });
+
+  it('fails closed when one provider action id is reused with a conflicting payload', async () => {
+    const runtime = new SimulationRuntime();
+    const capability = managed({
+      discardArtifacts: async () => ({ kind: 'discarded' as const }),
+    });
+    const common = {
+      handles: [] as readonly string[],
+      actionId: 'stable-discard-action',
+      access: {},
+      runtime,
+    };
+
+    await expect(capability.discardArtifacts({ ...common, payloadHash: 'payload-a' })).resolves.toEqual({
+      kind: 'discarded',
+    });
+    await expect(capability.discardArtifacts({ ...common, payloadHash: 'payload-b' })).rejects.toThrow(
+      'conflicting payload',
+    );
   });
 
   it('normalizes fresh and persisted bindings through the same provider codec boundary', async () => {

@@ -177,10 +177,21 @@ export class LaunchCoordinator {
   terminateAll(): void {
     this.shutdownRequested = true;
     this.drainQueuedLaunches(QUEUE_DRAINED_MESSAGE);
+    const failures: unknown[] = [];
     for (const cleanup of this.cleanupHandles.values()) {
-      cleanup();
+      try {
+        cleanup();
+      } catch (error: unknown) {
+        failures.push(error);
+      }
     }
     this.cleanupHandles.clear();
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        `Failed to terminate ${failures.length} active child process cleanup handle(s).`,
+      );
+    }
   }
 
   private getActiveMap(pool: LaunchPool): Map<string, { provider: string; owner: ExecutionOwner }> {

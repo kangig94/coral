@@ -59,6 +59,8 @@ function createCorpusConsumer(
     kind: 'apply' as const,
     registrationKind: registrationKind === 'stateless' ? 'expansion' : registrationKind,
     corpusInterest: 'content' as const,
+    projectionIdentityHash: () => `${id}-test-v1`,
+    readAuthoritativeFreshness: async () => ({ kind: 'stale' as const, reason: 'artifact-missing' as const }),
     apply: async () => {
       await apply();
     },

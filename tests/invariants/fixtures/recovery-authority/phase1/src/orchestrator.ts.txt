@@ -1,0 +1,6 @@
+import { defineRecoverySource as register } from './recovery/containment.js';
+import { sourceDefinitions } from './recovery/containment.js';
+import { fixtureValue } from '../tests/helpers/recovery-test-support.js';
+
+export const source = register({ boundary: fixtureValue, scan: () => [] });
+export const registrySize = sourceDefinitions.has(source);

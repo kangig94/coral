@@ -26,11 +26,29 @@ import { jobLaunchRequestBodySchema } from './launch.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { InitJobOptions, JobProgressStore } from './contracts/job-store.js';
-import type { JobProgressTiming, JobRuntimeStartedBody } from './event-bodies.js';
-import { type JobLaunch, type JobRuntime, type JobStatus, type JobTerminal } from './records.js';
+import { jobRuntimeStartedBodySchema, type JobProgressTiming, type JobRuntimeStartedBody } from './event-bodies.js';
+import {
+  emptyJobDiagnostics,
+  type JobDiagnostics,
+  type JobLaunch,
+  type JobRuntime,
+  type JobStatus,
+  type JobTerminal,
+  type JobTerminalDiagnostics,
+} from './records.js';
 import { progressTimingFromProjection } from './progress-timing.js';
 import { buildJobEventRefs } from './refs.js';
-import { countProjectedLiveJobRows } from './projection-row.js';
+import {
+  countProjectedLiveJobRows,
+  decodeProjectionJobExecutionOwner,
+  decodeProjectionJobStoredRow,
+  type ProjectionJobStoredRow,
+} from './projection-row.js';
+import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
+import { decodeEventRefs, rowToCoralEvent } from '../store/envelope.js';
+import type { EventsRow } from '../store/schema.js';
+import { jobDiagnosticsSchema, jobTerminalRecordedBodySchema, normalizeJobTerminal } from './terminal/result.js';
+import type { JobProjectionDetail } from './read-queries.js';
 
 export type JobStoreOptions = {
   eventBus?: JobEventBus;
@@ -46,6 +64,201 @@ export type JobStoreOptions = {
   providers: ProviderLookupPort;
   observer?: PostCommitObserver;
 };
+
+export type RawJobRecoveryProjection = {
+  readonly projection: ProjectionJobStoredRow;
+  readonly events: readonly EventsRow[];
+};
+
+function latestRecoveryEvent(events: readonly EventsRow[], type: string): EventsRow | null {
+  let latest: EventsRow | null = null;
+  for (const event of events) {
+    if (event.type === type && (latest === null || event.seq > latest.seq)) latest = event;
+  }
+  return latest;
+}
+
+function decodeRecoveryLaunch(jobId: string, row: EventsRow | null, ctx: StoreReadContext): JobLaunch | null {
+  if (row === null) return null;
+  const body = decodeBody(row, jobLaunchRequestBodySchema, ctx);
+  if (body.jobKind === 'kb') {
+    throw new TypeError(`Workflow recovery received KB launch '${jobId}'.`);
+  }
+  if (body.jobKind === 'workflow') {
+    return {
+      jobId,
+      owner: body.owner,
+      sessionId: null,
+      provider: null,
+      projectRoot: body.projectRoot,
+      backendNamespace: body.backendNamespace,
+      bundleHash: body.bundleHash,
+      jobKind: 'workflow',
+      pool: body.pool,
+      enqueueSequence: body.enqueueSequence,
+      request: {
+        prompt: body.request.prompt,
+        cwd: body.request.cwd,
+        bypassPermissions: body.request.bypassPermissions,
+        coralEnv: { ...body.request.coralEnv },
+      },
+      createdAt: body.createdAt,
+    };
+  }
+
+  const refs = row.refs === null ? null : decodeEventRefs(row);
+  return {
+    jobId,
+    owner: body.owner,
+    ...(body.discussionRun === undefined ? {} : { discussionRun: body.discussionRun }),
+    sessionId: body.sessionId,
+    provider: body.provider,
+    projectRoot: body.projectRoot,
+    backendNamespace: body.backendNamespace,
+    bundleHash: body.bundleHash,
+    jobKind: body.jobKind,
+    pool: body.pool,
+    enqueueSequence: body.enqueueSequence,
+    providerAction: body.providerAction,
+    workflowSlotGeneration: body.workflowSlotGeneration,
+    replacesWorkflowJobId: body.replacesWorkflowJobId,
+    request: {
+      prompt: body.request.prompt,
+      name: body.request.name,
+      model: body.request.model,
+      cwd: body.request.cwd,
+      effort: body.request.effort,
+      bypassPermissions: body.request.bypassPermissions,
+      systemPrompt: body.request.systemPrompt,
+      instruction: body.request.instruction,
+      retention: body.request.retention,
+      coralEnv: { ...body.request.coralEnv },
+    },
+    ...(refs?.parentJobId === undefined ? {} : { parentWorkflowJobId: refs.parentJobId }),
+    ...(refs?.workflowSlotId === undefined ? {} : { workflowSlotId: refs.workflowSlotId }),
+    createdAt: body.createdAt,
+  };
+}
+
+function decodeRecoveryRuntime(row: EventsRow | null, ctx: StoreReadContext): JobRuntime | null {
+  if (row === null) return null;
+  const body = decodeBody(row, jobRuntimeStartedBodySchema, ctx);
+  if (body.transport === 'workflow') {
+    return { transport: 'workflow', startTime: body.startedAt };
+  }
+  if (body.transport === 'app-server') {
+    return body.providerMeta.leaseState === 'waiting'
+      ? {
+          transport: 'app-server',
+          startTime: body.startedAt,
+          providerMeta: { provider: body.providerMeta.provider, leaseState: 'waiting' },
+        }
+      : {
+          transport: 'app-server',
+          startTime: body.startedAt,
+          providerMeta: {
+            provider: body.providerMeta.provider,
+            leaseState: 'acquired',
+            hostRef: body.providerMeta.hostRef,
+          },
+        };
+  }
+  if (body.transport === 'internal') {
+    if (
+      body.operation !== 'kb.source_import' &&
+      body.operation !== 'kb.reindex' &&
+      body.operation !== 'kb.community_summary'
+    ) {
+      throw new TypeError('Internal job runtime requires a KB operation.');
+    }
+    return {
+      transport: 'internal',
+      operation: body.operation,
+      owner: body.owner,
+      startTime: body.startedAt,
+    };
+  }
+  return {
+    transport: 'durable-cli',
+    pid: body.pid,
+    stdoutPath: body.stdoutPath,
+    stderrPath: body.stderrPath,
+    startTime: body.startedAt,
+    tailWatermark: body.tailWatermark,
+  };
+}
+
+function mergeRecoveryDiagnostics(base: JobDiagnostics, patch: JobTerminalDiagnostics): JobDiagnostics {
+  const warnings = patch.warnings ?? base.warnings;
+  const usage = patch.usage ?? base.usage;
+  const processExit = patch.processExit ?? base.processExit;
+  const byteCounts = patch.byteCounts ?? base.byteCounts;
+  return {
+    progressFaults: base.progressFaults.map((fault) => ({ ...fault })),
+    ...(warnings === undefined ? {} : { warnings: [...warnings] }),
+    ...(usage === undefined ? {} : { usage: { ...usage } }),
+    ...(processExit === undefined ? {} : { processExit: { ...processExit } }),
+    ...(byteCounts === undefined ? {} : { byteCounts: { ...byteCounts } }),
+  };
+}
+
+/** Hydrates one complete raw job projection without consulting persisted state again. */
+export function hydrateJobRecoveryProjection(
+  raw: RawJobRecoveryProjection,
+  ctx: StoreReadContext,
+): JobProjectionDetail {
+  const projection = decodeProjectionJobStoredRow(raw.projection);
+  for (const event of raw.events) {
+    if (event.stream_kind !== 'job' || event.stream_id !== projection.job_id) {
+      throw new TypeError(`Workflow recovery job event '${event.seq}' names another stream.`);
+    }
+    rowToCoralEvent(event, null);
+  }
+
+  const requested = latestRecoveryEvent(raw.events, 'job.launch.requested');
+  const rejected = latestRecoveryEvent(raw.events, 'job.launch.rejected');
+  const runtimeRow = latestRecoveryEvent(raw.events, 'job.runtime.started');
+  const terminalRow = latestRecoveryEvent(raw.events, 'job.terminal.recorded');
+  const launch = decodeRecoveryLaunch(projection.job_id, requested, ctx);
+  const runtime = decodeRecoveryRuntime(runtimeRow, ctx);
+  const baseDiagnostics =
+    projection.diagnostics.length === 0
+      ? emptyJobDiagnostics()
+      : jobDiagnosticsSchema.parse(JSON.parse(projection.diagnostics) as unknown);
+  const terminalBody = terminalRow === null ? null : decodeBody(terminalRow, jobTerminalRecordedBodySchema, ctx);
+  const terminal = terminalBody === null ? null : normalizeJobTerminal(terminalBody.terminal);
+  const diagnostics =
+    terminalBody?.diagnostics === undefined
+      ? baseDiagnostics
+      : mergeRecoveryDiagnostics(baseDiagnostics, terminalBody.diagnostics);
+
+  return {
+    status: {
+      jobId: projection.job_id,
+      owner: decodeProjectionJobExecutionOwner(projection),
+      sessionId: projection.session_id,
+      provider: projection.provider,
+      projectRoot: projection.project_root,
+      backendNamespace: projection.backend_namespace,
+      ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),
+      jobKind: projection.job_kind,
+      phase: projection.phase,
+      updatedAt: terminalRow?.ts ?? runtimeRow?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
+      lastSeq: projection.last_seq,
+      ...(terminal === null ? {} : { result: terminal }),
+    },
+    launch,
+    runtime,
+    exit:
+      terminalRow === null || terminal === null
+        ? null
+        : {
+            ...terminal,
+            diagnostics,
+            endTime: terminalRow.ts,
+          },
+  };
+}
 
 function toTerminalPayload(detail: ReturnType<typeof loadJobProjectionDetail>): JobTerminal | null {
   const exit = detail.exit;

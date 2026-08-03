@@ -34,6 +34,11 @@ const SNAPSHOT: KbCorpusSnapshot = {
   metadataManifestHash: 'metadata-hash',
 };
 
+const STALE_CORPUS_FRESHNESS = {
+  projectionIdentityHash: () => 'drift-signal-test-v1',
+  readAuthoritativeFreshness: async () => ({ kind: 'stale', reason: 'artifact-missing' }) as const,
+};
+
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
   const promise = new Promise<void>((settle) => {
@@ -146,6 +151,7 @@ describe('drift signal split', () => {
       kind: 'apply',
       registrationKind: 'base',
       corpusInterest: 'content',
+      ...STALE_CORPUS_FRESHNESS,
       async apply() {
         applyCount += 1;
         if (applyCount === 2) {
@@ -197,6 +203,7 @@ describe('drift signal split', () => {
       kind: 'apply',
       registrationKind: 'base',
       corpusInterest: 'content',
+      ...STALE_CORPUS_FRESHNESS,
       async apply() {},
     });
     await stopped.stop();
@@ -227,6 +234,7 @@ describe('drift signal split', () => {
       kind: 'apply',
       registrationKind: 'expansion',
       corpusInterest: 'content',
+      ...STALE_CORPUS_FRESHNESS,
       async apply() {},
     });
     const unregisteredForced = unregisteredDriver.forceCorpusApply(SNAPSHOT, {

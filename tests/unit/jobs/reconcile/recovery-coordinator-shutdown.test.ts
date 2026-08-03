@@ -471,19 +471,15 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       createInvocationContext,
       recoveryCoordinator,
       signal,
-      cleanupStaleJobs,
     }) => {
       await recoveryCoordinator.runStartupRecovery({
         namespace: identity.namespace,
-        bundleHash: identity.bundleHash,
         runtime,
         progressStore,
         getRecoveryService,
         createInvocationContext,
         signal,
         log: identity.log,
-        cleanupStaleJobs,
-        sessionLookup: modules.sessionQueriesModule.createProjectionSessionLookup(progressStore.getDb()),
         coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
       });
       signal.throwIfAborted();

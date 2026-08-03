@@ -1,3 +1,4 @@
+import { errorMessage } from '../../infra/error-format.js';
 import type { RuntimeComponent, RuntimeComponentId, RuntimeComponentStatus } from './contract.js';
 
 export interface RuntimeComponentRegistry {
@@ -7,6 +8,18 @@ export interface RuntimeComponentRegistry {
   disposeAll(signal: AbortSignal): Promise<void>;
   list(): readonly RuntimeComponentStatus[];
   status(id: RuntimeComponentId): RuntimeComponentStatus | null;
+}
+
+function readComponentStatus(component: RuntimeComponent): RuntimeComponentStatus {
+  try {
+    return component.status;
+  } catch (error: unknown) {
+    return {
+      id: component.id,
+      phase: 'offline',
+      reason: `Status unavailable: ${errorMessage(error)}`,
+    };
+  }
 }
 
 export function createRuntimeComponentRegistry(): RuntimeComponentRegistry {
@@ -31,11 +44,11 @@ export function createRuntimeComponentRegistry(): RuntimeComponentRegistry {
       await Promise.all([...components.values()].map((component) => component.dispose(signal).catch(() => {})));
     },
     list() {
-      return [...components.values()].map((component) => component.status);
+      return [...components.values()].map(readComponentStatus);
     },
     status(id) {
       const component = components.get(id);
-      return component ? component.status : null;
+      return component ? readComponentStatus(component) : null;
     },
   };
 }

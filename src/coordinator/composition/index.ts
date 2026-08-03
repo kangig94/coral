@@ -44,7 +44,14 @@ import { principalToWire } from '../../security/principal-wire.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
-import { createRuntimeState, createLifecycle, type LifecycleController, type LifecycleDeps } from '../lifecycle.js';
+import {
+  createCrashedJobTerminalizationRetryPlan,
+  createLifecycle,
+  createRuntimeState,
+  createStaleJobCleanupRetryPlan,
+  type LifecycleController,
+  type LifecycleDeps,
+} from '../lifecycle.js';
 import { createRuntimeComponentRegistry } from '../runtime-components/registry.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
 import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
@@ -78,6 +85,23 @@ import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-c
 import { readCorpusState } from '../../kb/state/corpus-state.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
+import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
+import {
+  assertRecoverySourceRegistryComplete,
+  createRecoveryQuarantineRetryService,
+  createRecoverySourceRegistry,
+  type RecoveryRetryQuarantinePort,
+} from '../../recovery/source-registry.js';
+import { createCoordinatorJobRecoveryRetryPlan } from '../services/recovery/index.js';
+import { createDiscussionCandidateRetryPlan, createDiscussionSourceRetryPlan } from '../../discuss/shell/recovery.js';
+import {
+  createRetentionReleasePairRetryPlan,
+  createRetentionWorkRetryPlan,
+  createSessionContinuationLeaseRetryPlan,
+  createSessionProjectionRetryPlan,
+  createTerminalRetentionOutcomeRetryPlan,
+} from '../../sessions/lifecycle-reactor.js';
+import { createWorkflowRecoveryRetryPlan } from '../../workflow/recover.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 const KB_DAEMON_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -410,6 +434,78 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     return storeServices;
   };
   const getProgressStore = () => getStoreServices().progressStore;
+  const getRecoveryQuarantineStore = () => new RecoveryQuarantineStore(getProgressStore().getDb(), runtime.time);
+  const recoveryQuarantineStore: RecoveryRetryQuarantinePort = {
+    read: (boundary, subjectKey) => getRecoveryQuarantineStore().read(boundary, subjectKey),
+    upsert: (write) => getRecoveryQuarantineStore().upsert(write),
+    delete: (request) => getRecoveryQuarantineStore().delete(request),
+    claimRetry: (request) => getRecoveryQuarantineStore().claimRetry(request),
+    reclaimRetry: (request) => getRecoveryQuarantineStore().reclaimRetry(request),
+  };
+  const recoverySources = createRecoverySourceRegistry();
+  const recoveryDb = () => getProgressStore().getDb();
+  const createRecoveryInvocationContext = (projectRoot: string): InvocationContext => ({
+    projectRoot,
+    pluginRoot: identity.pluginRoot,
+    coralEnv: {},
+    principal: {
+      subject: 'system',
+      transport: 'internal',
+      credential: { kind: 'internal', id: 'recovery-retry' },
+      binding: { kind: 'project', root: projectRoot },
+    },
+  });
+  recoverySources.register('coordinator-job-recovery', (subject, signal, quarantine) =>
+    createCoordinatorJobRecoveryRetryPlan(recoveryDb(), subject, signal, quarantine),
+  );
+  recoverySources.register('discussion-source', (subject, signal) =>
+    createDiscussionSourceRetryPlan(
+      {
+        getDiscussContext: discuss.getDiscussContext,
+        createInvocationContext: createRecoveryInvocationContext,
+        signal,
+      },
+      subject,
+    ),
+  );
+  recoverySources.register('discussion-candidate', (subject, signal, quarantine) =>
+    createDiscussionCandidateRetryPlan(
+      {
+        getDiscussContext: discuss.getDiscussContext,
+        createInvocationContext: createRecoveryInvocationContext,
+        signal,
+      },
+      subject,
+      quarantine,
+    ),
+  );
+  recoverySources.register('session-projection', (subject, _signal, quarantine) =>
+    createSessionProjectionRetryPlan(recoveryDb(), subject, quarantine),
+  );
+  recoverySources.register('session-continuation-lease', (subject, _signal, quarantine) =>
+    createSessionContinuationLeaseRetryPlan(recoveryDb(), subject, quarantine),
+  );
+  recoverySources.register('terminal-retention-outcome', (subject, _signal, quarantine) =>
+    createTerminalRetentionOutcomeRetryPlan(recoveryDb(), subject, quarantine),
+  );
+  recoverySources.register('retention-release-pair', (subject, _signal, quarantine) =>
+    createRetentionReleasePairRetryPlan(recoveryDb(), subject, quarantine),
+  );
+  recoverySources.register('session-retention-work', (subject, signal, quarantine) =>
+    createRetentionWorkRetryPlan(recoveryDb(), subject, signal, quarantine),
+  );
+  recoverySources.register('workflow-recovery', (subject) => createWorkflowRecoveryRetryPlan(recoveryDb(), subject));
+  recoverySources.register('stale-job-cleanup', (subject) => createStaleJobCleanupRetryPlan(recoveryDb(), subject));
+  recoverySources.register('crashed-job-terminalization', (subject) =>
+    createCrashedJobTerminalizationRetryPlan(recoveryDb(), world.namespace, subject),
+  );
+  assertRecoverySourceRegistryComplete(recoverySources);
+  const recoveryQuarantine = createRecoveryQuarantineRetryService({
+    instanceId: world.identity.instanceId,
+    ids: runtime.ids,
+    quarantine: recoveryQuarantineStore,
+    sources: recoverySources,
+  });
 
   // Eager defaults resolve from `runtime` alone.
   const defaults = defaultsPlan.finalizeWithWorld({
@@ -795,6 +891,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         }
       },
     },
+    recoveryQuarantine,
     kb: kbRpcPort,
     discuss: {
       seed: handleDiscussSeed,

@@ -1,0 +1,12 @@
+import { scanCoordinatorJobRecoveryEnvelopes } from './coordinator/services/recovery/coordinator-job-source.js';
+
+export class ConstructorAuthorityInjection {
+  constructor(
+    private readonly enumerate: typeof scanCoordinatorJobRecoveryEnvelopes =
+      scanCoordinatorJobRecoveryEnvelopes,
+  ) {}
+
+  scan(): unknown {
+    return this.enumerate();
+  }
+}

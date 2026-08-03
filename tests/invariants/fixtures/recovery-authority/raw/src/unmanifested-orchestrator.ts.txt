@@ -1,0 +1,7 @@
+import { scanCoordinatorJobRecoveryEnvelopes } from './coordinator/services/recovery/coordinator-job-source.js';
+
+export class UnmanifestedOrchestrator {
+  enumerate(): unknown {
+    return scanCoordinatorJobRecoveryEnvelopes();
+  }
+}

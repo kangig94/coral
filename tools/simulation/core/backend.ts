@@ -62,7 +62,6 @@ import { jobsReconcile } from '../../../src/jobs/startup.js';
 import { openStoreDatabase } from '../../../src/store/db.js';
 import { createEventBodyCodec } from '../../../src/store/event-body-codec.js';
 import { composeReducers } from '../../../src/store/reducers.js';
-import { createProjectionSessionLookup } from '../../../src/sessions/lookup.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
 import { setStoreServicesForTest } from '../../testing/store-services.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-script-types.js';
@@ -773,7 +772,6 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       createInvocationContext,
       recoveryCoordinator,
       signal,
-      cleanupStaleJobs,
       recoverPersistedDiscussFn,
     }) => {
       const recoveryProgressStore = await jobsReconcile.runStartup({
@@ -787,8 +785,6 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         createInvocationContext,
         signal,
         log: identity.log,
-        cleanupStaleJobs,
-        sessionLookup: createProjectionSessionLookup(storeDb),
         coordinatorCommit: (cb) => progressStore.commit(cb),
       });
       signal.throwIfAborted();

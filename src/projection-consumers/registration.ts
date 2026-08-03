@@ -28,7 +28,13 @@ export interface FinalizeStoppedConsumerDeps {
 export type UnregisterConsumerDeps = FinalizeStoppedConsumerDeps;
 
 export function assertValidRegistration(reg: ConsumerRegistration): void {
-  const regLike = reg as { id?: unknown; authority?: unknown; kind?: unknown };
+  const regLike = reg as {
+    id?: unknown;
+    authority?: unknown;
+    kind?: unknown;
+    projectionIdentityHash?: unknown;
+    readAuthoritativeFreshness?: unknown;
+  };
   if (regLike.kind === 'stateless') {
     if (reg.registrationKind !== undefined && !isRegistrationKind(reg.registrationKind)) {
       throw documentedCoralSetupError('consumer_registration_kind_invalid', { id: reg.id });
@@ -47,6 +53,12 @@ export function assertValidRegistration(reg: ConsumerRegistration): void {
   }
   if (reg.authority === 'corpus' && !isCorpusInterest(reg.corpusInterest)) {
     throw documentedCoralSetupError('consumer_interest_invalid', { id: reg.id });
+  }
+  if (reg.authority === 'corpus' && typeof regLike.projectionIdentityHash !== 'function') {
+    throw new TypeError(`Corpus consumer '${reg.id}' must supply projectionIdentityHash`);
+  }
+  if (reg.authority === 'corpus' && typeof regLike.readAuthoritativeFreshness !== 'function') {
+    throw new TypeError(`Corpus consumer '${reg.id}' must supply readAuthoritativeFreshness`);
   }
   if (reg.authority === 'journal' && 'corpusInterest' in reg) {
     throw documentedCoralSetupError('consumer_interest_invalid', { id: reg.id });

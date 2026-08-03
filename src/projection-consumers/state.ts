@@ -10,6 +10,7 @@ import type {
   ConsumerHandle,
   ConsumerRegistration,
   ConsumerRegistrationKind,
+  CorpusAuthoritativeFreshness,
   CorpusConsumerRegistration,
   CorpusInterest,
   CorpusLaneHint,
@@ -167,6 +168,39 @@ export function isKbCorpusSnapshot(value: unknown): value is KbCorpusSnapshot {
     typeof (value as KbCorpusSnapshot).contentManifestHash === 'string' &&
     typeof (value as KbCorpusSnapshot).metadataManifestHash === 'string'
   );
+}
+
+export function isCorpusAuthoritativeFreshness(value: unknown): value is CorpusAuthoritativeFreshness {
+  if (typeof value !== 'object' || value === null || !('kind' in value)) {
+    return false;
+  }
+
+  const freshness = value as Partial<CorpusAuthoritativeFreshness>;
+  if (freshness.kind === 'current') {
+    const current = value as Extract<CorpusAuthoritativeFreshness, { kind: 'current' }>;
+    return (
+      isKbCorpusSnapshot(current.appliedSnapshot) &&
+      Number.isInteger(current.generatedCommunityGeneration) &&
+      current.generatedCommunityGeneration >= 0 &&
+      typeof current.generatedCommunityDocsHash === 'string' &&
+      typeof current.projectionIdentityHash === 'string' &&
+      current.projectionIdentityHash.length > 0
+    );
+  }
+  if (freshness.kind === 'stale') {
+    const reason = (value as Extract<CorpusAuthoritativeFreshness, { kind: 'stale' }>).reason;
+    return (
+      reason === 'artifact-missing' ||
+      reason === 'lane-behind' ||
+      reason === 'generated-community-changed' ||
+      reason === 'projection-identity-changed'
+    );
+  }
+  if (freshness.kind === 'unavailable') {
+    const reason = (value as Extract<CorpusAuthoritativeFreshness, { kind: 'unavailable' }>).reason;
+    return reason === 'malformed' || reason === 'probe-failed' || reason === 'ahead-of-authority';
+  }
+  return false;
 }
 
 export function isForcedCorpusFreshnessTarget(value: unknown): value is ForcedCorpusFreshnessTarget {

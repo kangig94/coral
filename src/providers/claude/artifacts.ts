@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 
-import { discardRecordedArtifacts, managed } from '../capability.js';
+import { discardRecordedArtifacts, managed, reconcileRecordedArtifactDiscard } from '../capability.js';
 import type { ProviderArtifactHandleInput, ProviderRuntime } from '../contract.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { ProviderArtifactIdentity } from '../artifact-identity.js';
@@ -180,6 +180,7 @@ function safeReadDir(storage: ClaudeArtifactLocatorStorage, path: string) {
 
 export const claudeArtifactCapability = managed<ClaudeProviderAccess>({
   discardArtifacts: ({ handles, runtime }) => discardRecordedArtifacts(handles, runtime),
+  reconcileDiscard: ({ handles, runtime }) => Promise.resolve(reconcileRecordedArtifactDiscard(handles, runtime)),
   locateArtifact: ({ conversationRef, access, runtime }) => {
     const result = locateClaudeJsonlArtifact({
       conversationRef,

@@ -256,25 +256,19 @@ describe('store reset discipline invariants', () => {
     }
   });
 
-  it('keeps openOrResetBackendStoreDb free of destructive store-reset calls', () => {
+  it('keeps startup reset calls behind validated authority and the canonical reset lease', () => {
+    const source = sourceFile(BACKEND_STORE_RESET_PATH);
     const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
     const authorityParam = resetFunction.parameters[1];
-    const calls = collectCalls(BACKEND_STORE_RESET_PATH);
-    const destructiveOpenCalls = calls
-      .filter((call) => call.enclosingFunctions.includes('openOrResetBackendStoreDb'))
-      .filter((call) =>
-        [
-          'discardUncommittedStaging',
-          'publishBackendStoreResetIncident',
-          'publishIncident',
-          'reconcileCommittedEvidence',
-          'resumeInterruptedBackendStoreResetIncident',
-          'resumeInterruptedIncident',
-          'rmSync',
-          'unlinkSync',
-        ].includes(call.callee),
-      )
-      .map((call) => `${call.relativePath}:${call.line}:${call.enclosingFunctions[0] ?? '<top>'}`);
+    const body = resetFunction.body?.getText(source) ?? '';
+    const authorityIndex = body.indexOf('assertResetAuthority(');
+    const lockPathIndex = body.indexOf("join(files.dbDir, 'store.db.reset.lock')");
+    const lockIndex = body.indexOf('acquireDirectoryLockSync(');
+    const resumeIndex = body.indexOf('resumeAutomaticInterruptedIncident(');
+    const classificationIndex = body.indexOf('classifyStoreFile(');
+    const publishIndex = body.indexOf('publishIncident(');
+    const openIndex = body.indexOf('openStoreDatabase(');
+    const releaseIndex = body.indexOf('releaseLock?.()');
     const directStoreUnlinks = allSourcePaths()
       .flatMap((relativePath) =>
         collectCalls(relativePath)
@@ -286,24 +280,35 @@ describe('store reset discipline invariants', () => {
 
     expect(authorityParam?.name.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('authority');
     expect(authorityParam?.type?.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('BackendStoreResetAuthority');
-    expect(destructiveOpenCalls).toEqual([]);
+    expect(authorityIndex).toBeGreaterThanOrEqual(0);
+    expect(lockPathIndex).toBeGreaterThan(authorityIndex);
+    expect(lockIndex).toBeGreaterThan(lockPathIndex);
+    expect(resumeIndex).toBeGreaterThan(lockIndex);
+    expect(classificationIndex).toBeGreaterThan(resumeIndex);
+    expect(publishIndex).toBeGreaterThan(classificationIndex);
+    expect(openIndex).toBeGreaterThan(publishIndex);
+    expect(releaseIndex).toBeGreaterThan(openIndex);
+    expect(body).not.toMatch(/publishBackendStoreResetIncident\(|resumeInterruptedBackendStoreResetIncident\(/u);
     expect(directStoreUnlinks).toEqual([]);
   });
 
-  it('detects interrupted reset state before classifying and never resumes it from open', () => {
+  it('limits startup reset reachability to V3 resume and the two core policy causes', () => {
     const source = sourceFile(BACKEND_STORE_RESET_PATH);
     const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
     const body = resetFunction.body;
     expect(body).toBeDefined();
     const bodyText = body?.getText(source) ?? '';
     const lockIndex = bodyText.indexOf('acquireDirectoryLockSync(');
-    const interruptedIndex = bodyText.indexOf('refuseInterruptedIncident(');
+    const interruptedIndex = bodyText.indexOf('resumeAutomaticInterruptedIncident(');
     const classificationIndex = bodyText.indexOf('classifyStoreFile(');
 
     expect(lockIndex).toBeGreaterThanOrEqual(0);
     expect(interruptedIndex).toBeGreaterThan(lockIndex);
     expect(classificationIndex).toBeGreaterThan(interruptedIndex);
-    expect(bodyText).not.toMatch(/publishIncident\(|resumeInterruptedIncident\(/u);
+    expect(bodyText).toContain("classification.kind === 'older-incompatible'");
+    expect(bodyText).toContain("classification.kind === 'corrupt-or-unsupported'");
+    expect(bodyText).not.toContain("classification.kind === 'newer-incompatible-invalid-target'");
+    expect(bodyText).not.toMatch(/resumeInterruptedIncident\(/u);
   });
 
   it('keeps every store-reset support import closure outside reset authority and generic DB openers', () => {

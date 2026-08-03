@@ -739,8 +739,10 @@ describe('cli format', () => {
           phase: 'startup_failed',
           setupError: {
             code: 'store_newer_incompatible',
-            userMessage: 'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
-            remediation: "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
+            userMessage:
+              'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
+            remediation:
+              "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
           },
         }),
       ).toBe(
@@ -969,7 +971,7 @@ describe('cli format', () => {
       expect(formatErrorEnvelope(envelope)).toBe('input is required (-i, --input) [code=invalid_usage]');
     });
 
-    it('formats BackendToolHttpError envelopes with detail on a second line', () => {
+    it('keeps BackendToolHttpError diagnostics out of the default text surface', () => {
       const error = new BackendToolHttpError('HTTP 503', 503, {
         code: 'backend_recovering',
         message: 'recovering — retry after 500ms',
@@ -980,8 +982,7 @@ describe('cli format', () => {
 
       expect(formatErrorEnvelope(envelope, error.statusCode)).toBe(
         'recovering — retry after 500ms [code=backend_recovering, http=503]\n' +
-          'remediation: Retry after the backend finishes recovery.\n' +
-          'Detail: {"retryAfterMs":500}',
+          'remediation: Retry after the backend finishes recovery.',
       );
     });
 
@@ -995,7 +996,7 @@ describe('cli format', () => {
       expect(formatErrorEnvelope(envelope, error.statusCode)).toBe('Job not found [code=not_found, http=404]');
     });
 
-    it('formats BackendToolHttpError detail: null literally', () => {
+    it('omits null BackendToolHttpError detail', () => {
       const error = new BackendToolHttpError('HTTP 400', 400, {
         code: 'bad_request',
         message: 'Missing prompt',
@@ -1003,12 +1004,10 @@ describe('cli format', () => {
       });
       const { envelope } = buildErrorEnvelope(error);
 
-      expect(formatErrorEnvelope(envelope, error.statusCode)).toBe(
-        'Missing prompt [code=bad_request, http=400]\nDetail: null',
-      );
+      expect(formatErrorEnvelope(envelope, error.statusCode)).toBe('Missing prompt [code=bad_request, http=400]');
     });
 
-    it('does not normalize multi-line envelope heads and keeps Detail: on the next line boundary', () => {
+    it('does not normalize multi-line envelope heads while omitting diagnostics', () => {
       const formatted = formatErrorEnvelope(
         {
           error: true,
@@ -1019,11 +1018,7 @@ describe('cli format', () => {
         400,
       );
 
-      expect(formatted.split('\n')).toEqual([
-        'line one',
-        'line two [code=bad_request, http=400]',
-        'Detail: {"field":"prompt"}',
-      ]);
+      expect(formatted.split('\n')).toEqual(['line one', 'line two [code=bad_request, http=400]']);
     });
 
     it('formats BackendUnreachableError envelopes on a single line with recovery guidance', () => {

@@ -54,6 +54,22 @@ const _corpusAsStateless: CorpusConsumerRegistration = {
   // @ts-expect-error corpus-apply cannot pair with registrationKind: 'stateless'
   registrationKind: 'stateless',
   corpusInterest: 'content',
+  projectionIdentityHash: () => 'corpus-projection-v1',
+  readAuthoritativeFreshness: async () => ({ kind: 'stale', reason: 'artifact-missing' }),
+  apply: async () => {},
+};
+
+// Corpus registrations must provide the replay-gate capability. The runtime
+// assertion covers untyped installed packages; this assignment covers typed
+// registrations before they can reach the host.
+// @ts-expect-error corpus consumers require readAuthoritativeFreshness
+const _corpusWithoutAuthoritativeFreshness: CorpusConsumerRegistration = {
+  id: 'co-2',
+  authority: 'corpus',
+  kind: 'apply',
+  registrationKind: 'expansion',
+  corpusInterest: 'both',
+  projectionIdentityHash: () => 'corpus-projection-v1',
   apply: async () => {},
 };
 
@@ -85,6 +101,7 @@ export type _CompileTimeOnly = [
   typeof _cursorAsStateless,
   typeof _applyAsStateless,
   typeof _corpusAsStateless,
+  typeof _corpusWithoutAuthoritativeFreshness,
   typeof _statelessWithAuthority,
   typeof _crossAssign,
 ];

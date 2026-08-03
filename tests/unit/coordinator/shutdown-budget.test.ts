@@ -216,6 +216,36 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.closeIpcCalled()).toBe(true);
   });
 
+  it('continues hard shutdown when crash terminalization throws', async () => {
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {},
+    });
+    harness.ctx.reason = 'test-cleanup';
+    let terminalizationSignal: AbortSignal | undefined;
+    harness.ctx.markJobsAsErrorFn = (_namespace, _message, signal) => {
+      terminalizationSignal = signal;
+      throw new Error('injected crash terminalization failure');
+    };
+    harness.ctx.providerHostManager = {
+      drainForHandoff: async () => {},
+      shutdown: async () => {
+        harness.callLog.push('providerHostManager.shutdown');
+      },
+    } as never;
+    harness.ctx.terminateAllFn = () => {
+      harness.callLog.push('terminateAllFn');
+    };
+
+    await expect(runShutdownSequence(harness.ctx)).rejects.toBeInstanceOf(AggregateError);
+
+    expect(terminalizationSignal).toBeInstanceOf(AbortSignal);
+    expect(harness.callLog).toContain('providerHostManager.shutdown');
+    expect(harness.callLog).toContain('terminateAllFn');
+    expect(harness.logLines).toContainEqual(
+      expect.stringContaining('crashed job terminalization failed during shutdown'),
+    );
+  });
+
   it('emits a budget-exhausted skip log for finalizers reached after the deadline', async () => {
     // Provider-host drain consumes the entire budget so subsequent steps see
     // remaining=0 and emit the "skipped" message rather than the "exceeded"

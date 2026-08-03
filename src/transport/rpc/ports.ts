@@ -9,6 +9,7 @@ import type { Principal } from '../../security/principal.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { ToolDomainResult } from '../tool-result.js';
+import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
 
 type SessionStartInput = Pick<
   JobLaunchRequest,
@@ -55,6 +56,10 @@ interface JobsRequestPort {
 
 interface WorkflowRequestPort {
   execute(request: WorkflowPortInput, ctx: InvocationContext): Promise<WorkflowPortResult>;
+}
+
+export interface RecoveryQuarantineRequestPort {
+  clear(request: RecoveryQuarantineClearRequest, signal?: AbortSignal): Promise<RecoveryQuarantineClearResult>;
 }
 
 type MaybePromise<T> = T | Promise<T>;
@@ -112,6 +117,7 @@ export interface RpcPorts {
   readonly sessions: SessionRequestPort;
   readonly jobs: JobsRequestPort;
   readonly workflows: WorkflowRequestPort;
+  readonly recoveryQuarantine: RecoveryQuarantineRequestPort;
   readonly kb: KbRequestPort;
   readonly discuss: DiscussRequestPort;
   readonly expansion: ExpansionRequestPort;

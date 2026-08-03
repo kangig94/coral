@@ -1,4 +1,4 @@
-import type { ZodType } from 'zod';
+import { z, type ZodType } from 'zod';
 import type { Capability } from '../../security/capability.js';
 import {
   equipExpansionRequestSchema,
@@ -75,6 +75,31 @@ export type RequestBindingRule = {
   readonly projectRoot: 'required' | 'optional-all-projects';
 };
 
+export const recoveryQuarantineClearRequestSchema = z
+  .object({
+    boundary: z.string().min(1, 'Recovery boundary is required'),
+    key: z.string().min(1, 'Recovery subject key is required'),
+    revision: z.string().min(1, 'Recovery subject revision is required').nullable(),
+  })
+  .strict();
+
+export const recoveryQuarantineClearResultSchema = recoveryQuarantineClearRequestSchema
+  .extend({
+    disposition: z.enum(['advanced', 'quarantined', 'continuation']),
+  })
+  .strict();
+
+/** Catalog declaration for the canonical-coordinator recovery retry operation. */
+export const recoveryQuarantineClearRpcSpec = {
+  name: 'coordinator.recovery_quarantine.clear',
+  kind: 'unary',
+  requires: 'system:debug',
+  requestSchema: recoveryQuarantineClearRequestSchema,
+  responseKind: 'json',
+  portKey: 'recoveryQuarantine',
+  http: { method: 'POST', path: '/coordinator/recovery-quarantine/clear' },
+} as const satisfies RpcMethodSpec<unknown, unknown>;
+
 export const transportOperationalCarveouts = [
   '/health',
   '/admin/shutdown',
@@ -101,6 +126,7 @@ export const rpcCatalog = [
     portKey: 'workflows',
     http: { method: 'POST', path: '/workflow' },
   },
+  recoveryQuarantineClearRpcSpec,
   {
     name: 'coordinator.equipExpansion',
     kind: 'unary',

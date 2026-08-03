@@ -1,0 +1,15 @@
+import type { RecoveryPolicy, RecoverySource } from '../recovery/containment.js';
+
+type RawJob = { readonly id: string };
+
+export interface NamedSettlementCapability {
+  settle(id: string): void;
+}
+
+export interface LifecycleRecoveryInputs {
+  readonly source: RecoverySource<RawJob>;
+  readonly policy: RecoveryPolicy<RawJob>;
+  readonly settlement: NamedSettlementCapability;
+}
+
+export function runStartupStaleArtifactPrune(_inputs: LifecycleRecoveryInputs): void {}

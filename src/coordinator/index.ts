@@ -23,7 +23,6 @@ import { commit as commitJournalEvents, type AppendedEvent, type CommitEventsFn 
 import { prepareCached, type Database } from '../store/db.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { readJobEvents, loadJobProjectionDetail, loadJobProjectionDetails } from '../jobs/read-queries.js';
-import { createProjectionSessionLookup } from '../sessions/lookup.js';
 import { composeReducers } from '../store/reducers.js';
 import { sealCoralStoreFormat } from '../store-format.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
@@ -136,6 +135,20 @@ function resolveBootFreshnessTimeoutMs(runtime: Pick<Runtime, 'env'>): number {
 
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_BOOT_FRESHNESS_TIMEOUT_MS;
+}
+
+/** Keeps recovery fatal when a base cursor cannot reach the notified journal snapshot. */
+export async function awaitRecoveryCursorBarrier(
+  driver: Pick<ConsumerDriver, 'waitFreshUntil'>,
+  currentMaxSeq: number,
+  timeoutMs: number,
+): Promise<void> {
+  await Promise.all([
+    driver.waitFreshUntil('journal', currentMaxSeq, 'jobs', timeoutMs),
+    driver.waitFreshUntil('journal', currentMaxSeq, 'sessions', timeoutMs),
+    driver.waitFreshUntil('journal', currentMaxSeq, 'discuss', timeoutMs),
+    driver.waitFreshUntil('journal', currentMaxSeq, 'workflow', timeoutMs),
+  ]);
 }
 
 function createTextProjectionHealthTracker(): {
@@ -336,7 +349,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
   const getCurrentJournalSeq = () =>
     prepareCached<[], { seq: number }>(getQueryDb(), 'SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
-  const getSessionLookup = () => createProjectionSessionLookup(getQueryDb());
   const coordinatorCommit: CommitEventsFn = (cb) => {
     const db = getStoreDb();
     const appended = commitJournalEvents(db, cb, {
@@ -354,6 +366,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     lifecycleReactor.observe(appended);
     return appended;
   };
+  const lifecycleReactorLifetime = new AbortController();
   const lifecycleReactor = createLifecycleReactor({
     db: getQueryDb,
     readCtx,
@@ -361,7 +374,14 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     runtime,
     time: runtime.time,
     commitEvents: coordinatorCommit,
+    signal: lifecycleReactorLifetime.signal,
   });
+  let lifecycleReactorDisposal: Promise<void> | null = null;
+  const disposeLifecycleReactor = (): Promise<void> => {
+    lifecycleReactorLifetime.abort();
+    lifecycleReactorDisposal ??= lifecycleReactor.dispose();
+    return lifecycleReactorDisposal;
+  };
   handleKbDaemonEvent = (message: KbDaemonEventMessage): void => {
     if (message.event === 'journal') {
       if (!isAppendedEventArray(message.appended)) {
@@ -397,7 +417,9 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     runtime,
     storeFormat,
     discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId),
-    disposeLifecycleReactor: () => lifecycleReactor.dispose(),
+    disposeLifecycleReactor: () => {
+      void disposeLifecycleReactor();
+    },
     createStoreServicesFromDbFn,
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
     getTextProjectionState: textProjectionHealth.read,
@@ -428,7 +450,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       createInvocationContext,
       recoveryCoordinator,
       signal,
-      cleanupStaleJobs,
       recoverPersistedDiscussFn,
     }) => {
       const db = getStoreDb();
@@ -466,12 +487,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
       const currentMaxSeq = getCurrentJournalSeq();
       driver.notify('journal', currentMaxSeq);
-      await Promise.all([
-        driver.waitFreshUntil('journal', currentMaxSeq, 'jobs', bootFreshnessTimeoutMs),
-        driver.waitFreshUntil('journal', currentMaxSeq, 'sessions', bootFreshnessTimeoutMs),
-        driver.waitFreshUntil('journal', currentMaxSeq, 'discuss', bootFreshnessTimeoutMs),
-        driver.waitFreshUntil('journal', currentMaxSeq, 'workflow', bootFreshnessTimeoutMs),
-      ]);
+      await awaitRecoveryCursorBarrier(driver, currentMaxSeq, bootFreshnessTimeoutMs);
       signal.throwIfAborted();
 
       const recoveryProgressStore = await jobsReconcile.runStartup({
@@ -485,8 +501,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         createInvocationContext,
         signal,
         log: identity.log,
-        cleanupStaleJobs,
-        sessionLookup: getSessionLookup(),
         coordinatorCommit,
       });
       signal.throwIfAborted();
@@ -533,7 +547,13 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       // Pending workflow replacement intents must be examined before the
       // retention reactor can expire them. Workflow recovery renews or consumes
       // the intent deterministically; only the remainder is eligible for expiry.
-      await lifecycleReactor.scanStartup();
+      const abortReactorLifetime = () => lifecycleReactorLifetime.abort();
+      signal.addEventListener('abort', abortReactorLifetime, { once: true });
+      try {
+        await lifecycleReactor.scanStartup(signal);
+      } finally {
+        signal.removeEventListener('abort', abortReactorLifetime);
+      }
       signal.throwIfAborted();
 
       return recoveredDiscussResumes;
@@ -546,10 +566,20 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   return {
     server: coordinatorCore.server,
     start: () => coordinatorCore.lifecycleController.start(),
-    shutdown: (reason) => coordinatorCore.lifecycleController.shutdown(reason),
+    shutdown: async (reason) => {
+      try {
+        await coordinatorCore.lifecycleController.shutdown(reason);
+      } finally {
+        await disposeLifecycleReactor();
+      }
+    },
     waitForShutdown: async () => {
-      await coordinatorCore.lifecycleController.waitForShutdown();
-      await finalizeStoreServices(coordinatorCore.storeServicesRef);
+      try {
+        await coordinatorCore.lifecycleController.waitForShutdown();
+      } finally {
+        await disposeLifecycleReactor();
+        await finalizeStoreServices(coordinatorCore.storeServicesRef);
+      }
     },
     getLifecycle: () => coordinatorCore.runtimeState.getLifecycle(),
     getIdleTimer: () => coordinatorCore.idleTimer,

@@ -546,13 +546,47 @@ export type DiscardOutcome =
   | { readonly kind: 'skipped_no_handles'; readonly details?: Record<string, unknown> }
   | { readonly kind: 'provider_declares_none'; readonly details?: Record<string, unknown> };
 
+export const PROVIDER_ARTIFACT_DISCARD_PROTOCOL = 'provider-artifact-discard.v1' as const;
+
+export type ProviderArtifactDiscardReconciliation =
+  | { readonly kind: 'applied'; readonly outcome: DiscardOutcome }
+  | { readonly kind: 'not-applied' }
+  | { readonly kind: 'definitive-failure'; readonly reason: string }
+  | { readonly kind: 'unknown' };
+
+/** Fail-closed provider action identity or payload contradiction. */
+export class ProviderArtifactProtocolInvariantError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProviderArtifactProtocolInvariantError';
+  }
+}
+
+/** Provider-certified failure that is safe to record as a terminal discard outcome. */
+export class ProviderArtifactDefinitiveFailure extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProviderArtifactDefinitiveFailure';
+  }
+}
+
 export interface ProviderManagedArtifactCapability<Access extends ProviderAccess = ProviderAccess> {
   readonly kind: 'managed';
+  readonly protocol: typeof PROVIDER_ARTIFACT_DISCARD_PROTOCOL;
   discardArtifacts(options: {
     handles: readonly ProviderArtifactHandle[];
+    actionId: string;
+    payloadHash: string;
     access: Access;
     runtime: ArtifactCleanupRuntime;
   }): Promise<DiscardOutcome>;
+  reconcileDiscard(options: {
+    handles: readonly ProviderArtifactHandle[];
+    actionId: string;
+    payloadHash: string;
+    access: Access;
+    runtime: ArtifactCleanupRuntime;
+  }): Promise<ProviderArtifactDiscardReconciliation>;
   /**
    * Best-effort terminal-time fallback. In-run handle emission can miss the
    * native artifact when the provider has not yet flushed it to disk. At

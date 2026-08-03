@@ -16,7 +16,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
-import { serializeStoreResetIncidentManifest, type StoreResetIncidentManifestV2 } from '#src/store/reset-incident.js';
+import {
+  parseStoreResetIncidentManifest,
+  serializeStoreResetIncidentManifest,
+  type StoreResetIncidentManifestV2,
+} from '#src/store/reset-incident.js';
 
 const BUNDLE_DIR = process.env.CORAL_E2E_BUNDLE_DIR;
 if (!BUNDLE_DIR) throw new Error('CORAL_E2E_BUNDLE_DIR must identify the executing bundle directory.');
@@ -138,6 +142,10 @@ function runCli(
     HOME: home,
     TMPDIR: join(home, 'tmp'),
   };
+  delete env.CORAL_CHILD;
+  delete env.CORAL_CHILD_PRINCIPAL_HANDLE;
+  delete env.CORAL_JOB_ID;
+  delete env.CORAL_SESSION_ID;
   if (options.autostart === true) {
     delete env.CORAL_BACKEND_DISABLE_AUTOSTART;
   } else {
@@ -185,8 +193,8 @@ describe('bundled store-reset CLI', () => {
     const list = runCli(home, ['backend', 'store-reset', 'list', '--target', 'gen2']);
     expect(list).toEqual({
       stdout:
-        `Incident ID | Reset at | Reason | State | Files\n` +
-        `${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | mismatch | ready | 1\n\n` +
+        `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files\n` +
+        `${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V2 | mismatch | legacy-v2 | ready | 1\n\n` +
         'States: ready produces a Markdown report; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.\n' +
         'Next: coral-cli backend store-reset report --target gen2 <ready-incident-id>\n' +
         'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.\n' +
@@ -207,10 +215,9 @@ describe('bundled store-reset CLI', () => {
     expect(sha256(readFileSync(fixture.evidencePath))).toBe(fixture.evidenceHash);
   });
 
-  // Startup no longer destroys an unsupported store: it refuses and names the one
-  // command that may replace it. This walks that whole contract — refuse, prove the
-  // store survived, then reset only through the explicit operator command.
-  it('refuses on an unsupported store and resets only through the explicit operator command', async () => {
+  // Startup replaces an unsupported store under the reset lock, retains public-safe
+  // evidence, and boots without asking the user to run an operator command.
+  it('automatically resets an unsupported store and retains its incident without operator action', async () => {
     const home = root('coral-store-reset-e2e-running-');
     const temp = join(home, 'tmp');
     mkdirSync(temp);
@@ -239,32 +246,55 @@ describe('bundled store-reset CLI', () => {
       }
     };
     try {
-      const refused = runCli(home, ['abort', '--all'], CLI_BUNDLE, {
+      const automatic = runCli(home, ['abort', '--all'], CLI_BUNDLE, {
         autostart: true,
         timeoutMs: 30_000,
       });
-      expect(refused.status, refused.stderr).not.toBe(0);
-      expect(refused.stderr).toContain('The current-generation store is corrupt or uses an unsupported format.');
-      expect(refused.stderr).toContain(`coral-cli backend store-reset discard --target gen2 --flavor ${build.flavor}`);
-      expect(refused.stderr).not.toContain('PRIVATE_DB_SENTINEL');
-      // The refusal must leave the operator's data intact — that is the whole point.
-      expect(hasPreResetTable()).toBe(true);
-
-      const discard = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
-      expect(discard.status, discard.stderr).toBe(0);
+      expect(automatic.status, automatic.stderr).toBe(0);
+      expect(`${automatic.stdout}${automatic.stderr}`).not.toContain('store-reset discard');
       expect(hasPreResetTable()).toBe(false);
 
       const list = runCli(home, ['backend', 'store-reset', 'list', '--target', 'gen2']);
       expect(list.status, list.stderr).toBe(0);
-      const incidentId = list.stdout.match(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/)?.[0];
-      expect(incidentId).toBeDefined();
-      expect(discard.stdout).toContain(incidentId ?? 'missing');
+      const incidentIds = list.stdout.match(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/g) ?? [];
+      expect(incidentIds).toHaveLength(1);
+      const incidentId = incidentIds[0] ?? 'missing';
 
-      const report = runCli(home, ['backend', 'store-reset', 'report', incidentId ?? 'missing', '--target', 'gen2']);
+      const report = runCli(home, ['backend', 'store-reset', 'report', incidentId, '--target', 'gen2']);
       expect(report.status, report.stderr).toBe(0);
       expect(report.stdout).toContain('# Coral store-reset incident report\n');
       expect(report.stdout).toContain(`- Incident ID: \`${incidentId}\``);
-      expect(report.stdout).not.toContain('PRIVATE_DB_SENTINEL');
+
+      const incidentPath = join(quarantineRoot(home, build), incidentId);
+      const manifest = parseStoreResetIncidentManifest(readFileSync(join(incidentPath, 'reset-manifest.json')));
+      expect(manifest.schemaVersion).toBe(3);
+      if (manifest.schemaVersion !== 3) throw new Error('Automatic reset must publish a V3 incident.');
+      expect(manifest.resetPolicyCause).toBe('corrupt-or-unsupported');
+      const evidence = manifest.files.find((file) => file.name === 'store.db');
+      expect(evidence).toBeDefined();
+      expect(sha256(readFileSync(join(incidentPath, 'store.db')))).toBe(evidence?.sha256);
+
+      const publicOutput = `${automatic.stdout}${automatic.stderr}${list.stdout}${list.stderr}${report.stdout}${report.stderr}`;
+      expect(publicOutput).not.toContain('PRIVATE_DB_SENTINEL');
+      expect(publicOutput).not.toContain('PRIVATE_NAMESPACE_SENTINEL');
+      expect(publicOutput).not.toContain(home);
+
+      const shutdown = runCli(home, ['backend', 'shutdown']);
+      expect(shutdown.status, shutdown.stderr).toBe(0);
+      await waitFor(() => !existsSync(discovery));
+
+      const unsupported = new DatabaseSync(storePath);
+      unsupported.exec(`
+        UPDATE meta SET value = 'sha256:${'0'.repeat(64)}' WHERE key = 'store_format_fingerprint';
+        CREATE TABLE private_pre_reset(value TEXT);
+        INSERT INTO private_pre_reset VALUES ('PRIVATE_DB_SENTINEL');
+      `);
+      unsupported.close();
+
+      const discard = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
+      expect(discard.status, discard.stderr).toBe(0);
+      expect(discard.stdout).toContain('Quarantined store-reset incident');
+      expect(hasPreResetTable()).toBe(false);
     } finally {
       if (existsSync(discovery)) {
         runCli(home, ['backend', 'shutdown']);

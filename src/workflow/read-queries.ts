@@ -22,6 +22,14 @@ export type WorkflowProjectionRow = {
   lastSeq: number;
 };
 
+export type RawWorkflowProjectionRow = {
+  readonly workflow_id: string;
+  readonly plan: string;
+  readonly provider_scope: string;
+  readonly lifecycle: string;
+  readonly last_seq: number;
+};
+
 type WorkflowOutcome = 'running' | 'completed' | 'failed' | 'aborted';
 
 type WorkflowSlotOutcome = {
@@ -54,27 +62,8 @@ type WorkflowCompletionRow = {
 
 type WorkflowChildJobRow = ProjectionJobStoredRow & { workflow_slot: string };
 
-export function readWorkflowProjection(db: Database, workflowId: string): WorkflowProjectionRow | null {
-  const row = db
-    .prepare(
-      `SELECT workflow_id, plan, provider_scope, lifecycle, last_seq
-         FROM projection_workflows
-        WHERE workflow_id = ?`,
-    )
-    .get(workflowId) as
-    | {
-        workflow_id: string;
-        plan: string;
-        provider_scope: string;
-        lifecycle: string;
-        last_seq: number;
-      }
-    | undefined;
-
-  if (!row) {
-    return null;
-  }
-
+/** Hydrates a workflow projection row already captured by a recovery snapshot. */
+export function hydrateWorkflowProjectionRow(row: RawWorkflowProjectionRow): WorkflowProjectionRow {
   return {
     workflowId: row.workflow_id,
     plan: workflowPlanSchema.parse(JSON.parse(row.plan)),
@@ -84,26 +73,30 @@ export function readWorkflowProjection(db: Database, workflowId: string): Workfl
   };
 }
 
+export function readWorkflowProjection(db: Database, workflowId: string): WorkflowProjectionRow | null {
+  const row = db
+    .prepare(
+      `SELECT workflow_id, plan, provider_scope, lifecycle, last_seq
+         FROM projection_workflows
+        WHERE workflow_id = ?`,
+    )
+    .get(workflowId) as RawWorkflowProjectionRow | undefined;
+
+  if (!row) {
+    return null;
+  }
+
+  return hydrateWorkflowProjectionRow(row);
+}
+
 export function listWorkflowProjections(db: Database): WorkflowProjectionRow[] {
   const rows = db
     .prepare(
       `SELECT workflow_id, plan, provider_scope, lifecycle, last_seq FROM projection_workflows ORDER BY workflow_id`,
     )
-    .all() as Array<{
-    workflow_id: string;
-    plan: string;
-    provider_scope: string;
-    lifecycle: string;
-    last_seq: number;
-  }>;
+    .all() as RawWorkflowProjectionRow[];
 
-  return rows.map((row) => ({
-    workflowId: row.workflow_id,
-    plan: workflowPlanSchema.parse(JSON.parse(row.plan)),
-    providerScope: providerScopeSchema.parse(JSON.parse(row.provider_scope)),
-    lifecycle: workflowLifecycleSchema.parse(row.lifecycle),
-    lastSeq: row.last_seq,
-  }));
+  return rows.map(hydrateWorkflowProjectionRow);
 }
 
 export function readWorkflowView(db: Database, workflowId: string, ctx: StoreReadContext): WorkflowView | null {

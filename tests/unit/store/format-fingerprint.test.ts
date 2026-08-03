@@ -41,8 +41,11 @@ import {
   journalConsumerCursorSchema,
 } from '#src/projection-consumers/persistence.js';
 
+// Advanced deliberately when `recovery_quarantine` joined `schema.sql` (AC5): the table is hashed as
+// `ddl`, so the format fingerprint moves with it. That movement is the reason SC9's zero-step upgrade
+// gates exist — do not re-pin this without knowing which persisted contract changed.
 const CURRENT_CORAL_STORE_FORMAT_FINGERPRINT =
-  'sha256:f14ec2988abbf0fe125a6b0c9b50cbece7104d8a82a96da149392e2f44e53f52';
+  'sha256:9fd970cdcb803f517d77b133bba86ae83ef1ff662f77da8656604f32c8e67980';
 
 const CURRENT_BOUNDARY_CODEC_NAMES = [
   'store.events.body',

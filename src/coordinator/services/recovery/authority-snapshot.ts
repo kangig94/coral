@@ -4,6 +4,7 @@ import {
   readOwnDataProperty,
 } from '../../../infra/immutable-snapshot.js';
 import type { ProviderSession } from '../../../sessions/entry.js';
+import { providerSessionSchema, sessionControllerFromProfile } from '../../../sessions/entry.js';
 import type { BoundProvider } from '../../../providers/bound-provider-contract.js';
 import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import type {
@@ -11,6 +12,23 @@ import type {
   ProviderRecoveryLaunch,
   ProviderRecoverySession,
 } from '../../../jobs/reconcile/contracts.js';
+import type { RawCoordinatorSessionRow } from './coordinator-job-source.js';
+
+export function hydrateCoordinatorSessionAuthority(raw: RawCoordinatorSessionRow): ProviderSession {
+  const parsed = providerSessionSchema.parse(JSON.parse(raw.entry) as unknown);
+  const expectedController = sessionControllerFromProfile(parsed.controllerProfile);
+  const expectedResumable = parsed.state === 'ready' ? 1 : 0;
+  const expectedConversationRef = parsed.conversationRef ?? null;
+  if (
+    parsed.sessionId !== raw.session_id ||
+    raw.controller !== expectedController ||
+    raw.resumable !== expectedResumable ||
+    raw.conversation_ref !== expectedConversationRef
+  ) {
+    throw new TypeError(`Persisted session authority is inconsistent for '${raw.session_id}'.`);
+  }
+  return parsed;
+}
 
 export function snapshotProviderRecoveryAuthority(
   launchRecord: ProviderRecoveryLaunch,

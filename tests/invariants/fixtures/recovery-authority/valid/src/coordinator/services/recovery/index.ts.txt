@@ -1,0 +1,11 @@
+import { coordinatorJobRecoverySource } from './coordinator-job-source.js';
+
+type RawJob = { readonly id: string };
+
+interface Database {
+  scanJobs(): readonly RawJob[];
+}
+
+export function composeCoordinatorJobRecovery(database: Database): void {
+  void coordinatorJobRecoverySource(database);
+}

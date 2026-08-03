@@ -35,7 +35,7 @@ Claude Code
 clients/bridge/coral-cli.cjs
   ├── Provider commands (`codex`, `claude`)
   ├── Workflow commands (`workflow`, `jobs`, `wait`, `abort`)
-  ├── Admin commands (`backend status|shutdown`, `backend store-reset list|report|discard`, `backend kb-commit quarantine`)
+  ├── Admin commands (`backend status|shutdown`, `backend store-reset list|report|discard`, `backend recovery-quarantine list|clear`, `backend kb-commit quarantine`)
   ├── Discuss commands (`discuss *`)
   └── KB commands (`kb *`)
       │
@@ -91,6 +91,7 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `DELETE /coordinator/expansion/:name/catalog` | 200       | Ask the KB daemon to remove a manifest catalog entry                                                                     |
 | `GET /coordinator/expansion`                  | 200       | List expansions from the KB daemon expansion state                                                                       |
 | `GET /coordinator/bindings/:binding`          | 200       | Read a single capability binding's current owner and metadata                                                            |
+| `POST /coordinator/recovery-quarantine/clear` | 403       | Catalog-projected clear route; HTTP backend-token capabilities exclude its required `system:debug`, so CLI clear uses IPC |
 | `GET /jobs` / `GET /jobs/:id`                 | 200       | Job summaries and detailed progress history                                                                              |
 | `POST /jobs/abort`                            | 200       | Abort one or more jobs                                                                                                   |
 | `POST /jobs/wait`                             | 200       | SSE job monitoring used by `coral-cli wait` and follow mode                                                              |
@@ -193,8 +194,8 @@ Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin ro
 
 1. Pre-boundary state remains under `data[-dev]` and `run[-dev]`; generated state lives under `gen2/data[-dev]` and `gen2/run[-dev]`. Current code never mutates or binds the legacy generation during ordinary startup.
 2. Before generated initialization, readiness is one of three states: `generated-ready` proceeds; `no-legacy` initializes; `legacy-ignored` leaves legacy bytes untouched, reports the stored version or `unknown`, and initializes this generation's own state. A previous generation is never a precondition for startup and is never imported: the boundary exists to end that coupling, so whether this build could read the legacy store makes no difference to whether it boots.
-3. A generated store is classified by fingerprint plus SemVer. Compatible state opens in place. Newer, older, corrupt, or unsupported state refuses startup with a stable code; startup never quarantines it implicitly.
-4. `backend store-reset discard --target <current|gen2> --flavor <prod|dev>` is the only path that creates a store-reset incident. It holds the coordinator socket, adoption lock, exclusive maintenance lease after writer leases drain, and reset lock in that order. Under the reset lock it creates and verifies a private `.staging/<uuid>/` transaction, publishes the exact-build manifest, removes only matching active evidence, publishes `<uuid>/`, and initializes an empty current store. `--target legacy` always refuses before path resolution or socket binding.
+3. A generated store is classified by fingerprint plus SemVer. Compatible state opens in place. On ordinary boot, `older-incompatible` and `corrupt-or-unsupported` automatically publish a V3 incident and initialize fresh state inside the `store.db.reset.lock` critical section; no operator action is required, so on upgrade the user does nothing. `newer-incompatible` still refuses with `store_newer_incompatible` and requires `backend store-reset discard`, pending the separate cross-version target-validation and continuity work.
+4. `backend store-reset discard --target <current|gen2> --flavor <prod|dev>` remains the explicit offline recovery for a newer store, but it is no longer the only incident-creation path. It holds the coordinator socket, adoption lock, exclusive maintenance lease after writer leases drain, and reset lock in that order. Under the reset lock it creates and verifies a private `.staging/<uuid>/` transaction, publishes the exact-build manifest, removes only matching active evidence, publishes `<uuid>/`, and initializes an empty current store. Automatic-reset manifests use schema V3 with a required closed `resetPolicyCause` (`older-incompatible | corrupt-or-unsupported | newer-incompatible-invalid-target`); current startup authors only the first two because invalid-newer-target classification is deliberately unwired. An interrupted automatic reset resumes only for a self-authored V3 manifest from the same validated authority, canonical store, and flavor with a resettable cause. V2 remains readable for diagnostics but never auto-resumes. Startup reports ambiguous staging as `store_reset_interrupted_ambiguous`, foreign entries as `store_reset_interrupted_foreign`, manifest/publication identity disagreement as `store_reset_interrupted_mismatched`, a different build/store/flavor authority as `store_reset_interrupted_authority_mismatch`, malformed evidence as `store_reset_interrupted_malformed`, and V2 or otherwise non-resettable evidence as `store_reset_interrupted_non_resettable`. Unexpected quarantine I/O and missing classified evidence retain the catch-all `store_reset_quarantine_failed`. Every refusal leaves the evidence operator-visible. `--target legacy` always refuses before path resolution or socket binding.
 5. `backend store-reset list --target <legacy|current>` performs a bounded local directory read. `backend store-reset report --target <legacy|current> <incident-id>` validates containment and descriptor identity, recomputes bounded hashes, optionally diagnoses a private SQLite copy, and renders deterministic public-safe Markdown. Retained evidence is diagnostic-only and cannot restore active state.
 6. `backend kb-commit quarantine --flavor <prod|dev> --commit <id>` is the explicit recovery for a `kb_commit_corrupt_or_unsupported` refusal. After `backend shutdown`, it holds the same socket → adoption → maintenance boundary, validates the single-segment commit ID before acquisition, and durably moves only that commit and matching index evidence to retained quarantine.
 
@@ -260,6 +261,7 @@ Parent and child speak a newline-framed JSON protocol over the child's stdio (vo
 | Discuss              | Functional-core / imperative-shell discussion loop with persistence, bids, speeches, follow-ups, and synthesis.                                                                                                                                                                                                                                                                                                                  |
 | Journal              | Event-sourced substrate for append, rebuild, envelope decoding, and projection dispatch.                                                                                                                                                                                                                                                                                                                                         |
 | Causality            | Cross-stream event-reference vocabulary (`CauseRef`) shared below jobs/sessions/discuss/workflow without store access.                                                                                                                                                                                                                                                                                                           |
+| Recovery             | Single recovery-enumeration boundary, opaque source handles, source registry, and quarantine persistence. Raw sources and settlement policy remain domain-owned.                                                                                                                                                                                                                                                                 |
 | Runtime              | Single-world Runtime with six I/O subports shared by production and simulation.                                                                                                                                                                                                                                                                                                                                                  |
 | Simulation           | Deterministic doubles for tests.                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Knowledge base       | Corpus markdown authority, search, indexing, memo/source flows, and publication into coordinator-driven CorpusConsumers.                                                                                                                                                                                                                                                                                                         |
@@ -284,6 +286,7 @@ Parent and child speak a newline-framed JSON protocol over the child's stdio (vo
 | `cli/`                                                  | User command parsing, local startup, activation glue                    | No domain truth directly                             | IPC/HTTP clients and read facade                            | Coordinator lifecycle truth                    |
 | `infra/` / `runtime/`                                   | Low-level path, flavor, I/O ports                                       | Files/process/env through ports                      | No domain imports                                           | Domain concepts                                |
 | `causality/`                                            | Cross-stream event-reference vocabulary                                 | Nothing authoritative                                | Domain event/fault models                                   | Store/database access                          |
+| `recovery/`                                             | Single recovery-enumeration boundary, opaque source handles, quarantine persistence | `recovery_quarantine` through its store port          | Domain-owned source factories and policies                  | Domain settlement or registry/pool knowledge   |
 
 ## Dependency Sketch
 
@@ -302,6 +305,11 @@ Coordinator glue (`bootstrap.ts` + `composition/**` + `services/**`)
   -> Sessions continuity storage and lookup contracts
   -> Workflow / discuss / KB owner modules
   -> Provider adapters + live host management
+
+Domain-owned recovery sources and settlement policies
+  -> recovery/ RecoveryContainment.each(source, policy)
+      -> scan -> hydrate -> settle
+      -> recovery_quarantine convergence
 
 Coordinator startup
   Era I — Kernel (blocks until lifecycle = 'kernel-ready')
@@ -334,7 +342,7 @@ KB runtime
 
 Foundation layer
   -> Infra/runtime/causality primitives consumed by higher layers
-  -> Strict current-codec decoding; incompatible durable state refuses until explicit operator recovery
+  -> Store-format split: older/corrupt state resets automatically under the reset lock; newer state keeps the typed operator-recovery refusal
 ```
 
 ## Runtime State
@@ -348,6 +356,7 @@ Foundation layer
 | `~/.coral/gen2/data/store/store-reset-quarantine/<uuid>/` (or the `data-dev` equivalent)   | Indefinitely retained current-build reset evidence; support-only, never restored as active state                 |
 | `projection_sessions` in `store.db`                                                        | Projected provider sessions, continuation profiles, and project `scope_key`                                      |
 | `projection_discuss` in `store.db`                                                         | Projected discuss snapshots and source-scoped discovery/summary state                                            |
+| `recovery_quarantine` in `store.db`                                                        | Exact recovery failures and continuations retained for convergence or one-coordinate retry                        |
 | `~/.coral/exports/jobs/<jobId>/result.md` or `~/.coral/exports-dev/jobs/<jobId>/result.md` | Durable wait/follow result artifact                                                                              |
 | `<os-tmpdir>/coral-jobs/<jobId>/`                                                          | Live job scratch artifacts such as stdout/stderr/intermediates                                                   |
 | `~/.coral/kb/` or `~/.coral/kb-dev/`                                                       | Corpus-authoritative markdown KB                                                                                 |

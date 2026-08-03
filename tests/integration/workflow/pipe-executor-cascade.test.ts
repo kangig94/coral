@@ -137,6 +137,7 @@ describe('pipe executor coral cascade invariant', () => {
         runtime,
         time: runtime.time,
         commitEvents: coordinatorCommit,
+        signal: new AbortController().signal,
       });
       const executionSvc = new ExecutionService(
         {
@@ -277,6 +278,7 @@ describe('pipe executor coral cascade invariant', () => {
         runtime,
         time: runtime.time,
         commitEvents: coordinatorCommit,
+        signal: new AbortController().signal,
       });
       reactorRef.current = reactor;
       const executionSvc = new ExecutionService(
