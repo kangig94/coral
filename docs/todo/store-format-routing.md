@@ -21,8 +21,8 @@ pioneer pass caught only because both were considered together.
 > | newer | no | `store_newer_incompatible`; deciding “no valid target” requires the cross-version target validator | pending |
 >
 > The implemented quarantine branch is at `openOrResetBackendStoreDb`
-> (`backend-store-reset.ts:1106`). Both newer rows still reach `refuseIncompatibleStore`
-> (`backend-store-reset.ts:997`): the invalid-target classifier needed to distinguish the
+> (`backend-store-reset.ts`). Both newer rows still reach `refuseIncompatibleStore`
+> (`backend-store-reset.ts`): the invalid-target classifier needed to distinguish the
 > second row is owned by `cross-version-coordinator-continuity.md` and has not landed. The
 > re-exec branch belongs to that plan as well. Together they are SC9 of the
 > containment-boundary preplan.
@@ -36,7 +36,7 @@ pioneer pass caught only because both were considered together.
 One store per flavor means a build can meet a store it cannot read. Ordinary boot now
 auto-quarantines older or corrupt/unsupported state, but a newer store still produces
 `store_newer_incompatible` and requires `backend store-reset discard --target gen2`
-(`backend-store-reset.ts:997`, `refuseIncompatibleStore`).
+(`refuseIncompatibleStore` in `backend-store-reset.ts`).
 
 The refusal is not wrong, but it is the wrong instrument for the common case. The dangerous
 state is **two builds with different schemas alternating over one store** — the shape of the

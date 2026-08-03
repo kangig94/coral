@@ -9,8 +9,8 @@ import { discussionCandidateRecoverySource } from '#src/discuss/shell/discussion
 import { discussionSourceRecoverySource } from '#src/discuss/shell/discussion-source-recovery-source.js';
 import { retentionReleasePairComponentSource } from '#src/sessions/retention-release-pair-recovery-source.js';
 import { retentionWorkItemRecoverySource } from '#src/sessions/retention-work-item-recovery-source.js';
-import { sessionContinuationLeaseRecoverySource } from '#src/sessions/session-continuation-lease-recovery-source.js';
-import { sessionProjectionRecoverySource } from '#src/sessions/session-projection-recovery-source.js';
+import { sessionContinuationLeaseRecoverySource } from '#src/sessions/continuation-lease-recovery-source.js';
+import { sessionProjectionRecoverySource } from '#src/sessions/projection-recovery-source.js';
 import { terminalRetentionOutcomeRecoverySource } from '#src/sessions/terminal-retention-outcome-recovery-source.js';
 import { workflowRecoverySource } from '#src/workflow/recovery-source.js';
 import {

@@ -1389,13 +1389,13 @@ const RECOVERY_SOURCE_MATRIX: readonly RecoverySourceMatrixRow[] = [
   {
     boundary: 'P4 session retention',
     factory: 'sessionProjectionRecoverySource',
-    sourceModule: 'src/sessions/session-projection-recovery-source.ts',
+    sourceModule: 'src/sessions/projection-recovery-source.ts',
     rawAuthorities: ['scanSessionProjectionRows'],
   },
   {
     boundary: 'P4 session retention',
     factory: 'sessionContinuationLeaseRecoverySource',
-    sourceModule: 'src/sessions/session-continuation-lease-recovery-source.ts',
+    sourceModule: 'src/sessions/continuation-lease-recovery-source.ts',
     rawAuthorities: ['scanPendingContinuationLeaseRows'],
   },
   {
@@ -3145,7 +3145,7 @@ describe('recovery authority boundary', () => {
           violatedRule: expect.stringContaining('only inside the registered scan body'),
         }),
         expect.objectContaining({
-          offendingFile: 'src/sessions/session-projection-recovery-source.ts',
+          offendingFile: 'src/sessions/projection-recovery-source.ts',
           violatedRule: expect.stringContaining('pre-enumerated result'),
         }),
       ]),

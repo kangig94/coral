@@ -13,12 +13,12 @@ import {
   sessionProjectionRecoverySource,
   type RawSessionProjectionEnvelope,
   type SessionProjectionComponent,
-} from '#src/sessions/session-projection-recovery-source.js';
+} from '#src/sessions/projection-recovery-source.js';
 import {
   sessionContinuationLeaseRecoverySource,
   type RawPendingContinuationLeaseRow,
   type SessionContinuationLeaseComponent,
-} from '#src/sessions/session-continuation-lease-recovery-source.js';
+} from '#src/sessions/continuation-lease-recovery-source.js';
 import {
   terminalRetentionOutcomeRecoverySource,
   type RawTerminalRetentionOutcomeRow,

@@ -7,7 +7,7 @@ import {
 } from '../recovery/containment.js';
 import { PROJECTION_SESSION_COLUMNS, projectionSessionRevisionFields } from '../recovery/row-revision-fields.js';
 import type { PendingContinuationLease, ProviderSession } from './entry.js';
-import type { RawSessionProjectionRow } from './session-projection-recovery-source.js';
+import type { RawSessionProjectionRow } from './projection-recovery-source.js';
 
 export type RawPendingContinuationLeaseRow = RawSessionProjectionRow;
 

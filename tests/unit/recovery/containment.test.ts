@@ -764,6 +764,36 @@ describe('recovery/containment', () => {
     expect(report).toMatchObject({ advanced: 1, quarantined: 1 });
   });
 
+  it('should preserve settlement failure precedence when cleanup also fails', async () => {
+    const settlementError = new Error('settlement failed');
+    const cleanupError = new Error('process ownership remains held');
+    const quarantine = new FakeQuarantinePort();
+
+    let thrown: unknown;
+    try {
+      await RecoveryContainment.each(
+        source(() => [raw('aggregate-failure')]),
+        policy(quarantine, {
+          processLocalCleanup: {
+            kind: 'boundary-required',
+            release: () => ({ kind: 'incomplete', error: cleanupError }),
+          },
+          settle: () => {
+            throw settlementError;
+          },
+        }),
+      );
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(AggregateError);
+    if (!(thrown instanceof AggregateError)) throw new Error('Expected settlement and cleanup failures to aggregate.');
+    expect(thrown.errors[0]).toBe(settlementError);
+    expect(thrown.errors[1]).toBe(cleanupError);
+    expect(thrown.message).toContain(`${boundary}:aggregate-failure`);
+  });
+
   it('should abort after durable containment when boundary-required ownership release is incomplete', async () => {
     const cleanupError = new Error('process ownership remains held');
     const quarantine = new FakeQuarantinePort();

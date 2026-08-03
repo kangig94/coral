@@ -309,46 +309,55 @@ async function each<Raw, Item>(
       continue;
     }
 
-    // Cleanup runs on every path but must not become the reported failure: a settlement fault is the
-    // originating cause, and throwing from a `finally` would silently replace it with whatever the
-    // release reported. Both abort the walk, so precedence is the only thing at stake — and losing the
-    // origin is exactly the diagnostic loss this boundary exists to prevent.
-    let settlementFailure: { readonly error: unknown } | null = null;
-    try {
-      const settlement = await settlePhase(definition.boundary, hydration.value, policy);
-      await applyDisposition(report, policy, {
-        boundary: definition.boundary,
-        disposition: settlement.disposition,
-        error: settlement.error,
-        stage: 'settle',
-        subject: scanned.subject,
-        hydrated: hydration.value,
-        obligations: settlement.obligations,
-      });
-    } catch (error: unknown) {
-      settlementFailure = { error };
-    }
-
-    const cleanup = await releaseBoundaryOwnership(policy, hydration.value.item);
-    if (settlementFailure !== null && cleanup.kind === 'incomplete') {
-      throwIfAborted(policy.signal);
-      throw new AggregateError(
-        [settlementFailure.error, cleanup.error],
-        `Recovery settlement failed and process-local cleanup did not complete for ${definition.boundary}:${scanned.subject.key}`,
-      );
-    }
-    if (settlementFailure !== null) throw settlementFailure.error;
-    if (cleanup.kind === 'incomplete') {
-      const cleanupContext = `Recovery process-local cleanup did not complete for ${definition.boundary}:${scanned.subject.key}`;
-      if (cleanup.error instanceof Error) {
-        cleanup.error.message = `${cleanupContext}: ${cleanup.error.message}`;
-        throw cleanup.error;
-      }
-      throw new Error(cleanupContext, { cause: cleanup.error });
-    }
+    await settleAndReleaseSubject(definition.boundary, hydration.value, report, policy);
   }
 
   return finishReport(report);
+}
+
+async function settleAndReleaseSubject<Raw, Item>(
+  boundary: string,
+  hydrated: HydratedSubject<Raw, Item>,
+  report: MutableReport<Item>,
+  policy: RecoveryPolicy<Raw, Item>,
+): Promise<void> {
+  // Cleanup runs on every path but must not become the reported failure: a settlement fault is the
+  // originating cause, and throwing from a `finally` would silently replace it with whatever the
+  // release reported. Both abort the walk, so precedence is the only thing at stake — and losing the
+  // origin is exactly the diagnostic loss this boundary exists to prevent.
+  let settlementFailure: { readonly error: unknown } | null = null;
+  try {
+    const settlement = await settlePhase(boundary, hydrated, policy);
+    await applyDisposition(report, policy, {
+      boundary,
+      disposition: settlement.disposition,
+      error: settlement.error,
+      stage: 'settle',
+      subject: hydrated.subject,
+      hydrated,
+      obligations: settlement.obligations,
+    });
+  } catch (error: unknown) {
+    settlementFailure = { error };
+  }
+
+  const cleanup = await releaseBoundaryOwnership(policy, hydrated.item);
+  if (settlementFailure !== null && cleanup.kind === 'incomplete') {
+    throwIfAborted(policy.signal);
+    throw new AggregateError(
+      [settlementFailure.error, cleanup.error],
+      `Recovery settlement failed and process-local cleanup did not complete for ${boundary}:${hydrated.subject.key}`,
+    );
+  }
+  if (settlementFailure !== null) throw settlementFailure.error;
+  if (cleanup.kind === 'incomplete') {
+    const cleanupContext = `Recovery process-local cleanup did not complete for ${boundary}:${hydrated.subject.key}`;
+    if (cleanup.error instanceof Error) {
+      cleanup.error.message = `${cleanupContext}: ${cleanup.error.message}`;
+      throw cleanup.error;
+    }
+    throw new Error(cleanupContext, { cause: cleanup.error });
+  }
 }
 
 async function scanPhase<Raw, Item>(

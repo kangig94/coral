@@ -6,6 +6,7 @@ import {
   defineCompositeRecoverySource,
   type RecoveryReceipt,
   type RecoveryReceiptValue,
+  type RecoveryRevisionDependency,
   type RecoveryRevisionField,
   type RecoverySource,
   type RecoverySubject,
@@ -16,8 +17,8 @@ import {
   projectionSessionRevisionFields,
 } from '../recovery/row-revision-fields.js';
 import type { RetentionReleasePairComponent } from './retention-release-pair-recovery-source.js';
-import type { SessionContinuationLeaseComponent } from './session-continuation-lease-recovery-source.js';
-import type { RawRetentionContinuationRow, SessionProjectionComponent } from './session-projection-recovery-source.js';
+import type { SessionContinuationLeaseComponent } from './continuation-lease-recovery-source.js';
+import type { RawRetentionContinuationRow, SessionProjectionComponent } from './projection-recovery-source.js';
 import type { TerminalRetentionOutcomeComponent } from './terminal-retention-outcome-recovery-source.js';
 
 const RETENTION_WORK_BOUNDARY = 'session-retention-work';
@@ -159,6 +160,44 @@ function matchingContinuation(
   return session.retentionContinuations.find((continuation) => continuation.subject_key === key) ?? null;
 }
 
+function buildRetentionWorkSubject(input: {
+  readonly pairKey: string;
+  readonly operationFields: readonly RecoveryRevisionField[];
+  readonly continuation: RawRetentionContinuationRow | null;
+  readonly sessionReceipt: ReceiptValue<SessionProjectionComponent>;
+  readonly leaseReceipt: ReceiptValue<SessionContinuationLeaseComponent> | undefined;
+  readonly releaseReceipt: ReceiptValue<Extract<RetentionReleasePairComponent, { kind: 'release' }>>;
+  readonly terminalReceipt: ReceiptValue<Extract<RetentionReleasePairComponent, { kind: 'terminal' }>>;
+  readonly outcomes: readonly ReceiptValue<TerminalRetentionOutcomeComponent>[];
+}): RecoverySubject {
+  const operationRevision = canonicalRecoveryRevision(input.operationFields);
+  if (operationRevision.kind !== 'fingerprint') {
+    throw new Error('Retention work operation revision is not fingerprinted.');
+  }
+  const dependencies: RecoveryRevisionDependency[] = [
+    { source: 'session-projection', subject: input.sessionReceipt.subject },
+    ...(input.leaseReceipt === undefined
+      ? []
+      : [{ source: 'session-continuation-lease', subject: input.leaseReceipt.subject }]),
+    { source: 'retention-release', subject: input.releaseReceipt.subject },
+    { source: 'job-terminal', subject: input.terminalReceipt.subject },
+    ...input.outcomes.map((outcome) => ({
+      source: 'terminal-retention-outcome',
+      subject: outcome.subject,
+    })),
+  ];
+  const revisionFields = [...input.operationFields];
+  if (input.continuation !== null) {
+    revisionFields.push(
+      ...continuationRevisionFields(RETENTION_WORK_BOUNDARY, input.continuation.subject_key, input.continuation),
+    );
+  }
+  return {
+    key: input.pairKey,
+    revision: compositeRecoveryRevision(revisionFields, dependencies),
+  };
+}
+
 function buildRetentionWorkItem(input: {
   readonly composed: ComposedRetentionWorkReceipts;
   readonly sessionReceipt: ReceiptValue<SessionProjectionComponent>;
@@ -191,25 +230,16 @@ function buildRetentionWorkItem(input: {
     entry,
     jobId,
   });
-  const operationRevision = canonicalRecoveryRevision(operationFields);
-  if (operationRevision.kind !== 'fingerprint') {
-    throw new Error('Retention work operation revision is not fingerprinted.');
-  }
-  const dependencies = [
-    { source: 'session-projection', subject: sessionReceipt.subject },
-    ...(leaseReceipt === undefined ? [] : [{ source: 'session-continuation-lease', subject: leaseReceipt.subject }]),
-    { source: 'retention-release', subject: releaseReceipt.subject },
-    { source: 'job-terminal', subject: terminalReceipt.subject },
-    ...outcomes.map((outcome) => ({ source: 'terminal-retention-outcome', subject: outcome.subject })),
-  ];
-  const revisionFields = [...operationFields];
-  if (continuation !== null) {
-    revisionFields.push(...continuationRevisionFields(RETENTION_WORK_BOUNDARY, continuation.subject_key, continuation));
-  }
-  const subject: RecoverySubject = {
-    key: pairKey,
-    revision: compositeRecoveryRevision(revisionFields, dependencies),
-  };
+  const subject = buildRetentionWorkSubject({
+    pairKey,
+    operationFields,
+    continuation,
+    sessionReceipt,
+    leaseReceipt,
+    releaseReceipt,
+    terminalReceipt,
+    outcomes,
+  });
   return {
     sessionId,
     jobId,

@@ -406,14 +406,14 @@ describe('interrupted recovery settlement ownership', () => {
     lastSeq: 1,
   } as const;
 
-  function finalizerFixture(options: { releaseError?: Error } = {}) {
+  function finalizerFixture(options: { releaseError?: Error; artifactNextVersion?: number } = {}) {
     const runtime = new SimulationRuntime();
     const finalizeJobContinuityAtomic = vi.fn(async () => true);
-    // Crash-discovered artifact handles are persisted before the session is finalized, and each write
-    // advances the session version, so finalize must see the post-write version.
+    // Crash-discovered artifact handles are persisted before the session is finalized, so finalize
+    // must use the exact version returned by that write or idempotent replay.
     const recordArtifactHandleAtomic = vi.fn(async () => ({
       ok: true as const,
-      nextVersion: session.version + 1,
+      nextVersion: options.artifactNextVersion ?? session.version + 1,
     }));
     const abortRegistry = {
       remove: vi.fn(() => {
@@ -457,7 +457,7 @@ describe('interrupted recovery settlement ownership', () => {
     };
   }
 
-  it('makes terminal plus claim release the first and only authoritative recovery write', async () => {
+  it('persists artifact handles before final settlement with the exact returned CAS version', async () => {
     const fixture = finalizerFixture();
 
     await finalizeInterruptedAppServerRecovery(fixture.plan, fixture.performed, status, fixture.deps as never);
@@ -482,8 +482,26 @@ describe('interrupted recovery settlement ownership', () => {
         appendBeforeRelease: expect.any(Function),
       }),
     );
+    expect(fixture.recordArtifactHandleAtomic.mock.invocationCallOrder[0]).toBeLessThan(
+      fixture.finalizeJobContinuityAtomic.mock.invocationCallOrder[0],
+    );
     expect(fixture.abortRegistry.remove).toHaveBeenCalledWith(launchRecord.jobId);
     expect(fixture.launchAdmission.releaseLaunch).toHaveBeenCalledWith(launchRecord.jobId, launchRecord.pool);
+  });
+
+  it('uses an unchanged artifact replay version for the final settlement CAS', async () => {
+    const fixture = finalizerFixture({ artifactNextVersion: session.version });
+
+    await finalizeInterruptedAppServerRecovery(fixture.plan, fixture.performed, status, fixture.deps as never);
+
+    expect(fixture.recordArtifactHandleAtomic).toHaveBeenCalledWith(
+      session.sessionId,
+      expect.objectContaining({ expectedVersion: session.version }),
+    );
+    expect(fixture.finalizeJobContinuityAtomic).toHaveBeenCalledWith(
+      session.sessionId,
+      expect.objectContaining({ expectedVersion: session.version }),
+    );
   });
 
   it('surfaces incomplete process-local release as fatal after durable settlement', async () => {

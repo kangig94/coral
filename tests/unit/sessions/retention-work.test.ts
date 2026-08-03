@@ -16,7 +16,7 @@ import {
 } from '#src/providers/contract.js';
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
 import type { RawRetentionWorkItem } from '#src/sessions/retention-work-item-recovery-source.js';
-import type { RawRetentionContinuationRow } from '#src/sessions/session-projection-recovery-source.js';
+import type { RawRetentionContinuationRow } from '#src/sessions/projection-recovery-source.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
 import {
@@ -689,6 +689,44 @@ describe('sessions retention-work', () => {
     expect(separateRecord).not.toHaveProperty('archivePath');
     expect(readManifest(runtime, first).artifacts[0]).toMatchObject({ status: 'archived' });
     expect(readManifest(runtime, adopted).artifacts[0]).toMatchObject({ status: 'archived' });
+  });
+
+  it('rejects a corrupted foreign archive before provider discard without downgrading its record', async () => {
+    const harness = createSettlementHarness();
+    const jobId = 'job-corrupted-foreign-archive';
+    const handle = '/tmp/provider/corrupted-foreign-archive.jsonl';
+    const { entry } = await seedRetentionWork(harness, {
+      jobId,
+      handle,
+      nativeContent: 'foreign archive\n',
+    });
+    const foreign = deriveProviderArtifactActionDescriptor({
+      entry,
+      jobId,
+      handles: [handle],
+      sourceRevision: 'foreign-archive-revision-a',
+      archivedAt: NOW,
+    });
+    await archiveProviderArtifactsForJob({ runtime: harness.runtime, descriptor: foreign });
+    const foreignRecord = readManifest(harness.runtime, foreign).artifacts[0];
+    if (foreignRecord?.archivePath === undefined) throw new Error('Expected archived fixture path.');
+    harness.runtime.storage.writeFileSync(foreignRecord.archivePath, 'corrupted archive\n', { encoding: 'utf-8' });
+    harness.runtime.storage.unlinkSync(handle);
+
+    const adopting = deriveProviderArtifactActionDescriptor({
+      entry,
+      jobId,
+      handles: [handle],
+      sourceRevision: 'foreign-archive-revision-b',
+      archivedAt: '2026-06-11T00:00:01.000Z',
+    });
+
+    await expect(
+      harness.reactor.enforceRetention(recoveryWork(entry, jobId, 'foreign-archive-revision-b', adopting)),
+    ).rejects.toBeInstanceOf(ProviderArtifactArchiveInvariantError);
+    expect(harness.capabilityCalls).toEqual([]);
+    expect(harness.providerEffects).toEqual([]);
+    expect(readManifest(harness.runtime, foreign).artifacts[0]).toEqual(foreignRecord);
   });
 
   it('settles retention first and on-demand second through the same stable provider action', async () => {

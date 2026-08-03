@@ -18,7 +18,7 @@ import {
   projectionSessionRevisionFields,
   withConsistentRead,
 } from '../recovery/row-revision-fields.js';
-import type { RawSessionProjectionRow } from '../sessions/session-projection-recovery-source.js';
+import type { RawSessionProjectionRow } from '../sessions/projection-recovery-source.js';
 import type { RawWorkflowProjectionRow } from './read-queries.js';
 
 const WORKFLOW_RECOVERY_BOUNDARY = 'workflow-recovery';

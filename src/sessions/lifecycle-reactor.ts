@@ -35,12 +35,12 @@ import {
   sessionContinuationLeaseRecoverySource,
   type RawPendingContinuationLeaseRow,
   type SessionContinuationLeaseComponent,
-} from './session-continuation-lease-recovery-source.js';
+} from './continuation-lease-recovery-source.js';
 import {
   sessionProjectionRecoverySource,
   type RawSessionProjectionEnvelope,
   type SessionProjectionComponent,
-} from './session-projection-recovery-source.js';
+} from './projection-recovery-source.js';
 import {
   terminalRetentionOutcomeRecoverySource,
   type RawTerminalRetentionOutcomeRow,

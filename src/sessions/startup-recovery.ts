@@ -7,8 +7,8 @@ import {
 import type {
   RawPendingContinuationLeaseRow,
   SessionContinuationLeaseComponent,
-} from './session-continuation-lease-recovery-source.js';
-import type { RawSessionProjectionEnvelope, SessionProjectionComponent } from './session-projection-recovery-source.js';
+} from './continuation-lease-recovery-source.js';
+import type { RawSessionProjectionEnvelope, SessionProjectionComponent } from './projection-recovery-source.js';
 import type {
   RawTerminalRetentionOutcomeRow,
   TerminalRetentionOutcomeComponent,
