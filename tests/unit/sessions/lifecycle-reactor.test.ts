@@ -9,8 +9,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import type { LaunchPool, QueuedHandle } from '#src/jobs/contracts/admission.js';
 import type { JobPhase } from '#src/jobs/phase.js';
 import type { TerminalWriteOptions } from '#src/jobs/contracts/job-store.js';
-import { RecoveryRegistry } from '#src/jobs/reconcile/registry.js';
-import { applyRecoveryAction } from '#src/coordinator/services/recovery/actions.js';
+import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
 import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
@@ -27,7 +26,6 @@ import {
   appendRetentionDiscardFailed,
   appendRetentionDiscardRequested,
 } from '#src/sessions/retention-outbox.js';
-import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { readProjectionProviderSession } from '#src/sessions/projections.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
@@ -36,7 +34,12 @@ import { decodeEventBody } from '#src/store/body-codec.js';
 import type { Database } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
-import type { ArtifactCleanupRuntime, DiscardOutcome } from '#src/providers/contract.js';
+import {
+  ProviderArtifactDefinitiveFailure,
+  type ArtifactCleanupRuntime,
+  type DiscardOutcome,
+  type ProviderArtifactDiscardReconciliation,
+} from '#src/providers/contract.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
@@ -83,6 +86,10 @@ function createHarness(
     artifactMode?: ProviderArtifactMode;
     autoObserveCoordinator?: boolean;
     discardArtifacts?: (handles: readonly string[], runtime: ArtifactCleanupRuntime) => Promise<DiscardOutcome>;
+    reconcileDiscard?: (
+      handles: readonly string[],
+      runtime: ArtifactCleanupRuntime,
+    ) => Promise<ProviderArtifactDiscardReconciliation>;
     locateArtifact?: (conversationRef: string) => string | null;
     afterCommit?: (appended: readonly AppendedEvent[], commitEvents: CommitEventsFn) => void;
     interruptedRecovery?: boolean;
@@ -148,6 +155,12 @@ function createHarness(
                 }
                 return { kind: 'discarded' };
               },
+              ...(options.reconcileDiscard === undefined
+                ? {}
+                : {
+                    reconcileDiscard: ({ handles, runtime: cleanupRuntime }) =>
+                      options.reconcileDiscard!(handles, cleanupRuntime),
+                  }),
               ...(options.locateArtifact !== undefined
                 ? { locateArtifact: ({ conversationRef }) => options.locateArtifact!(conversationRef) }
                 : {}),
@@ -207,6 +220,38 @@ function createHarness(
     logs,
     appendedBatches,
   };
+}
+
+async function runCoordinatorStartupRecovery(harness: Harness): Promise<void> {
+  const getRecoveryService = () => {
+    throw new Error('These recovery actions must not require provider recovery authority.');
+  };
+  const createInvocationContext = (projectRoot: string) => ({
+    projectRoot,
+    pluginRoot: projectRoot,
+    coralEnv: {},
+    principal: testProjectPrincipal(projectRoot),
+  });
+  const coordinator = createRecoveryCoordinator({
+    progressStore: harness.progressStore,
+    runtime: harness.runtime,
+    runtimeState: { setLaunchFenceActive: () => {} },
+    eventBus: new TypedEventBus(),
+    getRecoveryService,
+    createInvocationContext,
+    log: (message) => harness.logs.push(message),
+  });
+
+  await coordinator.runStartupRecovery({
+    namespace: harness.namespace,
+    runtime: harness.runtime,
+    progressStore: harness.progressStore,
+    getRecoveryService,
+    createInvocationContext,
+    signal: new AbortController().signal,
+    log: (message) => harness.logs.push(message),
+    coordinatorCommit: harness.coordinatorCommit,
+  });
 }
 
 async function openClaimedSession(
@@ -470,7 +515,18 @@ describe('LifecycleReactor retention enforcement', () => {
         },
       ]);
 
-      const archiveDir = join(harness.runtime.paths.coral.exports.jobsRoot, jobId, 'provider-artifacts', 'codex');
+      const actionsRoot = join(
+        harness.runtime.paths.coral.exports.jobsRoot,
+        jobId,
+        'provider-artifacts',
+        'codex',
+        'actions',
+      );
+      const actionEntries = harness.runtime.storage.readdirSync(actionsRoot, { withFileTypes: true });
+      expect(actionEntries).toHaveLength(1);
+      const actionEntry = actionEntries[0];
+      if (actionEntry === undefined) throw new Error('Expected one archive action namespace.');
+      const archiveDir = join(actionsRoot, actionEntry.name);
       const archivedLog = join(archiveDir, '0001-rollout-archive.jsonl');
       const manifestPath = join(archiveDir, 'manifest.json');
       expect(harness.runtime.storage.existsSync(nativeLog)).toBe(false);
@@ -484,14 +540,15 @@ describe('LifecycleReactor retention enforcement', () => {
           sourceHandle: string;
           archivePath: string;
           bytes: number;
-          sha256: string;
+          sourceSha256: string;
+          archiveSha256: string;
           status: string;
           identity: { kind: string; handle: string };
           sourceJobId: string;
         }>;
       };
       expect(manifest).toMatchObject({
-        schemaVersion: 1,
+        schemaVersion: 2,
         jobId,
         sessionId,
         provider: 'codex',
@@ -506,7 +563,8 @@ describe('LifecycleReactor retention enforcement', () => {
           },
         ],
       });
-      expect(manifest.artifacts[0]?.sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(manifest.artifacts[0]?.sourceSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(manifest.artifacts[0]?.archiveSha256).toBe(manifest.artifacts[0]?.sourceSha256);
       expect(harness.discardCalls).toEqual([[nativeLog]]);
     } finally {
       harness.runtime.time.clearTimeout(lateAppend);
@@ -576,7 +634,7 @@ describe('LifecycleReactor retention enforcement', () => {
   it('records a failed terminal outcome when provider discard fails', async () => {
     const harness = createHarness({
       discardArtifacts: async () => {
-        throw new Error('discard permission denied');
+        throw new ProviderArtifactDefinitiveFailure('discard permission denied');
       },
     });
     const jobId = 'job-discard-fails';
@@ -605,6 +663,171 @@ describe('LifecycleReactor retention enforcement', () => {
       },
     ]);
     expect(harness.discardCalls).toEqual([['/tmp/rollout-discard-fails.jsonl']]);
+  });
+
+  it('quarantines an unclassified provider settlement exception and still settles its sibling', async () => {
+    const failedHandle = '/tmp/rollout-unclassified-provider-failure.jsonl';
+    const validHandle = '/tmp/rollout-unclassified-provider-sibling.jsonl';
+    const harness = createHarness({
+      autoObserveCoordinator: false,
+      discardArtifacts: async (handles) => {
+        if (handles.includes(failedHandle)) throw new Error('provider process exited before applying discard');
+        return { kind: 'discarded' };
+      },
+      reconcileDiscard: async () => ({ kind: 'not-applied' }),
+    });
+    const failedJobId = 'job-unclassified-provider-failure';
+    const validJobId = 'job-unclassified-provider-sibling';
+    const failedSessionId = await openClaimedSession(harness, failedJobId);
+    const validSessionId = await openClaimedSession(harness, validJobId);
+
+    for (const [jobId, sessionId, handle] of [
+      [failedJobId, failedSessionId, failedHandle],
+      [validJobId, validSessionId, validHandle],
+    ] as const) {
+      await recordArtifact(harness, sessionId, jobId, handle);
+      initRunningJob(harness, jobId, sessionId);
+      completeJobViaCoordinatorCommit(harness, jobId, sessionId);
+      harness.sessionManager.releaseJob(sessionId, jobId);
+    }
+
+    harness.reactor.observe(harness.appendedBatches.flat());
+    await harness.reactor.waitForIdle();
+
+    expect(readRetentionEvents(harness, failedSessionId).map((event) => event.type)).toEqual([
+      'session.retention.discard.requested',
+    ]);
+    expect(
+      harness.db
+        .prepare(
+          `SELECT state, stage, continuation_kind
+             FROM recovery_quarantine
+            WHERE boundary_id = 'session-retention-work'
+              AND subject_key = ?`,
+        )
+        .get(`${failedSessionId}\u0000${failedJobId}`),
+    ).toEqual({ state: 'active', stage: 'settle', continuation_kind: null });
+    expect(readRetentionEvents(harness, validSessionId).map((event) => ({ type: event.type, ...event.body }))).toEqual([
+      {
+        type: 'session.retention.discard.requested',
+        sessionId: validSessionId,
+        attempt: 1,
+        handles: [validHandle],
+      },
+      {
+        type: 'session.retention.discard.completed',
+        sessionId: validSessionId,
+        attempt: 1,
+        handles: [validHandle],
+        outcome: 'discarded',
+      },
+    ]);
+    expect(harness.discardCalls).toEqual([[failedHandle], [validHandle]]);
+  });
+
+  it('quarantines a request-append exception before provider effect and still settles its sibling', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const failedJobId = 'job-request-append-failure';
+    const validJobId = 'job-request-append-sibling';
+    const failedSessionId = await openClaimedSession(harness, failedJobId);
+    const validSessionId = await openClaimedSession(harness, validJobId);
+    const failedHandle = '/tmp/rollout-request-append-failure.jsonl';
+    const validHandle = '/tmp/rollout-request-append-sibling.jsonl';
+
+    for (const [jobId, sessionId, handle] of [
+      [failedJobId, failedSessionId, failedHandle],
+      [validJobId, validSessionId, validHandle],
+    ] as const) {
+      await recordArtifact(harness, sessionId, jobId, handle);
+      initRunningJob(harness, jobId, sessionId);
+      completeJobViaCoordinatorCommit(harness, jobId, sessionId);
+      harness.sessionManager.releaseJob(sessionId, jobId);
+    }
+    harness.db.exec(`
+      CREATE TRIGGER reject_fixture_retention_request
+      BEFORE INSERT ON events
+      WHEN NEW.type = 'session.retention.discard.requested'
+       AND NEW.stream_id = '${failedSessionId}'
+      BEGIN
+        SELECT RAISE(ABORT, 'fixture request append failure');
+      END;
+    `);
+
+    harness.reactor.observe(harness.appendedBatches.flat());
+    await harness.reactor.waitForIdle();
+
+    expect(readRetentionEvents(harness, failedSessionId)).toEqual([]);
+    expect(
+      harness.db
+        .prepare(
+          `SELECT state, stage, continuation_kind
+             FROM recovery_quarantine
+            WHERE boundary_id = 'session-retention-work'
+              AND subject_key = ?`,
+        )
+        .get(`${failedSessionId}\u0000${failedJobId}`),
+    ).toEqual({ state: 'active', stage: 'settle', continuation_kind: null });
+    expect(readRetentionEvents(harness, validSessionId).map((event) => ({ type: event.type, ...event.body }))).toEqual([
+      {
+        type: 'session.retention.discard.requested',
+        sessionId: validSessionId,
+        attempt: 1,
+        handles: [validHandle],
+      },
+      {
+        type: 'session.retention.discard.completed',
+        sessionId: validSessionId,
+        attempt: 1,
+        handles: [validHandle],
+        outcome: 'discarded',
+      },
+    ]);
+    expect(harness.discardCalls).toEqual([[validHandle]]);
+  });
+
+  it('keeps an unknown provider outcome durably deferred and reconciles before replay', async () => {
+    const harness = createHarness({
+      discardArtifacts: async () => {
+        throw new Error('provider response lost');
+      },
+      reconcileDiscard: async () => ({ kind: 'unknown' }),
+    });
+    const jobId = 'job-discard-unknown';
+    const handle = '/tmp/rollout-discard-unknown.jsonl';
+    const sessionId = await openClaimedSession(harness, jobId);
+    await recordArtifact(harness, sessionId, jobId, handle);
+    initRunningJob(harness, jobId, sessionId);
+
+    completeJob(harness, jobId, sessionId);
+    harness.sessionManager.releaseJob(sessionId, jobId);
+    await harness.reactor.waitForIdle();
+
+    expect(readRetentionEvents(harness, sessionId).map((event) => event.type)).toEqual([
+      'session.retention.discard.requested',
+    ]);
+    expect(harness.discardCalls).toEqual([[handle]]);
+    expect(
+      harness.db
+        .prepare(
+          `SELECT boundary_id, subject_key, state, stage, continuation_kind
+             FROM recovery_quarantine
+            WHERE boundary_id = 'session-retention-work'
+              AND subject_key = ?`,
+        )
+        .get(`${sessionId}\u0000${jobId}`),
+    ).toEqual({
+      boundary_id: 'session-retention-work',
+      subject_key: `${sessionId}\u0000${jobId}`,
+      state: 'continuation',
+      stage: 'settle',
+      continuation_kind: 'retention-discard.v1',
+    });
+
+    await harness.reactor.scanStartup();
+    expect(harness.discardCalls).toEqual([[handle]]);
+    expect(readRetentionEvents(harness, sessionId).map((event) => event.type)).toEqual([
+      'session.retention.discard.requested',
+    ]);
   });
 
   it('skips provider deletion when protection appears after the discard request commits', async () => {
@@ -844,32 +1067,41 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(harness.discardCalls).toEqual([]);
   });
 
-  it('prefers an in-run recorded handle over the locateArtifact fallback', async () => {
+  it('discards the crash-recovered job handle without using another job or the session fallback', async () => {
     const locateSpy = vi.fn((_ref: string) => '/tmp/should-not-be-used.jsonl');
     const harness = createHarness({ locateArtifact: locateSpy });
-    const jobId = 'job-handle-precedence';
-    const sessionId = await openClaimedSession(harness, jobId);
+    const otherJobId = 'job-before-crash-recovery';
+    const jobId = 'job-crash-recovered';
+    const otherHandle = '/tmp/rollout-other-job.jsonl';
+    const recoveredHandle = '/tmp/rollout-crash-recovered.jsonl';
+    const sessionId = await openClaimedSession(harness, otherJobId);
+    await recordArtifact(harness, sessionId, otherJobId, otherHandle);
+    harness.sessionManager.releaseJob(sessionId, otherJobId);
+    const released = harness.sessionManager.get('codex', sessionId);
+    if (released === null) throw new Error(`Expected session ${sessionId}`);
+    await expect(harness.sessionManager.claimForJobAtomic(sessionId, jobId, released.version)).resolves.toBe(true);
     await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
       conversationRef: 'thread-precedence',
       resumable: true,
       providerContinuity: { threadId: 'thread-precedence' },
     });
-    await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-recorded.jsonl');
+    await recordArtifact(harness, sessionId, jobId, recoveredHandle);
     initRunningJob(harness, jobId, sessionId);
 
     completeJob(harness, jobId, sessionId);
     harness.sessionManager.releaseJob(sessionId, jobId);
 
     await expectRetentionEvents(harness, sessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: ['/tmp/rollout-recorded.jsonl'] },
+      { type: 'session.retention.discard.requested', attempt: 1, handles: [recoveredHandle] },
       {
         type: 'session.retention.discard.completed',
         attempt: 1,
-        handles: ['/tmp/rollout-recorded.jsonl'],
+        handles: [recoveredHandle],
         outcome: 'discarded',
       },
     ]);
-    expect(harness.discardCalls).toEqual([['/tmp/rollout-recorded.jsonl']]);
+    expect(harness.discardCalls).toEqual([[recoveredHandle]]);
+    expect(harness.discardCalls.flat()).not.toContain(otherHandle);
     expect(locateSpy).not.toHaveBeenCalled();
   });
 
@@ -878,6 +1110,9 @@ describe('LifecycleReactor retention enforcement', () => {
     const jobId = 'job-ondemand';
     const sessionId = await openClaimedSession(harness, jobId, 'retain');
     await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-ondemand.jsonl');
+    initRunningJob(harness, jobId, sessionId);
+    completeJob(harness, jobId, sessionId);
+    harness.sessionManager.releaseJob(sessionId, jobId);
 
     await harness.reactor.discardSessionArtifacts(sessionId);
 
@@ -891,11 +1126,14 @@ describe('LifecycleReactor retention enforcement', () => {
     });
     const jobId = 'job-ondemand-locate';
     const sessionId = await openClaimedSession(harness, jobId, 'retain');
+    initRunningJob(harness, jobId, sessionId);
     await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
       conversationRef: 'thread-ondemand',
       resumable: true,
       providerContinuity: { threadId: 'thread-ondemand' },
     });
+    completeJob(harness, jobId, sessionId);
+    harness.sessionManager.releaseJob(sessionId, jobId);
 
     await harness.reactor.discardSessionArtifacts(sessionId);
 
@@ -984,6 +1222,111 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(harness.discardCalls).toEqual([['/tmp/rollout-out-of-order.jsonl']]);
   });
 
+  it.each([
+    {
+      name: 'projection',
+      corrupt: (harness: Harness, sessionId: string, _jobId: string) => {
+        harness.db
+          .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
+          .run('not valid session json', sessionId);
+        return { boundary: 'session-projection', subjectKey: sessionId };
+      },
+    },
+    {
+      name: 'release event',
+      corrupt: (harness: Harness, sessionId: string, _jobId: string) => {
+        const row = harness.db
+          .prepare<[string], { seq: number }>(
+            `SELECT seq
+               FROM events
+              WHERE type = 'session.claim.released'
+                AND stream_id = ?`,
+          )
+          .get(sessionId);
+        if (row === undefined) throw new Error('Expected release event fixture.');
+        harness.db.prepare('UPDATE events SET body = ? WHERE seq = ?').run(Buffer.from('malformed'), row.seq);
+        return { boundary: 'retention-release-pair', subjectKey: String(row.seq) };
+      },
+    },
+    {
+      name: 'terminal event',
+      corrupt: (harness: Harness, _sessionId: string, jobId: string) => {
+        const row = harness.db
+          .prepare<[string], { seq: number }>(
+            `SELECT seq
+               FROM events
+              WHERE type = 'job.terminal.recorded'
+                AND stream_id = ?`,
+          )
+          .get(jobId);
+        if (row === undefined) throw new Error('Expected terminal event fixture.');
+        harness.db.prepare('UPDATE events SET body = ? WHERE seq = ?').run(Buffer.from('malformed'), row.seq);
+        return { boundary: 'retention-release-pair', subjectKey: String(row.seq) };
+      },
+    },
+  ])('quarantines one malformed $name pair without requeueing its pending siblings', async ({ corrupt }) => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const pairs = [
+      { jobId: 'job-queue-malformed', handle: '/tmp/rollout-queue-malformed.jsonl' },
+      { jobId: 'job-queue-valid-a', handle: '/tmp/rollout-queue-valid-a.jsonl' },
+      { jobId: 'job-queue-valid-b', handle: '/tmp/rollout-queue-valid-b.jsonl' },
+    ];
+    const seeded: Array<{ jobId: string; sessionId: string; handle: string }> = [];
+    for (const pair of pairs) {
+      const sessionId = await openClaimedSession(harness, pair.jobId);
+      await recordArtifact(harness, sessionId, pair.jobId, pair.handle);
+      initRunningJob(harness, pair.jobId, sessionId);
+      completeJobViaCoordinatorCommit(harness, pair.jobId, sessionId);
+      harness.sessionManager.releaseJob(sessionId, pair.jobId);
+      seeded.push({ ...pair, sessionId });
+    }
+
+    const malformed = seeded[0];
+    if (malformed === undefined) throw new Error('Expected malformed pair fixture.');
+    const quarantine = corrupt(harness, malformed.sessionId, malformed.jobId);
+
+    harness.reactor.observe(harness.appendedBatches.flat());
+    await harness.reactor.waitForIdle();
+
+    for (const valid of seeded.slice(1)) {
+      expect(
+        readRetentionEvents(harness, valid.sessionId).map((event) => ({ type: event.type, ...event.body })),
+        harness.logs.join('\n'),
+      ).toEqual([
+        {
+          type: 'session.retention.discard.requested',
+          sessionId: valid.sessionId,
+          attempt: 1,
+          handles: [valid.handle],
+        },
+        {
+          type: 'session.retention.discard.completed',
+          sessionId: valid.sessionId,
+          attempt: 1,
+          handles: [valid.handle],
+          outcome: 'discarded',
+        },
+      ]);
+    }
+    expect(harness.discardCalls).toEqual([['/tmp/rollout-queue-valid-a.jsonl'], ['/tmp/rollout-queue-valid-b.jsonl']]);
+    expect(readRetentionEvents(harness, malformed.sessionId)).toEqual([]);
+    expect(
+      harness.db
+        .prepare(
+          `SELECT boundary_id, subject_key, state, stage
+             FROM recovery_quarantine
+            WHERE boundary_id = ?
+              AND subject_key = ?`,
+        )
+        .get(quarantine.boundary, quarantine.subjectKey),
+    ).toEqual({
+      boundary_id: quarantine.boundary,
+      subject_key: quarantine.subjectKey,
+      state: 'active',
+      stage: 'hydrate',
+    });
+  });
+
   it('startup scan backfills existing terminal and release pairs', async () => {
     const harness = createHarness({ autoObserveCoordinator: false });
     const jobId = 'job-startup-scan';
@@ -1021,7 +1364,7 @@ describe('LifecycleReactor retention enforcement', () => {
       [validJobId, validSessionId],
     ] as const) {
       initRunningJob(harness, jobId, sessionId);
-      completeJob(harness, jobId, sessionId);
+      completeJobViaCoordinatorCommit(harness, jobId, sessionId);
       harness.sessionManager.releaseJob(sessionId, jobId);
     }
     await harness.reactor.waitForIdle();
@@ -1040,9 +1383,21 @@ describe('LifecycleReactor retention enforcement', () => {
         outcome: 'skipped_no_handles',
       },
     ]);
-    expect(harness.logs.join('\n')).toContain(
-      `Skipped malformed session projection for ${malformedSessionId} during lifecycle processing`,
-    );
+    expect(
+      harness.db
+        .prepare(
+          `SELECT boundary_id, subject_key, state, stage
+             FROM recovery_quarantine
+            WHERE boundary_id = 'session-projection'
+              AND subject_key = ?`,
+        )
+        .get(malformedSessionId),
+    ).toEqual({
+      boundary_id: 'session-projection',
+      subject_key: malformedSessionId,
+      state: 'active',
+      stage: 'hydrate',
+    });
     expect(readRetentionEvents(harness, malformedSessionId)).toEqual([]);
   });
 
@@ -1144,40 +1499,155 @@ describe('LifecycleReactor retention enforcement', () => {
     harness.reactor.dispose();
   });
 
-  it('observes recovery markError session releases through the observer-aware release path', async () => {
+  it('quarantines a malformed lease while a valid timer sibling expires and settles', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const malformedJobId = 'job-lease-malformed';
+    const validJobId = 'job-lease-valid-sibling';
+    const malformedSessionId = await openClaimedSession(harness, malformedJobId);
+    const validSessionId = await openClaimedSession(harness, validJobId);
+
+    for (const [jobId, sessionId, handle] of [
+      [malformedJobId, malformedSessionId, '/tmp/rollout-lease-malformed.jsonl'],
+      [validJobId, validSessionId, '/tmp/rollout-lease-valid-sibling.jsonl'],
+    ] as const) {
+      await recordArtifact(harness, sessionId, jobId, handle);
+      initRunningJob(harness, jobId, sessionId);
+      completeJob(harness, jobId, sessionId);
+      harness.sessionManager.releaseJob(sessionId, jobId);
+      recordContinuationLease(harness, sessionId, jobId, harness.runtime.time.now() + 100);
+    }
+
+    const malformedEntryRow = harness.db
+      .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
+      .get(malformedSessionId);
+    if (malformedEntryRow === undefined) throw new Error('Expected malformed lease projection fixture.');
+    const malformedEntry = JSON.parse(malformedEntryRow.entry) as Record<string, unknown>;
+    malformedEntry.continuationLease = {
+      ...(malformedEntry.continuationLease as Record<string, unknown>),
+      expiresAt: 'not-an-instant',
+    };
+    harness.db
+      .prepare('UPDATE projection_sessions SET entry = ? WHERE session_id = ?')
+      .run(JSON.stringify(malformedEntry), malformedSessionId);
+
+    await harness.reactor.scanStartup();
+    expect(readRetentionEvents(harness, malformedSessionId)).toEqual([]);
+    expect(
+      harness.db
+        .prepare(
+          `SELECT boundary_id, subject_key, state, stage
+             FROM recovery_quarantine
+            WHERE boundary_id = 'session-continuation-lease'
+              AND subject_key = ?`,
+        )
+        .get(malformedSessionId),
+    ).toEqual({
+      boundary_id: 'session-continuation-lease',
+      subject_key: malformedSessionId,
+      state: 'active',
+      stage: 'hydrate',
+    });
+
+    harness.runtime.time.tick(100);
+    await expectRetentionEvents(harness, validSessionId, [
+      {
+        type: 'session.retention.discard.requested',
+        attempt: 1,
+        handles: ['/tmp/rollout-lease-valid-sibling.jsonl'],
+      },
+      {
+        type: 'session.retention.discard.completed',
+        attempt: 1,
+        handles: ['/tmp/rollout-lease-valid-sibling.jsonl'],
+        outcome: 'discarded',
+      },
+    ]);
+    expect(harness.discardCalls).toEqual([['/tmp/rollout-lease-valid-sibling.jsonl']]);
+    harness.reactor.dispose();
+  });
+
+  it('quarantines one expiry append failure and keeps the valid sibling timer live', async () => {
+    const harness = createHarness({ autoObserveCoordinator: false });
+    const failedJobId = 'job-lease-expiry-append-fails';
+    const validJobId = 'job-lease-expiry-append-sibling';
+    const failedSessionId = await openClaimedSession(harness, failedJobId);
+    const validSessionId = await openClaimedSession(harness, validJobId);
+
+    for (const [jobId, sessionId, handle] of [
+      [failedJobId, failedSessionId, '/tmp/rollout-expiry-append-fails.jsonl'],
+      [validJobId, validSessionId, '/tmp/rollout-expiry-append-sibling.jsonl'],
+    ] as const) {
+      await recordArtifact(harness, sessionId, jobId, handle);
+      initRunningJob(harness, jobId, sessionId);
+      completeJob(harness, jobId, sessionId);
+      harness.sessionManager.releaseJob(sessionId, jobId);
+    }
+    recordContinuationLease(harness, failedSessionId, failedJobId, harness.runtime.time.now() - 1);
+    recordContinuationLease(harness, validSessionId, validJobId, harness.runtime.time.now() + 100);
+    harness.db.exec(`
+      CREATE TRIGGER reject_fixture_lease_expiry
+      BEFORE INSERT ON events
+      WHEN NEW.type = 'session.continuation_lease.expired'
+       AND NEW.stream_id = '${failedSessionId}'
+      BEGIN
+        SELECT RAISE(ABORT, 'fixture expiry append failure');
+      END;
+    `);
+
+    await harness.reactor.scanStartup();
+    expect(readRetentionEvents(harness, failedSessionId)).toEqual([]);
+    expect(
+      harness.db
+        .prepare(
+          `SELECT boundary_id, subject_key, state, stage
+             FROM recovery_quarantine
+            WHERE boundary_id = 'session-continuation-lease'
+              AND subject_key = ?`,
+        )
+        .get(failedSessionId),
+    ).toEqual({
+      boundary_id: 'session-continuation-lease',
+      subject_key: failedSessionId,
+      state: 'active',
+      stage: 'settle',
+    });
+    expect(
+      harness.db
+        .prepare(
+          `SELECT COUNT(*) AS count
+             FROM events
+            WHERE type = 'session.continuation_lease.expired'
+              AND stream_id = ?`,
+        )
+        .get(failedSessionId),
+    ).toEqual({ count: 0 });
+
+    harness.db.exec('DROP TRIGGER reject_fixture_lease_expiry');
+    harness.runtime.time.tick(100);
+    await expectRetentionEvents(harness, validSessionId, [
+      {
+        type: 'session.retention.discard.requested',
+        attempt: 1,
+        handles: ['/tmp/rollout-expiry-append-sibling.jsonl'],
+      },
+      {
+        type: 'session.retention.discard.completed',
+        attempt: 1,
+        handles: ['/tmp/rollout-expiry-append-sibling.jsonl'],
+        outcome: 'discarded',
+      },
+    ]);
+    expect(harness.discardCalls).toEqual([['/tmp/rollout-expiry-append-sibling.jsonl']]);
+    harness.reactor.dispose();
+  });
+
+  it('observes startup recovery markError releases through the observer-aware entry point', async () => {
     const harness = createHarness();
     const jobId = 'job-recovery-mark-error';
     const sessionId = await openClaimedSession(harness, jobId);
     initRunningJob(harness, jobId, sessionId);
-    const status = harness.progressStore.readStatus(jobId);
-    if (status === null) {
-      throw new Error(`Expected status for ${jobId}`);
-    }
 
-    await applyRecoveryAction(
-      { type: 'markError', jobId, status, fault: { kind: 'wrapper_lost' } },
-      {
-        progressStore: harness.progressStore,
-        recoveryRegistry: new RecoveryRegistry(harness.runtime.process),
-        queuedRecoverable: [],
-        runningRecoverable: [],
-        log: () => {},
-        runtime: harness.runtime,
-        createInvocationContext: (projectRoot) => ({
-          projectRoot,
-          pluginRoot: projectRoot,
-          coralEnv: {},
-          principal: testProjectPrincipal(projectRoot),
-        }),
-        getRecoveryService: () => {
-          throw new Error('markError must not fabricate or capture provider recovery authority');
-        },
-        sessionLookup: createProjectionSessionLookup(harness.db),
-        emitSessionReleased: () => {},
-        coordinatorCommit: harness.coordinatorCommit,
-        signal: new AbortController().signal,
-      },
-    );
+    await runCoordinatorStartupRecovery(harness);
 
     await expectRetentionEvents(harness, sessionId, [
       { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
@@ -1190,37 +1660,14 @@ describe('LifecycleReactor retention enforcement', () => {
     ]);
   });
 
-  it('observes recovery releaseSessionClaim through the observer-aware release path', async () => {
+  it('observes startup recovery releaseSessionClaim through the observer-aware entry point', async () => {
     const harness = createHarness();
     const jobId = 'job-recovery-release';
     const sessionId = await openClaimedSession(harness, jobId);
     initRunningJob(harness, jobId, sessionId);
     completeJob(harness, jobId, sessionId);
 
-    applyRecoveryAction(
-      { type: 'releaseSessionClaim', sessionId, jobId },
-      {
-        progressStore: harness.progressStore,
-        recoveryRegistry: new RecoveryRegistry(harness.runtime.process),
-        queuedRecoverable: [],
-        runningRecoverable: [],
-        log: () => {},
-        runtime: harness.runtime,
-        createInvocationContext: (projectRoot) => ({
-          projectRoot,
-          pluginRoot: projectRoot,
-          coralEnv: {},
-          principal: testProjectPrincipal(projectRoot),
-        }),
-        getRecoveryService: () => {
-          throw new Error('unexpected recovery service lookup');
-        },
-        sessionLookup: createProjectionSessionLookup(harness.db),
-        emitSessionReleased: () => {},
-        coordinatorCommit: harness.coordinatorCommit,
-        signal: new AbortController().signal,
-      },
-    );
+    await runCoordinatorStartupRecovery(harness);
 
     await expectRetentionEvents(harness, sessionId, [
       { type: 'session.retention.discard.requested', attempt: 1, handles: [] },

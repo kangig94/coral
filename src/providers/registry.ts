@@ -1,9 +1,10 @@
 import type { ProviderCatalog } from './catalog.js';
-import type {
-  ProviderAppServerImplementation,
-  ProviderArtifactCapability,
-  ProviderImplementation,
-  ProviderStandaloneImplementation,
+import {
+  PROVIDER_ARTIFACT_DISCARD_PROTOCOL,
+  type ProviderAppServerImplementation,
+  type ProviderArtifactCapability,
+  type ProviderImplementation,
+  type ProviderStandaloneImplementation,
 } from './contract.js';
 import {
   bindingFailure,
@@ -167,6 +168,14 @@ export class ProviderRegistry implements ProviderCatalog {
     }
     if (this.providers.has(name)) {
       throw new Error(`New provider "${name}" is already registered`);
+    }
+    if (
+      binding.artifactKind === 'managed' &&
+      (binding.artifactProtocol !== PROVIDER_ARTIFACT_DISCARD_PROTOCOL || !binding.hasArtifactReconciliation)
+    ) {
+      throw new Error(
+        `Managed provider '${name}' must declare ${PROVIDER_ARTIFACT_DISCARD_PROTOCOL} with reconciliation.`,
+      );
     }
     this.providers.set(name, { definition: spec, binding });
   }

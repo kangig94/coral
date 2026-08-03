@@ -143,8 +143,8 @@ describe('cli errors', () => {
       ],
       [
         'store_reset_incident_limit_exceeded',
-        'Too many retained store-reset entries to list safely; report a known incident ID directly.',
-        'Use an incident ID from the reset warning. If none is available, file a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
+        'Too many retained store-reset entries to list safely.',
+        'File a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
         1,
       ],
       [

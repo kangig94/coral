@@ -54,7 +54,7 @@ type RunShutdownSequenceContext = {
   streamResponses: Set<ServerResponse>;
   runtime: Runtime;
   namespace: string;
-  markJobsAsErrorFn: (namespace: string, message: string) => void;
+  markJobsAsErrorFn: (namespace: string, message: string, signal: AbortSignal) => void | Promise<void>;
   providerHostManager: ProviderHostLifecycle;
   kbDaemonSupervisor?: KbDaemonSupervisor;
   storeServicesRef: StoreServicesRef;
@@ -178,7 +178,19 @@ export async function runShutdownSequence({
 
   if (mode === 'hard') {
     if (storeServicesRef.tryGet() !== null) {
-      markJobsAsErrorFn(namespace, 'Backend shutting down');
+      await withBudget(
+        'crashed job terminalization',
+        async (signal) => {
+          try {
+            await markJobsAsErrorFn(namespace, 'Backend shutting down', signal);
+          } catch (error: unknown) {
+            log(`crashed job terminalization failed during shutdown: ${formatError(error)}\n`);
+          }
+        },
+        remainingDrain,
+        runtime.time,
+        log,
+      );
     }
     await withBudget(
       'provider host shutdown',

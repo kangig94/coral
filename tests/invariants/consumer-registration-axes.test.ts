@@ -61,6 +61,8 @@ describe('Two-axis kind/registrationKind invariant', () => {
           kind: 'apply',
           registrationKind: 'base',
           corpusInterest: 'content',
+          projectionIdentityHash: () => 'corpus-base-v1',
+          readAuthoritativeFreshness: async () => ({ kind: 'stale', reason: 'artifact-missing' }),
           apply: async () => {},
         },
         {
@@ -69,6 +71,8 @@ describe('Two-axis kind/registrationKind invariant', () => {
           kind: 'apply',
           registrationKind: 'expansion',
           corpusInterest: 'metadata',
+          projectionIdentityHash: () => 'corpus-expansion-v1',
+          readAuthoritativeFreshness: async () => ({ kind: 'stale', reason: 'artifact-missing' }),
           apply: async () => {},
         },
         {
@@ -83,6 +87,27 @@ describe('Two-axis kind/registrationKind invariant', () => {
         expect(handle.id).toBe(reg.id);
         expect(handle.registrationKind).toBe(reg.registrationKind);
       }
+    } finally {
+      void driver.shutdown();
+      db.close();
+    }
+  });
+
+  it('runtime: rejects an untyped corpus registration without authoritative freshness', () => {
+    const db = createDb();
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
+    try {
+      expect(() =>
+        driver.register({
+          id: 'corpus-without-authoritative-freshness',
+          authority: 'corpus',
+          kind: 'apply',
+          registrationKind: 'expansion',
+          corpusInterest: 'both',
+          projectionIdentityHash: () => 'corpus-projection-v1',
+          apply: async () => {},
+        } as unknown as ConsumerRegistration),
+      ).toThrow(/must supply readAuthoritativeFreshness/);
     } finally {
       void driver.shutdown();
       db.close();

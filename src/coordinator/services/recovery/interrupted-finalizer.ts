@@ -33,6 +33,16 @@ export class InterruptedRecoveryCommitError extends Error {
   }
 }
 
+export class RecoveryOwnershipReleaseError extends Error {
+  readonly jobId: string;
+
+  constructor(jobId: string, cause: unknown) {
+    super(`Recovery ownership release is incomplete for ${jobId}.`, { cause });
+    this.name = 'RecoveryOwnershipReleaseError';
+    this.jobId = jobId;
+  }
+}
+
 type InterruptedFinalizerDeps = Readonly<{
   runtime: Pick<Runtime, 'storage' | 'paths' | 'time'>;
   sessionManager: Pick<SessionRecoveryPort, 'recordArtifactHandleAtomic' | 'finalizeJobContinuityAtomic'>;
@@ -107,9 +117,13 @@ function exportResultAndReleaseOwnership(
     backendLog.warn(`Writing terminal artifact failed for ${plan.launchRecord.jobId}: ${String(error)}`);
   }
   const pool = deps.jobPools.get(plan.launchRecord.jobId) ?? plan.launchRecord.pool;
-  deps.abortRegistry.remove(plan.launchRecord.jobId);
-  deps.jobPools.delete(plan.launchRecord.jobId);
-  deps.launchAdmission.releaseLaunch(plan.launchRecord.jobId, pool);
+  try {
+    deps.abortRegistry.remove(plan.launchRecord.jobId);
+    deps.jobPools.delete(plan.launchRecord.jobId);
+    deps.launchAdmission.releaseLaunch(plan.launchRecord.jobId, pool);
+  } catch (error: unknown) {
+    throw new RecoveryOwnershipReleaseError(plan.launchRecord.jobId, error);
+  }
 }
 
 function continuityState(

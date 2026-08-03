@@ -4,6 +4,8 @@ import type { FtsSearchResult, RetrievalScope } from '../../kb/search/contract.j
 import type { KbCorpusSnapshot, KbEngineRuntimeBase } from '../../kb/contract.js';
 import type {
   ConsumerApplyError,
+  CorpusAuthoritativeFreshness,
+  CorpusAuthoritativeFreshnessTarget,
   CorpusApplyResult,
   CorpusConsumerApplyContext,
   CorpusConsumerRegistration,
@@ -17,6 +19,7 @@ import { createOramaDb, toOramaDocument, type KbOramaDocument } from './document
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 import {
   ORAMA_PROJECTION_IDENTITY_HASH,
+  createOramaArtifactPort,
   createOramaProjectionIdentityInput,
   type OramaEntryManifest,
   type OramaEntryManifestEntry,
@@ -154,8 +157,18 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     );
   }
 
-  private projectionIdentityHash(): string {
+  projectionIdentityHash(): string {
     return ORAMA_PROJECTION_IDENTITY_HASH(this.projectionIdentityInput());
+  }
+
+  readAuthoritativeFreshness(target: CorpusAuthoritativeFreshnessTarget): Promise<CorpusAuthoritativeFreshness> {
+    const declaredAnalyzers = readDeclaredAnalyzers(this.runtime);
+    return createOramaArtifactPort(
+      this.runtime.projectionArtifacts.files,
+      this.runtime.projectionArtifacts.runtimeDir,
+      declaredAnalyzers,
+      (declared) => this.analyzerManager.effectiveDeclaredAnalyzers(declared, this.kiwiRuntime),
+    ).readAuthoritativeFreshness(target);
   }
 
   /** Builds a complete projection from KB-materialized corpus input. */

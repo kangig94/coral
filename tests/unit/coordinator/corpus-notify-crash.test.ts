@@ -150,6 +150,8 @@ function createVectorFixtureConsumer(options: {
     kind: 'apply',
     registrationKind: 'expansion',
     corpusInterest: 'content',
+    projectionIdentityHash: () => 'vector-fixture-v1',
+    readAuthoritativeFreshness: async () => ({ kind: 'stale', reason: 'artifact-missing' }),
     async apply({ snapshot }) {
       options.db
         .prepare(

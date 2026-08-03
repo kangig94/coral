@@ -1,5 +1,3 @@
-import { backendLog } from '../../infra/backend-log.js';
-import { formatError } from '../../infra/error-format.js';
 import type { Database } from '../../store/db.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -187,6 +185,13 @@ export function createDiscussRuntime({
     readDiscussSources: () => createJournal().listSources(),
   };
 
+  discussRecovery.registerDiscussionStartupRuntime(getDiscussContext, {
+    getDatabase: () => getProgressStore().getDb(),
+    time: runtime.time,
+    resolveProjectSource: world.resolveProjectSource,
+    resumeLoop: discussLoop.resumeLoop,
+  });
+
   const hooks = {
     onShutdown: async (mode: 'handoff' | 'hard', signal: AbortSignal) => {
       const discussSourcesAtShutdown = mode === 'hard' ? [...knownDiscussSources(readHelpersDeps)] : [];
@@ -224,15 +229,7 @@ export function createDiscussRuntime({
       world.discussRegistry.contexts.clear();
     },
     onIdleCheck: () => hasRunningSessions(world.discussRegistry),
-    onRecoveryComplete: async (resumes: RecoveredDiscussResume[]) => {
-      for (const recovered of resumes) {
-        try {
-          discussLoop.resumeLoop(recovered.ctx, recovered.sessionId, recovered.invocationCtx);
-        } catch (error: unknown) {
-          backendLog.warn(`Discuss resume failed for session ${recovered.sessionId}: ${formatError(error)}`);
-        }
-      }
-    },
+    onRecoveryComplete: (_resumes: RecoveredDiscussResume[]) => Promise.resolve(),
   };
 
   return {

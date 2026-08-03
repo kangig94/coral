@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { KB_COMPONENT_ID, type RuntimeComponentId } from '#src/coordinator/runtime-components/contract.js';
+import {
+  KB_COMPONENT_ID,
+  type RuntimeComponent,
+  type RuntimeComponentId,
+} from '#src/coordinator/runtime-components/contract.js';
 import { createRuntimeComponentRegistry } from '#src/coordinator/runtime-components/registry.js';
 
 import { createStubRuntimeComponent, runtimeComponentPhase } from './stub.js';
@@ -16,6 +20,34 @@ describe('createRuntimeComponentRegistry', () => {
 
     expect(registry.list()).toEqual([{ id: KB_COMPONENT_ID, phase: 'online' }]);
     expect(registry.status(KB_COMPONENT_ID)).toEqual({ id: KB_COMPONENT_ID, phase: 'online' });
+  });
+
+  it('contains status getter failures per component for list and status reads', () => {
+    const registry = createRuntimeComponentRegistry();
+    const unreadableId = 'unreadable' as RuntimeComponentId;
+    const unreadable: RuntimeComponent = {
+      id: unreadableId,
+      get status(): RuntimeComponent['status'] {
+        throw new Error('database is closed');
+      },
+      async init() {},
+      async dispose() {},
+    };
+    registry.register(unreadable);
+    registry.register(
+      createStubRuntimeComponent({
+        id: KB_COMPONENT_ID,
+        initialPhase: runtimeComponentPhase.online(KB_COMPONENT_ID),
+      }),
+    );
+
+    const unavailable = {
+      id: unreadableId,
+      phase: 'offline',
+      reason: 'Status unavailable: database is closed',
+    };
+    expect(registry.list()).toEqual([unavailable, { id: KB_COMPONENT_ID, phase: 'online' }]);
+    expect(registry.status(unreadableId)).toEqual(unavailable);
   });
 
   it('throws on duplicate registration', () => {

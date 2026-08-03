@@ -1,0 +1,20 @@
+import type { RecoveryReceipt } from '../recovery/containment.js';
+import { retentionWorkItemRecoverySource } from './retention-work-item-recovery-source.js';
+
+type RawRetention = { readonly id: string };
+
+interface Database {
+  runtimeQuery(): string;
+}
+
+export class LifecycleReactor {
+  constructor(private readonly database: Database) {}
+
+  runtimeValue(): string {
+    return this.database.runtimeQuery();
+  }
+}
+
+export function composeRetentionRecovery(receipts: readonly RecoveryReceipt<RawRetention>[]): void {
+  void retentionWorkItemRecoverySource(receipts);
+}

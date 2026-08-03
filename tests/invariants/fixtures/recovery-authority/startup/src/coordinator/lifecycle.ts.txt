@@ -1,0 +1,5 @@
+import { coordinatorJobRecoverySource } from './services/recovery/coordinator-job-source.js';
+
+export function composeLifecycleRecovery(): void {
+  void coordinatorJobRecoverySource();
+}

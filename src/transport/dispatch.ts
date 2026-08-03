@@ -7,6 +7,7 @@ import { isCapability, type Capability } from '../security/capability.js';
 import type { Principal, ResourceBinding } from '../security/principal.js';
 import { authorize, type Decision } from '../security/policy/authorize.js';
 import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
+import type { RecoveryQuarantineClearRequest } from '../recovery/source-registry.js';
 import { domainError, type ToolDomainResult } from './tool-result.js';
 import { domainResultToHttp, launchToHttp } from './response.js';
 import type { HttpHandlerPorts } from './server-ports.js';
@@ -274,6 +275,9 @@ export async function executeCatalogRequest(
   }
 
   switch (spec.name) {
+    case 'coordinator.recovery_quarantine.clear':
+      return unary(await rpcPorts.recoveryQuarantine.clear(request as RecoveryQuarantineClearRequest, abortSignal));
+
     case 'sessions.create': {
       const parsed = request as Record<string, unknown> & { provider: string; prompt: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);

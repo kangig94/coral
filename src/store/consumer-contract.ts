@@ -113,6 +113,35 @@ export type CorpusApplyResult =
   | { readonly advance: false; readonly reason: 'stale-snapshot' }
   | { readonly advanceTo: CorpusSnapshot };
 
+export interface CorpusAuthoritativeFreshnessTarget {
+  readonly snapshot: CorpusSnapshot;
+  readonly corpusInterest: CorpusInterest;
+  readonly generatedCommunityGeneration: number;
+  readonly generatedCommunityDocsHash: string;
+  readonly projectionIdentityHash: string;
+}
+
+export type CorpusAuthoritativeFreshness =
+  | {
+      readonly kind: 'current';
+      readonly appliedSnapshot: CorpusSnapshot;
+      readonly generatedCommunityGeneration: number;
+      readonly generatedCommunityDocsHash: string;
+      readonly projectionIdentityHash: string;
+    }
+  | {
+      readonly kind: 'stale';
+      readonly reason:
+        | 'artifact-missing'
+        | 'lane-behind'
+        | 'generated-community-changed'
+        | 'projection-identity-changed';
+    }
+  | {
+      readonly kind: 'unavailable';
+      readonly reason: 'malformed' | 'probe-failed' | 'ahead-of-authority';
+    };
+
 export interface JournalConsumerReadPort {
   readCursor(consumerId: string): number;
 }
@@ -142,6 +171,8 @@ export interface CorpusConsumerRegistration {
   readonly corpusInterest: CorpusInterest;
   readonly projectionSync?: 'text-index';
   readonly onApplyFailure?: (err: ConsumerApplyError) => void;
+  projectionIdentityHash(): string;
+  readAuthoritativeFreshness(target: CorpusAuthoritativeFreshnessTarget): Promise<CorpusAuthoritativeFreshness>;
   apply(ctx: CorpusConsumerApplyContext): Promise<void | CorpusApplyResult>;
 }
 

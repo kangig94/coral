@@ -1,0 +1,18 @@
+import { defineRecoverySource, type RecoverySource } from '../../../recovery/containment.js';
+
+type RawJob = { readonly id: string };
+
+interface DatabaseReader {
+  scanJobs(): readonly RawJob[];
+}
+
+function scanCoordinatorJobRecoveryEnvelopes(database: DatabaseReader): readonly RawJob[] {
+  return database.scanJobs();
+}
+
+export function coordinatorJobRecoverySource(database: DatabaseReader): RecoverySource<RawJob> {
+  return defineRecoverySource({
+    boundary: 'coordinator-job',
+    scan: () => scanCoordinatorJobRecoveryEnvelopes(database),
+  });
+}

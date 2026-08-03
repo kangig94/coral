@@ -1,0 +1,12 @@
+import { defineRecoverySource, type RecoverySource } from '../../recovery/containment.js';
+
+type RawCandidate = { readonly id: string };
+
+function scanDiscussionCandidateEnvelopes(): readonly RawCandidate[] {
+  return [];
+}
+
+export function discussionCandidateRecoverySource(): RecoverySource<RawCandidate> {
+  const rows = scanDiscussionCandidateEnvelopes();
+  return defineRecoverySource({ boundary: 'discussion-candidate', scan: () => rows });
+}

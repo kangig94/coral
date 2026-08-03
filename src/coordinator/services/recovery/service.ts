@@ -36,7 +36,11 @@ import { elapsedDurationMs } from '../../../jobs/duration.js';
 import { snapshotProviderRecoveryAuthority } from './authority-snapshot.js';
 import { planInterruptedAppServerRecovery, planInterruptedDurableRecovery } from './interrupted-plan.js';
 import { performInterruptedAppServerRecovery, performInterruptedDurableRecovery } from './interrupted-performer.js';
-import { finalizeInterruptedAppServerRecovery, finalizeInterruptedDurableRecovery } from './interrupted-finalizer.js';
+import {
+  finalizeInterruptedAppServerRecovery,
+  finalizeInterruptedDurableRecovery,
+  RecoveryOwnershipReleaseError,
+} from './interrupted-finalizer.js';
 
 function requireProviderLaunchRecord(
   launchRecord: JobLaunch,
@@ -112,12 +116,7 @@ export class RecoveryService {
     if (provider === null || launchRecord.sessionId === null) {
       return { ok: false, failure: { reason: 'invalid-persisted-binding', provider: provider ?? 'unknown' } };
     }
-    let session: ProviderSession | null;
-    try {
-      session = this.deps.sessionManager.readById(launchRecord.sessionId, { forceFresh: true });
-    } catch {
-      return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
-    }
+    const session = this.deps.sessionManager.readById(launchRecord.sessionId, { forceFresh: true });
     if (session === null) return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
     if (providerSessionProvider(session) !== launchRecord.provider) {
       return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
@@ -348,13 +347,17 @@ export class RecoveryService {
   }
 
   private cleanupRecoveryRegistration(jobId: string, pool: LaunchPool, queuedHandle: QueuedHandle | null = null): void {
-    if (queuedHandle !== null) {
-      void queuedHandle.waitForPermit().catch(() => undefined);
-      queuedHandle.cancel();
+    try {
+      if (queuedHandle !== null) {
+        void queuedHandle.waitForPermit().catch(() => undefined);
+        queuedHandle.cancel();
+      }
+      this.deps.abortRegistry.remove(jobId);
+      this.deps.jobPools.delete(jobId);
+      this.deps.launchAdmission.releaseLaunch(jobId, pool);
+    } catch (error: unknown) {
+      throw new RecoveryOwnershipReleaseError(jobId, error);
     }
-    this.deps.abortRegistry.remove(jobId);
-    this.deps.jobPools.delete(jobId);
-    this.deps.launchAdmission.releaseLaunch(jobId, pool);
   }
 
   completeRecoveredJob(
@@ -383,9 +386,13 @@ export class RecoveryService {
     const releaseResult = this.deps.sessionManager.releaseJob(sessionId, jobId);
 
     const pool = this.deps.jobPools.get(jobId) ?? options.pool;
-    this.deps.abortRegistry.remove(jobId);
-    this.deps.jobPools.delete(jobId);
-    this.deps.launchAdmission.releaseLaunch(jobId, pool);
+    try {
+      this.deps.abortRegistry.remove(jobId);
+      this.deps.jobPools.delete(jobId);
+      this.deps.launchAdmission.releaseLaunch(jobId, pool);
+    } catch (error: unknown) {
+      throw new RecoveryOwnershipReleaseError(jobId, error);
+    }
     return releaseResult;
   }
 

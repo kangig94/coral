@@ -401,6 +401,8 @@ describe('Orama coordinator reconcile ownership', () => {
       kind: projection.kind,
       registrationKind: projection.registrationKind,
       projectionSync: projection.projectionSync,
+      projectionIdentityHash: () => projection.projectionIdentityHash(),
+      readAuthoritativeFreshness: (target) => projection.readAuthoritativeFreshness(target),
       apply: (ctx) => projection.apply(ctx),
     });
     const requester = createOramaProjectionReconcileRequester({

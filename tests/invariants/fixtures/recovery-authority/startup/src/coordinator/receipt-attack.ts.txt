@@ -1,0 +1,11 @@
+import type { RecoveryReceipt } from '../recovery/containment.js';
+
+type RawJob = { readonly id: string };
+
+export function forgeReceipt(): RecoveryReceipt<RawJob> {
+  return {} as RecoveryReceipt<RawJob>;
+}
+
+export function inspectReceipt(receipt: RecoveryReceipt<RawJob>): unknown {
+  return (receipt as unknown as { readonly payload: RawJob }).payload;
+}

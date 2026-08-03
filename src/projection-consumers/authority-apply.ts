@@ -9,6 +9,8 @@ import { backendLog } from '../infra/backend-log.js';
 import type { Database } from '../store/db.js';
 import type {
   ConsumerApplyError,
+  CorpusAuthoritativeFreshness,
+  CorpusAuthoritativeFreshnessTarget,
   CorpusConsumerRegistration,
   CorpusStateReadPort,
   JournalApplyRegistration,
@@ -16,7 +18,7 @@ import type {
 } from '../store/consumer-contract.js';
 import type { ConsumerCursorRepository } from './persistence.js';
 import type { ConsumerState } from './state.js';
-import { toConsumerApplyError } from './state.js';
+import { isCorpusAuthoritativeFreshness, isKbCorpusSnapshot, toConsumerApplyError } from './state.js';
 
 const EMPTY_PROJECTION_INPUT: KbProjectionInput = {
   index: {
@@ -248,20 +250,48 @@ async function runCorpusApply(
       return true;
     }
 
+    const controller = new AbortController();
+    if (state.kind === 'corpus') {
+      state.activeController = controller;
+    }
+    const projectionInput = await prepareCorpusProjectionInput(
+      controller.signal,
+      deps,
+      options.generatedCommunityFreshness,
+    );
+    const projectionIdentityHash = reg.projectionIdentityHash();
+    if (typeof projectionIdentityHash !== 'string' || projectionIdentityHash.length === 0) {
+      throw new Error(`Corpus consumer '${reg.id}' returned an invalid projection identity`);
+    }
+    const freshnessTarget: CorpusAuthoritativeFreshnessTarget = {
+      snapshot,
+      corpusInterest: reg.corpusInterest,
+      generatedCommunityGeneration: projectionInput.generatedCommunityGeneration,
+      generatedCommunityDocsHash: projectionInput.generatedCommunityDocsHash,
+      projectionIdentityHash,
+    };
+    const authoritativeFreshness: unknown = await reg.readAuthoritativeFreshness(freshnessTarget);
+    if (!isCorpusAuthoritativeFreshness(authoritativeFreshness)) {
+      throw new Error(`Corpus consumer '${reg.id}' returned a malformed authoritative freshness result`);
+    }
+    if (authoritativeFreshness.kind === 'unavailable') {
+      throw new Error(
+        `Corpus consumer '${reg.id}' authoritative freshness is unavailable: ${authoritativeFreshness.reason}`,
+      );
+    }
+    if (authoritativeFreshness.kind === 'current') {
+      assertCurrentFreshnessProof(reg, freshnessTarget, authoritativeFreshness);
+      deps.repository.repairCorpusCursor(reg, authoritativeFreshness.appliedSnapshot);
+      recordCorpusFreshness(state, projectionInput, options.forceGeneration);
+      deps.resolveWaiters(state, authoritativeFreshness.appliedSnapshot);
+      return true;
+    }
+
     const trackTextProjection = reg.projectionSync === 'text-index';
     if (trackTextProjection) {
       deps.onTextProjectionApplyStart?.();
     }
     try {
-      const controller = new AbortController();
-      if (state.kind === 'corpus') {
-        state.activeController = controller;
-      }
-      const projectionInput = await prepareCorpusProjectionInput(
-        controller.signal,
-        deps,
-        options.generatedCommunityFreshness,
-      );
       const applyResult = await reg.apply({
         snapshot,
         journalReader: deps.journalReader,
@@ -281,16 +311,7 @@ async function runCorpusApply(
         deps.onTextProjectionSync?.();
       }
       deps.repository.advanceCorpusCursor(reg, appliedSnapshot);
-      if (state.kind === 'corpus' && options.forceGeneration !== undefined) {
-        state.lastAppliedForceGeneration = Math.max(state.lastAppliedForceGeneration, options.forceGeneration);
-      }
-      if (state.kind === 'corpus') {
-        state.lastAppliedGeneratedCommunityGeneration = projectionInput.generatedCommunityGeneration;
-        state.lastAppliedGeneratedCommunityDocsHash = projectionInput.generatedCommunityDocsHash;
-      }
-      if (state.kind === 'corpus') {
-        state.lastApplyError = null;
-      }
+      recordCorpusFreshness(state, projectionInput, options.forceGeneration);
       deps.resolveWaiters(state, appliedSnapshot);
       return true;
     } finally {
@@ -308,6 +329,56 @@ async function runCorpusApply(
     backendLog.error(`ConsumerDriver apply failed (${reg.id})`, err);
     return false;
   }
+}
+
+function assertCurrentFreshnessProof(
+  reg: CorpusConsumerRegistration,
+  target: CorpusAuthoritativeFreshnessTarget,
+  proof: Extract<CorpusAuthoritativeFreshness, { kind: 'current' }>,
+): void {
+  if (
+    !isKbCorpusSnapshot(proof.appliedSnapshot) ||
+    proof.generatedCommunityGeneration !== target.generatedCommunityGeneration ||
+    proof.generatedCommunityDocsHash !== target.generatedCommunityDocsHash ||
+    proof.projectionIdentityHash !== target.projectionIdentityHash ||
+    !snapshotsMatchForInterest(proof.appliedSnapshot, target.snapshot, reg.corpusInterest)
+  ) {
+    throw new Error(`Corpus consumer '${reg.id}' returned a false current freshness proof`);
+  }
+}
+
+function snapshotsMatchForInterest(
+  applied: KbCorpusSnapshot,
+  target: KbCorpusSnapshot,
+  interest: CorpusConsumerRegistration['corpusInterest'],
+): boolean {
+  const contentMatches =
+    applied.contentSeq === target.contentSeq && applied.contentManifestHash === target.contentManifestHash;
+  const metadataMatches =
+    applied.metadataSeq === target.metadataSeq && applied.metadataManifestHash === target.metadataManifestHash;
+  if (interest === 'content') {
+    return contentMatches;
+  }
+  if (interest === 'metadata') {
+    return metadataMatches;
+  }
+  return contentMatches && metadataMatches && applied.snapshotId === target.snapshotId;
+}
+
+function recordCorpusFreshness(
+  state: ConsumerState,
+  projectionInput: KbProjectionInput,
+  forceGeneration: number | undefined,
+): void {
+  if (state.kind !== 'corpus') {
+    return;
+  }
+  if (forceGeneration !== undefined) {
+    state.lastAppliedForceGeneration = Math.max(state.lastAppliedForceGeneration, forceGeneration);
+  }
+  state.lastAppliedGeneratedCommunityGeneration = projectionInput.generatedCommunityGeneration;
+  state.lastAppliedGeneratedCommunityDocsHash = projectionInput.generatedCommunityDocsHash;
+  state.lastApplyError = null;
 }
 
 async function prepareCorpusProjectionInput(

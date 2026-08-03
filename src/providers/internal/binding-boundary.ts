@@ -26,6 +26,9 @@ import type { AppServerHostAuthority } from './app-server-host.js';
 
 export interface ErasedProviderBindingBoundary {
   readonly provider: string;
+  readonly artifactKind: ProviderArtifactCapability['kind'];
+  readonly artifactProtocol: string | null | undefined;
+  readonly hasArtifactReconciliation: boolean;
   readonly profileContract: CanonicalContractValue;
   readonly bindingContract: CanonicalContractValue;
   readonly continuityContract: CanonicalContractValue;
@@ -277,6 +280,9 @@ export function eraseBindingCodec<
 
   const boundary: ErasedProviderBindingBoundary = {
     provider,
+    artifactKind: artifacts.kind,
+    artifactProtocol: artifacts.kind === 'managed' ? artifacts.protocol : null,
+    hasArtifactReconciliation: artifacts.kind === 'managed' && typeof artifacts.reconcileDiscard === 'function',
     profileContract: authority.profileContract,
     bindingContract: authority.bindingContract,
     continuityContract: authority.continuityContract,

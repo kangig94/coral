@@ -1,0 +1,18 @@
+interface Database {
+  runtimeQuery(): string;
+}
+
+interface RuntimeStore {
+  currentValue(): string;
+}
+
+export class Coordinator {
+  constructor(
+    private readonly database: Database,
+    private readonly store: RuntimeStore,
+  ) {}
+
+  runtimeValue(): string {
+    return `${this.database.runtimeQuery()}:${this.store.currentValue()}`;
+  }
+}

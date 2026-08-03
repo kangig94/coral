@@ -8,6 +8,7 @@ const capabilitySet = new Set<Capability>(CAPABILITIES);
 const expectedRpcRequires = {
   'sessions.create': 'jobs:control',
   'workflow.run': 'jobs:control',
+  'coordinator.recovery_quarantine.clear': 'system:debug',
   'coordinator.equipExpansion': 'expansion:manage',
   'coordinator.unequipExpansion': 'expansion:manage',
   'coordinator.removeExpansionCatalog': 'expansion:manage',

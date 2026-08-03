@@ -114,9 +114,11 @@ Provider-routing failures are intentionally distinct so the operator can repair 
 
 See [CLI Errors](./cli-errors.md) for the wire envelope and exit-code behavior.
 
-`ProviderBindingEnvelope`, `ProviderScope`, journal events, and projections carry no migration versions. Coral provides no upcaster, dual reader, default fill, or old-format decoder. The active `StoreFormatFingerprint` covers the executable SQL manifest, explicit event body/materializer and append-validator semantic contracts, persisted decoder contracts, and each provider's profile, binding, and continuity codecs. Startup refuses a generated store whose fingerprint or product version is missing, unsupported, older-incompatible, or newer-incompatible; it never translates or quarantines old durable state implicitly. Only the explicit `backend store-reset discard` operator command quarantines DB/WAL/SHM plus the redundant hook-safety format sidecar before initializing an empty store.
+`ProviderBindingEnvelope`, `ProviderScope`, journal events, and projections carry no migration versions. Coral provides no upcaster, dual reader, default fill, or old-format decoder. The active `StoreFormatFingerprint` covers the executable SQL manifest, explicit event body/materializer and append-validator semantic contracts, persisted decoder contracts, and each provider's profile, binding, and continuity codecs. Inside the ordinary-boot `store.db.reset.lock` critical section, `older-incompatible` and `corrupt-or-unsupported` automatically publish a V3 incident and initialize fresh state; on upgrade the user does nothing. `newer-incompatible` still refuses with `store_newer_incompatible` and requires `backend store-reset discard`, pending the separate cross-version target validator and continuity handoff.
 
 #### Upgrade cutover
+
+The zero-action store replacement above does not permit old and new daemon generations to run together; this gate concerns process cutover, not store-reset recovery.
 
 This release does not support old and new daemon generations running together. Treat upgrade as an operator-owned gate:
 
@@ -253,7 +255,9 @@ Per-client hook registration, each referenced by its own `plugin.json` (`.claude
 
 ### Store-reset incidents
 
-A reset is unconditional and needs no confirmation, but it occurs only when an operator explicitly runs `backend store-reset discard`; ordinary startup refuses incompatible state without moving any files. Active Coral history and state from the previous store are unavailable after the reset; KB Markdown is unaffected. The operator service copies and durably verifies DB/WAL/SHM/format evidence under the private `store-reset-quarantine/.staging/<incident-id>/` transaction, durably publishes its manifest, removes the matching active files, then publishes `store-reset-quarantine/<incident-id>/`. The discard command prints the incident ID and warns that retained evidence is diagnostic-only and cannot restore active state. A completed incident is retained indefinitely as support evidence, not recoverable product state. Coral provides no restore, migration, compatibility reader, upload, telemetry, pruning, or automatic issue creation.
+A reset is unconditional and needs no confirmation. Ordinary boot performs it automatically for `older-incompatible` and `corrupt-or-unsupported`; `backend store-reset discard` remains the operator path for `newer-incompatible`. The reset path copies and durably verifies DB/WAL/SHM/format evidence under the private `store-reset-quarantine/.staging/<incident-id>/` transaction, durably publishes its manifest, removes the matching active files, then publishes `store-reset-quarantine/<incident-id>/`. Automatic incidents use schema V3 with required `resetPolicyCause: older-incompatible | corrupt-or-unsupported | newer-incompatible-invalid-target`; the last cause is designed but deliberately unwired. V2 incidents remain readable for diagnostics but are never eligible for automatic resume. Active Coral history and state from the previous store are unavailable after reset; KB Markdown is unaffected. The explicit discard command prints the incident ID and warns that retained evidence is diagnostic-only. Completed evidence is retained indefinitely for support, never restored as product state. Coral provides no restore, migration, compatibility reader, upload, telemetry, pruning, or automatic issue creation.
+
+An interrupted automatic reset resumes only when the V3 manifest is self-authored by the same validated build authority, targets the same canonical store and flavor, and carries a resettable cause. Foreign, V2, mismatched, malformed, ambiguous, or non-resettable incidents fail closed with `store_reset_quarantine_failed` and remain visible for operator inspection.
 
 The daemon-independent operator commands require `--flavor` because the stopped daemon cannot supply that value ambiently:
 
@@ -264,7 +268,7 @@ coral-cli backend store-reset list --target <legacy|current>
 coral-cli backend store-reset report --target <legacy|current> <incident-id>
 ```
 
-- `store-reset discard` is the only command that creates an incident. `current` maps to the internal `gen2` generation; `legacy` is inspection-only and a discard request always refuses before path resolution or socket binding.
+- `store-reset discard` is the explicit incident path for the still-refused newer-store case; ordinary boot also creates incidents automatically for older or corrupt/unsupported stores. `current` maps to the internal `gen2` generation; `legacy` is inspection-only and a discard request always refuses before path resolution or socket binding.
 - `kb-commit quarantine` accepts the exact safe single-segment commit ID from `kb_commit_corrupt_or_unsupported` and moves only that commit plus matching index evidence.
 - `store-reset list` performs bounded local discovery for the selected generation. `store-reset report` validates one canonical incident ID, verifies retained evidence, and produces public-safe Markdown.
 
@@ -273,6 +277,17 @@ Run `store-reset discard` and `kb-commit quarantine` only after `coral-cli backe
 The generated Markdown contains only allowlisted build/reset metadata, recorded file sizes and hashes, fixed verification states, and a fixed SQLite integrity state. It excludes paths, namespace and process identifiers, rows, prompts, event bodies, environment values, credentials, account/workspace identifiers, child output, and raw exception or SQLite text. If a report cannot be generated, the fixed CLI error includes a public-safe next step and the issue form accepts that complete error output instead. Never attach DB/WAL/SHM files, `.env` or settings files, credentials, tokens, or unredacted logs.
 
 Inspection is intentionally bounded: list reads at most 4,097 root entries and rejects overflow; an incident may contain only the manifest plus four canonical evidence names; the manifest is limited to 64 KiB and JSON depth 8; report hashing is capped at 1 GiB cumulatively; SQLite staging is capped at 256 MiB cumulatively. SQLite runs only against a private temporary copy with a 5-second execution deadline, 1-second graceful termination window, 1-second forced-close window, 64-byte stdout cap, and 4 KiB stderr cap. Only the `backend store-reset report` invocation translates CLI SIGINT/SIGTERM into the diagnostic child shutdown sequence; unrelated commands keep Node's default signal behavior. Limit, cleanup, and termination failures become fixed statuses rather than partial or raw output.
+
+### Recovery quarantine
+
+Recovery scan/hydrate/settle failures and durable continuations converge in `recovery_quarantine`. The commands are:
+
+```bash
+coral-cli backend recovery-quarantine list
+coral-cli backend recovery-quarantine clear --boundary <boundary> --key <key> --revision <revision|until-cleared>
+```
+
+`list` reads a compatible local store directly and works with the daemon down. `clear` sends `coordinator.recovery_quarantine.clear` over authenticated IPC and requires the canonical coordinator to be running—the inverse of the offline `store-reset discard` mutation. It retries one exact `(boundary, key, revision)` coordinate; there is deliberately no clear-all operation. The catalog also projects `POST /coordinator/recovery-quarantine/clear`, but HTTP backend-token capabilities exclude its required `system:debug`; the supported operator path is IPC.
 
 ### Backend state
 
@@ -361,6 +376,7 @@ clients/bridge/manifest.json                    -> embedded build identity + has
 projection_sessions in store.db                -> projected provider session continuity and scope
 projection_discuss in store.db                 -> projected discuss snapshots and source indexes
 projection_jobs.diagnostics in store.db        -> projected job terminal diagnostics, including canonical usage summaries
+recovery_quarantine in store.db                -> exact retained recovery failures and continuations
 ~/.coral/exports/jobs/<jobId>/result.md        -> durable job result export (prod)
 ~/.coral/exports-dev/jobs/<jobId>/result.md    -> durable job result export (dev)
 <os-tmpdir>/coral-jobs/<jobId>/                -> live job scratch artifacts

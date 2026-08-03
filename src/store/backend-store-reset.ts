@@ -30,7 +30,10 @@ import {
   STORE_RESET_STAGING_DIRECTORY,
   type StoreResetEvidenceFileName,
   type StoreResetIncidentFile,
+  type StoreResetIncidentManifest,
   type StoreResetIncidentManifestV2,
+  type StoreResetIncidentManifestV3,
+  type StoreResetPolicyCause,
 } from './reset-incident.js';
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
@@ -39,8 +42,16 @@ const STEADY_STATE_BUSY_TIMEOUT_MS = 5_000;
 const BACKEND_STORE_RESET_AUTHORITY_BRAND: unique symbol = Symbol('BackendStoreResetAuthority');
 
 type ResettableStoreFormatClassification =
-  | { readonly kind: 'missing'; readonly current: StoreFormatFingerprint }
-  | { readonly kind: 'mismatch'; readonly current: StoreFormatFingerprint; readonly stored: string };
+  | Extract<StoreFormatClassification, { readonly kind: 'older-incompatible' }>
+  | Extract<StoreFormatClassification, { readonly kind: 'corrupt-or-unsupported' }>;
+
+type LegacyOperatorResetClassification = {
+  readonly kind: 'newer-incompatible';
+  readonly currentFingerprint: StoreFormatFingerprint;
+  readonly storedFingerprint: StoreFormatFingerprint;
+};
+
+type IncidentClassification = ResettableStoreFormatClassification | LegacyOperatorResetClassification;
 
 export type BackendStoreResetAuthority = Readonly<{
   socketPath: string;
@@ -85,10 +96,30 @@ type StoreFileCandidate = {
   readonly name: StoreResetEvidenceFileName;
 };
 
+type InterruptedStoreResetRefusalCode =
+  | 'store_reset_interrupted_ambiguous'
+  | 'store_reset_interrupted_foreign'
+  | 'store_reset_interrupted_mismatched'
+  | 'store_reset_interrupted_authority_mismatch'
+  | 'store_reset_interrupted_malformed'
+  | 'store_reset_interrupted_non_resettable';
+
+class InterruptedStoreResetRefusal extends Error {
+  readonly code: InterruptedStoreResetRefusalCode;
+
+  constructor(code: InterruptedStoreResetRefusalCode, cause?: unknown) {
+    super('Interrupted backend store reset cannot be resumed automatically.', { cause });
+    this.name = 'InterruptedStoreResetRefusal';
+    this.code = code;
+  }
+}
+
 export type BackendStoreResetIncident = {
   readonly incidentId: string;
   readonly resetAt: string;
   readonly reason: 'missing' | 'mismatch';
+  readonly schemaVersion: 2 | 3;
+  readonly resetPolicyCause: StoreResetPolicyCause | null;
   readonly fileCount: number;
 };
 
@@ -184,32 +215,22 @@ function assertResetAuthority(
   }
 }
 
-function storedFingerprint(classification: ResettableStoreFormatClassification): string | null {
-  return classification.kind === 'mismatch' && isStoreFormatFingerprint(classification.stored)
-    ? classification.stored
-    : null;
+function storedFingerprint(classification: IncidentClassification): string | null {
+  return isStoreFormatFingerprint(classification.storedFingerprint) ? classification.storedFingerprint : null;
 }
 
-function resettableStoreFormatClassification(
-  classification: StoreFormatClassification,
-): ResettableStoreFormatClassification | null {
-  if (
-    classification.kind === 'absent' ||
-    classification.kind === 'fresh' ||
-    classification.kind === 'compatible' ||
-    classification.kind === 'legacy-adoptable'
-  ) {
-    return null;
+function resettableStoreFormatClassification(classification: StoreFormatClassification): IncidentClassification | null {
+  if (classification.kind === 'older-incompatible' || classification.kind === 'corrupt-or-unsupported') {
+    return classification;
   }
-  const storedFingerprint = classification.storedFingerprint;
-  if (isStoreFormatFingerprint(storedFingerprint)) {
+  if (classification.kind === 'newer-incompatible') {
     return {
-      kind: 'mismatch',
-      current: classification.currentFingerprint,
-      stored: storedFingerprint,
+      kind: 'newer-incompatible',
+      currentFingerprint: classification.currentFingerprint,
+      storedFingerprint: classification.storedFingerprint,
     };
   }
-  return { kind: 'missing', current: classification.currentFingerprint };
+  return null;
 }
 
 function sameFileIdentity(left: StorageBigIntStat, right: StorageBigIntStat): boolean {
@@ -536,19 +557,19 @@ function evidenceMatches(
 function validateStagingEntries(
   storage: StoragePort,
   stagingDirectory: string,
-  manifest: StoreResetIncidentManifestV2,
+  manifest: StoreResetIncidentManifest,
   requireComplete: boolean,
 ): void {
   const read = storage.readDirectoryBoundedSync(stagingDirectory, MAX_INCIDENT_DIR_ENTRIES);
   if (read.overflow) {
-    throw new Error('Interrupted store-reset staging directory exceeds its entry limit.');
+    throw new InterruptedStoreResetRefusal('store_reset_interrupted_ambiguous');
   }
   const expected = new Set<string>([STORE_RESET_MANIFEST_FILE_NAME, ...manifest.files.map((file) => file.name)]);
   if (read.entries.some((entry) => !expected.has(entry))) {
-    throw new Error('Interrupted store-reset publication contains unexpected content.');
+    throw new InterruptedStoreResetRefusal('store_reset_interrupted_foreign');
   }
   if (requireComplete && read.entries.length !== expected.size) {
-    throw new Error('Interrupted store-reset publication is incomplete.');
+    throw new InterruptedStoreResetRefusal('store_reset_interrupted_malformed');
   }
 }
 
@@ -571,21 +592,21 @@ function reconcileCommittedEvidence(
   files: StoreFileSet,
   stagingDirectory: string,
   stagingIdentity: StorageBigIntStat,
-  manifest: StoreResetIncidentManifestV2,
+  manifest: StoreResetIncidentManifest,
 ): void {
   let remainingBudget = MAX_REPORT_HASH_BYTES;
   for (const expected of manifest.files) {
     if (expected.sizeBytes > remainingBudget) {
-      throw new Error('Interrupted store-reset publication exceeds the cumulative evidence budget.');
+      throw new InterruptedStoreResetRefusal('store_reset_interrupted_malformed');
     }
     const active = candidateForEvidence(files, expected.name);
     const staged = { source: join(stagingDirectory, expected.name), name: expected.name };
     if (!evidenceMatches(storage, staged, expected)) {
-      throw new Error('Interrupted store-reset publication evidence is missing or changed.');
+      throw new InterruptedStoreResetRefusal('store_reset_interrupted_mismatched');
     }
     if (storage.existsSync(active.source)) {
       if (!evidenceMatches(storage, active, expected)) {
-        throw new Error('Interrupted store-reset publication has conflicting active and staged evidence.');
+        throw new InterruptedStoreResetRefusal('store_reset_interrupted_mismatched');
       }
       requireSameDirectory(storage, stagingDirectory, stagingIdentity);
       storage.unlinkSync(active.source);
@@ -597,7 +618,7 @@ function reconcileCommittedEvidence(
   const recordedNames = new Set(manifest.files.map((file) => file.name));
   for (const name of STORE_RESET_EVIDENCE_FILE_NAMES) {
     if (!recordedNames.has(name) && storage.existsSync(candidateForEvidence(files, name).source)) {
-      throw new Error('Interrupted store-reset publication found unrecorded active evidence.');
+      throw new InterruptedStoreResetRefusal('store_reset_interrupted_mismatched');
     }
   }
 }
@@ -605,7 +626,8 @@ function reconcileCommittedEvidence(
 function resumeInterruptedIncident(
   runtime: Pick<Runtime, 'env' | 'storage'>,
   files: StoreFileSet,
-): { readonly incident: BackendStoreResetIncident; readonly manifest: StoreResetIncidentManifestV2 } | null {
+  authorizeCommittedManifest?: (manifest: StoreResetIncidentManifest) => void,
+): { readonly incident: BackendStoreResetIncident; readonly manifest: StoreResetIncidentManifest } | null {
   const interrupted = detectInterruptedIncident(runtime, files);
   if (interrupted === null) return null;
   if (interrupted.manifest === null) {
@@ -614,6 +636,7 @@ function resumeInterruptedIncident(
   }
 
   const { manifest, quarantineRoot, stagingDirectory, stagingIdentity, stagingRoot } = interrupted;
+  authorizeCommittedManifest?.(manifest);
   reconcileCommittedEvidence(runtime.storage, files, stagingDirectory, stagingIdentity, manifest);
 
   validateStagingEntries(runtime.storage, stagingDirectory, manifest, true);
@@ -625,6 +648,8 @@ function resumeInterruptedIncident(
       incidentId: manifest.incidentId,
       resetAt: manifest.resetAt,
       reason: manifest.reason,
+      schemaVersion: manifest.schemaVersion,
+      resetPolicyCause: manifest.schemaVersion === 3 ? manifest.resetPolicyCause : null,
       fileCount: manifest.files.length,
     },
     manifest,
@@ -633,7 +658,7 @@ function resumeInterruptedIncident(
 
 type InterruptedIncident = {
   readonly incidentId: string;
-  readonly manifest: StoreResetIncidentManifestV2 | null;
+  readonly manifest: StoreResetIncidentManifest | null;
   readonly quarantineRoot: string;
   readonly stagingDirectory: string;
   readonly stagingIdentity: StorageBigIntStat;
@@ -646,21 +671,36 @@ function detectInterruptedIncident(
 ): InterruptedIncident | null {
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
   if (!runtime.storage.existsSync(quarantineRoot)) return null;
-  assertQuarantineRoot(runtime.storage, quarantineRoot);
+  try {
+    assertQuarantineRoot(runtime.storage, quarantineRoot);
+  } catch (error: unknown) {
+    throw new InterruptedStoreResetRefusal('store_reset_interrupted_foreign', error);
+  }
   const stagingRoot = join(quarantineRoot, STORE_RESET_STAGING_DIRECTORY);
   if (!runtime.storage.existsSync(stagingRoot)) return null;
-  assertPrivateDirectory(runtime.storage, stagingRoot, runtime.env.platform());
+  try {
+    assertPrivateDirectory(runtime.storage, stagingRoot, runtime.env.platform());
+  } catch (error: unknown) {
+    throw new InterruptedStoreResetRefusal('store_reset_interrupted_foreign', error);
+  }
   const stagingRead = runtime.storage.readDirectoryBoundedSync(stagingRoot, 1);
-  if (stagingRead.overflow) throw new Error('Multiple interrupted store-reset publications exist.');
+  if (stagingRead.overflow) {
+    throw new InterruptedStoreResetRefusal('store_reset_interrupted_ambiguous');
+  }
   const stagingNames = stagingRead.entries.filter(isCanonicalStoreResetIncidentId);
   if (stagingNames.length !== stagingRead.entries.length) {
-    throw new Error('Unexpected entry exists in the store-reset staging directory.');
+    throw new InterruptedStoreResetRefusal('store_reset_interrupted_foreign');
   }
   if (stagingNames.length === 0) return null;
 
   const stagingName = stagingNames[0];
   const stagingDirectory = join(stagingRoot, stagingName);
-  const stagingIdentity = assertContainedDirectory(runtime.storage, stagingRoot, stagingDirectory);
+  let stagingIdentity: StorageBigIntStat;
+  try {
+    stagingIdentity = assertContainedDirectory(runtime.storage, stagingRoot, stagingDirectory);
+  } catch (error: unknown) {
+    throw new InterruptedStoreResetRefusal('store_reset_interrupted_foreign', error);
+  }
   const manifestPath = join(stagingDirectory, STORE_RESET_MANIFEST_FILE_NAME);
   if (!runtime.storage.existsSync(manifestPath)) {
     return {
@@ -672,9 +712,14 @@ function detectInterruptedIncident(
       stagingRoot,
     };
   }
-  const manifest = parseStoreResetIncidentManifest(readManifestBounded(runtime.storage, manifestPath));
+  let manifest: StoreResetIncidentManifest;
+  try {
+    manifest = parseStoreResetIncidentManifest(readManifestBounded(runtime.storage, manifestPath));
+  } catch (error: unknown) {
+    throw new InterruptedStoreResetRefusal('store_reset_interrupted_malformed', error);
+  }
   if (manifest.incidentId !== stagingName) {
-    throw new Error('Interrupted store-reset publication identity does not match its directory.');
+    throw new InterruptedStoreResetRefusal('store_reset_interrupted_mismatched');
   }
   validateStagingEntries(runtime.storage, stagingDirectory, manifest, true);
   return {
@@ -737,18 +782,18 @@ function removeCommittedActiveEvidence(
 function createIncidentManifest(
   runtime: Pick<Runtime, 'env'>,
   authority: BackendStoreResetAuthority,
-  classification: ResettableStoreFormatClassification,
+  classification: IncidentClassification,
   incidentId: string,
   resetAt: string,
   files: readonly StoreResetIncidentFile[],
-): StoreResetIncidentManifestV2 {
-  return {
-    schemaVersion: 2,
+): StoreResetIncidentManifest {
+  const recordedStoredFingerprint = storedFingerprint(classification);
+  const common = {
     incidentId,
     resetAt,
-    reason: classification.kind,
-    storedFingerprint: storedFingerprint(classification),
-    expectedFingerprint: classification.current,
+    reason: recordedStoredFingerprint === null ? ('missing' as const) : ('mismatch' as const),
+    storedFingerprint: recordedStoredFingerprint,
+    expectedFingerprint: classification.currentFingerprint,
     build: {
       version: authority.version,
       buildSetId: authority.buildSetId,
@@ -767,15 +812,41 @@ function createIncidentManifest(
     },
     files,
   };
+
+  if (classification.kind === 'newer-incompatible') {
+    // The operator boundary preserves its existing newer-store behavior, but
+    // cannot claim AC17's invalid-target policy before that typed proof exists.
+    return { schemaVersion: 2, ...common } satisfies StoreResetIncidentManifestV2;
+  }
+  return {
+    schemaVersion: 3,
+    incidentId: common.incidentId,
+    resetAt: common.resetAt,
+    reason: common.reason,
+    storedFingerprint: common.storedFingerprint,
+    expectedFingerprint: common.expectedFingerprint,
+    resetPolicyCause: classification.kind,
+    resetPolicyEvidence: null,
+    target: {
+      storeDbPath: authority.storeDbPath,
+      flavor: authority.flavor,
+    },
+    build: common.build,
+    runtime: common.runtime,
+    handoff: common.handoff,
+    files: common.files,
+  } satisfies StoreResetIncidentManifestV3;
 }
 
-function recordIncidentAudit(manifest: StoreResetIncidentManifestV2): void {
+function recordIncidentAudit(manifest: StoreResetIncidentManifest): void {
   writeAuditEvent(
     'store_reset_quarantine',
     {
       incidentId: manifest.incidentId,
       resetAt: manifest.resetAt,
       reason: manifest.reason,
+      incidentSchemaVersion: `v${manifest.schemaVersion}`,
+      resetPolicyCause: manifest.schemaVersion === 3 ? manifest.resetPolicyCause : null,
       storedFingerprint: manifest.storedFingerprint,
       expectedFingerprint: manifest.expectedFingerprint,
       version: manifest.build.version,
@@ -792,7 +863,7 @@ function publishIncident(
   runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'storage' | 'time'>,
   authority: BackendStoreResetAuthority,
   files: StoreFileSet,
-  classification: ResettableStoreFormatClassification,
+  classification: IncidentClassification,
 ): BackendStoreResetIncident | undefined {
   const candidates = activeEvidenceCandidates(runtime.storage, files);
   if (candidates.length === 0) {
@@ -851,7 +922,9 @@ function publishIncident(
     return {
       incidentId,
       resetAt,
-      reason: classification.kind,
+      reason: manifest.reason,
+      schemaVersion: manifest.schemaVersion,
+      resetPolicyCause: manifest.schemaVersion === 3 ? manifest.resetPolicyCause : null,
       fileCount: manifestFiles.length,
     };
   } catch (error: unknown) {
@@ -894,31 +967,60 @@ export function publishBackendStoreResetIncident(
   if (files.dbFile === ':memory:') {
     throw new Error('Store reset requires a real filesystem store path.');
   }
-  const classification = classifyStoreFile(files.dbFile, runtime.storage, options.storeFormat);
+  let classification: StoreFormatClassification;
+  try {
+    classification = classifyStoreFile(files.dbFile, runtime.storage, options.storeFormat);
+  } catch (error: unknown) {
+    const corruptClassification = corruptClassificationFromFailure(error, options.storeFormat);
+    if (corruptClassification === null) throw error;
+    classification = corruptClassification;
+  }
   const resettableClassification = resettableStoreFormatClassification(classification);
   return resettableClassification === null
     ? undefined
     : publishIncident(runtime, authority, files, resettableClassification);
 }
 
-function refuseInterruptedIncident(runtime: Pick<Runtime, 'env' | 'flavor' | 'storage'>, files: StoreFileSet): void {
-  let interrupted: InterruptedIncident | null;
-  try {
-    interrupted = detectInterruptedIncident(runtime, files);
-  } catch (error: unknown) {
-    throw documentedCoralSetupError({
-      code: 'store_reset_quarantine_failed',
-      reason: 'interrupted',
-      flavor: runtime.flavor,
-      cause: error instanceof Error ? error.message : String(error),
-    });
+function authorizeAutomaticIncidentResume(
+  authority: BackendStoreResetAuthority,
+  manifest: StoreResetIncidentManifest,
+): void {
+  if (manifest.schemaVersion !== 3) {
+    throw new InterruptedStoreResetRefusal('store_reset_interrupted_non_resettable');
   }
-  if (interrupted !== null) {
+  if (
+    manifest.build.version !== authority.version ||
+    manifest.build.buildSetId !== authority.buildSetId ||
+    manifest.build.backendBundleHash !== authority.bundleHash ||
+    manifest.build.flavor !== authority.flavor ||
+    manifest.target.storeDbPath !== authority.storeDbPath ||
+    manifest.target.flavor !== authority.flavor ||
+    manifest.runtime.namespace !== authority.namespace ||
+    manifest.expectedFingerprint !== authority.storeFormatFingerprint
+  ) {
+    throw new InterruptedStoreResetRefusal('store_reset_interrupted_authority_mismatch');
+  }
+}
+
+function resumeAutomaticInterruptedIncident(
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'storage'>,
+  authority: BackendStoreResetAuthority,
+  files: StoreFileSet,
+): BackendStoreResetIncident | null {
+  try {
+    return (
+      resumeInterruptedIncident(runtime, files, (manifest) => {
+        authorizeAutomaticIncidentResume(authority, manifest);
+      })?.incident ?? null
+    );
+  } catch (error: unknown) {
+    const refusalCode = error instanceof InterruptedStoreResetRefusal ? error.code : 'store_reset_quarantine_failed';
+    const cause = error instanceof InterruptedStoreResetRefusal ? error.cause : error;
     throw documentedCoralSetupError({
-      code: 'store_reset_quarantine_failed',
-      reason: 'interrupted',
+      code: refusalCode,
+      ...(refusalCode === 'store_reset_quarantine_failed' ? { reason: 'interrupted' } : {}),
       flavor: runtime.flavor,
-      incidentId: interrupted.incidentId,
+      cause: cause instanceof Error ? cause.message : String(cause),
     });
   }
 }
@@ -960,6 +1062,23 @@ function refuseIncompatibleStore(
       ...context,
     });
   }
+}
+
+function corruptClassificationFromFailure(
+  error: unknown,
+  current: StoreFormatDescription,
+): Extract<StoreFormatClassification, { readonly kind: 'corrupt-or-unsupported' }> | null {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!/file is not a database|database disk image is malformed|malformed database schema/iu.test(message)) {
+    return null;
+  }
+  return {
+    kind: 'corrupt-or-unsupported',
+    currentFingerprint: current.fingerprint,
+    currentProductVersion: current.productVersion,
+    storedFingerprint: null,
+    storedProductVersion: null,
+  };
 }
 
 export function openOrResetBackendStoreDb(
@@ -1009,20 +1128,34 @@ export function openOrResetBackendStoreDb(
       throw error;
     }
 
-    refuseInterruptedIncident(runtime, files);
+    resumeAutomaticInterruptedIncident(runtime, authority, files);
 
     let classification: StoreFormatClassification;
     try {
       classification = classifyStoreFile(files.dbFile, runtime.storage, options.storeFormat);
     } catch (error: unknown) {
-      throw documentedCoralSetupError({
-        code: 'store_corrupt_or_unsupported',
-        path: files.dbFile,
-        flavor: runtime.flavor,
-        cause: error instanceof Error ? error.message : String(error),
-      });
+      const corruptClassification = corruptClassificationFromFailure(error, options.storeFormat);
+      if (corruptClassification === null) {
+        throw documentedCoralSetupError({
+          code: 'store_corrupt_or_unsupported',
+          path: files.dbFile,
+          flavor: runtime.flavor,
+          cause: error instanceof Error ? error.message : String(error),
+        });
+      }
+      classification = corruptClassification;
     }
-    refuseIncompatibleStore(runtime, files, classification);
+    if (classification.kind === 'older-incompatible' || classification.kind === 'corrupt-or-unsupported') {
+      if (publishIncident(runtime, authority, files, classification) === undefined) {
+        throw documentedCoralSetupError({
+          code: 'store_reset_quarantine_failed',
+          reason: 'classified_evidence_missing',
+          flavor: runtime.flavor,
+        });
+      }
+    } else {
+      refuseIncompatibleStore(runtime, files, classification);
+    }
 
     const db = openStoreDatabase({
       path: files.dbFile,

@@ -1,0 +1,11 @@
+interface Database {
+  runtimeQuery(): string;
+}
+
+export class LifecycleReactor {
+  constructor(private readonly database: Database) {}
+
+  runtimeValue(): string {
+    return this.database.runtimeQuery();
+  }
+}

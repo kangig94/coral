@@ -2,11 +2,11 @@ import { formatStoreResetReport } from '../../src/cli/format/store-reset.js';
 import {
   projectStoreResetPublicReport,
   type StoreResetIncidentLocalReport,
-  type StoreResetIncidentManifestV2,
+  type StoreResetIncidentManifestV3,
 } from '../../src/store/reset-incident.js';
 
 declare const localReport: StoreResetIncidentLocalReport;
-declare const manifest: StoreResetIncidentManifestV2;
+declare const manifest: StoreResetIncidentManifestV3;
 
 formatStoreResetReport(projectStoreResetPublicReport(localReport));
 
@@ -20,6 +20,9 @@ const forged = {
   incidentId: manifest.incidentId,
   resetAt: manifest.resetAt,
   reason: manifest.reason,
+  schemaVersion: manifest.schemaVersion,
+  resetPolicyCause: manifest.resetPolicyCause,
+  resetPolicyEvidence: manifest.resetPolicyEvidence,
   storedFingerprint: manifest.storedFingerprint,
   expectedFingerprint: manifest.expectedFingerprint,
   build: manifest.build,
@@ -34,3 +37,9 @@ const forged = {
 
 // @ts-expect-error a structurally matching object cannot forge the private brand.
 formatStoreResetReport(forged);
+
+if (manifest.resetPolicyEvidence !== null) {
+  // @ts-expect-error unvalidated executable paths are not manifest authority.
+  const executablePath = manifest.resetPolicyEvidence.observedTarget.executablePath;
+  void executablePath;
+}

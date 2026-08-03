@@ -127,9 +127,8 @@ async function runQuarantineCommand(harness: ProjectionHarness, commitId: string
   const program = new Command();
   program.exitOverride();
   const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-  registerBackendCommands(
-    program,
-    {
+  registerBackendCommands(program, {
+    storeReset: {
       list: () => ({ incidents: [] }),
       report: async () => {
         throw new Error('Store reset is not part of KB commit recovery.');
@@ -138,14 +137,14 @@ async function runQuarantineCommand(harness: ProjectionHarness, commitId: string
         throw new Error('Store reset is not part of KB commit recovery.');
       },
     },
-    {
+    kbCommit: {
       quarantine: async (flavor, blockingCommitId) => {
         expect(flavor).toBe('prod');
         result = await quarantineKbCommit({ runtime: harness.runtime, commitId: blockingCommitId });
         return result;
       },
     },
-  );
+  });
 
   try {
     await program.parseAsync([

@@ -34,7 +34,9 @@ export type TransportRuntimeComponentStatus =
   | {
       id: string;
       phase: 'degraded';
-      reason: { kind: 'curate-publish'; consecutiveFailures: number; lastError: string };
+      reason:
+        | { kind: 'curate-publish'; consecutiveFailures: number; lastError: string }
+        | { kind: 'recovery-quarantine'; count: number; lastError: string };
     }
   | {
       id: string;

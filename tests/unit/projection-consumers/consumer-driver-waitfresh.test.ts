@@ -10,7 +10,11 @@ import { ConsumerDriver, FreshnessApplyFailure, FreshnessTimeout } from '#src/pr
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
 import type { KbCorpusProjectionReader, PrepareKbProjectionInputOptions } from '#src/kb/projection-input-contract.js';
-import type { CorpusConsumerRegistration, JournalConsumerRegistration } from '#src/store/consumer-contract.js';
+import type {
+  CorpusAuthoritativeFreshness,
+  CorpusConsumerRegistration,
+  JournalConsumerRegistration,
+} from '#src/store/consumer-contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
@@ -43,6 +47,10 @@ function createCorpusDriver(
   timers: Pick<TimePort, 'setTimeout' | 'clearTimeout'> = REAL_CONSUMER_DRIVER_TIMERS,
   onApplyFailure?: CorpusConsumerRegistration['onApplyFailure'],
   corpusProjectionReader?: KbCorpusProjectionReader,
+  readAuthoritativeFreshness: CorpusConsumerRegistration['readAuthoritativeFreshness'] = async () => ({
+    kind: 'stale',
+    reason: 'artifact-missing',
+  }),
 ): {
   db: Database;
   driver: ConsumerDriver;
@@ -63,6 +71,8 @@ function createCorpusDriver(
     kind: 'apply',
     registrationKind: 'expansion',
     corpusInterest: 'both',
+    projectionIdentityHash: () => 'waitfresh-test-projection-v1',
+    readAuthoritativeFreshness,
     ...(onApplyFailure === undefined ? {} : { onApplyFailure }),
     apply,
   });
@@ -379,6 +389,146 @@ describe('ConsumerDriver waitFreshUntil', () => {
       await driver.drainAll();
     } finally {
       releaseApply.resolve();
+      await driver.shutdown();
+      db.close();
+    }
+  });
+
+  it.each(['malformed', 'probe-failed', 'ahead-of-authority'] as const)(
+    'fails closed and rejects waiters when authoritative freshness is unavailable: %s',
+    async (reason) => {
+      const apply = vi.fn(async () => {});
+      const onApplyFailure = vi.fn();
+      const snapshot = buildSnapshot({ snapshotId: `unavailable-${reason}`, contentSeq: 4, metadataSeq: 4 });
+      const { db, driver, consumerId, handle } = createCorpusDriver(
+        apply,
+        REAL_CONSUMER_DRIVER_TIMERS,
+        onApplyFailure,
+        undefined,
+        async () => ({ kind: 'unavailable', reason }),
+      );
+      const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation((): void => {});
+
+      try {
+        let resolved = false;
+        const waitResult = driver.waitFreshUntil('corpus', snapshot, consumerId, 5000).then(
+          () => {
+            resolved = true;
+          },
+          (error: unknown) => error,
+        );
+
+        driver.notify('corpus', snapshot);
+        await driver.drainAll();
+
+        await expect(waitResult).resolves.toBeInstanceOf(FreshnessApplyFailure);
+        expect(resolved).toBe(false);
+        expect(apply).not.toHaveBeenCalled();
+        expect(onApplyFailure).toHaveBeenCalledTimes(1);
+        expect(handle.status()).toMatchObject({
+          authority: 'corpus',
+          snapshotId: null,
+          contentSeq: 0,
+          metadataSeq: 0,
+          pending: false,
+        });
+      } finally {
+        errorSpy.mockRestore();
+        await driver.shutdown();
+        db.close();
+      }
+    },
+  );
+
+  it('fails closed when a consumer returns a false current proof', async () => {
+    const apply = vi.fn(async () => {});
+    const snapshot = buildSnapshot({ snapshotId: 'false-current', contentSeq: 6, metadataSeq: 6 });
+    const { db, driver, consumerId, handle } = createCorpusDriver(
+      apply,
+      REAL_CONSUMER_DRIVER_TIMERS,
+      undefined,
+      undefined,
+      async (target): Promise<CorpusAuthoritativeFreshness> => ({
+        kind: 'current',
+        appliedSnapshot: target.snapshot,
+        generatedCommunityGeneration: target.generatedCommunityGeneration,
+        generatedCommunityDocsHash: `${target.generatedCommunityDocsHash}-wrong`,
+        projectionIdentityHash: target.projectionIdentityHash,
+      }),
+    );
+    const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation((): void => {});
+
+    try {
+      const waitResult = driver.waitFreshUntil('corpus', snapshot, consumerId, 5000).catch((error: unknown) => error);
+      driver.notify('corpus', snapshot);
+      await driver.drainAll();
+
+      await expect(waitResult).resolves.toBeInstanceOf(FreshnessApplyFailure);
+      expect(apply).not.toHaveBeenCalled();
+      expect(handle.status()).toMatchObject({ snapshotId: null, contentSeq: 0, metadataSeq: 0 });
+    } finally {
+      errorSpy.mockRestore();
+      await driver.shutdown();
+      db.close();
+    }
+  });
+
+  it('rejects every waiter and leaves the cursor unchanged when exact-current cursor repair fails', async () => {
+    const apply = vi.fn(async () => {});
+    const snapshot = buildSnapshot({ snapshotId: 'repair-write-fault', contentSeq: 9, metadataSeq: 9 });
+    const { db, driver, consumerId, handle } = createCorpusDriver(
+      apply,
+      REAL_CONSUMER_DRIVER_TIMERS,
+      undefined,
+      undefined,
+      async (target) => ({
+        kind: 'current',
+        appliedSnapshot: target.snapshot,
+        generatedCommunityGeneration: target.generatedCommunityGeneration,
+        generatedCommunityDocsHash: target.generatedCommunityDocsHash,
+        projectionIdentityHash: target.projectionIdentityHash,
+      }),
+    );
+    db.exec(`
+      CREATE TRIGGER fail_exact_current_cursor_repair
+      BEFORE UPDATE OF snapshot_id ON consumer_cursors
+      WHEN NEW.consumer_id = '${consumerId}'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected cursor repair fault');
+      END
+    `);
+    const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation((): void => {});
+
+    try {
+      let resolveCount = 0;
+      const waits = Array.from({ length: 3 }, () =>
+        driver.waitFreshUntil('corpus', snapshot, consumerId, 5000).then(
+          () => {
+            resolveCount += 1;
+          },
+          (error: unknown) => error,
+        ),
+      );
+
+      driver.notify('corpus', snapshot);
+      await driver.drainAll();
+      const results = await Promise.all(waits);
+
+      expect(results).toHaveLength(3);
+      for (const result of results) {
+        expect(result).toBeInstanceOf(FreshnessApplyFailure);
+      }
+      expect(resolveCount).toBe(0);
+      expect(apply).not.toHaveBeenCalled();
+      expect(handle.status()).toMatchObject({
+        authority: 'corpus',
+        snapshotId: null,
+        contentSeq: 0,
+        metadataSeq: 0,
+        pending: false,
+      });
+    } finally {
+      errorSpy.mockRestore();
       await driver.shutdown();
       db.close();
     }

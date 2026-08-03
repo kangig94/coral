@@ -26,11 +26,15 @@ The backend uses a **single Runtime world** pattern: one interface with a fixed 
 
 ## Journal
 
-The Journal is the event-sourced truth spine for all domain state. It provides append, rebuild, strict envelope decoding, domain append-validator, and projection-reducer dispatch primitives backed by SQLite in WAL mode. `store/` exports the SQL/Journal substrate; product read APIs live in `read-model/CoralStore` and domain-owned read query modules. There are no body versions, upcasters, or old-format readers: the application-wide store format covers every persisted codec and executable DDL fragment, and startup destructively resets incompatible durable state.
+The Journal is the event-sourced truth spine for all domain state. It provides append, rebuild, strict envelope decoding, domain append-validator, and projection-reducer dispatch primitives backed by SQLite in WAL mode. `store/` exports the SQL/Journal substrate; product read APIs live in `read-model/CoralStore` and domain-owned read query modules. There are no body versions, upcasters, or old-format readers: the application-wide store format covers every persisted codec and executable DDL fragment. Startup automatically resets older or corrupt/unsupported state; a newer store still produces the typed operator-recovery refusal.
 
 ## Causality
 
 Cross-stream event references live below the domains in `causality/`. `CauseRef` is vocabulary, not storage: domains can point at originating Journal events without importing `store/`, database handles, or each other's shells.
+
+## Recovery Containment
+
+`recovery/` owns the single recovery-enumeration boundary, opaque source handles, source registry, and quarantine persistence; raw source modules and settlement policy remain domain-owned and carry no registry/pool knowledge into the boundary. `RecoveryContainment.each(source, policy)` is the only enumeration surface and runs the scan → hydrate → settle phases. Quarantine or durable-continuation dispositions converge in `recovery_quarantine`, while successful exact retries remove their retained row. Static architecture invariants reject direct scan access, forged handles/receipts, eager pre-enumeration, and unmanifested startup walks. Because `recovery_quarantine` is executable store DDL, adding it moved the application-wide store-format fingerprint for this release.
 
 ## Domains
 
@@ -45,13 +49,13 @@ Each domain is self-contained: its own contract (events, projection, read-models
 
 ## Provider Adapters
 
-Provider adapters translate between the domain contract and external CLIs. Codex uses the Codex app-server surface; Claude uses a broker helper around Claude CLI, defaulting to `claude -p` stream-json and retaining an opt-in PTY TUI transport. Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters normalize provider usage at this boundary to the canonical additive `UsageSummary` (`inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens`, optional `costUsd`) before it reaches jobs. Provider-owned profile, binding, and continuity parsers contribute their exact persisted contracts to the application-wide store format.
+Provider adapters translate between the domain contract and external CLIs. Codex uses the Codex app-server surface; Claude uses a broker helper around Claude CLI, defaulting to `claude -p` stream-json and retaining an opt-in PTY TUI transport. Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters normalize provider usage at this boundary to the canonical additive `UsageSummary` (`inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens`, optional `costUsd`) before it reaches jobs. Provider-owned profile, binding, and continuity parsers contribute their exact persisted contracts to the application-wide store format. `ProviderRegistry.register` rejects a managed provider unless it declares `provider-artifact-discard.v1` with both `discardArtifacts` and `reconcileDiscard`; reconciliation is closed over `applied | not-applied | definitive-failure | unknown`.
 
 ## Expansion
 
 Expansion is the installable runtime contract that lets optional backends bind to a domain's `RuntimeBinding<Backed<T>>` cells without the domain knowing whether the binding is held. An `Expansion = (host) => void | Promise<void>` is a single-function contract; bundled and installed expansions receive the same host contract. The KB daemon owns and composes `ExpansionLifecycleService`. Its manifest catalog merges the static `BUNDLED_ENGINES` entries with validated installed-tier rows from `expansion_manifest_catalog`. At boot, the daemon invokes bundled loaders from its static fallback registry; an explicit equip dynamically imports an installed entry, invokes it under a fresh disposable scope, and persists `{id, version, installed_at}` in `expansion_state`. Unequip disposes that scope and deletes the row.
 
-KbRuntime registers built-in capability descriptors and empty `RuntimeBinding<Backed<T>>` cells; engines fill those cells through the same binding contract whether they are bundled or installed. Bundled Orama binds `kb.fts` during expansion lifecycle startup. `kb.embedding` carries no constructor-time default — embedders are peer engines (`gemini`, `onnx`) — and no current first-party engine binds `kb.vector`; external engines may fill it through the provider-neutral contract. Single-occupancy is enforced inside `RuntimeBinding.bind` itself (throws `binding-occupied` if held), not by lifecycle bookkeeping. Retrieval-consumer freshness is observed through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` after the Corpus commit; readiness is a comparison (`backed.consumer.cursor ≥ corpus version`), not a method on the `Backed<T>` contract.
+KbRuntime registers built-in capability descriptors and empty `RuntimeBinding<Backed<T>>` cells; engines fill those cells through the same binding contract whether they are bundled or installed. Bundled Orama binds `kb.fts` during expansion lifecycle startup. `kb.embedding` carries no constructor-time default — embedders are peer engines (`gemini`, `onnx`) — and no current first-party engine binds `kb.vector`; external engines may fill it through the provider-neutral contract. Single-occupancy is enforced inside `RuntimeBinding.bind` itself (throws `binding-occupied` if held), not by lifecycle bookkeeping. Retrieval-consumer freshness is observed through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` after the Corpus commit; readiness is a comparison (`backed.consumer.cursor ≥ corpus version`), not a method on the `Backed<T>` contract. Every Corpus consumer registration must provide `readAuthoritativeFreshness(target)` returning `current | stale | unavailable`; `ConsumerDriver.register` throws when it is absent.
 
 ## Knowledge Base
 
@@ -94,10 +98,11 @@ The coordinator layer owns process lifecycle, the three-era boot sequence (Kerne
 
 ## Runtime Components
 
-`coordinator/runtime-components/` is a small registry layer for daemon-visible health/lifecycle components that must not extend the kernel path. It does not host the KB runtime; the parent registers only a KB daemon health mirror:
+`coordinator/runtime-components/` is a small registry layer for daemon-visible health/lifecycle components that must not extend the kernel path. It does not host the KB runtime; the parent registers the mandatory recovery component and a best-effort KB daemon health mirror:
 
-- `contract.ts` — `RuntimeComponent` (init / dispose / status), `RuntimeComponentStatus` (4 serving phases: `initializing → online | degraded | offline`), `DegradedReason` (currently `{ kind: 'curate-publish'; consecutiveFailures; lastError }`), and branded `RuntimeComponentId`.
+- `contract.ts` — `RuntimeComponent` (init / dispose / status), `RuntimeComponentStatus` (4 serving phases: `initializing → online | degraded | offline`), `DegradedReason` (`{ kind: 'curate-publish'; consecutiveFailures; lastError } | { kind: 'recovery-quarantine'; count; lastError }`), and branded `RuntimeComponentId`.
 - `registry.ts` — `createRuntimeComponentRegistry()` exposing `register / initAll / disposeAll / list / status`. It is a status/lifecycle projection only; KB requests go through the KB daemon supervisor, not through this registry.
+- `recovery-component.ts` — projects `recovery_quarantine` count and latest error into daemon health. Its registration is mandatory and aborts startup on failure; unlike KB registration, it is not wrapped as best effort.
 - `runtime-components/kb-health-component.ts` — `createKbDaemonHealthComponent(kbDaemonSupervisor)` mirrors daemon health into `/health.components[]`; the KB daemon process owns the boot pipeline (Corpus replay + CorpusConsumer registration + Orama freshness wait), runtime construction, curate work, and expansion lifecycle. When `CORAL_KB_ENABLE=0`, the parent wires a disabled daemon supervisor, so the health component reports terminal `offline` with `KB_DISABLED_REASON` and does not spawn the KB daemon. The CLI matches that reason on `/health` to decide whether to restart the daemon and re-enable KB.
 
 KB request failures (`kb_initializing`, `kb_offline`, `kb_disabled`) come from the KB daemon request/supervisor path and lift to HTTP 503 through the standard error envelope with the `remediation` field.
@@ -126,6 +131,7 @@ Infrastructure helpers sit below every domain: schemas, small utilities, SSE par
 | `cli/`                | User command surface and local startup glue      | Backend/domain truth                      |
 | `infra/` / `runtime/` | Low-level paths, flavor, I/O ports               | Domain concepts                           |
 | `causality/`          | Cross-stream event-reference vocabulary          | Store/database access                     |
+| `recovery/`           | Single enumeration boundary, opaque source handles, quarantine persistence | Domain settlement, registry/pool knowledge |
 
 ## Dependency Outline
 
@@ -146,6 +152,10 @@ coordinator API
   -> KB daemon expansion proxy
   -> live launch / host management
   -> provider host manager
+
+domain-owned recovery source modules / settlement policies
+  -> recovery/ RecoveryContainment.each(source, policy)
+     -> recovery_quarantine convergence
 
 coordinator startup (three eras)
   Era I  Kernel:     Journal open, freshness drain, transport listeners bound (lifecycle = kernel-ready)

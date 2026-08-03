@@ -1,7 +1,12 @@
 import { assertNever } from '../../infra/error-format.js';
+import type { RecoveryQuarantineEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth } from '../../transport/http/backend/health.js';
 import type { BackendStatusFull } from '../../transport/http/backend/status.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
+import type { RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
+
+export const RECOVERY_REVISION_UNTIL_CLEARED = 'until-cleared';
+export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
 
 export function formatBackendStatus(result: BackendStatusFull): string {
   switch (result.status) {
@@ -35,6 +40,54 @@ export function formatBackendStatus(result: BackendStatusFull): string {
 
 export function formatShutdown(result: ShutdownResult): string {
   return result.ok ? 'Backend shutdown initiated' : `Shutdown failed: ${result.reason}`;
+}
+
+export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantineEntry[]): string {
+  if (entries.length === 0) {
+    return 'Recovery quarantine is empty.';
+  }
+
+  const lines = [`Recovery quarantine (${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}):`];
+  for (const entry of entries) {
+    lines.push(
+      `- boundary=${JSON.stringify(entry.boundary)} key=${JSON.stringify(entry.subject.key)} revision=${JSON.stringify(formatRecoveryRevision(entry))} state=${entry.state} stage=${entry.stage}`,
+      `  detected_at=${entry.detectedAt} updated_at=${entry.updatedAt}`,
+    );
+    if (entry.retry !== null) {
+      lines.push(`  retry_owner=${JSON.stringify(entry.retry.owner)} retry_token=${JSON.stringify(entry.retry.token)}`);
+    }
+    if (entry.continuation !== null) {
+      lines.push(
+        `  continuation_kind=${JSON.stringify(entry.continuation.kind)} continuation_key=${JSON.stringify(entry.continuation.key)}`,
+      );
+    }
+    lines.push(`  error=${JSON.stringify(entry.errorMessage)}`, `  detail=${JSON.stringify(entry.detail)}`);
+  }
+  return lines.join('\n');
+}
+
+export function formatRecoveryQuarantineClear(result: RecoveryQuarantineClearResult): string {
+  const coordinate = `boundary=${JSON.stringify(result.boundary)} key=${JSON.stringify(result.key)} revision=${JSON.stringify(formatRecoveryRevisionValue(result.revision))}`;
+  switch (result.disposition) {
+    case 'advanced':
+      return `Recovery quarantine resolved and removed: ${coordinate}`;
+    case 'quarantined':
+      return `Recovery retry failed again; the subject is still quarantined: ${coordinate}. Run coral-cli backend recovery-quarantine list to inspect the updated error.`;
+    case 'continuation':
+      return `Recovery retry made partial progress: ${coordinate}. Run clear again with this exact coordinate to finish.`;
+    default:
+      return assertNever(result.disposition);
+  }
+}
+
+function formatRecoveryRevision(entry: RecoveryQuarantineEntry): string {
+  return entry.subject.revision.kind === 'fingerprint'
+    ? formatRecoveryRevisionValue(entry.subject.revision.value)
+    : RECOVERY_REVISION_UNTIL_CLEARED;
+}
+
+function formatRecoveryRevisionValue(revision: string | null): string {
+  return revision === null ? RECOVERY_REVISION_UNTIL_CLEARED : `${RECOVERY_REVISION_FINGERPRINT_PREFIX}${revision}`;
 }
 
 type RunningHealth = Extract<BackendStatusFull, { status: 'ok' }>['health'];
@@ -134,8 +187,10 @@ function formatDegradedDetail(reason: DegradedReason): string {
   switch (reason.kind) {
     case 'curate-publish':
       return `${reason.consecutiveFailures} consecutive failures`;
+    case 'recovery-quarantine':
+      return `${reason.count} unresolved ${reason.count === 1 ? 'row' : 'rows'}`;
     default:
-      return assertNever(reason.kind);
+      return assertNever(reason);
   }
 }
 
@@ -143,8 +198,10 @@ function formatDegradedHint(reason: DegradedReason): string {
   switch (reason.kind) {
     case 'curate-publish':
       return 'free disk space, then coral-cli backend shutdown to reset';
+    case 'recovery-quarantine':
+      return 'inspect quarantined recovery work: coral-cli backend recovery-quarantine list';
     default:
-      return assertNever(reason.kind);
+      return assertNever(reason);
   }
 }
 

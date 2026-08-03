@@ -1,0 +1,39 @@
+declare const recoverySourceBrand: unique symbol;
+
+export interface RecoverySource<Raw> {
+  readonly boundary: string;
+  readonly [recoverySourceBrand]: Raw;
+}
+
+declare const recoveryReceiptBrand: unique symbol;
+
+export interface RecoveryReceipt<T> {
+  readonly [recoveryReceiptBrand]: T;
+}
+
+export interface RecoveryPolicy<Raw> {
+  readonly hydrate: (raw: Raw) => unknown;
+}
+
+type RecoverySourceDefinition<Raw> = {
+  readonly boundary: string;
+  scan(): readonly Raw[];
+};
+
+const sourceDefinitions = new WeakMap<object, RecoverySourceDefinition<unknown>>();
+const receiptValues = new WeakMap<object, unknown>();
+
+export function defineRecoverySource<Raw>(definition: RecoverySourceDefinition<Raw>): RecoverySource<Raw> {
+  const source = { boundary: definition.boundary } as RecoverySource<Raw>;
+  sourceDefinitions.set(source, definition as RecoverySourceDefinition<unknown>);
+  return source;
+}
+
+export function defineCompositeRecoverySource<T, Raw>(
+  receipts: readonly RecoveryReceipt<T>[],
+  definition: RecoverySourceDefinition<Raw>,
+): RecoverySource<Raw> {
+  void receipts;
+  void receiptValues;
+  return defineRecoverySource(definition);
+}

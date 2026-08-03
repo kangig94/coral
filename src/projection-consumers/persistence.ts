@@ -101,6 +101,7 @@ export class ConsumerCursorRepository {
   private readonly advanceBothCursorStmt: Statement<
     [string, number, number, string, string, string, number, number, string]
   >;
+  private readonly repairCorpusCursorStmt: Statement<[string, number, number, string, string, string]>;
 
   private readonly db: Database;
   private readonly now: () => Date;
@@ -201,6 +202,18 @@ export class ConsumerCursorRepository {
                metadata_manifest_hash = ?
          WHERE consumer_id = ?
            AND (content_seq < ? OR metadata_seq < ? OR snapshot_id != ?)
+      `,
+    );
+    this.repairCorpusCursorStmt = this.db.prepare<[string, number, number, string, string, string]>(
+      `
+        UPDATE consumer_cursors
+           SET snapshot_id = ?,
+               content_seq = ?,
+               metadata_seq = ?,
+               content_manifest_hash = ?,
+               metadata_manifest_hash = ?
+         WHERE consumer_id = ?
+           AND authority = 'corpus'
       `,
     );
   }
@@ -373,6 +386,20 @@ export class ConsumerCursorRepository {
       snapshot.metadataSeq,
       snapshot.snapshotId,
     );
+  }
+
+  repairCorpusCursor(reg: CorpusConsumerRegistration, snapshot: KbCorpusSnapshot): void {
+    const result = this.repairCorpusCursorStmt.run(
+      snapshot.snapshotId,
+      snapshot.contentSeq,
+      snapshot.metadataSeq,
+      snapshot.contentManifestHash,
+      snapshot.metadataManifestHash,
+      reg.id,
+    );
+    if (Number(result.changes) !== 1) {
+      throw new Error(`Corpus cursor repair failed because consumer '${reg.id}' has no durable cursor row`);
+    }
   }
 
   deleteExpansionCursor(consumerId: string): void {

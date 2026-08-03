@@ -6,7 +6,7 @@ import type { ConsumerApplyError } from '#src/store/consumer-contract.js';
 import { createOramaBaseProjection } from './base-projection.js';
 import type { OramaAnalyzerManager } from './analyzer.js';
 import type { OramaReconcileReason } from './constants.js';
-import { createOramaFtsBacked } from './index.js';
+import { createOramaCorpusConsumerRegistration, createOramaFtsBacked } from './index.js';
 import { OramaSnapshotStore } from './snapshot.js';
 import { createOramaArtifactPort } from './artifact-port.js';
 
@@ -36,30 +36,16 @@ export function createOramaExpansion(options: OramaExpansionOptions = {}): Expan
       ...(options.onApplyFailure === undefined ? {} : { onApplyFailure: options.onApplyFailure }),
     });
     const searchPort = projection.getSearchPort();
-    const handle = host.registerConsumer(
-      {
-        id: projection.id,
-        authority: projection.authority,
-        corpusInterest: projection.corpusInterest,
-        kind: projection.kind,
-        projectionSync: projection.projectionSync,
-        ...(projection.onApplyFailure === undefined ? {} : { onApplyFailure: projection.onApplyFailure }),
-        apply: (ctx) => projection.apply(ctx),
-      },
-      host.scope,
+    const artifactPort = createOramaArtifactPort(
+      host.kb.projectionArtifacts.files,
+      host.kb.projectionArtifacts.runtimeDir,
+      declaredAnalyzers,
+      analyzerManager === undefined
+        ? undefined
+        : (declared) => analyzerManager.effectiveDeclaredAnalyzers(declared, host.runtime),
     );
-    host.registerArtifactPort(
-      createOramaArtifactPort(
-        host.kb.projectionArtifacts.files,
-        host.kb.projectionArtifacts.runtimeDir,
-        declaredAnalyzers,
-        analyzerManager === undefined
-          ? undefined
-          : (declared) => analyzerManager.effectiveDeclaredAnalyzers(declared, host.runtime),
-      ),
-      { targetConsumerHandles: [handle] },
-      host.scope,
-    );
+    const handle = host.registerConsumer(createOramaCorpusConsumerRegistration(projection, artifactPort), host.scope);
+    host.registerArtifactPort(artifactPort, { targetConsumerHandles: [handle] }, host.scope);
     host.bind(KB_FTS_CAPABILITY, createOramaFtsBacked(projection, searchPort));
     options.registerAnalyzerDegradedObserver?.(host.scope);
   };

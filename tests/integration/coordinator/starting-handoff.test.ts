@@ -93,6 +93,7 @@ function buildPorts(opts: {
     workflows: {} as never,
     kb: {} as never,
     discuss: {} as never,
+    recoveryQuarantine: {} as never,
     expansion: {} as never,
   };
 }

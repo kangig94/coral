@@ -1,8 +1,13 @@
 import { InvalidArgumentError, type Command } from 'commander';
 
 import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
+import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever } from '../../infra/error-format.js';
+import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isSafeKbCommitId } from '../../kb/commit-quarantine.js';
+import { RecoveryQuarantineStore, type RecoveryQuarantineEntry } from '../../recovery/quarantine.js';
+import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
+import type { Runtime } from '../../runtime/ports.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import {
   formatLegacyGenerationIgnoredNotice,
@@ -10,11 +15,28 @@ import {
   type GenerationReadiness,
 } from '../../store/generation-mutation-coordination.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
+import { classifyStoreFile, type Database } from '../../store/db.js';
+import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
 import { getBackendStatusFull, type BackendStatusFull } from '../../transport/http/backend/status.js';
 import { shutdownBackend } from '../../transport/http/backend/shutdown.js';
+import { TOOL_TIMEOUT_MS } from '../../transport/http/sse.js';
+import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../../transport/ipc/child-principal-auth.js';
+import { IpcRpcError } from '../../transport/ipc/client.js';
+import { ensure } from '../../transport/ipc/ensure.js';
+import {
+  recoveryQuarantineClearRequestSchema,
+  recoveryQuarantineClearResultSchema,
+} from '../../transport/rpc/catalog.js';
 import { getPluginRoot } from '../dispatch.js';
 import { emitError } from '../emit.js';
-import { formatBackendStatus, formatShutdown } from '../format/backend.js';
+import {
+  formatBackendStatus,
+  formatRecoveryQuarantineClear,
+  formatRecoveryQuarantineList,
+  formatShutdown,
+  RECOVERY_REVISION_FINGERPRINT_PREFIX,
+  RECOVERY_REVISION_UNTIL_CLEARED,
+} from '../format/backend.js';
 import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetTarget } from '../../store/operator-store-reset.js';
@@ -48,22 +70,74 @@ export interface BackendStatusCommandOperations {
   getStatus(): Promise<BackendStatusFull>;
 }
 
-export function registerBackendCommands(
-  program: Command,
-  storeReset: StoreResetCommandOperations = {
-    list: listStoreResetIncidentsLocal,
-    report: reportStoreResetIncidentLocal,
-    discard: discardStoreResetLocal,
-  },
-  kbCommit: KbCommitCommandOperations = {
-    quarantine: quarantineKbCommitLocal,
-  },
-  backendStatus: BackendStatusCommandOperations = {
-    inspectReadiness: () =>
-      inspectGenerationReadiness(createRealRuntime(resolveBuildFlavor(process.env)), currentCoralStoreFormat()),
-    getStatus: () => getBackendStatusFull(getPluginRoot()),
-  },
-): void {
+export interface RecoveryQuarantineCommandOperations {
+  list(): readonly RecoveryQuarantineEntry[];
+  clear(request: RecoveryQuarantineClearRequest): Promise<RecoveryQuarantineClearResult>;
+}
+
+export type BackendCommandOperations = Readonly<{
+  storeReset?: StoreResetCommandOperations;
+  kbCommit?: KbCommitCommandOperations;
+  backendStatus?: BackendStatusCommandOperations;
+  recoveryQuarantine?: RecoveryQuarantineCommandOperations;
+}>;
+
+type RecoveryQuarantineReadRuntime = Pick<Runtime, 'flavor' | 'paths' | 'storage'>;
+
+/** Reads retained recovery failures directly from the local store without coordinator transport. */
+export function listRecoveryQuarantineLocal(
+  runtime: RecoveryQuarantineReadRuntime = createRecoveryQuarantineRuntime(),
+): readonly RecoveryQuarantineEntry[] {
+  const dbPath = runtime.paths.coral.store.dbFile;
+  const classification = classifyStoreFile(dbPath, runtime.storage, currentCoralStoreFormat());
+  if (
+    classification.kind === 'absent' ||
+    classification.kind === 'fresh' ||
+    classification.kind === 'older-incompatible'
+  ) {
+    return [];
+  }
+  if (classification.kind !== 'compatible') {
+    throw new Error(
+      `Recovery quarantine cannot be inspected while the local store is ${classification.kind}. Run coral-cli backend status and start or repair the coordinator so it can perform the supported store transition, then retry recovery-quarantine list.`,
+    );
+  }
+
+  const db = openReadOnlyStoreDatabase(runtime, {
+    storeFormat: currentCoralStoreFormat(),
+  }) as unknown as Database;
+  try {
+    return RecoveryQuarantineStore.readOnly(db).list();
+  } finally {
+    db.close();
+  }
+}
+
+/** Wires the local read and canonical-coordinator retry used by backend command registration. */
+export function createRecoveryQuarantineCommandOperations(signal?: AbortSignal): RecoveryQuarantineCommandOperations {
+  return {
+    list: () => listRecoveryQuarantineLocal(),
+    clear: (request) => clearRecoveryQuarantineWithCoordinator(request, signal),
+  };
+}
+
+export function registerBackendCommands(program: Command, operations: BackendCommandOperations = {}): void {
+  const {
+    storeReset = {
+      list: listStoreResetIncidentsLocal,
+      report: reportStoreResetIncidentLocal,
+      discard: discardStoreResetLocal,
+    },
+    kbCommit = {
+      quarantine: quarantineKbCommitLocal,
+    },
+    backendStatus = {
+      inspectReadiness: () =>
+        inspectGenerationReadiness(createRealRuntime(resolveBuildFlavor(process.env)), currentCoralStoreFormat()),
+      getStatus: () => getBackendStatusFull(getPluginRoot()),
+    },
+    recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
+  } = operations;
   const backend = program.command('backend').description('Backend administration and local incident inspection');
 
   const statusCommand = backend.command('status');
@@ -104,6 +178,35 @@ export function registerBackendCommands(
       emitError(error);
     }
   });
+
+  const recoveryQuarantineCommand = backend
+    .command('recovery-quarantine')
+    .description('Inspect or retry retained recovery failures');
+  recoveryQuarantineCommand
+    .command('list')
+    .description('List retained recovery failures from the local store')
+    .action(() => {
+      try {
+        process.stdout.write(`${formatRecoveryQuarantineList(recoveryQuarantine.list())}\n`);
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    });
+  recoveryQuarantineCommand
+    .command('clear')
+    .description('Retry one exact retained recovery failure through the canonical coordinator')
+    .requiredOption('--boundary <boundary>', 'Recovery boundary shown by recovery-quarantine list')
+    .requiredOption('--key <key>', 'Recovery subject key shown by recovery-quarantine list')
+    .requiredOption('--revision <revision>', "Exact revision shown by list, including 'until-cleared'")
+    .action(async (options: { boundary: string; key: string; revision: string }) => {
+      try {
+        const request = parseRecoveryQuarantineClearOptions(options);
+        const result = await recoveryQuarantine.clear(request);
+        process.stdout.write(`${formatRecoveryQuarantineClear(result)}\n`);
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    });
 
   const storeResetCommand = backend.command('store-reset').description('Inspect retained store-reset incidents');
   storeResetCommand
@@ -194,4 +297,88 @@ function parseStoreResetTarget(value: string): StoreResetTarget {
 function parseKbCommitId(value: string): string {
   if (isSafeKbCommitId(value)) return value;
   throw new InvalidArgumentError('KB commit ID must be one safe filesystem path segment.');
+}
+
+function parseRecoveryQuarantineClearOptions(options: {
+  readonly boundary: string;
+  readonly key: string;
+  readonly revision: string;
+}): RecoveryQuarantineClearRequest {
+  const parsed = recoveryQuarantineClearRequestSchema.safeParse({
+    boundary: options.boundary,
+    key: options.key,
+    revision:
+      options.revision === RECOVERY_REVISION_UNTIL_CLEARED
+        ? null
+        : options.revision.startsWith(RECOVERY_REVISION_FINGERPRINT_PREFIX)
+          ? options.revision.slice(RECOVERY_REVISION_FINGERPRINT_PREFIX.length)
+          : options.revision,
+  });
+  if (parsed.success) {
+    return parsed.data;
+  }
+
+  const issue = parsed.error.issues[0];
+  const message = issue?.message ?? 'Invalid recovery quarantine coordinate';
+  throw new InvalidArgumentError(
+    `${message}. Run coral-cli backend recovery-quarantine list and copy the exact boundary, key, and revision.`,
+  );
+}
+
+function createRecoveryQuarantineRuntime(): Runtime {
+  return createRealRuntime(readBuildFlavor(getPluginRoot()));
+}
+
+async function clearRecoveryQuarantineWithCoordinator(
+  request: RecoveryQuarantineClearRequest,
+  signal?: AbortSignal,
+): Promise<RecoveryQuarantineClearResult> {
+  const parsedRequest = recoveryQuarantineClearRequestSchema.parse(request);
+  signal?.throwIfAborted();
+  try {
+    const auth = childPrincipalAuthOptions(childPrincipalAuthFromEnv());
+    const client = await ensure(getPluginRoot());
+    const response = await client.request<unknown>('coordinator.recovery_quarantine.clear', parsedRequest, {
+      timeoutMs: TOOL_TIMEOUT_MS,
+      ...auth,
+    });
+    const result = recoveryQuarantineClearResultSchema.safeParse(response);
+    if (!result.success) {
+      throw new RecoveryQuarantineContractError(
+        'Coordinator returned an invalid recovery quarantine retry result. Run coral-cli backend status, then retry the exact clear.',
+      );
+    }
+    return result.data;
+  } catch (error: unknown) {
+    if (signal?.aborted === true) {
+      throw signal.reason;
+    }
+    if (error instanceof IpcRpcError || error instanceof RecoveryQuarantineContractError) {
+      throw error;
+    }
+    if (isRecoveryQuarantineTimeout(error)) {
+      throw new Error(
+        'Recovery quarantine clear timed out before the coordinator returned a result. Run coral-cli backend status, then retry the exact clear.',
+        { cause: error },
+      );
+    }
+    throw recoveryCoordinatorRequiredError();
+  }
+}
+
+class RecoveryQuarantineContractError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RecoveryQuarantineContractError';
+  }
+}
+
+function isRecoveryQuarantineTimeout(error: unknown): boolean {
+  return error instanceof Error && /timed out|deadline (?:already )?exceeded/iu.test(error.message);
+}
+
+function recoveryCoordinatorRequiredError(): BackendUnreachableError {
+  return new BackendUnreachableError(
+    'Recovery quarantine clear requires the canonical coordinator, but it is not reachable. Run coral-cli backend status, start or repair the coordinator, then retry the exact clear.',
+  );
 }

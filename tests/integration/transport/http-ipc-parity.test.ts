@@ -146,6 +146,9 @@ function createPorts(): HttpHandlerPorts {
       speech: vi.fn(),
       abort: vi.fn(),
     },
+    recoveryQuarantine: {
+      clear: vi.fn(async (request) => ({ ...request, disposition: 'advanced' as const })),
+    },
     expansion: {
       equipExpansion: vi.fn(),
       unequipExpansion: vi.fn(),

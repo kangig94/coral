@@ -19,6 +19,11 @@ function createDb(): Database {
   return db;
 }
 
+const STALE_CORPUS_FRESHNESS = {
+  projectionIdentityHash: () => 'consumer-driver-test-v1',
+  readAuthoritativeFreshness: async () => ({ kind: 'stale', reason: 'artifact-missing' }) as const,
+};
+
 function readJournalCursor(db: Database, consumerId: string): number {
   const row = db.prepare('SELECT cursor FROM consumer_cursors WHERE consumer_id = ?').get(consumerId) as
     | { cursor: number }
@@ -283,6 +288,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
         kind: 'apply',
         registrationKind: 'expansion',
         corpusInterest: 'content',
+        ...STALE_CORPUS_FRESHNESS,
         async apply() {
           if (corpusShouldFail) {
             throw new Error('corpus boom');
@@ -295,6 +301,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
         kind: 'apply',
         registrationKind: 'expansion',
         corpusInterest: 'metadata',
+        ...STALE_CORPUS_FRESHNESS,
         async apply() {
           if (corpusShouldFail) {
             throw new Error('corpus boom');
@@ -307,6 +314,7 @@ describe('ConsumerDriver handle lifecycle + fault isolation', () => {
         kind: 'apply',
         registrationKind: 'expansion',
         corpusInterest: 'both',
+        ...STALE_CORPUS_FRESHNESS,
         async apply() {
           if (corpusShouldFail) {
             throw new Error('corpus boom');

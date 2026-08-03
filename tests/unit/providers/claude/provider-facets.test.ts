@@ -10,6 +10,7 @@ import {
 } from '#src/providers/claude/artifacts.js';
 import type { ArtifactCleanupRuntime, ProviderPreflightRuntime } from '#src/providers/contract.js';
 import type { ClaudeProviderAccess } from '#src/providers/claude/execution-plan.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 function claudePreflightRuntime(
   files: Readonly<Record<string, string>>,
@@ -256,6 +257,41 @@ describe('locateClaudeJsonlArtifact', () => {
 });
 
 describe('claudeArtifactCapability', () => {
+  it('reconciles response loss without replaying the visible external effect', async () => {
+    const runtime = new SimulationRuntime();
+    const handle = '/tmp/claude-response-loss.jsonl';
+    runtime.storage.mkdirSync('/tmp', { recursive: true });
+    runtime.storage.writeFileSync(handle, '{}\n', { encoding: 'utf-8' });
+    const unlink = vi.spyOn(runtime.storage, 'unlinkSync');
+    const writeAtomicSync = runtime.storage.writeAtomicSync.bind(runtime.storage);
+    let actionWrites = 0;
+    vi.spyOn(runtime.storage, 'writeAtomicSync').mockImplementation((...args) => {
+      if (args[0].includes('.provider-artifact-discard') && ++actionWrites === 2) return false;
+      return writeAtomicSync(...args);
+    });
+    const cleanupRuntime: ArtifactCleanupRuntime = {
+      storage: runtime.storage,
+      env: runtime.env,
+      paths: runtime.paths,
+      time: { sleep: async () => {} } as unknown as ArtifactCleanupRuntime['time'],
+    };
+    const action = {
+      handles: [handle],
+      actionId: 'claude-response-loss-action',
+      payloadHash: 'claude-response-loss-payload',
+      access: TEST_CLAUDE_ACCESS,
+      runtime: cleanupRuntime,
+    };
+
+    await expect(claudeArtifactCapability.discardArtifacts(action)).rejects.toThrow(
+      'Failed to persist provider artifact action',
+    );
+    const reconciled = await claudeArtifactCapability.reconcileDiscard(action);
+    expect(reconciled).toEqual({ kind: 'applied', outcome: { kind: 'discarded' } });
+    if (reconciled.kind !== 'applied') await claudeArtifactCapability.discardArtifacts(action);
+    expect(unlink).toHaveBeenCalledTimes(1);
+  });
+
   it('locateArtifact resolves the project JSONL handle for a known conversationRef from the runtime', () => {
     const root = '/home/user/.claude/projects';
     const runtime = {
@@ -329,16 +365,20 @@ describe('deleteClaudeJsonlArtifactsForConversation', () => {
 
 describe('claudeArtifactCapability', () => {
   it('discards only the recorded handles it is given', async () => {
-    const unlinkSync = vi.fn();
-    const runtime = {
-      storage: { unlinkSync, existsSync: () => false },
-      env: { homedir: () => '/home/user' },
-      time: { sleep: async () => {} },
-    } as unknown as ArtifactCleanupRuntime;
+    const simulation = new SimulationRuntime();
+    const unlinkSync = vi.spyOn(simulation.storage, 'unlinkSync');
+    const runtime: ArtifactCleanupRuntime = {
+      storage: simulation.storage,
+      env: simulation.env,
+      paths: simulation.paths,
+      time: { sleep: async () => {} } as unknown as ArtifactCleanupRuntime['time'],
+    };
 
     await expect(
       claudeArtifactCapability.discardArtifacts({
         handles: ['/tmp/session-a.jsonl', '/tmp/session-b.jsonl'],
+        actionId: 'test-action',
+        payloadHash: 'test-payload',
         access: TEST_CLAUDE_ACCESS,
         runtime,
       }),

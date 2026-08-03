@@ -17,6 +17,30 @@ function fakeTimerTime(): Pick<ArtifactCleanupRuntime['time'], 'sleep'> {
   };
 }
 
+function protocolStorage(unlinkSync: ReturnType<typeof vi.fn>, existsSync: ReturnType<typeof vi.fn>) {
+  const files = new Map<string, string>();
+  return {
+    unlinkSync,
+    existsSync,
+    mkdirSync: vi.fn(),
+    readFileSync: (path: string) => {
+      const value = files.get(path);
+      if (value !== undefined) return value;
+      const error = new Error(`ENOENT: ${path}`) as NodeJS.ErrnoException;
+      error.code = 'ENOENT';
+      throw error;
+    },
+    writeAtomicSync: (path: string, value: string) => {
+      files.set(path, value);
+      return true;
+    },
+  };
+}
+
+const protocolPaths = {
+  coral: { exports: { jobsRoot: '/tmp/coral/jobs' } },
+} as ArtifactCleanupRuntime['paths'];
+
 function makeRuntime(): {
   runtime: ArtifactCleanupRuntime;
   unlinkSync: ReturnType<typeof vi.fn>;
@@ -26,8 +50,9 @@ function makeRuntime(): {
   const existsSync = vi.fn(() => false);
   return {
     runtime: {
-      storage: { unlinkSync, existsSync },
+      storage: protocolStorage(unlinkSync, existsSync),
       env: { homedir: () => '/home/user' },
+      paths: protocolPaths,
       time: immediateTime,
     } as unknown as ArtifactCleanupRuntime,
     unlinkSync,
@@ -40,7 +65,13 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
     const { runtime, unlinkSync } = makeRuntime();
 
     await expect(
-      claudeArtifactCapability.discardArtifacts({ handles: [], access: TEST_CLAUDE_ACCESS, runtime }),
+      claudeArtifactCapability.discardArtifacts({
+        handles: [],
+        actionId: 'test-action',
+        payloadHash: 'test-payload',
+        access: TEST_CLAUDE_ACCESS,
+        runtime,
+      }),
     ).resolves.toEqual({
       kind: 'skipped_no_handles',
     });
@@ -54,6 +85,8 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
     await expect(
       claudeArtifactCapability.discardArtifacts({
         handles: ['/tmp/ref-a.jsonl', '/tmp/ref-b.jsonl'],
+        actionId: 'test-action',
+        payloadHash: 'test-payload',
         access: TEST_CLAUDE_ACCESS,
         runtime,
       }),
@@ -71,6 +104,8 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
     await expect(
       claudeArtifactCapability.discardArtifacts({
         handles: ['/tmp/ref-a.jsonl', '/tmp/ref-b.jsonl'],
+        actionId: 'test-action',
+        payloadHash: 'test-payload',
         access: TEST_CLAUDE_ACCESS,
         runtime,
       }),
@@ -89,8 +124,9 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
       });
       const existsSync = vi.fn(() => exists);
       const runtime = {
-        storage: { unlinkSync, existsSync },
+        storage: protocolStorage(unlinkSync, existsSync),
         env: { homedir: () => '/home/user' },
+        paths: protocolPaths,
         time: fakeTimerTime(),
       } as unknown as ArtifactCleanupRuntime;
 
@@ -99,6 +135,8 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
       }, 250);
       const discard = claudeArtifactCapability.discardArtifacts({
         handles: [handle],
+        actionId: 'test-action',
+        payloadHash: 'test-payload',
         access: TEST_CLAUDE_ACCESS,
         runtime,
       });

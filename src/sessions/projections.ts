@@ -427,6 +427,7 @@ export function readProjectionProviderSession(db: ReadonlyDatabase, sessionId: s
 export function readProjectionSessionEntriesById(
   db: ReadonlyDatabase,
   sessionIds: readonly string[],
+  onInvalidRow?: (sessionId: string | null, error: unknown) => void,
 ): Map<string, ProviderSession> {
   const uniqueSessionIds = [...new Set(sessionIds)];
   if (uniqueSessionIds.length === 0) {
@@ -443,8 +444,18 @@ export function readProjectionSessionEntriesById(
 
   const entries = new Map<string, ProviderSession>();
   for (const rawRow of rows) {
-    const { row, entry } = decodeProjectionSessionAuthorityRow(rawRow);
-    entries.set(row.session_id, entry);
+    try {
+      const { row, entry } = decodeProjectionSessionAuthorityRow(rawRow);
+      entries.set(row.session_id, entry);
+    } catch (error: unknown) {
+      const sessionId =
+        typeof rawRow === 'object' &&
+        rawRow !== null &&
+        typeof (rawRow as { session_id?: unknown }).session_id === 'string'
+          ? (rawRow as { session_id: string }).session_id
+          : null;
+      onInvalidRow?.(sessionId, error);
+    }
   }
   return entries;
 }

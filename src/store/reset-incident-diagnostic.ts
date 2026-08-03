@@ -9,7 +9,7 @@ import {
   SQLITE_FORCE_CLOSE_DEADLINE_MS,
   SQLITE_TERMINATION_GRACE_MS,
   type StoreResetIncidentLocalReport,
-  type StoreResetIncidentManifestV2,
+  type StoreResetIncidentManifest,
 } from './reset-incident.js';
 import {
   sameStoreResetInspectionIdentity,
@@ -63,7 +63,7 @@ export interface StoreResetDiagnosticSupervisorPort {
 export type StoreResetIncidentDiagnosticRunner = (options: {
   readonly fs: StoreResetInspectionFs;
   readonly incidentPath: string;
-  readonly manifest: StoreResetIncidentManifestV2;
+  readonly manifest: StoreResetIncidentManifest;
 }) => Promise<StoreResetDiagnosticStatus>;
 
 export function superviseStoreResetDiagnosticChild(

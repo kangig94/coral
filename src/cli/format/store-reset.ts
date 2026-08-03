@@ -4,13 +4,19 @@ function code(value: string): string {
   return `\`${value}\``;
 }
 
+function observed(value: string | null): string {
+  return value === null ? 'not observed' : code(value);
+}
+
 export function formatStoreResetReport(report: StoreResetPublicReport): string {
   const lines = [
     '# Coral store-reset incident report',
     '',
     `- Incident ID: ${code(report.incidentId)}`,
     `- Reset at: ${code(report.resetAt)}`,
+    `- Manifest schema: ${code(`V${report.schemaVersion}`)}`,
     `- Reason: ${code(report.reason)}`,
+    `- Reset policy cause: ${report.resetPolicyCause === null ? 'legacy-v2' : code(report.resetPolicyCause)}`,
     `- Stored fingerprint: ${report.storedFingerprint === null ? 'missing' : code(report.storedFingerprint)}`,
     `- Expected fingerprint: ${code(report.expectedFingerprint)}`,
     `- Coral version: ${code(report.build.version)}`,
@@ -18,6 +24,21 @@ export function formatStoreResetReport(report: StoreResetPublicReport): string {
     `- Backend bundle hash: ${code(report.build.backendBundleHash)}`,
     `- Build flavor: ${code(report.build.flavor)}`,
     `- Acquired via handoff: ${report.handoff.acquiredViaHandoff ? 'yes' : 'no'}`,
+    ...(report.resetPolicyEvidence === null
+      ? []
+      : [
+          '',
+          '## Newer-target validation evidence',
+          '',
+          `- Validation failure: ${code(report.resetPolicyEvidence.validationFailure.code)}`,
+          `- Observed version: ${observed(report.resetPolicyEvidence.observedTarget.version)}`,
+          `- Observed build-set ID: ${observed(report.resetPolicyEvidence.observedTarget.buildSetId)}`,
+          `- Observed bundle hash: ${observed(report.resetPolicyEvidence.observedTarget.bundleHash)}`,
+          `- Observed flavor: ${observed(report.resetPolicyEvidence.observedTarget.flavor)}`,
+          `- Observed store fingerprint: ${observed(report.resetPolicyEvidence.observedTarget.storeFormatFingerprint)}`,
+          `- Executable path SHA-256: ${observed(report.resetPolicyEvidence.observedTarget.executablePathSha256)}`,
+          `- Executable SHA-256: ${observed(report.resetPolicyEvidence.observedTarget.executableSha256)}`,
+        ]),
     '',
     '## Evidence',
     '',
@@ -47,16 +68,15 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
   if (result.incidents.length === 0) {
     return [
       `No ${target} store-reset incidents.`,
-      'If an unexpected reset warning included an incident ID, report that ID directly.',
-      'Otherwise, file a Store-reset incident issue with this complete output; do not attach DB, WAL, SHM, or raw logs.',
+      'File a Store-reset incident issue with this complete output; do not attach DB, WAL, SHM, or raw logs.',
     ].join('\n');
   }
   return [
-    'Incident ID | Reset at | Reason | State | Files',
+    'Incident ID | Reset at | Schema | Reason | Reset policy | State | Files',
     ...result.incidents.map((incident) =>
       incident.state === 'ready'
-        ? `${incident.incidentId} | ${incident.resetAt} | ${incident.reason} | ${incident.state} | ${incident.fileCount}`
-        : `${incident.incidentId} | - | - | ${incident.state} | -`,
+        ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount}`
+        : `${incident.incidentId} | - | - | - | - | ${incident.state} | -`,
     ),
     '',
     'States: ready produces a Markdown report; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.',

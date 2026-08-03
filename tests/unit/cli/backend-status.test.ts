@@ -6,7 +6,18 @@ import {
   type BackendStatusCommandOperations,
   type StoreResetCommandOperations,
 } from '#src/cli/commands/backend.js';
-import { statusFromStartupDiagnostic } from '#src/transport/http/backend/status.js';
+import { formatBackendStatus } from '#src/cli/format/backend.js';
+import { createRecoveryComponent } from '#src/coordinator/runtime-components/recovery-component.js';
+import { createRuntimeComponentRegistry } from '#src/coordinator/runtime-components/registry.js';
+import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
+import { isBackendHealth } from '#src/transport/http/backend/health.js';
+import { statusFromStartupDiagnostic, type BackendStatusFull } from '#src/transport/http/backend/status.js';
+import type { HealthSnapshot } from '#src/transport/server-ports.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
+
+const TEST_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
 
 const storeReset: StoreResetCommandOperations = {
   list: () => ({ incidents: [] }),
@@ -52,7 +63,7 @@ describe('backend status generation readiness', () => {
     };
     const program = new Command();
     program.exitOverride();
-    registerBackendCommands(program, storeReset, undefined, status);
+    registerBackendCommands(program, { storeReset, backendStatus: status });
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
@@ -72,7 +83,7 @@ describe('backend status generation readiness', () => {
     };
     const program = new Command();
     program.exitOverride();
-    registerBackendCommands(program, storeReset, undefined, status);
+    registerBackendCommands(program, { storeReset, backendStatus: status });
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
@@ -85,6 +96,95 @@ describe('backend status generation readiness', () => {
         '',
       ].join('\n'),
     );
+  });
+});
+
+describe('backend status recovery quarantine propagation', () => {
+  it('carries the canonical producer reason through HTTP validation into CLI output', () => {
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
+      const quarantine = new RecoveryQuarantineStore(db, TEST_TIME);
+      quarantine.upsert({
+        boundary: 'workflow-recovery',
+        subject: { key: 'workflow-1', revision: { kind: 'fingerprint', value: 'revision-1' } },
+        state: 'active',
+        stage: 'hydrate',
+        errorMessage: 'failed to hydrate persisted workflow',
+        detail: 'retained for operator retry',
+      });
+      const recovery = createRecoveryComponent(db);
+      const produced = {
+        status: 'ok',
+        kernel: { phase: 'running', readyAt: 1_700_000_000_000 },
+        version: '0.10.4',
+        bundleHash: 'bundle-hash',
+        flavor: 'prod',
+        namespace: 'test-ns',
+        instanceId: 'instance-1',
+        pid: 4242,
+        uptimeMs: 1_000,
+        active: 0,
+        activeJobs: 0,
+        liveDiscuss: 0,
+        queueDepth: 0,
+        inflightRequests: 0,
+        textProjectionState: 'idle',
+        env: {},
+        components: [recovery.status],
+      } satisfies HealthSnapshot;
+
+      expect(isBackendHealth(produced)).toBe(true);
+      if (!isBackendHealth(produced)) throw new Error('expected the produced health snapshot to validate');
+      const { namespace: _namespace, status: _status, ...health } = produced;
+      const status = { status: 'ok', health: { ...health, status: 'ok' } } satisfies BackendStatusFull;
+
+      expect(formatBackendStatus(status)).toContain(
+        [
+          '  recovery: degraded',
+          '    reason: recovery-quarantine (1 unresolved row)',
+          '    last error: failed to hydrate persisted workflow',
+          '    hint: inspect quarantined recovery work: coral-cli backend recovery-quarantine list',
+        ].join('\n'),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps backend status readable when the recovery database handle is closed', () => {
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const registry = createRuntimeComponentRegistry();
+    registry.register(createRecoveryComponent(db));
+    db.close();
+
+    const produced = {
+      status: 'ok',
+      kernel: { phase: 'running', readyAt: 1_700_000_000_000 },
+      version: '0.10.4',
+      bundleHash: 'bundle-hash',
+      flavor: 'prod',
+      namespace: 'test-ns',
+      instanceId: 'instance-1',
+      pid: 4242,
+      uptimeMs: 1_000,
+      active: 0,
+      activeJobs: 0,
+      liveDiscuss: 0,
+      queueDepth: 0,
+      inflightRequests: 0,
+      textProjectionState: 'idle',
+      env: {},
+      components: [...registry.list()],
+    } satisfies HealthSnapshot;
+
+    expect(isBackendHealth(produced)).toBe(true);
+    if (!isBackendHealth(produced)) throw new Error('expected the produced health snapshot to validate');
+    const { namespace: _namespace, status: _status, ...health } = produced;
+    const status = { status: 'ok', health: { ...health, status: 'ok' } } satisfies BackendStatusFull;
+
+    expect(formatBackendStatus(status)).toContain('  recovery: offline\n    reason: Status unavailable:');
   });
 });
 
@@ -134,8 +234,10 @@ describe('backend startup diagnostic classification', () => {
           error: {
             kind: 'coral_setup_error',
             code: 'store_newer_incompatible',
-            userMessage: 'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
-            remediation: "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
+            userMessage:
+              'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
+            remediation:
+              "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
             // Context is deliberately not forwarded: only the two rendered
             // strings are authored per code and safe to show.
             context: { flavor: 'prod', version: '0.11.0' },
@@ -148,8 +250,10 @@ describe('backend startup diagnostic classification', () => {
       phase: 'startup_failed',
       setupError: {
         code: 'store_newer_incompatible',
-        userMessage: 'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
-        remediation: "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
+        userMessage:
+          'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
+        remediation:
+          "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
       },
     });
   });
@@ -180,7 +284,7 @@ describe('backend startup diagnostic classification', () => {
     };
     const program = new Command();
     program.exitOverride();
-    registerBackendCommands(program, storeReset, undefined, status);
+    registerBackendCommands(program, { storeReset, backendStatus: status });
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 

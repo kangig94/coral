@@ -30,31 +30,28 @@ afterEach(() => {
 });
 
 describe('operator coordinator socket bind failures', () => {
-  it.each(['store-reset', 'kb-commit'] as const)(
-    'translates a non-EADDRINUSE bind failure for %s',
-    async (command) => {
-      const runtime = createRealRuntime('prod', { baseDir: root() });
-      blockSocketParent(runtime.paths.coral.coordinator.socketPath);
+  it.each(['store-reset', 'kb-commit'] as const)('translates a non-EADDRINUSE bind failure for %s', async (command) => {
+    const runtime = createRealRuntime('prod', { baseDir: root() });
+    blockSocketParent(runtime.paths.coral.coordinator.socketPath);
 
-      let refusal: unknown;
-      try {
-        if (command === 'store-reset') {
-          await acquireStoreResetSocketGuard(resolveStoreResetTargetPaths(runtime, 'gen2'), runtime.flavor);
-        } else {
-          await quarantineKbCommit({ runtime, commitId: 'blocking-commit' });
-        }
-      } catch (error: unknown) {
-        refusal = error;
+    let refusal: unknown;
+    try {
+      if (command === 'store-reset') {
+        await acquireStoreResetSocketGuard(resolveStoreResetTargetPaths(runtime, 'gen2'), runtime.flavor);
+      } else {
+        await quarantineKbCommit({ runtime, commitId: 'blocking-commit' });
       }
+    } catch (error: unknown) {
+      refusal = error;
+    }
 
-      expect(serializeCoralSetupError(refusal)).toMatchObject({
-        code: 'coordinator_socket_bind_failed',
-        remediation: expect.stringContaining('coral-cli backend shutdown'),
-        context: {
-          socketPath: runtime.paths.coral.coordinator.socketPath,
-          cause: expect.stringMatching(/directory|EEXIST|ENOTDIR/u),
-        },
-      });
-    },
-  );
+    expect(serializeCoralSetupError(refusal)).toMatchObject({
+      code: 'coordinator_socket_bind_failed',
+      remediation: expect.stringContaining('coral-cli backend shutdown'),
+      context: {
+        socketPath: runtime.paths.coral.coordinator.socketPath,
+        cause: expect.stringMatching(/directory|EEXIST|ENOTDIR/u),
+      },
+    });
+  });
 });

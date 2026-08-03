@@ -1,4 +1,4 @@
-export const STORE_RESET_INCIDENT_SCHEMA_VERSION = 2 as const;
+export const STORE_RESET_INCIDENT_SCHEMA_VERSION = 3 as const;
 export const STORE_RESET_QUARANTINE_DIRECTORY = 'store-reset-quarantine';
 export const STORE_RESET_STAGING_DIRECTORY = '.staging';
 export const STORE_RESET_MANIFEST_FILE_NAME = 'reset-manifest.json';
@@ -21,6 +21,28 @@ export type StoreResetEvidenceFileName = (typeof STORE_RESET_EVIDENCE_FILE_NAMES
 export type StoreResetReason = 'missing' | 'mismatch';
 export type StoreResetBuildFlavor = 'dev' | 'prod';
 
+/** The validated startup policy that authorized a V3 store reset. */
+export type StoreResetPolicyCause =
+  | 'older-incompatible'
+  | 'corrupt-or-unsupported'
+  | 'newer-incompatible-invalid-target';
+
+/** Bounded, non-executable evidence for rejecting an exact newer target. */
+export type StoreResetNewerTargetEvidence = {
+  readonly validationFailure: {
+    readonly code: string;
+  };
+  readonly observedTarget: {
+    readonly version: string | null;
+    readonly buildSetId: string | null;
+    readonly bundleHash: string | null;
+    readonly flavor: StoreResetBuildFlavor | null;
+    readonly storeFormatFingerprint: string | null;
+    readonly executablePathSha256: string | null;
+    readonly executableSha256: string | null;
+  };
+};
+
 export type StoreResetIncidentFile = {
   readonly name: StoreResetEvidenceFileName;
   readonly sizeBytes: number;
@@ -29,7 +51,7 @@ export type StoreResetIncidentFile = {
 };
 
 export type StoreResetIncidentManifestV2 = {
-  readonly schemaVersion: typeof STORE_RESET_INCIDENT_SCHEMA_VERSION;
+  readonly schemaVersion: 2;
   readonly incidentId: string;
   readonly resetAt: string;
   readonly reason: StoreResetReason;
@@ -54,6 +76,27 @@ export type StoreResetIncidentManifestV2 = {
   readonly files: readonly StoreResetIncidentFile[];
 };
 
+export type StoreResetIncidentManifestV3 = {
+  readonly schemaVersion: typeof STORE_RESET_INCIDENT_SCHEMA_VERSION;
+  readonly incidentId: string;
+  readonly resetAt: string;
+  readonly reason: StoreResetReason;
+  readonly storedFingerprint: string | null;
+  readonly expectedFingerprint: string;
+  readonly resetPolicyCause: StoreResetPolicyCause;
+  readonly resetPolicyEvidence: StoreResetNewerTargetEvidence | null;
+  readonly target: {
+    readonly storeDbPath: string;
+    readonly flavor: StoreResetBuildFlavor;
+  };
+  readonly build: StoreResetIncidentManifestV2['build'];
+  readonly runtime: StoreResetIncidentManifestV2['runtime'];
+  readonly handoff: StoreResetIncidentManifestV2['handoff'];
+  readonly files: readonly StoreResetIncidentFile[];
+};
+
+export type StoreResetIncidentManifest = StoreResetIncidentManifestV2 | StoreResetIncidentManifestV3;
+
 export type StoreResetHashVerification = 'match' | 'mismatch' | 'missing' | 'unavailable_limit' | 'unavailable';
 
 export type StoreResetDiagnosticIntegrity = 'ok' | 'failed' | 'unavailable';
@@ -61,7 +104,7 @@ export type StoreResetDiagnosticTermination = 'not_started' | 'completed' | 'ter
 export type StoreResetDiagnosticCleanup = 'not_required' | 'removed' | 'cleanup_unavailable';
 
 export type StoreResetIncidentLocalReport = {
-  readonly manifest: StoreResetIncidentManifestV2;
+  readonly manifest: StoreResetIncidentManifest;
   readonly fileVerification: readonly {
     readonly name: StoreResetEvidenceFileName;
     readonly status: StoreResetHashVerification;
@@ -79,6 +122,8 @@ export type StoreResetIncidentListEntry =
       readonly state: 'ready';
       readonly resetAt: string;
       readonly reason: StoreResetReason;
+      readonly schemaVersion: 2 | typeof STORE_RESET_INCIDENT_SCHEMA_VERSION;
+      readonly resetPolicyCause: StoreResetPolicyCause | null;
       readonly fileCount: number;
     }
   | {
@@ -86,6 +131,8 @@ export type StoreResetIncidentListEntry =
       readonly state: 'malformed' | 'unsupported' | 'build_mismatch' | 'unsafe' | 'unavailable';
       readonly resetAt: null;
       readonly reason: null;
+      readonly schemaVersion: null;
+      readonly resetPolicyCause: null;
       readonly fileCount: null;
     };
 
@@ -99,6 +146,9 @@ export type StoreResetPublicReport = {
   readonly incidentId: string;
   readonly resetAt: string;
   readonly reason: StoreResetReason;
+  readonly schemaVersion: 2 | typeof STORE_RESET_INCIDENT_SCHEMA_VERSION;
+  readonly resetPolicyCause: StoreResetPolicyCause | null;
+  readonly resetPolicyEvidence: StoreResetNewerTargetEvidence | null;
   readonly storedFingerprint: string | null;
   readonly expectedFingerprint: string;
   readonly build: {
@@ -169,6 +219,7 @@ const SEMVER_PATTERN =
 const NAMESPACE_PATTERN = /^[0-9A-Za-z._-]+$/;
 const NODE_VERSION_PATTERN = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/;
 const UTC_ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const VALIDATION_FAILURE_CODE_PATTERN = /^[a-z][a-z0-9._-]*$/;
 
 const ALLOWED_PLATFORMS = new Set<NodeJS.Platform>([
   'aix',
@@ -488,6 +539,13 @@ function requiredValue(object: JsonObject, key: string): unknown {
   return object[key];
 }
 
+function requireExactKeys(object: JsonObject, keys: readonly string[]): void {
+  const allowed = new Set(keys);
+  if (Object.keys(object).some((key) => !allowed.has(key))) {
+    fail('manifest_invalid_schema');
+  }
+}
+
 function exactString(value: unknown, pattern: RegExp, maxLength: number): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > maxLength || !pattern.test(value)) {
     fail('manifest_invalid_schema');
@@ -532,10 +590,33 @@ function validateArchitecture(value: unknown): string {
   return value;
 }
 
-function validateManifest(value: unknown): StoreResetIncidentManifestV2 {
+function nullableExactString(value: unknown, pattern: RegExp, maxLength: number): string | null {
+  return value === null ? null : exactString(value, pattern, maxLength);
+}
+
+function validateManifest(value: unknown): StoreResetIncidentManifest {
   const root = objectValue(value);
-  if (requiredValue(root, 'schemaVersion') !== STORE_RESET_INCIDENT_SCHEMA_VERSION) {
+  const schemaVersion = requiredValue(root, 'schemaVersion');
+  if (schemaVersion !== 2 && schemaVersion !== STORE_RESET_INCIDENT_SCHEMA_VERSION) {
     fail('manifest_invalid_schema');
+  }
+  const isV3 = schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION;
+  if (isV3) {
+    requireExactKeys(root, [
+      'schemaVersion',
+      'incidentId',
+      'resetAt',
+      'reason',
+      'storedFingerprint',
+      'expectedFingerprint',
+      'resetPolicyCause',
+      'resetPolicyEvidence',
+      'target',
+      'build',
+      'runtime',
+      'handoff',
+      'files',
+    ]);
   }
 
   const incidentId = exactString(requiredValue(root, 'incidentId'), UUID_PATTERN, 36);
@@ -544,6 +625,7 @@ function validateManifest(value: unknown): StoreResetIncidentManifestV2 {
   if (reasonValue !== 'missing' && reasonValue !== 'mismatch') {
     fail('manifest_invalid_schema');
   }
+  const reason: StoreResetReason = reasonValue;
 
   const storedFingerprintValue = requiredValue(root, 'storedFingerprint');
   const storedFingerprint =
@@ -551,6 +633,9 @@ function validateManifest(value: unknown): StoreResetIncidentManifestV2 {
   const expectedFingerprint = exactString(requiredValue(root, 'expectedFingerprint'), FINGERPRINT_PATTERN, 71);
 
   const buildValue = objectValue(requiredValue(root, 'build'));
+  if (isV3) {
+    requireExactKeys(buildValue, ['version', 'buildSetId', 'backendBundleHash', 'flavor']);
+  }
   const version = exactString(requiredValue(buildValue, 'version'), SEMVER_PATTERN, 128);
   const buildSetId = exactString(requiredValue(buildValue, 'buildSetId'), UUID_PATTERN, 36);
   const backendBundleHash = exactString(requiredValue(buildValue, 'backendBundleHash'), BUNDLE_HASH_PATTERN, 16);
@@ -560,6 +645,9 @@ function validateManifest(value: unknown): StoreResetIncidentManifestV2 {
   }
 
   const runtimeValue = objectValue(requiredValue(root, 'runtime'));
+  if (isV3) {
+    requireExactKeys(runtimeValue, ['namespace', 'nodeVersion', 'platform', 'architecture', 'processId']);
+  }
   const namespace = exactString(requiredValue(runtimeValue, 'namespace'), NAMESPACE_PATTERN, 128);
   const nodeVersion = exactString(requiredValue(runtimeValue, 'nodeVersion'), NODE_VERSION_PATTERN, 64);
   const platform = validatePlatform(requiredValue(runtimeValue, 'platform'));
@@ -570,6 +658,9 @@ function validateManifest(value: unknown): StoreResetIncidentManifestV2 {
   }
 
   const handoffValue = objectValue(requiredValue(root, 'handoff'));
+  if (isV3) {
+    requireExactKeys(handoffValue, ['acquiredViaHandoff']);
+  }
   const acquiredViaHandoff = requiredValue(handoffValue, 'acquiredViaHandoff');
   if (typeof acquiredViaHandoff !== 'boolean') {
     fail('manifest_invalid_schema');
@@ -586,6 +677,9 @@ function validateManifest(value: unknown): StoreResetIncidentManifestV2 {
   let previousFileIndex = -1;
   const files = filesValue.map((entry): StoreResetIncidentFile => {
     const fileValue = objectValue(entry);
+    if (isV3) {
+      requireExactKeys(fileValue, ['name', 'sizeBytes', 'mtimeMs', 'sha256']);
+    }
     const nameValue = requiredValue(fileValue, 'name');
     const fileIndex =
       typeof nameValue === 'string'
@@ -606,11 +700,10 @@ function validateManifest(value: unknown): StoreResetIncidentManifestV2 {
     });
   });
 
-  return Object.freeze({
-    schemaVersion: STORE_RESET_INCIDENT_SCHEMA_VERSION,
+  const common = {
     incidentId,
     resetAt,
-    reason: reasonValue,
+    reason,
     storedFingerprint,
     expectedFingerprint,
     build: Object.freeze({
@@ -628,16 +721,106 @@ function validateManifest(value: unknown): StoreResetIncidentManifestV2 {
     }),
     handoff: Object.freeze({ acquiredViaHandoff }),
     files: Object.freeze(files),
+  };
+
+  if (!isV3) {
+    return Object.freeze({ schemaVersion: 2 as const, ...common });
+  }
+
+  const resetPolicyCause = requiredValue(root, 'resetPolicyCause');
+  if (
+    resetPolicyCause !== 'older-incompatible' &&
+    resetPolicyCause !== 'corrupt-or-unsupported' &&
+    resetPolicyCause !== 'newer-incompatible-invalid-target'
+  ) {
+    fail('manifest_invalid_schema');
+  }
+  const evidenceValue = requiredValue(root, 'resetPolicyEvidence');
+  let resetPolicyEvidence: StoreResetNewerTargetEvidence | null = null;
+  if (resetPolicyCause === 'newer-incompatible-invalid-target') {
+    const evidence = objectValue(evidenceValue);
+    requireExactKeys(evidence, ['validationFailure', 'observedTarget']);
+    const failureValue = objectValue(requiredValue(evidence, 'validationFailure'));
+    requireExactKeys(failureValue, ['code']);
+    const code = exactString(requiredValue(failureValue, 'code'), VALIDATION_FAILURE_CODE_PATTERN, 128);
+    const observedValue = objectValue(requiredValue(evidence, 'observedTarget'));
+    requireExactKeys(observedValue, [
+      'version',
+      'buildSetId',
+      'bundleHash',
+      'flavor',
+      'storeFormatFingerprint',
+      'executablePathSha256',
+      'executableSha256',
+    ]);
+    const observedFlavor = requiredValue(observedValue, 'flavor');
+    if (observedFlavor !== null && observedFlavor !== 'dev' && observedFlavor !== 'prod') {
+      fail('manifest_invalid_schema');
+    }
+    resetPolicyEvidence = Object.freeze({
+      validationFailure: Object.freeze({ code }),
+      observedTarget: Object.freeze({
+        version: nullableExactString(requiredValue(observedValue, 'version'), SEMVER_PATTERN, 128),
+        buildSetId: nullableExactString(requiredValue(observedValue, 'buildSetId'), UUID_PATTERN, 36),
+        bundleHash: nullableExactString(requiredValue(observedValue, 'bundleHash'), BUNDLE_HASH_PATTERN, 16),
+        flavor: observedFlavor,
+        storeFormatFingerprint: nullableExactString(
+          requiredValue(observedValue, 'storeFormatFingerprint'),
+          FINGERPRINT_PATTERN,
+          71,
+        ),
+        executablePathSha256: nullableExactString(
+          requiredValue(observedValue, 'executablePathSha256'),
+          SHA256_PATTERN,
+          64,
+        ),
+        executableSha256: nullableExactString(requiredValue(observedValue, 'executableSha256'), SHA256_PATTERN, 64),
+      }),
+    });
+    if (reason !== 'mismatch' || storedFingerprint === null) {
+      fail('manifest_invalid_schema');
+    }
+  } else {
+    if (evidenceValue !== null) {
+      fail('manifest_invalid_schema');
+    }
+    if (resetPolicyCause === 'older-incompatible' && (reason !== 'mismatch' || storedFingerprint === null)) {
+      fail('manifest_invalid_schema');
+    }
+  }
+
+  const targetValue = objectValue(requiredValue(root, 'target'));
+  requireExactKeys(targetValue, ['storeDbPath', 'flavor']);
+  const targetStoreDbPath = exactString(requiredValue(targetValue, 'storeDbPath'), /^.+$/u, 4_096);
+  const targetFlavor = requiredValue(targetValue, 'flavor');
+  if (targetFlavor !== 'dev' && targetFlavor !== 'prod') {
+    fail('manifest_invalid_schema');
+  }
+
+  return Object.freeze({
+    schemaVersion: STORE_RESET_INCIDENT_SCHEMA_VERSION,
+    incidentId: common.incidentId,
+    resetAt: common.resetAt,
+    reason: common.reason,
+    storedFingerprint: common.storedFingerprint,
+    expectedFingerprint: common.expectedFingerprint,
+    resetPolicyCause,
+    resetPolicyEvidence,
+    target: Object.freeze({ storeDbPath: targetStoreDbPath, flavor: targetFlavor }),
+    build: common.build,
+    runtime: common.runtime,
+    handoff: common.handoff,
+    files: common.files,
   });
 }
 
-export function parseStoreResetIncidentManifest(bytes: Uint8Array): StoreResetIncidentManifestV2 {
+export function parseStoreResetIncidentManifest(bytes: Uint8Array): StoreResetIncidentManifest {
   const text = decodeManifestBytes(bytes);
   const parsed = new BoundedJsonReader(text).parse();
   return validateManifest(parsed);
 }
 
-export function serializeStoreResetIncidentManifest(manifest: StoreResetIncidentManifestV2): string {
+export function serializeStoreResetIncidentManifest(manifest: StoreResetIncidentManifest): string {
   const validated = validateManifest(manifest);
   return `${JSON.stringify(validated, null, 2)}\n`;
 }
@@ -649,6 +832,9 @@ export function projectStoreResetPublicReport(local: StoreResetIncidentLocalRepo
     incidentId: manifest.incidentId,
     resetAt: manifest.resetAt,
     reason: manifest.reason,
+    schemaVersion: manifest.schemaVersion,
+    resetPolicyCause: manifest.schemaVersion === 3 ? manifest.resetPolicyCause : null,
+    resetPolicyEvidence: manifest.schemaVersion === 3 ? manifest.resetPolicyEvidence : null,
     storedFingerprint: manifest.storedFingerprint,
     expectedFingerprint: manifest.expectedFingerprint,
     build: Object.freeze({

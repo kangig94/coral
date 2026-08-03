@@ -1,0 +1,9 @@
+import * as recoverySources from './services/recovery/coordinator-job-source.js';
+
+export async function loadComputed(moduleName: string): Promise<unknown> {
+  return import(moduleName);
+}
+
+export function selectComputed(name: string): unknown {
+  return recoverySources[name as keyof typeof recoverySources];
+}

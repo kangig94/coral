@@ -78,6 +78,12 @@ import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-c
 import { readCorpusState } from '../../kb/state/corpus-state.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
+import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
+import {
+  createRecoveryQuarantineRetryService,
+  createRecoverySourceRegistry,
+  type RecoveryRetryQuarantinePort,
+} from '../../recovery/source-registry.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 const KB_DAEMON_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -410,6 +416,20 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     return storeServices;
   };
   const getProgressStore = () => getStoreServices().progressStore;
+  const getRecoveryQuarantineStore = () => new RecoveryQuarantineStore(getProgressStore().getDb(), runtime.time);
+  const recoveryQuarantineStore: RecoveryRetryQuarantinePort = {
+    read: (boundary, subjectKey) => getRecoveryQuarantineStore().read(boundary, subjectKey),
+    upsert: (write) => getRecoveryQuarantineStore().upsert(write),
+    delete: (request) => getRecoveryQuarantineStore().delete(request),
+    claimRetry: (request) => getRecoveryQuarantineStore().claimRetry(request),
+    reclaimRetry: (request) => getRecoveryQuarantineStore().reclaimRetry(request),
+  };
+  const recoveryQuarantine = createRecoveryQuarantineRetryService({
+    instanceId: world.identity.instanceId,
+    ids: runtime.ids,
+    quarantine: recoveryQuarantineStore,
+    sources: createRecoverySourceRegistry(),
+  });
 
   // Eager defaults resolve from `runtime` alone.
   const defaults = defaultsPlan.finalizeWithWorld({
@@ -795,6 +815,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         }
       },
     },
+    recoveryQuarantine,
     kb: kbRpcPort,
     discuss: {
       seed: handleDiscussSeed,

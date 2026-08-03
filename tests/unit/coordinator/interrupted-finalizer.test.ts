@@ -143,7 +143,7 @@ function createHarness(options: { artifactRecorded?: boolean; sessionFinalized?:
 }
 
 describe('interrupted app-server recovery finalizer', () => {
-  it('carries the exact CAS version and releases local ownership only after the durable session commit', async () => {
+  it('persists artifact handles before terminal settlement and carries the advanced CAS version', async () => {
     const harness = createHarness();
 
     await finalizeInterruptedAppServerRecovery(plan, performed, status, harness.deps);
@@ -192,6 +192,7 @@ describe('interrupted app-server recovery finalizer', () => {
       }),
     );
 
+    expect(harness.recordArtifactHandleAtomic).toHaveBeenCalled();
     expect(harness.order).toEqual(['artifact-cas']);
     expect(harness.jobPools.has('interrupted-job')).toBe(true);
     expect(harness.remove).not.toHaveBeenCalled();
@@ -221,6 +222,13 @@ describe('interrupted durable recovery finalizer', () => {
 
     await finalizeInterruptedDurableRecovery(durablePlan, durablePerformed, status, harness.deps);
 
+    expect(harness.recordArtifactHandleAtomic).toHaveBeenCalledWith('interrupted-session', {
+      expectedActiveJobId: 'interrupted-job',
+      expectedVersion: 7,
+      handle: '/provider/thread-recovered.jsonl',
+      identity: { kind: 'fixture', threadId: 'thread-recovered' },
+      sourceJobId: 'interrupted-job',
+    });
     expect(harness.finalizeJobContinuityAtomic).toHaveBeenCalledWith(
       'interrupted-session',
       expect.objectContaining({
@@ -272,6 +280,7 @@ describe('interrupted durable recovery finalizer', () => {
       }),
     );
 
+    expect(harness.recordArtifactHandleAtomic).toHaveBeenCalled();
     expect(harness.order).toEqual(['artifact-cas']);
     expect(harness.jobPools.has('interrupted-job')).toBe(true);
     expect(harness.releaseLaunch).not.toHaveBeenCalled();

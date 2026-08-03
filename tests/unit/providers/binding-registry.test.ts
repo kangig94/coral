@@ -2,7 +2,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z } from 'zod';
 import { zodPersistedParser, zodValueParser } from '#src/providers/binding-parser.js';
 
-import { none } from '#src/providers/capability.js';
+import { managed, none } from '#src/providers/capability.js';
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import {
   bindingFailure,
@@ -14,6 +14,8 @@ import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { PROVIDER_ARTIFACT_DISCARD_PROTOCOL } from '#src/providers/contract.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 const CLAUDE_BINDING_ENVELOPE = {
   provider: 'claude',
@@ -34,6 +36,69 @@ function successfulBinding(result: ProviderBindingResult<BoundProvider>): BoundP
 }
 
 describe('provider binding registry boundary', () => {
+  it('preserves the managed-artifact protocol and action coordinates through binding', async () => {
+    const observed: Array<{ actionId: string; payloadHash: string; operation: string }> = [];
+    let loseFirstResponse = true;
+    const registry = new ProviderRegistry();
+    registry.register(
+      defineProvider({
+        name: 'artifact-protocol',
+        transport: 'standalone',
+        run: async function* () {},
+        prepareExecutionPlan: () => ({
+          plan: { host: undefined, session: undefined, turn: undefined },
+          prepareCliRequest: (request) => request,
+        }),
+      })
+        .binding(fixtureProviderBindingCodec('artifact-protocol'))
+        .artifacts(
+          managed({
+            discardArtifacts: async ({ actionId, payloadHash }) => {
+              observed.push({ actionId, payloadHash, operation: 'discard' });
+              if (loseFirstResponse) {
+                loseFirstResponse = false;
+                throw new Error('fixture response lost');
+              }
+              return { kind: 'discarded' };
+            },
+            reconcileDiscard: async ({ actionId, payloadHash }) => {
+              observed.push({ actionId, payloadHash, operation: 'reconcile' });
+              return { kind: 'not-applied' };
+            },
+          }),
+        )
+        .build(),
+    );
+    const bound = successfulBinding(
+      registry.rehydrateBinding({
+        provider: 'artifact-protocol',
+        kind: 'profile',
+        binding: {
+          profile: { canonicalLocation: '/artifact-protocol', routing: {} },
+          guarantee: 'profile-only',
+        },
+      }),
+    );
+    if (bound.artifacts.kind !== 'managed') throw new Error('Expected managed artifact capability.');
+    expect(bound.artifacts.protocol).toBe(PROVIDER_ARTIFACT_DISCARD_PROTOCOL);
+    const runtime = new SimulationRuntime();
+    const action = {
+      handles: ['/tmp/artifact-protocol.jsonl'],
+      actionId: 'discard-action',
+      payloadHash: 'discard-payload',
+      runtime,
+    };
+
+    await expect(bound.artifacts.discardArtifacts(action)).rejects.toThrow('fixture response lost');
+    await expect(bound.artifacts.reconcileDiscard(action)).resolves.toEqual({ kind: 'not-applied' });
+    await expect(bound.artifacts.discardArtifacts(action)).resolves.toEqual({ kind: 'discarded' });
+    expect(observed).toEqual([
+      { actionId: 'discard-action', payloadHash: 'discard-payload', operation: 'discard' },
+      { actionId: 'discard-action', payloadHash: 'discard-payload', operation: 'reconcile' },
+      { actionId: 'discard-action', payloadHash: 'discard-payload', operation: 'discard' },
+    ]);
+  });
+
   it('retains each built-in provider continuity decoder on the bound authority', () => {
     const registry = createBuiltInProviderRegistry();
     const claude = successfulBinding(registry.rehydrateBinding(CLAUDE_BINDING_ENVELOPE));

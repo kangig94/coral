@@ -1,0 +1,34 @@
+import type { RecoverySource } from '../recovery/containment.js';
+import { loadComputed, selectComputed } from './computed-edge.js';
+import { forgeReceipt, inspectReceipt } from './receipt-attack.js';
+
+type RawJob = { readonly id: string };
+
+interface Database {
+  scan(): readonly RawJob[];
+}
+
+interface DomainDependencies<T> {
+  readonly database: Database;
+  readonly rows: readonly RawJob[];
+  readonly unresolved: T;
+  readonly [name: string]: unknown;
+  enumerate(): readonly RawJob[];
+}
+
+export interface NamedSettlementCapability {
+  settle(id: string): void;
+}
+
+export function runStartupStaleArtifactPrune<T>(
+  _dependencies: DomainDependencies<T>,
+  source: RecoverySource<RawJob>,
+  _settlement: NamedSettlementCapability,
+): void {
+  const { scan } = source;
+  void source.scan();
+  void scan;
+  void loadComputed('module');
+  void selectComputed('coordinatorJobRecoverySource');
+  void inspectReceipt(forgeReceipt());
+}

@@ -369,18 +369,44 @@ function bindArtifacts<Access extends JsonValue>(
 ): BoundProviderArtifacts {
   if (artifacts.kind === 'none') return artifacts;
   const discardArtifacts = artifacts.discardArtifacts;
+  const reconcileDiscard = artifacts.reconcileDiscard;
   const locateArtifact = artifacts.locateArtifact;
   return Object.freeze({
     kind: 'managed' as const,
-    discardArtifacts: (options: { handles: readonly ProviderArtifactHandle[]; runtime: ArtifactCleanupRuntime }) => {
+    protocol: artifacts.protocol,
+    discardArtifacts: (options: {
+      handles: readonly ProviderArtifactHandle[];
+      actionId: string;
+      payloadHash: string;
+      runtime: ArtifactCleanupRuntime;
+    }) => {
       const input = snapshotPlainReceiver(options, 'Bound artifact discard input', new Set(['runtime']));
       return discardArtifacts(
         Object.freeze({
           handles: snapshotBoundaryData(input.handles, 'Bound artifact handles'),
+          actionId: input.actionId,
+          payloadHash: input.payloadHash,
           runtime: input.runtime,
           access,
         }),
       ).then((result) => snapshotProviderResult(result, 'Bound artifact discard outcome'));
+    },
+    reconcileDiscard: (options: {
+      handles: readonly ProviderArtifactHandle[];
+      actionId: string;
+      payloadHash: string;
+      runtime: ArtifactCleanupRuntime;
+    }) => {
+      const input = snapshotPlainReceiver(options, 'Bound artifact reconciliation input', new Set(['runtime']));
+      return reconcileDiscard(
+        Object.freeze({
+          handles: snapshotBoundaryData(input.handles, 'Bound artifact handles'),
+          actionId: input.actionId,
+          payloadHash: input.payloadHash,
+          runtime: input.runtime,
+          access,
+        }),
+      ).then((result) => snapshotProviderResult(result, 'Bound artifact reconciliation outcome'));
     },
     ...(locateArtifact === undefined
       ? {}

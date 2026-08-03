@@ -6,6 +6,7 @@ import { codexAppServerLifecycle, codexRecoveryLifecycle } from '#src/providers/
 import { buildCodexContinuity } from '#src/providers/codex/request-mapping.js';
 import { codexArtifactCapability, locateCodexRolloutArtifact } from '#src/providers/codex/artifacts.js';
 import type { ArtifactCleanupRuntime, AppServerTransport } from '#src/providers/contract.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
   return {
@@ -227,17 +228,56 @@ describe('locateCodexRolloutArtifact', () => {
 });
 
 describe('codexArtifactCapability', () => {
+  it('reconciles response loss without replaying the visible external effect', async () => {
+    const runtime = new SimulationRuntime();
+    const handle = '/tmp/codex-response-loss.jsonl';
+    runtime.storage.mkdirSync('/tmp', { recursive: true });
+    runtime.storage.writeFileSync(handle, '{}\n', { encoding: 'utf-8' });
+    const unlink = vi.spyOn(runtime.storage, 'unlinkSync');
+    const writeAtomicSync = runtime.storage.writeAtomicSync.bind(runtime.storage);
+    let actionWrites = 0;
+    vi.spyOn(runtime.storage, 'writeAtomicSync').mockImplementation((...args) => {
+      if (args[0].includes('.provider-artifact-discard') && ++actionWrites === 2) return false;
+      return writeAtomicSync(...args);
+    });
+    const cleanupRuntime: ArtifactCleanupRuntime = {
+      storage: runtime.storage,
+      env: runtime.env,
+      paths: runtime.paths,
+      time: { sleep: async () => {} } as unknown as ArtifactCleanupRuntime['time'],
+    };
+    const action = {
+      handles: [handle],
+      actionId: 'codex-response-loss-action',
+      payloadHash: 'codex-response-loss-payload',
+      access: TEST_CODEX_ACCESS,
+      runtime: cleanupRuntime,
+    };
+
+    await expect(codexArtifactCapability.discardArtifacts(action)).rejects.toThrow(
+      'Failed to persist provider artifact action',
+    );
+    const reconciled = await codexArtifactCapability.reconcileDiscard(action);
+    expect(reconciled).toEqual({ kind: 'applied', outcome: { kind: 'discarded' } });
+    if (reconciled.kind !== 'applied') await codexArtifactCapability.discardArtifacts(action);
+    expect(unlink).toHaveBeenCalledTimes(1);
+  });
+
   it('discards only the recorded handles it is given', async () => {
-    const unlinkSync = vi.fn();
-    const runtime = {
-      storage: { unlinkSync, existsSync: () => false },
-      env: { homedir: () => '/home/user' },
-      time: { sleep: async () => {} },
-    } as unknown as ArtifactCleanupRuntime;
+    const simulation = new SimulationRuntime();
+    const unlinkSync = vi.spyOn(simulation.storage, 'unlinkSync');
+    const runtime: ArtifactCleanupRuntime = {
+      storage: simulation.storage,
+      env: simulation.env,
+      paths: simulation.paths,
+      time: { sleep: async () => {} } as unknown as ArtifactCleanupRuntime['time'],
+    };
 
     await expect(
       codexArtifactCapability.discardArtifacts({
         handles: ['/tmp/one.jsonl', '/tmp/two.jsonl'],
+        actionId: 'test-action',
+        payloadHash: 'test-payload',
         access: TEST_CODEX_ACCESS,
         runtime,
       }),

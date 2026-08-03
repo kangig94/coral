@@ -1,17 +1,59 @@
 import { backendLog } from '../infra/backend-log.js';
-import type { CauseRef } from '../causality/cause-ref.js';
 import { errorMessage } from '../infra/error-format.js';
 import type { TimePort, TimerHandle } from '../infra/port-types.js';
-import type { ArtifactCleanupRuntime } from '../providers/contract.js';
+import {
+  ProviderArtifactProtocolInvariantError,
+  type ArtifactCleanupRuntime,
+  type DiscardOutcome,
+  type ProviderArtifactDiscardReconciliation,
+} from '../providers/contract.js';
 import type { ProviderBindingCatalog } from '../providers/catalog.js';
 import type { BoundProvider } from '../providers/bound-provider-contract.js';
+import {
+  RecoveryContainment,
+  type RecoveryDisposition,
+  type RecoveryFault,
+  type RecoveryObligationId,
+  type RecoveryPolicy,
+  type RecoverySettlementFact,
+  type RecoverySubject,
+} from '../recovery/containment.js';
+import { rawRetentionContinuationRowSchema, RecoveryQuarantineStore } from '../recovery/quarantine.js';
+import { retentionWorkItemRecoverySource } from './retention-work-item-recovery-source.js';
+import {
+  retentionReleasePairComponentSource,
+  type RawRetentionReleaseAndTerminalRow,
+  type RetentionReleasePairComponent,
+} from './retention-release-pair-recovery-source.js';
+import {
+  sessionContinuationLeaseRecoverySource,
+  type RawPendingContinuationLeaseRow,
+  type SessionContinuationLeaseComponent,
+} from './session-continuation-lease-recovery-source.js';
+import {
+  sessionProjectionRecoverySource,
+  type RawSessionProjectionEnvelope,
+  type SessionProjectionComponent,
+} from './session-projection-recovery-source.js';
+import {
+  terminalRetentionOutcomeRecoverySource,
+  type RawTerminalRetentionOutcomeRow,
+  type TerminalRetentionOutcomeComponent,
+} from './terminal-retention-outcome-recovery-source.js';
 import type { AppendedEvent, CommitEventsFn, PostCommitObserver } from '../store/append.js';
-import type { ReadonlyDatabase } from '../store/read-port.js';
+import type { Database } from '../store/db.js';
 import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
+import { decodeEventRefs } from '../store/envelope.js';
 import type { EventsRow } from '../store/schema.js';
 import { collectArtifactHandles } from './artifact-discard.js';
 import { sessionContinuationLeaseExpiredEvent } from './continuation-lease-events.js';
-import { archiveProviderArtifactsForJob } from './provider-artifact-archive.js';
+import {
+  archiveProviderArtifactsForJob,
+  deriveProviderArtifactActionDescriptor,
+  deriveProviderArtifactSourceRevision,
+  ProviderArtifactArchiveInvariantError,
+  type ProviderArtifactActionDescriptor,
+} from './provider-artifact-archive.js';
 import { listProjectionSessionEntries, readProjectionSessionEntriesById } from './projections.js';
 import {
   appendRetentionDiscardCompleted,
@@ -23,23 +65,37 @@ import {
 import {
   hasUnterminalRetentionDiscardRequest,
   isProtectiveContinuationLease,
+  providerSessionSchema,
+  sessionControllerFromProfile,
   type ExpiredContinuationLease,
-  type PendingContinuationLease,
   type RetentionDiscardCompletedOutcome,
   type ProviderSession,
   providerSessionProvider,
 } from './entry.js';
 import {
-  readSessionRetentionWorkForEntries,
-  readSessionRetentionWorkForPairs,
-  readSessionRetentionWorkForSessionIds,
+  sessionClaimReleasedBodySchema,
+  sessionRetentionDiscardCompletedBodySchema,
+  sessionRetentionDiscardFailedBodySchema,
+} from './event-bodies.js';
+import { projectionSessionStoredRowSchema } from './projections.js';
+import {
   sessionRetentionWorkKey,
   type SessionRetentionPair,
   type SessionRetentionWork,
+  type RecoverySessionRetentionWork,
+  type RetentionDiscardContinuation,
+  hydrateRecoverySessionRetentionWork,
+  retentionRecoveryFact,
+  RETENTION_ATTEMPT_OBLIGATION,
+  RETENTION_DISCARD_CONTINUATION_KIND,
+  RETENTION_PROVIDER_DISCARD_OBLIGATION,
+  RETENTION_TERMINAL_OBLIGATION,
+  RETENTION_WORK_OBLIGATIONS,
 } from './retention-work.js';
+import { runSessionStartupRecovery } from './startup-recovery.js';
 
 export type LifecycleReactorOptions = {
-  readonly db: () => ReadonlyDatabase;
+  readonly db: () => Database;
   readonly readCtx: StoreReadContext;
   readonly providers: ProviderBindingCatalog;
   readonly runtime: ArtifactCleanupRuntime;
@@ -48,27 +104,187 @@ export type LifecycleReactorOptions = {
   readonly log?: (message: string) => void;
 };
 
-function relevantSessionId(event: AppendedEvent): string | null {
+const SESSION_COMPONENT_OBLIGATION = 'session.retention.session-component' as RecoveryObligationId;
+const LEASE_COMPONENT_OBLIGATION = 'session.retention.lease-component' as RecoveryObligationId;
+const LEASE_EXPIRY_OBLIGATION = 'session.retention.lease-expiry' as RecoveryObligationId;
+const OUTCOME_COMPONENT_OBLIGATION = 'session.retention.outcome-component' as RecoveryObligationId;
+const RELEASE_COMPONENT_OBLIGATION = 'session.retention.release-terminal-component' as RecoveryObligationId;
+
+function validateProjectionCoordinates(
+  row: RawPendingContinuationLeaseRow,
+  entry: ProviderSession,
+  label: string,
+): void {
+  if (entry.sessionId !== row.session_id) {
+    throw new TypeError(`${label} key '${row.session_id}' contradicts entry '${entry.sessionId}'.`);
+  }
   if (
-    event.type !== 'job.terminal.recorded' &&
-    event.type !== 'session.claim.released' &&
-    event.type !== 'session.continuation_lease.claimed' &&
-    event.type !== 'session.continuation_lease.cleared' &&
-    event.type !== 'session.continuation_lease.expired' &&
-    !isRetentionSkippedOrCancelled(event)
+    row.controller !== sessionControllerFromProfile(entry.controllerProfile) ||
+    row.resumable !== (entry.state === 'ready' ? 1 : 0) ||
+    row.conversation_ref !== (entry.conversationRef ?? null)
   ) {
-    return null;
+    throw new TypeError(`${label} '${row.session_id}' has contradictory denormalized fields.`);
   }
+}
 
-  if (typeof event.refs?.sessionId === 'string' && event.refs.sessionId.length > 0) {
-    return event.refs.sessionId;
+function hydrateSessionProjectionComponent(raw: RawSessionProjectionEnvelope): SessionProjectionComponent {
+  const row = projectionSessionStoredRowSchema.parse(raw.row);
+  const retentionContinuations = raw.retentionContinuations.map((continuation) =>
+    rawRetentionContinuationRowSchema.parse(continuation),
+  );
+  const rawEntry = JSON.parse(row.entry) as unknown;
+  if (typeof rawEntry !== 'object' || rawEntry === null || Array.isArray(rawEntry)) {
+    throw new TypeError(`Projection session '${row.session_id}' has a non-object entry.`);
   }
+  const hasContinuationLeaseField = Object.prototype.hasOwnProperty.call(rawEntry, 'continuationLease');
+  const { continuationLease: _lease, ...baseEntry } = rawEntry as Record<string, unknown>;
+  const entry = providerSessionSchema.parse(baseEntry);
+  validateProjectionCoordinates(row, entry, 'Projection session');
+  return {
+    kind: 'session',
+    row,
+    entry,
+    hasContinuationLeaseField,
+    retentionContinuations,
+  };
+}
 
-  if (event.stream.kind === 'session') {
-    return event.stream.id;
+function hydrateSessionContinuationLeaseComponent(
+  raw: RawPendingContinuationLeaseRow,
+  nowMs: number,
+): SessionContinuationLeaseComponent {
+  const row = projectionSessionStoredRowSchema.parse(raw);
+  const entry = providerSessionSchema.parse(JSON.parse(row.entry) as unknown);
+  validateProjectionCoordinates(row, entry, 'Continuation lease projection');
+  if (entry.continuationLease === undefined) {
+    throw new TypeError(`Continuation lease projection '${row.session_id}' has no lease.`);
   }
+  const overdueLease =
+    entry.continuationLease.status === 'pending' && Date.parse(entry.continuationLease.expiresAt) <= nowMs
+      ? entry.continuationLease
+      : null;
+  if (overdueLease === null) {
+    return {
+      kind: 'lease',
+      row,
+      persistedEntry: entry,
+      effectiveEntry: entry,
+      protectsRetention: isProtectiveContinuationLease(entry.continuationLease, nowMs),
+      overdueLease: null,
+    };
+  }
+  const expiredAt = new Date(nowMs).toISOString();
+  const expiredLease: ExpiredContinuationLease = {
+    staleJobId: overdueLease.staleJobId,
+    workflowId: overdueLease.workflowId,
+    workflowSlotId: overdueLease.workflowSlotId,
+    replacementGeneration: overdueLease.replacementGeneration,
+    reason: overdueLease.reason,
+    expiresAt: overdueLease.expiresAt,
+    recordedAt: overdueLease.recordedAt,
+    status: 'expired',
+    expiredAt,
+  };
+  return {
+    kind: 'lease',
+    row,
+    persistedEntry: entry,
+    effectiveEntry: {
+      ...entry,
+      continuationLease: expiredLease,
+      lastUsedAt: expiredAt,
+      version: entry.version + 1,
+    },
+    protectsRetention: false,
+    overdueLease,
+  };
+}
 
-  return null;
+function hydrateTerminalRetentionOutcomeComponent(
+  row: RawTerminalRetentionOutcomeRow,
+  readCtx: StoreReadContext,
+): TerminalRetentionOutcomeComponent {
+  const decoded = decodeStoredBody(row, readCtx);
+  if (row.type === 'session.retention.discard.failed') {
+    const body = sessionRetentionDiscardFailedBodySchema.parse(decoded);
+    if (body.sessionId !== row.stream_id) {
+      throw new TypeError(`Retention failure event ${row.seq} contradicts its session stream.`);
+    }
+    return { kind: 'terminal-outcome', row, sessionId: body.sessionId, terminal: true };
+  }
+  if (row.type !== 'session.retention.discard.completed') {
+    throw new TypeError(`Unexpected retention outcome event '${row.type}'.`);
+  }
+  const body = sessionRetentionDiscardCompletedBodySchema.parse(decoded);
+  if (body.sessionId !== row.stream_id) {
+    throw new TypeError(`Retention completion event ${row.seq} contradicts its session stream.`);
+  }
+  return {
+    kind: 'terminal-outcome',
+    row,
+    sessionId: body.sessionId,
+    terminal: body.outcome !== 'skipped_protected',
+  };
+}
+
+function hydrateRetentionReleasePairComponent(
+  row: RawRetentionReleaseAndTerminalRow,
+  readCtx: StoreReadContext,
+): RetentionReleasePairComponent {
+  const decoded = decodeStoredBody(row, readCtx);
+  const refs = decodeEventRefs(row);
+  if (row.type === 'session.claim.released') {
+    const body = sessionClaimReleasedBodySchema.parse(decoded);
+    const sessionId = refs?.sessionId ?? row.stream_id;
+    const jobId = refs?.jobId ?? body.jobId;
+    if (sessionId !== row.stream_id || body.entry.sessionId !== sessionId || body.jobId !== jobId) {
+      throw new TypeError(`Session release event ${row.seq} has contradictory session/job coordinates.`);
+    }
+    return { kind: 'release', row, sessionId, jobId, entry: body.entry };
+  }
+  if (row.type !== 'job.terminal.recorded') {
+    throw new TypeError(`Unexpected retention pair event '${row.type}'.`);
+  }
+  // The retention pair reads nothing out of a terminal body — only its stream, refs and seq — and a
+  // corrupt body already fails `decodeStoredBody` above. Re-validating jobs' own event shape here
+  // would make sessions depend on jobs at runtime for a value it discards.
+  const sessionId = refs?.sessionId;
+  if (sessionId === undefined) {
+    throw new TypeError(`Job terminal event ${row.seq} has no refs.sessionId.`);
+  }
+  return { kind: 'terminal', row, sessionId, jobId: row.stream_id };
+}
+
+function recoveryFact(
+  obligation: RecoveryObligationId,
+  outcome: RecoverySettlementFact['outcome'],
+  authorityRef?: string,
+): RecoverySettlementFact {
+  return { obligation, outcome, ...(authorityRef === undefined ? {} : { authorityRef }) };
+}
+
+function componentFaultDisposition<Raw, Item>(fault: RecoveryFault<Raw, Item>): RecoveryDisposition {
+  return fault.stage === 'scan'
+    ? { kind: 'fatal', error: fault.error }
+    : {
+        kind: 'quarantine',
+        detail: `P4 ${fault.stage} failed for ${fault.subject.key}: ${errorMessage(fault.error)}`,
+      };
+}
+
+function appendedRetentionPair(event: AppendedEvent): SessionRetentionPair | null {
+  if (event.type === 'job.terminal.recorded') {
+    const sessionId = event.refs?.sessionId;
+    return event.stream.kind === 'job' && typeof sessionId === 'string' && sessionId.length > 0
+      ? { sessionId, jobId: event.stream.id }
+      : null;
+  }
+  if (event.type !== 'session.claim.released') return null;
+  const sessionId = event.refs?.sessionId ?? (event.stream.kind === 'session' ? event.stream.id : undefined);
+  const jobId = event.refs?.jobId;
+  return typeof sessionId === 'string' && sessionId.length > 0 && typeof jobId === 'string' && jobId.length > 0
+    ? { sessionId, jobId }
+    : null;
 }
 
 function isContinuationLeaseEvent(event: AppendedEvent): boolean {
@@ -90,15 +306,11 @@ function isRetentionSkippedOrCancelled(event: AppendedEvent): boolean {
 export class LifecycleReactor {
   private readonly pendingBySession = new Map<string, Set<string>>();
   private readonly inFlightPairs = new Set<string>();
-  /**
-   * Failed requested/terminal appends can consume an in-memory attempt number
-   * without persisting it. In the typical case this is one row per attempt and
-   * bounded by per-session terminal-eligibility coalescing plus live suppression
-   * once a terminal outcome exists; a pathological append flake can grow
-   * linearly for the affected session during the daemon lifetime.
-   */
-  private readonly attemptFloorBySession = new Map<string, number>();
+  private readonly rerunPairs = new Set<string>();
   private drainPromise: Promise<void> | null = null;
+  private recoveryPromise: Promise<void> | null = null;
+  private recoveryRerunRequested = false;
+  private containedRecoveryDepth = 0;
   private continuationLeaseTimer: TimerHandle | null = null;
 
   private readonly options: LifecycleReactorOptions;
@@ -130,45 +342,188 @@ export class LifecycleReactor {
   }
 
   readonly observe: PostCommitObserver = (appended) => {
-    const sessionIds = new Set<string>();
+    const queuePairs = new Map<string, SessionRetentionPair>();
+    const skippedSessionIds = new Set<string>();
     let sawContinuationLeaseEvent = false;
     for (const event of appended) {
       if (isContinuationLeaseEvent(event)) {
         sawContinuationLeaseEvent = true;
       }
-      const sessionId = relevantSessionId(event);
-      if (sessionId !== null) {
-        sessionIds.add(sessionId);
+      const pair = appendedRetentionPair(event);
+      if (pair !== null) {
+        queuePairs.set(sessionRetentionWorkKey(pair.sessionId, pair.jobId), pair);
+      }
+      if (this.containedRecoveryDepth === 0 && isRetentionSkippedOrCancelled(event)) {
+        const sessionId = event.refs?.sessionId ?? (event.stream.kind === 'session' ? event.stream.id : undefined);
+        if (typeof sessionId === 'string' && sessionId.length > 0) skippedSessionIds.add(sessionId);
       }
     }
 
     if (sawContinuationLeaseEvent) {
-      this.rescheduleContinuationLeaseTimer();
+      void this.runContainedRecovery().catch((error: unknown) => {
+        this.log(`Continuation lease recovery failed: ${errorMessage(error)}`);
+      });
     }
-    this.enqueueWork(
-      readSessionRetentionWorkForSessionIds(this.options.db(), this.options.readCtx, [...sessionIds], {
-        nowMs: this.options.time.now(),
-      }),
-    );
+    for (const pair of queuePairs.values()) this.enqueue(pair.sessionId, pair.jobId);
+    for (const sessionId of skippedSessionIds) {
+      const jobId = this.latestTerminalJobId(sessionId);
+      if (jobId !== null) this.enqueue(sessionId, jobId);
+    }
     this.scheduleDrain();
   };
 
-  async scanStartup(): Promise<void> {
-    const db = this.options.db();
-    const expiredSessionIds = this.expireOverdueContinuationLeases();
-    this.rescheduleContinuationLeaseTimer();
-    this.enqueueWork(
-      readSessionRetentionWorkForSessionIds(db, this.options.readCtx, expiredSessionIds, {
-        nowMs: this.options.time.now(),
-      }),
-    );
-    this.enqueueWork(
-      readSessionRetentionWorkForEntries(db, this.options.readCtx, this.listLifecycleSessionEntries(db), {
-        nowMs: this.options.time.now(),
-      }),
-    );
-    this.scheduleDrain();
+  async scanStartup(signal: AbortSignal = new AbortController().signal): Promise<void> {
+    await this.runContainedRecovery(signal);
     await this.waitForIdle();
+  }
+
+  private runContainedRecovery(signal: AbortSignal = new AbortController().signal): Promise<void> {
+    if (this.recoveryPromise !== null) {
+      this.recoveryRerunRequested = true;
+      return this.recoveryPromise;
+    }
+    const promise = (async () => {
+      do {
+        this.recoveryRerunRequested = false;
+        await this.performContainedRecovery(signal);
+      } while (this.recoveryRerunRequested && !signal.aborted);
+    })().finally(() => {
+      if (this.recoveryPromise === promise) this.recoveryPromise = null;
+    });
+    this.recoveryPromise = promise;
+    return promise;
+  }
+
+  private async performContainedRecovery(signal: AbortSignal): Promise<void> {
+    const db = this.options.db();
+    const quarantine = new RecoveryQuarantineStore(db, this.options.time);
+    const timerCandidates: SessionContinuationLeaseComponent[] = [];
+    const sessionsPolicy: RecoveryPolicy<RawSessionProjectionEnvelope, SessionProjectionComponent> = {
+      signal,
+      quarantine,
+      processLocalCleanup: { kind: 'not-required' },
+      issueReceipts: true,
+      hydrate: hydrateSessionProjectionComponent,
+      requiredObligations: () => [SESSION_COMPONENT_OBLIGATION],
+      settle: (component) => ({
+        kind: 'advanced',
+        outcome: 'settled',
+        facts: [recoveryFact(SESSION_COMPONENT_OBLIGATION, 'done', `projection_sessions:${component.row.session_id}`)],
+        detail: 'session projection component hydrated',
+      }),
+      onFault: componentFaultDisposition,
+    };
+    const continuationLeasePolicy: RecoveryPolicy<RawPendingContinuationLeaseRow, SessionContinuationLeaseComponent> = {
+      signal,
+      quarantine,
+      processLocalCleanup: { kind: 'not-required' },
+      issueReceipts: true,
+      hydrate: (raw) => hydrateSessionContinuationLeaseComponent(raw, this.options.time.now()),
+      requiredObligations: () => [LEASE_COMPONENT_OBLIGATION, LEASE_EXPIRY_OBLIGATION],
+      settle: (component) => {
+        if (component.overdueLease === null) {
+          if (component.persistedEntry.continuationLease?.status === 'pending') timerCandidates.push(component);
+          return {
+            kind: 'advanced',
+            outcome: 'settled',
+            facts: [
+              recoveryFact(LEASE_COMPONENT_OBLIGATION, 'done', `projection_sessions:${component.row.session_id}`),
+              recoveryFact(LEASE_EXPIRY_OBLIGATION, 'not-applicable'),
+            ],
+            detail: 'continuation lease hydrated for timer scheduling',
+          };
+        }
+        const expiredLease = component.effectiveEntry.continuationLease;
+        if (expiredLease?.status !== 'expired') {
+          throw new Error(`Continuation lease '${component.row.session_id}' did not hydrate an expiry transition.`);
+        }
+        this.options.commitEvents((commit) => {
+          commit.append(sessionContinuationLeaseExpiredEvent(component.effectiveEntry, expiredLease));
+          return undefined;
+        });
+        return {
+          kind: 'advanced',
+          outcome: 'settled',
+          facts: [
+            recoveryFact(LEASE_COMPONENT_OBLIGATION, 'done', `projection_sessions:${component.row.session_id}`),
+            recoveryFact(
+              LEASE_EXPIRY_OBLIGATION,
+              'done',
+              `session.continuation_lease.expired:${component.row.session_id}`,
+            ),
+          ],
+          detail: 'overdue continuation lease expired atomically',
+        };
+      },
+      onFault: componentFaultDisposition,
+    };
+    const terminalOutcomePolicy: RecoveryPolicy<RawTerminalRetentionOutcomeRow, TerminalRetentionOutcomeComponent> = {
+      signal,
+      quarantine,
+      processLocalCleanup: { kind: 'not-required' },
+      issueReceipts: true,
+      hydrate: (raw) => hydrateTerminalRetentionOutcomeComponent(raw, this.options.readCtx),
+      requiredObligations: () => [OUTCOME_COMPONENT_OBLIGATION],
+      settle: (component) => ({
+        kind: 'advanced',
+        outcome: 'settled',
+        facts: [recoveryFact(OUTCOME_COMPONENT_OBLIGATION, 'done', `events:${component.row.seq}`)],
+        detail: 'terminal retention outcome hydrated',
+      }),
+      onFault: componentFaultDisposition,
+    };
+    const releasePairPolicy: RecoveryPolicy<RawRetentionReleaseAndTerminalRow, RetentionReleasePairComponent> = {
+      signal,
+      quarantine,
+      processLocalCleanup: { kind: 'not-required' },
+      issueReceipts: true,
+      hydrate: (raw) => hydrateRetentionReleasePairComponent(raw, this.options.readCtx),
+      requiredObligations: () => [RELEASE_COMPONENT_OBLIGATION],
+      settle: (component) => ({
+        kind: 'advanced',
+        outcome: 'settled',
+        facts: [recoveryFact(RELEASE_COMPONENT_OBLIGATION, 'done', `events:${component.row.seq}`)],
+        detail: 'release or terminal component hydrated',
+      }),
+      onFault: componentFaultDisposition,
+    };
+
+    this.containedRecoveryDepth += 1;
+    try {
+      await runSessionStartupRecovery({
+        sessions: { source: sessionProjectionRecoverySource(db), policy: sessionsPolicy },
+        continuationLeases: {
+          source: sessionContinuationLeaseRecoverySource(db),
+          policy: continuationLeasePolicy,
+        },
+        terminalOutcomes: { source: terminalRetentionOutcomeRecoverySource(db), policy: terminalOutcomePolicy },
+        releasePairs: { source: retentionReleasePairComponentSource(db), policy: releasePairPolicy },
+        retentionWork: {
+          settle: async (receipts) => {
+            await RecoveryContainment.each(retentionWorkItemRecoverySource(receipts), {
+              signal,
+              quarantine,
+              processLocalCleanup: { kind: 'not-required' },
+              hydrate: hydrateRecoverySessionRetentionWork,
+              requiredObligations: () => RETENTION_WORK_OBLIGATIONS,
+              settle: (work) => this.enforceRetention(work),
+              onFault: (fault) => {
+                if (
+                  fault.error instanceof ProviderArtifactArchiveInvariantError ||
+                  fault.error instanceof ProviderArtifactProtocolInvariantError
+                ) {
+                  return { kind: 'fatal', error: fault.error };
+                }
+                return componentFaultDisposition(fault);
+              },
+            });
+          },
+        },
+      });
+      this.scheduleContinuationLeaseTimer(timerCandidates);
+    } finally {
+      this.containedRecoveryDepth -= 1;
+    }
   }
 
   dispose(): void {
@@ -176,8 +531,8 @@ export class LifecycleReactor {
   }
 
   async waitForIdle(): Promise<void> {
-    while (this.drainPromise !== null) {
-      await this.drainPromise;
+    while (this.drainPromise !== null || this.recoveryPromise !== null) {
+      await Promise.all([this.drainPromise, this.recoveryPromise].filter((promise) => promise !== null));
     }
   }
 
@@ -201,129 +556,494 @@ export class LifecycleReactor {
     }
     const handles = collectArtifactHandles(entry, bound, this.options.runtime);
     if (handles.length === 0) return;
-    await this.archiveArtifactsBeforeDiscard(entry, handles);
-    try {
-      await bound.artifacts.discardArtifacts({
-        handles,
-        runtime: this.options.runtime,
-      });
-    } catch (error: unknown) {
-      this.log(`On-demand artifact discard failed for session ${sessionId}: ${errorMessage(error)}`);
-    }
-  }
-
-  async enforceRetention(work: SessionRetentionWork): Promise<void> {
-    const { jobId, sessionId } = work;
-    if (hasTerminalRetentionDiscardOutcome(this.options.db(), this.options.readCtx, sessionId)) {
-      return;
-    }
-
-    const entry = this.readRetentionEntryForRequest(sessionId);
-    if (entry === null) {
-      return;
-    }
-
-    if (entry.retention !== 'discard_provider_artifacts_on_terminal') {
-      return;
-    }
-    const bound = await this.readyBoundProvider(entry, 'Retention discard');
-    if (bound === null) return;
-    const recordedHandles = collectArtifactHandles(entry, bound, this.options.runtime, { jobId });
-    const attemptFloor = this.attemptFloorBySession.get(sessionId) ?? 0;
-    const attempt = readNextRetentionDiscardAttempt(this.options.db(), this.options.readCtx, sessionId, attemptFloor);
-
-    try {
-      const requested = appendRetentionDiscardRequested(this.options.commitEvents, {
-        sessionId,
-        attempt,
-        handles: recordedHandles,
-      });
-      if (requested.kind === 'duplicate') {
-        this.raiseAttemptFloor(sessionId, attempt, attemptFloor);
-        return;
+    const handlesByJob = new Map<string, string[]>();
+    const metadataByHandle = new Map(entry.artifactHandles.map((artifact) => [artifact.handle, artifact]));
+    for (const handle of handles) {
+      const jobId = metadataByHandle.get(handle)?.sourceJobId ?? this.latestTerminalJobId(sessionId);
+      if (jobId === null) {
+        this.log(`On-demand artifact discard skipped for session ${sessionId}: no persisted job envelope.`);
+        continue;
       }
-    } catch (error: unknown) {
-      this.raiseAttemptFloor(sessionId, attempt, attemptFloor);
-      this.log(
-        `Retention discard request append failed for session ${sessionId} attempt ${attempt}: ${errorMessage(error)}`,
-      );
-      return;
+      const jobHandles = handlesByJob.get(jobId) ?? [];
+      jobHandles.push(handle);
+      handlesByJob.set(jobId, jobHandles);
     }
-
-    if (hasTerminalRetentionDiscardOutcome(this.options.db(), this.options.readCtx, sessionId)) {
-      return;
-    }
-
-    const preDeleteEntry = this.readFreshProviderSession(sessionId);
-    if (preDeleteEntry === null || this.hasRetentionProtection(preDeleteEntry)) {
-      this.appendCompleted(sessionId, attempt, recordedHandles, 'skipped_protected');
-      return;
-    }
-
-    if (bound.artifacts.kind === 'none') {
-      this.appendCompleted(sessionId, attempt, recordedHandles, 'provider_declares_none');
-      return;
-    }
-
-    if (recordedHandles.length === 0) {
-      this.appendCompleted(sessionId, attempt, recordedHandles, 'skipped_no_handles');
-      return;
-    }
-
-    try {
-      await this.archiveArtifactsBeforeDiscard(preDeleteEntry, recordedHandles, jobId);
-      const outcome = await bound.artifacts.discardArtifacts({
-        handles: recordedHandles,
-        runtime: this.options.runtime,
+    for (const [jobId, jobHandles] of handlesByJob) {
+      const terminal = this.readTerminalEvent(sessionId, jobId);
+      const release = this.readReleaseEvent(sessionId, jobId);
+      if (terminal === null || release === null) continue;
+      const descriptor = deriveProviderArtifactActionDescriptor({
+        entry: release.entry,
+        jobId,
+        handles: jobHandles,
+        sourceRevision: deriveProviderArtifactSourceRevision({
+          sessionId,
+          jobId,
+          release: release.row,
+          terminal,
+        }),
+        archivedAt: terminal.ts,
       });
-      this.appendCompleted(sessionId, attempt, recordedHandles, outcome.kind);
-    } catch (error: unknown) {
-      this.appendFailed(
-        sessionId,
-        attempt,
-        recordedHandles,
-        errorMessage(error),
-        this.readTerminalCauseRef(sessionId, jobId),
-      );
-    }
-  }
-
-  private async archiveArtifactsBeforeDiscard(
-    entry: ProviderSession,
-    handles: readonly string[],
-    jobId?: string,
-  ): Promise<void> {
-    const byJobId = new Map<string, string[]>();
-    if (jobId !== undefined) {
-      byJobId.set(jobId, [...handles]);
-    } else {
-      const artifactByHandle = new Map(entry.artifactHandles.map((artifact) => [artifact.handle, artifact]));
-      for (const handle of handles) {
-        const sourceJobId = artifactByHandle.get(handle)?.sourceJobId;
-        if (sourceJobId === undefined) {
+      await this.archiveArtifactsBeforeDiscard(descriptor);
+      try {
+        const reconciled = await bound.artifacts.reconcileDiscard({
+          handles: jobHandles,
+          actionId: descriptor.discardActionId,
+          payloadHash: descriptor.discardPayloadHash,
+          runtime: this.options.runtime,
+        });
+        if (reconciled.kind === 'applied') continue;
+        if (reconciled.kind === 'definitive-failure') {
+          this.log(`On-demand artifact discard failed for session ${sessionId}: ${reconciled.reason}`);
           continue;
         }
-        const group = byJobId.get(sourceJobId) ?? [];
-        group.push(handle);
-        byJobId.set(sourceJobId, group);
+        if (reconciled.kind === 'unknown') {
+          this.log(`On-demand artifact discard remains unknown for session ${sessionId}; replay was not attempted.`);
+          continue;
+        }
+        await bound.artifacts.discardArtifacts({
+          handles: jobHandles,
+          actionId: descriptor.discardActionId,
+          payloadHash: descriptor.discardPayloadHash,
+          runtime: this.options.runtime,
+        });
+      } catch (error: unknown) {
+        if (
+          error instanceof ProviderArtifactArchiveInvariantError ||
+          error instanceof ProviderArtifactProtocolInvariantError
+        ) {
+          throw error;
+        }
+        this.log(`On-demand artifact discard failed for session ${sessionId}: ${errorMessage(error)}`);
+      }
+    }
+  }
+
+  async enforceRetention(work: SessionRetentionWork): Promise<RecoveryDisposition> {
+    const recoveryWork: RecoverySessionRetentionWork = isRecoveryRetentionWork(work)
+      ? work
+      : this.legacyRecoveryWork(work);
+    const { jobId, sessionId } = recoveryWork;
+    if (hasTerminalRetentionDiscardOutcome(this.options.db(), this.options.readCtx, sessionId)) {
+      return this.retentionAdvanced('retention outcome already terminal', 'not-applicable');
+    }
+
+    const bound = await this.readyBoundProvider(recoveryWork.entry, 'Retention discard');
+    if (bound === null) {
+      throw new Error(`Retention provider binding is unavailable for session ${sessionId}.`);
+    }
+    const recoveredContinuation = recoveryWork.recovery.continuation;
+    let continuation: RetentionDiscardContinuation;
+    if (recoveredContinuation === null) {
+      const handles = collectArtifactHandles(recoveryWork.entry, bound, this.options.runtime, { jobId });
+      const attempt = readNextRetentionDiscardAttempt(this.options.db(), this.options.readCtx, sessionId, 0);
+      const descriptor = deriveProviderArtifactActionDescriptor({
+        entry: recoveryWork.entry,
+        jobId,
+        handles,
+        sourceRevision: recoveryWork.recovery.sourceRevision,
+        archivedAt: recoveryWork.recovery.archivedAt,
+      });
+      continuation = {
+        v: 1,
+        sessionId,
+        jobId,
+        sourceRevision: recoveryWork.recovery.sourceRevision,
+        attempt,
+        handles,
+        descriptor,
+        terminalCauseRef: recoveryWork.recovery.terminalCauseRef,
+        completedObligationIds: [],
+        stage: 'prepared',
+      };
+    } else {
+      continuation = recoveredContinuation;
+      this.assertContinuationDescriptor(recoveryWork.entry, continuation);
+    }
+    this.persistRetentionContinuation(recoveryWork, continuation);
+
+    if (continuation.stage === 'prepared') {
+      appendRetentionDiscardRequested(this.options.commitEvents, {
+        sessionId,
+        attempt: continuation.attempt,
+        handles: continuation.handles,
+      });
+      continuation = this.advanceContinuation(continuation, {
+        stage: 'requested',
+        completed: RETENTION_ATTEMPT_OBLIGATION,
+      });
+      this.persistRetentionContinuation(recoveryWork, continuation);
+    }
+
+    const freshEntry = this.readFreshProviderSession(sessionId);
+    if (freshEntry === null || this.hasRetentionProtection(freshEntry)) {
+      return this.completeRetentionNoEffect(recoveryWork, continuation, 'skipped_protected');
+    }
+    if (bound.artifacts.kind === 'none') {
+      return this.completeRetentionNoEffect(recoveryWork, continuation, 'provider_declares_none');
+    }
+    if (continuation.handles.length === 0) {
+      return this.completeRetentionNoEffect(recoveryWork, continuation, 'skipped_no_handles');
+    }
+
+    await this.archiveArtifactsBeforeDiscard(continuation.descriptor);
+    if (continuation.stage === 'requested') {
+      continuation = { ...continuation, stage: 'discard-pending' };
+      this.persistRetentionContinuation(recoveryWork, continuation);
+      try {
+        const outcome = await bound.artifacts.discardArtifacts({
+          handles: continuation.handles,
+          actionId: continuation.descriptor.discardActionId,
+          payloadHash: continuation.descriptor.discardPayloadHash,
+          runtime: this.options.runtime,
+        });
+        continuation = this.recordAppliedDiscard(continuation, outcome);
+        this.persistRetentionContinuation(recoveryWork, continuation);
+      } catch (error: unknown) {
+        const reconciled = await this.reconcileDiscard(bound, continuation);
+        if (reconciled.kind === 'definitive-failure') {
+          return this.failRetention(recoveryWork, continuation, reconciled.reason);
+        }
+        if (reconciled.kind === 'applied') {
+          continuation = this.recordAppliedDiscard(continuation, reconciled.outcome);
+          this.persistRetentionContinuation(recoveryWork, continuation);
+        } else if (reconciled.kind === 'unknown') {
+          return this.deferUnknownProviderOutcome(
+            continuation,
+            `provider discard outcome remains unknown: ${errorMessage(error)}`,
+          );
+        } else {
+          throw error;
+        }
+      }
+    } else if (continuation.stage === 'discard-pending') {
+      const reconciled = await this.reconcileDiscard(bound, continuation);
+      if (reconciled.kind === 'unknown') {
+        return this.deferUnknownProviderOutcome(continuation, 'provider discard reconciliation remains unknown');
+      }
+      if (reconciled.kind === 'definitive-failure') {
+        return this.failRetention(recoveryWork, continuation, reconciled.reason);
+      }
+      if (reconciled.kind === 'not-applied') {
+        try {
+          const outcome = await bound.artifacts.discardArtifacts({
+            handles: continuation.handles,
+            actionId: continuation.descriptor.discardActionId,
+            payloadHash: continuation.descriptor.discardPayloadHash,
+            runtime: this.options.runtime,
+          });
+          continuation = this.recordAppliedDiscard(continuation, outcome);
+          this.persistRetentionContinuation(recoveryWork, continuation);
+        } catch (error: unknown) {
+          const replayReconciliation = await this.reconcileDiscard(bound, continuation);
+          if (replayReconciliation.kind === 'definitive-failure') {
+            return this.failRetention(recoveryWork, continuation, replayReconciliation.reason);
+          }
+          if (replayReconciliation.kind === 'applied') {
+            continuation = this.recordAppliedDiscard(continuation, replayReconciliation.outcome);
+            this.persistRetentionContinuation(recoveryWork, continuation);
+          } else if (replayReconciliation.kind === 'unknown') {
+            return this.deferUnknownProviderOutcome(
+              continuation,
+              `provider discard replay outcome remains unknown: ${errorMessage(error)}`,
+            );
+          } else {
+            throw error;
+          }
+        }
+      } else {
+        continuation = this.recordAppliedDiscard(continuation, reconciled.outcome);
+        this.persistRetentionContinuation(recoveryWork, continuation);
       }
     }
 
-    for (const [artifactJobId, artifactHandles] of byJobId) {
-      try {
-        await archiveProviderArtifactsForJob({
-          runtime: this.options.runtime,
-          entry,
-          jobId: artifactJobId,
-          handles: artifactHandles,
-          archivedAt: new Date(this.options.time.now()).toISOString(),
-        });
-      } catch (error: unknown) {
-        this.log(
-          `Provider artifact archive failed for session ${entry.sessionId} job ${artifactJobId}: ${errorMessage(error)}`,
-        );
-      }
+    const observed = continuation.observedOutcome;
+    if (continuation.stage !== 'discard-applied' || observed?.kind !== 'applied') {
+      throw new Error(`Retention discard '${continuation.descriptor.discardActionId}' has no durable applied outcome.`);
     }
+    try {
+      appendRetentionDiscardCompleted(this.options.commitEvents, {
+        sessionId,
+        attempt: continuation.attempt,
+        handles: continuation.handles,
+        outcome: observed.outcome as RetentionDiscardCompletedOutcome,
+      });
+    } catch (error: unknown) {
+      return this.deferFailedDurableClose(continuation, `retention completion append failed: ${errorMessage(error)}`);
+    }
+    this.clearRetentionContinuation(recoveryWork, continuation);
+    return this.retentionAdvanced(
+      'retention discard reconciled and completed',
+      'done',
+      continuation.descriptor.discardActionId,
+    );
+  }
+
+  private async archiveArtifactsBeforeDiscard(descriptor: ProviderArtifactActionDescriptor): Promise<void> {
+    try {
+      await archiveProviderArtifactsForJob({ runtime: this.options.runtime, descriptor });
+    } catch (error: unknown) {
+      if (error instanceof ProviderArtifactArchiveInvariantError) throw error;
+      this.log(
+        `Provider artifact archive failed for session ${descriptor.sessionId} job ${descriptor.jobId}: ${errorMessage(error)}`,
+      );
+    }
+  }
+
+  private legacyRecoveryWork(work: SessionRetentionWork): RecoverySessionRetentionWork {
+    const terminal = this.readTerminalEvent(work.sessionId, work.jobId);
+    const release = this.readReleaseEvent(work.sessionId, work.jobId);
+    if (terminal === null || release === null) {
+      throw new Error(
+        `Retention work ${sessionRetentionWorkKey(work.sessionId, work.jobId)} has no complete envelope.`,
+      );
+    }
+    const sourceRevision = deriveProviderArtifactSourceRevision({
+      sessionId: work.sessionId,
+      jobId: work.jobId,
+      release: release.row,
+      terminal,
+    });
+    const subject: RecoverySubject = {
+      key: sessionRetentionWorkKey(work.sessionId, work.jobId),
+      revision: { kind: 'fingerprint', value: sourceRevision },
+    };
+    return {
+      ...work,
+      entry: release.entry,
+      recovery: {
+        subject,
+        sourceRevision,
+        terminalCauseRef: { stream: { kind: 'job', id: work.jobId }, seq: terminal.seq },
+        archivedAt: terminal.ts,
+        continuation: null,
+      },
+    };
+  }
+
+  private latestTerminalJobId(sessionId: string): string | null {
+    return (
+      this.options
+        .db()
+        .prepare<[string], { stream_id: string }>(
+          `SELECT stream_id
+             FROM events
+            WHERE type = 'job.terminal.recorded'
+              AND json_extract(refs, '$.sessionId') = ?
+            ORDER BY seq DESC
+            LIMIT 1`,
+        )
+        .get(sessionId)?.stream_id ?? null
+    );
+  }
+
+  private readReleaseEvent(
+    sessionId: string,
+    jobId: string,
+  ): { readonly row: EventsRow; readonly entry: ProviderSession } | null {
+    const row = this.options
+      .db()
+      .prepare<[string, string], EventsRow>(
+        `SELECT *
+           FROM events
+          WHERE type = 'session.claim.released'
+            AND stream_id = ?
+            AND json_extract(refs, '$.jobId') = ?
+          ORDER BY seq DESC
+          LIMIT 1`,
+      )
+      .get(sessionId, jobId);
+    if (row === undefined) return null;
+    const body = sessionClaimReleasedBodySchema.parse(decodeStoredBody(row, this.options.readCtx));
+    if (body.entry.sessionId !== sessionId || body.jobId !== jobId) {
+      throw new ProviderArtifactArchiveInvariantError(
+        `On-demand artifact release envelope contradicts ${sessionId}/${jobId}.`,
+      );
+    }
+    return { row, entry: body.entry };
+  }
+
+  private assertContinuationDescriptor(entry: ProviderSession, continuation: RetentionDiscardContinuation): void {
+    const expected = deriveProviderArtifactActionDescriptor({
+      entry,
+      jobId: continuation.jobId,
+      handles: continuation.handles,
+      sourceRevision: continuation.sourceRevision,
+      archivedAt: continuation.descriptor.archivedAt,
+    });
+    if (JSON.stringify(expected) !== JSON.stringify(continuation.descriptor)) {
+      throw new ProviderArtifactProtocolInvariantError(
+        `Retention action '${continuation.descriptor.operationId}' conflicts with its persisted payload.`,
+      );
+    }
+  }
+
+  private persistRetentionContinuation(
+    work: RecoverySessionRetentionWork,
+    continuation: RetentionDiscardContinuation,
+  ): void {
+    const persisted = new RecoveryQuarantineStore(this.options.db(), this.options.time).upsert({
+      boundary: 'session-retention-work',
+      subject: work.recovery.subject,
+      state: 'continuation',
+      stage: 'settle',
+      errorMessage: 'retention discard remains in progress',
+      detail: `retention discard stage ${continuation.stage}`,
+      continuation: {
+        kind: RETENTION_DISCARD_CONTINUATION_KIND,
+        key: JSON.stringify(continuation),
+      },
+    });
+    if (!persisted) {
+      throw new Error(`Retention continuation lost authority for ${work.recovery.subject.key}.`);
+    }
+  }
+
+  private clearRetentionContinuation(
+    work: RecoverySessionRetentionWork,
+    continuation: RetentionDiscardContinuation,
+  ): void {
+    const deleted = new RecoveryQuarantineStore(this.options.db(), this.options.time).delete({
+      boundary: 'session-retention-work',
+      subject: work.recovery.subject,
+    });
+    if (!deleted) {
+      throw new Error(`Retention continuation completion lost authority for ${continuation.sessionId}.`);
+    }
+  }
+
+  private advanceContinuation(
+    continuation: RetentionDiscardContinuation,
+    change: { readonly stage: RetentionDiscardContinuation['stage']; readonly completed: RecoveryObligationId },
+  ): RetentionDiscardContinuation {
+    return {
+      ...continuation,
+      stage: change.stage,
+      completedObligationIds: [...new Set([...continuation.completedObligationIds, change.completed])],
+    };
+  }
+
+  private recordAppliedDiscard(
+    continuation: RetentionDiscardContinuation,
+    outcome: DiscardOutcome,
+  ): RetentionDiscardContinuation {
+    return {
+      ...continuation,
+      stage: 'discard-applied',
+      observedOutcome: { kind: 'applied', outcome: outcome.kind },
+      completedObligationIds: [
+        ...new Set([...continuation.completedObligationIds, RETENTION_PROVIDER_DISCARD_OBLIGATION]),
+      ],
+    };
+  }
+
+  private async reconcileDiscard(
+    bound: BoundProvider,
+    continuation: RetentionDiscardContinuation,
+  ): Promise<ProviderArtifactDiscardReconciliation> {
+    if (bound.artifacts.kind !== 'managed') {
+      throw new ProviderArtifactProtocolInvariantError(
+        `Retention action '${continuation.descriptor.operationId}' lost its managed artifact capability.`,
+      );
+    }
+    return bound.artifacts.reconcileDiscard({
+      handles: continuation.handles,
+      actionId: continuation.descriptor.discardActionId,
+      payloadHash: continuation.descriptor.discardPayloadHash,
+      runtime: this.options.runtime,
+    });
+  }
+
+  private deferUnknownProviderOutcome(continuation: RetentionDiscardContinuation, detail: string): RecoveryDisposition {
+    return this.retentionDeferred(continuation, detail);
+  }
+
+  private deferFailedDurableClose(continuation: RetentionDiscardContinuation, detail: string): RecoveryDisposition {
+    return this.retentionDeferred(continuation, detail);
+  }
+
+  private retentionDeferred(continuation: RetentionDiscardContinuation, detail: string): RecoveryDisposition {
+    return {
+      kind: 'deferred',
+      continuation: {
+        kind: RETENTION_DISCARD_CONTINUATION_KIND,
+        key: JSON.stringify(continuation),
+      },
+      detail,
+    };
+  }
+
+  private completeRetentionNoEffect(
+    work: RecoverySessionRetentionWork,
+    continuation: RetentionDiscardContinuation,
+    outcome: Extract<
+      RetentionDiscardCompletedOutcome,
+      'skipped_protected' | 'provider_declares_none' | 'skipped_no_handles'
+    >,
+  ): RecoveryDisposition {
+    try {
+      appendRetentionDiscardCompleted(this.options.commitEvents, {
+        sessionId: continuation.sessionId,
+        attempt: continuation.attempt,
+        handles: continuation.handles,
+        outcome,
+      });
+    } catch (error: unknown) {
+      return this.deferFailedDurableClose(continuation, `retention no-effect append failed: ${errorMessage(error)}`);
+    }
+    this.clearRetentionContinuation(work, continuation);
+    return this.retentionAdvanced('retention completed without provider effect', 'not-applicable');
+  }
+
+  private failRetention(
+    work: RecoverySessionRetentionWork,
+    continuation: RetentionDiscardContinuation,
+    reason: string,
+  ): RecoveryDisposition {
+    const failed: RetentionDiscardContinuation = {
+      ...continuation,
+      observedOutcome: { kind: 'definitive-failure', reason },
+      completedObligationIds: [
+        ...new Set([...continuation.completedObligationIds, RETENTION_PROVIDER_DISCARD_OBLIGATION]),
+      ],
+    };
+    this.persistRetentionContinuation(work, failed);
+    try {
+      appendRetentionDiscardFailed(this.options.commitEvents, {
+        sessionId: failed.sessionId,
+        attempt: failed.attempt,
+        handles: failed.handles,
+        reason,
+        ...(failed.terminalCauseRef === undefined ? {} : { causeRef: failed.terminalCauseRef }),
+      });
+    } catch (error: unknown) {
+      return this.deferFailedDurableClose(failed, `retention failure append failed: ${errorMessage(error)}`);
+    }
+    this.clearRetentionContinuation(work, failed);
+    return this.retentionAdvanced(
+      'definitive provider discard failure recorded',
+      'done',
+      failed.descriptor.discardActionId,
+    );
+  }
+
+  private retentionAdvanced(
+    detail: string,
+    providerOutcome: RecoverySettlementFact['outcome'],
+    authorityRef?: string,
+    attemptOutcome: RecoverySettlementFact['outcome'] = 'done',
+    terminalOutcome: RecoverySettlementFact['outcome'] = 'done',
+  ): RecoveryDisposition {
+    return {
+      kind: 'advanced',
+      outcome: 'settled',
+      facts: [
+        retentionRecoveryFact(RETENTION_PROVIDER_DISCARD_OBLIGATION, providerOutcome, authorityRef),
+        retentionRecoveryFact(RETENTION_ATTEMPT_OBLIGATION, attemptOutcome),
+        retentionRecoveryFact(RETENTION_TERMINAL_OBLIGATION, terminalOutcome),
+      ],
+      detail,
+    };
   }
 
   private readFreshProviderSession(sessionId: string): ProviderSession | null {
@@ -351,7 +1071,7 @@ export class LifecycleReactor {
     );
   }
 
-  private readTerminalCauseRef(sessionId: string, jobId: string): CauseRef | undefined {
+  private readTerminalEvent(sessionId: string, jobId: string): EventsRow | null {
     const row = this.options
       .db()
       .prepare<[string, string], EventsRow>(
@@ -365,18 +1085,16 @@ export class LifecycleReactor {
       )
       .get(jobId, sessionId);
     if (row === undefined) {
-      return undefined;
+      return null;
     }
     decodeStoredBody(row, this.options.readCtx);
-    return {
-      stream: { kind: 'job', id: jobId },
-      seq: row.seq,
-    };
+    return row;
   }
 
   private enqueue(sessionId: string, jobId: string): void {
     const key = sessionRetentionWorkKey(sessionId, jobId);
     if (this.inFlightPairs.has(key)) {
+      this.rerunPairs.add(key);
       return;
     }
 
@@ -390,15 +1108,17 @@ export class LifecycleReactor {
       return;
     }
 
+    let failed = false;
     const promise = this.drainQueue()
       .catch((error: unknown) => {
+        failed = true;
         this.log(`Retention lifecycle reactor failed: ${errorMessage(error)}`);
       })
       .finally(() => {
         if (this.drainPromise === promise) {
           this.drainPromise = null;
         }
-        if (this.hasPendingWork()) {
+        if (!failed && this.hasPendingWork()) {
           this.scheduleDrain();
         }
       });
@@ -414,123 +1134,51 @@ export class LifecycleReactor {
     return false;
   }
 
-  private enqueueWork(work: readonly SessionRetentionWork[]): void {
-    for (const item of work) {
-      this.enqueue(item.sessionId, item.jobId);
-    }
-  }
-
-  private takePendingPairs(): SessionRetentionPair[] {
-    const pairs: SessionRetentionPair[] = [];
+  private nextPendingPair(): SessionRetentionPair | null {
     for (const [sessionId, jobIds] of this.pendingBySession) {
       if (jobIds.size === 0) {
         this.pendingBySession.delete(sessionId);
         continue;
       }
       for (const jobId of jobIds) {
-        pairs.push({ sessionId, jobId });
+        return { sessionId, jobId };
       }
-      this.pendingBySession.delete(sessionId);
     }
-    return pairs;
+    return null;
+  }
+
+  private releasePendingPair(pair: SessionRetentionPair): void {
+    const jobIds = this.pendingBySession.get(pair.sessionId);
+    if (jobIds === undefined) return;
+    jobIds.delete(pair.jobId);
+    if (jobIds.size === 0) this.pendingBySession.delete(pair.sessionId);
   }
 
   private async drainQueue(): Promise<void> {
     for (;;) {
-      const pairs = this.takePendingPairs();
-      if (pairs.length === 0) {
-        return;
-      }
-      const workByPair = readSessionRetentionWorkForPairs(this.options.db(), this.options.readCtx, pairs, {
-        nowMs: this.options.time.now(),
-      });
+      const pair = this.nextPendingPair();
+      if (pair === null) return;
+      const key = sessionRetentionWorkKey(pair.sessionId, pair.jobId);
+      if (this.inFlightPairs.has(key)) return;
 
-      for (const pair of pairs) {
-        const key = sessionRetentionWorkKey(pair.sessionId, pair.jobId);
-        if (this.inFlightPairs.has(key)) {
-          continue;
-        }
-
-        const work = workByPair.get(key);
-        if (work === undefined) {
-          continue;
-        }
-
-        this.inFlightPairs.add(key);
-        try {
-          await this.enforceRetention(work);
-        } catch (error: unknown) {
-          this.log(
-            `Retention discard enforcement failed for session ${pair.sessionId} job ${pair.jobId}: ${errorMessage(error)}`,
-          );
-        } finally {
-          this.inFlightPairs.delete(key);
-        }
+      this.inFlightPairs.add(key);
+      let completed = false;
+      try {
+        await this.runContainedRecovery();
+        completed = true;
+        if (!this.rerunPairs.delete(key)) this.releasePendingPair(pair);
+      } finally {
+        if (!completed) this.rerunPairs.delete(key);
+        this.inFlightPairs.delete(key);
       }
     }
   }
 
-  private pendingContinuationLeaseEntries(): Array<ProviderSession & { continuationLease: PendingContinuationLease }> {
-    return this.listLifecycleSessionEntries(this.options.db()).filter(
-      (entry): entry is ProviderSession & { continuationLease: PendingContinuationLease } =>
-        entry.continuationLease?.status === 'pending',
-    );
-  }
-
-  private listLifecycleSessionEntries(db: ReadonlyDatabase): ProviderSession[] {
+  listLifecycleSessionEntries(db: Database = this.options.db()): ProviderSession[] {
     return listProjectionSessionEntries(db, undefined, undefined, (sessionId, error) => {
       const subject = sessionId === null ? 'with no decodable session id' : `for ${sessionId}`;
       this.log(`Skipped malformed session projection ${subject} during lifecycle processing: ${errorMessage(error)}`);
     });
-  }
-
-  private expireOverdueContinuationLeases(): string[] {
-    const nowMs = this.options.time.now();
-    const expiredSessionIds: string[] = [];
-    for (const entry of this.pendingContinuationLeaseEntries()) {
-      if (Date.parse(entry.continuationLease.expiresAt) > nowMs) {
-        continue;
-      }
-      if (this.appendContinuationLeaseExpired(entry, nowMs)) {
-        expiredSessionIds.push(entry.sessionId);
-      }
-    }
-    return expiredSessionIds;
-  }
-
-  private appendContinuationLeaseExpired(
-    entry: ProviderSession & { continuationLease: PendingContinuationLease },
-    nowMs: number,
-  ): boolean {
-    const expiredAt = new Date(nowMs).toISOString();
-    const lease: ExpiredContinuationLease = {
-      staleJobId: entry.continuationLease.staleJobId,
-      workflowId: entry.continuationLease.workflowId,
-      workflowSlotId: entry.continuationLease.workflowSlotId,
-      replacementGeneration: entry.continuationLease.replacementGeneration,
-      reason: entry.continuationLease.reason,
-      expiresAt: entry.continuationLease.expiresAt,
-      recordedAt: entry.continuationLease.recordedAt,
-      status: 'expired',
-      expiredAt,
-    };
-    const nextEntry: ProviderSession = {
-      ...entry,
-      continuationLease: lease,
-      lastUsedAt: expiredAt,
-      version: entry.version + 1,
-    };
-
-    try {
-      this.options.commitEvents((c) => {
-        c.append(sessionContinuationLeaseExpiredEvent(nextEntry, lease));
-        return undefined;
-      });
-      return true;
-    } catch (error: unknown) {
-      this.log(`Continuation lease expiry append failed for session ${entry.sessionId}: ${errorMessage(error)}`);
-      return false;
-    }
   }
 
   private clearContinuationLeaseTimer(): void {
@@ -541,13 +1189,15 @@ export class LifecycleReactor {
     this.continuationLeaseTimer = null;
   }
 
-  private rescheduleContinuationLeaseTimer(): void {
+  private scheduleContinuationLeaseTimer(leases: readonly SessionContinuationLeaseComponent[]): void {
     this.clearContinuationLeaseTimer();
 
     const nowMs = this.options.time.now();
     let earliestExpiresAt: number | null = null;
-    for (const entry of this.pendingContinuationLeaseEntries()) {
-      const expiresAt = Date.parse(entry.continuationLease.expiresAt);
+    for (const component of leases) {
+      const lease = component.persistedEntry.continuationLease;
+      if (lease?.status !== 'pending') continue;
+      const expiresAt = Date.parse(lease.expiresAt);
       if (expiresAt <= nowMs) {
         earliestExpiresAt = nowMs;
         break;
@@ -564,72 +1214,13 @@ export class LifecycleReactor {
     this.continuationLeaseTimer = this.options.time.setTimeout(
       () => {
         this.continuationLeaseTimer = null;
-        const expiredSessionIds = this.expireOverdueContinuationLeases();
-        this.rescheduleContinuationLeaseTimer();
-        if (expiredSessionIds.length > 0) {
-          this.enqueueWork(
-            readSessionRetentionWorkForSessionIds(this.options.db(), this.options.readCtx, expiredSessionIds, {
-              nowMs: this.options.time.now(),
-            }),
-          );
-          this.scheduleDrain();
-        }
+        void this.runContainedRecovery().catch((error: unknown) => {
+          this.log(`Continuation lease timer recovery failed: ${errorMessage(error)}`);
+        });
       },
       Math.max(0, earliestExpiresAt - nowMs),
     );
     this.continuationLeaseTimer.unref?.();
-  }
-
-  private appendCompleted(
-    sessionId: string,
-    attempt: number,
-    handles: readonly string[],
-    outcome: RetentionDiscardCompletedOutcome,
-  ): void {
-    try {
-      appendRetentionDiscardCompleted(this.options.commitEvents, {
-        sessionId,
-        attempt,
-        handles,
-        outcome,
-      });
-    } catch (error: unknown) {
-      this.raiseAttemptFloor(sessionId, attempt);
-      this.log(
-        `Retention discard completion append failed for session ${sessionId} attempt ${attempt}: ${errorMessage(error)}`,
-      );
-    }
-  }
-
-  private appendFailed(
-    sessionId: string,
-    attempt: number,
-    handles: readonly string[],
-    reason: string,
-    causeRef: CauseRef | undefined,
-  ): void {
-    try {
-      appendRetentionDiscardFailed(this.options.commitEvents, {
-        sessionId,
-        attempt,
-        handles,
-        reason,
-        ...(causeRef === undefined ? {} : { causeRef }),
-      });
-    } catch (error: unknown) {
-      this.raiseAttemptFloor(sessionId, attempt);
-      this.log(
-        `Retention discard failure append failed for session ${sessionId} attempt ${attempt}: ${errorMessage(error)}`,
-      );
-    }
-  }
-
-  private raiseAttemptFloor(
-    sessionId: string,
-    attempt: number,
-    floor = this.attemptFloorBySession.get(sessionId) ?? 0,
-  ): void {
-    this.attemptFloorBySession.set(sessionId, Math.max(floor, attempt));
   }
 
   private log(message: string): void {
@@ -639,6 +1230,10 @@ export class LifecycleReactor {
     }
     backendLog.warn(message);
   }
+}
+
+function isRecoveryRetentionWork(work: SessionRetentionWork): work is RecoverySessionRetentionWork {
+  return typeof (work as { readonly recovery?: unknown }).recovery === 'object';
 }
 
 export function createLifecycleReactor(options: LifecycleReactorOptions): LifecycleReactor {

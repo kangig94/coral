@@ -126,8 +126,10 @@ describe('session-start.mjs startup failure notice', () => {
       error: {
         kind: 'coral_setup_error',
         code: 'store_newer_incompatible',
-        userMessage: 'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
-        remediation: "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
+        userMessage:
+          'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
+        remediation:
+          "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
       },
     };
   }

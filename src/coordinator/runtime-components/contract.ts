@@ -1,11 +1,18 @@
 export type RuntimeComponentId = string & { readonly __brand: 'RuntimeComponentId' };
 export const KB_COMPONENT_ID = 'kb' as RuntimeComponentId;
+export const RECOVERY_COMPONENT_ID = 'recovery' as RuntimeComponentId;
 
-export type DegradedReason = {
-  kind: 'curate-publish';
-  consecutiveFailures: number;
-  lastError: string;
-};
+export type DegradedReason =
+  | {
+      kind: 'curate-publish';
+      consecutiveFailures: number;
+      lastError: string;
+    }
+  | {
+      kind: 'recovery-quarantine';
+      count: number;
+      lastError: string;
+    };
 
 type OfflineDiagnostic = {
   attempts?: number;

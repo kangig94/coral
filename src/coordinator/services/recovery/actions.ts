@@ -1,23 +1,27 @@
-import { errorMessage, formatError } from '../../../infra/error-format.js';
+import { formatError } from '../../../infra/error-format.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobRuntime } from '../../../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
-import type { TerminalOutcome } from '../../../jobs/outcome.js';
 import type { JobStore } from '../../../jobs/store.js';
 import type { RecoveryAction } from '../../../jobs/reconcile/plan.js';
 import type { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import type { SessionLookup } from '../../../sessions/lookup.js';
-import { describeSessionJobClaimReleaseResult, releaseSessionJobClaim } from '../../../sessions/job-release.js';
 import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../../../jobs/reconcile/contracts.js';
 import type { RecoveryCommitFence } from '../../../jobs/reconcile/contracts.js';
-import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
-import type { CommitEventsFn } from '../../../store/append.js';
-import { elapsedDurationMs } from '../../../jobs/duration.js';
 import { gracefulKillByPid } from '../../live/process-supervision.js';
+import type { JobLifecycleFault, JobProgressFault } from '../../../jobs/outcome.js';
+import type { RecoveryObligationId, RecoverySettlementFact } from '../../../recovery/containment.js';
+
+export const COORDINATOR_TERMINAL_OBLIGATION = 'coordinator-job-terminal' as RecoveryObligationId;
+export const COORDINATOR_CLAIM_RELEASE_OBLIGATION = 'coordinator-session-claim-release' as RecoveryObligationId;
+
+export const COORDINATOR_NOT_APPLICABLE_FACTS: readonly RecoverySettlementFact[] = Object.freeze([
+  Object.freeze({ obligation: COORDINATOR_TERMINAL_OBLIGATION, outcome: 'not-applicable' as const }),
+  Object.freeze({ obligation: COORDINATOR_CLAIM_RELEASE_OBLIGATION, outcome: 'not-applicable' as const }),
+]);
 
 export type QueuedRecoverableJob = { jobId: string; authority: ProviderRecoveryAuthority };
 export type RunningRecoverableJob = {
@@ -34,13 +38,17 @@ type RecoveryActionContext = {
   runtime: Runtime;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
-  sessionLookup: Pick<SessionLookup, 'readProviderSession'>;
-  emitSessionReleased: (payload: { sessionId: string; jobId: string }) => void;
-  coordinatorCommit: CommitEventsFn;
   signal: AbortSignal;
+  settleFault(fault: JobLifecycleFault | JobProgressFault, content?: string): readonly RecoverySettlementFact[];
+  settleClaim(jobId: string): readonly RecoverySettlementFact[];
+  setProcessLocalCleanup?(cleanup: () => void): void;
+  clearProcessLocalCleanup?(): void;
 };
 
-export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionContext): Promise<void> {
+export async function applyRecoveryAction(
+  action: RecoveryAction,
+  ctx: RecoveryActionContext,
+): Promise<readonly RecoverySettlementFact[]> {
   const {
     progressStore,
     recoveryRegistry,
@@ -50,36 +58,26 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
     runtime,
     createInvocationContext,
     getRecoveryService,
-    sessionLookup,
-    emitSessionReleased,
-    coordinatorCommit,
     signal,
+    settleFault,
+    settleClaim,
+    setProcessLocalCleanup = () => {},
+    clearProcessLocalCleanup = () => {},
   } = ctx;
 
   switch (action.type) {
     case 'discardIncompleteAdmission':
       runtime.storage.rmSync(progressStore.jobDir(action.jobId), { recursive: true, force: true });
       log(`Discarded incomplete admission: ${action.jobId}\n`);
-      return;
+      return COORDINATOR_NOT_APPLICABLE_FACTS;
     case 'markError': {
-      markJobAsError(progressStore, action.status, action.fault, runtime.time.now(), log);
+      const facts = settleFault(action.fault);
       if (action.status.jobKind === 'workflow') {
         try {
           writeResultArtifact(runtime.storage, runtime.paths.coral.exports.jobsRoot, action.status.jobId, '');
         } catch (error: unknown) {
           log(`Failed to write result artifact for ${action.status.jobId}: ${formatError(error)}\n`);
         }
-      }
-      if (action.status.sessionId !== null) {
-        releaseSessionJobClaim({
-          projectRoot: action.status.projectRoot,
-          runtime,
-          emitSessionReleased,
-          db: progressStore.getDb(),
-          commitEvents: coordinatorCommit,
-          sessionId: action.status.sessionId,
-          jobId: action.status.jobId,
-        });
       }
       switch (action.fault.kind) {
         case 'missing_launch_record':
@@ -92,49 +90,62 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
           log(`Marked recovery job as error: ${action.jobId}\n`);
           break;
       }
-      return;
+      return facts;
     }
     case 'registerQueued': {
       const service = getRecoveryService(createInvocationContext(action.launchRecord.projectRoot));
       recoveryRegistry.register(action.jobId, action.launchRecord);
+      setProcessLocalCleanup(() => recoveryRegistry.remove(action.jobId));
       const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
       signal.throwIfAborted();
       if (!captured.ok) {
-        const releaseResult = service.finalizeProviderRecoveryBindingFailure(action.launchRecord, captured.failure);
-        recoveryRegistry.remove(action.jobId);
-        log(
-          `Rejected queued recovery with invalid provider authority: ${action.jobId}; session claim disposition: ${describeSessionJobClaimReleaseResult(releaseResult)}.\n`,
+        const message = `Provider '${captured.failure.provider}' recovery binding failed: ${captured.failure.reason}.`;
+        const facts = settleFault(
+          {
+            kind: 'provider_binding',
+            provider: captured.failure.provider,
+            reason: captured.failure.reason,
+            message,
+          },
+          message,
         );
-        return;
+        log(`Rejected queued recovery with invalid provider authority: ${action.jobId}.\n`);
+        return facts;
       }
       const { authority } = captured;
       queuedRecoverable.push({ jobId: action.jobId, authority });
-      return;
+      clearProcessLocalCleanup();
+      return COORDINATOR_NOT_APPLICABLE_FACTS;
     }
     case 'registerRunning': {
       const service = getRecoveryService(createInvocationContext(action.launchRecord.projectRoot));
       recoveryRegistry.register(action.jobId, action.launchRecord, action.runtimeRecord);
+      setProcessLocalCleanup(() => recoveryRegistry.remove(action.jobId));
       const captured = await service.captureProviderRecoveryAuthority(action.launchRecord);
       signal.throwIfAborted();
       if (!captured.ok) {
-        // A rejected authority is a per-job fault, never a process verdict: throwing
-        // here is fatal to startup because the register loop runs outside the adoption
-        // try/catch, which would abandon every other job's recovery too.
         if (isDurableCliRuntime(action.runtimeRecord) && runtime.process.isAlive(action.runtimeRecord.pid)) {
-          try {
-            gracefulKillByPid(runtime, action.runtimeRecord.pid);
-          } catch (error: unknown) {
-            log(
-              `Failed to send SIGTERM to rejected recovery process ${action.runtimeRecord.pid} for job ${action.jobId}; recovery finalization will continue: ${errorMessage(error)}\n`,
-            );
-          }
+          const pid = action.runtimeRecord.pid;
+          const releaseRegistry = (): void => recoveryRegistry.remove(action.jobId);
+          setProcessLocalCleanup(() => {
+            gracefulKillByPid(runtime, pid);
+            releaseRegistry();
+          });
         }
-        const releaseResult = service.finalizeProviderRecoveryBindingFailure(action.launchRecord, captured.failure);
-        recoveryRegistry.remove(action.jobId);
-        log(
-          `Rejected running recovery with invalid provider authority: terminalized ${action.jobId}; session claim disposition: ${describeSessionJobClaimReleaseResult(releaseResult)}. Run coral-cli jobs detail ${action.jobId} for the recorded reason.\n`,
+        const message = `Provider '${captured.failure.provider}' recovery binding failed: ${captured.failure.reason}.`;
+        const facts = settleFault(
+          {
+            kind: 'provider_binding',
+            provider: captured.failure.provider,
+            reason: captured.failure.reason,
+            message,
+          },
+          message,
         );
-        return;
+        log(
+          `Rejected running recovery with invalid provider authority: terminalized ${action.jobId}. Run coral-cli jobs detail ${action.jobId} for the recorded reason.\n`,
+        );
+        return facts;
       }
       const { authority } = captured;
       if (isAppServerRuntime(action.runtimeRecord)) {
@@ -152,35 +163,18 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
         authority,
         runtimeRecord: action.runtimeRecord,
       });
-      return;
+      clearProcessLocalCleanup();
+      return COORDINATOR_NOT_APPLICABLE_FACTS;
     }
     case 'releaseSessionClaim': {
-      const session = sessionLookup.readProviderSession(action.sessionId);
-      if (!session) {
-        log(`Skipped releasing session claim for ${action.sessionId}: session lookup missing\n`);
-        return;
-      }
-
-      const releaseResult = releaseSessionJobClaim({
-        projectRoot: session.projectRoot,
-        runtime,
-        emitSessionReleased,
-        db: progressStore.getDb(),
-        commitEvents: coordinatorCommit,
-        sessionId: action.sessionId,
-        jobId: action.jobId,
-      });
+      const facts = settleClaim(action.jobId);
       const status = progressStore.readStatus(action.jobId);
       if (status && isTerminalPhase(status.phase)) {
-        log(
-          `Terminal session claim ${action.sessionId} disposition: ${describeSessionJobClaimReleaseResult(releaseResult)}.\n`,
-        );
+        log(`Terminal session claim ${action.sessionId} settled.\n`);
       } else {
-        log(
-          `Orphaned session claim ${action.sessionId} disposition: ${describeSessionJobClaimReleaseResult(releaseResult)}.\n`,
-        );
+        log(`Orphaned session claim ${action.sessionId} settled.\n`);
       }
-      return;
+      return facts;
     }
   }
 }
@@ -224,36 +218,6 @@ type FinalizeDeadAdoptedJobContext = {
   cancelledJobIds?: ReadonlySet<string>;
   fence: RecoveryCommitFence;
 };
-
-type FinalizeAbortedRecoveredJobContext = {
-  jobId: string;
-  authority: ProviderRecoveryAuthority;
-  service: RecoveryCapableService;
-  runtime: Pick<Runtime, 'time'>;
-};
-
-export function finalizeAbortedRecoveredJob({
-  jobId,
-  authority,
-  service,
-  runtime,
-}: FinalizeAbortedRecoveredJobContext): void {
-  const { launchRecord, session } = authority;
-  const sessionId = session.sessionId;
-
-  const outcome: TerminalOutcome = { kind: 'aborted', reason: 'user_abort' };
-  service.completeRecoveredJob(
-    jobId,
-    sessionId,
-    {
-      content: '',
-      durationMs: elapsedDurationMs(launchRecord.createdAt, runtime.time.now(), `job ${jobId}`),
-      outcome,
-    },
-    'aborted',
-    { pool: launchRecord.pool },
-  );
-}
 
 export async function finalizeDeadAdoptedJob({
   jobId,

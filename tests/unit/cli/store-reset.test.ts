@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { registerBackendCommands, type StoreResetCommandOperations } from '#src/cli/commands/backend.js';
 import { StoreResetCliError } from '#src/cli/errors.js';
+import { formatStoreResetReport } from '#src/cli/format/store-reset.js';
 import {
   listStoreResetIncidentsLocal,
   reportStoreResetIncidentLocal,
@@ -38,6 +39,7 @@ import {
   serializeStoreResetIncidentManifest,
   type StoreResetIncidentLocalReport,
   type StoreResetIncidentManifestV2,
+  type StoreResetIncidentManifestV3,
 } from '#src/store/reset-incident.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
@@ -81,14 +83,17 @@ function dependencies(quarantineRoot: string): StoreResetCliDependencies {
   };
 }
 
-function incidentManifest(): StoreResetIncidentManifestV2 {
+function incidentManifest(): StoreResetIncidentManifestV3 {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     incidentId: INCIDENT_ID,
     resetAt: '2026-07-23T01:02:03.004Z',
     reason: 'mismatch',
     storedFingerprint: `sha256:${'a'.repeat(64)}`,
     expectedFingerprint: BUILD.storeFormatFingerprint,
+    resetPolicyCause: 'older-incompatible',
+    resetPolicyEvidence: null,
+    target: { storeDbPath: '/coral/store.db', flavor: BUILD.flavor },
     build: {
       version: BUILD.version,
       buildSetId: BUILD.buildSetId,
@@ -107,8 +112,40 @@ function incidentManifest(): StoreResetIncidentManifestV2 {
   };
 }
 
-function publicReport() {
-  const manifest = incidentManifest();
+function newerTargetIncidentManifest(): StoreResetIncidentManifestV3 {
+  return {
+    ...incidentManifest(),
+    resetPolicyCause: 'newer-incompatible-invalid-target',
+    resetPolicyEvidence: {
+      validationFailure: { code: 'target_hash_mismatch' },
+      observedTarget: {
+        version: '99.0.0',
+        buildSetId: '323e4567-e89b-42d3-a456-426614174000',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+        storeFormatFingerprint: `sha256:${'e'.repeat(64)}`,
+        executablePathSha256: 'c'.repeat(64),
+        executableSha256: 'd'.repeat(64),
+      },
+    },
+  };
+}
+
+function manifestWithPlaceholderEvidence(manifest: StoreResetIncidentManifestV3): StoreResetIncidentManifestV3 {
+  return {
+    ...manifest,
+    files: [
+      {
+        name: 'store.db',
+        sizeBytes: 1,
+        mtimeMs: 1_754_000_000_000,
+        sha256: 'a'.repeat(64),
+      },
+    ],
+  };
+}
+
+function publicReport(manifest = incidentManifest()) {
   const local: StoreResetIncidentLocalReport = {
     manifest,
     fileVerification: [],
@@ -195,7 +232,7 @@ const operationsDiscard: StoreResetCommandOperations['discard'] = async () => ({
 async function runCommand(args: readonly string[], operations: StoreResetCommandOperations): Promise<void> {
   const program = new Command();
   program.exitOverride();
-  registerBackendCommands(program, operations);
+  registerBackendCommands(program, { storeReset: operations });
   await program.parseAsync(['node', 'coral-cli', ...args]);
 }
 
@@ -313,6 +350,110 @@ describe('local store-reset operations', () => {
     });
   });
 
+  it('rejects unknown V3 manifest fields while leaving the incident visible', async () => {
+    const quarantineRoot = root();
+    const incidentPath = join(quarantineRoot, INCIDENT_ID);
+    mkdirSync(incidentPath);
+    const evidencePath = join(incidentPath, 'store.db');
+    writeFileSync(evidencePath, 'strict V3 evidence');
+    const evidence = readFileSync(evidencePath);
+    const evidenceStat = statSync(evidencePath);
+    const manifest: StoreResetIncidentManifestV3 = {
+      ...incidentManifest(),
+      files: [
+        {
+          name: 'store.db',
+          sizeBytes: evidence.length,
+          mtimeMs: evidenceStat.mtimeMs,
+          sha256: createHash('sha256').update(evidence).digest('hex'),
+        },
+      ],
+    };
+    const encoded = JSON.parse(serializeStoreResetIncidentManifest(manifest)) as Record<string, unknown>;
+    encoded.unvalidatedExecutablePath = '/private/target';
+    writeFileSync(join(incidentPath, 'reset-manifest.json'), JSON.stringify(encoded));
+
+    expect(listStoreResetIncidentsLocal('gen2', dependencies(quarantineRoot)).incidents).toEqual([
+      {
+        incidentId: INCIDENT_ID,
+        state: 'unsupported',
+        resetAt: null,
+        reason: null,
+        schemaVersion: null,
+        resetPolicyCause: null,
+        fileCount: null,
+      },
+    ]);
+    await expect(
+      reportStoreResetIncidentLocal('gen2', INCIDENT_ID, dependencies(quarantineRoot)),
+    ).rejects.toMatchObject({ code: 'store_reset_reporting_failed' });
+    expect(readFileSync(join(incidentPath, 'reset-manifest.json'), 'utf-8')).toContain('/private/target');
+  });
+
+  it.each([
+    {
+      label: 'older cause with newer-target evidence',
+      mutate: (manifest: Record<string, unknown>) => {
+        manifest.resetPolicyEvidence = newerTargetIncidentManifest().resetPolicyEvidence;
+      },
+    },
+    {
+      label: 'corrupt cause with newer-target evidence',
+      mutate: (manifest: Record<string, unknown>) => {
+        manifest.resetPolicyCause = 'corrupt-or-unsupported';
+        manifest.resetPolicyEvidence = newerTargetIncidentManifest().resetPolicyEvidence;
+      },
+    },
+    {
+      label: 'newer-target cause without evidence',
+      mutate: (manifest: Record<string, unknown>) => {
+        manifest.resetPolicyCause = 'newer-incompatible-invalid-target';
+      },
+    },
+    {
+      label: 'newer-target cause without a mismatched stored fingerprint',
+      mutate: (manifest: Record<string, unknown>) => {
+        manifest.resetPolicyCause = 'newer-incompatible-invalid-target';
+        manifest.resetPolicyEvidence = newerTargetIncidentManifest().resetPolicyEvidence;
+        manifest.reason = 'missing';
+        manifest.storedFingerprint = null;
+      },
+    },
+  ])('rejects a V3 $label pair while preserving it for an operator', ({ mutate }) => {
+    const quarantineRoot = root();
+    const incidentPath = join(quarantineRoot, INCIDENT_ID);
+    mkdirSync(incidentPath);
+    const encoded = JSON.parse(
+      serializeStoreResetIncidentManifest(manifestWithPlaceholderEvidence(incidentManifest())),
+    ) as Record<string, unknown>;
+    mutate(encoded);
+    const manifestPath = join(incidentPath, 'reset-manifest.json');
+    writeFileSync(manifestPath, JSON.stringify(encoded));
+
+    expect(listStoreResetIncidentsLocal('gen2', dependencies(quarantineRoot)).incidents).toMatchObject([
+      { incidentId: INCIDENT_ID, state: 'unsupported' },
+    ]);
+    expect(existsSync(manifestPath)).toBe(true);
+  });
+
+  it('reads bounded newer-target evidence without projecting the target path', async () => {
+    const quarantineRoot = root();
+    const incidentPath = join(quarantineRoot, INCIDENT_ID);
+    mkdirSync(incidentPath);
+    writeFileSync(
+      join(incidentPath, 'reset-manifest.json'),
+      serializeStoreResetIncidentManifest(manifestWithPlaceholderEvidence(newerTargetIncidentManifest())),
+    );
+
+    const report = await reportStoreResetIncidentLocal('gen2', INCIDENT_ID, dependencies(quarantineRoot));
+
+    expect(report.resetPolicyCause).toBe('newer-incompatible-invalid-target');
+    expect(report.resetPolicyEvidence).toEqual(newerTargetIncidentManifest().resetPolicyEvidence);
+    expect(report).not.toHaveProperty('target');
+    expect(formatStoreResetReport(report)).toContain('- Validation failure: `target_hash_mismatch`');
+    expect(formatStoreResetReport(report)).not.toContain('/coral/store.db');
+  });
+
   it('resolves pre-boundary incidents only for an explicit legacy target', async () => {
     const base = root();
     const runtime = createRealRuntime('prod', { baseDir: base });
@@ -323,27 +464,34 @@ describe('local store-reset operations', () => {
     writeFileSync(evidencePath, 'pre-boundary evidence');
     const evidence = readFileSync(evidencePath);
     const evidenceStat = statSync(evidencePath);
-    writeFileSync(
-      join(incidentPath, 'reset-manifest.json'),
-      serializeStoreResetIncidentManifest({
-        ...incidentManifest(),
-        files: [
-          {
-            name: 'store.db',
-            sizeBytes: evidence.length,
-            mtimeMs: evidenceStat.mtimeMs,
-            sha256: createHash('sha256').update(evidence).digest('hex'),
-          },
-        ],
-      }),
-    );
+    const current = incidentManifest();
+    const legacyManifest: StoreResetIncidentManifestV2 = {
+      schemaVersion: 2,
+      incidentId: current.incidentId,
+      resetAt: current.resetAt,
+      reason: current.reason,
+      storedFingerprint: current.storedFingerprint,
+      expectedFingerprint: current.expectedFingerprint,
+      build: current.build,
+      runtime: current.runtime,
+      handoff: current.handoff,
+      files: [
+        {
+          name: 'store.db',
+          sizeBytes: evidence.length,
+          mtimeMs: evidenceStat.mtimeMs,
+          sha256: createHash('sha256').update(evidence).digest('hex'),
+        },
+      ],
+    };
+    writeFileSync(join(incidentPath, 'reset-manifest.json'), serializeStoreResetIncidentManifest(legacyManifest));
     const targetedDependencies: StoreResetCliDependencies = {
       ...dependencies(legacyRoot),
       quarantineRoot: (_manifest, target) => resolveStoreResetTargetPaths(runtime, target).quarantineRoot,
     };
 
     expect(listStoreResetIncidentsLocal('legacy', targetedDependencies).incidents).toMatchObject([
-      { incidentId: INCIDENT_ID, state: 'ready' },
+      { incidentId: INCIDENT_ID, state: 'ready', schemaVersion: 2, resetPolicyCause: null },
     ]);
     expect(listStoreResetIncidentsLocal('gen2', targetedDependencies)).toEqual({ incidents: [] });
     await expect(reportStoreResetIncidentLocal('legacy', INCIDENT_ID, targetedDependencies)).resolves.toMatchObject({
@@ -551,6 +699,7 @@ describe('backend store-reset commands', () => {
 
     expect(legacyOutput).toContain('No legacy store-reset incidents.');
     expect(stdout).toContain('No gen2 store-reset incidents.');
+    expect(stdout).not.toContain('unexpected reset warning');
     expect(stdout).not.toBe(legacyOutput);
   });
 
@@ -564,6 +713,8 @@ describe('backend store-reset commands', () => {
             state: 'ready',
             resetAt: '2026-07-23T01:02:03.004Z',
             reason: 'mismatch',
+            schemaVersion: 3,
+            resetPolicyCause: 'older-incompatible',
             fileCount: 0,
           },
         ],
@@ -581,7 +732,7 @@ describe('backend store-reset commands', () => {
 
     await runCommand(['backend', 'store-reset', 'list', '--target', 'gen2'], operations);
     expect(stdout).toBe(
-      `Incident ID | Reset at | Reason | State | Files\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | mismatch | ready | 0\n\n` +
+      `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V3 | mismatch | older-incompatible | ready | 0\n\n` +
         'States: ready produces a Markdown report; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.\n' +
         'Next: coral-cli backend store-reset report --target gen2 <ready-incident-id>\n' +
         'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.\n' +
@@ -593,6 +744,9 @@ describe('backend store-reset commands', () => {
     await runCommand(['backend', 'store-reset', 'report', '--target', 'gen2', INCIDENT_ID], operations);
     expect(stdout).toContain('# Coral store-reset incident report\n');
     expect(stdout).toContain(`- Incident ID: \`${INCIDENT_ID}\``);
+    expect(stdout).toContain('- Manifest schema: `V3`');
+    expect(stdout).toContain('- Reset policy cause: `older-incompatible`');
+    expect(stdout).not.toContain('/coral/store.db');
     expect(stderr).toBe('');
   });
 
@@ -670,7 +824,7 @@ describe('backend store-reset commands', () => {
 
     expect(stdout).toBe('');
     expect(stderr).toContain('[code=store_reset_incident_limit_exceeded]');
-    expect(stderr).toContain('Use an incident ID from the reset warning.');
+    expect(stderr).toContain('File a Store-reset incident issue with this fixed error output');
     expect(process.exitCode).toBe(1);
   });
 });

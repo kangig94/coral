@@ -178,22 +178,34 @@ export function snapshotArtifacts<Access extends JsonValue>(
   const receiver = snapshotPlainReceiver(capability, 'Provider artifact capability');
   if (receiver.kind === 'none') return Object.freeze({ kind: 'none', reason: receiver.reason });
   const discardArtifacts = receiver.discardArtifacts;
+  const reconcileDiscard = receiver.reconcileDiscard;
   const locateArtifact = receiver.locateArtifact;
   return Object.freeze({
     kind: 'managed',
+    protocol: receiver.protocol,
     discardArtifacts: (
       ...args: Parameters<Extract<ProviderArtifactCapability<Access>, { kind: 'managed' }>['discardArtifacts']>
     ) =>
       discardArtifacts
         .call(receiver, ...args)
         .then((result) => snapshotProviderResult(result, 'Provider artifact discard outcome')),
+    ...(typeof reconcileDiscard !== 'function'
+      ? {}
+      : {
+          reconcileDiscard: (
+            ...args: Parameters<Extract<ProviderArtifactCapability<Access>, { kind: 'managed' }>['reconcileDiscard']>
+          ) =>
+            reconcileDiscard
+              .call(receiver, ...args)
+              .then((result) => snapshotProviderResult(result, 'Provider artifact discard reconciliation')),
+        }),
     ...(locateArtifact === undefined
       ? {}
       : {
           locateArtifact: (...args: Parameters<NonNullable<typeof locateArtifact>>) =>
             snapshotProviderResult(locateArtifact.call(receiver, ...args), 'Provider artifact location outcome'),
         }),
-  });
+  } as ProviderArtifactCapability<Access>);
 }
 
 export function snapshotImplementation<Plan extends ProviderExecutionPlan, Access extends JsonValue>(

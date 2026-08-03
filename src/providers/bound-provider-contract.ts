@@ -3,6 +3,7 @@ import type {
   DiscardOutcome,
   HostRef,
   ProviderArtifactHandle,
+  ProviderArtifactDiscardReconciliation,
   ProviderCurationPreparationRuntime,
   ProviderCurationRequest,
   ProviderCurationUsageRuntime,
@@ -36,10 +37,19 @@ export type BoundProviderRecovery = Omit<ProviderRecoveryContract, 'finalizeInte
 export type BoundProviderArtifacts =
   | {
       readonly kind: 'managed';
+      readonly protocol: 'provider-artifact-discard.v1';
       discardArtifacts(options: {
         handles: readonly ProviderArtifactHandle[];
+        actionId: string;
+        payloadHash: string;
         runtime: ArtifactCleanupRuntime;
       }): Promise<DiscardOutcome>;
+      reconcileDiscard(options: {
+        handles: readonly ProviderArtifactHandle[];
+        actionId: string;
+        payloadHash: string;
+        runtime: ArtifactCleanupRuntime;
+      }): Promise<ProviderArtifactDiscardReconciliation>;
       locateArtifact?(options: {
         conversationRef: string;
         runtime: ArtifactCleanupRuntime;
