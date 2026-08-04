@@ -1,6 +1,6 @@
 # 🪸 Coral
 
-Claude Code는 이미 코딩할 줄 압니다. Coral은 _당신의 방식대로_ 일하도록 가르칩니다.
+당신의 코딩 에이전트는 이미 코딩할 줄 압니다. Coral은 _당신의 방식대로_ 일하도록 가르칩니다.
 
 Coral은 CLI 중심 플러그인이며, 오케스트레이션, 세션, 토론, 지식 베이스 워크플로우는 지속형 로컬 coordinator/backend 데몬을 통해 처리됩니다.
 
@@ -20,6 +20,17 @@ codex plugin marketplace add kangig94/coral
 
 # Codex marketplace와 설치된 플러그인 캐시 업데이트:
 codex plugin marketplace upgrade coral
+
+# GitHub Copilot CLI:
+npm install -g @github/copilot
+copilot plugin marketplace add kangig94/coral
+copilot plugin install coral@coral   # <plugin>@<marketplace>
+
+# 선택 — Copilot에서 --delegate 사용 시 필요 (Copilot은 Codex로 위임):
+npm install -g @openai/codex
+
+# 설치된 Copilot 플러그인 업데이트:
+copilot plugin update coral
 ```
 
 ## 바로 사용해보기
@@ -136,11 +147,11 @@ plan 모드에서는 실행 순서를 읽고 배치 단위로 디스패치하며
 # 적대적 테스트 — 놓친 부분을 찾는 red-attacker 생성:
 /coral:ralph --red implement the caching layer
 
-# 교차 모델 위임 (Claude에선 Codex로, Codex에선 Claude로):
+# 교차 모델 위임 (Claude → Codex, Codex → Claude, Copilot → Codex):
 /coral:plan --delegate redesign the session management system
 ```
 
-`--delegate`는 현재 host의 반대 host에서 작업을 실행 (Claude면 Codex, Codex면 Claude).
+`--delegate`는 현재 host의 반대 host에서 작업을 실행 (Claude면 Codex, Codex면 Claude, Copilot이면 Codex). Coral에는 아직 Copilot provider 어댑터가 없어서 Copilot은 위임을 보낼 수는 있지만 받을 수는 없습니다 — Copilot에서 위임하려면 Codex가 설치되어 있어야 합니다.
 
 </details>
 

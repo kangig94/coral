@@ -42,12 +42,14 @@ plugin files from project files. Two read patterns and one spawn pattern exist �
 - Hook scripts must:
   - Read input from stdin (JSON event payload) using an async `readStdin()` helper
   - Exit 0 on no-op (condition does not match)
-  - Write valid JSON to stdout when producing `hookSpecificOutput`
+  - Emit `hookSpecificOutput` through `writeHookOutput()` from `./lib/hook-utils.mjs`, never by writing the envelope to stdout directly — Copilot CLI reads those fields only at the top level and silently drops the wrapper
   - Never block on network calls or long-running operations
   - Wrap all logic in `try { ... } catch { process.exit(0); }` to fail-open
 
 ## Plugin.json Sync
 
+- Plugin manifests are per client and must stay in lockstep: `clients/.claude-plugin/plugin.json` (Claude Code), `clients/.codex-plugin/plugin.json` (Codex), `clients/.github/plugin/plugin.json` (Copilot), plus the root `.claude-plugin/marketplace.json` and `.github/plugin/marketplace.json` catalogs — all five are version-synced by `scripts/build-server.mjs`
+- Each manifest points at its own hook registration (`hooks/claude.json`, `hooks/codex.json`, `hooks/copilot.json`); adding or removing a hook script means updating all three
 - `clients/.claude-plugin/plugin.json` is host metadata only — do not rely on old host-side registration files
 - Agent declarations in plugin.json must match files in `clients/agents/`
 - Skill declarations must match directories in `clients/skills/`

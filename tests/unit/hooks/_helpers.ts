@@ -22,6 +22,7 @@ export const HUD_AUTO_UPDATE_HOOK = join(process.cwd(), 'clients', 'hooks', 'hud
 export const RALPH_LOOP_HOOK = join(process.cwd(), 'clients', 'hooks', 'ralph-loop.mjs');
 export const CLAUDE_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'claude.json');
 export const CODEX_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'codex.json');
+export const COPILOT_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'copilot.json');
 
 export interface HookRunResult {
   stdout: string;
@@ -126,6 +127,10 @@ export function runHook(
   delete env.CORAL_KB_PATH;
   delete env.CLAUDE_CONFIG_DIR;
   delete env.CORAL_WORK_ROOT_OVERRIDE;
+  // Host detection reads these; an ambient value from the shell that launched
+  // vitest would otherwise decide which output shape every hook emits.
+  delete env.COPILOT_PLUGIN_ROOT;
+  delete env.AI_AGENT;
 
   for (const [key, value] of Object.entries(envOverrides)) {
     if (value === undefined) {
@@ -170,6 +175,10 @@ export async function runHookAsync(
   delete env.CORAL_KB_PATH;
   delete env.CLAUDE_CONFIG_DIR;
   delete env.CORAL_WORK_ROOT_OVERRIDE;
+  // Host detection reads these; an ambient value from the shell that launched
+  // vitest would otherwise decide which output shape every hook emits.
+  delete env.COPILOT_PLUGIN_ROOT;
+  delete env.AI_AGENT;
 
   for (const [key, value] of Object.entries(envOverrides)) {
     if (value === undefined) {

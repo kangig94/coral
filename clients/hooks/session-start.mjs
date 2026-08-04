@@ -10,10 +10,12 @@ import {
   coralStateRoot,
   exitIfChildProcess,
   exitIfWrongFlavor,
+  hostKind,
   isValidSessionId,
   readStdin,
   resolveKbRoot,
   resolveProjectSource,
+  writeHookOutput,
 } from './lib/hook-utils.mjs';
 import { resolveEquippedTools } from './lib/equip-tools.mjs';
 import { renderInject } from './lib/inject-render.mjs';
@@ -157,8 +159,7 @@ try {
     equippedTools: resolveEquippedTools(),
   });
 
-  const aiAgent = process.env.AI_AGENT ?? '';
-  const host = aiAgent.startsWith('claude') ? 'claude' : 'codex';
+  const host = hostKind();
 
   const projectSlug = projectDir ? resolveProjectSource(projectDir).replace(/\//g, '-') : undefined;
   const wakeUpPayload = kbEnabled && projectSlug ? readProjectScopedWakeUp(resolveKbRoot(), projectSlug) : null;
@@ -170,12 +171,12 @@ try {
   const body = wakeUpPayload === null ? head : `${head}\n\n${wakeUpPayload}`;
   const additionalContext = startupFailureNotice === null ? body : `${startupFailureNotice}\n\n${body}`;
 
-  console.log(JSON.stringify({
+  writeHookOutput({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
       additionalContext,
     },
-  }));
+  });
 } catch {
   process.exit(0);
 }

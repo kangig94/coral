@@ -2,7 +2,7 @@
 
 [Korean](README.ko.md)
 
-Claude Code already knows how to code. Coral teaches it how _you_ work.
+Your coding agent already knows how to code. Coral teaches it how _you_ work.
 
 Coral is a CLI-first plugin backed by a persistent local coordinator for orchestration, sessions, discussion, and knowledge-base workflows.
 
@@ -22,6 +22,17 @@ codex plugin marketplace add kangig94/coral
 
 # Update the Codex marketplace and installed plugin cache:
 codex plugin marketplace upgrade coral
+
+# GitHub Copilot CLI:
+npm install -g @github/copilot
+copilot plugin marketplace add kangig94/coral
+copilot plugin install coral@coral   # <plugin>@<marketplace>
+
+# Optional — enables --delegate from Copilot (Copilot delegates to Codex):
+npm install -g @openai/codex
+
+# Update the installed Copilot plugin:
+copilot plugin update coral
 ```
 
 ## Try It Now
@@ -138,11 +149,11 @@ Every completion claim requires fresh verification evidence (lint → build → 
 # Adversarial testing — spawns a red-attacker to target blind spots:
 /coral:ralph --red implement the caching layer
 
-# Cross-model delegation (Codex when on Claude, Claude when on Codex):
+# Cross-model delegation (Claude → Codex, Codex → Claude, Copilot → Codex):
 /coral:plan --delegate redesign the session management system
 ```
 
-`--delegate` runs the work on the other host (Codex if you're on Claude, Claude if you're on Codex).
+`--delegate` runs the work on the other host: Codex if you're on Claude, Claude if you're on Codex, Codex if you're on Copilot. (Coral has no Copilot provider adapter yet, so Copilot can send delegated work but not receive it — delegating from Copilot requires Codex installed.)
 
 </details>
 

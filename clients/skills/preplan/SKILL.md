@@ -14,7 +14,7 @@ Structured problem-definition conversation with the user before planning begins.
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `<prompt>`   | Self-execute on current host (default)                                                                                                                  |
 | `--deep`     | Enable pioneer review for elegant alternatives. Blocks Step 3 until pioneer returns.                                                                    |
-| `--delegate` | Delegate pioneer to the other host (Codex when current is Claude, Claude when current is Codex; from SessionStart `Current host:`). Activates `--deep`. |
+| `--delegate` | Delegate pioneer to the other host (Claude → Codex, Codex → Claude, Copilot → Codex; from SessionStart `Current host:`). Activates `--deep`. |
 
 Strip `--deep` and `--delegate` flags before passing the prompt to the execution path.
 
@@ -126,7 +126,7 @@ items with the "unconfirmed" marker, then seek user feedback.
     request, wait for pioneer, re-present once.
 
     Run pioneer as a single **foreground blocking call** — never background it, never continue other
-    work while it runs. Let `<other-host>` = Codex if current host is Claude; Claude if current host is Codex.
+    work while it runs. Let `<other-host>` = the delegation target for the current host (Claude → Codex, Codex → Claude, Copilot → Codex).
 
     ```
     // --deep (without --delegate): self-execute, blocking

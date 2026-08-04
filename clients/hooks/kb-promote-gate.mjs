@@ -20,9 +20,10 @@ import {
   readStdin,
   readUserMessage,
   sweepStale,
+  writeHookOutput,
 } from './lib/hook-utils.mjs';
 import { projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
-import { KB_SKILL_FIELD_RE, KB_SKILL_MESSAGE_RE } from './lib/coral-skills.mjs';
+import { isKbSkillField, KB_SKILL_MESSAGE_RE } from './lib/coral-skills.mjs';
 import { hasLiveWork } from './lib/live-work-registry.mjs';
 import { isKbEnabled } from './lib/kb-toggle.mjs';
 exitIfChildProcess();
@@ -53,7 +54,7 @@ try {
   if (event === 'PreToolUse') {
     if (!sessionId) process.exit(0);
     const skill = input.tool_input?.skill || '';
-    if (!KB_SKILL_FIELD_RE.test(skill)) process.exit(0);
+    if (!isKbSkillField(skill)) process.exit(0);
     mkdirSync(flagDir, { recursive: true });
     writeFileSync(join(flagDir, `${FLAG_PREFIX}${sessionId}`), '');
     process.exit(0);
@@ -93,17 +94,17 @@ try {
     sweepStale(flagDir, FLAG_PREFIX, FLAG_SWEEP_TTL_MS);
     if (visibleMemos.length >= 10) {
       const list = visibleMemos.join(', ');
-      process.stdout.write(JSON.stringify({
+      writeHookOutput({
         decision: 'block',
         reason: `Review each memo, use CLI kb search to check for duplicates, then promote only durable knowledge via CLI kb promote if it is useful across sessions. Delete all processed memos regardless of promotion. Preserve the memo -> review -> promotion workflow; do not bypass memo review. Memos: ${list}`,
         systemMessage: `📋 KB: promoting ${visibleMemos.length} memo(s)`,
-      }) + '\n');
+      });
     } else if (hasFlag) {
-      process.stdout.write(JSON.stringify({
+      writeHookOutput({
         decision: 'block',
         reason: `No memos to process, but ${SESSION_KB_REMINDER}`,
         systemMessage: '📋 KB: checking session knowledge',
-      }) + '\n');
+      });
     } else {
       process.exit(0);
     }
@@ -111,29 +112,29 @@ try {
     // SessionStart (compact)
     if (!validSession) {
       // Degraded path: no valid session_id — emit generic reminder without listing memo names
-      process.stdout.write(JSON.stringify({
+      writeHookOutput({
         hookSpecificOutput: {
           hookEventName: 'SessionStart',
           additionalContext: memoFiles.length > 0
             ? `KB promotion reminder: unprocessed memos exist. Promote only if useful across sessions. Also, ${SESSION_KB_REMINDER}`
             : SESSION_KB_REMINDER,
         },
-      }) + '\n');
+      });
     } else if (visibleMemos.length > 0) {
       const list = visibleMemos.join(', ');
-      process.stdout.write(JSON.stringify({
+      writeHookOutput({
         hookSpecificOutput: {
           hookEventName: 'SessionStart',
           additionalContext: `KB promotion reminder: promote only if useful across sessions. Also, ${SESSION_KB_REMINDER} Memos: ${list}`,
         },
-      }) + '\n');
+      });
     } else {
-      process.stdout.write(JSON.stringify({
+      writeHookOutput({
         hookSpecificOutput: {
           hookEventName: 'SessionStart',
           additionalContext: SESSION_KB_REMINDER,
         },
-      }) + '\n');
+      });
     }
   }
 } catch {

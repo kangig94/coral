@@ -14,7 +14,7 @@ argument-hint: "[--delegate] [investigation target or question]"
   | Argument | Mode |
   |----------|------|
   | `<prompt>` | Self-execute on current host (default) |
-  | `--delegate` | Delegate to the other host (Codex when current is Claude, Claude when current is Codex; current host comes from SessionStart `Current host:`) |
+  | `--delegate` | Delegate to the other host (Claude → Codex, Codex → Claude, Copilot → Codex; current host comes from SessionStart `Current host:`) |
   | `--delegate <prompt>` | Same with prompt |
 
   Strip the `--delegate` flag before passing the prompt to the execution path.
@@ -53,7 +53,7 @@ argument-hint: "[--delegate] [investigation target or question]"
   Wait for the agent to return its findings.
   You (the executor) post-process and append the result to the file after each step completes.
 
-  **Delegate (`--delegate`)**: run `coral-cli <other-host> <role_name> -i "<--deep prompt>" --work-dir "<work_dir>" -d` where `<other-host>` is the non-current host (Codex if current is Claude; Claude if current is Codex)
+  **Delegate (`--delegate`)**: run `coral-cli <other-host> <role_name> -i "<--deep prompt>" --work-dir "<work_dir>" -d` where `<other-host>` is the delegation target for the current host (Claude → Codex, Codex → Claude, Copilot → Codex)
   with scope, `work_dir`, and analysis file content so far.
   Run one step at a time — do NOT launch steps in parallel. Each step's output informs
   the next step's scope and "Needed when" evaluation.

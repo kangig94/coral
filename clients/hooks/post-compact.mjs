@@ -12,6 +12,7 @@ import {
   logHookLine,
   readStdin,
   sweepStale,
+  writeHookOutput,
 } from './lib/hook-utils.mjs';
 import { isLivePhase, SNAPSHOT_PREFIX, SNAPSHOT_SUFFIX, SNAPSHOT_TTL_MS } from './lib/jobs-state.mjs';
 import { activeBridgeCommand, exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
@@ -111,14 +112,12 @@ await failOpen(async () => {
     lines.push(`- ${bridge} wait jobs <job-id> --embed`);
   }
 
-  console.log(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'SessionStart',
-        additionalContext: lines.join('\n'),
-      },
-    }),
-  );
+  writeHookOutput({
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      additionalContext: lines.join('\n'),
+    },
+  });
   logHookLine('post-compact', 'recovered compact snapshot', {
     projectDir,
     liveJobs: liveJobs.length,

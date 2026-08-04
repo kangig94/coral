@@ -8,7 +8,7 @@
 
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { exitIfChildProcess, exitIfWrongFlavor, readStdin, coralProjectDir, sweepStale, isValidSessionId } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, readStdin, coralProjectDir, sweepStale, isValidSessionId, writeHookOutput } from './lib/hook-utils.mjs';
 import { activeBridgeCommand, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 import { isKbEnabled } from './lib/kb-toggle.mjs';
 exitIfChildProcess();
@@ -39,12 +39,12 @@ try {
   sweepStale(flagDir, FLAG_PREFIX, 2 * 60 * 60_000);
   writeFileSync(flag, '');
 
-  console.log(JSON.stringify({
+  writeHookOutput({
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
       additionalContext: `Memo reminder: When you discover something that would save someone hours (painful root cause, gotcha contradicting docs), write with ${cliPath} kb memo write --owner "${sessionId}" --topic "<kebab-case-topic>" --content "one paragraph + context". Do not memo routine findings.`,
     },
-  }));
+  });
 } catch {
   process.exit(0);
 }

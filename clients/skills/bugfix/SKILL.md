@@ -13,7 +13,7 @@ Diagnose bugs, plan fixes, and execute - end-to-end.
 | Argument | Mode |
 |----------|------|
 | `<prompt>` | Self-execute on current host (default) |
-| `--delegate` | Delegate to the other host (Codex when current is Claude, Claude when current is Codex; current host comes from SessionStart `Current host:`) |
+| `--delegate` | Delegate to the other host (Claude → Codex, Codex → Claude, Copilot → Codex; current host comes from SessionStart `Current host:`) |
 | `--delegate <prompt>` | Same with prompt |
 
 Strip the `--delegate` flag before passing the prompt to the execution path.
@@ -23,7 +23,7 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
 1. **Diagnose**:
    - **Self-execute (default)**: Spawn `Agent({ subagent_type: "coral:debugger", prompt: "--deep " + prompt })`.
      Wait for the agent to return its diagnosis in `<Output_Format>` structure.
-   - **Delegate (`--delegate`)**: Run `coral-cli <other-host> debugger -i "<--deep prompt>" --work-dir "<work_dir>" -d` (`<other-host>` = Codex if current is Claude; Claude if current is Codex).
+   - **Delegate (`--delegate`)**: Run `coral-cli <other-host> debugger -i "<--deep prompt>" --work-dir "<work_dir>" -d` (`<other-host>` = the delegation target for the current host: Claude → Codex, Codex → Claude, Copilot → Codex).
      Capture `job` from `Job <job> <launchState> (session <session>)`, then run `coral-cli wait jobs <job> --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience for findings.
      On error, stop with the error message.
      Verify cited file:line references. Drop findings with incorrect references.

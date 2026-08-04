@@ -4,7 +4,7 @@ Hooks provide automatic context injection, backend warm-start, compaction recove
 
 ## Overview
 
-Hook registration is split per client, each `plugin.json` pointing at its own file: `clients/hooks/claude.json` (Claude Code — the full set below, via `.claude-plugin/plugin.json` `"hooks": "./hooks/claude.json"`) and `clients/hooks/codex.json` (Codex — the same set minus `hud-auto-update`, the `SubagentStart`/`SubagentStop` scripts, and the `PreToolUse(Monitor)` tracker, via `.codex-plugin/plugin.json` `"hooks": "./hooks/codex.json"`). The hook scripts themselves are shared; `codex.json` invokes them through Codex's native `${PLUGIN_ROOT}`, while `claude.json` uses `${CLAUDE_PLUGIN_ROOT}`. (Codex also exports `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` as OOTB compat aliases of its native `PLUGIN_ROOT`/`PLUGIN_DATA`, so the shared scripts — which read `CLAUDE_PLUGIN_ROOT` internally — run unchanged under both clients.) Coral uses these Claude Code hook events:
+Hook registration is split per client, each `plugin.json` pointing at its own file: `clients/hooks/claude.json` (Claude Code — the full set below, via `.claude-plugin/plugin.json` `"hooks": "./hooks/claude.json"`), `clients/hooks/codex.json` (Codex — the same set minus `hud-auto-update`, the `SubagentStart`/`SubagentStop` scripts, and the `PreToolUse(Monitor)` tracker, via `.codex-plugin/plugin.json` `"hooks": "./hooks/codex.json"`), and `clients/hooks/copilot.json` (Copilot CLI — the same set minus `hud-auto-update`, the `PreToolUse(Monitor)` tracker, and the compaction hooks, via `.github/plugin/plugin.json` `"hooks": "./hooks/copilot.json"`; see the contract deltas below for the registration-shape differences). The hook scripts themselves are shared; `codex.json` invokes them through Codex's native `${PLUGIN_ROOT}`, while `claude.json` and `copilot.json` use `${CLAUDE_PLUGIN_ROOT}`. (Codex and Copilot both export `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` as OOTB compat aliases of their native plugin-root variables, so the shared scripts — which read `CLAUDE_PLUGIN_ROOT` internally — run unchanged under all three clients.) Coral uses these Claude Code hook events:
 
 | Event                      | Scripts                                                                                 | Purpose                                                                                                            |
 | -------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -21,6 +21,26 @@ Hook registration is split per client, each `plugin.json` pointing at its own fi
 | `Stop`                     | `ralph-loop.mjs`, `kb-promote-gate.mjs`                                                 | Prompt-mode looping and KB promotion enforcement                                                                   |
 
 All hook scripts are Node.js ESM files that read JSON from stdin, write JSON to stdout, and fail open.
+
+## Copilot CLI contract deltas
+
+Copilot reuses Claude Code's hook vocabulary, but five details differ. All were verified against Copilot CLI 1.0.78.
+
+**Manifest precedence.** Copilot resolves `.github/plugin/plugin.json` before `.claude-plugin/plugin.json` (and never reads `.codex-plugin/`). That is the only reason Copilot loads `copilot.json` rather than Claude's `claude.json` — deleting `clients/.github/plugin/` would silently hand Copilot the Claude registration.
+
+**Output envelope.** Claude Code and Codex namespace per-event fields under `hookSpecificOutput`. Copilot is *split*, and the split was A/B-verified in both directions: it reads `additionalContext` only at the **top level** (a wrapped one never reaches the model), but reads `permissionDecision` / `permissionDecisionReason` / `updatedInput` only **inside the envelope** (a flat `updatedInput` never rewrites the command). Hook scripts therefore emit one canonical Claude-shaped payload through `writeHookOutput()` (`clients/hooks/lib/hook-utils.mjs`), which hoists exactly the fields listed in `COPILOT_HOISTED_FIELDS` and leaves the rest enveloped. Already-flat shapes pass through untouched: Copilot honors Stop-hook `decision: 'block'` with `reason` in exactly Claude's form (verified — a blocked turn continues with `reason` as its instruction), so the ralph loop and the KB Stop gate work unchanged. A new enveloped field is top-level-only until proven otherwise — add it to `COPILOT_HOISTED_FIELDS` only after an A/B check.
+
+**Event names.** Copilot fires both its native camelCase event (`sessionStart`) and the PascalCase Claude alias (`SessionStart`) for the same underlying event, so registering both would run every hook twice. `copilot.json` registers only the PascalCase names — which additionally makes Copilot deliver Claude's snake_case payload (`session_id`, `tool_name`, `tool_input`), the shape the shared scripts already parse.
+
+**Matchers and tool names.** Under PascalCase events Copilot maps its native tool names onto Claude's where an equivalent exists (`bash` → `Bash`, `view` → `Read`), but `skill` has no alias and stays lowercase — hence `PreToolUse` matches `skill`, not `Skill`. `Monitor` is Claude-only and is omitted. `SessionStart` matchers are *not* filtered (a `compact` matcher fires on every session start), so `copilot.json` keeps one unmatched `SessionStart` group containing only `session-start.mjs`.
+
+**Skill field values.** `tool_input.skill` carries the *bare* skill name under Copilot (`ralph`), not `coral:ralph`; Copilot namespaces it only when two installed plugins ship the same skill name. `isCoralSkillField()` / `isKbSkillField()` accept the bare form **only** when the host is Copilot — on Claude and Codex a bare `plan` is a user's own skill of that name, and matching it would fire Coral's hooks for a skill Coral does not own.
+
+Host detection lives in `hostKind()` and keys on `COPILOT_PLUGIN_ROOT`, not `COPILOT_CLI`: Copilot exports `COPILOT_CLI` into *every* shell it spawns, so it leaks into unrelated child processes, while `COPILOT_PLUGIN_ROOT` is set only for plugin hook invocations.
+
+### Compact recovery is Claude/Codex-only
+
+`copilot.json` registers neither `PreCompact` nor the compact-recovery scripts. Copilot emits `sessionStart` only with `source` `startup`/`resume`/`new` — it never re-emits a session start after compaction — so `post-compact.mjs` could never run in the session that compacted. Registering it on the unmatched `SessionStart` group would instead have run it on *every* session start, where it consumes and **deletes** the first snapshot it finds; snapshots are keyed by project, not by session or host, so a Copilot session start would silently destroy the pending compact recovery of a concurrent Claude Code or Codex session in the same project. Until Copilot exposes a post-compaction signal, Coral does not participate in compaction there.
 
 ## Hook Self-Gating
 

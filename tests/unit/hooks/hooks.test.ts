@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   CLAUDE_HOOKS_JSON_PATH,
   CODEX_HOOKS_JSON_PATH,
+  COPILOT_HOOKS_JSON_PATH,
   CORAL_SKILL_VARS_HOOK,
   HUD_AUTO_UPDATE_HOOK,
   KB_LOOKUP_REMINDER_HOOK,
@@ -75,6 +76,47 @@ describe('session-start.mjs', () => {
       /^SessionStart:session_id=sess-123\nCurrent host: (claude|codex)\nClaude config dir: .+\n\n/u,
     );
     expect(output.hookSpecificOutput.additionalContext).toContain(coreFragment);
+  });
+
+  it('emits a flat, unwrapped payload and "Current host: copilot" under Copilot CLI', () => {
+    const fixture = createFixture();
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    // Copilot exports COPILOT_PLUGIN_ROOT only when it invokes a plugin hook,
+    // and reads per-event fields at the top level — a hookSpecificOutput
+    // envelope is silently dropped, so the context would never reach the model.
+    const result = runHook(
+      SESSION_START_HOOK,
+      { session_id: 'sess-123' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, COPILOT_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout) as {
+      additionalContext?: string;
+      hookSpecificOutput?: unknown;
+    };
+    expect(output.hookSpecificOutput).toBeUndefined();
+    expect(output).not.toHaveProperty('hookEventName');
+    expect(output.additionalContext).toMatch(
+      /^SessionStart:session_id=sess-123\nCurrent host: copilot\nClaude config dir: .+\n\n/u,
+    );
+  });
+
+  it('keeps the wrapped payload for Claude and Codex hosts', () => {
+    const fixture = createFixture();
+    writeInjectBundle(fixture.pluginRoot, 'Project instructions');
+
+    const result = runHook(
+      SESSION_START_HOOK,
+      { session_id: 'sess-123' },
+      { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot, COPILOT_PLUGIN_ROOT: undefined, AI_AGENT: 'claude-code' },
+    );
+
+    expect(result.status).toBe(0);
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    expect(output.hookSpecificOutput.additionalContext).toContain('Current host: claude');
   });
 
   it('replaces {{CORAL_PROJECTS}} with the source-derived global project dir', () => {
@@ -626,6 +668,44 @@ describe('kb-promote-gate.mjs', () => {
     expect(output.reason).toContain('20260321-hooks-note-0.md');
   });
 
+  it('arms the session KB flag from a bare PreToolUse skill name (Copilot)', () => {
+    const fixture = createFixture();
+    // The gate exits early when the project has no memo dir; an empty one keeps
+    // the flag path reachable with zero memos.
+    mkdirSync(join(coralProjectDir(fixture.root, `local/${basename(fixture.projectRoot)}`), 'memo'), {
+      recursive: true,
+    });
+
+    // Copilot sends tool_input.skill as the bare "ralph"; matching only the
+    // "coral:ralph" form left the Stop-time promotion gate permanently unarmed.
+    runHook(
+      KB_PROMOTE_GATE_HOOK,
+      { hook_event_name: 'PreToolUse', session_id: 'sess-1', tool_input: { skill: 'ralph' } },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+        CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot,
+        COPILOT_PLUGIN_ROOT: fixture.pluginRoot,
+      },
+    );
+
+    const result = runHook(
+      KB_PROMOTE_GATE_HOOK,
+      { hook_event_name: 'Stop', session_id: 'sess-1' },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+        CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot,
+        COPILOT_PLUGIN_ROOT: fixture.pluginRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout) as { decision?: string; reason?: string };
+    expect(output.decision).toBe('block');
+    expect(output.reason).toContain('No memos to process');
+  });
+
   it('keeps compact SessionStart guidance on the memo-review workflow', () => {
     const fixture = createFixture();
     const memoDir = join(coralProjectDir(fixture.root, `local/${basename(fixture.projectRoot)}`), 'memo');
@@ -721,14 +801,46 @@ describe('kb-lookup-reminder.mjs', () => {
 });
 
 type HooksFile = {
-  hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout: number }> }>>;
+  hooks: Record<
+    string,
+    Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number; timeoutSec?: number }> }>
+  >;
 };
 
-describe('claude.json', () => {
-  it('does not reference migrate-coral-dir.mjs', () => {
-    expect(readFileSync(CLAUDE_HOOKS_JSON_PATH, 'utf-8')).not.toContain('migrate-coral-dir.mjs');
+describe('hook registration files', () => {
+  const configs = [
+    ['claude.json', CLAUDE_HOOKS_JSON_PATH],
+    ['codex.json', CODEX_HOOKS_JSON_PATH],
+    ['copilot.json', COPILOT_HOOKS_JSON_PATH],
+  ] as const;
+
+  it.each(configs)('%s does not reference migrate-coral-dir.mjs', (_name, path) => {
+    expect(readFileSync(path, 'utf-8')).not.toContain('migrate-coral-dir.mjs');
   });
 
+  it.each(configs)('%s only invokes hook scripts that exist', (_name, path) => {
+    // A typo'd path is deployment-fatal and invisible: the `test -d ... || exit 0`
+    // guard passes, then `node <missing>` fails per invocation with the hook
+    // silently doing nothing.
+    const hooksJson = JSON.parse(readFileSync(path, 'utf-8')) as HooksFile;
+    const referenced = new Set<string>();
+    for (const entries of Object.values(hooksJson.hooks)) {
+      for (const entry of entries) {
+        for (const hook of entry.hooks) {
+          for (const [, script] of hook.command.matchAll(/hooks\/([\w-]+\.mjs)/gu)) {
+            referenced.add(script);
+          }
+        }
+      }
+    }
+    expect(referenced.size).toBeGreaterThan(0);
+    for (const script of referenced) {
+      expect(existsSync(join(process.cwd(), 'clients', 'hooks', script))).toBe(true);
+    }
+  });
+});
+
+describe('claude.json', () => {
   it('SessionStart matcher "*" array has 2 entries: session-start (10s) then hud-auto-update (3s)', () => {
     const hooksJson = JSON.parse(readFileSync(CLAUDE_HOOKS_JSON_PATH, 'utf-8')) as HooksFile;
     const wildcardEntry = hooksJson.hooks.SessionStart.find((entry) => entry.matcher === '*');
@@ -743,10 +855,6 @@ describe('claude.json', () => {
 });
 
 describe('codex.json', () => {
-  it('does not reference migrate-coral-dir.mjs', () => {
-    expect(readFileSync(CODEX_HOOKS_JSON_PATH, 'utf-8')).not.toContain('migrate-coral-dir.mjs');
-  });
-
   it('omits the Claude-only hooks (hud-auto-update, subagent-start, subagent-track, monitor-track)', () => {
     const raw = readFileSync(CODEX_HOOKS_JSON_PATH, 'utf-8');
     for (const script of ['hud-auto-update.mjs', 'subagent-start.mjs', 'subagent-track.mjs', 'monitor-track.mjs']) {
@@ -764,6 +872,79 @@ describe('codex.json', () => {
     const preMatchers = hooksJson.hooks.PreToolUse.map((entry) => entry.matcher);
     expect(preMatchers).not.toContain('Monitor');
     expect(preMatchers).toEqual(expect.arrayContaining(['Skill', 'Bash']));
+  });
+});
+
+describe('copilot.json', () => {
+  function copilotHooks(): HooksFile {
+    return JSON.parse(readFileSync(COPILOT_HOOKS_JSON_PATH, 'utf-8')) as HooksFile;
+  }
+
+  it('registers only Claude-compatible PascalCase event names', () => {
+    // Copilot fires BOTH its native camelCase event and the PascalCase Claude
+    // alias for the same underlying event, so registering both names would run
+    // every hook twice. PascalCase is the one Coral keeps because it also makes
+    // Copilot deliver Claude's snake_case payload, which the shared hook
+    // scripts already parse.
+    for (const event of Object.keys(copilotHooks().hooks)) {
+      expect(event).toMatch(/^[A-Z][A-Za-z]+$/u);
+    }
+  });
+
+  it('drives every hook through ${CLAUDE_PLUGIN_ROOT} and Copilot timeoutSec', () => {
+    const raw = readFileSync(COPILOT_HOOKS_JSON_PATH, 'utf-8');
+    // Copilot exports CLAUDE_PLUGIN_ROOT as a compat alias, so the shared
+    // guard+invoke shape is reused verbatim rather than forked per client.
+    expect(raw).not.toContain('${PLUGIN_ROOT}');
+    for (const entries of Object.values(copilotHooks().hooks)) {
+      for (const entry of entries) {
+        for (const hook of entry.hooks) {
+          expect(hook.command).toContain('${CLAUDE_PLUGIN_ROOT}');
+          // Copilot's schema field is timeoutSec; Claude's `timeout` is ignored.
+          expect(hook.timeoutSec).toBeGreaterThan(0);
+          expect(hook.timeout).toBeUndefined();
+        }
+      }
+    }
+  });
+
+  it('uses the tool names Copilot actually reports, and omits Claude-only tools', () => {
+    const preMatchers = copilotHooks().hooks.PreToolUse.map((entry) => entry.matcher);
+    // Copilot maps its native `bash` tool onto Claude's `Bash` for PascalCase
+    // events, but `skill` has no Claude alias and stays lowercase. `Monitor` is
+    // a Claude-only tool and never fires here.
+    expect(preMatchers).toEqual(expect.arrayContaining(['skill', 'Bash']));
+    expect(preMatchers).not.toContain('Skill');
+    expect(preMatchers).not.toContain('Monitor');
+    expect(readFileSync(COPILOT_HOOKS_JSON_PATH, 'utf-8')).not.toContain('monitor-track.mjs');
+  });
+
+  it('keeps SessionStart in one group because Copilot does not filter its matcher', () => {
+    // Verified against Copilot CLI 1.0.78: a `compact` matcher on SessionStart
+    // fires on every session start, so the group must contain only work that is
+    // safe to repeat on every start.
+    const sessionStart = copilotHooks().hooks.SessionStart;
+    expect(sessionStart).toHaveLength(1);
+    expect(sessionStart[0].matcher).toBeUndefined();
+    const commands = sessionStart[0].hooks.map((hook) => hook.command);
+    expect(commands.some((command) => command.includes('session-start.mjs'))).toBe(true);
+    // hud-auto-update drives Claude Code's statusline and has no Copilot surface.
+    expect(commands.some((command) => command.includes('hud-auto-update.mjs'))).toBe(false);
+  });
+
+  it('registers no compaction hooks', () => {
+    // Copilot never re-emits a session start after compaction, so post-compact
+    // recovery cannot run in the session that compacted. On the unmatched
+    // SessionStart group it would instead run on EVERY session start, where it
+    // consumes and deletes the first snapshot it finds — and snapshots are keyed
+    // by project, not session or host, so it would destroy the pending recovery
+    // of a concurrent Claude Code or Codex session in the same project.
+    const raw = readFileSync(COPILOT_HOOKS_JSON_PATH, 'utf-8');
+    expect(raw).not.toContain('post-compact.mjs');
+    expect(raw).not.toContain('pre-compact.mjs');
+    expect(copilotHooks().hooks.PreCompact).toBeUndefined();
+    const sessionStartCommands = copilotHooks().hooks.SessionStart[0].hooks.map((hook) => hook.command);
+    expect(sessionStartCommands.some((command) => command.includes('kb-promote-gate.mjs'))).toBe(false);
   });
 });
 
@@ -1040,6 +1221,50 @@ describe('coral-skill-vars hook', () => {
     const output = JSON.parse(result.stdout) as HookOutput;
     expect(output.hookSpecificOutput.hookEventName).toBe('PreToolUse');
     expect(output.hookSpecificOutput.additionalContext).toContain('CORAL_PROJECT:');
+  });
+
+  it('injects context for PreToolUse with the bare skill name Copilot sends', () => {
+    const fixture = createFixture();
+
+    // Copilot puts the BARE skill name in tool_input.skill ("analyze"), and only
+    // falls back to "coral:analyze" when another installed plugin ships the same
+    // name — so matching on the `coral:` prefix alone would never fire here.
+    const result = runHook(
+      CORAL_SKILL_VARS_HOOK,
+      {
+        hook_event_name: 'PreToolUse',
+        tool_input: { skill: 'analyze' },
+      },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        COPILOT_PLUGIN_ROOT: fixture.pluginRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const output = JSON.parse(result.stdout) as { additionalContext?: string };
+    expect(output.additionalContext).toContain('CORAL_PROJECT:');
+  });
+
+  it('does not fire for a bare skill name owned by another plugin', () => {
+    const fixture = createFixture();
+
+    const result = runHook(
+      CORAL_SKILL_VARS_HOOK,
+      {
+        hook_event_name: 'PreToolUse',
+        tool_input: { skill: 'other:analyze' },
+      },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        COPILOT_PLUGIN_ROOT: fixture.pluginRoot,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
   });
 
   it('exits silently for non-matching messages', () => {

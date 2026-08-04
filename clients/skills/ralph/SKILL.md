@@ -13,7 +13,7 @@ Announce at start: "Using ralph to execute this task with verification loop."
 | Argument | Mode |
 |----------|------|
 | `<prompt>` | Self-execute on current host (default) |
-| `--delegate` | Delegate to the other host (Codex when current is Claude, Claude when current is Codex; from SessionStart `Current host:`) |
+| `--delegate` | Delegate to the other host (Claude → Codex, Codex → Claude, Copilot → Codex; from SessionStart `Current host:`) |
 | `--red` | Adversarial testing (spawns red-attacker in parallel) |
 | `--team` | Parallel AC execution via Agent Teams (plan mode only) |
 
@@ -142,7 +142,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
   </Exec_Default>
   <Exec_Delegate>
     Delegated execution. Replaces step-by-step self-execution with calls to the other host.
-    Let `<other-host>` = Codex if current host is Claude; Claude if current host is Codex.
+    Let `<other-host>` = the delegation target for the current host (Claude → Codex, Codex → Claude, Copilot → Codex).
 
     **`--red`**: Before starting, spawn `Agent("coral:red-attacker", { run_in_background: true })`
     with prompt: plan file path + acceptance criteria. Write tests to a temp directory.
@@ -188,7 +188,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
        - Instruction to wait for SendMessage assignments
 
        **If `--delegate`**: each worker's prompt must ALSO include these delegated-execution instructions
-       (let `<other-host>` = Codex if current host is Claude; Claude if current host is Codex):
+       (let `<other-host>` = the delegation target for the current host: Claude → Codex, Codex → Claude, Copilot → Codex):
        ```
        For each assigned AC, delegate to <other-host> using this prompt structure:
          Implement <AC numbers> EXACTLY as specified in the plan.
