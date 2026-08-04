@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import { type WaitStreamEvent, serializeWaitCursor } from '#src/jobs/wait.js';
+import type { BackendRoutingResult } from '#src/infra/backend-routing.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { openStoreDatabase } from '#src/store/db.js';
@@ -18,10 +19,16 @@ import { formatWaitProgress, formatWaitQueued, formatWaitTerminal, formatWaitWai
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
   subscribe: vi.fn(),
+  resolveCliHandoffRouting: vi.fn(),
 }));
 
 vi.mock('#src/transport/ipc/ensure.js', () => ({
   ensure: mockState.ensure,
+}));
+
+vi.mock('#src/coordinator/handoff-runner.js', () => ({
+  resolveCliHandoffRouting: mockState.resolveCliHandoffRouting,
+  runHandoff: vi.fn(),
 }));
 
 type FollowModule = typeof FollowMod;
@@ -31,6 +38,10 @@ function toText(chunk: string | Uint8Array): string {
 }
 
 function makeBackend(instanceId = 'backend-1') {
+  const routing = {
+    kind: 'use-current',
+    evidence: { source: 'current-build' },
+  } satisfies BackendRoutingResult;
   return {
     socketPath: '/tmp/coordinator.sock',
     instanceId,
@@ -41,6 +52,7 @@ function makeBackend(instanceId = 'backend-1') {
     port: 4100,
     token: 'backend-token',
     version: '0.5.2',
+    routing,
     request: vi.fn(),
     subscribe: mockState.subscribe,
     health: vi.fn(),
@@ -234,9 +246,18 @@ describe('cli follow', () => {
     process.exitCode = undefined;
     mockState.ensure.mockReset();
     mockState.subscribe.mockReset();
+    mockState.resolveCliHandoffRouting.mockReset();
+    mockState.resolveCliHandoffRouting.mockResolvedValue({
+      kind: 'use-current',
+      evidence: { source: 'current-build' },
+    } satisfies BackendRoutingResult);
 
-    vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+    vi.spyOn(process.stdout, 'write').mockImplementation(((
+      chunk: string | Uint8Array,
+      callback?: (error?: Error | null) => void,
+    ) => {
       stdout += toText(chunk);
+      callback?.();
       return true;
     }) as typeof process.stdout.write);
 

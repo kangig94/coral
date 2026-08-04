@@ -8,7 +8,6 @@ const mockState = vi.hoisted(() => ({
   request: vi.fn(),
   subscribe: vi.fn(),
   health: vi.fn(async () => ({ components: [] as Array<Record<string, unknown>> })),
-  shutdownAndAwaitRelease: vi.fn(async () => {}),
   readStore: {
     discuss: {
       watch: vi.fn(),
@@ -30,7 +29,6 @@ vi.mock('#src/transport/ipc/ensure.js', () => ({
     subscribe: mockState.subscribe,
     health: mockState.health,
   })),
-  shutdownAndAwaitRelease: mockState.shutdownAndAwaitRelease,
 }));
 
 vi.mock('#src/cli/read-store.js', () => ({
@@ -345,7 +343,6 @@ describe('command client routing', () => {
 
     expect(ensure).not.toHaveBeenCalled();
     expect(mockState.health).not.toHaveBeenCalled();
-    expect(mockState.shutdownAndAwaitRelease).not.toHaveBeenCalled();
     expect(mockState.request).not.toHaveBeenCalled();
   });
 
@@ -434,6 +431,7 @@ describe('kb lazy reconcile', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.restoreAllMocks();
     if (prevKbEnabled === undefined) {
       delete process.env.CORAL_KB_ENABLE;
     } else {
@@ -442,8 +440,9 @@ describe('kb lazy reconcile', () => {
     vi.unstubAllEnvs();
   });
 
-  it('restarts the daemon when a kb command runs with KB enabled against a KB-disabled daemon', async () => {
+  it('should continue on the KB-disabled daemon and explain idle setting inheritance once', async () => {
     process.env.CORAL_KB_ENABLE = '1';
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     mockState.health.mockResolvedValueOnce({
       components: [{ id: 'kb', phase: 'offline', reason: KB_DISABLED_REASON }],
     });
@@ -452,18 +451,28 @@ describe('kb lazy reconcile', () => {
 
     await client.kbReindex({ async: true });
 
-    expect(mockState.shutdownAndAwaitRelease).toHaveBeenCalledTimes(1);
+    expect(mockState.request).toHaveBeenCalledTimes(1);
+    expect(stderrWrite).toHaveBeenCalledTimes(1);
+    // The notice has to carry all three facts a user needs: the command will fail, why nothing was restarted,
+    // and how to get KB on now.
+    const notice = stderrWrite.mock.calls[0]?.[0] as string;
+    expect(notice).toContain('KB is disabled on the running Coral coordinator');
+    expect(notice).toContain('this command will fail');
+    expect(notice).toContain('CORAL_BACKEND_IDLE_MS');
+    expect(notice).toContain('coral-cli backend shutdown');
   });
 
   it('does not restart when the daemon already has KB online', async () => {
     process.env.CORAL_KB_ENABLE = '1';
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     mockState.health.mockResolvedValueOnce({ components: [{ id: 'kb', phase: 'online' }] });
     mockState.request.mockResolvedValueOnce({ status: 'running' });
     const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
 
     await client.kbReindex({ async: true });
 
-    expect(mockState.shutdownAndAwaitRelease).not.toHaveBeenCalled();
+    expect(mockState.request).toHaveBeenCalledTimes(1);
+    expect(stderrWrite).not.toHaveBeenCalled();
   });
 
   it('does not probe or restart when the caller wants KB disabled', async () => {
@@ -474,7 +483,7 @@ describe('kb lazy reconcile', () => {
     await client.kbReindex({ async: true });
 
     expect(mockState.health).not.toHaveBeenCalled();
-    expect(mockState.shutdownAndAwaitRelease).not.toHaveBeenCalled();
+    expect(ensure).toHaveBeenCalledTimes(1);
   });
 
   it('falls through to the command when the health probe fails', async () => {
@@ -485,7 +494,6 @@ describe('kb lazy reconcile', () => {
 
     await client.kbReindex({ async: true });
 
-    expect(mockState.shutdownAndAwaitRelease).not.toHaveBeenCalled();
     expect(mockState.request).toHaveBeenCalled();
   });
 });

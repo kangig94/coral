@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
+  resolveRunningBundleDir,
   resolveStrictBundleIdentity,
   type EmbeddedBundleIdentity,
   type StrictBundleManifest,
@@ -44,7 +45,7 @@ afterEach(() => {
   }
 });
 
-describe('strict bundle identity', () => {
+describe('bundle-manifest', () => {
   it('accepts only an adjacent manifest matching the embedded build identity', () => {
     expect(resolveStrictBundleIdentity({ bundleDir: bundleDir(), embedded })).toEqual({
       ok: true,
@@ -100,6 +101,7 @@ describe('strict bundle identity', () => {
     ['invalid build-set ID', JSON.stringify({ ...manifest, buildSetId: 'not-a-uuid' })],
     ['invalid bundle hash', JSON.stringify({ ...manifest, bundleHash: 'bundle' })],
     ['invalid fingerprint', JSON.stringify({ ...manifest, storeFormatFingerprint: 'old' })],
+    ['unknown manifest field', JSON.stringify({ ...manifest, extra: true })],
   ])('rejects %s', (_name, contents) => {
     const root = bundleDir();
     writeFileSync(join(root, 'manifest.json'), contents, 'utf-8');
@@ -129,5 +131,14 @@ describe('strict bundle identity', () => {
       ok: false,
       reason: 'adjacent_manifest_unavailable',
     });
+  });
+
+  it('resolves the running bridge directory to a canonical path', () => {
+    const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-running-bundle-'));
+    roots.push(pluginRoot);
+    const bridge = join(pluginRoot, 'bridge');
+    mkdirSync(bridge);
+
+    expect(resolveRunningBundleDir(pluginRoot)).toBe(realpathSync(bridge));
   });
 });

@@ -336,7 +336,12 @@ describe('lifecycle reset authority and finalizer order', () => {
     const { deps } = makeLifecycleDeps();
     const handoff = await import('#src/coordinator/handoff.js');
     const storeReset = await import('#src/store/backend-store-reset.js');
-    vi.mocked(handoff.bindWithHandoff).mockResolvedValueOnce({ acquiredViaHandoff: true });
+    // `SuccessfulCoordinatorBindResult` carries a module-private brand so production cannot mint bind
+    // authority without binding. A test doubling that module boundary has to assert the brand it cannot
+    // construct; `tests/invariants/coordinator-bind-authority.test.ts` keeps the same cast out of `src/`.
+    vi.mocked(handoff.bindWithHandoff).mockResolvedValueOnce({
+      acquiredViaHandoff: true,
+    } as HandoffMod.SuccessfulCoordinatorBindResult);
 
     await createLifecycle(deps).start();
 

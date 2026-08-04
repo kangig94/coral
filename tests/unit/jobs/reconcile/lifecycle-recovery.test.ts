@@ -33,6 +33,7 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import type { RecoverPersistedDiscussFn, RunStartupRecoveryFn } from '#src/coordinator/lifecycle.js';
 import type { TimerHandle } from '#src/infra/port-types.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { createBoundIpcLifecycleDeps } from '#tests/helpers/bound-ipc-lifecycle.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
@@ -793,6 +794,7 @@ function createLifecycleHarness(
     providerRegistry,
     providerHostManager: createFakeProviderHostManager() as never,
     server: createServer(),
+    ...createBoundIpcLifecycleDeps(),
     getExecutionService: getExecutionService as never,
     getRecoveryService: getRecoveryService as never,
     listExecutionServices: () => [...new Set(servicesByProjectRoot.values())] as never[],

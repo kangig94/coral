@@ -1,6 +1,6 @@
 import { handleExpansionCommanderFailure, isCommanderDisplayOnlyError } from './commands/expansion.js';
 import { emitError } from './emit.js';
-import { buildProgram } from './program.js';
+import { buildProgram, parseProgramWithHandoff } from './program.js';
 import { isStoreResetReportInvocation } from './store-reset-signal.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 
@@ -42,8 +42,16 @@ export function runCli(): Promise<unknown> {
   // Keep the process alive while async command handlers are still awaiting unref'ed runtime timers such as
   // coordinator startup polling.
   const parseKeepAlive = setInterval(() => undefined, 2 ** 31 - 1);
-  return program
-    .parseAsync(process.argv)
+  return parseProgramWithHandoff(program)
+    .then((handoff) => {
+      // A delegated invocation ran in the newer build; this process only mirrors how that child ended.
+      if (handoff === null || handoff.kind === 'handoff-success') return;
+      if (handoff.kind === 'handoff-exit') {
+        process.exitCode = handoff.exitCode;
+        return;
+      }
+      process.kill(process.pid, handoff.signal);
+    })
     .catch((error) => {
       if (isCommanderDisplayOnlyError(error)) {
         process.exitCode = 0;

@@ -66,7 +66,7 @@ import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../transport/context-
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
-import { ensure, shutdownAndAwaitRelease, type RawCoordinatorHealth } from '../transport/ipc/ensure.js';
+import { ensure, type RawCoordinatorHealth } from '../transport/ipc/ensure.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
 import { filterForwardableCoralEnv } from '../infra/env-sanitize.js';
@@ -488,11 +488,9 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
   const ipcAuth = childPrincipalAuthFromEnv();
   const ipcAuthOptions = () => childPrincipalAuthOptions(ipcAuth);
 
-  // Lazy KB re-enable: a `kb …` command run with CORAL_KB_ENABLE=1 against a
-  // daemon that booted with KB disabled restarts the daemon so it respawns with
-  // KB on. Admin shutdown is identity-agnostic (the handoff path refuses to
-  // replace a same-bundle daemon), so it is the correct restart trigger here.
-  // Runs at most once per command and only on the actual mismatch.
+  // A KB command probes once so a KB-disabled incumbent follows the same live
+  // authority rule as every other invocation. A later idle restart may inherit
+  // this process's KB setting without interrupting current coordinator work.
   let kbReconcileDone = false;
   const reconcileKbBoot = async (): Promise<void> => {
     if (kbReconcileDone || !path.startsWith('kb ')) return;
@@ -506,11 +504,13 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         (s) => s.id === 'kb' && s.phase === 'offline' && s.reason === KB_DISABLED_REASON,
       );
       if (kbDisabled) {
-        process.stderr.write('KB was disabled; restarting the Coral daemon to enable it…\n');
-        // Drain + wait for socket release so the next ensure() respawns a fresh
-        // daemon that inherits this CLI's env (KB enabled) — no race with the
-        // still-running incumbent.
-        await shutdownAndAwaitRelease(getPluginRoot());
+        process.stderr.write(
+          'KB is disabled on the running Coral coordinator, so this command will fail; continuing without a ' +
+            'restart so in-flight work is not interrupted. KB turns on at the next idle restart ' +
+            "(CORAL_BACKEND_IDLE_MS, default ~6h) — run 'coral-cli backend shutdown' to force it now if " +
+            'nothing else is running.\n',
+        );
+        return;
       }
     } catch {
       // Best-effort: fall through and let the command run against the daemon.

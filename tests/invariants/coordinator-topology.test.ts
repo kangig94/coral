@@ -21,6 +21,7 @@ const COORDINATOR_EDGES = parseProductionImportEdges(REPO_ROOT, COORDINATOR_FILE
 const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/bootstrap-diagnostics.ts',
   'src/coordinator/bootstrap.ts',
+  'src/coordinator/bound-coordinator-authority.ts',
   'src/coordinator/child-principal-registry.ts',
   'src/coordinator/composition/job-control.ts',
   'src/coordinator/composition/store-services-ref.ts',
@@ -34,6 +35,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/index.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
+  'src/coordinator/handoff-runner.ts',
   'src/coordinator/handoff.ts',
   'src/coordinator/invocation-scope.ts',
   'src/coordinator/runtime-components/kb-health-component.ts',
@@ -105,6 +107,7 @@ const TRANSPORT_TARGETS = new Set([
   'src/transport/ipc/handoff.ts',
   'src/transport/ipc/client.ts',
 ]);
+const HANDOFF_RUNNER_TRANSPORT_TARGET = 'src/transport/ipc/ensure.ts';
 const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/index.ts',
   'src/coordinator/bootstrap.ts',
@@ -191,6 +194,10 @@ describe('coordinator topology invariants', () => {
       }
 
       if (TRANSPORT_TARGETS.has(target)) {
+        return false;
+      }
+
+      if (source === 'src/coordinator/handoff-runner.ts' && target === HANDOFF_RUNNER_TRANSPORT_TARGET) {
         return false;
       }
 

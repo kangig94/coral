@@ -74,6 +74,7 @@ import {
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
 import { runStartupStaleArtifactPrune } from './startup-recovery.js';
+import { boundCoordinatorAuthorityFrom, type BoundCoordinatorAuthority } from './bound-coordinator-authority.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
@@ -602,6 +603,7 @@ export type RecoverPersistedDiscussDeps = {
 export type RecoverPersistedDiscussFn = (deps: RecoverPersistedDiscussDeps) => Promise<RecoveredDiscussResume[]>;
 
 export type StartupRecoveryDeps = {
+  readonly boundCoordinatorAuthority: BoundCoordinatorAuthority;
   readonly identity: CoordinatorIdentity;
   readonly runtime: Runtime;
   readonly progressStore: JobStore;
@@ -759,6 +761,7 @@ async function runLifecycleStartup({
     const socketPath = runtime.paths.coral.coordinator.socketPath;
     let interruptedAppServerReason: InterruptedAppServerReason = 'restart';
     let acquiredViaHandoff = false;
+    let boundCoordinatorAuthority: BoundCoordinatorAuthority | null = null;
     if (ipcServer && listenIpcFn) {
       const handoff = await bindWithHandoff({
         socketPath,
@@ -819,6 +822,7 @@ async function runLifecycleStartup({
         signal,
         totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
       });
+      boundCoordinatorAuthority = boundCoordinatorAuthorityFrom(handoff);
       if (handoff.acquiredViaHandoff) {
         acquiredViaHandoff = true;
         interruptedAppServerReason = 'handoff';
@@ -924,22 +928,29 @@ async function runLifecycleStartup({
     // because its budget is bounded by the daemon-side
     // `bootFreshnessTimeoutMs` (default 90s), not by either CLI-facing
     // deadline — the CLI has already returned by now.
-    const recoveredDiscussResumes = await runStartupRecoveryFn({
-      identity,
-      runtime,
-      progressStore,
-      providerRegistry,
-      getExecutionService: deps.getExecutionService,
-      getRecoveryService,
-      knownDiscussSources,
-      getDiscussStoreForSource,
-      getDiscussContext,
-      createInvocationContext,
-      recoveryCoordinator,
-      signal,
-      recoverPersistedDiscussFn,
-      interruptedAppServerReason,
-    });
+    // A startup without an IPC listener never bound the coordinator socket, so it holds no bind
+    // authority and there is no incumbent's work to recover — it was never the canonical coordinator.
+    // This is the absence of a recovery obligation, not a skipped one.
+    const recoveredDiscussResumes =
+      boundCoordinatorAuthority === null
+        ? []
+        : await runStartupRecoveryFn({
+            boundCoordinatorAuthority,
+            identity,
+            runtime,
+            progressStore,
+            providerRegistry,
+            getExecutionService: deps.getExecutionService,
+            getRecoveryService,
+            knownDiscussSources,
+            getDiscussStoreForSource,
+            getDiscussContext,
+            createInvocationContext,
+            recoveryCoordinator,
+            signal,
+            recoverPersistedDiscussFn,
+            interruptedAppServerReason,
+          });
     await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
     signal.throwIfAborted();
     if (runtimeState.getLaunchFenceActive()) {

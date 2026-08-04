@@ -25,6 +25,7 @@ import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { createBoundIpcLifecycleDeps } from '#tests/helpers/bound-ipc-lifecycle.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 
@@ -439,6 +440,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     launchCoordinator,
     providerRegistry,
     server: createServer(),
+    ...createBoundIpcLifecycleDeps(),
     getExecutionService: () => fakeService as never,
     getRecoveryService: () => fakeService as never,
     listExecutionServices: () => [fakeService as never],

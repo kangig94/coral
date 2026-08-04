@@ -55,6 +55,14 @@ export class BackendAlreadyRunningError extends Error {
 }
 
 export type HandoffBindResult = { kind: 'bound' } | { kind: 'incumbent'; reason: string };
+
+declare const successfulCoordinatorBindResultBrand: unique symbol;
+
+export interface SuccessfulCoordinatorBindResult {
+  readonly acquiredViaHandoff: boolean;
+  readonly [successfulCoordinatorBindResultBrand]: true;
+}
+
 export type HandoffSignalPolicy = 'term-kill' | 'term-only' | 'manual';
 
 export interface HandoffOptions {
@@ -379,7 +387,7 @@ function verifySignalTarget(
  *   4. on budget expiry, escalate via process signals only after revalidating
  *      pid+processStartedAt
  */
-export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredViaHandoff: boolean }> {
+export async function bindWithHandoff(opts: HandoffOptions): Promise<SuccessfulCoordinatorBindResult> {
   const deadline = opts.runtime.time.now() + opts.totalBudgetMs;
   const platform = opts.runtime.env.platform() as NodeJS.Platform;
   const signalPolicy = resolveSignalPolicy(opts);
@@ -401,7 +409,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
     const result = await opts.bindAttempt();
     opts.signal?.throwIfAborted();
     if (result.kind === 'bound') {
-      return { acquiredViaHandoff: sawIncumbent };
+      return Object.freeze({ acquiredViaHandoff: sawIncumbent }) as SuccessfulCoordinatorBindResult;
     }
 
     sawIncumbent = true;

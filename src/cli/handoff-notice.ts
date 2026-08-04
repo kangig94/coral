@@ -1,0 +1,22 @@
+import type { HandoffSuccess } from '../coordinator/handoff-runner.js';
+
+let noticeRendered = false;
+
+/**
+ * Goes to stderr, not stdout: the delegated child already wrote the invocation's real answer to the inherited
+ * stdout, so appending a line there would corrupt every machine-readable caller (`-f json`, `wait --embed`,
+ * hooks that `JSON.parse` the output) the moment a handoff occurred. The acceptance criterion pins the text,
+ * not the stream.
+ *
+ * Writes directly rather than through `emitText` for two reasons: the notice is not a command result, so it
+ * must not flush the pending read-store note, and importing `emit.ts` would close an
+ * `emit -> follow -> handoff-notice` cycle that `tests/invariants/production-import-graph.test.ts` forbids.
+ */
+export function renderHandoffNotice(success: HandoffSuccess): void {
+  if (noticeRendered) {
+    return;
+  }
+
+  noticeRendered = true;
+  process.stderr.write(`handed off to ${success.version}; use that version from now on\n`);
+}

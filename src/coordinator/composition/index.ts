@@ -12,6 +12,7 @@
 import type { ServerResponse } from 'node:http';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
+import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { formatError } from '../../infra/error-format.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { isRecord } from '../../infra/json.js';
@@ -420,6 +421,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   const world = createCoordinatorWorld(options, runtime, defaultsPlan);
   const kbDaemonSupervisor = options.kbDaemonSupervisor;
   const identity = world.identity;
+  const strictHealthIdentity = resolveStrictBundleIdentity();
+  const strictHealthBundleDir = strictHealthIdentity.ok ? resolveRunningBundleDir(world.pluginRoot) : null;
   const storeServicesRef = world.storeServicesRef;
   // Local indirection: callers in non-health/handoff paths use this to get
   // the post-bind progressStore. Equivalent to `storeServicesRef.get()` but
@@ -977,6 +980,9 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           },
           version: identity.version,
           bundleHash: identity.bundleHash,
+          ...(strictHealthIdentity.ok && strictHealthBundleDir !== null
+            ? { manifest: strictHealthIdentity.manifest, bundleDir: strictHealthBundleDir }
+            : {}),
           flavor: identity.flavor,
           namespace: identity.namespace,
           instanceId: identity.instanceId,
