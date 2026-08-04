@@ -1,24 +1,25 @@
 import { createHash } from 'node:crypto';
-import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
-import type { BackendRoutingResult } from '#src/infra/backend-routing.js';
-import {
-  createForeignTargetValidator,
-  withValidatedHandoffTarget,
-  type ValidatedHandoffTarget,
-} from '#src/infra/handoff-target.js';
-import type { Runtime } from '#src/runtime/ports.js';
-import { createRealRuntime } from '#src/runtime/real.js';
-import { resolveCliHandoffRouting, runHandoff, type HandoffOperation } from '#src/coordinator/handoff-runner.js';
+import { runHandoff, type HandoffOperation } from '#src/coordinator/handoff-runner.js';
+import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
+import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
+import { serializeWaitCursor } from '#src/jobs/wait.js';
+
+type StrictBundleManifest = BundleManifestMod.StrictBundleManifest;
 
 const mockState = vi.hoisted(() => ({
-  ensure: vi.fn(),
+  createIpcClient: vi.fn(),
+  createRealRuntime: vi.fn(),
+  health: vi.fn(),
+  probeCoordinator: vi.fn(),
+  readBuildFlavor: vi.fn(),
+  resolveStrictBundleIdentity: vi.fn(),
   spawn: vi.fn(),
 }));
 
@@ -27,23 +28,63 @@ vi.mock('node:child_process', async () => {
   return { ...actual, spawn: mockState.spawn };
 });
 
-vi.mock('#src/transport/ipc/ensure.js', () => ({
-  ensure: mockState.ensure,
+vi.mock('#src/infra/backend-discovery.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof BackendDiscoveryMod>();
+  return { ...actual, probeCoordinator: mockState.probeCoordinator };
+});
+
+vi.mock('#src/infra/bundle-manifest.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof BundleManifestMod>();
+  return {
+    ...actual,
+    readBuildFlavor: mockState.readBuildFlavor,
+    resolveStrictBundleIdentity: mockState.resolveStrictBundleIdentity,
+  };
+});
+
+vi.mock('#src/runtime/real.js', () => ({
+  createRealRuntime: mockState.createRealRuntime,
 }));
 
-const validateForeignTarget = createForeignTargetValidator();
+vi.mock('#src/transport/ipc/client.js', () => ({
+  createIpcClient: mockState.createIpcClient,
+}));
+
+const GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
+const originalGuard = process.env[GUARD_ENV];
 const roots: string[] = [];
 const backendBundle = 'handoff runner backend fixture';
 const cliBundle = 'handoff runner cli fixture';
 const claudeAppserverBundle = 'handoff runner claude appserver fixture';
 const manifest: StrictBundleManifest = {
   version: '2.1.0',
-  buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+  buildSetId: '223e4567-e89b-42d3-a456-426614174000',
   bundleHash: createHash('sha256').update(backendBundle).digest('hex').slice(0, 16),
   cliBundleHash: createHash('sha256').update(cliBundle).digest('hex').slice(0, 16),
   claudeAppserverBundleHash: createHash('sha256').update(claudeAppserverBundle).digest('hex').slice(0, 16),
   flavor: 'prod',
   storeFormatFingerprint: `sha256:${'a'.repeat(64)}`,
+};
+const invokingManifest: StrictBundleManifest = {
+  ...manifest,
+  version: '1.0.0',
+  buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+};
+const socketPath = join(tmpdir(), 'coral-handoff-runner.sock');
+const runtime = {
+  storage: {},
+  time: {
+    // The drain arms a real timer through the port, so the double must actually schedule.
+    setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
+    clearTimeout: (handle: { unref?(): void } | null) => {
+      clearTimeout(handle as unknown as NodeJS.Timeout);
+    },
+  },
+  env: {
+    cwd: () => '/handoff/cwd',
+    fullSnapshot: () => ({ CORAL_BASE_ENV: 'preserved' }),
+  },
+  paths: { coral: { coordinator: { socketPath } } },
 };
 
 function createBundle(): string {
@@ -56,37 +97,31 @@ function createBundle(): string {
   return root;
 }
 
-function createTarget(): { readonly bundleDir: string; readonly target: ValidatedHandoffTarget } {
-  const bundleDir = createBundle();
-  const result = validateForeignTarget(bundleDir, manifest);
-  if (result.kind !== 'validated') {
-    throw new Error(`Fixture target failed validation: ${result.evidence.failure}`);
-  }
-  return { bundleDir, target: result.target };
+function configureNewerIncumbent(bundleDir = createBundle()): string {
+  mockState.probeCoordinator.mockReturnValue({
+    socketPath,
+    pid: 4242,
+    bundleHash: manifest.bundleHash,
+    flavor: manifest.flavor,
+    namespace: 'handoff-runner',
+    bootToken: 'boot-token',
+  });
+  mockState.health.mockResolvedValue({
+    status: 'ok',
+    version: manifest.version,
+    bundleHash: manifest.bundleHash,
+    flavor: manifest.flavor,
+    namespace: 'handoff-runner',
+    instanceId: 'incumbent-1',
+    pid: 4242,
+    manifest,
+    bundleDir,
+  });
+  return bundleDir;
 }
 
-function runnerRuntime(socketPath = join(tmpdir(), 'coral-handoff-runner.sock')): Pick<Runtime, 'env' | 'paths'> {
-  const base = createRealRuntime('prod');
-  return {
-    env: {
-      ...base.env,
-      get: (key: string) => (key === 'CORAL_BASE_ENV' ? 'preserved' : undefined),
-      cwd: () => '/handoff/cwd',
-      fullSnapshot: () => ({ CORAL_BASE_ENV: 'preserved' }),
-      coralSnapshot: () => ({ CORAL_BASE_ENV: 'preserved' }),
-    },
-    paths: {
-      ...base.paths,
-      coral: {
-        ...base.paths.coral,
-        coordinator: { ...base.paths.coral.coordinator, socketPath },
-      },
-    },
-  };
-}
-
-function operation(entrypoint: HandoffOperation['entrypoint'] = 'cli'): HandoffOperation {
-  return { entrypoint, args: ['status'], envAdditions: { CORAL_HANDOFF_TEST: '1' } };
+function cliOperation(...args: string[]): HandoffOperation {
+  return { kind: 'cli-invocation', argv: ['node', 'coral-cli', ...args] };
 }
 
 function childThatExits(code: number | null, signal: NodeJS.Signals | null): ChildProcess {
@@ -98,158 +133,228 @@ function childThatExits(code: number | null, signal: NodeJS.Signals | null): Chi
   return child;
 }
 
-afterEach(() => {
-  vi.restoreAllMocks();
-  mockState.ensure.mockReset();
+beforeEach(() => {
+  delete process.env[GUARD_ENV];
+  mockState.createIpcClient.mockReset().mockReturnValue({ health: mockState.health });
+  mockState.createRealRuntime.mockReset().mockReturnValue(runtime);
+  mockState.health.mockReset();
+  mockState.probeCoordinator.mockReset();
+  mockState.readBuildFlavor.mockReset().mockReturnValue('prod');
+  mockState.resolveStrictBundleIdentity.mockReset().mockReturnValue({ ok: true, manifest: invokingManifest });
   mockState.spawn.mockReset();
+  configureNewerIncumbent();
+  vi.spyOn(process.stdout, 'write').mockImplementation(((
+    _chunk: string | Uint8Array,
+    callback?: (error?: Error | null) => void,
+  ) => {
+    callback?.();
+    return true;
+  }) as typeof process.stdout.write);
+});
+
+afterEach(() => {
+  if (originalGuard === undefined) {
+    delete process.env[GUARD_ENV];
+  } else {
+    process.env[GUARD_ENV] = originalGuard;
+  }
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
 describe('handoff-runner', () => {
-  it.each(['cli', 'backend'] as const)(
-    'should execute the validated %s entrypoint with inherited stdio and return the newer version',
-    async (entrypoint) => {
-      const { bundleDir, target } = createTarget();
-      mockState.spawn.mockImplementationOnce(() => childThatExits(0, null));
+  it.each([
+    ['absent', undefined],
+    ['zero', '0'],
+  ])('should delegate when the guard is %s and propagate one', async (_label, guard) => {
+    if (guard !== undefined) {
+      process.env[GUARD_ENV] = guard;
+    }
+    const bundleDir = roots[0];
+    mockState.spawn.mockImplementationOnce(() => childThatExits(0, null));
 
-      const result = await runHandoff({ runtime: runnerRuntime(), target, operation: operation(entrypoint) });
+    const result = await runHandoff(cliOperation('backend', 'status'), { pluginRoot: '/plugin/root' });
 
-      expect(result).toMatchObject({ kind: 'handoff-success', version: manifest.version });
-      expect(mockState.spawn).toHaveBeenCalledWith(
-        process.execPath,
-        [join(bundleDir, `coral-${entrypoint}.cjs`), 'status'],
-        expect.objectContaining({
-          cwd: '/handoff/cwd',
-          env: { CORAL_BASE_ENV: 'preserved', CORAL_HANDOFF_TEST: '1' },
-          stdio: 'inherit',
-        }),
-      );
+    expect(result).toMatchObject({
+      kind: 'delegated',
+      outcome: { kind: 'handoff-success', version: manifest.version },
+    });
+    expect(mockState.spawn).toHaveBeenCalledWith(
+      process.execPath,
+      [join(bundleDir, 'coral-cli.cjs'), 'backend', 'status'],
+      {
+        cwd: '/handoff/cwd',
+        env: { CORAL_BASE_ENV: 'preserved', [GUARD_ENV]: '1' },
+        stdio: 'inherit',
+      },
+    );
+  });
+
+  it('should derive wait jobs argv from the job and seq cursor', async () => {
+    const bundleDir = roots[0];
+    mockState.spawn.mockImplementationOnce(() => childThatExits(0, null));
+
+    await runHandoff(
+      { kind: 'wait-jobs', jobId: 'job-1', serializedCursor: 'eyJhZnRlclNlcSI6N30' },
+      { pluginRoot: '/plugin/root' },
+    );
+
+    expect(mockState.spawn).toHaveBeenCalledWith(
+      process.execPath,
+      [join(bundleDir, 'coral-cli.cjs'), 'wait', 'jobs', 'job-1', '--cursor', serializeWaitCursor({ afterSeq: 7 })],
+      expect.objectContaining({ stdio: 'inherit' }),
+    );
+  });
+
+  it('should return run-current without spawning when no incumbent is discoverable', async () => {
+    mockState.probeCoordinator.mockReturnValue(null);
+
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'run-current',
+    });
+
+    expect(mockState.health).not.toHaveBeenCalled();
+    expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
+  it.each([['--help'], ['-h'], ['--version']])(
+    'should skip the incumbent probe for display-only invocation %s',
+    async (flag) => {
+      await expect(runHandoff(cliOperation(flag), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+        kind: 'run-current',
+      });
+
+      expect(mockState.createRealRuntime).not.toHaveBeenCalled();
+      expect(mockState.probeCoordinator).not.toHaveBeenCalled();
     },
   );
 
-  it('should release a held canonical socket before spawning and retain the target lease through spawn', async () => {
-    const { bundleDir, target } = createTarget();
-    const socketPath = join(bundleDir, 'coordinator.sock');
-    const lockPath = join(dirname(bundleDir), `.${basename(bundleDir)}.coral-target-execution.lock`);
+  it.each(['', '2', '01', ' 1 ', 'true'])('should reject invalid delegation guard value %j as usage', async (guard) => {
+    process.env[GUARD_ENV] = guard;
+
+    // Owned by the runner, not `cli/errors.ts` — importing that would close a cli -> coordinator -> cli
+    // cycle. `buildErrorEnvelope` maps it to invalid_usage / exit 2 on the CLI side.
+    await expect(runHandoff(cliOperation('run'))).rejects.toMatchObject({ name: 'HandoffGuardError' });
+    await expect(runHandoff(cliOperation('run'))).rejects.toThrow(GUARD_ENV);
+    expect(mockState.probeCoordinator).not.toHaveBeenCalled();
+  });
+
+  it('should refuse a second delegation inside the routing authority', async () => {
+    process.env[GUARD_ENV] = '1';
+
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).rejects.toThrow(
+      /already delegated once/u,
+    );
+    expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
+  it('should release a held canonical socket before the final byte check and spawn', async () => {
     const order: string[] = [];
-    const releaseCanonicalSocket = async () => {
-      order.push('release');
-    };
     mockState.spawn.mockImplementationOnce(() => {
       order.push('spawn');
-      expect(existsSync(lockPath)).toBe(true);
       return childThatExits(0, null);
     });
 
-    await runHandoff({
-      runtime: runnerRuntime(socketPath),
-      target,
-      operation: operation(),
-      releaseCanonicalSocket,
+    await runHandoff(cliOperation('run'), {
+      pluginRoot: '/plugin/root',
+      releaseCanonicalSocket: async () => {
+        order.push('release');
+      },
     });
 
     expect(order).toEqual(['release', 'spawn']);
-    expect(existsSync(lockPath)).toBe(false);
-  });
-
-  it('should not attempt a socket release when the caller holds no release capability', async () => {
-    const { target } = createTarget();
-    const socketPath = join(tmpdir(), 'coral-unheld.sock');
-    mockState.spawn.mockImplementationOnce(() => childThatExits(0, null));
-
-    await runHandoff({ runtime: runnerRuntime(socketPath), target, operation: operation() });
-
-    expect(mockState.spawn).toHaveBeenCalledOnce();
-  });
-
-  it.each([
-    ['cast', {} as ValidatedHandoffTarget],
-    ['decoded', JSON.parse('{}') as unknown as ValidatedHandoffTarget],
-  ])('should reject a %s target at the consumer boundary', async (_kind, target) => {
-    await expect(runHandoff({ runtime: runnerRuntime(), target, operation: operation() })).rejects.toThrow(
-      'was not produced',
-    );
-    expect(mockState.spawn).not.toHaveBeenCalled();
-  });
-
-  it('should reject a target whose lease has expired', async () => {
-    const { target } = createTarget();
-    await withValidatedHandoffTarget(target, () => undefined);
-
-    await expect(runHandoff({ runtime: runnerRuntime(), target, operation: operation() })).rejects.toThrow(
-      'was not produced',
-    );
-    expect(mockState.spawn).not.toHaveBeenCalled();
-  });
-
-  it('should validate the delegated operation before execution and release the target lease on failure', async () => {
-    const { bundleDir, target } = createTarget();
-    const lockPath = join(dirname(bundleDir), `.${basename(bundleDir)}.coral-target-execution.lock`);
-    const invalidOperation = { entrypoint: 'shell', args: [] } as unknown as HandoffOperation;
-
-    await expect(runHandoff({ runtime: runnerRuntime(), target, operation: invalidOperation })).rejects.toThrow();
-    expect(mockState.spawn).not.toHaveBeenCalled();
-    expect(existsSync(lockPath)).toBe(false);
   });
 
   it('should reject a byte mismatch at the final re-hash without spawning', async () => {
-    const { bundleDir, target } = createTarget();
-    writeFileSync(join(bundleDir, 'coral-cli.cjs'), 'changed after validation', 'utf8');
+    const bundleDir = roots[0];
+    vi.mocked(process.stdout.write).mockImplementationOnce(((
+      _chunk: string | Uint8Array,
+      callback?: (error?: Error | null) => void,
+    ) => {
+      writeFileSync(join(bundleDir, 'coral-cli.cjs'), 'changed after validation', 'utf8');
+      callback?.();
+      return true;
+    }) as typeof process.stdout.write);
 
-    await expect(runHandoff({ runtime: runnerRuntime(), target, operation: operation() })).rejects.toThrow(
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).rejects.toThrow(
       'bytes changed before execution',
     );
     expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
-  it('should release the target lease when the child fails to spawn', async () => {
-    const { bundleDir, target } = createTarget();
-    const lockPath = join(dirname(bundleDir), `.${basename(bundleDir)}.coral-target-execution.lock`);
+  it('should degrade an undrainable stdout to run-current without throwing', async () => {
+    vi.useFakeTimers();
+    let markDrainStarted: (() => void) | undefined;
+    const drainStarted = new Promise<void>((resolve) => {
+      markDrainStarted = resolve;
+    });
+    vi.mocked(process.stdout.write).mockImplementationOnce((() => {
+      markDrainStarted?.();
+      return false;
+    }) as typeof process.stdout.write);
+
+    const result = runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' });
+    await drainStarted;
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    await expect(result).resolves.toEqual({ kind: 'run-current' });
+    expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
+  it('should isolate a failed stdout drain from a later handoff attempt', async () => {
+    vi.mocked(process.stdout.write)
+      .mockImplementationOnce(((_chunk: string | Uint8Array, callback?: (error?: Error | null) => void) => {
+        callback?.(new Error('EPIPE'));
+        return true;
+      }) as typeof process.stdout.write)
+      .mockImplementationOnce(((_chunk: string | Uint8Array, callback?: (error?: Error | null) => void) => {
+        callback?.();
+        return true;
+      }) as typeof process.stdout.write);
+    mockState.spawn.mockImplementationOnce(() => childThatExits(0, null));
+
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'run-current',
+    });
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toMatchObject({
+      kind: 'delegated',
+      outcome: { kind: 'handoff-success' },
+    });
+    expect(mockState.spawn).toHaveBeenCalledOnce();
+  });
+
+  it('should reject an invalid continuation operation before probing', async () => {
+    const invalid = { kind: 'wait-jobs', jobId: '', serializedCursor: '' } as HandoffOperation;
+
+    await expect(runHandoff(invalid)).rejects.toThrow();
+    expect(mockState.probeCoordinator).not.toHaveBeenCalled();
+  });
+
+  it('should report child exit and signal outcomes through the delegated result', async () => {
+    mockState.spawn
+      .mockImplementationOnce(() => childThatExits(23, null))
+      .mockImplementationOnce(() => childThatExits(null, 'SIGTERM'));
+
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'delegated',
+      outcome: { kind: 'handoff-exit', exitCode: 23 },
+    });
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
+      kind: 'delegated',
+      outcome: { kind: 'handoff-signal', signal: 'SIGTERM' },
+    });
+  });
+
+  it('should reject a child spawn failure', async () => {
     mockState.spawn.mockImplementationOnce(() => {
       const child = new EventEmitter() as ChildProcess;
       queueMicrotask(() => child.emit('error', new Error('spawn failed')));
       return child;
     });
 
-    await expect(runHandoff({ runtime: runnerRuntime(), target, operation: operation() })).rejects.toThrow(
-      'spawn failed',
-    );
-    expect(existsSync(lockPath)).toBe(false);
-  });
-
-  it('should return a non-zero child exit code', async () => {
-    const { target } = createTarget();
-    mockState.spawn.mockImplementationOnce(() => childThatExits(23, null));
-
-    await expect(runHandoff({ runtime: runnerRuntime(), target, operation: operation() })).resolves.toEqual({
-      kind: 'handoff-exit',
-      exitCode: 23,
-    });
-  });
-
-  it('should return a child signal instead of treating it as a clean exit', async () => {
-    const { target } = createTarget();
-    mockState.spawn.mockImplementationOnce(() => childThatExits(null, 'SIGTERM'));
-
-    await expect(runHandoff({ runtime: runnerRuntime(), target, operation: operation() })).resolves.toEqual({
-      kind: 'handoff-signal',
-      signal: 'SIGTERM',
-    });
-  });
-
-  it('should resolve CLI routing without exposing the foreign validator', async () => {
-    const routing = {
-      kind: 'use-current',
-      evidence: { source: 'current-build' },
-    } satisfies BackendRoutingResult;
-    const time = createRealRuntime('prod').time;
-    mockState.ensure.mockResolvedValueOnce({ routing });
-
-    await expect(resolveCliHandoffRouting('/plugin/root', time)).resolves.toBe(routing);
-    expect(mockState.ensure).toHaveBeenCalledWith('/plugin/root', time, {
-      validateForeignTarget: expect.any(Function),
-    });
+    await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).rejects.toThrow('spawn failed');
   });
 });

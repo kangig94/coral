@@ -10,37 +10,43 @@ import {
 import { probeCoordinator, type CoordinatorDiscoveryRecord } from '../infra/backend-discovery.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { readBuildFlavor, resolveStrictBundleIdentity, strictBundleManifestSchema } from '../infra/bundle-manifest.js';
-import type { Runtime } from '../runtime/ports.js';
-import { createRealRuntime } from '../runtime/real.js';
-import type { TimePort } from '../infra/port-types.js';
-import { ensure } from '../transport/ipc/ensure.js';
-import { createIpcClient } from '../transport/ipc/client.js';
 import {
   createForeignTargetValidator,
   withValidatedHandoffTarget,
   type ForeignTargetValidator,
-  type ValidatedHandoffTarget,
 } from '../infra/handoff-target.js';
+import type { TimePort } from '../infra/port-types.js';
+import type { Runtime } from '../runtime/ports.js';
+import { createRealRuntime } from '../runtime/real.js';
+import { createIpcClient } from '../transport/ipc/client.js';
 
 // The pre-flight's own probe budget. Not `HEALTH_TIMEOUT_MS` from `transport/http/sse.ts`: the coordinator
 // topology invariant forbids a coordinator module depending on the HTTP transport, and this bound answers a
 // different question — how long a CLI may wait before dispatching without an incumbent.
 const INCUMBENT_HEALTH_PROBE_TIMEOUT_MS = 3_000;
+const STDOUT_HANDOFF_DRAIN_TIMEOUT_MS = 3_000;
+const CLI_HANDOFF_GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
 
 const handoffSuccessBrand: unique symbol = Symbol('HandoffSuccess');
+const cliHandoffGuardSchema = z.enum(['0', '1']).optional();
 
-const handoffOperationSchema = z
-  .object({
-    entrypoint: z.enum(['cli', 'backend']),
-    args: z.array(z.string()),
-    envAdditions: z.record(z.string(), z.string()).optional(),
-  })
-  .strict();
-
-const HANDOFF_ENTRYPOINTS = {
-  cli: 'coral-cli.cjs',
-  backend: 'coral-backend.cjs',
-} as const;
+const handoffOperationSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('cli-invocation'),
+      argv: z.array(z.string()).min(2),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('wait-jobs'),
+      jobId: z.string().min(1),
+      // Opaque here on purpose: the caller already holds the serialized cursor, and decoding it would make
+      // this coordinator module depend on the jobs domain's wait vocabulary just to re-encode the same string.
+      serializedCursor: z.string().min(1),
+    })
+    .strict(),
+]);
 
 const liveIncumbentHealthSchema = z
   .object({
@@ -78,11 +84,9 @@ const liveIncumbentHealthSchema = z
 
 type LiveIncumbentHealth = z.infer<typeof liveIncumbentHealthSchema>;
 
-export type HandoffOperation = Readonly<{
-  entrypoint: keyof typeof HANDOFF_ENTRYPOINTS;
-  args: readonly string[];
-  envAdditions?: Readonly<Record<string, string>>;
-}>;
+export type HandoffOperation =
+  | Readonly<{ kind: 'cli-invocation'; argv: readonly string[] }>
+  | Readonly<{ kind: 'wait-jobs'; jobId: string; serializedCursor: string }>;
 
 export type HandoffSuccess = Readonly<{
   kind: 'handoff-success';
@@ -95,12 +99,16 @@ export type HandoffOutcome =
   | Readonly<{ kind: 'handoff-exit'; exitCode: number }>
   | Readonly<{ kind: 'handoff-signal'; signal: NodeJS.Signals }>;
 
+export type HandoffContinuationResult =
+  | Readonly<{ kind: 'run-current' }>
+  | Readonly<{ kind: 'delegated'; outcome: HandoffOutcome }>;
+
 export type CanonicalSocketRelease = () => Promise<void>;
 
 export type RunHandoffOptions = Readonly<{
-  runtime: Pick<Runtime, 'env' | 'paths'>;
-  target: ValidatedHandoffTarget;
-  operation: HandoffOperation;
+  pluginRoot?: string;
+  time?: TimePort;
+  signal?: AbortSignal;
   releaseCanonicalSocket?: CanonicalSocketRelease;
 }>;
 
@@ -114,7 +122,45 @@ type ObservedChild = Readonly<{
   outcome: Promise<ChildOutcome>;
 }>;
 
+type RoutingResolution = Readonly<{
+  routing: BackendRoutingResult;
+  runtime: Pick<Runtime, 'env' | 'paths'>;
+  time: TimePort;
+}>;
+
 const foreignTargetValidator: ForeignTargetValidator = createForeignTargetValidator();
+
+/**
+ * Raised when the delegation marker holds a value Coral never writes. Owned here rather than imported from
+ * `cli/errors.ts`: the guard is the runner's, and reaching into the CLI for its presentation type would close a
+ * `cli -> coordinator -> cli` cycle. `buildErrorEnvelope` maps it to invalid usage on the CLI side.
+ */
+export class HandoffGuardError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HandoffGuardError';
+  }
+}
+
+function readCliHandoffGuard(): '0' | '1' | undefined {
+  const raw = process.env[CLI_HANDOFF_GUARD_ENV];
+  const parsed = cliHandoffGuardSchema.safeParse(raw);
+  if (parsed.success) {
+    return parsed.data;
+  }
+
+  throw new HandoffGuardError(
+    `${CLI_HANDOFF_GUARD_ENV} must be "0", "1", or unset (got ${JSON.stringify(raw)}). ` +
+      `Coral sets it itself when it delegates to a newer build; unset it or set it to 0.`,
+  );
+}
+
+function isDisplayOnlyInvocation(operation: HandoffOperation): boolean {
+  return (
+    operation.kind === 'cli-invocation' &&
+    operation.argv.slice(2).some((argument) => argument === '--help' || argument === '-h' || argument === '--version')
+  );
+}
 
 function discoveryMatchesHealth(
   discovery: CoordinatorDiscoveryRecord,
@@ -156,7 +202,7 @@ function routeAuthenticatedHealth(health: LiveIncumbentHealth): BackendRoutingRe
       : Object.freeze({ bundleDir: health.bundleDir, expectedManifest: health.manifest });
   const invokingIdentity = resolveStrictBundleIdentity();
   if (!invokingIdentity.ok || candidate === null) {
-    return createUseCurrentBackendRouting({ source: 'live-incumbent', candidate, invalidTarget: null });
+    return createUseCurrentBackendRouting({ source: 'live-incumbent' });
   }
   return routeLiveIncumbent({
     invokingManifest: invokingIdentity.manifest,
@@ -165,31 +211,24 @@ function routeAuthenticatedHealth(health: LiveIncumbentHealth): BackendRoutingRe
   });
 }
 
-export async function resolveCliHandoffPreflightRouting(
-  pluginRoot?: string,
-  time?: TimePort,
-): Promise<BackendRoutingResult> {
+async function resolveHandoffRouting(pluginRoot?: string, timePort?: TimePort): Promise<RoutingResolution> {
   const flavor = pluginRoot === undefined ? resolveBuildFlavor(process.env) : readBuildFlavor(pluginRoot);
   const runtime = createRealRuntime(flavor);
+  const time = timePort ?? runtime.time;
   const discovery = probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
   if (discovery === null) {
-    return createUseCurrentBackendRouting({ source: 'current-build' });
+    return { routing: createUseCurrentBackendRouting({ source: 'current-build' }), runtime, time };
   }
 
-  const health = await readAuthenticatedHealth(discovery, time ?? runtime.time);
+  const health = await readAuthenticatedHealth(discovery, time);
   if (
     health === null ||
     health.status === 'draining' ||
     !discoveryMatchesHealth(discovery, runtime.paths.coral.coordinator.socketPath, health)
   ) {
-    return createUseCurrentBackendRouting({ source: 'current-build' });
+    return { routing: createUseCurrentBackendRouting({ source: 'current-build' }), runtime, time };
   }
-  return routeAuthenticatedHealth(health);
-}
-
-export async function resolveCliHandoffRouting(pluginRoot?: string, time?: TimePort): Promise<BackendRoutingResult> {
-  const client = await ensure(pluginRoot, time, { validateForeignTarget: foreignTargetValidator });
-  return client.routing;
+  return { routing: routeAuthenticatedHealth(health), runtime, time };
 }
 
 function observeChild(child: ChildProcess): ObservedChild {
@@ -222,24 +261,121 @@ function handoffOutcome(version: string, outcome: ChildOutcome): HandoffOutcome 
   });
 }
 
-export async function runHandoff(options: RunHandoffOptions): Promise<HandoffOutcome> {
-  const observed = await withValidatedHandoffTarget(options.target, async (execution) => {
-    const operation = handoffOperationSchema.parse(options.operation);
-    const childArguments = [join(execution.bundleDir, HANDOFF_ENTRYPOINTS[operation.entrypoint]), ...operation.args];
-    const spawnOptions: SpawnOptions = {
-      cwd: options.runtime.env.cwd(),
-      env: { ...options.runtime.env.fullSnapshot(), ...operation.envAdditions },
-      stdio: 'inherit',
+function delegatedArguments(operation: HandoffOperation): readonly string[] {
+  switch (operation.kind) {
+    case 'cli-invocation':
+      return operation.argv.slice(2);
+    case 'wait-jobs':
+      return ['wait', 'jobs', operation.jobId, '--cursor', operation.serializedCursor];
+  }
+}
+
+function drainStdoutBeforeHandoff(time: TimePort, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted === true) {
+    return Promise.resolve(false);
+  }
+
+  return new Promise<boolean>((resolveDrain) => {
+    let settled = false;
+    let writeReturned = false;
+    let callbackComplete = false;
+    let drainComplete = false;
+    let needsDrain = false;
+
+    const cleanup = (): void => {
+      time.clearTimeout(timeout);
+      process.stdout.off('drain', onDrain);
+      process.stdout.off('error', onError);
+      signal?.removeEventListener('abort', onAbort);
     };
+    const settle = (stable: boolean): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveDrain(stable);
+    };
+    const finish = (): void => {
+      if (writeReturned && callbackComplete && (!needsDrain || drainComplete)) {
+        settle(true);
+      }
+    };
+    const onDrain = (): void => {
+      drainComplete = true;
+      finish();
+    };
+    const onError = (): void => settle(false);
+    const onAbort = (): void => settle(false);
+    const timeout = time.setTimeout(() => settle(false), STDOUT_HANDOFF_DRAIN_TIMEOUT_MS);
+    timeout.unref?.();
 
-    await options.releaseCanonicalSocket?.();
-    execution.assertExecutable();
-    // Runtime ports do not expose the executable for the current Node process.
-    const child = spawn(process.execPath, childArguments, spawnOptions);
-    const childObservation = observeChild(child);
-    await childObservation.spawned;
-    return { ...childObservation, version: execution.manifest.version };
+    process.stdout.once('error', onError);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const accepted = process.stdout.write('', (error) => {
+        if (error) {
+          settle(false);
+          return;
+        }
+        callbackComplete = true;
+        finish();
+      });
+      needsDrain = !accepted;
+      drainComplete = accepted;
+      writeReturned = true;
+      if (!settled && !accepted) {
+        process.stdout.once('drain', onDrain);
+      }
+      finish();
+    } catch {
+      settle(false);
+    }
   });
+}
 
-  return handoffOutcome(observed.version, await observed.outcome);
+export async function runHandoff(
+  operationInput: HandoffOperation,
+  options: RunHandoffOptions = {},
+): Promise<HandoffContinuationResult> {
+  const operation = handoffOperationSchema.parse(operationInput) as HandoffOperation;
+  const guard = readCliHandoffGuard();
+  if (isDisplayOnlyInvocation(operation)) {
+    return { kind: 'run-current' };
+  }
+
+  const { routing, runtime, time } = await resolveHandoffRouting(options.pluginRoot, options.time);
+  switch (routing.kind) {
+    case 'use-current':
+    case 'reset-newer-invalid':
+      return { kind: 'run-current' };
+    case 'handoff': {
+      if (guard === '1') {
+        throw new Error(
+          'This Coral build already delegated once and refuses a second delegation, which means two builds ' +
+            "are handing off to each other. Run 'coral-cli backend status' and report that output; unsetting " +
+            `${CLI_HANDOFF_GUARD_ENV} lets this invocation retry once.`,
+        );
+      }
+
+      if (!(await drainStdoutBeforeHandoff(time, options.signal))) {
+        return { kind: 'run-current' };
+      }
+
+      const execution = withValidatedHandoffTarget(routing.target);
+      const childArguments = [join(execution.bundleDir, 'coral-cli.cjs'), ...delegatedArguments(operation)];
+      const spawnOptions: SpawnOptions = {
+        cwd: runtime.env.cwd(),
+        env: { ...runtime.env.fullSnapshot(), [CLI_HANDOFF_GUARD_ENV]: '1' },
+        stdio: 'inherit',
+      };
+
+      await options.releaseCanonicalSocket?.();
+      execution.assertExecutable();
+      // Runtime ports do not expose the executable for the current Node process.
+      const child = spawn(process.execPath, childArguments, spawnOptions);
+      const childObservation = observeChild(child);
+      await childObservation.spawned;
+      const outcome = handoffOutcome(execution.manifest.version, await childObservation.outcome);
+      return { kind: 'delegated', outcome };
+    }
+  }
 }

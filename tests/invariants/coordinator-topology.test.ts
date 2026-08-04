@@ -92,6 +92,7 @@ const CONTRACT_TARGETS = new Set([
   'src/jobs/contracts/admission.ts',
   'src/jobs/launch.ts',
   'src/jobs/outcome.ts',
+  'src/jobs/wait.ts',
   'src/kb/contract.ts',
   'src/kb/state/corpus-state.ts',
   'src/kb/search/contract.ts',
@@ -107,7 +108,7 @@ const TRANSPORT_TARGETS = new Set([
   'src/transport/ipc/handoff.ts',
   'src/transport/ipc/client.ts',
 ]);
-const HANDOFF_RUNNER_TRANSPORT_TARGET = 'src/transport/ipc/ensure.ts';
+const HANDOFF_RUNNER_CLI_TARGET = 'src/cli/errors.ts';
 const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/index.ts',
   'src/coordinator/bootstrap.ts',
@@ -197,7 +198,7 @@ describe('coordinator topology invariants', () => {
         return false;
       }
 
-      if (source === 'src/coordinator/handoff-runner.ts' && target === HANDOFF_RUNNER_TRANSPORT_TARGET) {
+      if (source === 'src/coordinator/handoff-runner.ts' && target === HANDOFF_RUNNER_CLI_TARGET) {
         return false;
       }
 

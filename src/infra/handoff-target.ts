@@ -1,5 +1,5 @@
 import { lstatSync, realpathSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 
 import {
   hashStableAdjacentBundle,
@@ -7,11 +7,7 @@ import {
   strictBundleManifestSchema,
   type StrictBundleManifest,
 } from './bundle-manifest.js';
-import { acquireDirectoryLockSync, type DirectoryLockLease } from './fs-lock.js';
 
-const TARGET_EXECUTION_LOCK_SUFFIX = '.coral-target-execution.lock';
-
-declare const targetExecutionLeaseBrand: unique symbol;
 declare const validatedHandoffTargetBrand: unique symbol;
 
 export type TargetCandidateEvidence = Readonly<{
@@ -23,7 +19,6 @@ export type InvalidTargetFailure =
   | 'bundle-dir-not-canonical'
   | 'bundle-dir-unavailable'
   | 'expected-manifest-invalid'
-  | 'target-lease-unavailable'
   | 'adjacent-manifest-unavailable'
   | 'adjacent-manifest-invalid'
   | 'adjacent-manifest-mismatch'
@@ -33,10 +28,6 @@ export type InvalidTargetEvidence = Readonly<{
   bundleDir: string;
   expectedManifest: StrictBundleManifest | null;
   failure: InvalidTargetFailure;
-}>;
-
-export type TargetExecutionLease = Readonly<{
-  [targetExecutionLeaseBrand]: true;
 }>;
 
 export type ValidatedHandoffTarget = Readonly<{
@@ -58,19 +49,17 @@ export type ValidatedTargetExecution = Readonly<{
   assertExecutable(): void;
 }>;
 
-type ExecutionLeaseState = {
-  readonly bundleDir: string;
-  readonly directoryLease: DirectoryLockLease;
-  released: boolean;
-};
+type VerifiedBundleHashes = Readonly<{
+  bundleHash: string;
+  cliBundleHash: string;
+  claudeAppserverBundleHash: string;
+}>;
 
 type ValidatedTargetState = {
   readonly evidence: TargetCandidateEvidence;
-  readonly lease: TargetExecutionLease;
-  state: 'available' | 'in-use' | 'released';
+  readonly verifiedHashes: VerifiedBundleHashes;
 };
 
-const executionLeases = new WeakMap<TargetExecutionLease, ExecutionLeaseState>();
 const validatedTargets = new WeakMap<ValidatedHandoffTarget, ValidatedTargetState>();
 
 function copyManifest(manifest: StrictBundleManifest): StrictBundleManifest {
@@ -119,37 +108,6 @@ function resolveCanonicalBundleDir(
   }
 }
 
-function executionLockPath(bundleDir: string): string {
-  // The adjacent lease coordinates Coral writers only. Node still executes by
-  // path, so a non-Coral same-uid writer remains outside this lock boundary.
-  return join(dirname(bundleDir), `.${basename(bundleDir)}${TARGET_EXECUTION_LOCK_SUFFIX}`);
-}
-
-function acquireTargetExecutionLease(bundleDir: string): TargetExecutionLease {
-  const directoryLease = acquireDirectoryLockSync(executionLockPath(bundleDir));
-  const lease = Object.freeze(Object.create(null)) as TargetExecutionLease;
-  executionLeases.set(lease, { bundleDir, directoryLease, released: false });
-  return lease;
-}
-
-function assertLeaseOwned(lease: TargetExecutionLease, expectedBundleDir: string): void {
-  const state = executionLeases.get(lease);
-  if (state === undefined || state.released || state.bundleDir !== expectedBundleDir) {
-    throw new Error('Validated handoff target execution lease is not live.');
-  }
-  state.directoryLease.assertOwned();
-}
-
-function releaseLease(lease: TargetExecutionLease): void {
-  const state = executionLeases.get(lease);
-  if (state === undefined || state.released) {
-    return;
-  }
-  state.released = true;
-  state.directoryLease();
-  executionLeases.delete(lease);
-}
-
 // Derived from the schema rather than hand-listed: "every manifest and hash field must equal the expected
 // foreign identity" has to keep holding when a field is added, and a hand-written list would weaken silently.
 const STRICT_MANIFEST_FIELDS = Object.keys(strictBundleManifestSchema.shape) as ReadonlyArray<
@@ -160,33 +118,58 @@ function manifestsMatch(left: StrictBundleManifest, right: StrictBundleManifest)
   return STRICT_MANIFEST_FIELDS.every((field) => left[field] === right[field]);
 }
 
-function validateAdjacentTarget(evidence: TargetCandidateEvidence): InvalidTargetFailure | null {
+function validateAdjacentTarget(
+  evidence: TargetCandidateEvidence,
+):
+  | { readonly ok: true; readonly verifiedHashes: VerifiedBundleHashes }
+  | { readonly ok: false; readonly failure: InvalidTargetFailure } {
   const adjacent = readBoundedAdjacentManifest(evidence.bundleDir);
   if (!adjacent.ok) {
-    return adjacent.reason === 'invalid' ? 'adjacent-manifest-invalid' : 'adjacent-manifest-unavailable';
+    return {
+      ok: false,
+      failure: adjacent.reason === 'invalid' ? 'adjacent-manifest-invalid' : 'adjacent-manifest-unavailable',
+    };
   }
 
   const parsed = strictBundleManifestSchema.safeParse(adjacent.value);
   if (!parsed.success) {
-    return 'adjacent-manifest-invalid';
+    return { ok: false, failure: 'adjacent-manifest-invalid' };
   }
   if (!manifestsMatch(parsed.data, evidence.expectedManifest)) {
-    return 'adjacent-manifest-mismatch';
+    return { ok: false, failure: 'adjacent-manifest-mismatch' };
   }
 
-  const backendHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-backend.cjs');
-  const cliHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-cli.cjs');
-  const claudeAppserverHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-claude-appserver.cjs');
-  return backendHash === evidence.expectedManifest.bundleHash &&
-    cliHash === evidence.expectedManifest.cliBundleHash &&
-    claudeAppserverHash === evidence.expectedManifest.claudeAppserverBundleHash
-    ? null
-    : 'adjacent-bundle-mismatch';
+  const bundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-backend.cjs');
+  const cliBundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-cli.cjs');
+  const claudeAppserverBundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-claude-appserver.cjs');
+  if (
+    bundleHash === null ||
+    cliBundleHash === null ||
+    claudeAppserverBundleHash === null ||
+    bundleHash !== evidence.expectedManifest.bundleHash ||
+    cliBundleHash !== evidence.expectedManifest.cliBundleHash ||
+    claudeAppserverBundleHash !== evidence.expectedManifest.claudeAppserverBundleHash
+  ) {
+    return { ok: false, failure: 'adjacent-bundle-mismatch' };
+  }
+  const verifiedHashes = Object.freeze({ bundleHash, cliBundleHash, claudeAppserverBundleHash });
+  return { ok: true, verifiedHashes };
 }
 
-function sealValidatedTarget(evidence: TargetCandidateEvidence, lease: TargetExecutionLease): ValidatedHandoffTarget {
+function sameVerifiedHashes(left: VerifiedBundleHashes, right: VerifiedBundleHashes): boolean {
+  return (
+    left.bundleHash === right.bundleHash &&
+    left.cliBundleHash === right.cliBundleHash &&
+    left.claudeAppserverBundleHash === right.claudeAppserverBundleHash
+  );
+}
+
+function sealValidatedTarget(
+  evidence: TargetCandidateEvidence,
+  verifiedHashes: VerifiedBundleHashes,
+): ValidatedHandoffTarget {
   const target = Object.freeze(Object.create(null)) as ValidatedHandoffTarget;
-  validatedTargets.set(target, { evidence, lease, state: 'available' });
+  validatedTargets.set(target, { evidence, verifiedHashes });
   return target;
 }
 
@@ -202,50 +185,30 @@ export function createForeignTargetValidator(): ForeignTargetValidator {
       return invalidTarget(bundleDir, parsedExpected.data, canonical.failure);
     }
 
-    let lease: TargetExecutionLease;
-    try {
-      lease = acquireTargetExecutionLease(canonical.bundleDir);
-    } catch {
-      return invalidTarget(canonical.bundleDir, parsedExpected.data, 'target-lease-unavailable');
-    }
-
     const evidence = copyCandidate(canonical.bundleDir, parsedExpected.data);
-    const failure = validateAdjacentTarget(evidence);
-    if (failure !== null) {
-      releaseLease(lease);
-      return invalidTarget(evidence.bundleDir, evidence.expectedManifest, failure);
+    const validation = validateAdjacentTarget(evidence);
+    if (!validation.ok) {
+      return invalidTarget(evidence.bundleDir, evidence.expectedManifest, validation.failure);
     }
-    return { kind: 'validated', target: sealValidatedTarget(evidence, lease) };
+    return { kind: 'validated', target: sealValidatedTarget(evidence, validation.verifiedHashes) };
   };
 }
 
-export async function withValidatedHandoffTarget<TResult>(
-  target: ValidatedHandoffTarget,
-  operation: (execution: ValidatedTargetExecution) => Promise<TResult> | TResult,
-): Promise<TResult> {
+export function withValidatedHandoffTarget(target: ValidatedHandoffTarget): ValidatedTargetExecution {
   const state = validatedTargets.get(target);
-  if (state === undefined || state.state !== 'available') {
+  if (state === undefined) {
     throw new Error('Handoff target was not produced by the live foreign-target authority.');
   }
 
-  assertLeaseOwned(state.lease, state.evidence.bundleDir);
-  state.state = 'in-use';
-  const execution = Object.freeze({
+  validatedTargets.delete(target);
+  return Object.freeze({
     bundleDir: state.evidence.bundleDir,
     manifest: state.evidence.expectedManifest,
     assertExecutable: () => {
-      assertLeaseOwned(state.lease, state.evidence.bundleDir);
-      if (validateAdjacentTarget(state.evidence) !== null) {
+      const validation = validateAdjacentTarget(state.evidence);
+      if (!validation.ok || !sameVerifiedHashes(validation.verifiedHashes, state.verifiedHashes)) {
         throw new Error('Validated handoff target bytes changed before execution.');
       }
     },
   });
-
-  try {
-    return await operation(execution);
-  } finally {
-    state.state = 'released';
-    releaseLease(state.lease);
-    validatedTargets.delete(target);
-  }
 }

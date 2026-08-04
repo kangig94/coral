@@ -66,7 +66,7 @@ describe('backend-routing', () => {
       }),
     ).toEqual({
       kind: 'use-current',
-      evidence: { source: 'live-incumbent', candidate: incumbent, invalidTarget: null },
+      evidence: { source: 'live-incumbent' },
     });
   });
 
@@ -82,7 +82,7 @@ describe('backend-routing', () => {
     expect(result.kind).toBe('handoff');
     if (result.kind !== 'handoff') return;
     expect(result.source).toBe('live-incumbent');
-    await withValidatedHandoffTarget(result.target, (execution) => execution.assertExecutable());
+    withValidatedHandoffTarget(result.target).assertExecutable();
   });
 
   it('should keep an older incumbent when the invocation is newer', () => {
@@ -128,7 +128,7 @@ describe('backend-routing', () => {
       }),
     ).toEqual({
       kind: 'use-current',
-      evidence: { source: 'live-incumbent', candidate: incumbent, invalidTarget: invalid },
+      evidence: { source: 'live-incumbent' },
     });
   });
 

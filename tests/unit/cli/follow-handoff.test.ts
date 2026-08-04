@@ -1,23 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
-import type { WaitStreamEvent } from '#src/jobs/wait.js';
-import {
-  MAX_WAIT_SNAPSHOT_ACKS,
-  advanceWaitRenderCursor,
-  parseWaitRenderCursor,
-  parseWaitStreamEvent,
-  serializeWaitRenderCursor,
-  type WaitSnapshotAck,
-} from '#src/jobs/wait-stream-event.js';
 import type * as FollowModule from '#src/cli/follow.js';
+import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
+import { parseSerializedWaitCursor, serializeWaitCursor, type WaitStreamEvent } from '#src/jobs/wait.js';
+import { advanceWaitRenderCursor, parseWaitStreamEvent } from '#src/jobs/wait-stream-event.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
-  resolveCliHandoffRouting: vi.fn(),
-  runHandoff: vi.fn(),
   renderHandoffNotice: vi.fn(),
+  runHandoff: vi.fn(),
 }));
 
 vi.mock('#src/transport/ipc/ensure.js', () => ({
@@ -25,7 +17,6 @@ vi.mock('#src/transport/ipc/ensure.js', () => ({
 }));
 
 vi.mock('#src/coordinator/handoff-runner.js', () => ({
-  resolveCliHandoffRouting: mockState.resolveCliHandoffRouting,
   runHandoff: mockState.runHandoff,
 }));
 
@@ -62,10 +53,6 @@ function makeOptions(overrides: Partial<FollowOptions> = {}): FollowOptions {
   };
 }
 
-function useCurrentRouting() {
-  return { kind: 'use-current', evidence: { source: 'current-build' } } as const;
-}
-
 function makeBackend(subscribe = vi.fn()) {
   return {
     socketPath: '/tmp/coordinator.sock',
@@ -77,7 +64,7 @@ function makeBackend(subscribe = vi.fn()) {
     port: 4100,
     token: 'token',
     version: '1.0.0',
-    routing: useCurrentRouting(),
+    routing: { kind: 'use-current', evidence: { source: 'current-build' } } as const,
     request: vi.fn(),
     subscribe,
     ping: vi.fn(),
@@ -95,10 +82,6 @@ function makeSubscription(events: readonly WaitStreamEvent[]) {
   };
 }
 
-function encodeCursor(value: unknown): string {
-  return Buffer.from(JSON.stringify(value)).toString('base64url');
-}
-
 describe('cli follow handoff', () => {
   let sigintHandler: (() => void) | null;
 
@@ -106,9 +89,8 @@ describe('cli follow handoff', () => {
     sigintHandler = null;
     process.exitCode = undefined;
     mockState.ensure.mockReset();
-    mockState.resolveCliHandoffRouting.mockReset();
-    mockState.runHandoff.mockReset();
     mockState.renderHandoffNotice.mockReset();
+    mockState.runHandoff.mockReset();
     vi.stubEnv('CORAL_CHILD', '');
     vi.stubEnv('CORAL_CHILD_PRINCIPAL_HANDLE', '');
     vi.stubEnv('CORAL_JOB_ID', '');
@@ -131,10 +113,10 @@ describe('cli follow handoff', () => {
     vi.unstubAllEnvs();
   });
 
-  it('should wait for the rendered snapshot acknowledgement before executing remaining intent', async () => {
-    const target = { target: 'newer-build' } as never;
-    const progressAcknowledgement = createDeferred<void>();
-    const secondRoutingResolved = createDeferred<void>();
+  it('should hand the runner the exact seq cursor while stdout is still buffered', async () => {
+    const progressWrite = createDeferred<void>();
+    const secondRunStarted = createDeferred<void>();
+    let progressAcknowledged = false;
     const progressEvent: WaitStreamEvent = {
       type: 'progress',
       jobId: 'job-1',
@@ -142,60 +124,48 @@ describe('cli follow handoff', () => {
       message: 'checkpoint-one',
       timing: waitTiming,
     };
-    const waitingEvent = {
-      type: 'waiting',
-      waitingJobIds: ['job-1'],
-      snapshotRenderId: 'waiting-snapshot-v1',
-    } as WaitStreamEvent;
+    const waitingEvent: WaitStreamEvent = { type: 'waiting', waitingJobIds: ['job-1'] };
     const subscribe = vi.fn().mockResolvedValue(makeSubscription([progressEvent, waitingEvent]));
 
     vi.spyOn(process.stdout, 'write').mockImplementation(((
       chunk: string | Uint8Array,
       callback?: (error?: Error | null) => void,
     ) => {
-      const text = chunk.toString();
-      if (text.includes('checkpoint-one')) {
-        void progressAcknowledgement.promise.then(() => callback?.());
+      if (chunk.toString().includes('checkpoint-one')) {
+        void progressWrite.promise.then(() => {
+          progressAcknowledged = true;
+          callback?.();
+        });
       } else {
         callback?.();
       }
       return true;
     }) as typeof process.stdout.write);
-
     mockState.ensure.mockResolvedValueOnce(makeBackend(subscribe)).mockResolvedValueOnce(makeBackend());
-    mockState.resolveCliHandoffRouting.mockResolvedValueOnce(useCurrentRouting()).mockImplementationOnce(async () => {
-      secondRoutingResolved.resolve();
-      return { kind: 'handoff', target, source: 'live-incumbent' };
+    mockState.runHandoff.mockResolvedValueOnce({ kind: 'run-current' }).mockImplementationOnce(async (operation) => {
+      secondRunStarted.resolve();
+      expect(progressAcknowledged).toBe(false);
+      // The runner takes the cursor as the opaque string the CLI already holds; base64url of {"afterSeq":4}.
+      expect(operation).toEqual({
+        kind: 'wait-jobs',
+        jobId: 'job-1',
+        serializedCursor: 'eyJhZnRlclNlcSI6NH0',
+      });
+      return { kind: 'delegated', outcome: { kind: 'handoff-success', version: '2.0.0' } };
     });
-    mockState.runHandoff.mockResolvedValue({ kind: 'handoff-success', version: '2.0.0' });
 
     const { launchAndFollow } = await import('#src/cli/follow.js');
     const follow = launchAndFollow(makeOptions());
-    await secondRoutingResolved.promise;
+    await secondRunStarted.promise;
 
-    expect(mockState.runHandoff).not.toHaveBeenCalled();
-    progressAcknowledgement.resolve();
+    expect(progressAcknowledged).toBe(false);
+    progressWrite.resolve();
     await expect(follow).resolves.toBe(0);
-
-    expect(mockState.runHandoff).toHaveBeenCalledOnce();
-    const handoffOptions = mockState.runHandoff.mock.calls[0]?.[0] as {
-      operation: { args: string[] };
-    };
-    expect(handoffOptions.operation.args.slice(0, 3)).toEqual(['wait', 'jobs', 'job-1']);
-    expect(handoffOptions.operation.args[3]).toBe('--cursor');
-    expect(parseWaitRenderCursor(handoffOptions.operation.args[4])).toEqual({
-      afterSeq: 4,
-      snapshotAcks: [{ key: 'waiting:["job-1"]', id: 'waiting-snapshot-v1' }],
-    });
     expect(mockState.renderHandoffNotice).toHaveBeenCalledWith({ kind: 'handoff-success', version: '2.0.0' });
   });
 
-  it('should resume a transient retry from the acknowledged cursor while snapshot acknowledgement is pending', async () => {
-    const progressAcknowledgementPending = createDeferred<void>();
-    const secondRoutingResolved = createDeferred<void>();
+  it('should resume a transient retry from afterSeq and suppress replayed journal facts', async () => {
     const output: string[] = [];
-    let acknowledgeProgress: (() => void) | undefined;
-    let routingCalls = 0;
     const progressEvent: WaitStreamEvent = {
       type: 'progress',
       jobId: 'job-1',
@@ -227,49 +197,60 @@ describe('cli follow handoff', () => {
       chunk: string | Uint8Array,
       callback?: (error?: Error | null) => void,
     ) => {
-      const text = chunk.toString();
-      output.push(text);
-      if (text.includes('checkpoint-one')) {
-        acknowledgeProgress = () => callback?.();
-        progressAcknowledgementPending.resolve();
-      } else {
-        callback?.();
-      }
+      output.push(chunk.toString());
+      callback?.();
       return true;
     }) as typeof process.stdout.write);
-
     mockState.ensure
       .mockResolvedValueOnce(makeBackend(firstSubscribe))
       .mockResolvedValueOnce(makeBackend(secondSubscribe));
-    mockState.resolveCliHandoffRouting.mockImplementation(async () => {
-      routingCalls += 1;
-      if (routingCalls === 2) secondRoutingResolved.resolve();
-      return useCurrentRouting();
-    });
+    mockState.runHandoff.mockResolvedValue({ kind: 'run-current' });
 
     const { launchAndFollow } = await import('#src/cli/follow.js');
-    const follow = launchAndFollow(makeOptions({ backoffScheduler: vi.fn().mockResolvedValue(undefined) }));
-    await progressAcknowledgementPending.promise;
-    await secondRoutingResolved.promise;
+    await expect(
+      launchAndFollow(makeOptions({ backoffScheduler: vi.fn().mockResolvedValue(undefined) })),
+    ).resolves.toBe(0);
 
-    expect(secondSubscribe).not.toHaveBeenCalled();
-    expect(acknowledgeProgress).toBeTypeOf('function');
-    acknowledgeProgress?.();
-    await expect(follow).resolves.toBe(0);
-
-    expect(firstSubscribe).toHaveBeenCalledOnce();
-    expect(secondSubscribe).toHaveBeenCalledOnce();
     expect(output.filter((chunk) => chunk.includes('checkpoint-one'))).toHaveLength(1);
     expect(output.join('')).toContain('Job job-1 completed');
   });
 
-  it('should preserve double Ctrl-C abort semantics while the delegated wait is active', async () => {
-    const target = { target: 'newer-build' } as never;
-    const firstHandoff = createDeferred<{ kind: 'handoff-signal'; signal: 'SIGINT' }>();
-    const secondHandoff = createDeferred<{ kind: 'handoff-signal'; signal: 'SIGINT' }>();
+  it('should continue locally when the runner degrades an unavailable handoff', async () => {
+    const terminal: WaitStreamEvent = {
+      type: 'terminal',
+      jobId: 'job-1',
+      seq: 1,
+      remainingJobIds: [],
+      resultPath: '/tmp/result.md',
+      result: { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
+    };
+    const subscribe = vi.fn().mockResolvedValue(makeSubscription([terminal]));
+    const emitError = vi.fn();
+    vi.spyOn(process.stdout, 'write').mockImplementation(((
+      _chunk: string | Uint8Array,
+      callback?: (error?: Error | null) => void,
+    ) => {
+      callback?.();
+      return true;
+    }) as typeof process.stdout.write);
+    mockState.ensure.mockResolvedValue(makeBackend(subscribe));
+    mockState.runHandoff.mockResolvedValue({ kind: 'run-current' });
+
+    const { launchAndFollow } = await import('#src/cli/follow.js');
+    await expect(launchAndFollow(makeOptions({ emitError }))).resolves.toBe(0);
+
+    expect(subscribe).toHaveBeenCalledOnce();
+    expect(emitError).not.toHaveBeenCalled();
+  });
+
+  it('should preserve double Ctrl-C abort semantics while delegated waits are active', async () => {
+    const firstHandoff = createDeferred<{ kind: 'delegated'; outcome: { kind: 'handoff-signal'; signal: 'SIGINT' } }>();
+    const secondHandoff = createDeferred<{
+      kind: 'delegated';
+      outcome: { kind: 'handoff-signal'; signal: 'SIGINT' };
+    }>();
     const secondRunStarted = createDeferred<void>();
     const abortJob = vi.fn().mockResolvedValue(undefined);
-
     vi.spyOn(process.stdout, 'write').mockImplementation(((
       _chunk: string | Uint8Array,
       callback?: (error?: Error | null) => void,
@@ -278,7 +259,6 @@ describe('cli follow handoff', () => {
       return true;
     }) as typeof process.stdout.write);
     mockState.ensure.mockResolvedValue(makeBackend());
-    mockState.resolveCliHandoffRouting.mockResolvedValue({ kind: 'handoff', target, source: 'live-incumbent' });
     mockState.runHandoff.mockReturnValueOnce(firstHandoff.promise).mockImplementationOnce(async () => {
       secondRunStarted.resolve();
       return secondHandoff.promise;
@@ -290,11 +270,11 @@ describe('cli follow handoff', () => {
 
     sigintHandler?.();
     expect(abortJob).not.toHaveBeenCalled();
-    firstHandoff.resolve({ kind: 'handoff-signal', signal: 'SIGINT' });
+    firstHandoff.resolve({ kind: 'delegated', outcome: { kind: 'handoff-signal', signal: 'SIGINT' } });
     await secondRunStarted.promise;
 
     sigintHandler?.();
-    secondHandoff.resolve({ kind: 'handoff-signal', signal: 'SIGINT' });
+    secondHandoff.resolve({ kind: 'delegated', outcome: { kind: 'handoff-signal', signal: 'SIGINT' } });
     await expect(follow).resolves.toBe(1);
 
     expect(abortJob).toHaveBeenCalledOnce();
@@ -302,56 +282,46 @@ describe('cli follow handoff', () => {
     expect(process.stderr.write).toHaveBeenCalledWith('\nPress Ctrl+C again to abort the job.\n');
   });
 
-  it('should accept the acknowledgement bound and reject the first entry beyond it', () => {
-    const acknowledgements: WaitSnapshotAck[] = [
-      ...Array.from({ length: 128 }, (_, index) => ({
-        key: `queued:job-${index}` as const,
-        id: `queued-${index}`,
-      })),
-      ...Array.from({ length: 128 }, (_, index) => ({
-        key: `interrupted:job-${index}` as const,
-        id: `interrupted-${index}`,
-      })),
-      { key: 'waiting:["job-1"]', id: 'waiting-1' },
-    ];
+  it('should use seq alone for journal replay while rendering snapshot status refreshes', () => {
+    const progressed = advanceWaitRenderCursor(
+      { afterSeq: 3 },
+      {
+        type: 'progress',
+        jobId: 'job-1',
+        seq: 4,
+        message: 'checkpoint',
+        timing: waitTiming,
+      },
+    );
+    const replayed = advanceWaitRenderCursor(progressed.cursor, {
+      type: 'progress',
+      jobId: 'job-1',
+      seq: 4,
+      message: 'checkpoint',
+      timing: waitTiming,
+    });
+    const waiting = advanceWaitRenderCursor(progressed.cursor, { type: 'waiting', waitingJobIds: ['job-1'] });
 
-    expect(MAX_WAIT_SNAPSHOT_ACKS).toBe(257);
-    expect(parseWaitRenderCursor(encodeCursor({ afterSeq: 9, snapshotAcks: acknowledgements }))).not.toBeNull();
-    expect(
-      parseWaitRenderCursor(
-        encodeCursor({
-          afterSeq: 9,
-          snapshotAcks: [...acknowledgements, { key: 'queued:overflow', id: 'overflow' }],
-        }),
-      ),
-    ).toBeNull();
-
-    const replacement = advanceWaitRenderCursor({ afterSeq: 9, snapshotAcks: acknowledgements }, {
-      type: 'waiting',
-      waitingJobIds: ['job-2'],
-      snapshotRenderId: 'waiting-2',
-    } as WaitStreamEvent);
-    expect(replacement.cursor.snapshotAcks).toHaveLength(MAX_WAIT_SNAPSHOT_ACKS);
-    expect(replacement.cursor.snapshotAcks?.filter(({ key }) => key.startsWith('waiting:'))).toEqual([
-      { key: 'waiting:["job-2"]', id: 'waiting-2' },
-    ]);
+    expect(progressed).toEqual({ cursor: { afterSeq: 4 }, shouldRender: true });
+    expect(replayed).toEqual({ cursor: { afterSeq: 4 }, shouldRender: false });
+    expect(waiting).toEqual({ cursor: { afterSeq: 4 }, shouldRender: true });
+    expect(parseSerializedWaitCursor(serializeWaitCursor(progressed.cursor))).toEqual({ afterSeq: 4 });
   });
 
-  it('should validate and preserve snapshot render identifiers from the wire', () => {
-    const parsed = parseWaitStreamEvent(
-      'waiting',
-      JSON.stringify({
-        type: 'waiting',
-        waitingJobIds: ['job-1'],
-        snapshotRenderId: 'stable-waiting-snapshot',
-      }),
-    );
-
-    expect(parsed).toEqual({
+  it('should reject the deleted snapshot acknowledgement field from wire events', () => {
+    expect(() =>
+      parseWaitStreamEvent(
+        'waiting',
+        JSON.stringify({
+          type: 'waiting',
+          waitingJobIds: ['job-1'],
+          snapshotRenderId: 'retired-snapshot-id',
+        }),
+      ),
+    ).toThrow();
+    expect(parseWaitStreamEvent('waiting', JSON.stringify({ type: 'waiting', waitingJobIds: ['job-1'] }))).toEqual({
       type: 'waiting',
       waitingJobIds: ['job-1'],
-      snapshotRenderId: 'stable-waiting-snapshot',
     });
-    expect(parseWaitRenderCursor(serializeWaitRenderCursor({ afterSeq: 0 }))).toEqual({ afterSeq: 0 });
   });
 });

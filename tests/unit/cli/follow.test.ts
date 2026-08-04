@@ -18,8 +18,8 @@ import { formatWaitProgress, formatWaitQueued, formatWaitTerminal, formatWaitWai
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
+  runHandoff: vi.fn(),
   subscribe: vi.fn(),
-  resolveCliHandoffRouting: vi.fn(),
 }));
 
 vi.mock('#src/transport/ipc/ensure.js', () => ({
@@ -27,8 +27,7 @@ vi.mock('#src/transport/ipc/ensure.js', () => ({
 }));
 
 vi.mock('#src/coordinator/handoff-runner.js', () => ({
-  resolveCliHandoffRouting: mockState.resolveCliHandoffRouting,
-  runHandoff: vi.fn(),
+  runHandoff: mockState.runHandoff,
 }));
 
 type FollowModule = typeof FollowMod;
@@ -245,12 +244,8 @@ describe('cli follow', () => {
     sigintHandler = null;
     process.exitCode = undefined;
     mockState.ensure.mockReset();
+    mockState.runHandoff.mockReset().mockResolvedValue({ kind: 'run-current' });
     mockState.subscribe.mockReset();
-    mockState.resolveCliHandoffRouting.mockReset();
-    mockState.resolveCliHandoffRouting.mockResolvedValue({
-      kind: 'use-current',
-      evidence: { source: 'current-build' },
-    } satisfies BackendRoutingResult);
 
     vi.spyOn(process.stdout, 'write').mockImplementation(((
       chunk: string | Uint8Array,

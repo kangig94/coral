@@ -5,6 +5,7 @@ import { BackendToolHttpError } from '../transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '../infra/http-errors.js';
 import { isRecord } from '../infra/json.js';
 import { DiscussWatchReadError } from '../discuss/watch.js';
+import { HandoffGuardError } from '../coordinator/handoff-runner.js';
 import { serializeCoralSetupError } from '../runtime/errors.js';
 import { ChildPrincipalBindingError } from '../transport/ipc/child-principal-auth.js';
 import { IpcRpcError } from '../transport/ipc/client.js';
@@ -209,7 +210,7 @@ function directErrorEnvelope(error: unknown): CliErrorResult | null {
     );
   }
 
-  if (error instanceof UsageError || error instanceof CommanderError) {
+  if (error instanceof UsageError || error instanceof CommanderError || error instanceof HandoffGuardError) {
     return withExitCode({ error: true, code: 'invalid_usage', message: error.message }, 2);
   }
 

@@ -7,13 +7,7 @@ import type {
 } from './handoff-target.js';
 import { compareProductVersions } from './product-version.js';
 
-export type UseCurrentEvidence =
-  | { readonly source: 'current-build' }
-  | {
-      readonly source: 'live-incumbent';
-      readonly candidate: TargetCandidateEvidence | null;
-      readonly invalidTarget: InvalidTargetEvidence | null;
-    };
+export type UseCurrentEvidence = { readonly source: 'current-build' } | { readonly source: 'live-incumbent' };
 
 export type BackendRoutingResult =
   | { readonly kind: 'use-current'; readonly evidence: UseCurrentEvidence }
@@ -34,27 +28,24 @@ export function createUseCurrentBackendRouting(evidence: UseCurrentEvidence): Ba
   return { kind: 'use-current', evidence };
 }
 
-function useLiveIncumbent(
-  candidate: TargetCandidateEvidence,
-  invalidTarget: InvalidTargetEvidence | null = null,
-): BackendRoutingResult {
-  return createUseCurrentBackendRouting({ source: 'live-incumbent', candidate, invalidTarget });
+function useLiveIncumbent(): BackendRoutingResult {
+  return createUseCurrentBackendRouting({ source: 'live-incumbent' });
 }
 
 export function routeLiveIncumbent(input: LiveIncumbentRoutingInput): BackendRoutingResult {
   const { invokingManifest, incumbent, validateForeignTarget } = input;
   if (invokingManifest.buildSetId === incumbent.expectedManifest.buildSetId) {
-    return useLiveIncumbent(incumbent);
+    return useLiveIncumbent();
   }
 
   const precedence = compareProductVersions(invokingManifest.version, incumbent.expectedManifest.version);
   if (precedence >= 0) {
-    return useLiveIncumbent(incumbent);
+    return useLiveIncumbent();
   }
 
   const validation = validateForeignTarget(incumbent.bundleDir, incumbent.expectedManifest);
   if (validation.kind === 'invalid') {
-    return useLiveIncumbent(incumbent, validation.evidence);
+    return useLiveIncumbent();
   }
   return { kind: 'handoff', target: validation.target, source: 'live-incumbent' };
 }

@@ -5,21 +5,14 @@ import type { AcceptedLaunchResponse } from '../jobs/launch.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { JobTerminal } from '../jobs/records.js';
-import type { WaitStreamEvent } from '../jobs/wait.js';
-import {
-  advanceWaitRenderCursor,
-  parseWaitRenderCursor,
-  serializeWaitRenderCursor,
-  type WaitRenderCursor,
-} from '../jobs/wait-stream-event.js';
+import { parseSerializedWaitCursor, serializeWaitCursor, type WaitCursor, type WaitStreamEvent } from '../jobs/wait.js';
+import { advanceWaitRenderCursor } from '../jobs/wait-stream-event.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/http/sse.js';
 import { isTransientStreamError } from '../infra/http-errors.js';
 import { assertNever } from '../infra/error-format.js';
-import type { BackendRoutingResult } from '../infra/backend-routing.js';
 import { ensure } from '../transport/ipc/ensure.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
-import { resolveCliHandoffRouting, runHandoff } from '../coordinator/handoff-runner.js';
-import { createRealRuntime } from '../runtime/real.js';
+import { runHandoff } from '../coordinator/handoff-runner.js';
 import { formatLaunch } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
 import { renderHandoffNotice } from './handoff-notice.js';
@@ -36,7 +29,6 @@ import {
 const FOLLOW_TIMEOUT_SECONDS = 600;
 const TRANSIENT_RETRY_LIMIT = 2;
 const TRANSIENT_RETRY_DELAY_MS = 1_000;
-export const STABLE_SNAPSHOT_ACK_TIMEOUT_MS = 3_000;
 
 type WaitCursorRef = { serializedCursor?: string };
 type BackoffScheduler = (delayMs: number) => Promise<void>;
@@ -52,83 +44,15 @@ type FollowOptions = {
   backoffScheduler?: BackoffScheduler;
 };
 
-function writeStdout(text: string): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    let writeReturned = false;
-    let callbackComplete = false;
-    let drainComplete = false;
-    let needsDrain = false;
-
-    const finish = (): void => {
-      if (writeReturned && callbackComplete && (!needsDrain || drainComplete)) {
-        resolve(true);
-      }
-    };
-
-    const accepted = process.stdout.write(text, (error) => {
-      if (error) {
-        resolve(false);
-        return;
-      }
-      callbackComplete = true;
-      finish();
-    });
-    needsDrain = !accepted;
-    drainComplete = accepted;
-    writeReturned = true;
-
-    if (!accepted) {
-      process.stdout.once('drain', () => {
-        drainComplete = true;
-        finish();
-      });
-    }
-    finish();
-  });
+function writeStdout(text: string): void {
+  process.stdout.write(text);
 }
 
-function appendStdoutAcknowledgement(
-  current: Promise<boolean>,
-  next: Promise<boolean>,
-  acknowledge?: () => void,
-): Promise<boolean> {
-  return Promise.all([current, next]).then(([currentStable, nextStable]) => {
-    const stable = currentStable && nextStable;
-    if (stable) {
-      acknowledge?.();
-    }
-    return stable;
-  });
-}
-
-async function isStdoutSnapshotStable(acknowledgement: Promise<boolean>, signal: AbortSignal): Promise<boolean> {
-  if (signal.aborted) {
-    return false;
-  }
-
-  const timeoutController = new AbortController();
-  const onAbort = (): void => timeoutController.abort();
-  signal.addEventListener('abort', onAbort, { once: true });
-  try {
-    return await Promise.race([
-      acknowledgement,
-      delay(STABLE_SNAPSHOT_ACK_TIMEOUT_MS, false, { signal: timeoutController.signal, ref: false }).catch(() => false),
-    ]);
-  } finally {
-    signal.removeEventListener('abort', onAbort);
-    timeoutController.abort();
-  }
-}
-
-function serializedCursor(cursor: WaitRenderCursor): string | undefined {
-  if (cursor.afterSeq === 0 && (cursor.snapshotAcks?.length ?? 0) === 0) {
+function serializedCursor(cursor: WaitCursor): string | undefined {
+  if (cursor.afterSeq === 0) {
     return undefined;
   }
-  return serializeWaitRenderCursor(cursor);
-}
-
-async function resolveMidFollowRouting(pluginRoot: string): Promise<BackendRoutingResult> {
-  return resolveCliHandoffRouting(pluginRoot);
+  return serializeWaitCursor(cursor);
 }
 
 function emitWaitEvent(
@@ -136,7 +60,7 @@ function emitWaitEvent(
   cursor: string | null,
   renderContext: WaitRenderContext,
   renderCauseRef?: (ref: CauseRef, terminalOutcomeDiagnostic?: TerminalOutcome) => string,
-): Promise<boolean> {
+): void {
   let line: string;
   switch (event.type) {
     case 'progress':
@@ -156,7 +80,7 @@ function emitWaitEvent(
   }
 
   const trailingNewline = (event.type === 'terminal' || event.type === 'waiting') && renderContext.isTTY ? '\n' : '';
-  return writeStdout(renderWaitLine(line, renderContext) + trailingNewline);
+  writeStdout(renderWaitLine(line, renderContext) + trailingNewline);
 }
 
 function toExitCode(result: JobTerminal): number {
@@ -223,7 +147,6 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
   let localAbortRequested = false;
   let sigintCount = 0;
   let abortPromise: Promise<void> | null = null;
-  let requiresStableCursor = false;
   const causeRenderer = openCliCauseRefRenderer(options.projectRoot);
   const ipcAuthOptions = childPrincipalAuthOptions(childPrincipalAuthFromEnv());
 
@@ -250,7 +173,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         );
   };
 
-  let stdoutAcknowledgement = writeStdout(formatLaunch(options.launchResult) + '\n');
+  writeStdout(formatLaunch(options.launchResult) + '\n');
   process.on('SIGINT', onSigint);
 
   try {
@@ -263,22 +186,16 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
       try {
         backend = await ensure(options.pluginRoot);
 
-        const routing = await resolveMidFollowRouting(options.pluginRoot);
-        if (routing.kind === 'handoff') {
-          if (!(await isStdoutSnapshotStable(stdoutAcknowledgement, controller.signal))) {
-            throw new Error(
-              `Timed out waiting ${STABLE_SNAPSHOT_ACK_TIMEOUT_MS}ms for stable follow output before handoff`,
-            );
-          }
-          requiresStableCursor = false;
-
-          const handoffCursor = cursorRef.serializedCursor ?? serializeWaitRenderCursor({ afterSeq: 0 });
-          const args = ['wait', 'jobs', options.launchResult.jobId, '--cursor', handoffCursor];
-          const outcome = await runHandoff({
-            runtime: createRealRuntime(backend.flavor),
-            target: routing.target,
-            operation: { entrypoint: 'cli', args },
-          });
+        const continuation = await runHandoff(
+          {
+            kind: 'wait-jobs',
+            jobId: options.launchResult.jobId,
+            serializedCursor: cursorRef.serializedCursor ?? serializeWaitCursor({ afterSeq: 0 }),
+          },
+          { pluginRoot: options.pluginRoot, signal: controller.signal },
+        );
+        if (continuation.kind === 'delegated') {
+          const { outcome } = continuation;
 
           if (localAbortRequested) {
             return 1;
@@ -297,13 +214,6 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
           options.emitError(new Error(`Delegated wait command ended from signal ${outcome.signal}`));
           return fallbackExitCode();
         }
-
-        if (requiresStableCursor) {
-          if (!(await isStdoutSnapshotStable(stdoutAcknowledgement, controller.signal))) {
-            throw new Error(`Timed out waiting ${STABLE_SNAPSHOT_ACK_TIMEOUT_MS}ms for stable follow output`);
-          }
-          requiresStableCursor = false;
-        }
       } catch (error) {
         if (localAbortRequested) {
           return 1;
@@ -319,7 +229,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
 
       try {
         let reconnect = false;
-        const inputCursor = parseWaitRenderCursor(cursorRef.serializedCursor);
+        const inputCursor = parseSerializedWaitCursor(cursorRef.serializedCursor);
         if (cursorRef.serializedCursor && !inputCursor) {
           throw new BackendToolHttpError('Invalid Last-Event-ID cursor', 400, {
             code: 'invalid_request',
@@ -343,7 +253,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         );
 
         try {
-          let currentCursor: WaitRenderCursor = inputCursor ?? { afterSeq: 0 };
+          let currentCursor: WaitCursor = inputCursor ?? { afterSeq: 0 };
           for await (const event of subscription) {
             const decision = advanceWaitRenderCursor(currentCursor, event);
             currentCursor = decision.cursor;
@@ -351,14 +261,8 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
             if (decision.shouldRender) {
               const acknowledgedCursor = serializedCursor(currentCursor);
               const cursor = acknowledgedCursor ?? null;
-              requiresStableCursor = true;
-              stdoutAcknowledgement = appendStdoutAcknowledgement(
-                stdoutAcknowledgement,
-                emitWaitEvent(event, cursor, renderContext, causeRenderer.render),
-                () => {
-                  cursorRef.serializedCursor = acknowledgedCursor;
-                },
-              );
+              cursorRef.serializedCursor = acknowledgedCursor;
+              emitWaitEvent(event, cursor, renderContext, causeRenderer.render);
             }
 
             if (event.type === 'waiting') {

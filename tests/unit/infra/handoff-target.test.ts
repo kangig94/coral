@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
@@ -35,10 +35,6 @@ function createBundle(adjacentManifest: unknown = manifest): string {
   return root;
 }
 
-async function releaseTarget(target: ValidatedHandoffTarget): Promise<void> {
-  await withValidatedHandoffTarget(target, () => undefined);
-}
-
 afterEach(() => {
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
@@ -46,7 +42,7 @@ afterEach(() => {
 });
 
 describe('handoff-target', () => {
-  it('should seal a validated target and expose its evidence only inside the execution boundary', async () => {
+  it('should seal a validated target and expose its evidence only through the branded accessor', () => {
     const bundleDir = createBundle();
     const result = createForeignTargetValidator()(bundleDir, manifest);
 
@@ -54,15 +50,11 @@ describe('handoff-target', () => {
     if (result.kind !== 'validated') return;
     expect(Object.isFrozen(result.target)).toBe(true);
     expect(Reflect.ownKeys(result.target)).toEqual([]);
-    const lockPath = join(dirname(bundleDir), `.${basename(bundleDir)}.coral-target-execution.lock`);
-    expect(existsSync(lockPath)).toBe(true);
 
-    await withValidatedHandoffTarget(result.target, (execution) => {
-      expect(execution.bundleDir).toBe(bundleDir);
-      expect(execution.manifest).toEqual(manifest);
-      execution.assertExecutable();
-    });
-    expect(existsSync(lockPath)).toBe(false);
+    const execution = withValidatedHandoffTarget(result.target);
+    expect(execution.bundleDir).toBe(bundleDir);
+    expect(execution.manifest).toEqual(manifest);
+    execution.assertExecutable();
   });
 
   it.each([
@@ -143,7 +135,7 @@ describe('handoff-target', () => {
     });
   });
 
-  it('should release the target lease after invalid validation', async () => {
+  it('should validate corrected bytes after a prior manifest mismatch', () => {
     const bundleDir = createBundle({ ...manifest, version: '2.0.0' });
     expect(createForeignTargetValidator()(bundleDir, manifest).kind).toBe('invalid');
     writeFileSync(join(bundleDir, 'manifest.json'), JSON.stringify(manifest), 'utf8');
@@ -151,25 +143,33 @@ describe('handoff-target', () => {
     const retried = createForeignTargetValidator()(bundleDir, manifest);
     expect(retried.kind).toBe('validated');
     if (retried.kind === 'validated') {
-      await releaseTarget(retried.target);
+      withValidatedHandoffTarget(retried.target).assertExecutable();
     }
   });
 
-  it('should re-hash while holding the lease immediately before execution', async () => {
+  it('should reject a byte mismatch at the final re-hash', () => {
     const bundleDir = createBundle();
     const result = createForeignTargetValidator()(bundleDir, manifest);
     expect(result.kind).toBe('validated');
     if (result.kind !== 'validated') return;
     writeFileSync(join(bundleDir, 'coral-cli.cjs'), 'changed after validation', 'utf8');
 
-    await expect(
-      withValidatedHandoffTarget(result.target, (execution) => execution.assertExecutable()),
-    ).rejects.toThrow('bytes changed before execution');
+    const execution = withValidatedHandoffTarget(result.target);
+    expect(() => execution.assertExecutable()).toThrow('bytes changed before execution');
   });
 
-  it('should reject a cast object at the consumer boundary', async () => {
-    await expect(withValidatedHandoffTarget({} as ValidatedHandoffTarget, () => undefined)).rejects.toThrow(
-      'was not produced',
-    );
+  it('should reject cast, cloned, inherited, and already-consumed targets at the consumer boundary', () => {
+    const result = createForeignTargetValidator()(createBundle(), manifest);
+    expect(result.kind).toBe('validated');
+    if (result.kind !== 'validated') return;
+
+    const inherited = Object.create(result.target) as ValidatedHandoffTarget;
+    const cloned = structuredClone(result.target);
+    expect(() => withValidatedHandoffTarget({} as ValidatedHandoffTarget)).toThrow('was not produced');
+    expect(() => withValidatedHandoffTarget(inherited)).toThrow('was not produced');
+    expect(() => withValidatedHandoffTarget(cloned)).toThrow('was not produced');
+
+    withValidatedHandoffTarget(result.target);
+    expect(() => withValidatedHandoffTarget(result.target)).toThrow('was not produced');
   });
 });

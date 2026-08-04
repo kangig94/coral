@@ -383,7 +383,7 @@ function resolveLiveIncumbentRouting(
 ): BackendRoutingResult {
   const candidate = targetCandidateFromHealth(health);
   if (desired.manifest === null || candidate === null || capabilities === null) {
-    return createUseCurrentBackendRouting({ source: 'live-incumbent', candidate, invalidTarget: null });
+    return createUseCurrentBackendRouting({ source: 'live-incumbent' });
   }
   return routeLiveIncumbent({
     invokingManifest: desired.manifest,
@@ -760,12 +760,7 @@ async function ensureChildIncumbent(
     throw childCoordinatorUnavailable('its parent coordinator is unreachable');
   }
   const info = await waitForExistingIncumbentReady(paths, health, KERNEL_READY_DEADLINE_MS, timePort);
-  return summarizeBackend(
-    info,
-    timePort,
-    'none',
-    createUseCurrentBackendRouting({ source: 'live-incumbent', candidate: null, invalidTarget: null }),
-  );
+  return summarizeBackend(info, timePort, 'none', createUseCurrentBackendRouting({ source: 'live-incumbent' }));
 }
 
 async function reuseServingIncumbent(
