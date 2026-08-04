@@ -138,8 +138,13 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
         runtime,
         backendNamespace: coreNamespace,
         bootSnapshot: {
-          version: 'test-version',
-          bundleHash: opts.bundleHash ?? 'test-bundle',
+          // Strict-manifest shaped on purpose: startup now publishes an active-store selection, whose schema
+          // pins SemVer, a UUID build set, and 16-hex bundle hashes. Production identity always satisfies that
+          // (`resolveStrictBundleIdentity`), so a placeholder here would only be testing a shape production
+          // never has.
+          version: '1.0.0',
+          buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+          bundleHash: opts.bundleHash ?? '0123456789abcdef',
           flavor,
           instanceId: opts.instanceId,
           token: `token-${opts.instanceId}`,

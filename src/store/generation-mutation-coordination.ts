@@ -78,6 +78,12 @@ export interface GenerationAdoptionLease {
   release(): void;
 }
 
+const GENERATION_ADOPTION_LOCK_BRAND: unique symbol = Symbol('GenerationAdoptionLockLease');
+
+export type GenerationAdoptionLockLease = DirectoryLockLease & {
+  readonly [GENERATION_ADOPTION_LOCK_BRAND]: true;
+};
+
 const GENERATION_COORDINATION_TIMEOUT_MS = 5_000;
 const GENERATION_COORDINATION_STALE_MS = 10 * 60 * 1_000;
 const GENERATION_COORDINATION_HEARTBEAT_MS = 10 * 1_000;
@@ -177,11 +183,13 @@ function ensureCoordinationRoot(runtime: Runtime, paths: GenerationBoundaryPaths
 export async function acquireGenerationAdoptionLock(
   runtime: Runtime,
   timeoutMs = GENERATION_COORDINATION_TIMEOUT_MS,
-): Promise<DirectoryLockLease> {
+): Promise<GenerationAdoptionLockLease> {
   const paths = resolveGenerationBoundaryPaths(runtime);
   runtime.storage.mkdirSync(paths.generationRoot, { recursive: true });
   try {
-    return await acquireDirectoryLock(paths.adoptionLock, directoryLockDeps(runtime), timeoutMs);
+    const lease = await acquireDirectoryLock(paths.adoptionLock, directoryLockDeps(runtime), timeoutMs);
+    Object.defineProperty(lease, GENERATION_ADOPTION_LOCK_BRAND, { value: true });
+    return lease as GenerationAdoptionLockLease;
   } catch (error: unknown) {
     if (isDirectoryLockTimeoutError(error)) {
       throw generationNotQuiescentError(runtime, `adoption lock at ${paths.adoptionLock}`);

@@ -49,7 +49,12 @@ import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
-import { createBackendStoreResetAuthority, openOrResetBackendStoreDb } from '../store/backend-store-reset.js';
+import {
+  coordinateActiveStoreSelection,
+  createBackendStoreResetAuthority,
+  openOrResetBackendStoreDb,
+} from '../store/backend-store-reset.js';
+import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
 import type { Database } from '../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
@@ -845,27 +850,48 @@ async function runLifecycleStartup({
       }
     }
 
+    const currentBuild = {
+      version,
+      buildSetId,
+      bundleHash,
+      cliBundleHash,
+      claudeAppserverBundleHash,
+      flavor,
+      storeFormatFingerprint: deps.storeFormat.fingerprint,
+    };
     const resetAuthority = createBackendStoreResetAuthority(
       runtime,
       { acquiredViaHandoff: bound?.acquiredViaHandoff ?? false },
       {
         namespace,
         storeFormat: deps.storeFormat,
-        build: {
-          version,
-          buildSetId,
-          bundleHash,
-          cliBundleHash,
-          claudeAppserverBundleHash,
-          flavor,
-          storeFormatFingerprint: deps.storeFormat.fingerprint,
-        },
+        build: currentBuild,
       },
     );
-    const storeDb = openOrResetBackendStoreDb(runtime, resetAuthority, {
+    const storeOptions = {
       storeFormat: deps.storeFormat,
       startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
-    });
+    };
+    const currentBundleDir = resolveRunningBundleDir(identity.pluginRoot);
+    let storeDb: Database;
+    if (currentBundleDir === null) {
+      storeDb = openOrResetBackendStoreDb(runtime, resetAuthority, storeOptions);
+    } else {
+      const selectionResult = await coordinateActiveStoreSelection(runtime, resetAuthority, {
+        storeFormat: deps.storeFormat,
+        startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+        currentSelection: {
+          version: 1,
+          manifest: currentBuild,
+          bundleDir: currentBundleDir,
+          activeStoreFingerprint: currentBuild.storeFormatFingerprint,
+        },
+      });
+      if (selectionResult.kind === 'handoff') {
+        throw new Error('Validated active-store handoff requires the V2.4 startup routing owner.');
+      }
+      storeDb = selectionResult.db;
+    }
     let storeServices: CoordinatorStoreServices;
     try {
       storeServices = createStoreServicesFromDbFn(storeDb);
