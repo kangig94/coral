@@ -36,6 +36,7 @@ import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workf
 import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
 import { createFailedWorkflowDescendantReleaser } from '#src/coordinator/services/workflow-recovery-descendants.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
+import { createBoundJobsRecoveryHarness } from '#tests/helpers/bound-jobs-recovery.js';
 
 // NOTE: "running" and "queued" branches today share the same code path
 // (both hit waitForAtoms). We retain two tests so that if phase-differentiated
@@ -1387,27 +1388,47 @@ describe('workflow recovery branch rules', () => {
     const releaseLaunch = vi.spyOn(backend.launchCoordinator, 'releaseLaunch');
     const kill = vi.spyOn(backend.runtime.process, 'kill');
     const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => backend.progressStore.commit(cb);
-    const recoveryCoordinator = createRecoveryCoordinator({
-      progressStore: backend.progressStore,
+    const signal = new AbortController().signal;
+    const boundRecovery = await createBoundJobsRecoveryHarness({
+      identity: {
+        pluginRoot: backend.pluginRoot,
+        namespace: backend.namespace,
+        version: 'test-version',
+        buildSetId: '00000000-0000-4000-8000-000000000000',
+        bundleHash: 'test-bundle',
+        cliBundleHash: 'test-cli-bundle',
+        claudeAppserverBundleHash: 'test-claude-bundle',
+        flavor: 'prod',
+        instanceId: 'workflow-recovery',
+        token: 'test-token',
+        bootToken: 'test-boot-token',
+        shutdownToken: 'test-shutdown-token',
+        now: () => backend.runtime.time.now(),
+        log,
+      },
       runtime: backend.runtime,
-      runtimeState: { setLaunchFenceActive: vi.fn() },
-      eventBus: backend.eventBus,
+      progressStore: backend.progressStore,
+      providerRegistry: backend.providerRegistry,
       getRecoveryService: () => backend.service,
       createInvocationContext: backend.createInvocationContext,
-      log,
+      signal,
+      coordinatorCommit,
     });
-
-    try {
-      await recoveryCoordinator.runStartupRecovery({
-        namespace: backend.namespace,
-        runtime: backend.runtime,
+    const recoveryCoordinator = createRecoveryCoordinator(
+      {
         progressStore: backend.progressStore,
+        runtime: backend.runtime,
+        runtimeState: { setLaunchFenceActive: vi.fn() },
+        eventBus: backend.eventBus,
         getRecoveryService: () => backend.service,
         createInvocationContext: backend.createInvocationContext,
-        signal: new AbortController().signal,
         log,
-        coordinatorCommit,
-      });
+      },
+      boundRecovery.bound,
+    );
+
+    try {
+      await boundRecovery.run(recoveryCoordinator);
       expect(restoreActiveLaunch).toHaveBeenCalledWith(childJobId, 'codex', childLaunch.owner, 'default');
       expect(backend.launchCoordinator.getActiveJobIds()).toContain(childJobId);
 

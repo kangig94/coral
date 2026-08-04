@@ -87,6 +87,7 @@ function buildEscalationHarness(opts: {
       socketPath: '/tmp/coral.sock',
       desired: { version: '0.9.1', bundleHash: 'new', flavor: 'prod' as const, namespace: 'ns' },
       bindAttempt,
+      runStartupRecovery: async () => [],
       runtime,
       readVerifiedIncumbentFromDiscovery: () => opts.identity,
       totalBudgetMs: opts.totalBudgetMs,

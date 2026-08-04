@@ -10,6 +10,7 @@ import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as HandoffMod from '#src/coordinator/handoff.js';
+import type { RunCoordinatorStartupRecoveryFn } from '#src/coordinator/services/recovery/index.js';
 import type * as BackendStoreResetMod from '#src/store/backend-store-reset.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 
@@ -23,17 +24,34 @@ const mockState = vi.hoisted(() => {
     }),
   };
 
-  return { events, fakeDb };
+  return { events, fakeDb, acquiredViaHandoff: false };
 });
 
 vi.mock('#src/coordinator/handoff.js', async (importOriginal) => {
   const actual = await importOriginal<typeof HandoffMod>();
+  const realBoundByDouble = new WeakMap<object, HandoffMod.BoundCoordinator>();
   return {
     ...actual,
-    bindWithHandoff: vi.fn(async () => {
+    bindWithHandoff: vi.fn(async (options: HandoffMod.HandoffOptions) => {
+      const bound = await actual.bindWithHandoff({
+        ...options,
+        bindAttempt: async () => ({ kind: 'bound' }),
+      });
       mockState.events.push('bindWithHandoff:return');
-      return { acquiredViaHandoff: false };
+      if (!mockState.acquiredViaHandoff) {
+        return bound;
+      }
+      const doubledBound: HandoffMod.BoundCoordinator = {
+        acquiredViaHandoff: true,
+        runStartupRecovery: bound.runStartupRecovery,
+      };
+      realBoundByDouble.set(doubledBound, bound);
+      return doubledBound;
     }),
+    registerCoordinatorStartupRecovery: vi.fn(
+      (bound: HandoffMod.BoundCoordinator, runStartupRecovery: RunCoordinatorStartupRecoveryFn) =>
+        actual.registerCoordinatorStartupRecovery(realBoundByDouble.get(bound) ?? bound, runStartupRecovery),
+    ),
   };
 });
 
@@ -267,7 +285,6 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
       })) as never,
       registerBuiltInProvidersFn: vi.fn(),
       recoverPersistedDiscussFn: vi.fn(async () => []),
-      runStartupRecoveryFn: vi.fn(async () => []),
       hooks: {
         onShutdown: vi.fn(async () => {
           mockState.events.push('hooks:onShutdown');
@@ -286,6 +303,7 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
 
 afterEach(() => {
   mockState.events.length = 0;
+  mockState.acquiredViaHandoff = false;
   mockState.fakeDb.closed = false;
   vi.clearAllMocks();
 });
@@ -306,7 +324,7 @@ describe('lifecycle reset authority and finalizer order', () => {
         mockState.events.push('providers:register');
       }),
     };
-    const lifecycle = createLifecycle(deps);
+    const lifecycle = createLifecycle(deps, async () => []);
 
     await expect(lifecycle.start()).rejects.toMatchObject({ code: 'system_provider_scope_invalid' });
 
@@ -317,7 +335,7 @@ describe('lifecycle reset authority and finalizer order', () => {
 
   it('creates reset authority only after bindWithHandoff returns', async () => {
     const { deps } = makeLifecycleDeps();
-    const lifecycle = createLifecycle(deps);
+    const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
 
@@ -334,16 +352,10 @@ describe('lifecycle reset authority and finalizer order', () => {
 
   it('propagates actual incumbent handoff provenance into reset authority', async () => {
     const { deps } = makeLifecycleDeps();
-    const handoff = await import('#src/coordinator/handoff.js');
     const storeReset = await import('#src/store/backend-store-reset.js');
-    // `SuccessfulCoordinatorBindResult` carries a module-private brand so production cannot mint bind
-    // authority without binding. A test doubling that module boundary has to assert the brand it cannot
-    // construct; `tests/invariants/coordinator-bind-authority.test.ts` keeps the same cast out of `src/`.
-    vi.mocked(handoff.bindWithHandoff).mockResolvedValueOnce({
-      acquiredViaHandoff: true,
-    } as HandoffMod.SuccessfulCoordinatorBindResult);
+    mockState.acquiredViaHandoff = true;
 
-    await createLifecycle(deps).start();
+    await createLifecycle(deps, async () => []).start();
 
     expect(storeReset.createBackendStoreResetAuthority).toHaveBeenCalledWith(
       expect.anything(),
@@ -363,7 +375,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     const handoff = await import('#src/coordinator/handoff.js');
     const storeReset = await import('#src/store/backend-store-reset.js');
 
-    await createLifecycle(deps).start();
+    await createLifecycle(deps, async () => []).start();
 
     expect(handoff.bindWithHandoff).not.toHaveBeenCalled();
     expect(storeReset.createBackendStoreResetAuthority).toHaveBeenCalledWith(
@@ -375,7 +387,7 @@ describe('lifecycle reset authority and finalizer order', () => {
 
   it('threads the startup abort signal into handoff binding', async () => {
     const { deps } = makeLifecycleDeps();
-    const lifecycle = createLifecycle(deps);
+    const lifecycle = createLifecycle(deps, async () => []);
     const handoff = await import('#src/coordinator/handoff.js');
 
     await lifecycle.start();
@@ -388,7 +400,7 @@ describe('lifecycle reset authority and finalizer order', () => {
 
   it('opens the startup store with a short busy timeout', async () => {
     const { deps } = makeLifecycleDeps();
-    const lifecycle = createLifecycle(deps);
+    const lifecycle = createLifecycle(deps, async () => []);
     const storeDb = await import('#src/store/backend-store-reset.js');
 
     await lifecycle.start();
@@ -402,7 +414,7 @@ describe('lifecycle reset authority and finalizer order', () => {
 
   it('registers components before exposing the running lifecycle', async () => {
     const { deps } = makeLifecycleDeps();
-    const lifecycle = createLifecycle(deps);
+    const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
 
@@ -438,7 +450,7 @@ describe('lifecycle reset authority and finalizer order', () => {
       restart: async () => childHealth,
       dispose: async () => undefined,
     } as never;
-    const lifecycle = createLifecycle(deps);
+    const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
 
@@ -452,7 +464,7 @@ describe('lifecycle reset authority and finalizer order', () => {
 
   it('keeps storeDb live through shutdown sequence and closes it only in the finalizer', async () => {
     const { deps, servicesRef } = makeLifecycleDeps();
-    const lifecycle = createLifecycle(deps);
+    const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
     await lifecycle.shutdown('unit-hard-stop');
@@ -481,7 +493,7 @@ describe('lifecycle reset authority and finalizer order', () => {
       },
     };
     deps.discussStores.set('fixture', { dispose: discussDispose } as never);
-    const lifecycle = createLifecycle(deps);
+    const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
     await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);
@@ -507,7 +519,7 @@ describe('lifecycle reset authority and finalizer order', () => {
       }),
     };
     deps.discussStores.set('fixture', { dispose: discussDispose } as never);
-    const lifecycle = createLifecycle(deps);
+    const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
     await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);
@@ -539,7 +551,7 @@ describe('lifecycle reset authority and finalizer order', () => {
       terminateAllFn: vi.fn(() => launchCoordinator.terminateAll()),
     };
     deps.discussStores.set('fixture', { dispose: discussDispose } as never);
-    const lifecycle = createLifecycle(deps);
+    const lifecycle = createLifecycle(deps, async () => []);
 
     await lifecycle.start();
     await expect(lifecycle.shutdown('unit-hard-stop')).rejects.toBeInstanceOf(AggregateError);

@@ -280,41 +280,43 @@ describe('incumbent handoff reset authority', () => {
       return { kind: 'response', id: request.id, result: null };
     });
 
-    const core = createCoordinatorCore({
-      storeFormat: currentCoralStoreFormat(),
-      runtime,
-      backendNamespace: 'ns',
-      bootSnapshot: {
-        version: '0.0.0-test',
-        buildSetId: '00000000-0000-4000-8000-000000000000',
-        bundleHash: '1111111111111111',
-        flavor: 'prod',
-        instanceId: 'replacement',
-        token,
-        bootToken: 'replacement-boot-token',
-        shutdownToken: 'replacement-shutdown-token',
-        now: () => Date.now(),
-        log: () => {},
+    const core = createCoordinatorCore(
+      {
+        storeFormat: currentCoralStoreFormat(),
+        runtime,
+        backendNamespace: 'ns',
+        bootSnapshot: {
+          version: '0.0.0-test',
+          buildSetId: '00000000-0000-4000-8000-000000000000',
+          bundleHash: '1111111111111111',
+          flavor: 'prod',
+          instanceId: 'replacement',
+          token,
+          bootToken: 'replacement-boot-token',
+          shutdownToken: 'replacement-shutdown-token',
+          now: () => Date.now(),
+          log: () => {},
+        },
+        createServerFn: (handler) => createServer(handler),
+        listenFn: listenHttp,
+        closeServerFn: closeHttp,
+        listenIpcFn: async (listener) => {
+          const result = await listenIpcServer(listener, runtime.paths.coral.coordinator.socketPath);
+          ipcListeners.add(listener);
+          return result;
+        },
+        createStoreServicesFromDbFn: (storeDb) => createStoreServices(storeDb, runtime, 'ns'),
+        kbDaemonSupervisor: createMockKbDaemonSupervisor(),
+        cleanupStaleJobsFn: () => {},
+        markJobsAsErrorFn: () => {},
+        terminateAllFn: () => {},
+        registerBuiltInProvidersFn: () => {},
+        getConsumerStuck: () => {
+          throw new Error('getConsumerStuck must not run before store services exist');
+        },
       },
-      createServerFn: (handler) => createServer(handler),
-      listenFn: listenHttp,
-      closeServerFn: closeHttp,
-      listenIpcFn: async (listener) => {
-        const result = await listenIpcServer(listener, runtime.paths.coral.coordinator.socketPath);
-        ipcListeners.add(listener);
-        return result;
-      },
-      createStoreServicesFromDbFn: (storeDb) => createStoreServices(storeDb, runtime, 'ns'),
-      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-      runStartupRecoveryFn: async () => [],
-      cleanupStaleJobsFn: () => {},
-      markJobsAsErrorFn: () => {},
-      terminateAllFn: () => {},
-      registerBuiltInProvidersFn: () => {},
-      getConsumerStuck: () => {
-        throw new Error('getConsumerStuck must not run before store services exist');
-      },
-    });
+      async () => [],
+    );
 
     try {
       const httpInfo = await listenHttp(core.server);

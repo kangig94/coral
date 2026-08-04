@@ -21,7 +21,6 @@ const COORDINATOR_EDGES = parseProductionImportEdges(REPO_ROOT, COORDINATOR_FILE
 const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/bootstrap-diagnostics.ts',
   'src/coordinator/bootstrap.ts',
-  'src/coordinator/bound-coordinator-authority.ts',
   'src/coordinator/child-principal-registry.ts',
   'src/coordinator/composition/job-control.ts',
   'src/coordinator/composition/store-services-ref.ts',

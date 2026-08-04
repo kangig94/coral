@@ -6,6 +6,8 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   bindWithHandoff,
   HandoffEscalationError,
+  registerCoordinatorStartupRecovery,
+  type BoundCoordinator,
   type HandoffOptions,
   type HandoffSignalLedger,
   type HandoffSignalPolicy,
@@ -57,6 +59,7 @@ function buildHarness(opts?: {
   signalCooldownMs?: number;
   signalPolicy?: HandoffSignalPolicy;
   signal?: AbortSignal;
+  runStartupRecovery?: HandoffOptions['runStartupRecovery'];
 }) {
   const time = new VirtualTime();
   const killCalls: KillCall[] = [];
@@ -92,6 +95,7 @@ function buildHarness(opts?: {
     socketPath: '/tmp/coral.sock',
     desired: { version: '0.9.1', bundleHash: 'new-hash', flavor: 'prod', namespace: 'ns' },
     bindAttempt,
+    runStartupRecovery: opts?.runStartupRecovery ?? (async () => []),
     runtime,
     readVerifiedIncumbentFromDiscovery: readDiscovery,
     ...(opts?.signalLedger === undefined ? {} : { signalLedger: opts.signalLedger }),
@@ -143,6 +147,37 @@ describe('bindWithHandoff', () => {
     expect(bindAttempt).toHaveBeenCalledTimes(1);
     expect(mockedShutdown).not.toHaveBeenCalled();
     expect(time.now()).toBe(before);
+  });
+
+  it('runs startup recovery only after the real bound capability registers its coordinator runner', async () => {
+    const runCoordinatorStartupRecovery = vi.fn(async () => ({}) as never);
+    const runStartupRecovery = vi.fn(async (_inputs, runJobsStartup) => {
+      await runJobsStartup({} as never);
+      return [];
+    });
+    const { options } = buildHarness({
+      bindSequence: [{ kind: 'bound' }],
+      runStartupRecovery,
+    });
+    const bound = await bindWithHandoff(options);
+
+    expect(() => bound.runStartupRecovery({} as never)).toThrow('Bound coordinator startup recovery is not registered');
+
+    registerCoordinatorStartupRecovery(bound, runCoordinatorStartupRecovery);
+    await expect(bound.runStartupRecovery({} as never)).resolves.toEqual([]);
+    expect(runStartupRecovery).toHaveBeenCalledTimes(1);
+    expect(runCoordinatorStartupRecovery).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a structurally forged bound coordinator at the consumed boundary', () => {
+    const forged: BoundCoordinator = {
+      acquiredViaHandoff: false,
+      runStartupRecovery: async () => [],
+    };
+
+    expect(() => registerCoordinatorStartupRecovery(forged, async () => ({}) as never)).toThrow(
+      'Bound coordinator capability is not registered',
+    );
   });
 
   it('same-bundle incumbent throws IncumbentMatchesError', async () => {
@@ -228,7 +263,10 @@ describe('bindWithHandoff', () => {
     time.tick(200);
     await flush();
 
-    await expect(promise).resolves.toEqual({ acquiredViaHandoff: true });
+    await expect(promise).resolves.toEqual({
+      acquiredViaHandoff: true,
+      runStartupRecovery: expect.any(Function),
+    });
     expect(mockedShutdown).toHaveBeenCalledWith(
       expect.objectContaining({
         socketPath: '/tmp/coral.sock',
@@ -422,7 +460,10 @@ describe('bindWithHandoff', () => {
       time.tick(200);
     }
 
-    await expect(promise).resolves.toEqual({ acquiredViaHandoff: true });
+    await expect(promise).resolves.toEqual({
+      acquiredViaHandoff: true,
+      runStartupRecovery: expect.any(Function),
+    });
     expect(mockedShutdown).toHaveBeenCalledTimes(2);
     expect(mockedShutdown.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ bootToken: 'old-boot-token' }));
     expect(mockedShutdown.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ bootToken: 'new-boot-token' }));

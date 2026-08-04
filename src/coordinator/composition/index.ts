@@ -52,6 +52,7 @@ import {
   createStaleJobCleanupRetryPlan,
   type LifecycleController,
   type LifecycleDeps,
+  type RunStartupRecoveryOrchestratorFn,
 } from '../lifecycle.js';
 import { createRuntimeComponentRegistry } from '../runtime-components/registry.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
@@ -414,7 +415,10 @@ function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): Exp
   };
 }
 
-export function createCoordinatorCore(options: CoordinatorCoreOptions): CoordinatorCoreResult {
+export function createCoordinatorCore(
+  options: CoordinatorCoreOptions,
+  runStartupRecovery: RunStartupRecoveryOrchestratorFn,
+): CoordinatorCoreResult {
   const runtime = options.runtime;
 
   const defaultsPlan = resolveCoordinatorDefaults(options, runtime);
@@ -1121,7 +1125,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisorWithTrackedShutdown),
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,
     recoverPersistedDiscussFn: defaults.recoverPersistedDiscussFn,
-    runStartupRecoveryFn: options.runStartupRecoveryFn,
     hooks: discuss.hooks,
     closeServerFn: defaults.closeServerFn,
     listenFn: defaults.listenFn,
@@ -1133,7 +1136,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     onFatalShutdownError: options.onFatalShutdownError,
   };
 
-  lifecycleController = createLifecycle(lifecycleDeps);
+  lifecycleController = createLifecycle(lifecycleDeps, runStartupRecovery);
   const resolvedLifecycleController = lifecycleController;
   // Install the starting-incumbent shutdown callback. `transport.shutdown`
   // invokes both `requestDrain('replaced')` (idle-timer driven) AND this

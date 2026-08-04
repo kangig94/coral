@@ -123,24 +123,26 @@ describe('expansion RPC before store services exist', () => {
         },
       },
     }));
-    const core = createCoordinatorCore({
-      storeFormat: currentCoralStoreFormat(),
-      runtime: makeRuntime(),
-      bootSnapshot: {
-        version: 'test-version',
-        bundleHash: 'test-bundle',
-        flavor: 'prod',
-        instanceId: 'test-instance',
-        token,
-        bootToken,
-        now: () => 1_000,
-        log: () => {},
+    const core = createCoordinatorCore(
+      {
+        storeFormat: currentCoralStoreFormat(),
+        runtime: makeRuntime(),
+        bootSnapshot: {
+          version: 'test-version',
+          bundleHash: 'test-bundle',
+          flavor: 'prod',
+          instanceId: 'test-instance',
+          token,
+          bootToken,
+          now: () => 1_000,
+          log: () => {},
+        },
+        createServerFn: (handler) => createServer(handler),
+        kbDaemonSupervisor: createMockKbDaemonSupervisor({ expansionRpc }),
+        getConsumerStuck: () => [],
       },
-      createServerFn: (handler) => createServer(handler),
-      kbDaemonSupervisor: createMockKbDaemonSupervisor({ expansionRpc }),
-      runStartupRecoveryFn: async () => [],
-      getConsumerStuck: () => [],
-    });
+      async () => [],
+    );
 
     const port = await listen(core.server);
     const response = await fetch(`http://127.0.0.1:${port}/coordinator/expansion`, {
@@ -198,23 +200,25 @@ describe('expansion RPC before store services exist', () => {
       remediation: failure.remediation,
       detail: failure.detail,
     }));
-    const core = createCoordinatorCore({
-      storeFormat: currentCoralStoreFormat(),
-      runtime: makeRuntime(),
-      bootSnapshot: {
-        version: 'test-version',
-        bundleHash: 'test-bundle',
-        flavor: 'prod',
-        instanceId: 'test-instance',
-        token,
-        now: () => 1_000,
-        log: () => {},
+    const core = createCoordinatorCore(
+      {
+        storeFormat: currentCoralStoreFormat(),
+        runtime: makeRuntime(),
+        bootSnapshot: {
+          version: 'test-version',
+          bundleHash: 'test-bundle',
+          flavor: 'prod',
+          instanceId: 'test-instance',
+          token,
+          now: () => 1_000,
+          log: () => {},
+        },
+        createServerFn: (handler) => createServer(handler),
+        kbDaemonSupervisor: createMockKbDaemonSupervisor({ expansionRpc }),
+        getConsumerStuck: () => [],
       },
-      createServerFn: (handler) => createServer(handler),
-      kbDaemonSupervisor: createMockKbDaemonSupervisor({ expansionRpc }),
-      runStartupRecoveryFn: async () => [],
-      getConsumerStuck: () => [],
-    });
+      async () => [],
+    );
 
     const port = await listen(core.server);
     const response = await fetch(`http://127.0.0.1:${port}/coordinator/expansion`, {
@@ -241,28 +245,30 @@ describe('expansion RPC before store services exist', () => {
     const token = 'test-token';
     const bootToken = 'test-boot-token';
     const mutationBlocked = { owner: 'reindex', ageMs: 5000, signaledAtMs: 1234567890 };
-    const core = createCoordinatorCore({
-      storeFormat: currentCoralStoreFormat(),
-      runtime: makeRuntime(),
-      bootSnapshot: {
-        version: 'test-version',
-        bundleHash: 'test-bundle',
-        flavor: 'prod',
-        instanceId: 'test-instance',
-        token,
-        bootToken,
-        now: () => 1_000,
-        log: () => {},
-      },
-      createServerFn: (handler) => createServer(handler),
-      kbDaemonSupervisor: createMockKbDaemonSupervisor({
-        health: createOnlineKbDaemonHealth({
-          kbWrite: { phase: 'ready', mutationBlocked },
+    const core = createCoordinatorCore(
+      {
+        storeFormat: currentCoralStoreFormat(),
+        runtime: makeRuntime(),
+        bootSnapshot: {
+          version: 'test-version',
+          bundleHash: 'test-bundle',
+          flavor: 'prod',
+          instanceId: 'test-instance',
+          token,
+          bootToken,
+          now: () => 1_000,
+          log: () => {},
+        },
+        createServerFn: (handler) => createServer(handler),
+        kbDaemonSupervisor: createMockKbDaemonSupervisor({
+          health: createOnlineKbDaemonHealth({
+            kbWrite: { phase: 'ready', mutationBlocked },
+          }),
         }),
-      }),
-      runStartupRecoveryFn: async () => [],
-      getConsumerStuck: () => [],
-    });
+        getConsumerStuck: () => [],
+      },
+      async () => [],
+    );
 
     const port = await listen(core.server);
     const response = await fetch(`http://127.0.0.1:${port}/health?detailed=1`, {

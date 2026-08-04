@@ -410,74 +410,77 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   const storeServices = createStoreServicesHarness(progressStore);
   const kbDaemonSupervisor = createMockKbDaemonSupervisor();
 
-  const controller = modules.lifecycleModule.createLifecycle({
-    storeFormat: currentCoralStoreFormat(),
-    identity: {
-      pluginRoot,
-      namespace,
-      version: '9.9.9',
-      buildSetId: '00000000-0000-4000-8000-000000000000',
-      bundleHash: 'testhash1234',
-      cliBundleHash: 'testclihash1234',
-      claudeAppserverBundleHash: 'testclaudehash12',
-      flavor: 'prod',
-      instanceId: `recovery-shutdown-${Math.random()}`,
-      token: 'test-token',
-      bootToken: 'test-boot-token',
-      shutdownToken: 'test-shutdown-token',
-      now: () => 1,
-      log: () => {},
-    },
-    runtime,
-    backendPid: 1234,
-    runtimeState: runtimeState as never,
-    idleTimer: idleTimer as never,
-    storeServicesRef: storeServices.storeServicesRef,
-    createStoreServicesFromDbFn: storeServices.createStoreServicesFromDbFn,
-    streamResponses: new Set(),
-    discussStores: new Map(),
-    eventBus,
-    launchCoordinator,
-    providerRegistry,
-    server: createServer(),
-    ...createBoundIpcLifecycleDeps(),
-    getExecutionService: () => fakeService as never,
-    getRecoveryService: () => fakeService as never,
-    listExecutionServices: () => [fakeService as never],
-    getDiscussStoreForSource: () => {
-      throw new Error('Unexpected discuss store lookup');
-    },
-    knownDiscussSources: () => new Set<string>(),
-    getDiscussContext: () => {
-      throw new Error('Unexpected discuss context lookup');
-    },
-    writeBackendInfoFn,
-    removeBackendInfoIfOwnerFn: () => {},
-    cleanupStaleJobsFn: () => {},
-    markJobsAsErrorFn: () => {},
-    terminateAllFn: () => {},
-    providerHostManager: createFakeProviderHostManager() as never,
-    kbDaemonSupervisor,
-    handoffQuiescePorts: () => [],
-    createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
-    registerBuiltInProvidersFn: () => {},
-    // Required by createLifecycle's contract but unused: the custom runStartupRecoveryFn below
-    // calls its own closure-captured spy (recoverPersistedDiscussSpy) so the tail-cut assertion
-    // can observe whether the post-recovery startup tail ran.
-    recoverPersistedDiscussFn: async () => [],
-    runStartupRecoveryFn: async ({
-      identity,
+  const controller = modules.lifecycleModule.createLifecycle(
+    {
+      storeFormat: currentCoralStoreFormat(),
+      identity: {
+        pluginRoot,
+        namespace,
+        version: '9.9.9',
+        buildSetId: '00000000-0000-4000-8000-000000000000',
+        bundleHash: 'testhash1234',
+        cliBundleHash: 'testclihash1234',
+        claudeAppserverBundleHash: 'testclaudehash12',
+        flavor: 'prod',
+        instanceId: `recovery-shutdown-${Math.random()}`,
+        token: 'test-token',
+        bootToken: 'test-boot-token',
+        shutdownToken: 'test-shutdown-token',
+        now: () => 1,
+        log: () => {},
+      },
       runtime,
-      progressStore,
-      getRecoveryService,
-      createInvocationContext,
-      recoveryCoordinator,
-      signal,
-    }) => {
-      await recoveryCoordinator.runStartupRecovery({
+      backendPid: 1234,
+      runtimeState: runtimeState as never,
+      idleTimer: idleTimer as never,
+      storeServicesRef: storeServices.storeServicesRef,
+      createStoreServicesFromDbFn: storeServices.createStoreServicesFromDbFn,
+      streamResponses: new Set(),
+      discussStores: new Map(),
+      eventBus,
+      launchCoordinator,
+      providerRegistry,
+      server: createServer(),
+      ...createBoundIpcLifecycleDeps(),
+      getExecutionService: () => fakeService as never,
+      getRecoveryService: () => fakeService as never,
+      listExecutionServices: () => [fakeService as never],
+      getDiscussStoreForSource: () => {
+        throw new Error('Unexpected discuss store lookup');
+      },
+      knownDiscussSources: () => new Set<string>(),
+      getDiscussContext: () => {
+        throw new Error('Unexpected discuss context lookup');
+      },
+      writeBackendInfoFn,
+      removeBackendInfoIfOwnerFn: () => {},
+      cleanupStaleJobsFn: () => {},
+      markJobsAsErrorFn: () => {},
+      terminateAllFn: () => {},
+      providerHostManager: createFakeProviderHostManager() as never,
+      kbDaemonSupervisor,
+      handoffQuiescePorts: () => [],
+      createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
+      registerBuiltInProvidersFn: () => {},
+      recoverPersistedDiscussFn: async () => [],
+      hooks: {
+        onShutdown: async () => {},
+        onIdleCheck: () => false,
+        onRecoveryComplete: async () => {},
+      },
+      closeServerFn: async () => {},
+      listenFn: async () => ({ port: 4105, host: '127.0.0.1' }),
+    },
+    async (
+      { identity, runtime, progressStore, providerRegistry, getRecoveryService, createInvocationContext, signal },
+      runJobsStartup,
+    ) => {
+      await runJobsStartup({
         namespace: identity.namespace,
+        bundleHash: identity.bundleHash,
         runtime,
         progressStore,
+        providerRegistry,
         getRecoveryService,
         createInvocationContext,
         signal,
@@ -491,14 +494,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       signal.throwIfAborted();
       return recoveredDiscussResumes;
     },
-    hooks: {
-      onShutdown: async () => {},
-      onIdleCheck: () => false,
-      onRecoveryComplete: async () => {},
-    },
-    closeServerFn: async () => {},
-    listenFn: async () => ({ port: 4105, host: '127.0.0.1' }),
-  });
+  );
 
   seedTestJobSession(progressStore, {
     jobId: 'running-adoption-job',

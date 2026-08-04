@@ -9,7 +9,6 @@ import type {
   LifecycleHooks,
   RecoverPersistedDiscussFn,
   RegisterBuiltInProvidersFn,
-  RunStartupRecoveryFn,
 } from '../lifecycle.js';
 import type { ProjectRequestPort, ExecutionServiceDeps } from '../contracts.js';
 import type { DiscussContext } from '../../discuss/shell/types.js';
@@ -72,7 +71,6 @@ export type CoordinatorCoreOptions = {
   terminateAllFn?: () => void;
   registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
-  runStartupRecoveryFn: RunStartupRecoveryFn;
   providerHostManager?: ProviderHostManager;
   launchCoordinator?: LaunchCoordinator;
   eventBus?: TypedEventBus;

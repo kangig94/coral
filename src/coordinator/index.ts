@@ -26,7 +26,6 @@ import { readJobEvents, loadJobProjectionDetail, loadJobProjectionDetails } from
 import { composeReducers } from '../store/reducers.js';
 import { sealCoralStoreFormat } from '../store-format.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
-import { jobsReconcile } from '../jobs/startup.js';
 import { jobsRegistry } from '../jobs/events.js';
 import { sessionsRegistry } from '../sessions/events.js';
 import { discussRegistry } from '../discuss/event-registry.js';
@@ -42,6 +41,7 @@ import { createFailedWorkflowDescendantReleaser } from './services/workflow-reco
 import { assertDescriberCoverage } from '../read-model/event-describers.js';
 import { aggregateWorkflowUsage } from '../jobs/workflow-usage.js';
 import { JobStore } from '../jobs/store.js';
+import { createJobsStartupRunner } from '../jobs/startup.js';
 import { TypedEventBus } from './event-bus.js';
 import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
 import type { TextProjectionHealthState } from '../transport/server-ports.js';
@@ -55,12 +55,7 @@ import { createKbCurateAssistantHandler, createKbCurateUsageBudgetHandler } from
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
-  | 'runtime'
-  | 'storeFormat'
-  | 'runStartupRecoveryFn'
-  | 'getConsumerStuck'
-  | 'createStoreServicesFromDbFn'
-  | 'kbDaemonSupervisor'
+  'runtime' | 'storeFormat' | 'getConsumerStuck' | 'createStoreServicesFromDbFn' | 'kbDaemonSupervisor'
 > & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
@@ -410,48 +405,55 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     driver.notifyCorpus(message.publication.snapshot);
   };
 
-  core = createCoordinatorCore({
-    ...coreOptions,
-    providerRegistry,
-    eventBus,
-    runtime,
-    storeFormat,
-    discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId),
-    disposeLifecycleReactor: () => {
-      void disposeLifecycleReactor();
-    },
-    createStoreServicesFromDbFn,
-    getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
-    getTextProjectionState: textProjectionHealth.read,
-    kbDaemonSupervisor,
-    createExecutionService: (ctx, deps) => {
-      const wiredDeps = {
-        ...deps,
-        coordinatorCommit,
-        loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId, readCtx),
-        readJobEvents: (jobId: string) => readJobEvents(getQueryDb(), jobId, readCtx),
-        aggregateWorkflowUsage: (workflowJobId: string) => aggregateWorkflowUsage(getQueryDb(), workflowJobId),
-        subscribeJobEvents,
-        getCurrentJournalSeq,
-      };
-      return providedCreateExecutionService
-        ? providedCreateExecutionService(ctx, wiredDeps)
-        : new ExecutionService(ctx, wiredDeps);
-    },
-    runStartupRecoveryFn: async ({
-      identity,
-      progressStore,
+  core = createCoordinatorCore(
+    {
+      ...coreOptions,
       providerRegistry,
-      getExecutionService,
-      getRecoveryService,
-      knownDiscussSources,
-      getDiscussStoreForSource,
-      getDiscussContext,
-      createInvocationContext,
-      recoveryCoordinator,
-      signal,
-      recoverPersistedDiscussFn,
-    }) => {
+      eventBus,
+      runtime,
+      storeFormat,
+      discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId),
+      disposeLifecycleReactor: () => {
+        void disposeLifecycleReactor();
+      },
+      createStoreServicesFromDbFn,
+      getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
+      getTextProjectionState: textProjectionHealth.read,
+      kbDaemonSupervisor,
+      createExecutionService: (ctx, deps) => {
+        const wiredDeps = {
+          ...deps,
+          coordinatorCommit,
+          loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId, readCtx),
+          readJobEvents: (jobId: string) => readJobEvents(getQueryDb(), jobId, readCtx),
+          aggregateWorkflowUsage: (workflowJobId: string) => aggregateWorkflowUsage(getQueryDb(), workflowJobId),
+          subscribeJobEvents,
+          getCurrentJournalSeq,
+        };
+        return providedCreateExecutionService
+          ? providedCreateExecutionService(ctx, wiredDeps)
+          : new ExecutionService(ctx, wiredDeps);
+      },
+      registerBuiltInProvidersFn: () => {},
+    },
+    async (
+      {
+        identity,
+        progressStore,
+        providerRegistry,
+        getExecutionService,
+        getRecoveryService,
+        knownDiscussSources,
+        getDiscussStoreForSource,
+        getDiscussContext,
+        createInvocationContext,
+        recoveryCoordinator,
+        signal,
+        recoverPersistedDiscussFn,
+      },
+      runCoordinatorStartupRecovery,
+    ) => {
+      const runJobsStartup = createJobsStartupRunner(runCoordinatorStartupRecovery);
       const db = getStoreDb();
       const driver = getConsumerDriver();
 
@@ -490,8 +492,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       await awaitRecoveryCursorBarrier(driver, currentMaxSeq, bootFreshnessTimeoutMs);
       signal.throwIfAborted();
 
-      const recoveryProgressStore = await jobsReconcile.runStartup({
-        recoveryCoordinator,
+      const recoveryProgressStore = await runJobsStartup({
         namespace: identity.namespace,
         bundleHash: identity.bundleHash,
         runtime,
@@ -558,8 +559,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
       return recoveredDiscussResumes;
     },
-    registerBuiltInProvidersFn: () => {},
-  });
+  );
   const coordinatorCore = core;
   // KB lifecycle is owned by the child proxy; the server does not build a KB runtime.
 

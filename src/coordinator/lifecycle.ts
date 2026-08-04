@@ -41,6 +41,7 @@ import {
   BackendAlreadyRunningError,
   createFileHandoffSignalLedger,
   HandoffEscalationError,
+  type BoundCoordinator,
 } from './handoff.js';
 import { IncumbentMatchesError } from '../transport/ipc/handoff.js';
 import { probeCoordinator } from '../infra/backend-discovery.js';
@@ -74,7 +75,7 @@ import {
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
 import { runStartupStaleArtifactPrune } from './startup-recovery.js';
-import { boundCoordinatorAuthorityFrom, type BoundCoordinatorAuthority } from './bound-coordinator-authority.js';
+import type { RunJobsStartupFn } from '../jobs/startup.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
@@ -602,8 +603,7 @@ export type RecoverPersistedDiscussDeps = {
 
 export type RecoverPersistedDiscussFn = (deps: RecoverPersistedDiscussDeps) => Promise<RecoveredDiscussResume[]>;
 
-export type StartupRecoveryDeps = {
-  readonly boundCoordinatorAuthority: BoundCoordinatorAuthority;
+export type StartupRecoveryInputs = {
   readonly identity: CoordinatorIdentity;
   readonly runtime: Runtime;
   readonly progressStore: JobStore;
@@ -618,14 +618,18 @@ export type StartupRecoveryDeps = {
   readonly signal: AbortSignal;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
   /**
-   * Default `'restart'`. Phase C will set this to `'handoff'` when
-   * `bindWithHandoff` observed an incumbent and acquired the socket; in this
-   * landing the parameter exists but always defaults to `'restart'`.
+   * Defaults to `'restart'`; a bound coordinator that replaced an incumbent
+   * sets this to `'handoff'`.
    */
   readonly interruptedAppServerReason?: InterruptedAppServerReason;
 };
 
-export type RunStartupRecoveryFn = (deps: StartupRecoveryDeps) => Promise<RecoveredDiscussResume[]>;
+export type RunStartupRecoveryFn = (inputs: StartupRecoveryInputs) => Promise<RecoveredDiscussResume[]>;
+
+export type RunStartupRecoveryOrchestratorFn = (
+  inputs: StartupRecoveryInputs,
+  runJobsStartup: RunJobsStartupFn,
+) => Promise<RecoveredDiscussResume[]>;
 
 export type LifecycleDeps = {
   readonly identity: CoordinatorIdentity;
@@ -661,7 +665,6 @@ export type LifecycleDeps = {
   readonly createKbHealthComponentFn: CreateKbHealthComponentFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
-  readonly runStartupRecoveryFn: RunStartupRecoveryFn;
   readonly hooks: LifecycleHooks;
   readonly closeServerFn: (server: Server) => Promise<void>;
   readonly listenFn: (server: Server) => Promise<{ port: number; host: string }>;
@@ -688,6 +691,7 @@ type LifecycleControlState = LifecycleWiringState & {
 
 type LifecycleStartupContext = {
   deps: LifecycleDeps;
+  runStartupRecovery: RunStartupRecoveryOrchestratorFn;
   state: LifecycleControlState;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   ownershipChecker: ReturnType<typeof createReplacementBackendOwnershipChecker>;
@@ -696,6 +700,7 @@ type LifecycleStartupContext = {
 
 async function runLifecycleStartup({
   deps,
+  runStartupRecovery,
   state,
   createInvocationContext,
   ownershipChecker,
@@ -723,7 +728,6 @@ async function runLifecycleStartup({
     createKbHealthComponentFn,
     registerBuiltInProvidersFn,
     recoverPersistedDiscussFn,
-    runStartupRecoveryFn,
     hooks,
     closeServerFn,
     listenFn,
@@ -759,11 +763,9 @@ async function runLifecycleStartup({
     // here, so a contender that arrives while we are still 'starting' triggers
     // immediate shutdown via that path.
     const socketPath = runtime.paths.coral.coordinator.socketPath;
-    let interruptedAppServerReason: InterruptedAppServerReason = 'restart';
-    let acquiredViaHandoff = false;
-    let boundCoordinatorAuthority: BoundCoordinatorAuthority | null = null;
+    let bound: BoundCoordinator | null = null;
     if (ipcServer && listenIpcFn) {
-      const handoff = await bindWithHandoff({
+      bound = await bindWithHandoff({
         socketPath,
         desired: { version, bundleHash, flavor, namespace },
         bindAttempt: async () => {
@@ -777,6 +779,7 @@ async function runLifecycleStartup({
             throw error;
           }
         },
+        runStartupRecovery,
         runtime,
         readVerifiedIncumbentFromDiscovery: ({ socketPath: probeSocket, desired, lastHealth }) => {
           const info = probeCoordinator({
@@ -822,11 +825,6 @@ async function runLifecycleStartup({
         signal,
         totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
       });
-      boundCoordinatorAuthority = boundCoordinatorAuthorityFrom(handoff);
-      if (handoff.acquiredViaHandoff) {
-        acquiredViaHandoff = true;
-        interruptedAppServerReason = 'handoff';
-      }
     }
     signal.throwIfAborted();
 
@@ -849,7 +847,7 @@ async function runLifecycleStartup({
 
     const resetAuthority = createBackendStoreResetAuthority(
       runtime,
-      { acquiredViaHandoff },
+      { acquiredViaHandoff: bound?.acquiredViaHandoff ?? false },
       {
         namespace,
         storeFormat: deps.storeFormat,
@@ -882,15 +880,18 @@ async function runLifecycleStartup({
     storeServicesRef.clear();
     storeServicesRef.set(storeServices);
     const progressStore = storeServices.progressStore;
-    const recoveryCoordinator = createRecoveryCoordinator({
-      progressStore,
-      runtime,
-      runtimeState,
-      eventBus: deps.eventBus,
-      getRecoveryService,
-      createInvocationContext,
-      log: identity.log,
-    });
+    const recoveryCoordinator = createRecoveryCoordinator(
+      {
+        progressStore,
+        runtime,
+        runtimeState,
+        eventBus: deps.eventBus,
+        getRecoveryService,
+        createInvocationContext,
+        log: identity.log,
+      },
+      bound,
+    );
     state.recoveryCoordinator = recoveryCoordinator;
     signal.throwIfAborted();
 
@@ -923,7 +924,7 @@ async function runLifecycleStartup({
 
     // ===== Era II (recovery) =====
     // Per-job isolation: corrupt sessions should not abort recovery.
-    // `runStartupRecoveryFn` registers journal cursors then awaits
+    // `bound.runStartupRecovery` registers journal cursors then awaits
     // `waitFreshUntil` against `currentMaxSeq`; that wait runs here in Era II
     // because its budget is bounded by the daemon-side
     // `bootFreshnessTimeoutMs` (default 90s), not by either CLI-facing
@@ -932,10 +933,9 @@ async function runLifecycleStartup({
     // authority and there is no incumbent's work to recover — it was never the canonical coordinator.
     // This is the absence of a recovery obligation, not a skipped one.
     const recoveredDiscussResumes =
-      boundCoordinatorAuthority === null
+      bound === null
         ? []
-        : await runStartupRecoveryFn({
-            boundCoordinatorAuthority,
+        : await bound.runStartupRecovery({
             identity,
             runtime,
             progressStore,
@@ -949,7 +949,7 @@ async function runLifecycleStartup({
             recoveryCoordinator,
             signal,
             recoverPersistedDiscussFn,
-            interruptedAppServerReason,
+            interruptedAppServerReason: bound.acquiredViaHandoff ? 'handoff' : 'restart',
           });
     await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
     signal.throwIfAborted();
@@ -1067,7 +1067,10 @@ async function runLifecycleStartup({
   }
 }
 
-export function createLifecycle(deps: LifecycleDeps): LifecycleController {
+export function createLifecycle(
+  deps: LifecycleDeps,
+  runStartupRecovery: RunStartupRecoveryOrchestratorFn,
+): LifecycleController {
   const {
     identity,
     runtime,
@@ -1177,6 +1180,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     try {
       return await runLifecycleStartup({
         deps,
+        runStartupRecovery,
         state,
         createInvocationContext,
         ownershipChecker,

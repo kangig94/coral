@@ -19,6 +19,7 @@ import { defineProvider } from '#src/providers/registry.js';
 import { managed, none } from '#src/providers/capability.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import { createBoundJobsRecoveryHarness } from '#tests/helpers/bound-jobs-recovery.js';
 import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
 import { runSessionStartupRecovery } from '#src/sessions/startup-recovery.js';
@@ -243,26 +244,46 @@ async function runCoordinatorStartupRecovery(harness: Harness): Promise<void> {
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
   });
-  const coordinator = createRecoveryCoordinator({
-    progressStore: harness.progressStore,
+  const signal = new AbortController().signal;
+  const boundRecovery = await createBoundJobsRecoveryHarness({
+    identity: {
+      pluginRoot: harness.projectRoot,
+      namespace: harness.namespace,
+      version: 'test-version',
+      buildSetId: '00000000-0000-4000-8000-000000000000',
+      bundleHash: 'test-bundle',
+      cliBundleHash: 'test-cli-bundle',
+      claudeAppserverBundleHash: 'test-claude-bundle',
+      flavor: 'prod',
+      instanceId: 'lifecycle-reactor-recovery',
+      token: 'test-token',
+      bootToken: 'test-boot-token',
+      shutdownToken: 'test-shutdown-token',
+      now: () => harness.runtime.time.now(),
+      log: (message) => harness.logs.push(message),
+    },
     runtime: harness.runtime,
-    runtimeState: { setLaunchFenceActive: () => {} },
-    eventBus: new TypedEventBus(),
+    progressStore: harness.progressStore,
+    providerRegistry: harness.providerRegistry,
     getRecoveryService,
     createInvocationContext,
-    log: (message) => harness.logs.push(message),
-  });
-
-  await coordinator.runStartupRecovery({
-    namespace: harness.namespace,
-    runtime: harness.runtime,
-    progressStore: harness.progressStore,
-    getRecoveryService,
-    createInvocationContext,
-    signal: new AbortController().signal,
-    log: (message) => harness.logs.push(message),
+    signal,
     coordinatorCommit: harness.coordinatorCommit,
   });
+  const coordinator = createRecoveryCoordinator(
+    {
+      progressStore: harness.progressStore,
+      runtime: harness.runtime,
+      runtimeState: { setLaunchFenceActive: () => {} },
+      eventBus: new TypedEventBus(),
+      getRecoveryService,
+      createInvocationContext,
+      log: (message) => harness.logs.push(message),
+    },
+    boundRecovery.bound,
+  );
+
+  await boundRecovery.run(coordinator);
 }
 
 async function openClaimedSession(

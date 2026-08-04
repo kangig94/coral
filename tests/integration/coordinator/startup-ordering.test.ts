@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { jobsReconcile } from '#src/jobs/startup.js';
+import * as jobsStartup from '#src/jobs/startup.js';
+import type { JobsStartupContext } from '#src/jobs/startup.js';
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { createCoordinatorServer } from '#src/coordinator/index.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
@@ -59,10 +60,11 @@ describe('coordinator startup ordering', () => {
       await Promise.resolve();
       order.push('waitFreshUntil:resolved');
     });
-    const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async (options) => {
+    const runStartup = vi.fn(async (options: JobsStartupContext) => {
       order.push('jobsReconcile.runStartup');
       return options.progressStore;
     });
+    vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockReturnValue(runStartup);
     const kbDaemonSupervisor = createMockKbDaemonSupervisor();
 
     const coordinator = createCoordinatorServer({
@@ -136,10 +138,11 @@ describe('coordinator startup ordering', () => {
         const consumerId = typeof args[0] === 'string' ? args[2] : args[1];
         order.push(`waitFreshUntil:${consumerId}`);
       });
-    const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async (options) => {
+    const runStartup = vi.fn(async (options: JobsStartupContext) => {
       order.push('jobsReconcile.runStartup');
       return options.progressStore;
     });
+    vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockReturnValue(runStartup);
     const resumeAll = vi.spyOn(workflowRecover, 'resumeAll').mockImplementation(async () => {
       order.push('workflowRecover.resumeAll');
       return [];
@@ -235,7 +238,7 @@ describe('coordinator startup ordering', () => {
     const order: string[] = [];
     let startupDb: Database | null = null;
     let recoveryObservedPending = false;
-    const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async (options) => {
+    const runStartup = vi.fn(async (options: JobsStartupContext) => {
       order.push('jobsReconcile.runStartup');
       startupDb = options.progressStore.getDb();
       const opened = providerSessionSchema.parse({
@@ -285,6 +288,7 @@ describe('coordinator startup ordering', () => {
       });
       return options.progressStore;
     });
+    vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockReturnValue(runStartup);
     const resumeAll = vi.spyOn(workflowRecover, 'resumeAll').mockImplementation(async (options) => {
       order.push('workflowRecover.resumeAll');
       const row = options.db

@@ -58,7 +58,6 @@ import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';
 import { createWorkflowRecoveryFinalizer } from '../../../src/coordinator/services/workflow-recovery-finalizer.js';
 import { createFailedWorkflowDescendantReleaser } from '../../../src/coordinator/services/workflow-recovery-descendants.js';
-import { jobsReconcile } from '../../../src/jobs/startup.js';
 import { openStoreDatabase } from '../../../src/store/db.js';
 import { createEventBodyCodec } from '../../../src/store/event-body-codec.js';
 import { composeReducers } from '../../../src/store/reducers.js';
@@ -691,91 +690,95 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     onExit: () => () => {},
   };
 
-  const core = createCoordinatorCore({
-    storeFormat,
-    runtime,
-    pluginRoot,
-    backendNamespace: namespace,
-    launchCoordinator,
-    eventBus,
-    providerRegistry,
-    providerHostManager,
-    getConsumerStuck: () => [],
-    resolveProjectSourceFn: (root) => runtime.paths.projectSource(root),
-    bootSnapshot: {
-      version: DEFAULT_VERSION,
-      buildSetId: DEFAULT_BUILD_SET_ID,
-      bundleHash: DEFAULT_BUNDLE_HASH,
-      flavor: runtime.flavor,
-      now: () => runtime.time.now(),
-      pid: runtime.env.pid(),
-      bindHost: listenHost,
-      advertiseHost: listenHost,
-    },
-    createExecutionService: (ctx, deps) =>
-      new ExecutionService(ctx, {
-        ...deps,
-        coordinatorCommit: (cb) => progressStore.commit(cb),
-      }),
-    createStoreServicesFromDbFn: (openedStoreDb) => {
-      if (openedStoreDb !== storeDb) {
-        openedStoreDb.close();
-      }
-      return storeServices;
-    },
-    createServerFn,
-    fetchFn: createSimulationHealthFetch(runtime, pluginRoot),
-    listenFn: async () => {
-      hooks.listenCalls.push({ host: listenHost, port: listenPort });
-      return { host: listenHost, port: listenPort };
-    },
-    listenIpcFn: async () => ({
-      socketPath: coordinatorPaths('dev', runtime.env.fullSnapshot(), {
-        baseDir: join(runtime.env.homedir(), '.coral'),
-      }).socketPath,
-    }),
-    writeBackendInfoFn: (info) => {
-      hooks.writeBackendInfoCalls.push({ pluginRoot, info });
-      runtime.storage.mkdirSync(dirname(runtime.paths.coral.coordinator.infoFile), { recursive: true });
-      writeBackendInfo(info, {
-        storage: runtime.storage,
-        env: runtime.env,
-        paths: runtime.paths,
-      });
-    },
-    removeBackendInfoIfOwnerFn: (instanceId) => {
-      hooks.removeBackendInfoCalls.push({ pluginRoot, instanceId });
-      removeBackendInfoIfOwner(instanceId, {
-        storage: runtime.storage,
-        env: runtime.env,
-        paths: runtime.paths,
-      });
-    },
-    kbDaemonSupervisor,
-    registerBuiltInProvidersFn: () => {},
-    recoverPersistedDiscussFn: async (deps) => {
-      hooks.recoverPersistedDiscussCalls += 1;
-      if (scenario.recoverPersistedDiscuss === 'default') {
-        return discussRecovery.runStartup(deps);
-      }
-      return [];
-    },
-    runStartupRecoveryFn: async ({
-      identity,
-      progressStore,
+  const core = createCoordinatorCore(
+    {
+      storeFormat,
+      runtime,
+      pluginRoot,
+      backendNamespace: namespace,
+      launchCoordinator,
+      eventBus,
       providerRegistry,
-      getExecutionService,
-      getRecoveryService,
-      knownDiscussSources,
-      getDiscussStoreForSource,
-      getDiscussContext,
-      createInvocationContext,
-      recoveryCoordinator,
-      signal,
-      recoverPersistedDiscussFn,
-    }) => {
-      const recoveryProgressStore = await jobsReconcile.runStartup({
+      providerHostManager,
+      getConsumerStuck: () => [],
+      resolveProjectSourceFn: (root) => runtime.paths.projectSource(root),
+      bootSnapshot: {
+        version: DEFAULT_VERSION,
+        buildSetId: DEFAULT_BUILD_SET_ID,
+        bundleHash: DEFAULT_BUNDLE_HASH,
+        flavor: runtime.flavor,
+        now: () => runtime.time.now(),
+        pid: runtime.env.pid(),
+        bindHost: listenHost,
+        advertiseHost: listenHost,
+      },
+      createExecutionService: (ctx, deps) =>
+        new ExecutionService(ctx, {
+          ...deps,
+          coordinatorCommit: (cb) => progressStore.commit(cb),
+        }),
+      createStoreServicesFromDbFn: (openedStoreDb) => {
+        if (openedStoreDb !== storeDb) {
+          openedStoreDb.close();
+        }
+        return storeServices;
+      },
+      createServerFn,
+      fetchFn: createSimulationHealthFetch(runtime, pluginRoot),
+      listenFn: async () => {
+        hooks.listenCalls.push({ host: listenHost, port: listenPort });
+        return { host: listenHost, port: listenPort };
+      },
+      listenIpcFn: async () => ({
+        socketPath: coordinatorPaths('dev', runtime.env.fullSnapshot(), {
+          baseDir: join(runtime.env.homedir(), '.coral'),
+        }).socketPath,
+      }),
+      writeBackendInfoFn: (info) => {
+        hooks.writeBackendInfoCalls.push({ pluginRoot, info });
+        runtime.storage.mkdirSync(dirname(runtime.paths.coral.coordinator.infoFile), { recursive: true });
+        writeBackendInfo(info, {
+          storage: runtime.storage,
+          env: runtime.env,
+          paths: runtime.paths,
+        });
+      },
+      removeBackendInfoIfOwnerFn: (instanceId) => {
+        hooks.removeBackendInfoCalls.push({ pluginRoot, instanceId });
+        removeBackendInfoIfOwner(instanceId, {
+          storage: runtime.storage,
+          env: runtime.env,
+          paths: runtime.paths,
+        });
+      },
+      kbDaemonSupervisor,
+      registerBuiltInProvidersFn: () => {},
+      recoverPersistedDiscussFn: async (deps) => {
+        hooks.recoverPersistedDiscussCalls += 1;
+        if (scenario.recoverPersistedDiscuss === 'default') {
+          return discussRecovery.runStartup(deps);
+        }
+        return [];
+      },
+    },
+    async (
+      {
+        identity,
+        progressStore,
+        providerRegistry,
+        getExecutionService,
+        getRecoveryService,
+        knownDiscussSources,
+        getDiscussStoreForSource,
+        getDiscussContext,
+        createInvocationContext,
         recoveryCoordinator,
+        signal,
+        recoverPersistedDiscussFn,
+      },
+      runJobsStartup,
+    ) => {
+      const recoveryProgressStore = await runJobsStartup({
         namespace: identity.namespace,
         bundleHash: identity.bundleHash,
         runtime,
@@ -827,7 +830,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
 
       return recoveredDiscussResumes;
     },
-  });
+  );
   setStoreServicesForTest(core.storeServicesRef, storeServices, { storeDbPath: ':memory:' });
 
   let cleanedRuntimeRoot = false;

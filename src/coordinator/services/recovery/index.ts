@@ -47,6 +47,7 @@ import type { SessionClaimReleasedBody } from '../../../sessions/event-bodies.js
 import type { CoralEventInput } from '../../../store/envelope.js';
 import { normalizeProviderSession } from '../../../sessions/entry-normalization.js';
 import { InterruptedRecoveryCommitError, RecoveryOwnershipReleaseError } from './interrupted-finalizer.js';
+import { registerCoordinatorStartupRecovery, type BoundCoordinator } from '../../handoff.js';
 
 const RECOVERY_POLL_MS = 500;
 
@@ -68,7 +69,6 @@ type RecoveryCoordinatorState = {
 };
 
 export interface RecoveryCoordinator {
-  runStartupRecovery(ctx: StartupRecoveryContext): Promise<JobStore>;
   releaseAdoptedJob(jobId: string): void;
   getRecoveryRegistry(): RecoveryRegistry | null;
   isIdleBlocked(): boolean;
@@ -85,7 +85,7 @@ type RecoveryCoordinatorContext = {
   log: (message: string) => void;
 };
 
-type StartupRecoveryContext = {
+export type StartupRecoveryContext = {
   namespace: string;
   runtime: Runtime;
   progressStore: JobStore;
@@ -96,6 +96,8 @@ type StartupRecoveryContext = {
   coordinatorCommit: CommitEventsFn;
   interruptedAppServerReason?: InterruptedAppServerReason;
 };
+
+export type RunCoordinatorStartupRecoveryFn = (ctx: StartupRecoveryContext) => Promise<JobStore>;
 
 type RecoveryAdoptionContext = {
   queuedJobs: QueuedRecoverableJob[];
@@ -321,15 +323,18 @@ function settleCoordinatorRecoveryItem(
   ]);
 }
 
-export function createRecoveryCoordinator({
-  progressStore,
-  runtime,
-  runtimeState,
-  eventBus,
-  getRecoveryService,
-  createInvocationContext,
-  log,
-}: RecoveryCoordinatorContext): RecoveryCoordinator {
+export function createRecoveryCoordinator(
+  {
+    progressStore,
+    runtime,
+    runtimeState,
+    eventBus,
+    getRecoveryService,
+    createInvocationContext,
+    log,
+  }: RecoveryCoordinatorContext,
+  bound: BoundCoordinator | null,
+): RecoveryCoordinator {
   const state: RecoveryCoordinatorState = {
     recoveryRegistry: null,
     cancelledRecoveryJobIds: new Set<string>(),
@@ -897,179 +902,183 @@ export function createRecoveryCoordinator({
     log('Recovery adoption complete. Launch fence lifted.\n');
   }
 
-  return {
-    async runStartupRecovery(ctx: StartupRecoveryContext): Promise<JobStore> {
-      const { namespace, runtime, progressStore, signal } = ctx;
-      coordinatorJobRetryPolicies.set(progressStore.getDb(), (retrySignal) =>
-        createCoordinatorJobRecoveryPolicy(
-          {
-            signal: retrySignal,
-            coordinatorCommit: ctx.coordinatorCommit,
-            summary: 'Coordinator job operator retry',
-            settle: () => ({
-              kind: 'quarantine',
-              detail: 'coordinator job requires a fresh recovery reconciliation',
-            }),
-          },
-          [],
-        ),
-      );
-      const interruptedAppServerReason: InterruptedAppServerReason = ctx.interruptedAppServerReason ?? 'restart';
-      state.teardownRequested = false;
-      runtimeState.setLaunchFenceActive(true);
-      const recoveryRegistry = new RecoveryRegistry(runtime.process, state.cancelledRecoveryJobIds);
-      state.recoveryRegistry = recoveryRegistry;
-      const queuedRecoverable: QueuedRecoverableJob[] = [];
-      const runningRecoverable: RunningRecoverableJob[] = [];
+  async function runStartupRecovery(ctx: StartupRecoveryContext): Promise<JobStore> {
+    const { namespace, runtime, progressStore, signal } = ctx;
+    coordinatorJobRetryPolicies.set(progressStore.getDb(), (retrySignal) =>
+      createCoordinatorJobRecoveryPolicy(
+        {
+          signal: retrySignal,
+          coordinatorCommit: ctx.coordinatorCommit,
+          summary: 'Coordinator job operator retry',
+          settle: () => ({
+            kind: 'quarantine',
+            detail: 'coordinator job requires a fresh recovery reconciliation',
+          }),
+        },
+        [],
+      ),
+    );
+    const interruptedAppServerReason: InterruptedAppServerReason = ctx.interruptedAppServerReason ?? 'restart';
+    state.teardownRequested = false;
+    runtimeState.setLaunchFenceActive(true);
+    const recoveryRegistry = new RecoveryRegistry(runtime.process, state.cancelledRecoveryJobIds);
+    state.recoveryRegistry = recoveryRegistry;
+    const queuedRecoverable: QueuedRecoverableJob[] = [];
+    const runningRecoverable: RunningRecoverableJob[] = [];
 
-      let adoptedCount = 0;
+    let adoptedCount = 0;
+    await runCoordinatorWalk({
+      signal,
+      coordinatorCommit: ctx.coordinatorCommit,
+      summary: 'Cross-namespace coordinator recovery',
+      settle: (item, controls) => {
+        const status = item.detail?.status ?? null;
+        if (
+          status !== null &&
+          isLivePhase(status.phase) &&
+          item.launchEventNamespace !== null &&
+          item.launchEventNamespace !== namespace
+        ) {
+          const facts = settleFault(item, status.jobId, { kind: 'wrapper_lost' }, ctx.coordinatorCommit);
+          adoptedCount += 1;
+          controls.report(`Finalized foreign-namespace job ${status.jobId} from ${item.launchEventNamespace}\n`);
+          return {
+            kind: 'advanced',
+            outcome: 'settled',
+            facts,
+            detail: 'foreign-namespace job finalized',
+          };
+        }
+        return {
+          kind: 'advanced',
+          outcome: 'settled',
+          facts: COORDINATOR_NOT_APPLICABLE_FACTS,
+          detail: 'job belongs to the current coordinator namespace',
+        };
+      },
+    });
+    if (adoptedCount > 0) {
+      reportCoordinatorRecovery(
+        'Cross-namespace coordinator recovery',
+        { advanced: 0, quarantined: 0, deferred: 0, skipped: 0, receipts: [] },
+        [`Adopted ${adoptedCount} orphaned cross-namespace job(s)\n`],
+      );
+    }
+
+    const recoveryItems: CoordinatorRecoveryItem[] = [];
+    await runCoordinatorWalk({
+      signal,
+      coordinatorCommit: ctx.coordinatorCommit,
+      summary: 'Coordinator recovery snapshot hydration',
+      settle: (item) => {
+        recoveryItems.push(item);
+        return {
+          kind: 'advanced',
+          outcome: 'settled',
+          facts: COORDINATOR_NOT_APPLICABLE_FACTS,
+          detail: 'raw coordinator job hydrated',
+        };
+      },
+    });
+    const snapshot = buildRecoverySnapshot(recoveryItems, namespace, runtime.process);
+    const plan = planRecovery(snapshot);
+    const itemsByJobId = new Map(recoveryItems.map((item) => [item.jobId, item]));
+    const itemsBySessionId = new Map(
+      recoveryItems.flatMap((item) =>
+        item.claimedSession === null ? [] : [[item.claimedSession.sessionId, item] as const],
+      ),
+    );
+
+    const applyPlanAction = async (action: Parameters<typeof applyRecoveryAction>[0]): Promise<void> => {
+      const item =
+        itemsByJobId.get(action.jobId) ??
+        (action.type === 'releaseSessionClaim' ? itemsBySessionId.get(action.sessionId) : undefined);
+      if (item === undefined) {
+        throw new Error(`Recovery plan action '${action.type}' has no raw coordinator item for ${action.jobId}.`);
+      }
       await runCoordinatorWalk({
+        subjectKey: item.jobId,
         signal,
         coordinatorCommit: ctx.coordinatorCommit,
-        summary: 'Cross-namespace coordinator recovery',
-        settle: (item, controls) => {
-          const status = item.detail?.status ?? null;
-          if (
-            status !== null &&
-            isLivePhase(status.phase) &&
-            item.launchEventNamespace !== null &&
-            item.launchEventNamespace !== namespace
-          ) {
-            const facts = settleFault(item, status.jobId, { kind: 'wrapper_lost' }, ctx.coordinatorCommit);
-            adoptedCount += 1;
-            controls.report(`Finalized foreign-namespace job ${status.jobId} from ${item.launchEventNamespace}\n`);
-            return {
-              kind: 'advanced',
-              outcome: 'settled',
-              facts,
-              detail: 'foreign-namespace job finalized',
-            };
+        summary: `Coordinator recovery action ${action.type} for ${action.jobId}`,
+        settle: async (freshItem, controls) => {
+          let facts: readonly RecoverySettlementFact[];
+          try {
+            facts = await applyRecoveryAction(action, {
+              progressStore,
+              recoveryRegistry,
+              queuedRecoverable,
+              runningRecoverable,
+              log: controls.report,
+              runtime,
+              createInvocationContext,
+              getRecoveryService,
+              signal,
+              settleFault: (fault, content) =>
+                settleFault(freshItem, action.jobId, fault, ctx.coordinatorCommit, content),
+              settleClaim: (jobId) => settleClaim(freshItem, jobId, ctx.coordinatorCommit),
+              setProcessLocalCleanup: controls.setProcessLocalCleanup,
+              clearProcessLocalCleanup: controls.clearProcessLocalCleanup,
+            });
+          } catch (error: unknown) {
+            logRecoveryActionFailure(action, error, controls.report);
+            throw error;
           }
           return {
             kind: 'advanced',
             outcome: 'settled',
-            facts: COORDINATOR_NOT_APPLICABLE_FACTS,
-            detail: 'job belongs to the current coordinator namespace',
+            facts,
+            detail: `coordinator recovery action ${action.type} completed`,
           };
         },
-      });
-      if (adoptedCount > 0) {
-        reportCoordinatorRecovery(
-          'Cross-namespace coordinator recovery',
-          { advanced: 0, quarantined: 0, deferred: 0, skipped: 0, receipts: [] },
-          [`Adopted ${adoptedCount} orphaned cross-namespace job(s)\n`],
-        );
-      }
-
-      const recoveryItems: CoordinatorRecoveryItem[] = [];
-      await runCoordinatorWalk({
-        signal,
-        coordinatorCommit: ctx.coordinatorCommit,
-        summary: 'Coordinator recovery snapshot hydration',
-        settle: (item) => {
-          recoveryItems.push(item);
-          return {
-            kind: 'advanced',
-            outcome: 'settled',
-            facts: COORDINATOR_NOT_APPLICABLE_FACTS,
-            detail: 'raw coordinator job hydrated',
-          };
-        },
-      });
-      const snapshot = buildRecoverySnapshot(recoveryItems, namespace, runtime.process);
-      const plan = planRecovery(snapshot);
-      const itemsByJobId = new Map(recoveryItems.map((item) => [item.jobId, item]));
-      const itemsBySessionId = new Map(
-        recoveryItems.flatMap((item) =>
-          item.claimedSession === null ? [] : [[item.claimedSession.sessionId, item] as const],
-        ),
-      );
-
-      const applyPlanAction = async (action: Parameters<typeof applyRecoveryAction>[0]): Promise<void> => {
-        const item =
-          itemsByJobId.get(action.jobId) ??
-          (action.type === 'releaseSessionClaim' ? itemsBySessionId.get(action.sessionId) : undefined);
-        if (item === undefined) {
-          throw new Error(`Recovery plan action '${action.type}' has no raw coordinator item for ${action.jobId}.`);
-        }
-        await runCoordinatorWalk({
-          subjectKey: item.jobId,
-          signal,
-          coordinatorCommit: ctx.coordinatorCommit,
-          summary: `Coordinator recovery action ${action.type} for ${action.jobId}`,
-          settle: async (freshItem, controls) => {
-            let facts: readonly RecoverySettlementFact[];
-            try {
-              facts = await applyRecoveryAction(action, {
-                progressStore,
-                recoveryRegistry,
-                queuedRecoverable,
-                runningRecoverable,
-                log: controls.report,
-                runtime,
-                createInvocationContext,
-                getRecoveryService,
-                signal,
-                settleFault: (fault, content) =>
-                  settleFault(freshItem, action.jobId, fault, ctx.coordinatorCommit, content),
-                settleClaim: (jobId) => settleClaim(freshItem, jobId, ctx.coordinatorCommit),
-                setProcessLocalCleanup: controls.setProcessLocalCleanup,
-                clearProcessLocalCleanup: controls.clearProcessLocalCleanup,
-              });
-            } catch (error: unknown) {
-              logRecoveryActionFailure(action, error, controls.report);
-              throw error;
+        ...(action.type === 'registerQueued' || action.type === 'registerRunning'
+          ? {
+              settleFailure: (
+                freshItem: CoordinatorRecoveryItem,
+                error: unknown,
+                controls: { report(message: string): void },
+              ) =>
+                settleUnexpectedRecoveryFailure(
+                  freshItem,
+                  action.jobId,
+                  action.type === 'registerQueued'
+                    ? 'Queued recovery registration failed'
+                    : 'Running recovery registration failed',
+                  error,
+                  ctx.coordinatorCommit,
+                  controls.report,
+                ),
             }
-            return {
-              kind: 'advanced',
-              outcome: 'settled',
-              facts,
-              detail: `coordinator recovery action ${action.type} completed`,
-            };
-          },
-          ...(action.type === 'registerQueued' || action.type === 'registerRunning'
-            ? {
-                settleFailure: (
-                  freshItem: CoordinatorRecoveryItem,
-                  error: unknown,
-                  controls: { report(message: string): void },
-                ) =>
-                  settleUnexpectedRecoveryFailure(
-                    freshItem,
-                    action.jobId,
-                    action.type === 'registerQueued'
-                      ? 'Queued recovery registration failed'
-                      : 'Running recovery registration failed',
-                    error,
-                    ctx.coordinatorCommit,
-                    controls.report,
-                  ),
-              }
-            : {}),
-        });
-      };
-
-      for (const action of plan.register) {
-        await applyPlanAction(action);
-      }
-      for (const action of plan.cleanup) {
-        await applyPlanAction(action);
-      }
-
-      if (queuedRecoverable.length === 0 && runningRecoverable.length === 0) {
-        resetRecoveryState();
-        return progressStore;
-      }
-
-      await runRecoveryAdoption({
-        queuedJobs: queuedRecoverable,
-        runningJobs: runningRecoverable,
-        signal,
-        coordinatorCommit: ctx.coordinatorCommit,
-        interruptedAppServerReason,
+          : {}),
       });
+    };
+
+    for (const action of plan.register) {
+      await applyPlanAction(action);
+    }
+    for (const action of plan.cleanup) {
+      await applyPlanAction(action);
+    }
+
+    if (queuedRecoverable.length === 0 && runningRecoverable.length === 0) {
+      resetRecoveryState();
       return progressStore;
-    },
+    }
+
+    await runRecoveryAdoption({
+      queuedJobs: queuedRecoverable,
+      runningJobs: runningRecoverable,
+      signal,
+      coordinatorCommit: ctx.coordinatorCommit,
+      interruptedAppServerReason,
+    });
+    return progressStore;
+  }
+
+  if (bound !== null) {
+    registerCoordinatorStartupRecovery(bound, runStartupRecovery);
+  }
+  return {
     releaseAdoptedJob,
     getRecoveryRegistry: () => state.recoveryRegistry,
     isIdleBlocked: () => state.adoptedRunningPids.size > 0 || (state.recoveryRegistry?.size ?? 0) > 0,

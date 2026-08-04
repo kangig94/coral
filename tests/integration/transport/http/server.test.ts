@@ -5888,68 +5888,70 @@ describe('execution backend server', () => {
       runtimeState.setLifecycle('running');
 
       const kbDaemonSupervisor = createMockKbDaemonSupervisor();
-      const controller = lifecycleModule.createLifecycle({
-        storeFormat: currentCoralStoreFormat(),
-        identity: {
-          pluginRoot,
-          namespace,
-          version: '9.9.9',
-          buildSetId: '00000000-0000-4000-8000-000000000000',
-          bundleHash: 'testhash1234',
-          cliBundleHash: 'testclihash1234',
-          claudeAppserverBundleHash: 'testclaudehash12',
-          flavor: 'prod',
-          instanceId: 'handoff-instance-1',
-          token: 'test-token',
-          bootToken: 'test-boot-token',
-          shutdownToken: 'test-shutdown-token',
-          now: () => 1,
-          log: () => {},
+      const controller = lifecycleModule.createLifecycle(
+        {
+          storeFormat: currentCoralStoreFormat(),
+          identity: {
+            pluginRoot,
+            namespace,
+            version: '9.9.9',
+            buildSetId: '00000000-0000-4000-8000-000000000000',
+            bundleHash: 'testhash1234',
+            cliBundleHash: 'testclihash1234',
+            claudeAppserverBundleHash: 'testclaudehash12',
+            flavor: 'prod',
+            instanceId: 'handoff-instance-1',
+            token: 'test-token',
+            bootToken: 'test-boot-token',
+            shutdownToken: 'test-shutdown-token',
+            now: () => 1,
+            log: () => {},
+          },
+          runtime,
+          backendPid: 1234,
+          runtimeState,
+          idleTimer: fakeIdleTimer as never,
+          storeServicesRef,
+          createStoreServicesFromDbFn: () => {
+            throw new Error('Unexpected store services factory during shutdown-only test');
+          },
+          streamResponses: new Set(),
+          discussStores: new Map(),
+          eventBus: new TypedEventBus(),
+          launchCoordinator: createLaunchCoordinator(),
+          providerRegistry: new ProviderRegistry(),
+          server: createServer(),
+          getExecutionService: () => fakeService as never,
+          getRecoveryService: () => fakeService as never,
+          listExecutionServices: () => [fakeService as never],
+          getDiscussStoreForSource: () => {
+            throw new Error('Unexpected discuss store lookup');
+          },
+          knownDiscussSources: () => new Set<string>(),
+          getDiscussContext: () => {
+            throw new Error('Unexpected discuss context lookup');
+          },
+          writeBackendInfoFn: vi.fn(),
+          removeBackendInfoIfOwnerFn: () => {},
+          cleanupStaleJobsFn: () => {},
+          markJobsAsErrorFn: vi.fn(),
+          terminateAllFn: vi.fn(),
+          providerHostManager: providerHostManager as never,
+          kbDaemonSupervisor,
+          handoffQuiescePorts: () => [fakeService as never],
+          createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
+          registerBuiltInProvidersFn: () => {},
+          recoverPersistedDiscussFn: async () => [],
+          hooks: {
+            onShutdown: async () => {},
+            onIdleCheck: () => false,
+            onRecoveryComplete: async () => {},
+          },
+          closeServerFn: async () => {},
+          listenFn: async () => ({ port: 4102, host: '127.0.0.1' }),
         },
-        runtime,
-        backendPid: 1234,
-        runtimeState,
-        idleTimer: fakeIdleTimer as never,
-        storeServicesRef,
-        createStoreServicesFromDbFn: () => {
-          throw new Error('Unexpected store services factory during shutdown-only test');
-        },
-        streamResponses: new Set(),
-        discussStores: new Map(),
-        eventBus: new TypedEventBus(),
-        launchCoordinator: createLaunchCoordinator(),
-        providerRegistry: new ProviderRegistry(),
-        server: createServer(),
-        getExecutionService: () => fakeService as never,
-        getRecoveryService: () => fakeService as never,
-        listExecutionServices: () => [fakeService as never],
-        getDiscussStoreForSource: () => {
-          throw new Error('Unexpected discuss store lookup');
-        },
-        knownDiscussSources: () => new Set<string>(),
-        getDiscussContext: () => {
-          throw new Error('Unexpected discuss context lookup');
-        },
-        writeBackendInfoFn: vi.fn(),
-        removeBackendInfoIfOwnerFn: () => {},
-        cleanupStaleJobsFn: () => {},
-        markJobsAsErrorFn: vi.fn(),
-        terminateAllFn: vi.fn(),
-        providerHostManager: providerHostManager as never,
-        kbDaemonSupervisor,
-        handoffQuiescePorts: () => [fakeService as never],
-        createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
-        registerBuiltInProvidersFn: () => {},
-        recoverPersistedDiscussFn: async () => [],
-        runStartupRecoveryFn: async () => [],
-        hooks: {
-          onShutdown: async () => {},
-          onIdleCheck: () => false,
-          onRecoveryComplete: async () => {},
-        },
-        closeServerFn: async () => {},
-        listenFn: async () => ({ port: 4102, host: '127.0.0.1' }),
-      });
+        async () => [],
+      );
 
       await controller.shutdown('replaced');
       await controller.waitForShutdown();

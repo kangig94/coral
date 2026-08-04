@@ -30,10 +30,16 @@ import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import type { RecoverPersistedDiscussFn, RunStartupRecoveryFn } from '#src/coordinator/lifecycle.js';
+import type {
+  RecoverPersistedDiscussFn,
+  RunStartupRecoveryFn,
+  StartupRecoveryInputs,
+} from '#src/coordinator/lifecycle.js';
+import type { RunJobsStartupFn } from '#src/jobs/startup.js';
 import type { TimerHandle } from '#src/infra/port-types.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { createBoundIpcLifecycleDeps } from '#tests/helpers/bound-ipc-lifecycle.js';
+import { createBoundJobsRecoveryHarness } from '#tests/helpers/bound-jobs-recovery.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
@@ -68,6 +74,11 @@ vi.mock('node:os', async () => {
 
 type LoadedModules = Awaited<ReturnType<typeof loadModules>>;
 
+type HarnessStartupRecoveryFn = (
+  inputs: StartupRecoveryInputs,
+  runJobsStartup: RunJobsStartupFn,
+) => ReturnType<RunStartupRecoveryFn>;
+
 async function loadModules() {
   vi.resetModules();
   const [
@@ -87,6 +98,7 @@ async function loadModules() {
     workflowEventsModule,
     jobsEventsModule,
     reducersModule,
+    handoffModule,
     recoveryCoordinatorModule,
     jobsStartupModule,
     workflowRecoverModule,
@@ -116,6 +128,7 @@ async function loadModules() {
     import('#src/workflow/events.js'),
     import('#src/jobs/events.js'),
     import('#src/store/reducers.js'),
+    import('#src/coordinator/handoff.js'),
     import('#src/coordinator/services/recovery/index.js'),
     import('#src/jobs/startup.js'),
     import('#src/workflow/recover.js'),
@@ -147,6 +160,7 @@ async function loadModules() {
     workflowEventsModule,
     jobsEventsModule,
     reducersModule,
+    handoffModule,
     recoveryCoordinatorModule,
     jobsStartupModule,
     workflowRecoverModule,
@@ -724,7 +738,7 @@ function createLifecycleHarness(
     servicesByProjectRoot?: Map<string, unknown>;
     getExecutionService?: (ctx: { projectRoot: string }) => unknown;
     getRecoveryService?: (ctx: { projectRoot: string }) => unknown;
-    runStartupRecoveryFn?: RunStartupRecoveryFn;
+    runStartupRecoveryFn?: HarnessStartupRecoveryFn;
     cleanupStaleJobsFn?: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
     markJobsAsErrorFn?: (namespace: string, message: string, signal: AbortSignal) => void | Promise<void>;
     registerRuntimeComponentFn?: (component: RuntimeComponent) => void;
@@ -763,106 +777,112 @@ function createLifecycleHarness(
   const storeServices = createStoreServicesHarness(options.progressStore);
 
   const kbDaemonSupervisor = createMockKbDaemonSupervisor();
-  const controller = modules.lifecycleModule.createLifecycle({
-    storeFormat: currentCoralStoreFormat(),
-    identity: {
-      pluginRoot: options.pluginRoot,
-      namespace,
-      version: '9.9.9',
-      buildSetId: '00000000-0000-4000-8000-000000000000',
-      bundleHash: 'testhash1234',
-      cliBundleHash: 'testclihash1234',
-      claudeAppserverBundleHash: 'testclaudehash12',
-      flavor: 'prod',
-      instanceId: `lifecycle-${Math.random()}`,
-      token: 'test-token',
-      bootToken: 'test-boot-token',
-      shutdownToken: 'test-shutdown-token',
-      now: () => 1,
-      log: options.log ?? (() => {}),
+  const controller = modules.lifecycleModule.createLifecycle(
+    {
+      storeFormat: currentCoralStoreFormat(),
+      identity: {
+        pluginRoot: options.pluginRoot,
+        namespace,
+        version: '9.9.9',
+        buildSetId: '00000000-0000-4000-8000-000000000000',
+        bundleHash: 'testhash1234',
+        cliBundleHash: 'testclihash1234',
+        claudeAppserverBundleHash: 'testclaudehash12',
+        flavor: 'prod',
+        instanceId: `lifecycle-${Math.random()}`,
+        token: 'test-token',
+        bootToken: 'test-boot-token',
+        shutdownToken: 'test-shutdown-token',
+        now: () => 1,
+        log: options.log ?? (() => {}),
+      },
+      runtime: options.runtime ?? createRealRuntime('prod'),
+      backendPid: 1234,
+      runtimeState: runtimeState as never,
+      idleTimer: idleTimer as never,
+      storeServicesRef: storeServices.storeServicesRef,
+      createStoreServicesFromDbFn: storeServices.createStoreServicesFromDbFn,
+      streamResponses: new Set(),
+      discussStores: new Map(),
+      eventBus: options.eventBus,
+      launchCoordinator,
+      providerRegistry,
+      providerHostManager: createFakeProviderHostManager() as never,
+      server: createServer(),
+      ...createBoundIpcLifecycleDeps(),
+      getExecutionService: getExecutionService as never,
+      getRecoveryService: getRecoveryService as never,
+      listExecutionServices: () => [...new Set(servicesByProjectRoot.values())] as never[],
+      getDiscussStoreForSource:
+        (options.discussion?.getDiscussStoreForSource as never) ??
+        ((() => {
+          throw new Error('Unexpected discuss store lookup');
+        }) as never),
+      knownDiscussSources: options.discussion?.knownDiscussSources ?? (() => new Set<string>()),
+      getDiscussContext:
+        (options.discussion?.getDiscussContext as never) ??
+        (() => {
+          throw new Error('Unexpected discuss context lookup');
+        }),
+      writeBackendInfoFn: () => {},
+      removeBackendInfoIfOwnerFn: () => {},
+      cleanupStaleJobsFn: options.cleanupStaleJobsFn ?? (() => {}),
+      markJobsAsErrorFn: options.markJobsAsErrorFn ?? (() => {}),
+      terminateAllFn: () => {},
+      kbDaemonSupervisor,
+      handoffQuiescePorts: () => [],
+      createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
+      registerBuiltInProvidersFn: () => {},
+      recoverPersistedDiscussFn: options.discussion?.recoverPersistedDiscussFn ?? (async () => []),
+      hooks:
+        (options.discussion?.hooks as never) ??
+        ({
+          onShutdown: async () => {},
+          onIdleCheck: () => false,
+          onRecoveryComplete: async () => {},
+        } as never),
+      closeServerFn: async () => {},
+      listenFn: async () => ({ port: 4100, host: '127.0.0.1' }),
     },
-    runtime: options.runtime ?? createRealRuntime('prod'),
-    backendPid: 1234,
-    runtimeState: runtimeState as never,
-    idleTimer: idleTimer as never,
-    storeServicesRef: storeServices.storeServicesRef,
-    createStoreServicesFromDbFn: storeServices.createStoreServicesFromDbFn,
-    streamResponses: new Set(),
-    discussStores: new Map(),
-    eventBus: options.eventBus,
-    launchCoordinator,
-    providerRegistry,
-    providerHostManager: createFakeProviderHostManager() as never,
-    server: createServer(),
-    ...createBoundIpcLifecycleDeps(),
-    getExecutionService: getExecutionService as never,
-    getRecoveryService: getRecoveryService as never,
-    listExecutionServices: () => [...new Set(servicesByProjectRoot.values())] as never[],
-    getDiscussStoreForSource:
-      (options.discussion?.getDiscussStoreForSource as never) ??
-      ((() => {
-        throw new Error('Unexpected discuss store lookup');
-      }) as never),
-    knownDiscussSources: options.discussion?.knownDiscussSources ?? (() => new Set<string>()),
-    getDiscussContext:
-      (options.discussion?.getDiscussContext as never) ??
-      (() => {
-        throw new Error('Unexpected discuss context lookup');
-      }),
-    writeBackendInfoFn: () => {},
-    removeBackendInfoIfOwnerFn: () => {},
-    cleanupStaleJobsFn: options.cleanupStaleJobsFn ?? (() => {}),
-    markJobsAsErrorFn: options.markJobsAsErrorFn ?? (() => {}),
-    terminateAllFn: () => {},
-    kbDaemonSupervisor,
-    handoffQuiescePorts: () => [],
-    createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
-    registerBuiltInProvidersFn: () => {},
-    recoverPersistedDiscussFn: options.discussion?.recoverPersistedDiscussFn ?? (async () => []),
-    runStartupRecoveryFn:
-      options.runStartupRecoveryFn ??
-      (async ({
+    async (inputs, runJobsStartup) => {
+      if (options.runStartupRecoveryFn !== undefined) {
+        return options.runStartupRecoveryFn(inputs, runJobsStartup);
+      }
+      const {
         identity,
         runtime,
         progressStore,
+        providerRegistry,
         getRecoveryService,
         createInvocationContext,
-        recoveryCoordinator,
         signal,
         recoverPersistedDiscussFn,
         knownDiscussSources,
         getDiscussStoreForSource,
         getDiscussContext,
-      }) => {
-        await recoveryCoordinator.runStartupRecovery({
-          namespace: identity.namespace,
-          runtime,
-          progressStore,
-          getRecoveryService,
-          createInvocationContext,
-          signal,
-          log: identity.log,
-          coordinatorCommit: createTestJobJournalDeps(options.progressStore, runtime).coordinatorCommit,
-          interruptedAppServerReason: options.interruptedAppServerReason,
-        });
-        return recoverPersistedDiscussFn({
-          knownDiscussSources,
-          getDiscussStoreForSource,
-          getDiscussContext,
-          createInvocationContext,
-          signal,
-        });
-      }),
-    hooks:
-      (options.discussion?.hooks as never) ??
-      ({
-        onShutdown: async () => {},
-        onIdleCheck: () => false,
-        onRecoveryComplete: async () => {},
-      } as never),
-    closeServerFn: async () => {},
-    listenFn: async () => ({ port: 4100, host: '127.0.0.1' }),
-  });
+      } = inputs;
+      await runJobsStartup({
+        namespace: identity.namespace,
+        bundleHash: identity.bundleHash,
+        runtime,
+        progressStore,
+        providerRegistry,
+        getRecoveryService,
+        createInvocationContext,
+        signal,
+        log: identity.log,
+        coordinatorCommit: createTestJobJournalDeps(options.progressStore, runtime).coordinatorCommit,
+        interruptedAppServerReason: options.interruptedAppServerReason,
+      });
+      return recoverPersistedDiscussFn({
+        knownDiscussSources,
+        getDiscussStoreForSource,
+        getDiscussContext,
+        createInvocationContext,
+        signal,
+      });
+    },
+  );
 
   return {
     controller,
@@ -2142,15 +2162,19 @@ describe('lifecycle recovery', () => {
         [projectRoot, service],
         [barrierProjectRoot, barrierService],
       ]),
-      runStartupRecoveryFn: async ({
-        identity,
-        runtime,
-        progressStore,
-        getRecoveryService,
-        createInvocationContext,
-        recoveryCoordinator,
-        signal,
-      }) => {
+      runStartupRecoveryFn: async (
+        {
+          identity,
+          runtime,
+          progressStore,
+          providerRegistry,
+          getRecoveryService,
+          createInvocationContext,
+          recoveryCoordinator,
+          signal,
+        },
+        runJobsStartup,
+      ) => {
         const captureBarrierAuthority = barrierService.captureProviderRecoveryAuthority.bind(barrierService);
         vi.spyOn(barrierService, 'captureProviderRecoveryAuthority').mockImplementation(async (launchRecord) => {
           // FIFO registration makes the second queued item's authority capture a deterministic
@@ -2160,10 +2184,12 @@ describe('lifecycle recovery', () => {
           abortResult ??= registry?.abort([jobId]) ?? null;
           return captureBarrierAuthority(launchRecord);
         });
-        await recoveryCoordinator.runStartupRecovery({
+        await runJobsStartup({
           namespace: identity.namespace,
+          bundleHash: identity.bundleHash,
           runtime,
           progressStore,
+          providerRegistry,
           getRecoveryService,
           createInvocationContext,
           signal,
@@ -3029,11 +3055,29 @@ describe('lifecycle recovery', () => {
     const service = createFakeExecutionAndRecoveryService();
     const log = vi.fn<(message: string) => void>();
     const coordinatorCommit = createTestJobJournalDeps(progressStore, runtime).coordinatorCommit;
-    const recoveryCoordinator = modules.recoveryCoordinatorModule.createRecoveryCoordinator({
-      progressStore,
+    const signal = new AbortController().signal;
+    const providerRegistry = createRecoveryProviderRegistry(modules);
+    const identity = {
+      pluginRoot,
+      namespace,
+      version: 'test-version',
+      buildSetId: '00000000-0000-4000-8000-000000000000',
+      bundleHash: 'test-bundle',
+      cliBundleHash: 'test-cli-bundle',
+      claudeAppserverBundleHash: 'test-claude-bundle',
+      flavor: 'prod' as const,
+      instanceId: 'raw-source-recovery',
+      token: 'test-token',
+      bootToken: 'test-boot-token',
+      shutdownToken: 'test-shutdown-token',
+      now: () => runtime.time.now(),
+      log,
+    };
+    const boundRecovery = await createBoundJobsRecoveryHarness({
+      identity,
       runtime,
-      runtimeState: { setLaunchFenceActive: vi.fn() },
-      eventBus,
+      progressStore,
+      providerRegistry,
       getRecoveryService: () => service as never,
       createInvocationContext: (root: string) => ({
         projectRoot: root,
@@ -3041,17 +3085,16 @@ describe('lifecycle recovery', () => {
         coralEnv: {},
         principal: testProjectPrincipal(root),
       }),
-      log,
+      signal,
+      coordinatorCommit,
+      bindWithHandoffFn: modules.handoffModule.bindWithHandoff,
     });
-    const signal = new AbortController().signal;
-
-    try {
-      const recoveryProgressStore = await modules.jobsStartupModule.jobsReconcile.runStartup({
-        namespace,
-        bundleHash: 'test-bundle',
-        runtime,
+    const recoveryCoordinator = modules.recoveryCoordinatorModule.createRecoveryCoordinator(
+      {
         progressStore,
-        providerRegistry: createRecoveryProviderRegistry(modules),
+        runtime,
+        runtimeState: { setLaunchFenceActive: vi.fn() },
+        eventBus,
         getRecoveryService: () => service as never,
         createInvocationContext: (root: string) => ({
           projectRoot: root,
@@ -3059,11 +3102,14 @@ describe('lifecycle recovery', () => {
           coralEnv: {},
           principal: testProjectPrincipal(root),
         }),
-        signal,
         log,
-        coordinatorCommit,
-        recoveryCoordinator,
-      });
+      },
+      boundRecovery.bound,
+    );
+
+    try {
+      await boundRecovery.run(recoveryCoordinator);
+      const recoveryProgressStore = progressStore;
       expect(listJobIds).not.toHaveBeenCalled();
       const rawWorkflowId = 'workflow-raw-source';
       seedCompletedWorkflowRecovery(progressStore, {
