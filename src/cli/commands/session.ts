@@ -1,33 +1,18 @@
 import type { Command } from 'commander';
 import { z } from 'zod';
 
-import { BackendToolHttpError } from '../../transport/http/errors.js';
-import type { CauseRef } from '../../causality/cause-ref.js';
 import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
-import {
-  parseSerializedWaitCursor,
-  serializeWaitCursor,
-  type WaitCursor,
-  type WaitStreamEvent,
-} from '../../jobs/wait.js';
+import type { WaitStreamEvent } from '../../jobs/wait.js';
 import type { JobStatus } from '../../jobs/records.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
-import { getProviderNames, makeClient, WAIT_TIMEOUT_SECONDS, type AbortOptions } from '../dispatch.js';
+import { getProviderNames, makeClient, type AbortOptions } from '../dispatch.js';
 import { emitError, getTerminalContext } from '../emit.js';
 import { parseJobIds } from '../flags.js';
 import { flushPendingReadStoreNote } from '../read-store.js';
 import { UsageError, normalizeUsageError } from '../errors.js';
 import { formatAbortResult, formatJobDetail, formatJobsList, renderJobsList } from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
-import { mapWaitSubscriptionError } from '../wait-stream-error.js';
-import {
-  formatWaitProgress,
-  formatWaitQueued,
-  formatWaitTerminal,
-  formatWaitWaiting,
-  renderWaitLine,
-  type WaitRenderContext,
-} from '../format/wait.js';
+import { followJobs } from '../follow.js';
 
 type JobsOptions = {
   phase?: string;
@@ -191,76 +176,36 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     });
 
   async function runWaitJobs(jobIds: string[], opts: WaitJobsOptions, command: Command): Promise<void> {
-    try {
-      const timeoutSeconds = WAIT_TIMEOUT_SECONDS;
-      const projectRoot = process.cwd();
-      const embed = opts.embed === true;
-      const client = makeClient(projectRoot, command);
-      const parsedCursor = parseSerializedWaitCursor(opts.cursor);
-      if (opts.cursor && !parsedCursor) {
-        throw new BackendToolHttpError('Invalid Last-Event-ID cursor', 400, {
-          code: 'invalid_request',
-          message: 'Invalid Last-Event-ID cursor',
-        });
-      }
+    const projectRoot = process.cwd();
+    const client = makeClient(projectRoot, command);
 
-      const currentCursor: WaitCursor = { afterSeq: parsedCursor?.afterSeq ?? 0 };
-      const jobLabels = jobIds.length > 1 ? new Map(jobIds.map((id, index) => [id, `j${index}`])) : null;
-      const causeRenderer = openCliCauseRefRenderer(projectRoot);
-
-      try {
-        const subscription = await client.subscribe<WaitStreamEvent>('jobs.wait', {
-          jobIds,
-          timeoutSeconds,
-          projectRoot,
-          ...(parsedCursor ? { cursor: parsedCursor } : {}),
-        });
-
-        try {
-          for await (const event of subscription) {
-            if (event.type === 'progress' || event.type === 'terminal') {
-              currentCursor.afterSeq = event.seq;
-            }
-
-            const cursor = currentCursor.afterSeq > 0 ? serializeWaitCursor(currentCursor) : null;
-
-            const ctx: WaitRenderContext = getTerminalContext();
-            const renderCauseRef = causeRenderer.render;
-            let formatted: string;
-
-            switch (event.type) {
-              case 'progress':
-                formatted = formatWaitProgress(event, jobLabels?.get(event.jobId));
-                break;
-              case 'queued':
-                formatted = formatWaitQueued(event, jobLabels?.get(event.jobId));
-                break;
-              case 'terminal': {
-                const describer = renderCauseRef
-                  ? { describeCauseRef: (ref: CauseRef) => renderCauseRef(ref, event.result.outcome) }
-                  : {};
-                formatted = formatWaitTerminal(event, cursor, embed, { ...describer, verbose: opts.verbose === true });
-                break;
-              }
-              case 'waiting':
-                formatted = formatWaitWaiting(event, cursor, jobIds);
-                break;
-            }
-
-            process.stdout.write(renderWaitLine(formatted, ctx));
-            if ((event.type === 'terminal' || event.type === 'waiting') && ctx.isTTY) {
-              process.stdout.write('\n');
-            }
-          }
-        } finally {
-          await subscription.close();
-        }
-      } finally {
-        causeRenderer.close();
-      }
-    } catch (error) {
-      emitError(mapWaitSubscriptionError(error));
-    }
+    process.exitCode = await followJobs({
+      start: { kind: 'jobs', jobIds, ...(opts.cursor === undefined ? {} : { serializedCursor: opts.cursor }) },
+      reconnectPolicy: 'bounded',
+      projectRoot,
+      emitError,
+      render: {
+        ...getTerminalContext(),
+        embed: opts.embed === true,
+        verbose: opts.verbose === true,
+      },
+      abortJobs: async (ids) => {
+        await client.abortJobs([...ids]);
+      },
+      connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal }) => ({
+        kind: 'subscription',
+        subscription: await client.subscribe<WaitStreamEvent>(
+          'jobs.wait',
+          {
+            jobIds: [...activeJobIds],
+            timeoutSeconds,
+            projectRoot,
+            ...(cursor ? { cursor } : {}),
+          },
+          { signal },
+        ),
+      }),
+    });
   }
 
   const waitCommand = program.command('wait');

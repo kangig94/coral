@@ -49,6 +49,7 @@ Rules:
 2. Capture `jobId` and `sessionId` from the launch line: `Provider job <jobId> <launchState> (provider session <sessionId>)`.
 3. Monitor with `coral-cli wait`; terminal lines include usage diagnostics when provider data is available.
 4. For `--embed`, use inline preview text when it helps, but read the printed `Result path: <path>` for the full artifact.
+5. Interpret `wait jobs` exit codes as a monitoring contract: `0` means every job completed successfully; `1` means a failed, aborted, or faulted job, while `provider_exit` returns its normalized child code; `75` means work is still running, so resume with the printed cursor.
 
 ## `--red` Flag
 

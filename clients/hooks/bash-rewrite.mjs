@@ -56,10 +56,10 @@ const RESERVED_TOP_LEVEL_COMMANDS = new Set(['workflow', 'wait', 'abort', 'backe
 const SHORT_FLAGS_WITH_VALUES = new Set(['f', 'i', 's', 'w', 'm', 'o', 'e', 'c', 'p']);
 const SHORT_BOOLEAN_FLAGS = new Set(['b', 'd']);
 
-// Bash tool rejects timeouts above 600_000 ms. The wait command emits its
-// final `waiting`/`terminal` event at WAIT_TIMEOUT_SECONDS (590s on the
-// server side) so this ceiling leaves ~10s for the process to flush and
-// exit before Bash kills it.
+// Bash rejects timeouts above 600_000 ms, so this is the ceiling, not a choice. A bounded wait derives its
+// own deadline from this value minus a flush margin (see FOLLOW_TIMEOUT_SECONDS in src/cli/follow.ts) so it
+// finishes first: it exits 75 with a printed resume cursor when work is still running, and both would be lost
+// if Bash killed the process mid-write. Raising the wait deadline to this ceiling removes that margin.
 const WAIT_BASH_TIMEOUT_MS = 600_000;
 
 // Shell-grammar characters that cause parse errors when they appear in an unquoted token.

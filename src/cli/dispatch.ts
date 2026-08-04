@@ -327,11 +327,6 @@ export type KbMemoPurgeOptions = {
   owner?: string;
 };
 
-// Wait emits a `waiting` event at this deadline so the process exits before
-// the bash-rewrite hook's Bash timeout (600_000ms) kills it — leaving room
-// for the final event (and its resume cursor) to reach stdout.
-export const WAIT_TIMEOUT_SECONDS = 590;
-
 // no module-level capture: callers go through resolvePluginRoot() at use time
 
 export function getProviderNames(providerRegistry: ProviderRegistry): string[] {

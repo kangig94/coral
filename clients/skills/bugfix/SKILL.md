@@ -24,7 +24,7 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
    - **Self-execute (default)**: Spawn `Agent({ subagent_type: "coral:debugger", prompt: "--deep " + prompt })`.
      Wait for the agent to return its diagnosis in `<Output_Format>` structure.
    - **Delegate (`--delegate`)**: Run `coral-cli <other-host> debugger -i "<--deep prompt>" --work-dir "<work_dir>" -d` (`<other-host>` = Codex if current is Claude; Claude if current is Codex).
-     Capture `job` from `Job <job> <launchState> (session <session>)`, then run `coral-cli wait jobs <job> --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience for findings.
+     Capture `job` from `Job <job> <launchState> (session <session>)`, then run `coral-cli wait jobs <job> --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience for findings. Exit `0` means every job completed successfully; `1` means a failed, aborted, or faulted job (a `provider_exit` returns its normalized child code); `75` means work is still running, so resume with the printed cursor.
      On error, stop with the error message.
      Verify cited file:line references. Drop findings with incorrect references.
 

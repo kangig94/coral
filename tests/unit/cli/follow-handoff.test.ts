@@ -243,6 +243,20 @@ describe('cli follow handoff', () => {
     expect(emitError).not.toHaveBeenCalled();
   });
 
+  it('should preserve a delegated bounded-wait exit code of 75', async () => {
+    vi.spyOn(process.stdout, 'write').mockImplementation((() => true) as typeof process.stdout.write);
+    mockState.ensure.mockResolvedValue(makeBackend());
+    mockState.runHandoff.mockResolvedValue({
+      kind: 'delegated',
+      outcome: { kind: 'handoff-exit', exitCode: 75 },
+    });
+
+    const { launchAndFollow } = await import('#src/cli/follow.js');
+    await expect(launchAndFollow(makeOptions())).resolves.toBe(75);
+
+    expect(mockState.renderHandoffNotice).not.toHaveBeenCalled();
+  });
+
   it('should preserve double Ctrl-C abort semantics while delegated waits are active', async () => {
     const firstHandoff = createDeferred<{ kind: 'delegated'; outcome: { kind: 'handoff-signal'; signal: 'SIGINT' } }>();
     const secondHandoff = createDeferred<{

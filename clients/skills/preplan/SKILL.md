@@ -132,12 +132,13 @@ items with the "unconfirmed" marker, then seek user feedback.
     // --deep (without --delegate): self-execute, blocking
     output = Agent({ subagent_type: "coral:pioneer", prompt: <draft file content> })
 
-    // --delegate: dispatch to the other host, then block on the wait
+    // --delegate: dispatch to the other host, then monitor for one bounded wait
     launch = Bash(`coral-cli <other-host> pioneer -i "<draft file content>" --work-dir "<work_dir>" -d`)
     job = parse `Job <job> <launchState> (session <session>)` from launch
-    terminal = Bash(`coral-cli wait jobs ${job} --embed`)   // foreground; blocks until terminal
+    terminal = Bash(`coral-cli wait jobs ${job} --embed`)   // foreground; returns at terminal or the bound
     output = Read(<path from the terminal's `Result path:` line>)
     ```
+    Exit `0` means every job completed successfully; `1` means a failed, aborted, or faulted job (a `provider_exit` returns its normalized child code); `75` means work is still running, so resume with the printed cursor before reading the terminal result.
 
     Then consume `output`: for items where pioneer identifies a genuinely more elegant form, mark the
     sub-item unconfirmed and add the three-point spectrum (default, minimal, elegant) with pioneer's

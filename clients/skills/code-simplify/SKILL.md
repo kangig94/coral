@@ -70,13 +70,13 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
          **Every delegated prompt MUST include**: "NEVER run git checkout, git restore, git reset, git clean,
          or any command that discards uncommitted changes. Other processes may be working in the same
          worktree. Only edit target files through tool calls."
-         Then run `coral-cli wait jobs <job> --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience.
+         Then run `coral-cli wait jobs <job> --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience. Exit `0` means every job completed successfully; `1` means a failed, aborted, or faulted job (a `provider_exit` returns its normalized child code); `75` means work is still running, so resume with the printed cursor.
        Parallel split:
        - Self-execute (default): spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
        - Delegate (`--delegate`): dispatch one detached `coral-cli <other-host> -b -i ... -d` launch per file group.
          **Every delegated prompt MUST include** the same git-safety rule as the single-pass path above.
-         Collect all `job`s from the detached launch lines, then run `coral-cli wait jobs <job-id...> --embed` until all complete; each terminal block always prints `Result path: <path>`, which is the durable artifact location.
+         Collect all `job`s from the detached launch lines, then run `coral-cli wait jobs <job-id...> --embed`; when it exits `75`, resume with the printed cursor until all complete. Each terminal block always prints `Result path: <path>`, which is the durable artifact location.
     5) Review each change for correctness AND justification.
        Use git diff as a before/after reference when the diff is manageable.
        Correctness:

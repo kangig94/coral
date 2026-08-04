@@ -111,6 +111,10 @@ await failOpen(async () => {
     lines.push(`- ${bridge} wait jobs <job-id> --embed`);
   }
 
+  lines.push(
+    'Wait exit codes: 0 = all succeeded; 1 = failed, aborted, or faulted; provider_exit = normalized child code; 75 = still running, resume with the printed cursor.',
+  );
+
   console.log(
     JSON.stringify({
       hookSpecificOutput: {

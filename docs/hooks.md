@@ -121,6 +121,8 @@ Two hooks run after compaction:
 - terminal jobs without inline artifacts: `coral-cli wait jobs <job> --embed`
 - missing or unreadable job state: do not rerun `wait` unless a verified artifact path exists
 
+`wait jobs` exits `0` when every job completed successfully, `1` for a failed, aborted, or faulted job, and with the normalized child code for `provider_exit`. Exit `75` is not a job failure: work is still running, and recovery should resume with the printed cursor.
+
 Implementation notes:
 
 - snapshots are written under the project temp directory (`/tmp/claude-<uid>/coral/<project-slug>/hooks/active-jobs-*.json`)

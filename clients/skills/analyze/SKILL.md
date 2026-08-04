@@ -58,7 +58,7 @@ argument-hint: "[--delegate] [investigation target or question]"
   Run one step at a time — do NOT launch steps in parallel. Each step's output informs
   the next step's scope and "Needed when" evaluation.
   Each step is a fresh call (no session continuity — each agent has a different role).
-  After each launch: capture `job` from `Job <job> <launchState> (session <session>)`, then run `coral-cli wait jobs <job> --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience.
+  After each launch: capture `job` from `Job <job> <launchState> (session <session>)`, then run `coral-cli wait jobs <job> --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience. Exit `0` means every job completed successfully; `1` means a failed, aborted, or faulted job (a `provider_exit` returns its normalized child code); `75` means work is still running, so resume with the printed cursor.
   On error, abort the chain and report the error.
   You (the executor) post-process and append the result to the file after each step completes.
 

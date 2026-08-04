@@ -319,7 +319,9 @@ describe('cli follow', () => {
       'jobs.wait',
       {
         jobIds: ['job-1'],
-        timeoutSeconds: 600,
+        // The Bash tool's 600s ceiling minus the flush margin that lets a bounded wait write its resume
+        // cursor before being killed — asserted as the derived value, not as a round number.
+        timeoutSeconds: 590,
         projectRoot: '/project/root',
       },
       {
@@ -376,6 +378,7 @@ describe('cli follow', () => {
       .mockImplementationOnce(async (_method: string, params: Record<string, unknown>) => {
         expect(params.cursor).toEqual({ afterSeq: 1 });
         return makeSubscription(async function* () {
+          yield progressEvent;
           yield terminalEvent;
         });
       });
@@ -390,6 +393,7 @@ describe('cli follow', () => {
         `${formatWaitTerminal(terminalEvent, cursorAfterTerminal, false)}\n`,
     );
     expect(mockState.ensure).toHaveBeenCalledTimes(2);
+    expect(stdout.match(/Halfway there/gu)).toHaveLength(1);
   });
 
   it('retries transient stream failures with a 1s backoff and resumes from the current cursor', async () => {
@@ -512,6 +516,41 @@ describe('cli follow', () => {
     expect(mockState.ensure).toHaveBeenCalledTimes(1);
     expect(mockState.subscribe).toHaveBeenCalledTimes(1);
     expect(process.off).toHaveBeenCalledWith('SIGINT', expect.any(Function));
+  });
+
+  it('warns on first SIGINT and aborts every bounded-wait job on the second', async () => {
+    const { followJobs } = await loadFollowModule();
+    const started = createDeferred<void>();
+    const abortJobs = vi.fn().mockResolvedValue(undefined);
+
+    const followPromise = followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1', 'job-2'] },
+      reconnectPolicy: 'bounded',
+      projectRoot: '/project/root',
+      emitError: vi.fn(),
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs,
+      connect: async ({ signal }) => ({
+        kind: 'subscription',
+        subscription: makeSubscription(async function* () {
+          started.resolve();
+          await new Promise<never>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new TypeError('terminated')), { once: true });
+          });
+        }),
+      }),
+    });
+    await started.promise;
+
+    sigintHandler?.();
+    expect(stderr).toBe('\nPress Ctrl+C again to abort the job.\n');
+    expect(abortJobs).not.toHaveBeenCalled();
+
+    sigintHandler?.();
+    await expect(followPromise).resolves.toBe(1);
+
+    expect(abortJobs).toHaveBeenCalledOnce();
+    expect(abortJobs).toHaveBeenCalledWith(['job-1', 'job-2']);
   });
 
   it.each([
