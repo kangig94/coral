@@ -932,18 +932,26 @@ describe('copilot.json', () => {
     expect(commands.some((command) => command.includes('hud-auto-update.mjs'))).toBe(false);
   });
 
-  it('registers no compaction hooks', () => {
+  it('registers no compaction or subagent hooks', () => {
     // Copilot never re-emits a session start after compaction, so post-compact
     // recovery cannot run in the session that compacted. On the unmatched
     // SessionStart group it would instead run on EVERY session start, where it
     // consumes and deletes the first snapshot it finds — and snapshots are keyed
     // by project, not session or host, so it would destroy the pending recovery
     // of a concurrent Claude Code or Codex session in the same project.
+    //
+    // Copilot fires SubagentStop but never SubagentStart (verified on 1.0.78),
+    // so subagent-start could never inject and subagent-track would only ever
+    // remove a marker nothing created. Registering either is dead config.
     const raw = readFileSync(COPILOT_HOOKS_JSON_PATH, 'utf-8');
-    expect(raw).not.toContain('post-compact.mjs');
-    expect(raw).not.toContain('pre-compact.mjs');
-    expect(copilotHooks().hooks.PreCompact).toBeUndefined();
-    const sessionStartCommands = copilotHooks().hooks.SessionStart[0].hooks.map((hook) => hook.command);
+    for (const script of ['post-compact.mjs', 'pre-compact.mjs', 'subagent-start.mjs', 'subagent-track.mjs']) {
+      expect(raw).not.toContain(script);
+    }
+    const hooks = copilotHooks().hooks;
+    expect(hooks.PreCompact).toBeUndefined();
+    expect(hooks.SubagentStart).toBeUndefined();
+    expect(hooks.SubagentStop).toBeUndefined();
+    const sessionStartCommands = hooks.SessionStart[0].hooks.map((hook) => hook.command);
     expect(sessionStartCommands.some((command) => command.includes('kb-promote-gate.mjs'))).toBe(false);
   });
 });

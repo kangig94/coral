@@ -156,8 +156,8 @@ function silenceStdoutErrors() {
 /** Envelope fields Copilot reads only at the top level. Everything else stays enveloped. */
 const COPILOT_HOISTED_FIELDS = ['additionalContext'];
 
-export function hookOutputForHost(value, host = hostKind()) {
-  if (host !== 'copilot') return value;
+function hookOutputForHost(value) {
+  if (hostKind() !== 'copilot') return value;
   const envelope = value?.hookSpecificOutput;
   if (envelope === null || typeof envelope !== 'object' || Array.isArray(envelope)) return value;
 
