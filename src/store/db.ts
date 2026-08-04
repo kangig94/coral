@@ -13,6 +13,7 @@ import {
   STORE_PRODUCT_VERSION_META_KEY,
   type StoreFormatClassification,
   type StoreFormatDescription,
+  type StoreFormatFingerprint,
 } from './format-fingerprint.js';
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
@@ -72,6 +73,11 @@ type WritableStoreOptions = {
 };
 
 export type OpenStoreOptions = ReadonlyStoreOptions | WritableStoreOptions;
+
+export type StoreFormatClassificationTarget = Readonly<{
+  fingerprint: string;
+  productVersion: string;
+}>;
 
 /**
  * Journal pragma configuration mode.
@@ -139,22 +145,24 @@ function stringMetadataValue(metadata: StoredMetadataValue): string | null {
 }
 
 function corruptOrUnsupported(
-  current: StoreFormatDescription,
+  currentFingerprint: StoreFormatFingerprint,
+  currentProductVersion: string,
   storedFingerprint: string | null,
   storedProductVersion: string | null,
 ): StoreFormatClassification {
   return {
     kind: 'corrupt-or-unsupported',
-    currentFingerprint: current.fingerprint,
-    currentProductVersion: current.productVersion,
+    currentFingerprint,
+    currentProductVersion,
     storedFingerprint,
     storedProductVersion,
   };
 }
 
-export function classifyStoreFormat(db: Database, current: StoreFormatDescription): StoreFormatClassification {
-  if (!isStoreFormatFingerprint(current.fingerprint)) {
-    throw new TypeError(`Invalid current store format fingerprint: ${current.fingerprint}`);
+export function classifyStoreFormat(db: Database, current: StoreFormatClassificationTarget): StoreFormatClassification {
+  const currentFingerprint = current.fingerprint;
+  if (!isStoreFormatFingerprint(currentFingerprint)) {
+    throw new TypeError(`Invalid current store format fingerprint: ${currentFingerprint}`);
   }
   const currentProductVersion = validateProductVersion(current.productVersion);
   if (currentProductVersion === null) {
@@ -169,37 +177,37 @@ export function classifyStoreFormat(db: Database, current: StoreFormatDescriptio
   const storedProductVersion = stringMetadataValue(versionMetadata);
 
   if (!isStoreFormatFingerprint(storedFingerprint)) {
-    return corruptOrUnsupported(current, storedFingerprint, storedProductVersion);
+    return corruptOrUnsupported(currentFingerprint, currentProductVersion, storedFingerprint, storedProductVersion);
   }
 
   if (versionMetadata.kind === 'absent') {
-    return storedFingerprint === current.fingerprint
+    return storedFingerprint === currentFingerprint
       ? {
           kind: 'legacy-adoptable',
-          currentFingerprint: current.fingerprint,
+          currentFingerprint,
           currentProductVersion,
           storedFingerprint,
         }
-      : corruptOrUnsupported(current, storedFingerprint, null);
+      : corruptOrUnsupported(currentFingerprint, currentProductVersion, storedFingerprint, null);
   }
 
   if (storedProductVersion === null) {
-    return corruptOrUnsupported(current, storedFingerprint, null);
+    return corruptOrUnsupported(currentFingerprint, currentProductVersion, storedFingerprint, null);
   }
   const validStoredProductVersion = validateProductVersion(storedProductVersion);
   if (validStoredProductVersion === null) {
-    return corruptOrUnsupported(current, storedFingerprint, storedProductVersion);
+    return corruptOrUnsupported(currentFingerprint, currentProductVersion, storedFingerprint, storedProductVersion);
   }
 
   const precedence = compareProductVersions(validStoredProductVersion, currentProductVersion);
   const identity = {
-    currentFingerprint: current.fingerprint,
+    currentFingerprint,
     currentProductVersion,
     storedFingerprint,
     storedProductVersion,
   };
   if (precedence > 0) return { kind: 'newer-incompatible', ...identity };
-  if (storedFingerprint === current.fingerprint) return { kind: 'compatible', ...identity };
+  if (storedFingerprint === currentFingerprint) return { kind: 'compatible', ...identity };
   if (precedence < 0) return { kind: 'older-incompatible', ...identity };
   return { kind: 'corrupt-or-unsupported', ...identity };
 }
@@ -207,7 +215,7 @@ export function classifyStoreFormat(db: Database, current: StoreFormatDescriptio
 export function classifyStoreFile(
   path: string,
   storage: Pick<StoragePort, 'existsSync'>,
-  current: StoreFormatDescription,
+  current: StoreFormatClassificationTarget,
 ): StoreFormatClassification {
   if (path !== ':memory:' && !storage.existsSync(path)) return { kind: 'absent' };
   const db = new DatabaseSync(path, { readOnly: path !== ':memory:' }) as unknown as Database;
