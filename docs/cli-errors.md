@@ -61,6 +61,7 @@ This only affects malformed or truncated backend responses. In normal operation 
 | `coordinator_socket_bind_failed`      | An offline operator command could not bind the coordinator socket because of a path, permission, or platform failure                                                                                                                                                    |
 | `legacy_foreign_generation`           | The legacy tree belongs to a different or unreadable generation; `store-reset discard --target legacy` always refuses without touching it                                                                                                                                                         |
 | `legacy_source_not_quiescent`         | A generation-boundary operation could not acquire its lock or drain a live writer lease                                                                                                                                                                                 |
+| `active_store_coordination_invalid`   | Coral cannot safely use the active-store selection or transition record because a filesystem-trust check failed, or because the transition record is corrupt or oversized                                                                                              |
 | `store_newer_incompatible`            | The active generated store has a valid product version newer than this build                                                                                                                                                                                             |
 | `store_older_incompatible`            | The active generated store has an older product version and a different format fingerprint                                                                                                                                                                              |
 | `store_corrupt_or_unsupported`        | The active generated store has missing, malformed, corrupt, or otherwise unsupported format metadata                                                                                                                                                                    |
@@ -100,6 +101,7 @@ Generation-boundary and offline-operator refusals keep the same CLI exit whether
 | `coordinator_socket_bind_failed`    | `1`                   | `409`       | `1`                      |
 | `legacy_foreign_generation`         | `1`                   | `409`       | `1`                      |
 | `legacy_source_not_quiescent`       | `1`                   | `409`       | `1`                      |
+| `active_store_coordination_invalid` | `1`                   | `409`       | `1`                      |
 | `store_newer_incompatible`          | `1`                   | `409`       | `1`                      |
 | `store_older_incompatible`          | `1`                   | `409`       | `1`                      |
 | `store_corrupt_or_unsupported`      | `1`                   | `409`       | `1`                      |

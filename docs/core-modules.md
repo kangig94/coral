@@ -42,7 +42,7 @@ Each domain is self-contained: its own contract (events, projection, read-models
 
 | Domain   | Responsibility                                                                                                                                                  |
 | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Jobs     | Job lifecycle truth — launch, admit, wait, abort, terminal outcome, cause references, startup reconciliation, cross-namespace adoption.                         |
+| Jobs     | Job lifecycle truth — launch, admit, wait, abort, terminal outcome, cause references, startup reconciliation.                                                   |
 | Sessions | Session persistence and continuity — open, checkpoint, interrupt, provider failure, close, atomic storage, lookup by id or ref.                                 |
 | Workflow | DSL parsing, semantic plan compilation, pipeline execution (launch and retry intertwined), drain handling, resume-from-projection.                              |
 | Discuss  | Multi-agent discussion loop — pure state machine at the core, imperative shell around it for persistence, bids, speeches, follow-ups, synthesis, and snapshots. |
