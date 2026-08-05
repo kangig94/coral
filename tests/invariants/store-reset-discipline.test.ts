@@ -358,8 +358,8 @@ describe('store reset discipline invariants', () => {
     const importers = allSourcePaths()
       .filter((path) => sourceImports(path).includes(BACKEND_STORE_RESET_PATH))
       .sort();
-    // V2.4 names startup-store-routing as the lifecycle seam that owns selection resolution, transition
-    // recovery, and the adoption-lock scope; it is a deliberate reset owner, not leaked backend access.
+    // Startup-store routing owns selection resolution, transition recovery, and the adoption-lock scope; it
+    // is a deliberate reset owner, not leaked backend access.
     expect(importers).toEqual([
       'src/coordinator/lifecycle.ts',
       ACTIVE_STORE_SELECTION_COORDINATION_PATH,

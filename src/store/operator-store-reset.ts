@@ -2,7 +2,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 
 import type { BackendRoutingResult } from '../infra/backend-routing.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
+import { resolveRunningBundleDir, type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import type { ForeignTargetValidator } from '../infra/handoff-target.js';
 import { socketPathForRunDir } from '../infra/path/index.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
@@ -113,15 +113,11 @@ async function discardGeneratedStore(
   paths: StoreResetTargetPaths,
 ): Promise<StoreResetDiscardDecision> {
   const entrypoint = process.argv[1];
-  const currentBundleDir =
-    options.currentBundleDir ??
-    (() => {
-      if (entrypoint === undefined) {
-        throw new Error('Store reset cannot resolve the executing bundle directory.');
-      }
-      const executable = options.runtime.storage.realpathSync(resolve(entrypoint));
-      return dirname(executable);
-    })();
+  const pluginRoot = entrypoint === undefined ? options.runtime.env.cwd() : dirname(dirname(resolve(entrypoint)));
+  const currentBundleDir = options.currentBundleDir ?? resolveRunningBundleDir(pluginRoot);
+  if (currentBundleDir === null) {
+    throw documentedCoralSetupError({ code: 'startup_bundle_unresolvable', pluginRoot });
+  }
   const authority = createBackendStoreResetAuthority(
     options.runtime,
     { acquiredViaHandoff: false },

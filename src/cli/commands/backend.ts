@@ -245,7 +245,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   storeResetCommand
     .command('discard')
-    .description('Quarantine and replace an incompatible generated store; defer unchanged to a newer owning build')
+    .description('Quarantine and replace an incompatible generated store; replay this command on a newer owning build')
     .requiredOption(
       '--target <target>',
       'Store generation to discard (current; gen2 also accepted, legacy is inspection-only)',
@@ -263,7 +263,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
             { pluginRoot: getPluginRoot(), activeSelectionTarget: result.target },
           );
           if (continuation.kind === 'run-current') {
-            process.stderr.write('The selected Coral build could not accept the store-reset handoff.\n');
+            process.stderr.write(
+              'This Coral process could not finish draining stdout, so store-reset delegation was abandoned before any destructive step. Nothing was changed. Retry the command.\n',
+            );
             process.exitCode = errorCodeToExit('transient');
             return;
           }
@@ -272,9 +274,11 @@ export function registerBackendCommands(program: Command, operations: BackendCom
               renderHandoffNotice(continuation.outcome);
               return;
             case 'handoff-exit':
+              process.stderr.write(`Coral ${continuation.version} ran the delegated store-reset command.\n`);
               process.exitCode = continuation.outcome.exitCode;
               return;
             case 'handoff-signal':
+              process.stderr.write(`Coral ${continuation.version} ran the delegated store-reset command.\n`);
               process.kill(process.pid, continuation.outcome.signal);
               return;
             default:

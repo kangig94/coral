@@ -571,6 +571,7 @@ describe('operator store-reset discard', () => {
           storeFormat: STORE_FORMAT,
           acquireSocketGuard: noSocketGuard,
           maintenanceTimeoutMs: 25,
+          currentBundleDir: baseDir,
           validateSelectedTarget: () => {
             throw new Error('no selected target is expected in this case');
           },
@@ -692,6 +693,7 @@ describe('operator store-reset discard', () => {
           storeFormat: STORE_FORMAT,
           acquireSocketGuard: noSocketGuard,
           maintenanceTimeoutMs: 25,
+          currentBundleDir: baseDir,
           validateSelectedTarget: () => {
             throw new Error('no selected target is expected in this case');
           },
@@ -725,6 +727,7 @@ describe('operator store-reset discard', () => {
       build: CURRENT_BUILD,
       storeFormat: STORE_FORMAT,
       acquireSocketGuard: noSocketGuard,
+      currentBundleDir: baseDir,
       validateSelectedTarget: () => {
         throw new Error('no selected target is expected in this case');
       },
@@ -763,6 +766,7 @@ describe('operator store-reset discard', () => {
         build: CURRENT_BUILD,
         storeFormat: STORE_FORMAT,
         acquireSocketGuard: noSocketGuard,
+        currentBundleDir: baseDir,
         validateSelectedTarget: () => {
           throw new Error('no selected target is expected in this case');
         },
@@ -778,6 +782,7 @@ describe('operator store-reset discard', () => {
       build: CURRENT_BUILD,
       storeFormat: STORE_FORMAT,
       acquireSocketGuard: noSocketGuard,
+      currentBundleDir: baseDir,
       validateSelectedTarget: () => {
         throw new Error('no selected target is expected in this case');
       },
@@ -787,10 +792,38 @@ describe('operator store-reset discard', () => {
     expect(readdirSync(stagingRoot)).toEqual([]);
     expect(classifyStoreFile(dbPath, runtime.storage, STORE_FORMAT).kind).toBe('compatible');
   });
+
+  it('uses the documented startup refusal when the executing bundle directory cannot be resolved', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const originalEntrypoint = process.argv[1];
+    process.argv[1] = join(baseDir, 'plugin', 'bridge', 'coral-cli.cjs');
+
+    try {
+      await expect(
+        discardStoreReset({
+          target: 'gen2',
+          runtime,
+          build: CURRENT_BUILD,
+          storeFormat: STORE_FORMAT,
+          acquireSocketGuard: noSocketGuard,
+          validateSelectedTarget: () => {
+            throw new Error('selection validation must not run without a bundle directory');
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: 'startup_bundle_unresolvable',
+        context: { pluginRoot: join(baseDir, 'plugin') },
+      });
+    } finally {
+      if (originalEntrypoint === undefined) process.argv.splice(1, 1);
+      else process.argv[1] = originalEntrypoint;
+    }
+  });
 });
 
 describe('backend store-reset commands', () => {
-  it('describes discard as deferring unchanged to a newer owning build', () => {
+  it('describes discard as replaying the command on a newer owning build', () => {
     const program = new Command();
     registerBackendCommands(program, {
       storeReset: { list: () => ({ incidents: [] }), report: async () => publicReport(), discard: operationsDiscard },
@@ -802,7 +835,7 @@ describe('backend store-reset commands', () => {
       ?.commands.find((command) => command.name() === 'discard');
 
     expect(discard?.description()).toBe(
-      'Quarantine and replace an incompatible generated store; defer unchanged to a newer owning build',
+      'Quarantine and replace an incompatible generated store; replay this command on a newer owning build',
     );
   });
 
@@ -811,6 +844,7 @@ describe('backend store-reset commands', () => {
     const discard = vi.fn(async () => ({ kind: 'handoff' as const, target, source: 'active-selection' as const }));
     mockState.runHandoff.mockResolvedValue({
       kind: 'delegated',
+      version: '2.0.0',
       outcome: { kind: 'handoff-success', version: '2.0.0' },
     });
     const operations: StoreResetCommandOperations = {
@@ -834,7 +868,7 @@ describe('backend store-reset commands', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
-  it('exits transiently when the selected owner cannot accept the discard handoff', async () => {
+  it('exits transiently when this process cannot finish preparing the discard handoff', async () => {
     const target = Object.freeze({}) as ValidatedHandoffTarget;
     mockState.runHandoff.mockResolvedValue({ kind: 'run-current' });
     const operations: StoreResetCommandOperations = {
@@ -846,8 +880,42 @@ describe('backend store-reset commands', () => {
     await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
 
     expect(stdout).toBe('');
-    expect(stderr).toBe('The selected Coral build could not accept the store-reset handoff.\n');
+    expect(stderr).toBe(
+      'This Coral process could not finish draining stdout, so store-reset delegation was abandoned before any destructive step. Nothing was changed. Retry the command.\n',
+    );
     expect(process.exitCode).toBe(75);
+  });
+
+  it.each([
+    {
+      label: 'exit',
+      outcome: { kind: 'handoff-exit' as const, exitCode: 23 },
+    },
+    {
+      label: 'signal',
+      outcome: { kind: 'handoff-signal' as const, signal: 'SIGTERM' as const },
+    },
+  ])('names the newer build before mirroring a delegated discard $label', async ({ outcome }) => {
+    const target = Object.freeze({}) as ValidatedHandoffTarget;
+    const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    mockState.runHandoff.mockResolvedValue({ kind: 'delegated', version: '2.0.0', outcome });
+    const operations: StoreResetCommandOperations = {
+      list: () => ({ incidents: [] }),
+      report: async () => publicReport(),
+      discard: async () => ({ kind: 'handoff', target, source: 'active-selection' }),
+    };
+
+    await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
+
+    expect(stdout).toBe('');
+    expect(stderr).toBe('Coral 2.0.0 ran the delegated store-reset command.\n');
+    if (outcome.kind === 'handoff-exit') {
+      expect(process.exitCode).toBe(23);
+      expect(kill).not.toHaveBeenCalled();
+    } else {
+      expect(process.exitCode).toBeUndefined();
+      expect(kill).toHaveBeenCalledWith(process.pid, 'SIGTERM');
+    }
   });
 
   it('identifies the selected target when no incidents are retained', async () => {

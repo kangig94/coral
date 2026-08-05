@@ -111,7 +111,7 @@ export type HandoffOutcome =
 
 export type HandoffContinuationResult =
   | Readonly<{ kind: 'run-current' }>
-  | Readonly<{ kind: 'delegated'; outcome: HandoffOutcome }>;
+  | Readonly<{ kind: 'delegated'; version: string; outcome: HandoffOutcome }>;
 
 export type CanonicalSocketRelease = () => Promise<void>;
 
@@ -135,7 +135,7 @@ type ObservedChild = Readonly<{
 
 type RoutingResolution = Readonly<{
   routing: BackendRoutingResult;
-  runtime: Pick<Runtime, 'env' | 'paths'>;
+  runtime: Pick<Runtime, 'env' | 'paths' | 'storage'>;
   time: TimePort;
 }>;
 
@@ -229,21 +229,27 @@ function routeAuthenticatedHealth(health: LiveIncumbentHealth): BackendRoutingRe
   });
 }
 
+async function readLiveCoordinatorHealth(
+  runtime: Pick<Runtime, 'env' | 'paths' | 'storage'>,
+  time: TimePort,
+): Promise<LiveIncumbentHealth | null> {
+  const discovery = probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
+  if (discovery === null) return null;
+
+  const health = await readAuthenticatedHealth(discovery, time);
+  return health !== null &&
+    health.status !== 'draining' &&
+    discoveryMatchesHealth(discovery, runtime.paths.coral.coordinator.socketPath, health)
+    ? health
+    : null;
+}
+
 async function resolveHandoffRouting(pluginRoot?: string, timePort?: TimePort): Promise<RoutingResolution> {
   const flavor = pluginRoot === undefined ? resolveBuildFlavor(process.env) : readBuildFlavor(pluginRoot);
   const runtime = createRealRuntime(flavor);
   const time = timePort ?? runtime.time;
-  const discovery = probeCoordinator({ storage: runtime.storage, env: runtime.env, paths: runtime.paths });
-  if (discovery === null) {
-    return { routing: createUseCurrentBackendRouting({ source: 'current-build' }), runtime, time };
-  }
-
-  const health = await readAuthenticatedHealth(discovery, time);
-  if (
-    health === null ||
-    health.status === 'draining' ||
-    !discoveryMatchesHealth(discovery, runtime.paths.coral.coordinator.socketPath, health)
-  ) {
+  const health = await readLiveCoordinatorHealth(runtime, time);
+  if (health === null) {
     return { routing: createUseCurrentBackendRouting({ source: 'current-build' }), runtime, time };
   }
   return { routing: routeAuthenticatedHealth(health), runtime, time };
@@ -312,7 +318,6 @@ async function observeBackendStartupLiveness(observation: ObservedChild, time: T
   let timer: TimerHandle | null = null;
   const stillRunning = new Promise<null>((resolveAlive) => {
     timer = time.setTimeout(() => resolveAlive(null), BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS);
-    timer.unref?.();
   });
 
   try {
@@ -445,15 +450,23 @@ export async function runHandoff(
         // prevents a broken bundle that exits at once from being reported as a successful cold-start handoff.
         const earlyOutcome = await observeBackendStartupLiveness(childObservation, time);
         if (earlyOutcome !== null) {
-          return { kind: 'delegated', outcome: endedChildOutcome(earlyOutcome) };
+          const liveCoordinator = await readLiveCoordinatorHealth(runtime, time);
+          return liveCoordinator === null
+            ? { kind: 'delegated', version: execution.manifest.version, outcome: endedChildOutcome(earlyOutcome) }
+            : {
+                kind: 'delegated',
+                version: execution.manifest.version,
+                outcome: handoffOutcome(execution.manifest.version, { code: 0, signal: null }),
+              };
         }
         return {
           kind: 'delegated',
+          version: execution.manifest.version,
           outcome: handoffOutcome(execution.manifest.version, { code: 0, signal: null }),
         };
       }
       const outcome = handoffOutcome(execution.manifest.version, await childObservation.outcome);
-      return { kind: 'delegated', outcome };
+      return { kind: 'delegated', version: execution.manifest.version, outcome };
     }
   }
 }

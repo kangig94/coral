@@ -273,12 +273,14 @@ describe('handoff-runner', () => {
     const bundleDir = roots[0];
     const target = validatedTarget(bundleDir);
     let child: ChildProcess | undefined;
-    const confirmationTimer = { unref: vi.fn() };
+    const confirmationTimer = {};
+    const confirmationDelays: number[] = [];
     let confirmAlive: (() => void) | undefined;
     const time: TimePort = {
       now: () => 0,
       sleep: async () => {},
-      setTimeout: vi.fn((fn: () => void) => {
+      setTimeout: vi.fn((fn: () => void, ms: number) => {
+        confirmationDelays.push(ms);
         confirmAlive = fn;
         return confirmationTimer;
       }),
@@ -307,8 +309,10 @@ describe('handoff-runner', () => {
       stdio: 'inherit',
       detached: true,
     });
-    expect(time.setTimeout).toHaveBeenCalledWith(expect.any(Function), 100);
-    expect(confirmationTimer.unref).toHaveBeenCalledOnce();
+    expect(time.setTimeout).toHaveBeenCalledOnce();
+    expect(confirmationDelays).toHaveLength(1);
+    expect(Number.isFinite(confirmationDelays[0])).toBe(true);
+    expect(confirmationDelays[0]).toBeGreaterThan(0);
 
     let settled = false;
     void result.then(() => {
@@ -336,19 +340,47 @@ describe('handoff-runner', () => {
     expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
-  it.each([0, 23])('should report an immediate backend startup exit with code %s as non-success', async (code) => {
+  it('should accept an immediate backend startup exit when a live coordinator answers', async () => {
     const target = validatedTarget(roots[0]);
     let child: ChildProcess | undefined;
     mockState.spawn.mockImplementationOnce(() => {
-      child = childThatExits(code, null);
+      child = childThatExits(0, null);
       return child;
     });
 
     await expect(
       runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
-    ).resolves.toEqual({ kind: 'delegated', outcome: { kind: 'handoff-exit', exitCode: code } });
+    ).resolves.toMatchObject({
+      kind: 'delegated',
+      version: manifest.version,
+      outcome: { kind: 'handoff-success', version: manifest.version },
+    });
+    expect(mockState.probeCoordinator).toHaveBeenCalledOnce();
+    expect(mockState.health).toHaveBeenCalledOnce();
     expect(child?.unref).toHaveBeenCalledOnce();
   });
+
+  it.each([0, 23])(
+    'should report an immediate backend startup exit with code %s when no coordinator is live',
+    async (code) => {
+      const target = validatedTarget(roots[0]);
+      let child: ChildProcess | undefined;
+      mockState.probeCoordinator.mockReturnValue(null);
+      mockState.spawn.mockImplementationOnce(() => {
+        child = childThatExits(code, null);
+        return child;
+      });
+
+      await expect(
+        runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
+      ).resolves.toEqual({
+        kind: 'delegated',
+        version: manifest.version,
+        outcome: { kind: 'handoff-exit', exitCode: code },
+      });
+      expect(child?.unref).toHaveBeenCalledOnce();
+    },
+  );
 
   it('should release a held canonical socket before the final byte check and spawn', async () => {
     const order: string[] = [];
@@ -439,10 +471,12 @@ describe('handoff-runner', () => {
 
     await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
       kind: 'delegated',
+      version: manifest.version,
       outcome: { kind: 'handoff-exit', exitCode: 23 },
     });
     await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).resolves.toEqual({
       kind: 'delegated',
+      version: manifest.version,
       outcome: { kind: 'handoff-signal', signal: 'SIGTERM' },
     });
   });
@@ -455,5 +489,18 @@ describe('handoff-runner', () => {
     });
 
     await expect(runHandoff(cliOperation('run'), { pluginRoot: '/plugin/root' })).rejects.toThrow('spawn failed');
+  });
+
+  it('should reject a backend startup spawn failure before the child reports spawn', async () => {
+    const target = validatedTarget(roots[0]);
+    mockState.spawn.mockImplementationOnce(() => {
+      const child = new EventEmitter() as ChildProcess;
+      queueMicrotask(() => child.emit('error', new Error('backend spawn failed')));
+      return child;
+    });
+
+    await expect(
+      runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
+    ).rejects.toThrow('backend spawn failed');
   });
 });

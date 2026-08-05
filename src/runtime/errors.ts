@@ -165,8 +165,8 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
   startup_bundle_unresolvable: {
     userMessage: "Coral cannot resolve this installation's running backend bundle directory.",
-    remediation:
-      'Reinstall or update the Coral plugin so its bridge bundle and manifest are present, then start Coral again.',
+    remediation: (context) =>
+      `Reinstall or update the Coral plugin at ${stringContextValue(context, 'pluginRoot', '<plugin-root>')} so its bridge bundle and manifest are present, then start Coral again.`,
   },
   coordinator_socket_in_use: {
     userMessage: (context) =>

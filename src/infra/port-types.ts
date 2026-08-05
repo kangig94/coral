@@ -27,6 +27,7 @@ export type StorageBigIntStat = {
   readonly dev: bigint;
   readonly ino: bigint;
   readonly mode: bigint;
+  readonly uid?: bigint;
   readonly size: bigint;
   readonly mtimeNs: bigint;
   isDirectory(): boolean;

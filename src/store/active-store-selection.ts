@@ -651,7 +651,7 @@ function readBoundedRecord(
   if (!pathBefore.isFile()) return { kind: 'rejected', failureCode: 'record_not_regular' };
   if ((pathBefore.mode & PERMISSION_BITS) !== PRIVATE_FILE_MODE) {
     const currentUid = process.getuid?.();
-    const ownerUid = (pathBefore as StorageBigIntStat & { readonly uid?: bigint }).uid;
+    const ownerUid = pathBefore.uid;
     // Mode drift is repairable only for the current user's regular file. A foreign owner is a trust boundary,
     // not state an upgrade may silently adopt; abstract storage ports without uid metadata must prove authority
     // by allowing the chmod itself.

@@ -6,6 +6,7 @@ import {
   closeSync,
   existsSync,
   fdatasyncSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -776,7 +777,7 @@ function writeAtomicDurableSyncNode(
   try {
     fd = mode === undefined ? openSync(tempPath, 'w') : openSync(tempPath, 'w', mode);
     if (mode !== undefined) {
-      chmodSync(tempPath, mode);
+      fchmodSync(fd, mode);
     }
     writeAllSync(fd, normalizeStorageBuffer(data, options?.encoding ?? 'utf-8'));
     fdatasyncSync(fd);

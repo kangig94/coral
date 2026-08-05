@@ -871,6 +871,9 @@ async function runLifecycleStartup({
     if (preinjectedStoreServices !== null) {
       // Production starts with an empty service ref. Test composition may pre-inject an in-memory store, which
       // has no filesystem selection or reset state to coordinate and must not consume deterministic IDs.
+      if (preinjectedStoreServices.storeDb.location() !== null) {
+        throw new Error('Pre-injected lifecycle store must be non-filesystem-backed.');
+      }
       storeDb = preinjectedStoreServices.storeDb;
     } else {
       const resetAuthority = createBackendStoreResetAuthority(
@@ -906,6 +909,11 @@ async function runLifecycleStartup({
       });
       if (routing.kind === 'handoff') {
         throw new StartupStoreHandoffError(routing.target);
+      }
+      if (routing.kind === 'reset-newer-invalid') {
+        backendLog.warn(
+          `Recovered the newer-incompatible active store after selected bundle ${routing.evidence.bundleDir} failed validation (${routing.evidence.failure}).`,
+        );
       }
       storeDb = routing.db;
     }
