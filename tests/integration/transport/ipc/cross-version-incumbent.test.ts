@@ -189,7 +189,10 @@ describe('cross-version incumbent', () => {
     expect(shutdownRequests).toBe(0);
     expect(stderrWrite).toHaveBeenCalledTimes(1);
     expect(stderrWrite).toHaveBeenCalledWith(
-      'KB is disabled on the running Coral coordinator; continuing without a restart. A later idle restart may inherit this enabled setting.\n',
+      'KB is disabled on the running Coral coordinator, so this command will fail; continuing without a ' +
+        'restart so in-flight work is not interrupted. KB turns on at the next idle restart ' +
+        "(CORAL_BACKEND_IDLE_MS, default ~6h) — run 'coral-cli backend shutdown' to force it now if " +
+        'nothing else is running.\n',
     );
   });
 });

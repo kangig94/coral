@@ -22,7 +22,7 @@ import {
   type ForeignTargetValidationResult,
   type ValidatedHandoffTarget,
 } from '../infra/handoff-target.js';
-import type { TimePort } from '../infra/port-types.js';
+import type { TimePort, TimerHandle } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { createIpcClient } from '../transport/ipc/client.js';
@@ -32,6 +32,7 @@ import { createIpcClient } from '../transport/ipc/client.js';
 // different question — how long a CLI may wait before dispatching without an incumbent.
 const INCUMBENT_HEALTH_PROBE_TIMEOUT_MS = 3_000;
 const STDOUT_HANDOFF_DRAIN_TIMEOUT_MS = 3_000;
+const BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS = 100;
 const CLI_HANDOFF_GUARD_ENV = 'CORAL_CLI_HANDOFF_DELEGATED';
 
 const handoffSuccessBrand: unique symbol = Symbol('HandoffSuccess');
@@ -278,6 +279,27 @@ function handoffOutcome(version: string, outcome: ChildOutcome): HandoffOutcome 
   });
 }
 
+function endedChildOutcome(outcome: ChildOutcome): Exclude<HandoffOutcome, HandoffSuccess> {
+  if (outcome.signal !== null) {
+    return Object.freeze({ kind: 'handoff-signal', signal: outcome.signal });
+  }
+  return Object.freeze({ kind: 'handoff-exit', exitCode: outcome.code ?? 1 });
+}
+
+async function observeBackendStartupLiveness(observation: ObservedChild, time: TimePort): Promise<ChildOutcome | null> {
+  let timer: TimerHandle | null = null;
+  const stillRunning = new Promise<null>((resolveAlive) => {
+    timer = time.setTimeout(() => resolveAlive(null), BACKEND_STARTUP_LIVENESS_CONFIRMATION_MS);
+    timer.unref?.();
+  });
+
+  try {
+    return await Promise.race([observation.outcome, stillRunning]);
+  } finally {
+    time.clearTimeout(timer);
+  }
+}
+
 function delegatedArguments(operation: HandoffOperation): readonly string[] {
   switch (operation.kind) {
     case 'cli-invocation':
@@ -414,6 +436,12 @@ export async function runHandoff(
       await childObservation.spawned;
       if (operation.kind === 'backend-startup') {
         child.unref();
+        // The selected backend starts immediately; this bounded window delays only the retiring delegator and
+        // prevents a broken bundle that exits at once from being reported as a successful cold-start handoff.
+        const earlyOutcome = await observeBackendStartupLiveness(childObservation, time);
+        if (earlyOutcome !== null) {
+          return { kind: 'delegated', outcome: endedChildOutcome(earlyOutcome) };
+        }
         return {
           kind: 'delegated',
           outcome: handoffOutcome(execution.manifest.version, { code: 0, signal: null }),

@@ -1,5 +1,6 @@
 import { InvalidArgumentError, type Command } from 'commander';
 
+import { runHandoff } from '../../coordinator/handoff-runner.js';
 import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever } from '../../infra/error-format.js';
@@ -29,6 +30,7 @@ import {
 } from '../../transport/rpc/catalog.js';
 import { getPluginRoot } from '../dispatch.js';
 import { emitError } from '../emit.js';
+import { errorCodeToExit } from '../errors.js';
 import {
   formatBackendStatus,
   formatRecoveryQuarantineClear,
@@ -38,6 +40,7 @@ import {
   RECOVERY_REVISION_UNTIL_CLEARED,
 } from '../format/backend.js';
 import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
+import { renderHandoffNotice } from '../handoff-notice.js';
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetTarget } from '../../store/operator-store-reset.js';
 import {
@@ -242,7 +245,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   storeResetCommand
     .command('discard')
-    .description('Quarantine and replace an incompatible generated store under explicit operator control')
+    .description('Quarantine and replace an incompatible generated store; defer unchanged to a newer owning build')
     .requiredOption(
       '--target <target>',
       'Store generation to discard (current; gen2 also accepted, legacy is inspection-only)',
@@ -253,12 +256,30 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       try {
         const result = await storeReset.discard(options.target, options.flavor);
         if (result.kind === 'handoff') {
-          // A newer build owns this store, and the decision arrived before any lock or destructive step. The
-          // operator runs nothing: the newer build is the one that may reset it.
-          process.stderr.write(
-            'A newer Coral build owns this store; run the discard from that version. Nothing was changed.\n',
+          // The selection decision precedes every destructive step. Replaying the original argv lets the
+          // validated owner perform the requested reset without asking the operator to run another command.
+          const continuation = await runHandoff(
+            { kind: 'cli-invocation', argv: ['node', 'coral-cli', ...program.args] },
+            { pluginRoot: getPluginRoot(), activeSelectionTarget: result.target },
           );
-          return;
+          if (continuation.kind === 'run-current') {
+            process.stderr.write('The selected Coral build could not accept the store-reset handoff.\n');
+            process.exitCode = errorCodeToExit('transient');
+            return;
+          }
+          switch (continuation.outcome.kind) {
+            case 'handoff-success':
+              renderHandoffNotice(continuation.outcome);
+              return;
+            case 'handoff-exit':
+              process.exitCode = continuation.outcome.exitCode;
+              return;
+            case 'handoff-signal':
+              process.kill(process.pid, continuation.outcome.signal);
+              return;
+            default:
+              return assertNever(continuation.outcome);
+          }
         }
         process.stderr.write(STORE_RESET_EVIDENCE_WARNING);
         if (result.incident === null) {

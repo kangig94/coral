@@ -181,25 +181,13 @@ export function assertProjectionJobTableIntegrity(db: Database): void {
   auditedProjectionJobDataVersion.set(db, dataVersion);
 }
 
-export function countProjectedLiveJobRows(
-  db: Database,
-  filters: { bundleHash?: string; namespace?: string; excludedJobIds?: readonly string[] },
-): number {
+export function countProjectedLiveJobRows(db: Database, excludedJobIds: readonly string[] = []): number {
   assertProjectionJobTableIntegrity(db);
   const clauses = ["phase IN ('queued', 'launching', 'running')"];
   const parameters: unknown[] = [];
-  if (filters.bundleHash !== undefined) {
-    clauses.push('bundle_hash = ?');
-    parameters.push(filters.bundleHash);
-  }
-  if (filters.namespace !== undefined) {
-    clauses.push('backend_namespace = ?');
-    parameters.push(filters.namespace);
-  }
-  const excluded = filters.excludedJobIds ?? [];
-  if (excluded.length > 0) {
-    clauses.push(`job_id NOT IN (${excluded.map(() => '?').join(', ')})`);
-    parameters.push(...excluded);
+  if (excludedJobIds.length > 0) {
+    clauses.push(`job_id NOT IN (${excludedJobIds.map(() => '?').join(', ')})`);
+    parameters.push(...excludedJobIds);
   }
   return (
     db

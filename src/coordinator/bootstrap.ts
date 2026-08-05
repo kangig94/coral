@@ -55,6 +55,44 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   }
 }
 
+export async function handoffStartupToSelectedBuild(
+  pluginRoot: string,
+  startupError: StartupStoreHandoffError,
+): Promise<Readonly<{ kind: 'started' }> | Readonly<{ kind: 'failed'; error: unknown }>> {
+  try {
+    const continuation = await runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot, activeSelectionTarget: startupError.target },
+    );
+    if (continuation.kind === 'run-current') {
+      return {
+        kind: 'failed',
+        error: new Error('Validated active-store startup handoff did not start the selected backend.'),
+      };
+    }
+    switch (continuation.outcome.kind) {
+      case 'handoff-success':
+        return { kind: 'started' };
+      case 'handoff-exit':
+        return {
+          kind: 'failed',
+          error: new Error(
+            `Selected backend exited during startup handoff with code ${continuation.outcome.exitCode}.`,
+          ),
+        };
+      case 'handoff-signal':
+        return {
+          kind: 'failed',
+          error: new Error(
+            `Selected backend exited during startup handoff from signal ${continuation.outcome.signal}.`,
+          ),
+        };
+    }
+  } catch (error: unknown) {
+    return { kind: 'failed', error };
+  }
+}
+
 export async function main(): Promise<number> {
   // Before any child spawn, shed the Claude Code identity inherited from the daemon's launcher.
   shedInheritedClaudeCodeEnv(process.env);
@@ -135,18 +173,9 @@ export async function main(): Promise<number> {
 
     let startupError = error;
     if (error instanceof StartupStoreHandoffError) {
-      try {
-        const continuation = await runHandoff(
-          { kind: 'backend-startup' },
-          { pluginRoot: __PLUGIN_ROOT__, activeSelectionTarget: error.target },
-        );
-        if (continuation.kind === 'delegated' && continuation.outcome.kind === 'handoff-success') {
-          return 0;
-        }
-        startupError = new Error('Validated active-store startup handoff did not start the selected backend.');
-      } catch (handoffError: unknown) {
-        startupError = handoffError;
-      }
+      const handoff = await handoffStartupToSelectedBuild(__PLUGIN_ROOT__, error);
+      if (handoff.kind === 'started') return 0;
+      startupError = handoff.error;
     }
 
     backendLog.error('Fatal startup error', startupError);

@@ -21,12 +21,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerBackendCommands, type StoreResetCommandOperations } from '#src/cli/commands/backend.js';
 import { StoreResetCliError } from '#src/cli/errors.js';
 import { formatStoreResetReport } from '#src/cli/format/store-reset.js';
+import type * as HandoffRunnerMod from '#src/coordinator/handoff-runner.js';
 import {
   listStoreResetIncidentsLocal,
   reportStoreResetIncidentLocal,
   type StoreResetCliDependencies,
 } from '#src/cli/store-reset.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
+import type { ValidatedHandoffTarget } from '#src/infra/handoff-target.js';
 import { socketPathForRunDir } from '#src/infra/path/coordinator.js';
 import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
 import { createKbDaemonWriteRuntimeHost } from '#src/kb-daemon/runtime-host.js';
@@ -44,6 +46,15 @@ import {
 } from '#src/store/reset-incident.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
+
+const mockState = vi.hoisted(() => ({
+  runHandoff: vi.fn(),
+}));
+
+vi.mock('#src/coordinator/handoff-runner.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof HandoffRunnerMod>();
+  return { ...actual, runHandoff: mockState.runHandoff };
+});
 
 const BUILD: StrictBundleManifest = {
   version: '0.9.16',
@@ -242,6 +253,7 @@ beforeEach(() => {
   stdout = '';
   stderr = '';
   process.exitCode = undefined;
+  mockState.runHandoff.mockReset();
   vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
     stdout += chunk.toString();
     return true;
@@ -778,6 +790,66 @@ describe('operator store-reset discard', () => {
 });
 
 describe('backend store-reset commands', () => {
+  it('describes discard as deferring unchanged to a newer owning build', () => {
+    const program = new Command();
+    registerBackendCommands(program, {
+      storeReset: { list: () => ({ incidents: [] }), report: async () => publicReport(), discard: operationsDiscard },
+    });
+
+    const discard = program.commands
+      .find((command) => command.name() === 'backend')
+      ?.commands.find((command) => command.name() === 'store-reset')
+      ?.commands.find((command) => command.name() === 'discard');
+
+    expect(discard?.description()).toBe(
+      'Quarantine and replace an incompatible generated store; defer unchanged to a newer owning build',
+    );
+  });
+
+  it('delegates the original discard command to the validated newer owner and reports its version', async () => {
+    const target = Object.freeze({}) as ValidatedHandoffTarget;
+    const discard = vi.fn(async () => ({ kind: 'handoff' as const, target, source: 'active-selection' as const }));
+    mockState.runHandoff.mockResolvedValue({
+      kind: 'delegated',
+      outcome: { kind: 'handoff-success', version: '2.0.0' },
+    });
+    const operations: StoreResetCommandOperations = {
+      list: () => ({ incidents: [] }),
+      report: async () => publicReport(),
+      discard,
+    };
+
+    await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
+
+    expect(discard).toHaveBeenCalledWith('gen2', 'prod');
+    expect(mockState.runHandoff).toHaveBeenCalledWith(
+      {
+        kind: 'cli-invocation',
+        argv: ['node', 'coral-cli', 'backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'],
+      },
+      expect.objectContaining({ activeSelectionTarget: target }),
+    );
+    expect(stdout).toBe('');
+    expect(stderr).toBe('handed off to 2.0.0; use that version from now on\n');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('exits transiently when the selected owner cannot accept the discard handoff', async () => {
+    const target = Object.freeze({}) as ValidatedHandoffTarget;
+    mockState.runHandoff.mockResolvedValue({ kind: 'run-current' });
+    const operations: StoreResetCommandOperations = {
+      list: () => ({ incidents: [] }),
+      report: async () => publicReport(),
+      discard: async () => ({ kind: 'handoff', target, source: 'active-selection' }),
+    };
+
+    await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
+
+    expect(stdout).toBe('');
+    expect(stderr).toBe('The selected Coral build could not accept the store-reset handoff.\n');
+    expect(process.exitCode).toBe(75);
+  });
+
   it('identifies the selected target when no incidents are retained', async () => {
     const operations: StoreResetCommandOperations = {
       list: () => ({ incidents: [] }),

@@ -134,7 +134,7 @@ export type HealthSnapshot = {
   processStartedAt?: number;
   uptimeMs: number;
   active: number;
-  /** Live jobs across every build namespace, including work inherited during replacement. */
+  /** Jobs in a live phase; build namespace is provenance and does not scope job ownership. */
   activeJobs: number;
   liveDiscuss: number;
   queueDepth: number;

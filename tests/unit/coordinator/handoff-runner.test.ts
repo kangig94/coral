@@ -6,9 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { runHandoff, type HandoffOperation } from '#src/coordinator/handoff-runner.js';
+import { runHandoff, validateForeignHandoffTarget, type HandoffOperation } from '#src/coordinator/handoff-runner.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
+import type { TimePort } from '#src/infra/port-types.js';
 import { serializeWaitCursor } from '#src/jobs/wait.js';
 
 type StrictBundleManifest = BundleManifestMod.StrictBundleManifest;
@@ -126,11 +127,27 @@ function cliOperation(...args: string[]): HandoffOperation {
 
 function childThatExits(code: number | null, signal: NodeJS.Signals | null): ChildProcess {
   const child = new EventEmitter() as ChildProcess;
+  child.unref = vi.fn();
   queueMicrotask(() => {
     child.emit('spawn');
     queueMicrotask(() => child.emit('exit', code, signal));
   });
   return child;
+}
+
+function childThatStaysAlive(): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  child.unref = vi.fn();
+  queueMicrotask(() => child.emit('spawn'));
+  return child;
+}
+
+function validatedTarget(bundleDir: string) {
+  const validation = validateForeignHandoffTarget(bundleDir, manifest);
+  if (validation.kind !== 'validated') {
+    throw new Error(`Expected a validated target, received ${validation.kind}`);
+  }
+  return validation.target;
 }
 
 beforeEach(() => {
@@ -249,6 +266,88 @@ describe('handoff-runner', () => {
       /already delegated once/u,
     );
     expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
+  it('should bypass the CLI guard for monotone backend startup delegation and confirm liveness without exit', async () => {
+    process.env[GUARD_ENV] = 'not-a-cli-guard';
+    const bundleDir = roots[0];
+    const target = validatedTarget(bundleDir);
+    let child: ChildProcess | undefined;
+    const confirmationTimer = { unref: vi.fn() };
+    let confirmAlive: (() => void) | undefined;
+    const time: TimePort = {
+      now: () => 0,
+      sleep: async () => {},
+      setTimeout: vi.fn((fn: () => void) => {
+        confirmAlive = fn;
+        return confirmationTimer;
+      }),
+      clearTimeout: vi.fn(),
+      setInterval: vi.fn(() => confirmationTimer),
+      clearInterval: vi.fn(),
+    };
+    mockState.spawn.mockImplementationOnce(() => {
+      child = childThatStaysAlive();
+      return child;
+    });
+
+    // Startup delegates the same active-store selection again. Version precedence is strictly monotone, so
+    // the selected build cannot classify the older caller as a target and bounce back.
+    const result = runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot: '/plugin/root', activeSelectionTarget: target, time },
+    );
+    await vi.waitFor(() => expect(child?.unref).toHaveBeenCalledOnce());
+
+    expect(mockState.probeCoordinator).not.toHaveBeenCalled();
+    expect(mockState.health).not.toHaveBeenCalled();
+    expect(mockState.spawn).toHaveBeenCalledWith(process.execPath, [join(bundleDir, 'coral-backend.cjs')], {
+      cwd: '/handoff/cwd',
+      env: { CORAL_BASE_ENV: 'preserved', [GUARD_ENV]: '1' },
+      stdio: 'inherit',
+      detached: true,
+    });
+    expect(time.setTimeout).toHaveBeenCalledWith(expect.any(Function), 100);
+    expect(confirmationTimer.unref).toHaveBeenCalledOnce();
+
+    let settled = false;
+    void result.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    confirmAlive?.();
+    await expect(result).resolves.toMatchObject({
+      kind: 'delegated',
+      outcome: { kind: 'handoff-success', version: manifest.version },
+    });
+    expect(time.clearTimeout).toHaveBeenCalledWith(confirmationTimer);
+  });
+
+  it('should reject backend startup without a validated active-selection target instead of probing live health', async () => {
+    process.env[GUARD_ENV] = 'not-a-cli-guard';
+
+    await expect(runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root' })).rejects.toThrow(
+      'Backend startup handoff requires a validated active-store target.',
+    );
+
+    expect(mockState.probeCoordinator).not.toHaveBeenCalled();
+    expect(mockState.health).not.toHaveBeenCalled();
+    expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 23])('should report an immediate backend startup exit with code %s as non-success', async (code) => {
+    const target = validatedTarget(roots[0]);
+    let child: ChildProcess | undefined;
+    mockState.spawn.mockImplementationOnce(() => {
+      child = childThatExits(code, null);
+      return child;
+    });
+
+    await expect(
+      runHandoff({ kind: 'backend-startup' }, { pluginRoot: '/plugin/root', activeSelectionTarget: target }),
+    ).resolves.toEqual({ kind: 'delegated', outcome: { kind: 'handoff-exit', exitCode: code } });
+    expect(child?.unref).toHaveBeenCalledOnce();
   });
 
   it('should release a held canonical socket before the final byte check and spawn', async () => {

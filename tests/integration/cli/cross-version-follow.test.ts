@@ -211,7 +211,12 @@ describe('cross-version follow', () => {
     });
     mockState.createRealRuntime.mockReturnValue({
       storage: {},
-      time: {},
+      time: {
+        setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
+        clearTimeout: (handle: { unref?(): void } | null) => {
+          clearTimeout(handle as unknown as NodeJS.Timeout);
+        },
+      },
       env: { cwd: () => process.cwd(), fullSnapshot: () => ({ ...process.env }) },
       paths: { coral: { coordinator: { socketPath } } },
     });

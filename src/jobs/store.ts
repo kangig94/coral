@@ -779,7 +779,7 @@ export class JobStore implements JobProgressStore {
   }
 
   liveJobCount(): number {
-    return this.countProjectedLiveJobs() + this.countLiveOverrideJobs(() => true);
+    return this.countProjectedLiveJobs() + this.countLiveOverrideJobs();
   }
 
   appendProgress(jobId: string, sessionId: string | null, message: string): number {
@@ -805,12 +805,12 @@ export class JobStore implements JobProgressStore {
     return appended?.seq ?? 0;
   }
 
-  private countLiveOverrideJobs(predicate: (status: JobStatus) => boolean): number {
+  private countLiveOverrideJobs(): number {
     let count = 0;
 
     for (const jobId of this.namespaceOverrides.keys()) {
       const status = this.detail(jobId).status;
-      if (status && isLivePhase(status.phase) && predicate(status)) {
+      if (status && isLivePhase(status.phase)) {
         count += 1;
       }
     }
@@ -820,6 +820,6 @@ export class JobStore implements JobProgressStore {
 
   private countProjectedLiveJobs(): number {
     const excludedJobIds = [...this.namespaceOverrides.keys()];
-    return countProjectedLiveJobRows(this.db, { excludedJobIds });
+    return countProjectedLiveJobRows(this.db, excludedJobIds);
   }
 }
