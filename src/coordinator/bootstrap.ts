@@ -3,7 +3,9 @@ declare const __PLUGIN_ROOT__: string | undefined;
 
 import { auditBootstrapFailure, writeBootstrapDiagnostic, writeStartupErrorSentinel } from './bootstrap-diagnostics.js';
 import { BackendAlreadyRunningError } from './handoff.js';
+import { runHandoff } from './handoff-runner.js';
 import { createCoordinatorServer } from './index.js';
+import { StartupStoreHandoffError } from './lifecycle.js';
 import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
 import { backendLog } from '../infra/backend-log.js';
 import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
@@ -131,10 +133,33 @@ export async function main(): Promise<number> {
       return 0;
     }
 
-    backendLog.error('Fatal startup error', error);
-    const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'startup_failed', error, 1);
-    writeStartupErrorSentinel(__PLUGIN_ROOT__, error, diagnosticFile);
-    auditBootstrapFailure('bootstrap_startup_failed', __PLUGIN_ROOT__, 'startup_failed', error, 1, diagnosticFile);
+    let startupError = error;
+    if (error instanceof StartupStoreHandoffError) {
+      try {
+        const continuation = await runHandoff(
+          { kind: 'backend-startup' },
+          { pluginRoot: __PLUGIN_ROOT__, activeSelectionTarget: error.target },
+        );
+        if (continuation.kind === 'delegated' && continuation.outcome.kind === 'handoff-success') {
+          return 0;
+        }
+        startupError = new Error('Validated active-store startup handoff did not start the selected backend.');
+      } catch (handoffError: unknown) {
+        startupError = handoffError;
+      }
+    }
+
+    backendLog.error('Fatal startup error', startupError);
+    const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'startup_failed', startupError, 1);
+    writeStartupErrorSentinel(__PLUGIN_ROOT__, startupError, diagnosticFile);
+    auditBootstrapFailure(
+      'bootstrap_startup_failed',
+      __PLUGIN_ROOT__,
+      'startup_failed',
+      startupError,
+      1,
+      diagnosticFile,
+    );
     return 1;
   } finally {
     clearInterval(startupKeepalive);

@@ -4,11 +4,12 @@ import type { BuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { createNodeStoreResetDiagnosticSupervisor } from '../infra/store-reset-diagnostic-supervisor.js';
 import { createStoreResetInspectionFs } from '../infra/store-reset-inspection-fs.js';
+import { validateForeignHandoffTarget } from '../coordinator/handoff-runner.js';
 import { createRealRuntime } from '../runtime/real.js';
 import {
   discardStoreReset,
   resolveStoreResetTargetPaths,
-  type StoreResetDiscardResult,
+  type StoreResetDiscardDecision,
   type StoreResetTarget,
 } from '../store/operator-store-reset.js';
 import {
@@ -59,7 +60,7 @@ function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDepende
 export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal): {
   readonly list: (target: StoreResetTarget) => StoreResetIncidentListResult;
   readonly report: (target: StoreResetTarget, incidentId: string) => Promise<StoreResetPublicReport>;
-  readonly discard: (target: StoreResetTarget, flavor: BuildFlavor) => Promise<StoreResetDiscardResult>;
+  readonly discard: (target: StoreResetTarget, flavor: BuildFlavor) => Promise<StoreResetDiscardDecision>;
 } {
   const dependencies = defaultDependencies(shutdownSignal);
   return {
@@ -69,10 +70,15 @@ export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal):
   };
 }
 
+/**
+ * Returns the operator decision as-is, `handoff` arm included. A valid newer selection is answered before the
+ * maintenance and reset locks are taken, so the caller — not this function — decides what delegating means for
+ * an operator command; collapsing it here would hide the one outcome that must not proceed to destructive work.
+ */
 export function discardStoreResetLocal(
   target: StoreResetTarget,
   flavor: BuildFlavor,
-): Promise<StoreResetDiscardResult> {
+): Promise<StoreResetDiscardDecision> {
   const runtime = createRealRuntime(flavor);
   if (target === 'legacy') return discardStoreReset({ target, runtime });
   const identity = resolveStrictBundleIdentity();
@@ -85,6 +91,9 @@ export function discardStoreResetLocal(
     build: identity.manifest,
     storeFormat: currentCoralStoreFormat(),
     acquireSocketGuard: acquireStoreResetSocketGuard,
+    // Supplied here rather than defaulted inside `src/store`: the validator is the coordinator's, and the CLI
+    // is the caller that already sits above both layers.
+    validateSelectedTarget: validateForeignHandoffTarget,
   });
 }
 

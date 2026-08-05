@@ -1,20 +1,20 @@
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
+import type { BackendRoutingResult } from '../infra/backend-routing.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
-import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
+import type { ForeignTargetValidator } from '../infra/handoff-target.js';
 import { socketPathForRunDir } from '../infra/path/index.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
+  coordinateActiveStoreSelection,
   createBackendStoreResetAuthority,
   openOrResetBackendStoreDb,
-  publishBackendStoreResetIncident,
-  resumeInterruptedBackendStoreResetIncident,
+  type ActiveStoreSelectionRecoveryOutcome,
   type BackendStoreResetIncident,
 } from './backend-store-reset.js';
 import {
-  acquireGenerationAdoptionLease,
   acquireGenerationMaintenanceLease,
   resolveGenerationBoundaryPaths,
   type GenerationMaintenanceLease,
@@ -37,6 +37,8 @@ export interface StoreResetSocketGuard {
 }
 
 export type StoreResetDiscardResult = {
+  /** Present so the decision below is discriminated — a caller must not reach for incident fields on a handoff. */
+  readonly kind: 'discarded';
   readonly target: 'gen2';
   readonly flavor: BuildFlavor;
   readonly baseDir: string;
@@ -44,6 +46,10 @@ export type StoreResetDiscardResult = {
   readonly incident: BackendStoreResetIncident | null;
   readonly resumed: boolean;
 };
+
+export type StoreResetDiscardDecision =
+  | StoreResetDiscardResult
+  | Extract<BackendRoutingResult, { readonly kind: 'handoff' }>;
 
 type AcquireStoreResetSocketGuard = (
   paths: StoreResetTargetPaths,
@@ -62,6 +68,13 @@ export type StoreResetDiscardOptions =
       readonly storeFormat: StoreFormatDescription;
       readonly acquireSocketGuard: AcquireStoreResetSocketGuard;
       readonly maintenanceTimeoutMs?: number;
+      readonly currentBundleDir?: string;
+      /**
+       * Injected, never imported: the validator lives in the coordinator's handoff runner, and reaching for it
+       * from `src/store` would invert the layering and pull coordinator, transport and every domain into one
+       * import cycle. The caller that already sits above both supplies it.
+       */
+      readonly validateSelectedTarget: ForeignTargetValidator;
     };
 
 export function resolveStoreResetTargetPaths(
@@ -93,97 +106,84 @@ export function resolveStoreResetTargetPaths(
   };
 }
 
-function acquireStoreResetLock(runtime: Runtime, paths: StoreResetTargetPaths): () => void {
-  const dbDir = dirname(paths.storeDbPath);
-  runtime.storage.mkdirSync(dbDir, { recursive: true });
-  const lockPath = join(dbDir, 'store.db.reset.lock');
-  try {
-    return acquireDirectoryLockSync(lockPath, 250);
-  } catch (error: unknown) {
-    if (isDirectoryLockTimeoutError(error)) {
-      throw documentedCoralSetupError({
-        code: 'store_reset_lock_contended',
-        lockPath,
-        dbDir,
-        target: paths.target,
-        flavor: runtime.flavor,
-        baseDir: paths.baseDir,
-      });
-    }
-    throw error;
-  }
-}
-
 async function discardGeneratedStore(
   options: Extract<StoreResetDiscardOptions, { readonly target: 'gen2' }>,
   paths: StoreResetTargetPaths,
-): Promise<StoreResetDiscardResult> {
-  const adoption = await acquireGenerationAdoptionLease(options.runtime, options.storeFormat);
-  try {
-    let maintenance: GenerationMaintenanceLease;
-    try {
-      maintenance = await acquireGenerationMaintenanceLease(options.runtime, options.maintenanceTimeoutMs);
-    } catch (error: unknown) {
-      if (error instanceof CoralSetupError && error.code === 'legacy_source_not_quiescent') {
-        throw documentedCoralSetupError({
-          code: 'legacy_source_not_quiescent',
-          operation: 'store-reset',
-          holder: error.context?.holder,
-          flavor: options.runtime.flavor,
-          baseDir: paths.baseDir,
-        });
+): Promise<StoreResetDiscardDecision> {
+  const entrypoint = process.argv[1];
+  const currentBundleDir =
+    options.currentBundleDir ??
+    (() => {
+      if (entrypoint === undefined) {
+        throw new Error('Store reset cannot resolve the executing bundle directory.');
       }
-      throw error;
-    }
-    try {
-      adoption.assertOwned();
-      maintenance.assertOwned();
-
-      const authority = createBackendStoreResetAuthority(
-        options.runtime,
-        { acquiredViaHandoff: false },
-        {
+      const executable = options.runtime.storage.realpathSync(resolve(entrypoint));
+      return dirname(executable);
+    })();
+  const authority = createBackendStoreResetAuthority(
+    options.runtime,
+    { acquiredViaHandoff: false },
+    {
+      path: paths.storeDbPath,
+      namespace: 'store-reset-operator',
+      storeFormat: options.storeFormat,
+      build: options.build,
+    },
+  );
+  let recovery: ActiveStoreSelectionRecoveryOutcome = { incident: null, resumed: false };
+  const selectionResult = await coordinateActiveStoreSelection(options.runtime, authority, {
+    path: paths.storeDbPath,
+    storeFormat: options.storeFormat,
+    currentSelection: {
+      version: 1,
+      manifest: options.build,
+      bundleDir: currentBundleDir,
+      activeStoreFingerprint: options.build.storeFormatFingerprint,
+    },
+    dependencies: {
+      validateSelectedTarget: options.validateSelectedTarget,
+      acquireStoreRecoveryLease: async () => {
+        let maintenance: GenerationMaintenanceLease;
+        try {
+          maintenance = await acquireGenerationMaintenanceLease(options.runtime, options.maintenanceTimeoutMs);
+        } catch (error: unknown) {
+          if (error instanceof CoralSetupError && error.code === 'legacy_source_not_quiescent') {
+            throw documentedCoralSetupError({
+              code: 'legacy_source_not_quiescent',
+              operation: 'store-reset',
+              holder: error.context?.holder,
+              flavor: options.runtime.flavor,
+              baseDir: paths.baseDir,
+            });
+          }
+          throw error;
+        }
+        return maintenance;
+      },
+      openPreparedStore: () =>
+        openOrResetBackendStoreDb(options.runtime, authority, {
           path: paths.storeDbPath,
-          namespace: 'store-reset-operator',
           storeFormat: options.storeFormat,
-          build: options.build,
-        },
-      );
-      let resumed: BackendStoreResetIncident | null;
-      let published: BackendStoreResetIncident | undefined;
-      const releaseReset = acquireStoreResetLock(options.runtime, paths);
-      try {
-        resumed = resumeInterruptedBackendStoreResetIncident(options.runtime, authority, {
-          path: paths.storeDbPath,
-          storeFormat: options.storeFormat,
-        });
-        published = publishBackendStoreResetIncident(options.runtime, authority, {
-          path: paths.storeDbPath,
-          storeFormat: options.storeFormat,
-        });
-      } finally {
-        releaseReset();
-      }
-
-      const db = openOrResetBackendStoreDb(options.runtime, authority, {
-        path: paths.storeDbPath,
-        storeFormat: options.storeFormat,
-      });
-      db.close();
-      return {
-        target: 'gen2',
-        flavor: options.runtime.flavor,
-        baseDir: paths.baseDir,
-        storeDbPath: paths.storeDbPath,
-        incident: resumed ?? published ?? null,
-        resumed: resumed !== null,
-      };
-    } finally {
-      maintenance.release();
-    }
-  } finally {
-    adoption.release();
+        }),
+      resumeIncidentAsOperator: true,
+      recordRecoveryOutcome: (outcome) => {
+        recovery = outcome;
+      },
+    },
+  });
+  if (selectionResult.kind === 'handoff') {
+    return { kind: 'handoff', target: selectionResult.target, source: 'active-selection' };
   }
+  selectionResult.db.close();
+  return {
+    kind: 'discarded',
+    target: 'gen2',
+    flavor: options.runtime.flavor,
+    baseDir: paths.baseDir,
+    storeDbPath: paths.storeDbPath,
+    incident: recovery.incident,
+    resumed: recovery.resumed,
+  };
 }
 
 /**
@@ -191,7 +191,13 @@ async function discardGeneratedStore(
  * offline. It owns generation targeting and the socket → adoption →
  * maintenance → reset-lock acquisition order.
  */
-export async function discardStoreReset(options: StoreResetDiscardOptions): Promise<StoreResetDiscardResult> {
+export function discardStoreReset(
+  options: Extract<StoreResetDiscardOptions, { readonly target: 'gen2' }> & {
+    readonly validateSelectedTarget: ForeignTargetValidator;
+  },
+): Promise<StoreResetDiscardDecision>;
+export function discardStoreReset(options: StoreResetDiscardOptions): Promise<StoreResetDiscardResult>;
+export async function discardStoreReset(options: StoreResetDiscardOptions): Promise<StoreResetDiscardDecision> {
   if (options.target === 'legacy') {
     throw documentedCoralSetupError({
       code: 'legacy_foreign_generation',

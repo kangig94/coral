@@ -145,6 +145,8 @@ describe('active-store-selection locking', () => {
   it('should publish transition then selection before taking the reset lock and opening the store', async () => {
     const { runtime, currentSelection, authority } = harness();
     const paths = resolveActiveStoreRecordPaths(runtime);
+    mkdirSync(paths.coordinationRoot, { recursive: true, mode: 0o755 });
+    chmodSync(paths.coordinationRoot, 0o755);
     const boundary = resolveGenerationBoundaryPaths(runtime);
     const resetLock = join(runtime.paths.coral.store.dbDir, 'store.db.reset.lock');
     const events: string[] = [];
@@ -180,6 +182,7 @@ describe('active-store-selection locking', () => {
     expect(events).toEqual(['transition', 'selection', 'classify', 'open']);
     expect(existsSync(boundary.adoptionLock)).toBe(false);
     expect(existsSync(resetLock)).toBe(false);
+    expect(statSync(paths.coordinationRoot).mode & 0o777).toBe(0o700);
     expect(statSync(paths.selectionFile).mode & 0o777).toBe(0o600);
     expect(existsSync(paths.transitionFile)).toBe(false);
   });

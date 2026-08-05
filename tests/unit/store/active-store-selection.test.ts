@@ -215,7 +215,6 @@ describe('active-store-selection', () => {
     ['selection link', 'record_link'],
     ['selection directory', 'record_not_regular'],
     ['selection mode', 'record_mode'],
-    ['coordination mode', 'coordination_directory_mode'],
   ])('should distinguish an invalid %s', (_name, failureCode) => {
     const { runtime, selection } = harness();
     const paths = resolveActiveStoreRecordPaths(runtime);
@@ -230,10 +229,19 @@ describe('active-store-selection', () => {
       mkdirSync(paths.selectionFile, { mode: 0o700 });
     } else {
       writeFileSync(paths.selectionFile, encodeActiveStoreSelection(selection), { mode: 0o600 });
-      chmodSync(failureCode === 'record_mode' ? paths.selectionFile : paths.coordinationRoot, 0o755);
+      chmodSync(paths.selectionFile, 0o755);
     }
 
     expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'rejected', failureCode });
+  });
+
+  it('should tolerate a wider coordination directory while retaining private record checks', () => {
+    const { runtime, selection } = harness();
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    publishRecord(runtime, 'selectionFile', encodeActiveStoreSelection(selection));
+    chmodSync(paths.coordinationRoot, 0o755);
+
+    expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection });
   });
 
   it('should encode and decode every closed transition evidence arm', () => {

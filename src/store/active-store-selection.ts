@@ -16,7 +16,6 @@ export const ACTIVE_STORE_TRANSITION_MAX_BYTES = 32 * 1024;
 const ACTIVE_STORE_SELECTION_FILE_NAME = 'active-store-selection.v1.json';
 const ACTIVE_STORE_TRANSITION_FILE_NAME = 'active-store-transition.v1.json';
 const PRIVATE_FILE_MODE = 0o600n;
-const PRIVATE_DIRECTORY_MODE = 0o700n;
 const PERMISSION_BITS = 0o777n;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const TRANSITION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -49,7 +48,6 @@ const recordReadFailureCodes = [
   'coordination_directory_link',
   'coordination_directory_not_regular',
   'coordination_directory_not_canonical',
-  'coordination_directory_mode',
   'coordination_directory_unavailable',
   'record_link',
   'record_not_regular',
@@ -493,9 +491,6 @@ function inspectCoordinationDirectory(
     const stat = storage.statSync(coordinationRoot, { bigint: true });
     if (!stat.isDirectory()) {
       return { kind: 'rejected', failureCode: 'coordination_directory_not_regular' };
-    }
-    if ((stat.mode & PERMISSION_BITS) !== PRIVATE_DIRECTORY_MODE) {
-      return { kind: 'rejected', failureCode: 'coordination_directory_mode' };
     }
     if (storage.realpathSync(coordinationRoot) !== coordinationRoot) {
       return { kind: 'rejected', failureCode: 'coordination_directory_not_canonical' };

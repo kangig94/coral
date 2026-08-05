@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 const REPO_ROOT = process.cwd();
 const SRC_ROOT = join(REPO_ROOT, 'src');
 const BACKEND_STORE_RESET_PATH = 'src/store/backend-store-reset.ts';
+const STARTUP_STORE_ROUTING_PATH = 'src/store/startup-store-routing.ts';
 const READ_PORT_PATH = 'src/store/read-port.ts';
 const KB_QUERY_RUNTIME_PATH = 'src/read-model/kb-query-runtime.ts';
 const GENERATION_MUTATION_COORDINATION_PATH = 'src/store/generation-mutation-coordination.ts';
@@ -329,12 +330,19 @@ describe('store reset discipline invariants', () => {
     const importers = allSourcePaths()
       .filter((path) => sourceImports(path).includes(BACKEND_STORE_RESET_PATH))
       .sort();
-    expect(importers).toEqual(['src/coordinator/lifecycle.ts', 'src/store/operator-store-reset.ts']);
+    // V2.4 names startup-store-routing as the lifecycle seam that owns selection resolution, transition
+    // recovery, and the adoption-lock scope; it is a deliberate reset owner, not leaked backend access.
+    expect(importers).toEqual([
+      'src/coordinator/lifecycle.ts',
+      'src/store/operator-store-reset.ts',
+      STARTUP_STORE_ROUTING_PATH,
+    ]);
 
     const symbolAllowlist = new Set([
       BACKEND_STORE_RESET_PATH,
       'src/coordinator/lifecycle.ts',
       'src/store/operator-store-reset.ts',
+      STARTUP_STORE_ROUTING_PATH,
     ]);
     const forbiddenReferences = allSourcePaths()
       .filter((path) => !symbolAllowlist.has(path))
@@ -345,30 +353,44 @@ describe('store reset discipline invariants', () => {
     expect(forbiddenReferences).toEqual([]);
   });
 
-  it('keeps quarantine resume and publish reachable only through the direct-filesystem operator service', () => {
+  it('keeps operator reset composition behind the socket guard and shared selection coordinator', () => {
     const operatorPath = 'src/store/operator-store-reset.ts';
     const operatorSource = sourceFile(operatorPath);
+    const backendSource = sourceFile(BACKEND_STORE_RESET_PATH);
     const topLevel = findFunction(operatorPath, 'discardStoreReset').body?.getText(operatorSource) ?? '';
     const generated = findFunction(operatorPath, 'discardGeneratedStore').body?.getText(operatorSource) ?? '';
+    const recovery =
+      findFunction(BACKEND_STORE_RESET_PATH, 'recoverActiveStoreTransition').body?.getText(backendSource) ?? '';
     const targetPathsIndex = topLevel.indexOf('resolveStoreResetTargetPaths(');
     const socketIndex = topLevel.indexOf('options.acquireSocketGuard(');
     const legacyRefusalIndex = topLevel.indexOf("options.target === 'legacy'");
     const generatedIndex = topLevel.indexOf('discardGeneratedStore(');
-    const adoptionIndex = generated.indexOf('acquireGenerationAdoptionLease(');
+    const selectionIndex = generated.indexOf('coordinateActiveStoreSelection(');
     const maintenanceIndex = generated.indexOf('acquireGenerationMaintenanceLease(');
-    const resetLockIndex = generated.indexOf('acquireStoreResetLock(');
-    const resumeIndex = generated.indexOf('resumeInterruptedBackendStoreResetIncident(');
-    const publishIndex = generated.indexOf('publishBackendStoreResetIncident(');
+    const preparedOpenIndex = generated.indexOf('openOrResetBackendStoreDb(');
+    const handoffIndex = generated.indexOf("selectionResult.kind === 'handoff'");
+    const resetLockIndex = recovery.indexOf('acquireBackendStoreResetLock(');
+    const resumeIndex = recovery.indexOf('resumeInterruptedIncident(');
+    const classificationIndex = recovery.indexOf('classifyStoreForProtocol(');
+    const authorizationIndex = recovery.indexOf('authorizeClassifiedStore(');
+    const openIndex = recovery.indexOf('openPreparedStore');
 
     expect(legacyRefusalIndex).toBeGreaterThanOrEqual(0);
     expect(targetPathsIndex).toBeGreaterThan(legacyRefusalIndex);
     expect(socketIndex).toBeGreaterThan(targetPathsIndex);
     expect(generatedIndex).toBeGreaterThan(socketIndex);
-    expect(adoptionIndex).toBeGreaterThanOrEqual(0);
-    expect(maintenanceIndex).toBeGreaterThan(adoptionIndex);
-    expect(resetLockIndex).toBeGreaterThan(maintenanceIndex);
+    expect(selectionIndex).toBeGreaterThanOrEqual(0);
+    expect(maintenanceIndex).toBeGreaterThan(selectionIndex);
+    expect(preparedOpenIndex).toBeGreaterThan(maintenanceIndex);
+    expect(handoffIndex).toBeGreaterThan(preparedOpenIndex);
+    expect(resetLockIndex).toBeGreaterThanOrEqual(0);
     expect(resumeIndex).toBeGreaterThan(resetLockIndex);
-    expect(publishIndex).toBeGreaterThan(resumeIndex);
+    expect(classificationIndex).toBeGreaterThan(resumeIndex);
+    expect(authorizationIndex).toBeGreaterThan(classificationIndex);
+    expect(openIndex).toBeGreaterThan(authorizationIndex);
+    expect(generated).not.toMatch(
+      /acquireGenerationAdoptionLease|acquireStoreResetLock|resumeInterruptedBackendStoreResetIncident|publishBackendStoreResetIncident/u,
+    );
     expect(readFileSync(join(REPO_ROOT, operatorPath), 'utf8')).not.toMatch(/shutdownAndAwaitRelease/u);
     expect(readFileSync(join(REPO_ROOT, operatorPath), 'utf8')).toContain(
       'Destructive operator service used while the coordinator is deliberately',
@@ -384,6 +406,6 @@ describe('store reset discipline invariants', () => {
           .map((call) => call.relativePath),
       )
       .sort();
-    expect(destructiveCallers).toEqual([operatorPath, operatorPath]);
+    expect(destructiveCallers).toEqual([]);
   });
 });

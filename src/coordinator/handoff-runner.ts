@@ -9,11 +9,18 @@ import {
 } from '../infra/backend-routing.js';
 import { probeCoordinator, type CoordinatorDiscoveryRecord } from '../infra/backend-discovery.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
-import { readBuildFlavor, resolveStrictBundleIdentity, strictBundleManifestSchema } from '../infra/bundle-manifest.js';
+import {
+  readBuildFlavor,
+  resolveStrictBundleIdentity,
+  strictBundleManifestSchema,
+  type StrictBundleManifest,
+} from '../infra/bundle-manifest.js';
 import {
   createForeignTargetValidator,
   withValidatedHandoffTarget,
   type ForeignTargetValidator,
+  type ForeignTargetValidationResult,
+  type ValidatedHandoffTarget,
 } from '../infra/handoff-target.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -46,6 +53,7 @@ const handoffOperationSchema = z.discriminatedUnion('kind', [
       serializedCursor: z.string().min(1),
     })
     .strict(),
+  z.object({ kind: z.literal('backend-startup') }).strict(),
 ]);
 
 const liveIncumbentHealthSchema = z
@@ -86,7 +94,8 @@ type LiveIncumbentHealth = z.infer<typeof liveIncumbentHealthSchema>;
 
 export type HandoffOperation =
   | Readonly<{ kind: 'cli-invocation'; argv: readonly string[] }>
-  | Readonly<{ kind: 'wait-jobs'; jobId: string; serializedCursor: string }>;
+  | Readonly<{ kind: 'wait-jobs'; jobId: string; serializedCursor: string }>
+  | Readonly<{ kind: 'backend-startup' }>;
 
 export type HandoffSuccess = Readonly<{
   kind: 'handoff-success';
@@ -110,6 +119,7 @@ export type RunHandoffOptions = Readonly<{
   time?: TimePort;
   signal?: AbortSignal;
   releaseCanonicalSocket?: CanonicalSocketRelease;
+  activeSelectionTarget?: ValidatedHandoffTarget;
 }>;
 
 type ChildOutcome = Readonly<{
@@ -129,6 +139,13 @@ type RoutingResolution = Readonly<{
 }>;
 
 const foreignTargetValidator: ForeignTargetValidator = createForeignTargetValidator();
+
+export function validateForeignHandoffTarget(
+  bundleDir: string,
+  expectedManifest: StrictBundleManifest,
+): ForeignTargetValidationResult {
+  return foreignTargetValidator(bundleDir, expectedManifest);
+}
 
 /**
  * Raised when the delegation marker holds a value Coral never writes. Owned here rather than imported from
@@ -267,6 +284,8 @@ function delegatedArguments(operation: HandoffOperation): readonly string[] {
       return operation.argv.slice(2);
     case 'wait-jobs':
       return ['wait', 'jobs', operation.jobId, '--cursor', operation.serializedCursor];
+    case 'backend-startup':
+      return [];
   }
 }
 
@@ -337,12 +356,29 @@ export async function runHandoff(
   options: RunHandoffOptions = {},
 ): Promise<HandoffContinuationResult> {
   const operation = handoffOperationSchema.parse(operationInput) as HandoffOperation;
-  const guard = readCliHandoffGuard();
+  const guard = operation.kind === 'backend-startup' ? undefined : readCliHandoffGuard();
   if (isDisplayOnlyInvocation(operation)) {
     return { kind: 'run-current' };
   }
 
-  const { routing, runtime, time } = await resolveHandoffRouting(options.pluginRoot, options.time);
+  const resolution =
+    options.activeSelectionTarget !== undefined
+      ? (() => {
+          const flavor =
+            options.pluginRoot === undefined ? resolveBuildFlavor(process.env) : readBuildFlavor(options.pluginRoot);
+          const runtime = createRealRuntime(flavor);
+          return {
+            routing: { kind: 'handoff', target: options.activeSelectionTarget, source: 'active-selection' } as const,
+            runtime,
+            time: options.time ?? runtime.time,
+          };
+        })()
+      : operation.kind === 'backend-startup'
+        ? (() => {
+            throw new Error('Backend startup handoff requires a validated active-store target.');
+          })()
+        : await resolveHandoffRouting(options.pluginRoot, options.time);
+  const { routing, runtime, time } = resolution;
   switch (routing.kind) {
     case 'use-current':
     case 'reset-newer-invalid':
@@ -356,16 +392,18 @@ export async function runHandoff(
         );
       }
 
-      if (!(await drainStdoutBeforeHandoff(time, options.signal))) {
+      if (operation.kind !== 'backend-startup' && !(await drainStdoutBeforeHandoff(time, options.signal))) {
         return { kind: 'run-current' };
       }
 
       const execution = withValidatedHandoffTarget(routing.target);
-      const childArguments = [join(execution.bundleDir, 'coral-cli.cjs'), ...delegatedArguments(operation)];
+      const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : 'coral-cli.cjs';
+      const childArguments = [join(execution.bundleDir, executable), ...delegatedArguments(operation)];
       const spawnOptions: SpawnOptions = {
         cwd: runtime.env.cwd(),
         env: { ...runtime.env.fullSnapshot(), [CLI_HANDOFF_GUARD_ENV]: '1' },
         stdio: 'inherit',
+        ...(operation.kind === 'backend-startup' ? { detached: true } : {}),
       };
 
       await options.releaseCanonicalSocket?.();
@@ -374,6 +412,13 @@ export async function runHandoff(
       const child = spawn(process.execPath, childArguments, spawnOptions);
       const childObservation = observeChild(child);
       await childObservation.spawned;
+      if (operation.kind === 'backend-startup') {
+        child.unref();
+        return {
+          kind: 'delegated',
+          outcome: handoffOutcome(execution.manifest.version, { code: 0, signal: null }),
+        };
+      }
       const outcome = handoffOutcome(execution.manifest.version, await childObservation.outcome);
       return { kind: 'delegated', outcome };
     }

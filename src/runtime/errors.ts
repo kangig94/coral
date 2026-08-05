@@ -28,6 +28,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'store_schema_outdated'
   | 'legacy_foreign_generation'
   | 'legacy_source_not_quiescent'
+  | 'active_store_coordination_invalid'
   | 'store_newer_incompatible'
   | 'store_older_incompatible'
   | 'store_corrupt_or_unsupported'
@@ -110,6 +111,23 @@ function interruptedStoreResetRemediation(context?: CoralSetupErrorContext): str
   return `Run 'coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}' to resume the interrupted reset under explicit operator control. Startup leaves the active store and staged incident unchanged.`;
 }
 
+function activeStoreCoordinationRemediation(context?: CoralSetupErrorContext): string {
+  const recordPath = stringContextValue(context, 'recordPath', '<active-store-record>');
+  const coordinationRoot = stringContextValue(context, 'coordinationRoot', '<coordination-directory>');
+  const failureCode = stringContextValue(context, 'failureCode', 'unknown');
+  const stop = "Run this build's own 'coral-cli backend shutdown'.";
+  if (failureCode === 'record_mode') {
+    return `${stop} Verify that ${recordPath} is a regular file owned by the current user, set its mode to 0600, then retry. Preserve the record and store files if the refusal persists.`;
+  }
+  if (failureCode.startsWith('coordination_directory_')) {
+    return `${stop} Verify that ${coordinationRoot} is an ordinary canonical directory owned by the current user, then retry. Preserve the coordination records and store files if the refusal persists.`;
+  }
+  if (failureCode === 'record_link' || failureCode === 'record_not_regular') {
+    return `${stop} Restore ${recordPath} as a regular non-link file owned by the current user with mode 0600, then retry. Preserve the existing entry and store files for diagnosis if its origin is unknown.`;
+  }
+  return `${stop} Retry once with the Coral build that owns this coordination state. If it still fails, preserve ${recordPath} and the store files and report this code with failureCode=${failureCode}; do not edit or delete them.`;
+}
+
 const DOCUMENTED_CORAL_SETUP_ERRORS = {
   expansion_install_lock_contended: {
     userMessage: (context) =>
@@ -186,6 +204,11 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       );
       return `Run this build's own 'coral-cli backend shutdown'. Wait for '${stringContextValue(context, 'holder', '<writer-lease-holder>')}' to exit and release its lease or lock, then retry '${retry}'.`;
     },
+  },
+  active_store_coordination_invalid: {
+    userMessage: (context) =>
+      `Coral cannot safely use the active-store ${stringContextValue(context, 'record', '<selection|transition>')} record (${stringContextValue(context, 'failureCode', 'unknown')}).`,
+    remediation: activeStoreCoordinationRemediation,
   },
   store_newer_incompatible: {
     userMessage: (context) =>

@@ -5,13 +5,20 @@ import {
   createStoreServicesRef,
   type CoordinatorStoreServices,
 } from '#src/coordinator/composition/store-services-ref.js';
-import { createLifecycle, STARTUP_STORE_BUSY_TIMEOUT_MS, type LifecycleDeps } from '#src/coordinator/lifecycle.js';
+import {
+  createLifecycle,
+  STARTUP_STORE_BUSY_TIMEOUT_MS,
+  StartupStoreHandoffError,
+  type LifecycleDeps,
+} from '#src/coordinator/lifecycle.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as HandoffMod from '#src/coordinator/handoff.js';
 import type { RunCoordinatorStartupRecoveryFn } from '#src/coordinator/services/recovery/index.js';
 import type * as BackendStoreResetMod from '#src/store/backend-store-reset.js';
+import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
+import type * as StartupStoreRoutingMod from '#src/store/startup-store-routing.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 
 const mockState = vi.hoisted(() => {
@@ -24,7 +31,22 @@ const mockState = vi.hoisted(() => {
     }),
   };
 
-  return { events, fakeDb, acquiredViaHandoff: false };
+  return {
+    events,
+    fakeDb,
+    acquiredViaHandoff: false,
+    currentBundleDir: null as string | null,
+    startupRouting: 'open' as 'open' | 'handoff',
+    handoffTarget: Object.freeze(Object.create(null)),
+  };
+});
+
+vi.mock('#src/infra/bundle-manifest.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof BundleManifestMod>();
+  return {
+    ...actual,
+    resolveRunningBundleDir: vi.fn(() => mockState.currentBundleDir),
+  };
 });
 
 vi.mock('#src/coordinator/handoff.js', async (importOriginal) => {
@@ -76,6 +98,19 @@ vi.mock('#src/store/backend-store-reset.js', async (importOriginal) => {
     openOrResetBackendStoreDb: vi.fn(() => {
       mockState.events.push('storeDb:openOrReset');
       return mockState.fakeDb;
+    }),
+  };
+});
+
+vi.mock('#src/store/startup-store-routing.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof StartupStoreRoutingMod>();
+  return {
+    ...actual,
+    routeOrOpenBackendStoreAtStartup: vi.fn(async () => {
+      mockState.events.push('startupStore:route');
+      return mockState.startupRouting === 'handoff'
+        ? { kind: 'handoff', target: mockState.handoffTarget, source: 'active-selection' }
+        : { kind: 'open', db: mockState.fakeDb };
     }),
   };
 });
@@ -304,6 +339,8 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
 afterEach(() => {
   mockState.events.length = 0;
   mockState.acquiredViaHandoff = false;
+  mockState.currentBundleDir = null;
+  mockState.startupRouting = 'open';
   mockState.fakeDb.closed = false;
   vi.clearAllMocks();
 });
@@ -348,6 +385,40 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(mockState.events.indexOf('storeDb:openOrReset')).toBeLessThan(
       mockState.events.indexOf('storeServices:create'),
     );
+  });
+
+  it('routes the selected startup store after bind and reset authority creation', async () => {
+    const { deps } = makeLifecycleDeps();
+    mockState.currentBundleDir = '/tmp/plugin/bridge';
+    const startupRouting = await import('#src/store/startup-store-routing.js');
+    const handoffRunner = await import('#src/coordinator/handoff-runner.js');
+
+    await createLifecycle(deps, async () => []).start();
+
+    expect(mockState.events.indexOf('bindWithHandoff:return')).toBeLessThan(
+      mockState.events.indexOf('resetAuthority:create'),
+    );
+    expect(mockState.events.indexOf('resetAuthority:create')).toBeLessThan(
+      mockState.events.indexOf('startupStore:route'),
+    );
+    expect(mockState.events.indexOf('startupStore:route')).toBeLessThan(
+      mockState.events.indexOf('storeServices:create'),
+    );
+    expect(startupRouting.routeOrOpenBackendStoreAtStartup).toHaveBeenCalledWith(
+      expect.objectContaining({ validateForeignTarget: handoffRunner.validateForeignHandoffTarget }),
+    );
+  });
+
+  it('returns a validated selection handoff to bootstrap without opening store services', async () => {
+    const { deps } = makeLifecycleDeps();
+    mockState.currentBundleDir = '/tmp/plugin/bridge';
+    mockState.startupRouting = 'handoff';
+
+    await expect(createLifecycle(deps, async () => []).start()).rejects.toBeInstanceOf(StartupStoreHandoffError);
+
+    expect(mockState.events).not.toContain('storeDb:openOrReset');
+    expect(mockState.events).not.toContain('storeServices:create');
+    expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
   });
 
   it('propagates actual incumbent handoff provenance into reset authority', async () => {

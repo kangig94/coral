@@ -252,6 +252,14 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .action(async (options: { target: StoreResetTarget; flavor: BuildFlavor }) => {
       try {
         const result = await storeReset.discard(options.target, options.flavor);
+        if (result.kind === 'handoff') {
+          // A newer build owns this store, and the decision arrived before any lock or destructive step. The
+          // operator runs nothing: the newer build is the one that may reset it.
+          process.stderr.write(
+            'A newer Coral build owns this store; run the discard from that version. Nothing was changed.\n',
+          );
+          return;
+        }
         process.stderr.write(STORE_RESET_EVIDENCE_WARNING);
         if (result.incident === null) {
           process.stdout.write(`Initialized ${result.target} ${result.flavor} store at ${result.storeDbPath}.\n`);

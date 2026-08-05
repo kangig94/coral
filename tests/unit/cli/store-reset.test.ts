@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -30,6 +31,7 @@ import { socketPathForRunDir } from '#src/infra/path/coordinator.js';
 import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
 import { createKbDaemonWriteRuntimeHost } from '#src/kb-daemon/runtime-host.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { resolveActiveStoreRecordPaths } from '#src/store/active-store-selection.js';
 import { createBackendStoreResetAuthority, publishBackendStoreResetIncident } from '#src/store/backend-store-reset.js';
 import { classifyStoreFile } from '#src/store/db.js';
 import { generationMutationCoordinationSeam } from '#src/store/generation-mutation-coordination.js';
@@ -221,6 +223,7 @@ function noSocketGuard() {
 }
 
 const operationsDiscard: StoreResetCommandOperations['discard'] = async () => ({
+  kind: 'discarded',
   target: 'gen2',
   flavor: 'prod',
   baseDir: '/coral',
@@ -557,6 +560,9 @@ describe('operator store-reset discard', () => {
           storeFormat: STORE_FORMAT,
           acquireSocketGuard: noSocketGuard,
           maintenanceTimeoutMs: 25,
+          validateSelectedTarget: () => {
+            throw new Error('no selected target is expected in this case');
+          },
         }),
       ).rejects.toMatchObject({
         code: 'legacy_source_not_quiescent',
@@ -567,6 +573,47 @@ describe('operator store-reset discard', () => {
     } finally {
       writer.release();
     }
+  });
+
+  it.each([
+    { record: 'selection', file: 'selectionFile', mode: 0o644 },
+    { record: 'transition', file: 'transitionFile', mode: 0o600 },
+  ] as const)('reports an unsafe $record record as a typed operator refusal with remediation', async (testCase) => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbPath = runtime.paths.coral.store.dbFile;
+    createMismatchStore(dbPath);
+    const before = readFileSync(dbPath);
+    const selectionPaths = resolveActiveStoreRecordPaths(runtime);
+    mkdirSync(selectionPaths.coordinationRoot, { recursive: true, mode: 0o700 });
+    writeFileSync(selectionPaths[testCase.file], '{}', { mode: 0o600 });
+    chmodSync(selectionPaths[testCase.file], testCase.mode);
+    const operations: StoreResetCommandOperations = {
+      list: () => ({ incidents: [] }),
+      report: async () => publicReport(),
+      discard: async () =>
+        discardStoreReset({
+          target: 'gen2',
+          runtime,
+          build: CURRENT_BUILD,
+          storeFormat: STORE_FORMAT,
+          acquireSocketGuard: noSocketGuard,
+          currentBundleDir: baseDir,
+          validateSelectedTarget: () => {
+            throw new Error('no selected target is expected in this case');
+          },
+        }),
+    };
+
+    await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
+
+    expect(stdout).toBe('');
+    expect(stderr).toContain(`active-store ${testCase.record} record`);
+    expect(stderr).toContain('[code=active_store_coordination_invalid]');
+    expect(stderr).toContain('remediation:');
+    expect(stderr).not.toContain('[code=internal]');
+    expect(process.exitCode).toBe(1);
+    expect(readFileSync(dbPath)).toEqual(before);
   });
 
   it('refuses while the KB child holds its writer lease and leaves the store byte-identical', async () => {
@@ -596,6 +643,9 @@ describe('operator store-reset discard', () => {
           storeFormat: STORE_FORMAT,
           acquireSocketGuard: noSocketGuard,
           maintenanceTimeoutMs: 25,
+          validateSelectedTarget: () => {
+            throw new Error('no selected target is expected in this case');
+          },
         }),
       ).rejects.toMatchObject({
         code: 'legacy_source_not_quiescent',
@@ -626,9 +676,13 @@ describe('operator store-reset discard', () => {
       build: CURRENT_BUILD,
       storeFormat: STORE_FORMAT,
       acquireSocketGuard: noSocketGuard,
+      validateSelectedTarget: () => {
+        throw new Error('no selected target is expected in this case');
+      },
     });
 
     expect(result).toMatchObject({ target: 'gen2', flavor: 'prod', baseDir, storeDbPath: dbPath, resumed: false });
+    if (result.kind !== 'discarded') throw new Error(`Expected a discard, received ${result.kind}`);
     expect(result.incident).not.toBeNull();
     expect(classifyStoreFile(dbPath, runtime.storage, STORE_FORMAT).kind).toBe('compatible');
     expect(storeTableExists(dbPath, 'events')).toBe(true);
@@ -676,6 +730,9 @@ describe('operator store-reset discard', () => {
       build: CURRENT_BUILD,
       storeFormat: STORE_FORMAT,
       acquireSocketGuard: noSocketGuard,
+      validateSelectedTarget: () => {
+        throw new Error('no selected target is expected in this case');
+      },
     });
 
     expect(result).toMatchObject({ resumed: true, incident: { incidentId } });
@@ -721,6 +778,7 @@ describe('backend store-reset commands', () => {
       }),
       report: async () => report,
       discard: async () => ({
+        kind: 'discarded',
         target: 'gen2',
         flavor: 'prod',
         baseDir: '/coral',
@@ -754,6 +812,7 @@ describe('backend store-reset commands', () => {
     const list = vi.fn(() => ({ incidents: [] }));
     const report = vi.fn(async () => publicReport());
     const discard = vi.fn(async () => ({
+      kind: 'discarded' as const,
       target: 'gen2' as const,
       flavor: 'dev' as const,
       baseDir: '/coral',

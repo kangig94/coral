@@ -49,13 +49,12 @@ import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
-import {
-  coordinateActiveStoreSelection,
-  createBackendStoreResetAuthority,
-  openOrResetBackendStoreDb,
-} from '../store/backend-store-reset.js';
+import { createBackendStoreResetAuthority, openOrResetBackendStoreDb } from '../store/backend-store-reset.js';
 import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
+import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Database } from '../store/db.js';
+import { routeOrOpenBackendStoreAtStartup } from '../store/startup-store-routing.js';
+import { validateForeignHandoffTarget } from './handoff-runner.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 import type { SystemProviderScope } from '../infra/provider-scope.js';
@@ -85,6 +84,16 @@ import type { RunJobsStartupFn } from '../jobs/startup.js';
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
 export const STARTUP_STORE_BUSY_TIMEOUT_MS = 750;
+
+export class StartupStoreHandoffError extends Error {
+  readonly target: ValidatedHandoffTarget;
+
+  constructor(target: ValidatedHandoffTarget) {
+    super('Coordinator startup is continuing in the selected active-store build.');
+    this.name = 'StartupStoreHandoffError';
+    this.target = target;
+  }
+}
 
 export type CoordinatorServerInfo = {
   port: number;
@@ -875,20 +884,25 @@ async function runLifecycleStartup({
     if (currentBundleDir === null) {
       storeDb = openOrResetBackendStoreDb(runtime, resetAuthority, storeOptions);
     } else {
-      const selectionResult = await coordinateActiveStoreSelection(runtime, resetAuthority, {
-        storeFormat: deps.storeFormat,
-        startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
-        currentSelection: {
-          version: 1,
-          manifest: currentBuild,
-          bundleDir: currentBundleDir,
-          activeStoreFingerprint: currentBuild.storeFormatFingerprint,
+      const routing = await routeOrOpenBackendStoreAtStartup({
+        runtime,
+        authority: resetAuthority,
+        validateForeignTarget: validateForeignHandoffTarget,
+        options: {
+          storeFormat: deps.storeFormat,
+          startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+          currentSelection: {
+            version: 1,
+            manifest: currentBuild,
+            bundleDir: currentBundleDir,
+            activeStoreFingerprint: currentBuild.storeFormatFingerprint,
+          },
         },
       });
-      if (selectionResult.kind === 'handoff') {
-        throw new Error('Validated active-store handoff requires the V2.4 startup routing owner.');
+      if (routing.kind === 'handoff') {
+        throw new StartupStoreHandoffError(routing.target);
       }
-      storeDb = selectionResult.db;
+      storeDb = routing.db;
     }
     let storeServices: CoordinatorStoreServices;
     try {
