@@ -71,7 +71,6 @@ export type CoralStoreOptions = {
    * omit it; calls into the kb surface throw a clear error instead.
    */
   runtime?: CoralStoreRuntime;
-  namespace?: string;
   projectRoot?: string;
   pluginRoot?: string;
 };
@@ -81,7 +80,6 @@ export class CoralStore implements StoreReadContext {
   public readonly streamKinds: StoreReadContext['streamKinds'];
   public readonly bodyCodec: StoreReadContext['bodyCodec'];
   private readonly runtime?: CoralStoreRuntime;
-  private readonly namespace?: string;
   private readonly projectRoot?: string;
   private readonly pluginRoot?: string;
 
@@ -123,22 +121,12 @@ export class CoralStore implements StoreReadContext {
     this.streamKinds = readCtx.streamKinds;
     this.bodyCodec = readCtx.bodyCodec;
     this.runtime = options.runtime;
-    this.namespace = options.namespace;
     this.projectRoot = options.projectRoot;
     this.pluginRoot = options.pluginRoot;
 
     this.jobs = {
-      list: (filters) =>
-        listJobs(
-          this.db,
-          {
-            ...filters,
-            ...(this.namespace === undefined ? {} : { namespace: this.namespace }),
-          },
-          this,
-        ),
-      detail: (jobId) =>
-        loadJobDetail(this.db, jobId, this, this.namespace === undefined ? {} : { namespace: this.namespace }),
+      list: (filters) => listJobs(this.db, filters, this),
+      detail: (jobId) => loadJobDetail(this.db, jobId, this),
     };
 
     this.kb = {

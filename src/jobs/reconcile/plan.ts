@@ -1,5 +1,5 @@
 import { isLivePhase, isTerminalPhase } from '../phase.js';
-import { belongsToNamespace, type JobLaunch, type JobRuntime, type JobStatus } from '../records.js';
+import type { JobLaunch, JobRuntime, JobStatus } from '../records.js';
 import type { JobLifecycleFault, JobProgressFault } from '../outcome.js';
 
 /**
@@ -9,11 +9,10 @@ import type { JobLifecycleFault, JobProgressFault } from '../outcome.js';
  * `jobIds.includes(activeJobId)` preserves the active projection membership
  * semantics for orphaned session-claim detection.
  *
- * Invariant — session state crosses namespaces:
+ * Invariant — session state spans job origins:
  * `listSessionRefs()` / `readSession(...)` enumerate Journal-projected sessions
- * regardless of `currentNamespace`, matching the current lifecycle session sweep.
- * Terminal and orphaned claims must remain releasable even when the owning job
- * belongs to a foreign namespace.
+ * without filtering by job origin, matching the current lifecycle session sweep.
+ * Terminal and orphaned claims must remain releasable for every stored job.
  */
 export type RecoveryJobFacts = {
   jobId: string;
@@ -31,7 +30,6 @@ export type RecoverySessionFacts = {
 
 export interface RecoveryProjectionSnapshot {
   readonly jobIds: readonly string[];
-  readonly currentNamespace: string;
   readJob(jobId: string): RecoveryJobFacts;
   listSessionRefs(): Array<{ sessionId: string; provider: string }>;
   readSession(sessionId: string): RecoverySessionFacts | null;
@@ -77,9 +75,7 @@ export function planRecovery(snapshot: RecoveryProjectionSnapshot): RecoveryPlan
   const markStaleRunning: CleanupAction[] = [];
 
   for (const jobId of jobIds) {
-    const planned = planJobRecovery(snapshot.readJob(jobId), snapshot.currentNamespace, (pid) =>
-      snapshot.isPidAlive(pid),
-    );
+    const planned = planJobRecovery(snapshot.readJob(jobId), (pid) => snapshot.isPidAlive(pid));
     if (planned === null) continue;
 
     switch (planned.bucket) {
@@ -115,11 +111,7 @@ export function planRecovery(snapshot: RecoveryProjectionSnapshot): RecoveryPlan
   };
 }
 
-function planJobRecovery(
-  facts: RecoveryJobFacts,
-  currentNamespace: string,
-  isPidAlive: (pid: number) => boolean,
-): PlannedRecoveryAction | null {
+function planJobRecovery(facts: RecoveryJobFacts, isPidAlive: (pid: number) => boolean): PlannedRecoveryAction | null {
   const status = facts.status;
 
   if (status === null) {
@@ -131,7 +123,7 @@ function planJobRecovery(
       : null;
   }
 
-  if (!belongsToNamespace(status, currentNamespace) || isTerminalPhase(status.phase)) {
+  if (isTerminalPhase(status.phase)) {
     return null;
   }
 

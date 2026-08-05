@@ -16,7 +16,6 @@ export type CoordinatorRecoveryItem = Readonly<{
   detail: (JobProjectionDetail & Readonly<{ status: JobStatus }>) | null;
   claimedSession: ProviderSession | null;
   claimedSessionLastSeq: number | null;
-  launchEventNamespace: string | null;
 }>;
 
 export function hydrateCoordinatorRecoveryItem(
@@ -33,7 +32,6 @@ export function hydrateCoordinatorRecoveryItem(
       detail: null,
       claimedSession,
       claimedSessionLastSeq: raw.claimedSession?.last_seq ?? null,
-      launchEventNamespace: null,
     });
   }
   const detail = hydrateJobRecoveryProjection({ projection: raw.projection, events: raw.statusEvents }, progressStore);
@@ -45,14 +43,11 @@ export function hydrateCoordinatorRecoveryItem(
     detail: { ...detail, status: detail.status },
     claimedSession,
     claimedSessionLastSeq: raw.claimedSession?.last_seq ?? null,
-    launchEventNamespace:
-      [...raw.statusEvents].reverse().find((event) => event.type === 'job.launch.requested')?.namespace ?? null,
   });
 }
 
 export function buildRecoverySnapshot(
   items: readonly CoordinatorRecoveryItem[],
-  namespace: string,
   process: Pick<ProcessPort, 'isAlive'>,
 ): RecoveryProjectionSnapshot {
   const jobIds = Object.freeze(items.flatMap(({ detail }) => (detail === null ? [] : [detail.status.jobId])));
@@ -89,7 +84,6 @@ export function buildRecoverySnapshot(
 
   const snapshot: RecoveryProjectionSnapshot = {
     jobIds,
-    currentNamespace: namespace,
     readJob: (jobId: string): RecoveryJobFacts =>
       factsByJob.get(jobId) ?? {
         jobId,

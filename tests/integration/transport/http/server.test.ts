@@ -565,7 +565,7 @@ describe('execution backend server', () => {
         bootToken: 'test-boot-token',
         shutdownToken: 'test-shutdown-token',
         version: '9.9.9',
-        bundleHash: 'testhash1234',
+        bundleHash: '0123456789abcdef',
         flavor: 'prod',
         log: () => {},
         ...bootOverrides,
@@ -625,7 +625,7 @@ describe('execution backend server', () => {
         token: 'test-token',
         bootToken: 'test-boot-token',
         version: '9.9.9',
-        bundleHash: 'testhash1234',
+        bundleHash: '0123456789abcdef',
         flavor: 'dev',
         instanceId: 'backend-info-dev',
         namespace,
@@ -670,7 +670,7 @@ describe('execution backend server', () => {
     expect(body).toMatchObject({
       status: 'ok',
       version: '9.9.9',
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       flavor: 'prod',
       instanceId: 'execution-backend-instance-1',
       active: 0,
@@ -880,7 +880,7 @@ describe('execution backend server', () => {
         bootToken: 'test-boot-token',
         shutdownToken: 'test-shutdown-token',
         version: '9.9.9',
-        bundleHash: 'testhash1234',
+        bundleHash: '0123456789abcdef',
         flavor: 'prod',
         log: () => {},
       },
@@ -1309,7 +1309,7 @@ describe('execution backend server', () => {
       provider: null,
       projectRoot,
       backendNamespace: testBackendNamespace,
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       jobKind: 'kb',
       pool: 'default',
       enqueueSequence: progressStore.nextEnqueueSequence(),
@@ -1425,7 +1425,7 @@ describe('execution backend server', () => {
       provider: null,
       projectRoot,
       backendNamespace: testBackendNamespace,
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       jobKind: 'kb',
       pool: 'default',
       enqueueSequence: progressStore.nextEnqueueSequence(),
@@ -1520,7 +1520,7 @@ describe('execution backend server', () => {
       provider: null,
       projectRoot,
       backendNamespace: testBackendNamespace,
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       jobKind: 'kb',
       pool: 'default',
       enqueueSequence: progressStore.nextEnqueueSequence(),
@@ -1652,7 +1652,7 @@ describe('execution backend server', () => {
     }
   });
 
-  it('reports only in-namespace live jobs from /health even when a foreign namespace shares the same bundle hash', async () => {
+  it('reports live jobs from every namespace in /health', async () => {
     const progressStore = createProgressStore();
     const backend = await startBackendServer();
 
@@ -1664,7 +1664,7 @@ describe('execution backend server', () => {
       provider: 'codex',
       projectRoot: '/tmp/project',
       backendNamespace: testBackendNamespace,
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -1681,7 +1681,7 @@ describe('execution backend server', () => {
       provider: 'codex',
       projectRoot: '/tmp/project',
       backendNamespace: foreignBackendNamespace,
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -1701,7 +1701,7 @@ describe('execution backend server', () => {
     expect(response.status).toBe(200);
     expect(body).toMatchObject({
       status: 'ok',
-      activeJobs: 1,
+      activeJobs: 2,
     });
   });
 
@@ -2086,7 +2086,7 @@ describe('execution backend server', () => {
           pluginRoot: '/tmp/plugin',
           namespace: testBackendNamespace,
           version: '9.9.9',
-          bundleHash: 'testhash1234',
+          bundleHash: '0123456789abcdef',
           flavor: 'prod',
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
@@ -2137,7 +2137,7 @@ describe('execution backend server', () => {
               status: 'ok' as const,
               kernel: { phase: 'running' as const, readyAt: 0 },
               version: '9.9.9',
-              bundleHash: 'testhash1234',
+              bundleHash: '0123456789abcdef',
               flavor: 'prod' as const,
               namespace: testBackendNamespace,
               instanceId: 'execution-backend-instance-1',
@@ -5562,7 +5562,7 @@ describe('execution backend server', () => {
       provider: null,
       projectRoot,
       backendNamespace: testBackendNamespace,
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       jobKind: 'kb',
       pool: 'default',
       enqueueSequence: progressStore.nextEnqueueSequence(),
@@ -5675,7 +5675,7 @@ describe('execution backend server', () => {
       phase: 'error',
       backendNamespace: foreignBackendNamespace,
     });
-    expect(progressStore.liveJobCount('testhash1234')).toBe(0);
+    expect(progressStore.liveJobCount()).toBe(0);
 
     const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
@@ -5762,7 +5762,7 @@ describe('execution backend server', () => {
     expect(body).toMatchObject({
       status: 'ok',
       version: '9.9.9',
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       flavor: 'prod',
       instanceId: 'execution-backend-instance-1',
     });
@@ -5896,7 +5896,7 @@ describe('execution backend server', () => {
             namespace,
             version: '9.9.9',
             buildSetId: '00000000-0000-4000-8000-000000000000',
-            bundleHash: 'testhash1234',
+            bundleHash: '0123456789abcdef',
             cliBundleHash: 'testclihash1234',
             claudeAppserverBundleHash: 'testclaudehash12',
             flavor: 'prod',
@@ -6096,7 +6096,7 @@ describe('execution backend server', () => {
           token: 'test-token',
           bootToken: 'test-boot-token',
           version: '9.9.9',
-          bundleHash: 'testhash1234',
+          bundleHash: '0123456789abcdef',
           flavor: 'prod',
           log: () => {},
         },
@@ -6178,7 +6178,7 @@ describe('execution backend server', () => {
           pluginRoot: '/tmp/plugin',
           namespace: testBackendNamespace,
           version: '9.9.9',
-          bundleHash: 'testhash1234',
+          bundleHash: '0123456789abcdef',
           flavor: 'prod',
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
@@ -6205,7 +6205,7 @@ describe('execution backend server', () => {
             status: 'ok' as const,
             kernel: { phase: 'running' as const, readyAt: 0 },
             version: '9.9.9',
-            bundleHash: 'testhash1234',
+            bundleHash: '0123456789abcdef',
             flavor: 'prod' as const,
             namespace: testBackendNamespace,
             instanceId: 'execution-backend-instance-1',

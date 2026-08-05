@@ -94,7 +94,6 @@ function buildHarness(opts: {
     ipcServer,
     streamResponses: new Set<ServerResponse>(),
     runtime,
-    namespace: 'test-ns',
     markJobsAsErrorFn: () => {},
     providerHostManager: {
       // Mode is 'handoff', so .shutdown() is not called — only drainForHandoff().
@@ -222,7 +221,7 @@ describe('runShutdownSequence drain budget', () => {
     });
     harness.ctx.reason = 'test-cleanup';
     let terminalizationSignal: AbortSignal | undefined;
-    harness.ctx.markJobsAsErrorFn = (_namespace, _message, signal) => {
+    harness.ctx.markJobsAsErrorFn = (_message, signal) => {
       terminalizationSignal = signal;
       throw new Error('injected crash terminalization failure');
     };

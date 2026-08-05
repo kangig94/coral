@@ -18,14 +18,6 @@ import type { LaunchPool } from './contracts/admission.js';
  */
 export type LaunchReadiness = 'pending' | 'queued' | 'ready' | 'error';
 
-export function belongsToNamespace(status: JobStatus, namespace: string): boolean {
-  return (
-    typeof status.backendNamespace === 'string' &&
-    status.backendNamespace.length > 0 &&
-    status.backendNamespace === namespace
-  );
-}
-
 export const jobKindSchema = z.enum(['provider', 'workflow', 'kb']);
 export type JobKind = z.infer<typeof jobKindSchema>;
 

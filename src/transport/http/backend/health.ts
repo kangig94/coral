@@ -94,6 +94,7 @@ export interface BackendHealth {
   namespace: string;
   uptimeMs: number;
   active: number;
+  /** Live jobs across every build namespace, including work inherited during replacement. */
   activeJobs: number;
   inflightRequests: number;
   queueDepth: number;

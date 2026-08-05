@@ -276,7 +276,7 @@ async function stopBackend(pluginRoot: string, home: string): Promise<void> {
 }
 
 describe('namespace coexistence integration', () => {
-  it('runs same-flavor coordinators side-by-side with namespace-isolated job visibility', async () => {
+  it('runs same-flavor coordinators side-by-side, sharing job visibility while namespace stays provenance', async () => {
     const sharedStoreDir = mkdtempSync(join(tmpdir(), 'coral-namespace-store-'));
     tempRoots.push(sharedStoreDir);
     const firstHome = createCoordinatorHome(sharedStoreDir);
@@ -336,10 +336,15 @@ describe('namespace coexistence integration', () => {
       `/jobs?all=1&projectRoot=${encodeURIComponent(projectRoot)}`,
     );
 
-    expect(firstJobs.jobs.map((job) => job.jobId)).toEqual([firstJobId]);
-    expect(secondJobs.jobs.map((job) => job.jobId)).toEqual([secondJobId]);
-    expect(firstJobs.jobs[0]?.status.backendNamespace).toBe(firstNamespace);
-    expect(secondJobs.jobs[0]?.status.backendNamespace).toBe(secondNamespace);
+    // Converted with W1: namespace is no longer work tenancy, so `jobs.list` has no namespace gate and each
+    // coordinator sees both jobs in this shared project. What namespace still carries is provenance — which
+    // build recorded the job — and that is asserted below rather than dropped.
+    expect(firstJobs.jobs.map((job) => job.jobId).sort()).toEqual([firstJobId, secondJobId].sort());
+    expect(secondJobs.jobs.map((job) => job.jobId).sort()).toEqual([firstJobId, secondJobId].sort());
+
+    const namespaceByJobId = new Map(firstJobs.jobs.map((job) => [job.jobId, job.status.backendNamespace]));
+    expect(namespaceByJobId.get(firstJobId)).toBe(firstNamespace);
+    expect(namespaceByJobId.get(secondJobId)).toBe(secondNamespace);
 
     await fetchJson<{ status: JobStatus; events: unknown[] }>(
       firstInfo,
@@ -350,18 +355,18 @@ describe('namespace coexistence integration', () => {
       `/jobs/${secondJobId}?projectRoot=${encodeURIComponent(projectRoot)}`,
     );
 
-    const firstForeignLookup = await fetchJson<{ code: string; message: string }>(
+    // Also converted: `jobs.detail` dropped its namespace gate, so a job recorded by the other build resolves
+    // instead of 404-ing. Project-root scoping is what still decides reachability.
+    const firstReadsSecond = await fetchJson<{ status: JobStatus }>(
       firstInfo,
       `/jobs/${secondJobId}?projectRoot=${encodeURIComponent(projectRoot)}`,
-      404,
     );
-    const secondForeignLookup = await fetchJson<{ code: string; message: string }>(
+    const secondReadsFirst = await fetchJson<{ status: JobStatus }>(
       secondInfo,
       `/jobs/${firstJobId}?projectRoot=${encodeURIComponent(projectRoot)}`,
-      404,
     );
 
-    expect(firstForeignLookup.code).toBe('job_not_found');
-    expect(secondForeignLookup.code).toBe('job_not_found');
+    expect(firstReadsSecond.status.backendNamespace).toBe(secondNamespace);
+    expect(secondReadsFirst.status.backendNamespace).toBe(firstNamespace);
   });
 });

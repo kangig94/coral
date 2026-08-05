@@ -53,8 +53,7 @@ type RunShutdownSequenceContext = {
   ipcServer?: IpcListener;
   streamResponses: Set<ServerResponse>;
   runtime: Runtime;
-  namespace: string;
-  markJobsAsErrorFn: (namespace: string, message: string, signal: AbortSignal) => void | Promise<void>;
+  markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
   providerHostManager: ProviderHostLifecycle;
   kbDaemonSupervisor?: KbDaemonSupervisor;
   storeServicesRef: StoreServicesRef;
@@ -169,7 +168,6 @@ export async function runShutdownSequence({
   ipcServer,
   streamResponses,
   runtime,
-  namespace,
   markJobsAsErrorFn,
   providerHostManager,
   kbDaemonSupervisor,
@@ -230,7 +228,7 @@ export async function runShutdownSequence({
     });
     if (storeServicesAvailable) {
       await runBudgetedStep('crashed job terminalization', async (signal) => {
-        await markJobsAsErrorFn(namespace, 'Backend shutting down', signal);
+        await markJobsAsErrorFn('Backend shutting down', signal);
       });
     }
     await runBudgetedStep('provider host shutdown', async (signal) => providerHostManager.shutdown(signal));

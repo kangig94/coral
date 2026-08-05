@@ -598,18 +598,27 @@ describe('planRecovery', () => {
     expect(plan.cleanup).toEqual([]);
   });
 
-  it('returns no action for foreign-namespace jobs', () => {
+  it('returns registerRunning for inherited jobs from another namespace', () => {
+    const launchRecord = makeLaunch('foreign-job', { backendNamespace: FOREIGN_NAMESPACE });
+    const runtimeRecord = makeRuntime('foreign-job');
     const snapshot = new InMemoryRecoverySnapshot().addJob({
       jobId: 'foreign-job',
       status: makeStatus('foreign-job', 'running', { backendNamespace: FOREIGN_NAMESPACE }),
-      launch: makeLaunch('foreign-job', { backendNamespace: FOREIGN_NAMESPACE }),
-      runtime: makeRuntime('foreign-job'),
+      launch: launchRecord,
+      runtime: runtimeRecord,
       hasLaunchRequest: true,
       hasRuntimeStart: true,
     });
 
     const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
+    expect(plan.register).toEqual([
+      {
+        type: 'registerRunning',
+        jobId: 'foreign-job',
+        launchRecord,
+        runtimeRecord,
+      },
+    ]);
     expect(plan.cleanup).toEqual([]);
   });
 

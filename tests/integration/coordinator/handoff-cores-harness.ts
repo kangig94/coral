@@ -26,7 +26,7 @@ import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
-import type { CoordinatorServerInfo, RunStartupRecoveryFn } from '#src/coordinator/lifecycle.js';
+import type { CoordinatorServerInfo, RunStartupRecoveryOrchestratorFn } from '#src/coordinator/lifecycle.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
@@ -55,13 +55,15 @@ export interface BootCoreOptions {
   bundleHash?: string;
   backendNamespace?: string;
   createExecutionService?: CoordinatorCoreOptions['createExecutionService'];
+  providerHostManager?: CoordinatorCoreOptions['providerHostManager'];
+  providerRegistry?: CoordinatorCoreOptions['providerRegistry'];
   /**
    * Override the post-discuss-recovery startup phase. Called with the same
    * deps the production `runStartupRecoveryFn` receives; defaults to discuss
    * recovery only. Tests that need workflow or jobs recovery wire the extra
    * stages in here.
    */
-  runStartupRecoveryFn?: RunStartupRecoveryFn;
+  runStartupRecoveryFn?: RunStartupRecoveryOrchestratorFn;
 }
 
 export interface BootedCore {
@@ -113,7 +115,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
   async function bootCore(opts: BootCoreOptions): Promise<BootedCore> {
     const coreNamespace = opts.backendNamespace ?? backendNamespace;
     const storeServices = createHarnessStoreServices(runtime, db, coreNamespace);
-    const runStartupRecovery: RunStartupRecoveryFn =
+    const runStartupRecovery: RunStartupRecoveryOrchestratorFn =
       opts.runStartupRecoveryFn ??
       (async ({
         knownDiscussSources,
@@ -168,9 +170,11 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
         terminateAllFn: () => {},
         registerBuiltInProvidersFn: () => {},
         ...(opts.createExecutionService === undefined ? {} : { createExecutionService: opts.createExecutionService }),
+        ...(opts.providerHostManager === undefined ? {} : { providerHostManager: opts.providerHostManager }),
+        ...(opts.providerRegistry === undefined ? {} : { providerRegistry: opts.providerRegistry }),
         getConsumerStuck: () => [],
       },
-      (inputs) => runStartupRecovery(inputs),
+      runStartupRecovery,
     );
     setStoreServicesForTest(core.storeServicesRef, storeServices, { storeDbPath: ':memory:' });
 

@@ -168,7 +168,7 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
   const server = createServer();
   const fakeProgressStore = {
     getDb: () => mockState.fakeDb,
-    liveJobCountByNamespace: () => 0,
+    liveJobCount: () => 0,
   };
   const consumerDriver = {
     shutdown: vi.fn(async () => {

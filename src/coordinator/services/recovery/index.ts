@@ -1,5 +1,5 @@
 import { errorMessage, formatError } from '../../../infra/error-format.js';
-import { isLivePhase, isTerminalPhase } from '../../../jobs/phase.js';
+import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
@@ -86,7 +86,6 @@ type RecoveryCoordinatorContext = {
 };
 
 export type StartupRecoveryContext = {
-  namespace: string;
   runtime: Runtime;
   progressStore: JobStore;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
@@ -903,7 +902,7 @@ export function createRecoveryCoordinator(
   }
 
   async function runStartupRecovery(ctx: StartupRecoveryContext): Promise<JobStore> {
-    const { namespace, runtime, progressStore, signal } = ctx;
+    const { runtime, progressStore, signal } = ctx;
     coordinatorJobRetryPolicies.set(progressStore.getDb(), (retrySignal) =>
       createCoordinatorJobRecoveryPolicy(
         {
@@ -926,45 +925,6 @@ export function createRecoveryCoordinator(
     const queuedRecoverable: QueuedRecoverableJob[] = [];
     const runningRecoverable: RunningRecoverableJob[] = [];
 
-    let adoptedCount = 0;
-    await runCoordinatorWalk({
-      signal,
-      coordinatorCommit: ctx.coordinatorCommit,
-      summary: 'Cross-namespace coordinator recovery',
-      settle: (item, controls) => {
-        const status = item.detail?.status ?? null;
-        if (
-          status !== null &&
-          isLivePhase(status.phase) &&
-          item.launchEventNamespace !== null &&
-          item.launchEventNamespace !== namespace
-        ) {
-          const facts = settleFault(item, status.jobId, { kind: 'wrapper_lost' }, ctx.coordinatorCommit);
-          adoptedCount += 1;
-          controls.report(`Finalized foreign-namespace job ${status.jobId} from ${item.launchEventNamespace}\n`);
-          return {
-            kind: 'advanced',
-            outcome: 'settled',
-            facts,
-            detail: 'foreign-namespace job finalized',
-          };
-        }
-        return {
-          kind: 'advanced',
-          outcome: 'settled',
-          facts: COORDINATOR_NOT_APPLICABLE_FACTS,
-          detail: 'job belongs to the current coordinator namespace',
-        };
-      },
-    });
-    if (adoptedCount > 0) {
-      reportCoordinatorRecovery(
-        'Cross-namespace coordinator recovery',
-        { advanced: 0, quarantined: 0, deferred: 0, skipped: 0, receipts: [] },
-        [`Adopted ${adoptedCount} orphaned cross-namespace job(s)\n`],
-      );
-    }
-
     const recoveryItems: CoordinatorRecoveryItem[] = [];
     await runCoordinatorWalk({
       signal,
@@ -980,7 +940,7 @@ export function createRecoveryCoordinator(
         };
       },
     });
-    const snapshot = buildRecoverySnapshot(recoveryItems, namespace, runtime.process);
+    const snapshot = buildRecoverySnapshot(recoveryItems, runtime.process);
     const plan = planRecovery(snapshot);
     const itemsByJobId = new Map(recoveryItems.map((item) => [item.jobId, item]));
     const itemsBySessionId = new Map(

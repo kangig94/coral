@@ -47,7 +47,7 @@ describe('coordinator startup ordering', () => {
     mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
     writeFileSync(
       join(pluginRoot, 'bridge', 'manifest.json'),
-      JSON.stringify({ bundleHash: 'startup-ordering-bundle', flavor: 'prod' }) + '\n',
+      JSON.stringify({ bundleHash: '0123456789abcdef', flavor: 'prod' }) + '\n',
       'utf-8',
     );
 
@@ -107,7 +107,7 @@ describe('coordinator startup ordering', () => {
     mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
     writeFileSync(
       join(pluginRoot, 'bridge', 'manifest.json'),
-      JSON.stringify({ bundleHash: 'startup-ordering-bundle', flavor: 'prod' }) + '\n',
+      JSON.stringify({ bundleHash: '0123456789abcdef', flavor: 'prod' }) + '\n',
       'utf-8',
     );
 
@@ -229,7 +229,7 @@ describe('coordinator startup ordering', () => {
     mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
     writeFileSync(
       join(pluginRoot, 'bridge', 'manifest.json'),
-      JSON.stringify({ bundleHash: 'startup-ordering-bundle', flavor: 'prod' }) + '\n',
+      JSON.stringify({ bundleHash: '0123456789abcdef', flavor: 'prod' }) + '\n',
       'utf-8',
     );
     vi.stubEnv('HOME', home);
@@ -342,7 +342,7 @@ describe('coordinator startup ordering', () => {
     mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
     writeFileSync(
       join(pluginRoot, 'bridge', 'manifest.json'),
-      JSON.stringify({ bundleHash: 'startup-ordering-bundle', flavor: 'prod' }) + '\n',
+      JSON.stringify({ bundleHash: '0123456789abcdef', flavor: 'prod' }) + '\n',
       'utf-8',
     );
 

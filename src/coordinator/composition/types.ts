@@ -66,7 +66,7 @@ export type CoordinatorCoreOptions = {
   removeBackendInfoIfOwnerFn?: (instanceId: string) => void;
   closeServerFn?: (server: Server) => Promise<void>;
   cleanupStaleJobsFn?: (currentBundleHash: string) => void | Promise<void>;
-  markJobsAsErrorFn?: (namespace: string, message: string) => void | Promise<void>;
+  markJobsAsErrorFn?: (message: string) => void | Promise<void>;
   createStoreServicesFromDbFn?: (storeDb: Database) => CoordinatorStoreServices;
   terminateAllFn?: () => void;
   registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;

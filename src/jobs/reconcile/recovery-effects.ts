@@ -9,20 +9,13 @@ import { elapsedDurationMs } from '../duration.js';
 
 type JobRecoveryError = JobLifecycleFault | JobProgressFault;
 
-export function listLiveJobs(progressStore: JobStore, namespace: string): JobStatus[] {
+export function listLiveJobs(progressStore: JobStore): JobStatus[] {
   const results: JobStatus[] = [];
 
   for (const jobId of progressStore.listJobIds()) {
     const status = progressStore.readStatus(jobId);
     if (!status || !isLivePhase(status.phase)) continue;
-
-    const backendNamespace =
-      typeof status.backendNamespace === 'string' && status.backendNamespace.length > 0
-        ? status.backendNamespace
-        : null;
-    if (backendNamespace === namespace) {
-      results.push(status);
-    }
+    results.push(status);
   }
 
   return results;

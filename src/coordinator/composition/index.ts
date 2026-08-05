@@ -65,7 +65,6 @@ import { createExecutionServices } from './execution-services.js';
 import { createCoordinatorWorld } from './world.js';
 import { storeServicesStartupNotReadyError } from './store-services-ref.js';
 import { isLivePhase, isTerminalPhase } from '../../jobs/phase.js';
-import { belongsToNamespace } from '../../jobs/records.js';
 import type {
   EquipExpansionRequest,
   EquipExpansionResult,
@@ -504,7 +503,7 @@ export function createCoordinatorCore(
   recoverySources.register('workflow-recovery', (subject) => createWorkflowRecoveryRetryPlan(recoveryDb(), subject));
   recoverySources.register('stale-job-cleanup', (subject) => createStaleJobCleanupRetryPlan(recoveryDb(), subject));
   recoverySources.register('crashed-job-terminalization', (subject) =>
-    createCrashedJobTerminalizationRetryPlan(recoveryDb(), world.namespace, subject),
+    createCrashedJobTerminalizationRetryPlan(recoveryDb(), subject),
   );
   assertRecoverySourceRegistryComplete(recoverySources);
   const recoveryQuarantine = createRecoveryQuarantineRetryService({
@@ -561,7 +560,6 @@ export function createCoordinatorCore(
     world,
     listExecutionServices: services.listExecutionServices,
     getLifecycleController: () => lifecycleController,
-    backendNamespace: world.namespace,
     getProgressStore,
     internalJobAbortRegistry,
   });
@@ -604,12 +602,7 @@ export function createCoordinatorCore(
 
     const progressStore = getProgressStore();
     const status = progressStore.readStatus(jobId);
-    if (
-      !status ||
-      status.sessionId !== sessionId ||
-      !belongsToNamespace(status, world.namespace) ||
-      !isLivePhase(status.phase)
-    ) {
+    if (!status || status.sessionId !== sessionId || !isLivePhase(status.phase)) {
       return;
     }
 
@@ -711,12 +704,7 @@ export function createCoordinatorCore(
     const jobIds: string[] = [];
     for (const jobId of progressStore.listJobIds()) {
       const status = progressStore.readStatus(jobId);
-      if (
-        status === null ||
-        !isLivePhase(status.phase) ||
-        !belongsToNamespace(status, world.namespace) ||
-        status.jobKind !== 'kb'
-      ) {
+      if (status === null || !isLivePhase(status.phase) || status.jobKind !== 'kb') {
         continue;
       }
       const runtime = progressStore.readRuntimeProjection(jobId);
@@ -737,12 +725,7 @@ export function createCoordinatorCore(
       const failed: string[] = [];
       for (const jobId of daemonOwnedJobIds) {
         const status = progressStore.readStatus(jobId);
-        if (
-          status === null ||
-          !isLivePhase(status.phase) ||
-          !belongsToNamespace(status, world.namespace) ||
-          status.jobKind !== 'kb'
-        ) {
+        if (status === null || !isLivePhase(status.phase) || status.jobKind !== 'kb') {
           cleanupDaemonJobAbortProxy(jobId);
           continue;
         }
@@ -823,7 +806,7 @@ export function createCoordinatorCore(
       start: (providerName, input, ctx) => services.getExecutionService(ctx).start(providerName, input, ctx),
     },
     jobs: {
-      scopeCheck: (jobIds, projectRoot) => control.scopeCheckJobs(jobIds, projectRoot, world.namespace),
+      scopeCheck: control.scopeCheckJobs,
       abort: control.abortJobs,
       waitStream: (request) =>
         services
@@ -836,9 +819,6 @@ export function createCoordinatorCore(
         const progressStore = getProgressStore();
         const jobs: ReturnType<typeof progressStore.listJobProjections> = [];
         for (const entry of progressStore.listJobProjections()) {
-          if (!belongsToNamespace(entry.status, world.namespace)) {
-            continue;
-          }
           if (filters.all !== true && !isLivePhase(entry.status.phase)) {
             continue;
           }
@@ -860,7 +840,7 @@ export function createCoordinatorCore(
         const progressStore = getProgressStore();
         const detail = progressStore.loadJobProjectionDetail(jobId);
         const status = detail.status;
-        if (!status || !belongsToNamespace(status, world.namespace)) {
+        if (!status) {
           return null;
         }
         const events = progressStore.readJobEvents(jobId);
@@ -994,8 +974,7 @@ export function createCoordinatorCore(
           ...(processStartedAt !== undefined ? { processStartedAt } : {}),
           uptimeMs: identity.now() - runtimeState.getStartedAt(),
           active: world.launchCoordinator.active,
-          activeJobs:
-            storeServices === null ? 0 : storeServices.progressStore.liveJobCountByNamespace(identity.namespace),
+          activeJobs: storeServices === null ? 0 : storeServices.progressStore.liveJobCount(),
           liveDiscuss: listAttachedSessions(world.discussRegistry).length,
           queueDepth: world.launchCoordinator.queueDepth(),
           inflightRequests: world.idleTimer.inflightRequests,

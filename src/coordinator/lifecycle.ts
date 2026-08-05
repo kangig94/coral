@@ -488,7 +488,6 @@ export function createStaleJobCleanupRetryPlan(
 /** Returns the exact-subject crash-terminalization retry plan owned by coordinator lifecycle. */
 export function createCrashedJobTerminalizationRetryPlan(
   db: Database,
-  namespace: string,
   subject: RecoverySubject,
 ): RecoverySourceFactoryPlan<RawCrashedJobRow, CrashedJobTerminalizationItem> {
   let resolvedPolicy: RecoveryRetryPolicy<RawCrashedJobRow, CrashedJobTerminalizationItem> | undefined;
@@ -501,7 +500,7 @@ export function createCrashedJobTerminalizationRetryPlan(
     return resolvedPolicy;
   };
   return {
-    source: crashedJobTerminalizationSource(db, namespace, subject),
+    source: crashedJobTerminalizationSource(db, subject),
     policy: {
       processLocalCleanup: { kind: 'not-required' },
       hydrate: (raw) => policy().hydrate(raw),
@@ -544,7 +543,6 @@ export async function cleanupStaleJobs(
 
 export async function markJobsAsError(
   progressStore: JobStore,
-  namespace: string,
   message: string,
   storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>,
   jobsRoot: string,
@@ -560,7 +558,7 @@ export async function markJobsAsError(
     ...createCrashedJobTerminalizationPolicy(context),
   };
   await runShutdownCrashTerminalization({
-    source: crashedJobTerminalizationSource(progressStore.getDb(), namespace),
+    source: crashedJobTerminalizationSource(progressStore.getDb()),
     policy,
   });
 }
@@ -661,7 +659,7 @@ export type LifecycleDeps = {
   readonly writeBackendInfoFn: (info: BackendInfo) => void;
   readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void;
   readonly cleanupStaleJobsFn: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
-  readonly markJobsAsErrorFn: (namespace: string, message: string, signal: AbortSignal) => void | Promise<void>;
+  readonly markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
   readonly terminateAllFn: () => void;
   readonly providerHostManager: Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
   readonly kbDaemonSupervisor?: KbDaemonSupervisor;
@@ -1014,7 +1012,7 @@ async function runLifecycleStartup({
           runtimeState.getLifecycle() === 'running' &&
           launchCoordinator.active === 0 &&
           !recoveryCoordinator.isIdleBlocked() &&
-          progressStore.liveJobCountByNamespace(namespace) === 0 &&
+          progressStore.liveJobCount() === 0 &&
           idleTimer.inflightRequests === 0 &&
           !hooks.onIdleCheck() &&
           !daemonCurateRunning
@@ -1120,7 +1118,7 @@ export function createLifecycle(
     onFatalShutdownError,
   } = deps;
 
-  const { pluginRoot, namespace, instanceId, log } = identity;
+  const { pluginRoot, instanceId, log } = identity;
 
   const state: LifecycleControlState = {
     shutdownPromise: null,
@@ -1176,7 +1174,6 @@ export function createLifecycle(
         ipcServer,
         streamResponses,
         runtime,
-        namespace,
         markJobsAsErrorFn,
         providerHostManager,
         kbDaemonSupervisor,

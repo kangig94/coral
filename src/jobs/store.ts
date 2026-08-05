@@ -778,22 +778,8 @@ export class JobStore implements JobProgressStore {
     return this.listJobProjections().map(({ jobId }) => jobId);
   }
 
-  liveJobCountByNamespace(namespace: string): number {
-    if (!namespace) {
-      return 0;
-    }
-
-    return (
-      this.countProjectedLiveJobsByNamespace(namespace) +
-      this.countLiveOverrideJobs((status) => status.backendNamespace === namespace)
-    );
-  }
-
-  liveJobCount(bundleHash?: string): number {
-    return (
-      this.countProjectedLiveJobs(bundleHash) +
-      this.countLiveOverrideJobs((status) => bundleHash === undefined || status.bundleHash === bundleHash)
-    );
+  liveJobCount(): number {
+    return this.countProjectedLiveJobs() + this.countLiveOverrideJobs(() => true);
   }
 
   appendProgress(jobId: string, sessionId: string | null, message: string): number {
@@ -832,13 +818,8 @@ export class JobStore implements JobProgressStore {
     return count;
   }
 
-  private countProjectedLiveJobs(bundleHash?: string): number {
+  private countProjectedLiveJobs(): number {
     const excludedJobIds = [...this.namespaceOverrides.keys()];
-    return countProjectedLiveJobRows(this.db, { bundleHash, excludedJobIds });
-  }
-
-  private countProjectedLiveJobsByNamespace(namespace: string): number {
-    const excludedJobIds = [...this.namespaceOverrides.keys()];
-    return countProjectedLiveJobRows(this.db, { namespace, excludedJobIds });
+    return countProjectedLiveJobRows(this.db, { excludedJobIds });
   }
 }

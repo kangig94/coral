@@ -1947,11 +1947,7 @@ describe('AC13 lifecycle recovery source revisions', () => {
         const quarantine = new RecoveryQuarantineStore(db, REVISION_TIME);
         let settlements = 0;
         const run = () =>
-          quarantineRawSource(
-            crashedJobTerminalizationSource(db, 'revision-namespace'),
-            quarantine,
-            () => (settlements += 1),
-          );
+          quarantineRawSource(crashedJobTerminalizationSource(db), quarantine, () => (settlements += 1));
         await run();
         expect(settlements).toBe(1);
         expect((await run()).skipped).toBe(1);

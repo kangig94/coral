@@ -6,7 +6,6 @@ import { jobProgressBodySchema, jobRuntimeStartedBodySchema } from './event-bodi
 import { jobLaunchRequestBodySchema } from './launch.js';
 import { isLivePhase, type JobPhase } from './phase.js';
 import {
-  belongsToNamespace,
   emptyJobDiagnostics,
   isWorkflowJobKind,
   type JobDiagnostics,
@@ -114,7 +113,6 @@ export type JobsListFilters = {
   phase?: JobPhase;
   all?: boolean;
   provider?: string;
-  namespace?: string;
 };
 
 export type JobDetail = {
@@ -173,7 +171,6 @@ function readOrderedProjectionRows(db: Database, filters?: JobsListFilters): Pro
     .map(decodeProjectionJobStoredRow);
 
   return rows.filter((row) => {
-    if (filters?.namespace !== undefined && row.backend_namespace !== filters.namespace) return false;
     if (filters && filters.all !== true && !isLivePhase(row.phase)) return false;
     // KB jobs belong to no single project and remain visible from every project.
     if (filters?.projectRoot !== undefined && row.project_root !== filters.projectRoot && row.job_kind !== 'kb') {
@@ -640,22 +637,13 @@ export function listJobs(
   return listJobProjections(db, ctx, filters);
 }
 
-export function loadJobDetail(
-  db: Database,
-  jobId: string,
-  ctx: StoreReadContext,
-  options: { namespace?: string } = {},
-): JobDetail | null {
+export function loadJobDetail(db: Database, jobId: string, ctx: StoreReadContext): JobDetail | null {
   const detail = loadJobProjectionDetail(db, jobId, ctx);
   const status = detail.status;
 
   if (status === null) {
     return null;
   }
-  if (options.namespace !== undefined && !belongsToNamespace(status, options.namespace)) {
-    return null;
-  }
-
   return {
     status,
     events: readJobEvents(db, jobId, ctx),

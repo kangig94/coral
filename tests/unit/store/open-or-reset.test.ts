@@ -36,6 +36,13 @@ import {
   type BackendStoreResetAuthority,
 } from '#src/store/backend-store-reset.js';
 import { openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
+
+/**
+ * Mirrors `STALE_LOCK_MS` in `src/infra/fs-lock.ts`. Restated rather than exported from production: the value a
+ * test bounds against is a property of the contention behaviour it asserts, and importing it would let a
+ * production change silently move the assertion with it.
+ */
+const FRESH_LOCK_STALENESS_WINDOW_MS = 30_000;
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
 import {
   MAX_RESET_MANIFEST_BYTES,
@@ -1121,7 +1128,11 @@ describe('openOrResetBackendStoreDb', () => {
     const elapsed = Date.now() - started;
 
     expectSetupCode(error, 'store_reset_lock_contended');
-    expect(elapsed).toBeLessThan(1_000);
+    // The property is "did not sit out the staleness window", not "finished inside an arbitrary second". A
+    // fresh lock must be refused immediately, whereas waiting for it to go stale would cost STALE_LOCK_MS
+    // (30s). Bounding against that instead of a round number keeps this from failing under suite load — it
+    // measured 2623ms on a loaded machine while the call itself was nowhere near the wait path.
+    expect(elapsed).toBeLessThan(FRESH_LOCK_STALENESS_WINDOW_MS / 2);
     expect(existsSync(lockDir)).toBe(true);
   });
 

@@ -740,7 +740,7 @@ function createLifecycleHarness(
     getRecoveryService?: (ctx: { projectRoot: string }) => unknown;
     runStartupRecoveryFn?: HarnessStartupRecoveryFn;
     cleanupStaleJobsFn?: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
-    markJobsAsErrorFn?: (namespace: string, message: string, signal: AbortSignal) => void | Promise<void>;
+    markJobsAsErrorFn?: (message: string, signal: AbortSignal) => void | Promise<void>;
     registerRuntimeComponentFn?: (component: RuntimeComponent) => void;
     interruptedAppServerReason?: 'restart' | 'handoff';
     runtime?: ReturnType<typeof createRealRuntime>;
@@ -1751,10 +1751,9 @@ describe('lifecycle recovery', () => {
       progressStore,
       eventBus,
       runStartupRecoveryFn: async () => [],
-      markJobsAsErrorFn: async (currentNamespace, message, signal) => {
+      markJobsAsErrorFn: async (message, signal) => {
         await modules.lifecycleModule.markJobsAsError(
           progressStore,
-          currentNamespace,
           message,
           {
             mkdirSync: () => {},
@@ -1822,7 +1821,7 @@ describe('lifecycle recovery', () => {
                 AND subject_key = ?`,
           )
           .get(foreignFaultJobId),
-      ).toEqual({ count: 0 });
+      ).toEqual({ count: 1 });
     } finally {
       await stopLifecycleController(controller);
     }
@@ -2340,7 +2339,6 @@ describe('lifecycle recovery', () => {
         world: { idleTimer: { requestDrain() {} } } as never,
         listExecutionServices: () => [service] as never,
         getLifecycleController: () => controller,
-        backendNamespace: namespace,
         getProgressStore: () => progressStore,
         internalJobAbortRegistry: {
           abort: (jobIds: string[]) => ({ aborted: [], notFound: jobIds }),
@@ -2406,12 +2404,12 @@ describe('lifecycle recovery', () => {
   });
 
   it.each([
-    ['5. foreign queued jobs finalize as wrapper_lost', 'queued', false, false],
-    ['6. foreign launching jobs finalize as wrapper_lost', 'launching', false, false],
-    ['7. foreign running durable jobs finalize as wrapper_lost', 'running', true, false],
-    ['8. foreign running app-server jobs finalize as wrapper_lost', 'running', false, true],
-    ['9. foreign live PIDs still finalize as wrapper_lost', 'running', true, false],
-  ])('%s', async (_label, phase, durableRuntime, appServerRuntime) => {
+    ['5. inherited queued jobs enter ordinary queued recovery', 'queued', false, false, false],
+    ['6. inherited launching jobs without runtime finalize as ghost_launch', 'launching', false, false, false],
+    ['7. inherited running durable jobs with dead PIDs use the durable finalizer', 'running', true, false, false],
+    ['8. inherited running app-server jobs use the app-server finalizer', 'running', false, true, false],
+    ['9. inherited running durable jobs with live PIDs are adopted', 'running', true, false, true],
+  ])('%s', async (_label, phase, durableRuntime, appServerRuntime, livePid) => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot(
       `plugin-foreign-${phase}-${durableRuntime ? 'durable' : appServerRuntime ? 'app' : 'none'}`,
@@ -2441,7 +2439,7 @@ describe('lifecycle recovery', () => {
     if (durableRuntime) {
       stubRuntimeRecord(progressStore, {
         jobId,
-        pid: jobId.endsWith('none') ? 999_991 : process.pid,
+        pid: livePid ? process.pid : 999_991,
       });
     }
     if (appServerRuntime) {
@@ -2457,20 +2455,51 @@ describe('lifecycle recovery', () => {
 
     try {
       await controller.start();
-      expect(progressStore.readStatus(jobId)).toMatchObject({
-        backendNamespace: foreignNamespace,
-        phase: 'error',
-        result: { outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
-      });
-      expect(fakeService.recoverQueuedJob).not.toHaveBeenCalled();
-      expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
-      expect(fakeService.finalizeInterruptedAppServerJob).not.toHaveBeenCalled();
+      expect(progressStore.readStatus(jobId)?.backendNamespace).toBe(foreignNamespace);
+      expect(progressStore.readJobEvents(jobId)).not.toContainEqual(
+        expect.objectContaining({
+          type: 'terminal',
+          result: { outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
+        }),
+      );
+      if (phase === 'queued') {
+        expect(progressStore.readStatus(jobId)?.phase).toBe('queued');
+        expect(fakeService.recoverQueuedJob).toHaveBeenCalledWith(
+          expect.objectContaining({ launchRecord: expect.objectContaining({ jobId }) }),
+        );
+      } else if (phase === 'launching') {
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: { outcome: { kind: 'job_fault', fault: { kind: 'ghost_launch' } } },
+        });
+      } else {
+        expect(progressStore.readStatus(jobId)?.phase).toBe('running');
+      }
+      if (durableRuntime && livePid) {
+        expect(fakeService.adoptRunningJob).toHaveBeenCalledWith(
+          expect.objectContaining({ launchRecord: expect.objectContaining({ jobId }) }),
+          expect.objectContaining({ transport: 'durable-cli', pid: process.pid }),
+        );
+      } else if (durableRuntime) {
+        expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledWith(
+          expect.objectContaining({ launchRecord: expect.objectContaining({ jobId }) }),
+          expect.objectContaining({ transport: 'durable-cli', pid: 999_991 }),
+          expect.objectContaining({ exit: null, terminal: null, cancelled: false }),
+          expect.objectContaining({ signal: expect.any(AbortSignal), onCommitStart: expect.any(Function) }),
+        );
+      } else if (appServerRuntime) {
+        expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
+          expect.objectContaining({ launchRecord: expect.objectContaining({ jobId }) }),
+          expect.objectContaining({ transport: 'app-server' }),
+          expect.objectContaining({ reason: 'restart' }),
+        );
+      }
     } finally {
       await stopLifecycleController(controller);
     }
   });
 
-  it('foreign workflow parent jobs finalize as wrapper_lost before workflow resume ownership', async () => {
+  it('inherited workflow parents remain available for workflow resume ownership', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-foreign-workflow-parent');
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -2513,9 +2542,14 @@ describe('lifecycle recovery', () => {
       expect(progressStore.readStatus('foreign-workflow-parent')).toMatchObject({
         backendNamespace: foreignNamespace,
         jobKind: 'workflow',
-        phase: 'error',
-        result: { outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
+        phase: 'running',
       });
+      expect(progressStore.readJobEvents('foreign-workflow-parent')).not.toContainEqual(
+        expect.objectContaining({
+          type: 'terminal',
+          result: { outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
+        }),
+      );
       expect(fakeService.recoverQueuedJob).not.toHaveBeenCalled();
       expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
       expect(fakeService.waitStream).not.toHaveBeenCalled();
@@ -2524,7 +2558,7 @@ describe('lifecycle recovery', () => {
     }
   });
 
-  it('10. current-namespace queued jobs are not finalized by the cross-namespace scan', async () => {
+  it('10. queued jobs enter ordinary recovery', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-local-queued');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -3280,7 +3314,7 @@ describe('lifecycle recovery', () => {
           .get(malformedJobId),
       ).toEqual({ stage: 'hydrate' });
       const messages = log.mock.calls.flat().join('');
-      expect(messages).toContain('Cross-namespace coordinator recovery: quarantined 1 item');
+      expect(messages).toContain('Coordinator recovery snapshot hydration: quarantined 1 item');
     } finally {
       await stopLifecycleController(controller);
     }
@@ -3944,7 +3978,7 @@ describe('lifecycle recovery', () => {
     }
   });
 
-  it('16. foreign terminal jobs are ignored by the cross-namespace scan', async () => {
+  it('16. inherited terminal jobs remain ignored by startup recovery', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-foreign-terminal');
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -3992,7 +4026,7 @@ describe('lifecycle recovery', () => {
     }
   });
 
-  it('17. foreign running jobs append wrapper_lost into progress history', async () => {
+  it('17. inherited running jobs do not append wrapper_lost into progress history', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-foreign-history');
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -4027,16 +4061,26 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       const history = progressStore.readJobEvents('foreign-history');
-      expect(history.at(-1)).toMatchObject({
-        type: 'terminal',
-        result: { outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
-      });
+      expect(history).not.toContainEqual(
+        expect.objectContaining({
+          type: 'terminal',
+          result: { outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
+        }),
+      );
+      expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          launchRecord: expect.objectContaining({ jobId: 'foreign-history' }),
+        }),
+        expect.objectContaining({ transport: 'durable-cli', pid: 999_992 }),
+        expect.objectContaining({ exit: null, terminal: null, cancelled: false }),
+        expect.objectContaining({ signal: expect.any(AbortSignal), onCommitStart: expect.any(Function) }),
+      );
     } finally {
       await stopLifecycleController(controller);
     }
   });
 
-  it('18. cross-namespace recovery preserves the foreign backend namespace in status', async () => {
+  it('18. ordinary recovery preserves the inherited backend namespace as provenance', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-foreign-namespace-preserved');
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -4154,7 +4198,7 @@ describe('lifecycle recovery', () => {
     }
   });
 
-  it('21. foreign queued recovery does not call recoverQueuedJob', async () => {
+  it('21. inherited queued recovery calls recoverQueuedJob', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-foreign-no-queued');
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -4192,13 +4236,17 @@ describe('lifecycle recovery', () => {
 
     try {
       await controller.start();
-      expect(fakeService.recoverQueuedJob).not.toHaveBeenCalled();
+      expect(fakeService.recoverQueuedJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          launchRecord: expect.objectContaining({ jobId: 'foreign-no-queued' }),
+        }),
+      );
     } finally {
       await stopLifecycleController(controller);
     }
   });
 
-  it('22. foreign running recovery does not call adoptRunningJob', async () => {
+  it('22. inherited running recovery with a dead PID uses the durable finalizer', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-foreign-no-adopt');
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -4233,6 +4281,14 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
+      expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          launchRecord: expect.objectContaining({ jobId: 'foreign-no-adopt' }),
+        }),
+        expect.objectContaining({ transport: 'durable-cli', pid: 999_993 }),
+        expect.objectContaining({ exit: null, terminal: null, cancelled: false }),
+        expect.objectContaining({ signal: expect.any(AbortSignal), onCommitStart: expect.any(Function) }),
+      );
     } finally {
       await stopLifecycleController(controller);
     }
