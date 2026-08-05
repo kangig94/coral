@@ -99,6 +99,12 @@ function createProjectRoot(name: string): string {
   return projectRoot;
 }
 
+function createPluginRoot(name: string): string {
+  const pluginRoot = createProjectRoot(name);
+  mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
+  return pluginRoot;
+}
+
 function createStoreServicesHarness(progressStore: { getDb(): { close(): void } }): {
   storeServicesRef: never;
   createStoreServicesFromDbFn: (storeDb: { close(): void }) => never;
@@ -418,9 +424,9 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
         namespace,
         version: '9.9.9',
         buildSetId: '00000000-0000-4000-8000-000000000000',
-        bundleHash: 'testhash1234',
-        cliBundleHash: 'testclihash1234',
-        claudeAppserverBundleHash: 'testclaudehash12',
+        bundleHash: '1111111111111111',
+        cliBundleHash: '2222222222222222',
+        claudeAppserverBundleHash: '3333333333333333',
         flavor: 'prod',
         instanceId: `recovery-shutdown-${Math.random()}`,
         token: 'test-token',
@@ -546,7 +552,7 @@ describe('recovery coordinator shutdown', () => {
   it('stops the startup tail when shutdown begins during recovery adoption', async () => {
     const modules = await loadModules();
     const runtime = createRealRuntime('prod');
-    const pluginRoot = createProjectRoot('plugin-mid-adoption');
+    const pluginRoot = createPluginRoot('plugin-mid-adoption');
     const projectRoot = createProjectRoot('project-mid-adoption');
     const cleanupSpy = vi.fn();
     // eslint-disable-next-line prefer-const -- circular: adoptRunningJob closure reads controller, but controller assignment depends on harness which wires adoptRunningJob
@@ -593,7 +599,7 @@ describe('recovery coordinator shutdown', () => {
   it('bars a late binding-failure commit when authority capture returns after shutdown', async () => {
     const modules = await loadModules();
     const runtime = createRealRuntime('prod');
-    const pluginRoot = createProjectRoot('plugin-late-authority');
+    const pluginRoot = createPluginRoot('plugin-late-authority');
     const projectRoot = createProjectRoot('project-late-authority');
     let releaseCapture!: (value: { ok: false; failure: { reason: 'subject-mismatch'; provider: string } }) => void;
     const captureBlocked = new Promise<{
@@ -633,7 +639,7 @@ describe('recovery coordinator shutdown', () => {
     const modules = await loadModules();
     const virtualRuntime = new SimulationRuntime();
     const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
-    const pluginRoot = createProjectRoot('plugin-after-poller');
+    const pluginRoot = createPluginRoot('plugin-after-poller');
     const projectRoot = createProjectRoot('project-after-poller');
     const cleanupSpy = vi.fn();
     const recoveryPollMs = 500;
@@ -706,7 +712,7 @@ describe('recovery coordinator shutdown', () => {
   it('continues to the second workflow and lets start resolve after finalizing the first recovery failure', async () => {
     const modules = await loadModules();
     const runtime = createRealRuntime('prod');
-    const pluginRoot = createProjectRoot('plugin-workflow-isolation');
+    const pluginRoot = createPluginRoot('plugin-workflow-isolation');
     const failedProjectRoot = createProjectRoot('project-workflow-failure');
     const resumedProjectRoot = createProjectRoot('project-workflow-resumed');
     const backendNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -780,7 +786,7 @@ describe('recovery coordinator shutdown', () => {
     const modules = await loadModules();
     const virtualRuntime = new SimulationRuntime();
     const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
-    const pluginRoot = createProjectRoot('plugin-finalization-failure');
+    const pluginRoot = createPluginRoot('plugin-finalization-failure');
     const projectRoot = createProjectRoot('project-finalization-failure');
     const cleanupSpy = vi.fn();
     const pid = 51_515;
@@ -831,7 +837,7 @@ describe('recovery coordinator shutdown', () => {
     const modules = await loadModules();
     const virtualRuntime = new SimulationRuntime();
     const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
-    const pluginRoot = createProjectRoot('plugin-precommit-finalization');
+    const pluginRoot = createPluginRoot('plugin-precommit-finalization');
     const projectRoot = createProjectRoot('project-precommit-finalization');
     const pid = 60_606;
     let pidAlive = true;
@@ -871,7 +877,7 @@ describe('recovery coordinator shutdown', () => {
     const modules = await loadModules();
     const virtualRuntime = new SimulationRuntime();
     const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
-    const pluginRoot = createProjectRoot('plugin-finalization-drain');
+    const pluginRoot = createPluginRoot('plugin-finalization-drain');
     const projectRoot = createProjectRoot('project-finalization-drain');
     const pid = 61_616;
     let pidAlive = true;
@@ -921,7 +927,7 @@ describe('recovery coordinator shutdown', () => {
   it('waits for startup app-server finalization before shutdown releases daemon authority', async () => {
     const modules = await loadModules();
     const runtime = createRealRuntime('prod');
-    const pluginRoot = createProjectRoot('plugin-app-finalization-drain');
+    const pluginRoot = createPluginRoot('plugin-app-finalization-drain');
     const projectRoot = createProjectRoot('project-app-finalization-drain');
     let releaseFinalizer!: () => void;
     const finalizerBlocked = new Promise<void>((resolve) => {

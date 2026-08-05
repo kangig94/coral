@@ -23,6 +23,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'expansion_install_command_failed'
   | 'expansion_install_artifact_failed'
   | 'startup_not_ready'
+  | 'startup_bundle_unresolvable'
   | 'coordinator_socket_in_use'
   | 'coordinator_socket_bind_failed'
   | 'store_schema_outdated'
@@ -161,6 +162,11 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   startup_not_ready: {
     userMessage: 'Coral backend is still starting.',
     remediation: 'The Coral backend is still starting; retry shortly.',
+  },
+  startup_bundle_unresolvable: {
+    userMessage: "Coral cannot resolve this installation's running backend bundle directory.",
+    remediation:
+      'Reinstall or update the Coral plugin so its bridge bundle and manifest are present, then start Coral again.',
   },
   coordinator_socket_in_use: {
     userMessage: (context) =>

@@ -29,13 +29,16 @@ import { documentedCoralSetupError, serializeCoralSetupError } from '#src/runtim
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import {
+  acquireBackendStoreResetLock,
   createBackendStoreResetAuthority,
   openOrResetBackendStoreDb,
-  publishBackendStoreResetIncident,
-  resumeInterruptedBackendStoreResetIncident,
+  publishClassifiedBackendStoreResetIncident,
+  resolveBackendStoreFileSet,
+  resumeBackendStoreResetIncidentForOperator,
   type BackendStoreResetAuthority,
 } from '#src/store/backend-store-reset.js';
-import { openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
+import { classifyStoreFile, openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
+import type { GenerationAdoptionLockLease } from '#src/store/generation-mutation-coordination.js';
 
 /**
  * Mirrors `STALE_LOCK_MS` in `src/infra/fs-lock.ts`. Restated rather than exported from production: the value a
@@ -229,25 +232,54 @@ function authorityFor(runtime: Runtime, dbPath: string): BackendStoreResetAuthor
   );
 }
 
+function adoptionLease(): GenerationAdoptionLockLease {
+  return {
+    assertOwned: () => undefined,
+  } as unknown as GenerationAdoptionLockLease;
+}
+
 function openReset(runtime: Runtime, dbPath: string) {
-  return openOrResetBackendStoreDb(runtime, authorityFor(runtime, dbPath), {
+  return openOrResetBackendStoreDb(runtime, authorityFor(runtime, dbPath), adoptionLease(), {
     path: dbPath,
     storeFormat: STORE_FORMAT,
   });
 }
 
 function publishReset(runtime: Runtime, dbPath: string) {
-  return publishBackendStoreResetIncident(runtime, authorityFor(runtime, dbPath), {
+  const options = {
     path: dbPath,
     storeFormat: STORE_FORMAT,
-  });
+  };
+  const files = resolveBackendStoreFileSet(runtime, options);
+  const resetLock = acquireBackendStoreResetLock(runtime, files, adoptionLease());
+  try {
+    const classification = classifyStoreFile(dbPath, runtime.storage, STORE_FORMAT);
+    if (classification.kind !== 'older-incompatible' && classification.kind !== 'corrupt-or-unsupported') {
+      throw new Error(`Test fixture is not resettable: ${classification.kind}`);
+    }
+    return publishClassifiedBackendStoreResetIncident(
+      runtime,
+      authorityFor(runtime, dbPath),
+      files,
+      classification,
+      resetLock,
+    );
+  } finally {
+    resetLock.release();
+  }
 }
 
 function resumeReset(runtime: Runtime, dbPath: string) {
-  return resumeInterruptedBackendStoreResetIncident(runtime, authorityFor(runtime, dbPath), {
+  const files = resolveBackendStoreFileSet(runtime, {
     path: dbPath,
     storeFormat: STORE_FORMAT,
   });
+  const resetLock = acquireBackendStoreResetLock(runtime, files, adoptionLease());
+  try {
+    return resumeBackendStoreResetIncidentForOperator(runtime, files, resetLock);
+  } finally {
+    resetLock.release();
+  }
 }
 
 function captureError(fn: () => unknown): unknown {
@@ -367,7 +399,7 @@ describe('openOrResetBackendStoreDb', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-steady-busy-timeout-'), 'store.db');
 
-    const db = openOrResetBackendStoreDb(runtime, authorityFor(runtime, dbPath), {
+    const db = openOrResetBackendStoreDb(runtime, authorityFor(runtime, dbPath), adoptionLease(), {
       path: dbPath,
       storeFormat: STORE_FORMAT,
       startupBusyTimeoutMs: 1,
@@ -1070,7 +1102,7 @@ describe('openOrResetBackendStoreDb', () => {
       },
     );
 
-    const db = openOrResetBackendStoreDb(runtime, authority, {
+    const db = openOrResetBackendStoreDb(runtime, authority, adoptionLease(), {
       path: dbPath,
       storeFormat: STORE_FORMAT,
     });
@@ -1212,7 +1244,7 @@ describe('openOrResetBackendStoreDb', () => {
     );
 
     const error = captureError(() =>
-      openOrResetBackendStoreDb(runtime, staleAuthority, {
+      openOrResetBackendStoreDb(runtime, staleAuthority, adoptionLease(), {
         path: dbPath,
         storeFormat: STORE_FORMAT,
       }),
@@ -1248,7 +1280,7 @@ describe('openOrResetBackendStoreDb', () => {
     );
 
     const error = captureError(() =>
-      openOrResetBackendStoreDb(runtime, authority, {
+      openOrResetBackendStoreDb(runtime, authority, adoptionLease(), {
         path: dbPath,
         storeFormat: otherFormat,
       }),

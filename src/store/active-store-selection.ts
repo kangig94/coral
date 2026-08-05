@@ -438,6 +438,77 @@ function sameIdentity(left: StorageBigIntStat, right: StorageBigIntStat): boolea
   );
 }
 
+function ensureActiveStoreCoordinationDirectory(runtime: Runtime): void {
+  const { coordinationRoot } = resolveActiveStoreRecordPaths(runtime);
+  if (!runtime.storage.existsSync(coordinationRoot)) {
+    runtime.storage.mkdirSync(coordinationRoot, { recursive: true });
+    const created = runtime.storage.lstatSync(coordinationRoot);
+    if (!created.isDirectory() || created.isSymbolicLink()) {
+      throw new Error('Active-store coordination directory could not be created safely.');
+    }
+    runtime.storage.chmodSync(coordinationRoot, 0o700);
+  }
+  const link = runtime.storage.lstatSync(coordinationRoot);
+  if (
+    !link.isDirectory() ||
+    link.isSymbolicLink() ||
+    runtime.storage.realpathSync(coordinationRoot) !== coordinationRoot
+  ) {
+    throw new Error('Active-store coordination directory is not private and canonical.');
+  }
+  runtime.storage.chmodSync(coordinationRoot, 0o700);
+  const stat = runtime.storage.statSync(coordinationRoot, { bigint: true });
+  if (!stat.isDirectory() || (stat.mode & PERMISSION_BITS) !== 0o700n) {
+    throw new Error('Active-store coordination directory is not private and canonical.');
+  }
+}
+
+function publishActiveStoreRecord(runtime: Runtime, path: string, bytes: Uint8Array, record: string): void {
+  ensureActiveStoreCoordinationDirectory(runtime);
+  if (!runtime.storage.writeAtomicDurableSync(path, bytes, { mode: 0o600 })) {
+    throw new Error(`${record} could not be published durably.`);
+  }
+}
+
+export function publishActiveStoreSelection(runtime: Runtime, selection: ActiveStoreSelection): void {
+  const paths = resolveActiveStoreRecordPaths(runtime);
+  publishActiveStoreRecord(
+    runtime,
+    paths.selectionFile,
+    encodeActiveStoreSelection(selection),
+    'Active-store selection',
+  );
+}
+
+export function publishActiveStoreTransition(runtime: Runtime, transition: ActiveStoreTransition): void {
+  const paths = resolveActiveStoreRecordPaths(runtime);
+  publishActiveStoreRecord(
+    runtime,
+    paths.transitionFile,
+    encodeActiveStoreTransition(transition),
+    'Active-store transition',
+  );
+}
+
+export function clearActiveStoreTransition(runtime: Runtime, expectedIdentity?: StorageBigIntStat): void {
+  const paths = resolveActiveStoreRecordPaths(runtime);
+  if (!runtime.storage.existsSync(paths.transitionFile)) return;
+  const link = runtime.storage.lstatSync(paths.transitionFile);
+  const stat = runtime.storage.statSync(paths.transitionFile, { bigint: true });
+  if (
+    !link.isFile() ||
+    link.isSymbolicLink() ||
+    !stat.isFile() ||
+    (expectedIdentity !== undefined && !sameIdentity(stat, expectedIdentity))
+  ) {
+    throw new Error('Active-store transition changed before durable clear.');
+  }
+  runtime.storage.unlinkSync(paths.transitionFile);
+  if (!runtime.storage.syncDirectoryDurableSync(paths.coordinationRoot)) {
+    throw new Error('Active-store transition clear could not be synchronized durably.');
+  }
+}
+
 type BoundedRecordReadResult =
   | { readonly kind: 'absent' }
   | { readonly kind: 'bytes'; readonly bytes: Uint8Array; readonly overLimit: boolean }

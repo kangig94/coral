@@ -35,7 +35,7 @@ const mockState = vi.hoisted(() => {
     events,
     fakeDb,
     acquiredViaHandoff: false,
-    currentBundleDir: null as string | null,
+    currentBundleDir: '/tmp/plugin/bridge' as string | null,
     startupRouting: 'open' as 'open' | 'handoff',
     handoffTarget: Object.freeze(Object.create(null)),
   };
@@ -94,10 +94,6 @@ vi.mock('#src/store/backend-store-reset.js', async (importOriginal) => {
         acquiredViaHandoff: handoff.acquiredViaHandoff,
         issuedAt: runtime.time.now(),
       };
-    }),
-    openOrResetBackendStoreDb: vi.fn(() => {
-      mockState.events.push('storeDb:openOrReset');
-      return mockState.fakeDb;
     }),
   };
 });
@@ -339,7 +335,7 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
 afterEach(() => {
   mockState.events.length = 0;
   mockState.acquiredViaHandoff = false;
-  mockState.currentBundleDir = null;
+  mockState.currentBundleDir = '/tmp/plugin/bridge';
   mockState.startupRouting = 'open';
   mockState.fakeDb.closed = false;
   vi.clearAllMocks();
@@ -367,7 +363,7 @@ describe('lifecycle reset authority and finalizer order', () => {
 
     expect(mockState.events).toContain('providers:register');
     expect(mockState.events).not.toContain('resetAuthority:create');
-    expect(mockState.events).not.toContain('storeDb:openOrReset');
+    expect(mockState.events).not.toContain('startupStore:route');
   });
 
   it('creates reset authority only after bindWithHandoff returns', async () => {
@@ -380,9 +376,9 @@ describe('lifecycle reset authority and finalizer order', () => {
       mockState.events.indexOf('resetAuthority:create'),
     );
     expect(mockState.events.indexOf('resetAuthority:create')).toBeLessThan(
-      mockState.events.indexOf('storeDb:openOrReset'),
+      mockState.events.indexOf('startupStore:route'),
     );
-    expect(mockState.events.indexOf('storeDb:openOrReset')).toBeLessThan(
+    expect(mockState.events.indexOf('startupStore:route')).toBeLessThan(
       mockState.events.indexOf('storeServices:create'),
     );
   });
@@ -416,7 +412,7 @@ describe('lifecycle reset authority and finalizer order', () => {
 
     await expect(createLifecycle(deps, async () => []).start()).rejects.toBeInstanceOf(StartupStoreHandoffError);
 
-    expect(mockState.events).not.toContain('storeDb:openOrReset');
+    expect(mockState.events).toContain('startupStore:route');
     expect(mockState.events).not.toContain('storeServices:create');
     expect(deps.closeIpcServerFn).toHaveBeenCalledOnce();
   });
@@ -469,18 +465,32 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(startupSignal?.aborted).toBe(false);
   });
 
-  it('opens the startup store with a short busy timeout', async () => {
+  it('routes the startup store with a short busy timeout', async () => {
     const { deps } = makeLifecycleDeps();
     const lifecycle = createLifecycle(deps, async () => []);
-    const storeDb = await import('#src/store/backend-store-reset.js');
+    const startupRouting = await import('#src/store/startup-store-routing.js');
 
     await lifecycle.start();
 
-    expect(storeDb.openOrResetBackendStoreDb).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS }),
+    expect(startupRouting.routeOrOpenBackendStoreAtStartup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({ startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS }),
+      }),
     );
+  });
+
+  it('refuses an unresolvable running bundle before entering store selection', async () => {
+    const { deps } = makeLifecycleDeps();
+    mockState.currentBundleDir = null;
+
+    await expect(createLifecycle(deps, async () => []).start()).rejects.toMatchObject({
+      code: 'startup_bundle_unresolvable',
+      userMessage: "Coral cannot resolve this installation's running backend bundle directory.",
+      remediation: expect.stringContaining('Reinstall or update the Coral plugin'),
+    });
+
+    expect(mockState.events).not.toContain('startupStore:route');
+    expect(mockState.events).not.toContain('storeServices:create');
   });
 
   it('registers components before exposing the running lifecycle', async () => {

@@ -593,6 +593,12 @@ describe('execution backend server', () => {
     return projectRoot;
   }
 
+  function createPluginRoot(name: string): string {
+    const pluginRoot = createProjectRoot(name);
+    mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
+    return pluginRoot;
+  }
+
   it('rejects a semantically invalid named system scope before binding the listener', async () => {
     const duplicate = TEST_SYSTEM_PROVIDER_SCOPE.profiles[0];
 
@@ -5415,7 +5421,7 @@ describe('execution backend server', () => {
   });
 
   it('returns 200 from /admin/shutdown with draining status and shuts down when idle', async () => {
-    const pluginRoot = createProjectRoot('plugin-root');
+    const pluginRoot = createPluginRoot('plugin-root');
     const backend = await startBackendServer({ pluginRoot });
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
@@ -5647,7 +5653,7 @@ describe('execution backend server', () => {
 
   it('drains shutdown when only foreign namespace live jobs remain', async () => {
     const progressStore = createProgressStore();
-    const pluginRoot = createProjectRoot('plugin-root-foreign-drain');
+    const pluginRoot = createPluginRoot('plugin-root-foreign-drain');
     const localNamespace = pluginRootNamespace(pluginRoot);
     const foreignJobId = 'job-foreign-drain';
     createdJobIds.add(foreignJobId);

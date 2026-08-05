@@ -31,7 +31,11 @@ import {
 } from '#src/store/active-store-selection.js';
 import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
 import { discardStoreReset, resolveStoreResetTargetPaths } from '#src/store/operator-store-reset.js';
-import { parseStoreResetIncidentManifest, STORE_RESET_MANIFEST_FILE_NAME } from '#src/store/reset-incident.js';
+import {
+  isCanonicalStoreResetIncidentId,
+  parseStoreResetIncidentManifest,
+  STORE_RESET_MANIFEST_FILE_NAME,
+} from '#src/store/reset-incident.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { bindSocket } from '#src/transport/ipc/server.js';
 
@@ -138,10 +142,7 @@ function tableExists(path: string, table: string): boolean {
 
 function newestIncidentManifest(runtime: ReturnType<typeof createRealRuntime>) {
   const quarantineRoot = resolveStoreResetTargetPaths(runtime, 'gen2').quarantineRoot;
-  const incident = readdirSync(quarantineRoot)
-    .filter((entry) => entry !== '.staging')
-    .sort()
-    .at(-1);
+  const incident = readdirSync(quarantineRoot).filter(isCanonicalStoreResetIncidentId).sort().at(-1);
   if (incident === undefined) throw new Error('Expected a store-reset incident.');
   return parseStoreResetIncidentManifest(readFileSync(join(quarantineRoot, incident, STORE_RESET_MANIFEST_FILE_NAME)));
 }

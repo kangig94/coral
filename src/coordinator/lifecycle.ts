@@ -49,7 +49,7 @@ import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
-import { createBackendStoreResetAuthority, openOrResetBackendStoreDb } from '../store/backend-store-reset.js';
+import { createBackendStoreResetAuthority } from '../store/backend-store-reset.js';
 import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
 import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Database } from '../store/db.js';
@@ -58,7 +58,7 @@ import { validateForeignHandoffTarget } from './handoff-runner.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 import type { SystemProviderScope } from '../infra/provider-scope.js';
-import { CoralSetupError } from '../runtime/errors.js';
+import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { StoreFormatDescription } from '../store/format-fingerprint.js';
 import { decodeStoredBody } from '../store/body-codec.js';
 import { rowToCoralEvent } from '../store/envelope.js';
@@ -866,24 +866,29 @@ async function runLifecycleStartup({
       flavor,
       storeFormatFingerprint: deps.storeFormat.fingerprint,
     };
-    const resetAuthority = createBackendStoreResetAuthority(
-      runtime,
-      { acquiredViaHandoff: bound?.acquiredViaHandoff ?? false },
-      {
-        namespace,
-        storeFormat: deps.storeFormat,
-        build: currentBuild,
-      },
-    );
-    const storeOptions = {
-      storeFormat: deps.storeFormat,
-      startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
-    };
-    const currentBundleDir = resolveRunningBundleDir(identity.pluginRoot);
+    const preinjectedStoreServices = storeServicesRef.tryGet();
     let storeDb: Database;
-    if (currentBundleDir === null) {
-      storeDb = openOrResetBackendStoreDb(runtime, resetAuthority, storeOptions);
+    if (preinjectedStoreServices !== null) {
+      // Production starts with an empty service ref. Test composition may pre-inject an in-memory store, which
+      // has no filesystem selection or reset state to coordinate and must not consume deterministic IDs.
+      storeDb = preinjectedStoreServices.storeDb;
     } else {
+      const resetAuthority = createBackendStoreResetAuthority(
+        runtime,
+        { acquiredViaHandoff: bound?.acquiredViaHandoff ?? false },
+        {
+          namespace,
+          storeFormat: deps.storeFormat,
+          build: currentBuild,
+        },
+      );
+      const currentBundleDir = resolveRunningBundleDir(identity.pluginRoot);
+      if (currentBundleDir === null) {
+        throw documentedCoralSetupError({
+          code: 'startup_bundle_unresolvable',
+          pluginRoot: identity.pluginRoot,
+        });
+      }
       const routing = await routeOrOpenBackendStoreAtStartup({
         runtime,
         authority: resetAuthority,

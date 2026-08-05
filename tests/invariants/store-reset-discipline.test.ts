@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest';
 const REPO_ROOT = process.cwd();
 const SRC_ROOT = join(REPO_ROOT, 'src');
 const BACKEND_STORE_RESET_PATH = 'src/store/backend-store-reset.ts';
+const ACTIVE_STORE_SELECTION_PATH = 'src/store/active-store-selection.ts';
+const ACTIVE_STORE_SELECTION_COORDINATION_PATH = 'src/store/active-store-selection-coordination.ts';
 const STARTUP_STORE_ROUTING_PATH = 'src/store/startup-store-routing.ts';
 const READ_PORT_PATH = 'src/store/read-port.ts';
 const KB_QUERY_RUNTIME_PATH = 'src/read-model/kb-query-runtime.ts';
@@ -261,15 +263,21 @@ describe('store reset discipline invariants', () => {
     const source = sourceFile(BACKEND_STORE_RESET_PATH);
     const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
     const authorityParam = resetFunction.parameters[1];
+    const adoptionParam = resetFunction.parameters[2];
     const body = resetFunction.body?.getText(source) ?? '';
-    const authorityIndex = body.indexOf('assertResetAuthority(');
-    const lockPathIndex = body.indexOf("join(files.dbDir, 'store.db.reset.lock')");
-    const lockIndex = body.indexOf('acquireDirectoryLockSync(');
-    const resumeIndex = body.indexOf('resumeAutomaticInterruptedIncident(');
+    const authorityIndex = body.indexOf('assertBackendStoreResetAuthority(');
+    const lockIndex = body.indexOf('acquireBackendStoreResetLock(');
+    const resumeIndex = body.indexOf('resumeAutomaticBackendStoreResetIncident(');
     const classificationIndex = body.indexOf('classifyStoreFile(');
-    const publishIndex = body.indexOf('publishIncident(');
+    const publishIndex = body.indexOf('publishClassifiedBackendStoreResetIncident(');
     const openIndex = body.indexOf('openStoreDatabase(');
-    const releaseIndex = body.indexOf('releaseLock?.()');
+    const releaseIndex = body.indexOf('resetLock.release()');
+    const lockFunction = findFunction(BACKEND_STORE_RESET_PATH, 'acquireBackendStoreResetLock');
+    const lockBody = lockFunction.body?.getText(source) ?? '';
+    const adoptionOwnedIndex = lockBody.indexOf('adoption.assertOwned()');
+    const mkdirIndex = lockBody.indexOf('runtime.storage.mkdirSync(');
+    const lockPathIndex = lockBody.indexOf("join(files.dbDir, 'store.db.reset.lock')");
+    const directoryLockIndex = lockBody.indexOf('acquireDirectoryLockSync(');
     const directStoreUnlinks = allSourcePaths()
       .flatMap((relativePath) =>
         collectCalls(relativePath)
@@ -281,14 +289,20 @@ describe('store reset discipline invariants', () => {
 
     expect(authorityParam?.name.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('authority');
     expect(authorityParam?.type?.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('BackendStoreResetAuthority');
+    expect(adoptionParam?.name.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('adoption');
+    expect(adoptionParam?.type?.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('GenerationAdoptionLockLease');
     expect(authorityIndex).toBeGreaterThanOrEqual(0);
-    expect(lockPathIndex).toBeGreaterThan(authorityIndex);
-    expect(lockIndex).toBeGreaterThan(lockPathIndex);
+    expect(lockIndex).toBeGreaterThan(authorityIndex);
     expect(resumeIndex).toBeGreaterThan(lockIndex);
     expect(classificationIndex).toBeGreaterThan(resumeIndex);
     expect(publishIndex).toBeGreaterThan(classificationIndex);
     expect(openIndex).toBeGreaterThan(publishIndex);
     expect(releaseIndex).toBeGreaterThan(openIndex);
+    expect(adoptionOwnedIndex).toBeGreaterThanOrEqual(0);
+    expect(mkdirIndex).toBeGreaterThan(adoptionOwnedIndex);
+    expect(lockPathIndex).toBeGreaterThan(mkdirIndex);
+    expect(directoryLockIndex).toBeGreaterThan(lockPathIndex);
+    expect(body).not.toContain('acquireDirectoryLockSync(');
     expect(body).not.toMatch(/publishBackendStoreResetIncident\(|resumeInterruptedBackendStoreResetIncident\(/u);
     expect(directStoreUnlinks).toEqual([]);
   });
@@ -299,8 +313,8 @@ describe('store reset discipline invariants', () => {
     const body = resetFunction.body;
     expect(body).toBeDefined();
     const bodyText = body?.getText(source) ?? '';
-    const lockIndex = bodyText.indexOf('acquireDirectoryLockSync(');
-    const interruptedIndex = bodyText.indexOf('resumeAutomaticInterruptedIncident(');
+    const lockIndex = bodyText.indexOf('acquireBackendStoreResetLock(');
+    const interruptedIndex = bodyText.indexOf('resumeAutomaticBackendStoreResetIncident(');
     const classificationIndex = bodyText.indexOf('classifyStoreFile(');
 
     expect(lockIndex).toBeGreaterThanOrEqual(0);
@@ -326,6 +340,20 @@ describe('store reset discipline invariants', () => {
     expect(supportClosure.has('src/store/db.ts')).toBe(false);
   });
 
+  it('keeps active-store records and the locked coordination protocol in their canonical modules', () => {
+    const records = readFileSync(join(REPO_ROOT, ACTIVE_STORE_SELECTION_PATH), 'utf8');
+    const coordination = readFileSync(join(REPO_ROOT, ACTIVE_STORE_SELECTION_COORDINATION_PATH), 'utf8');
+    const backendReset = readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8');
+    const startupRouting = readFileSync(join(REPO_ROOT, STARTUP_STORE_ROUTING_PATH), 'utf8');
+
+    expect(records).toContain('export function publishActiveStoreSelection(');
+    expect(records).toContain('export function publishActiveStoreTransition(');
+    expect(records).toContain('export function clearActiveStoreTransition(');
+    expect(coordination).toContain('export async function coordinateActiveStoreSelection(');
+    expect(backendReset).not.toMatch(/ActiveStore|publishActiveStore|clearActiveStore/u);
+    expect(startupRouting).not.toContain('routeActiveStoreSelection');
+  });
+
   it('keeps backend reset access limited to lifecycle opening and the explicit operator service', () => {
     const importers = allSourcePaths()
       .filter((path) => sourceImports(path).includes(BACKEND_STORE_RESET_PATH))
@@ -334,6 +362,7 @@ describe('store reset discipline invariants', () => {
     // recovery, and the adoption-lock scope; it is a deliberate reset owner, not leaked backend access.
     expect(importers).toEqual([
       'src/coordinator/lifecycle.ts',
+      ACTIVE_STORE_SELECTION_COORDINATION_PATH,
       'src/store/operator-store-reset.ts',
       STARTUP_STORE_ROUTING_PATH,
     ]);
@@ -341,6 +370,7 @@ describe('store reset discipline invariants', () => {
     const symbolAllowlist = new Set([
       BACKEND_STORE_RESET_PATH,
       'src/coordinator/lifecycle.ts',
+      ACTIVE_STORE_SELECTION_COORDINATION_PATH,
       'src/store/operator-store-reset.ts',
       STARTUP_STORE_ROUTING_PATH,
     ]);
@@ -356,11 +386,13 @@ describe('store reset discipline invariants', () => {
   it('keeps operator reset composition behind the socket guard and shared selection coordinator', () => {
     const operatorPath = 'src/store/operator-store-reset.ts';
     const operatorSource = sourceFile(operatorPath);
-    const backendSource = sourceFile(BACKEND_STORE_RESET_PATH);
+    const coordinationSource = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
     const topLevel = findFunction(operatorPath, 'discardStoreReset').body?.getText(operatorSource) ?? '';
     const generated = findFunction(operatorPath, 'discardGeneratedStore').body?.getText(operatorSource) ?? '';
     const recovery =
-      findFunction(BACKEND_STORE_RESET_PATH, 'recoverActiveStoreTransition').body?.getText(backendSource) ?? '';
+      findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'recoverActiveStoreTransition').body?.getText(
+        coordinationSource,
+      ) ?? '';
     const targetPathsIndex = topLevel.indexOf('resolveStoreResetTargetPaths(');
     const socketIndex = topLevel.indexOf('options.acquireSocketGuard(');
     const legacyRefusalIndex = topLevel.indexOf("options.target === 'legacy'");
@@ -370,7 +402,7 @@ describe('store reset discipline invariants', () => {
     const preparedOpenIndex = generated.indexOf('openOrResetBackendStoreDb(');
     const handoffIndex = generated.indexOf("selectionResult.kind === 'handoff'");
     const resetLockIndex = recovery.indexOf('acquireBackendStoreResetLock(');
-    const resumeIndex = recovery.indexOf('resumeInterruptedIncident(');
+    const resumeIndex = recovery.indexOf('resumeBackendStoreResetIncidentForOperator(');
     const classificationIndex = recovery.indexOf('classifyStoreForProtocol(');
     const authorizationIndex = recovery.indexOf('authorizeClassifiedStore(');
     const openIndex = recovery.indexOf('openPreparedStore');
@@ -407,5 +439,8 @@ describe('store reset discipline invariants', () => {
       )
       .sort();
     expect(destructiveCallers).toEqual([]);
+    expect(readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8')).not.toMatch(
+      /export function (?:publishBackendStoreResetIncident|resumeInterruptedBackendStoreResetIncident)\b/u,
+    );
   });
 });

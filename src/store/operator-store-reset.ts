@@ -9,9 +9,11 @@ import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js
 import type { Runtime } from '../runtime/ports.js';
 import {
   coordinateActiveStoreSelection,
+  type ActiveStoreSelectionRecoveryOutcome,
+} from './active-store-selection-coordination.js';
+import {
   createBackendStoreResetAuthority,
   openOrResetBackendStoreDb,
-  type ActiveStoreSelectionRecoveryOutcome,
   type BackendStoreResetIncident,
 } from './backend-store-reset.js';
 import {
@@ -141,6 +143,7 @@ async function discardGeneratedStore(
       activeStoreFingerprint: options.build.storeFormatFingerprint,
     },
     dependencies: {
+      kind: 'operator',
       validateSelectedTarget: options.validateSelectedTarget,
       acquireStoreRecoveryLease: async () => {
         let maintenance: GenerationMaintenanceLease;
@@ -160,12 +163,11 @@ async function discardGeneratedStore(
         }
         return maintenance;
       },
-      openPreparedStore: () =>
-        openOrResetBackendStoreDb(options.runtime, authority, {
+      openPreparedStore: (adoption) =>
+        openOrResetBackendStoreDb(options.runtime, authority, adoption, {
           path: paths.storeDbPath,
           storeFormat: options.storeFormat,
         }),
-      resumeIncidentAsOperator: true,
       recordRecoveryOutcome: (outcome) => {
         recovery = outcome;
       },
@@ -192,11 +194,11 @@ async function discardGeneratedStore(
  * maintenance → reset-lock acquisition order.
  */
 export function discardStoreReset(
-  options: Extract<StoreResetDiscardOptions, { readonly target: 'gen2' }> & {
-    readonly validateSelectedTarget: ForeignTargetValidator;
-  },
+  options: Extract<StoreResetDiscardOptions, { readonly target: 'gen2' }>,
 ): Promise<StoreResetDiscardDecision>;
-export function discardStoreReset(options: StoreResetDiscardOptions): Promise<StoreResetDiscardResult>;
+export function discardStoreReset(
+  options: Extract<StoreResetDiscardOptions, { readonly target: 'legacy' }>,
+): Promise<never>;
 export async function discardStoreReset(options: StoreResetDiscardOptions): Promise<StoreResetDiscardDecision> {
   if (options.target === 'legacy') {
     throw documentedCoralSetupError({

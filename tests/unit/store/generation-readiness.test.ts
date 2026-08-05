@@ -14,6 +14,7 @@ import { createBackendStoreResetAuthority, openOrResetBackendStoreDb } from '#sr
 import { openStoreDatabase } from '#src/store/db.js';
 import {
   formatLegacyGenerationIgnoredNotice,
+  acquireGenerationAdoptionLock,
   generationMutationCoordinationSeam,
   inspectGenerationReadiness,
   resolveGenerationBoundaryPaths,
@@ -29,7 +30,7 @@ function harness(flavor: BuildFlavor = 'prod'): { readonly runtime: Runtime } {
   return { runtime: createRealRuntime(flavor, { baseDir }) };
 }
 
-function openGeneratedStore(runtime: Runtime): void {
+async function openGeneratedStore(runtime: Runtime): Promise<void> {
   const authority = createBackendStoreResetAuthority(
     runtime,
     { acquiredViaHandoff: true },
@@ -47,7 +48,12 @@ function openGeneratedStore(runtime: Runtime): void {
       storeFormat: STORE_FORMAT,
     },
   );
-  openOrResetBackendStoreDb(runtime, authority, { storeFormat: STORE_FORMAT }).close();
+  const adoption = await acquireGenerationAdoptionLock(runtime);
+  try {
+    openOrResetBackendStoreDb(runtime, authority, adoption, { storeFormat: STORE_FORMAT }).close();
+  } finally {
+    adoption();
+  }
 }
 
 function createForeignLegacyStore(runtime: Runtime, productVersion?: string): string {
@@ -151,19 +157,19 @@ describe('generation readiness', () => {
     expect(inspectGenerationReadiness(runtime, STORE_FORMAT)).toEqual({ kind: 'generated-ready' });
   });
 
-  it('permits coordinator initialization when both generation targets are absent', () => {
+  it('permits coordinator initialization when both generation targets are absent', async () => {
     const { runtime } = harness();
     const paths = resolveGenerationBoundaryPaths(runtime);
     expect(existsSync(paths.generatedFlavorRoot)).toBe(false);
     expect(existsSync(paths.legacyFlavorRoot)).toBe(false);
     expect(inspectGenerationReadiness(runtime, STORE_FORMAT)).toEqual({ kind: 'no-legacy' });
 
-    openGeneratedStore(runtime);
+    await openGeneratedStore(runtime);
 
     expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
   });
 
-  it('boots beside readable legacy history without importing it', () => {
+  it('boots beside readable legacy history without importing it', async () => {
     const { runtime } = harness();
     const legacyRoot = createSameGenerationLegacyStore(runtime);
     const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
@@ -175,7 +181,7 @@ describe('generation readiness', () => {
 
     // Used to throw `legacy_adoption_required` here: a readable previous
     // generation made the whole daemon unbootable until an operator migrated it.
-    openGeneratedStore(runtime);
+    await openGeneratedStore(runtime);
 
     expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
     // The legacy rows stay where they are, and none of them appear in the new
@@ -188,7 +194,7 @@ describe('generation readiness', () => {
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('left untouched'));
   });
 
-  it('boots beside a foreign legacy generation and reports its stored version', () => {
+  it('boots beside a foreign legacy generation and reports its stored version', async () => {
     const { runtime } = harness();
     const legacyRoot = createForeignLegacyStore(runtime, '0.9.16');
     const before = hashTree(legacyRoot);
@@ -200,14 +206,14 @@ describe('generation readiness', () => {
       storedProductVersion: '0.9.16',
     });
 
-    openGeneratedStore(runtime);
+    await openGeneratedStore(runtime);
 
     expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
     expect(hashTree(legacyRoot)).toBe(before);
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('0.9.16'));
   });
 
-  it('boots beside an unreadable legacy store rather than diagnosing it', () => {
+  it('boots beside an unreadable legacy store rather than diagnosing it', async () => {
     const { runtime } = harness();
     const paths = resolveGenerationBoundaryPaths(runtime);
     const dbFile = join(paths.legacyFlavorRoot, 'store', 'store.db');
@@ -223,7 +229,7 @@ describe('generation readiness', () => {
       storedProductVersion: null,
     });
 
-    openGeneratedStore(runtime);
+    await openGeneratedStore(runtime);
 
     expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
     expect(hashTree(paths.legacyFlavorRoot)).toBe(before);

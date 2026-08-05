@@ -30,10 +30,11 @@ import {
 } from '#src/store/active-store-selection.js';
 import {
   coordinateActiveStoreSelection,
-  createBackendStoreResetAuthority,
+  type ActiveStoreSelectionOperatorDependencies,
   type ActiveStoreSelectionProtocolDependencies,
-  type BackendStoreResetAuthority,
-} from '#src/store/backend-store-reset.js';
+  type ActiveStoreSelectionStartupDependencies,
+} from '#src/store/active-store-selection-coordination.js';
+import { createBackendStoreResetAuthority, type BackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
 import type { Database } from '#src/store/db.js';
 import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
 import {
@@ -123,7 +124,7 @@ function prepareEvidence(
   arm: EvidenceArm,
   runtime: Runtime,
   currentSelection: ActiveStoreSelection,
-): ActiveStoreSelectionProtocolDependencies {
+): Partial<Omit<ActiveStoreSelectionOperatorDependencies, 'kind'>> {
   if (arm === 'malformed') {
     publish(runtime, 'selectionFile', new TextEncoder().encode('{malformed'));
     return {};
@@ -144,12 +145,25 @@ function fakeDatabase(): Database {
 }
 
 function successfulDependencies(
-  extra: ActiveStoreSelectionProtocolDependencies = {},
-): ActiveStoreSelectionProtocolDependencies {
+  extra: Partial<Omit<ActiveStoreSelectionOperatorDependencies, 'kind'>> = {},
+): ActiveStoreSelectionOperatorDependencies {
   return {
+    kind: 'operator',
+    validateSelectedTarget: () => {
+      throw new Error('validator should not run');
+    },
     classifyStore: () => ({ kind: 'fresh' }),
     openStore: () => fakeDatabase(),
     ...extra,
+  };
+}
+
+function startupDependencies(): ActiveStoreSelectionStartupDependencies {
+  return {
+    kind: 'startup',
+    validateSelectedTarget: () => {
+      throw new Error('validator should not run');
+    },
   };
 }
 
@@ -249,7 +263,7 @@ describe('active-store-selection crash cuts', () => {
       coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
         currentSelection,
-        dependencies: { ...evidenceDependencies, classifyStore, openStore },
+        dependencies: successfulDependencies({ ...evidenceDependencies, classifyStore, openStore }),
       }),
     ).rejects.toThrow();
     restore();
@@ -317,7 +331,7 @@ describe('active-store-selection crash cuts', () => {
         coordinateActiveStoreSelection(runtime, authority, {
           storeFormat: currentCoralStoreFormat(),
           currentSelection,
-          dependencies: { classifyStore, openStore: vi.fn() },
+          dependencies: successfulDependencies({ classifyStore, openStore: vi.fn() }),
         }),
       ).rejects.toThrow('crash:pre-intent-publication');
       expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
@@ -340,7 +354,7 @@ describe('active-store-selection crash cuts', () => {
       coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
         currentSelection,
-        dependencies: {
+        dependencies: successfulDependencies({
           classifyStore: () => ({
             kind: 'newer-incompatible',
             currentFingerprint: currentCoralStoreFormat().fingerprint,
@@ -349,7 +363,7 @@ describe('active-store-selection crash cuts', () => {
             storedProductVersion: '99.0.0',
           }),
           openStore: vi.fn(),
-        },
+        }),
       }),
     ).rejects.toThrow('crash:transitionFile:rename');
     restore();
@@ -365,6 +379,7 @@ describe('active-store-selection crash cuts', () => {
     const result = await coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),
       currentSelection,
+      dependencies: startupDependencies(),
     });
     expect(result.kind).toBe('opened');
     if (result.kind === 'opened') result.db.close();
@@ -390,6 +405,7 @@ describe('active-store-selection crash cuts', () => {
       coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
         currentSelection,
+        dependencies: startupDependencies(),
       }),
     ).rejects.toMatchObject({ code: 'store_reset_quarantine_failed' });
     expect(tableExists(runtime.paths.coral.store.dbFile, 'sentinel_before_reset')).toBe(true);
@@ -402,6 +418,7 @@ describe('active-store-selection crash cuts', () => {
     const resumed = await coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),
       currentSelection,
+      dependencies: startupDependencies(),
     });
     if (resumed.kind === 'opened') resumed.db.close();
     expect(tableExists(runtime.paths.coral.store.dbFile, 'sentinel_before_reset')).toBe(false);
@@ -425,6 +442,7 @@ describe('active-store-selection crash cuts', () => {
       coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
         currentSelection,
+        dependencies: startupDependencies(),
       }),
     ).rejects.toMatchObject({ code: 'store_reset_quarantine_failed' });
     expect(tableExists(runtime.paths.coral.store.dbFile, 'sentinel_before_reset')).toBe(true);
@@ -433,6 +451,7 @@ describe('active-store-selection crash cuts', () => {
     const resumed = await coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),
       currentSelection,
+      dependencies: startupDependencies(),
     });
     if (resumed.kind === 'opened') resumed.db.close();
     expect(tableExists(runtime.paths.coral.store.dbFile, 'sentinel_before_reset')).toBe(false);
@@ -446,12 +465,12 @@ describe('active-store-selection crash cuts', () => {
       const originalUnlink = runtime.storage.unlinkSync.bind(runtime.storage);
       const dependencies: ActiveStoreSelectionProtocolDependencies =
         cut === 'open'
-          ? {
+          ? successfulDependencies({
               openStore: () => {
                 throw new Error('crash:open');
               },
-            }
-          : {};
+            })
+          : startupDependencies();
       if (cut === 'transition-clear') {
         runtime.storage.unlinkSync = (path) => {
           if (path === resolveActiveStoreRecordPaths(runtime).transitionFile) {
@@ -474,6 +493,7 @@ describe('active-store-selection crash cuts', () => {
       const resumed = await coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
         currentSelection,
+        dependencies: startupDependencies(),
       });
       if (resumed.kind === 'opened') resumed.db.close();
       expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
@@ -481,7 +501,7 @@ describe('active-store-selection crash cuts', () => {
     }
   });
 
-  it('should retain invalid-selection intent when audit publication fails and clear it after replay', async () => {
+  it('should retain durable invalid-selection evidence when the audit log is unavailable', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', new TextEncoder().encode('{malformed'));
     const db = fakeDatabase();
@@ -502,13 +522,28 @@ describe('active-store-selection crash cuts', () => {
     expect(db.close).toHaveBeenCalledOnce();
     expect(readActiveStoreTransition(runtime).kind).toBe('valid');
 
+    const unavailableAudit = vi.fn();
     const resumed = await coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),
       currentSelection,
-      dependencies: successfulDependencies({ recordAudit: vi.fn() }),
+      dependencies: successfulDependencies({ recordAudit: unavailableAudit }),
     });
     expect(resumed.kind).toBe('opened');
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
+    expect(unavailableAudit).toHaveBeenCalledWith('invalid-selection-recovery', expect.anything(), 'warn');
+    const retainedRoot = join(
+      runtime.paths.coral.store.dbDir,
+      STORE_RESET_QUARANTINE_DIRECTORY,
+      'retained-active-store-transitions',
+    );
+    const retainedEvidence = readdirSync(retainedRoot).map((entry) =>
+      JSON.parse(readFileSync(join(retainedRoot, entry), 'utf8')),
+    );
+    expect(retainedEvidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ evidence: expect.objectContaining({ kind: 'selection-malformed' }) }),
+      ]),
+    );
   });
 
   it('should replay the durable store outcome after a crash before adoption-lock release', async () => {
@@ -527,6 +562,7 @@ describe('active-store-selection crash cuts', () => {
     const opened = await coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),
       currentSelection,
+      dependencies: startupDependencies(),
     });
     if (opened.kind === 'opened') opened.db.close();
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
@@ -537,6 +573,7 @@ describe('active-store-selection crash cuts', () => {
     const replayed = await coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),
       currentSelection,
+      dependencies: startupDependencies(),
     });
     if (replayed.kind === 'opened') replayed.db.close();
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });

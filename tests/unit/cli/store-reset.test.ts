@@ -32,7 +32,6 @@ import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-
 import { createKbDaemonWriteRuntimeHost } from '#src/kb-daemon/runtime-host.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { resolveActiveStoreRecordPaths } from '#src/store/active-store-selection.js';
-import { createBackendStoreResetAuthority, publishBackendStoreResetIncident } from '#src/store/backend-store-reset.js';
 import { classifyStoreFile } from '#src/store/db.js';
 import { generationMutationCoordinationSeam } from '#src/store/generation-mutation-coordination.js';
 import { discardStoreReset, resolveStoreResetTargetPaths } from '#src/store/operator-store-reset.js';
@@ -648,7 +647,7 @@ describe('operator store-reset discard', () => {
     expect(process.exitCode).toBeUndefined();
     expect(classifyStoreFile(dbPath, runtime.storage, STORE_FORMAT).kind).toBe('compatible');
     expect(existsSync(selectionPaths.transitionFile)).toBe(false);
-    const evidenceRoot = join(dirname(dbPath), 'store-reset-quarantine', 'superseded-active-store-transitions');
+    const evidenceRoot = join(dirname(dbPath), 'store-reset-quarantine', 'retained-active-store-transitions');
     const evidenceFiles = readdirSync(evidenceRoot);
     expect(evidenceFiles).toHaveLength(1);
     expect(readFileSync(join(evidenceRoot, evidenceFiles[0]))).toEqual(malformedBytes);
@@ -736,16 +735,6 @@ describe('operator store-reset discard', () => {
     const dbPath = runtime.paths.coral.store.dbFile;
     createMismatchStore(dbPath);
     writeFileSync(`${dbPath}-wal`, 'interrupted wal evidence');
-    const authority = createBackendStoreResetAuthority(
-      runtime,
-      { acquiredViaHandoff: false },
-      {
-        path: dbPath,
-        namespace: 'fixture',
-        storeFormat: STORE_FORMAT,
-        build: CURRENT_BUILD,
-      },
-    );
     const unlinkSync = runtime.storage.unlinkSync;
     let interrupted = false;
     const unlinkSpy = vi.spyOn(runtime.storage, 'unlinkSync').mockImplementation((path) => {
@@ -755,9 +744,18 @@ describe('operator store-reset discard', () => {
       }
       unlinkSync(path);
     });
-    expect(() =>
-      publishBackendStoreResetIncident(runtime, authority, { path: dbPath, storeFormat: STORE_FORMAT }),
-    ).toThrow();
+    await expect(
+      discardStoreReset({
+        target: 'gen2',
+        runtime,
+        build: CURRENT_BUILD,
+        storeFormat: STORE_FORMAT,
+        acquireSocketGuard: noSocketGuard,
+        validateSelectedTarget: () => {
+          throw new Error('no selected target is expected in this case');
+        },
+      }),
+    ).rejects.toThrow();
     unlinkSpy.mockRestore();
     const stagingRoot = join(dirname(dbPath), 'store-reset-quarantine', '.staging');
     const [incidentId] = readdirSync(stagingRoot);

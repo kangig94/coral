@@ -199,6 +199,12 @@ function createProjectRoot(name: string): string {
   return projectRoot;
 }
 
+function createPluginRoot(name: string): string {
+  const pluginRoot = createProjectRoot(name);
+  mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
+  return pluginRoot;
+}
+
 function createStoreServicesHarness(progressStore: { getDb(): { close(): void } }): {
   storeServicesRef: never;
   createStoreServicesFromDbFn: (storeDb: { close(): void }) => never;
@@ -785,9 +791,9 @@ function createLifecycleHarness(
         namespace,
         version: '9.9.9',
         buildSetId: '00000000-0000-4000-8000-000000000000',
-        bundleHash: 'testhash1234',
-        cliBundleHash: 'testclihash1234',
-        claudeAppserverBundleHash: 'testclaudehash12',
+        bundleHash: '1111111111111111',
+        cliBundleHash: '2222222222222222',
+        claudeAppserverBundleHash: '3333333333333333',
         flavor: 'prod',
         instanceId: `lifecycle-${Math.random()}`,
         token: 'test-token',
@@ -913,7 +919,7 @@ function createActualRecoveryService(
       runtime,
       childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
       progressStore: options.progressStore,
-      bundleHash: 'testhash1234',
+      bundleHash: '1111111111111111',
       backendNamespace: modules.pathsModule.pluginRootNamespace(options.pluginRoot),
       launchCoordinator: options.launchCoordinator,
       eventBus: options.eventBus,
@@ -989,7 +995,7 @@ describe('lifecycle recovery', () => {
 
   it('P5 cursor barrier failure prevents recovery and never reaches running', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-p5-cursor-barrier');
+    const pluginRoot = createPluginRoot('plugin-p5-cursor-barrier');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const eventBus = new modules.eventBusModule.TypedEventBus();
     const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
@@ -1027,7 +1033,7 @@ describe('lifecycle recovery', () => {
 
   it('aborts startup before running when recovery component registration fails', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-recovery-component-registration-failure');
+    const pluginRoot = createPluginRoot('plugin-recovery-component-registration-failure');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const eventBus = new modules.eventBusModule.TypedEventBus();
     const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
@@ -1056,7 +1062,7 @@ describe('lifecycle recovery', () => {
 
   it('keeps KB component registration best-effort after recovery registration succeeds', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-kb-component-registration-failure');
+    const pluginRoot = createPluginRoot('plugin-kb-component-registration-failure');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const eventBus = new modules.eventBusModule.TypedEventBus();
     const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
@@ -1083,7 +1089,7 @@ describe('lifecycle recovery', () => {
 
   it('P3 discussion boundary keeps lifecycle running while a valid sibling resumes', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-p3-discussion-boundary');
+    const pluginRoot = createPluginRoot('plugin-p3-discussion-boundary');
     const projectRoot = createProjectRoot('project-p3-discussion-boundary');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -1175,7 +1181,7 @@ describe('lifecycle recovery', () => {
 
   it('P4 session boundary keeps lifecycle running while a valid retention sibling settles', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-p4-session-boundary');
+    const pluginRoot = createPluginRoot('plugin-p4-session-boundary');
     const projectRoot = createProjectRoot('project-p4-session-boundary');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -1339,7 +1345,7 @@ describe('lifecycle recovery', () => {
 
   it('P6 workflow settlement keeps lifecycle running, holds faulted claims, and finalizes a sibling', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-p6-workflow-settlement');
+    const pluginRoot = createPluginRoot('plugin-p6-workflow-settlement');
     const faultProjectRoot = createProjectRoot('project-p6-workflow-fault');
     const validProjectRoot = createProjectRoot('project-p6-workflow-valid');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -1491,7 +1497,7 @@ describe('lifecycle recovery', () => {
 
   it('P7 workflow hydration keeps lifecycle running while a valid sibling finalizes', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-p7-workflow-hydration');
+    const pluginRoot = createPluginRoot('plugin-p7-workflow-hydration');
     const projectRoot = createProjectRoot('project-p7-workflow-hydration');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const malformedWorkflowId = 'p7-malformed-workflow';
@@ -1601,7 +1607,7 @@ describe('lifecycle recovery', () => {
 
   it('AC13 artifact prune quarantines one failure while its sibling settles and lifecycle reaches running', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-ac13-artifact-prune');
+    const pluginRoot = createPluginRoot('plugin-ac13-artifact-prune');
     const projectRoot = createProjectRoot('project-ac13-artifact-prune');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -1698,7 +1704,7 @@ describe('lifecycle recovery', () => {
 
   it('AC13 crash terminalization quarantines one job while its sibling settles and lifecycle reaches running', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-ac13-crash-terminalization');
+    const pluginRoot = createPluginRoot('plugin-ac13-crash-terminalization');
     const projectRoot = createProjectRoot('project-ac13-crash-terminalization');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -1829,7 +1835,7 @@ describe('lifecycle recovery', () => {
 
   it('fences mutating RPCs as soon as kernel-ready is visible', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-kernel-ready-fence');
+    const pluginRoot = createPluginRoot('plugin-kernel-ready-fence');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-kernel-ready-fence');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -1862,7 +1868,7 @@ describe('lifecycle recovery', () => {
               bootToken: 'test-boot-token',
               shutdownToken: 'test-shutdown-token',
               version: '9.9.9',
-              bundleHash: 'testhash1234',
+              bundleHash: '1111111111111111',
               flavor: 'prod',
               namespace,
               instanceId: 'test-instance',
@@ -1909,7 +1915,7 @@ describe('lifecycle recovery', () => {
 
   it('awaits the durable recovery pipeline with an immutable death observation', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-recovered-handles');
+    const pluginRoot = createPluginRoot('plugin-recovered-handles');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-recovered-handles');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2026,7 +2032,7 @@ describe('lifecycle recovery', () => {
 
   it('1. queued recoverable jobs are restored in FIFO enqueueSequence order', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-queued');
+    const pluginRoot = createPluginRoot('plugin-queued');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2091,7 +2097,7 @@ describe('lifecycle recovery', () => {
 
   it('1b. aborting a queued recoverable job during startup recovery finalizes it without launching', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-queued-abort');
+    const pluginRoot = createPluginRoot('plugin-queued-abort');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-queued-abort');
     const barrierProjectRoot = createProjectRoot('project-queued-abort-barrier');
@@ -2215,7 +2221,7 @@ describe('lifecycle recovery', () => {
 
   it('2. running durable-cli job with a live PID is adopted before the launch fence lifts', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-running');
+    const pluginRoot = createPluginRoot('plugin-running');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-running');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2281,7 +2287,7 @@ describe('lifecycle recovery', () => {
     const { spawn } = await import('node:child_process');
     const { createCoordinatorControl } = await import('#src/coordinator/composition/job-control.js');
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-running-adopted-abort');
+    const pluginRoot = createPluginRoot('plugin-running-adopted-abort');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-running-adopted-abort');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2364,7 +2370,7 @@ describe('lifecycle recovery', () => {
 
   it.each([['3. launching without runtime finalizes as ghost_launch', 'launching']])('%s', async (_label, phase) => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot(`plugin-ghost-${phase}`);
+    const pluginRoot = createPluginRoot(`plugin-ghost-${phase}`);
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot(`project-ghost-${phase}`);
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2411,7 +2417,7 @@ describe('lifecycle recovery', () => {
     ['9. inherited running durable jobs with live PIDs are adopted', 'running', true, false, true],
   ])('%s', async (_label, phase, durableRuntime, appServerRuntime, livePid) => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot(
+    const pluginRoot = createPluginRoot(
       `plugin-foreign-${phase}-${durableRuntime ? 'durable' : appServerRuntime ? 'app' : 'none'}`,
     );
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -2501,7 +2507,7 @@ describe('lifecycle recovery', () => {
 
   it('inherited workflow parents remain available for workflow resume ownership', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-foreign-workflow-parent');
+    const pluginRoot = createPluginRoot('plugin-foreign-workflow-parent');
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-workflow-parent');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2560,7 +2566,7 @@ describe('lifecycle recovery', () => {
 
   it('10. queued jobs enter ordinary recovery', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-local-queued');
+    const pluginRoot = createPluginRoot('plugin-local-queued');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-local-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2601,7 +2607,7 @@ describe('lifecycle recovery', () => {
 
   it('11. same-namespace provider jobs with dead pids use the BoundProvider durable finalizer', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-dead-running');
+    const pluginRoot = createPluginRoot('plugin-dead-running');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-dead-running');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2648,7 +2654,7 @@ describe('lifecycle recovery', () => {
 
   it('11b. dead-on-start durable finalization failure is a per-job fault, not a boot failure', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-dead-finalizer-blocked');
+    const pluginRoot = createPluginRoot('plugin-dead-finalizer-blocked');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-dead-finalizer-blocked');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2694,7 +2700,7 @@ describe('lifecycle recovery', () => {
 
   it('12. terminal jobs release stale session claims', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-terminal-claim');
+    const pluginRoot = createPluginRoot('plugin-terminal-claim');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-terminal-claim');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2764,7 +2770,7 @@ describe('lifecycle recovery', () => {
 
   it('13. orphaned session claims release when the referenced job is missing', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-orphan-claim');
+    const pluginRoot = createPluginRoot('plugin-orphan-claim');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-orphan-claim');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2813,7 +2819,7 @@ describe('lifecycle recovery', () => {
 
   it('14. running app-server jobs route through finalizeInterruptedAppServerJob(restart)', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-app-server');
+    const pluginRoot = createPluginRoot('plugin-app-server');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-app-server');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2875,7 +2881,7 @@ describe('lifecycle recovery', () => {
 
   it('14b. handoff startup recovery routes app-server jobs through finalizeInterruptedAppServerJob(handoff)', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-app-server-handoff');
+    const pluginRoot = createPluginRoot('plugin-app-server-handoff');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-app-server-handoff');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2937,7 +2943,7 @@ describe('lifecycle recovery', () => {
 
   it('14c. interrupted app-server finalization failure is a per-job fault, not a boot failure', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-app-server-blocked');
+    const pluginRoot = createPluginRoot('plugin-app-server-blocked');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-app-server-blocked');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -2993,7 +2999,7 @@ describe('lifecycle recovery', () => {
   // exercised separately because it has a different exception boundary.
   it('14c2. one unresolvable job does not abandon the recovery of another', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-app-server-isolation');
+    const pluginRoot = createPluginRoot('plugin-app-server-isolation');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-app-server-isolation');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -3049,7 +3055,7 @@ describe('lifecycle recovery', () => {
 
   it('does not use safe or eager job enumeration during workflow recovery', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-safe-workflow-enumeration');
+    const pluginRoot = createPluginRoot('plugin-safe-workflow-enumeration');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-safe-workflow-enumeration');
     const workflowId = 'workflow-safe-enumeration';
@@ -3181,7 +3187,7 @@ describe('lifecycle recovery', () => {
 
   it('recovers a valid job while a different session projection is malformed', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-session-enumeration-isolation');
+    const pluginRoot = createPluginRoot('plugin-session-enumeration-isolation');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-session-enumeration-isolation');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -3232,7 +3238,7 @@ describe('lifecycle recovery', () => {
 
   it('quarantines an attributable malformed job revision while recovering its valid sibling', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-job-hydration-isolation');
+    const pluginRoot = createPluginRoot('plugin-job-hydration-isolation');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-job-hydration-isolation');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -3327,7 +3333,7 @@ describe('lifecycle recovery', () => {
   // session entry, so there is no claim to leak. This one uses a real claimed session.
   it('14c3. an unresolvable app-server job releases its session claim immediately', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-app-server-claim');
+    const pluginRoot = createPluginRoot('plugin-app-server-claim');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-app-server-claim');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -3410,7 +3416,7 @@ describe('lifecycle recovery', () => {
     '14c4. a thrown %s registration failure is terminalized without aborting startup',
     async (recoveryKind) => {
       const modules = await loadModules();
-      const pluginRoot = createProjectRoot(`plugin-${recoveryKind}-registration-throws`);
+      const pluginRoot = createPluginRoot(`plugin-${recoveryKind}-registration-throws`);
       const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
       const projectRoot = createProjectRoot(`project-${recoveryKind}-registration-throws`);
       const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -3480,7 +3486,7 @@ describe('lifecycle recovery', () => {
     '14c5. a partial %s adoption is unwound before the session is made reusable',
     async (recoveryKind) => {
       const modules = await loadModules();
-      const pluginRoot = createProjectRoot(`plugin-${recoveryKind}-adoption-throws`);
+      const pluginRoot = createPluginRoot(`plugin-${recoveryKind}-adoption-throws`);
       const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
       const projectRoot = createProjectRoot(`project-${recoveryKind}-adoption-throws`);
       const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -3555,7 +3561,7 @@ describe('lifecycle recovery', () => {
 
   it('14c7. registration fallback settles from its contained raw item without a secondary status read', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-registration-status-decode-fails');
+    const pluginRoot = createPluginRoot('plugin-registration-status-decode-fails');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-registration-status-decode-fails');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -3615,7 +3621,7 @@ describe('lifecycle recovery', () => {
 
   it('14c6. an atomic terminal-plus-claim failure rolls back both facts and quarantines the item', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-registration-terminal-write-fails');
+    const pluginRoot = createPluginRoot('plugin-registration-terminal-write-fails');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-registration-terminal-write-fails');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -3689,7 +3695,7 @@ describe('lifecycle recovery', () => {
 
   it('14d. app-server binding failure terminalizes instead of failing the boot', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-provider-authority-blocked');
+    const pluginRoot = createPluginRoot('plugin-provider-authority-blocked');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-provider-authority-blocked');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -3752,7 +3758,7 @@ describe('lifecycle recovery', () => {
 
   it('14e. live durable binding failure requests process stop and then terminalizes', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-durable-binding-blocked');
+    const pluginRoot = createPluginRoot('plugin-durable-binding-blocked');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-durable-binding-blocked');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -3820,7 +3826,7 @@ describe('lifecycle recovery', () => {
 
   it('14e2. a failed required process stop is fatal after the durable rejection settlement', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-durable-kill-fails');
+    const pluginRoot = createPluginRoot('plugin-durable-kill-fails');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-durable-kill-fails');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -3877,7 +3883,7 @@ describe('lifecycle recovery', () => {
 
   it('14f. dead durable binding failure terminalizes only after liveness is disproved', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-dead-durable-binding');
+    const pluginRoot = createPluginRoot('plugin-dead-durable-binding');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-dead-durable-binding');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -3929,7 +3935,7 @@ describe('lifecycle recovery', () => {
 
   it('15. current-namespace live durable jobs stay running after startup recovery', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-running-stays-running');
+    const pluginRoot = createPluginRoot('plugin-running-stays-running');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-running-stays-running');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -3980,7 +3986,7 @@ describe('lifecycle recovery', () => {
 
   it('16. inherited terminal jobs remain ignored by startup recovery', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-foreign-terminal');
+    const pluginRoot = createPluginRoot('plugin-foreign-terminal');
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-terminal');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -4028,7 +4034,7 @@ describe('lifecycle recovery', () => {
 
   it('17. inherited running jobs do not append wrapper_lost into progress history', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-foreign-history');
+    const pluginRoot = createPluginRoot('plugin-foreign-history');
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-history');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -4082,7 +4088,7 @@ describe('lifecycle recovery', () => {
 
   it('18. ordinary recovery preserves the inherited backend namespace as provenance', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-foreign-namespace-preserved');
+    const pluginRoot = createPluginRoot('plugin-foreign-namespace-preserved');
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-namespace-preserved');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -4126,7 +4132,7 @@ describe('lifecycle recovery', () => {
 
   it('19. current-namespace queued jobs remain queued after startup recovery', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-local-queued-stays-queued');
+    const pluginRoot = createPluginRoot('plugin-local-queued-stays-queued');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-local-queued-stays-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -4164,7 +4170,7 @@ describe('lifecycle recovery', () => {
 
   it('20. ghost_launch recovery does not call recoverQueuedJob', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-ghost-no-queued');
+    const pluginRoot = createPluginRoot('plugin-ghost-no-queued');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-ghost-no-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -4200,7 +4206,7 @@ describe('lifecycle recovery', () => {
 
   it('21. inherited queued recovery calls recoverQueuedJob', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-foreign-no-queued');
+    const pluginRoot = createPluginRoot('plugin-foreign-no-queued');
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-no-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -4248,7 +4254,7 @@ describe('lifecycle recovery', () => {
 
   it('22. inherited running recovery with a dead PID uses the durable finalizer', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-foreign-no-adopt');
+    const pluginRoot = createPluginRoot('plugin-foreign-no-adopt');
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-no-adopt');
     const eventBus = new modules.eventBusModule.TypedEventBus();
@@ -4296,7 +4302,7 @@ describe('lifecycle recovery', () => {
 
   it('23. startup recovery toggles the launch fence on and then off', async () => {
     const modules = await loadModules();
-    const pluginRoot = createProjectRoot('plugin-fence');
+    const pluginRoot = createPluginRoot('plugin-fence');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-fence');
     const eventBus = new modules.eventBusModule.TypedEventBus();

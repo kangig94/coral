@@ -29,9 +29,11 @@ import {
   type ActiveStoreSelection,
   type ActiveStoreTransition,
 } from '#src/store/active-store-selection.js';
+import { coordinateActiveStoreSelection } from '#src/store/active-store-selection-coordination.js';
 import { createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
-import type { Database } from '#src/store/db.js';
+import { openStoreDatabase } from '#src/store/db.js';
 import {
+  isCanonicalStoreResetIncidentId,
   parseStoreResetIncidentManifest,
   STORE_RESET_MANIFEST_FILE_NAME,
   STORE_RESET_QUARANTINE_DIRECTORY,
@@ -106,18 +108,13 @@ function publish(runtime: Runtime, record: 'selectionFile' | 'transitionFile', b
   expect(runtime.storage.writeAtomicDurableSync(paths[record], bytes, { mode: 0o600 })).toBe(true);
 }
 
-function fakeDatabase(): Database {
-  return { exec: vi.fn(), close: vi.fn() } as unknown as Database;
-}
-
-function compatibleClassification() {
-  return {
-    kind: 'compatible' as const,
-    currentFingerprint: storeFormat.fingerprint,
-    currentProductVersion: storeFormat.productVersion,
-    storedFingerprint: storeFormat.fingerprint,
-    storedProductVersion: storeFormat.productVersion,
-  };
+function createCurrentStore(runtime: Runtime): void {
+  openStoreDatabase({
+    path: runtime.paths.coral.store.dbFile,
+    storage: runtime.storage,
+    storeFormat,
+    flavor: runtime.flavor,
+  }).close();
 }
 
 function createNewerStore(runtime: Runtime): void {
@@ -149,20 +146,20 @@ function tableExists(path: string, table: string): boolean {
 
 function newestIncidentManifest(runtime: Runtime) {
   const quarantine = join(runtime.paths.coral.store.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
-  const incident = readdirSync(quarantine)
-    .filter((entry) => entry !== '.staging')
-    .sort()
-    .at(-1);
+  const incident = readdirSync(quarantine).filter(isCanonicalStoreResetIncidentId).sort().at(-1);
   if (incident === undefined) throw new Error('Expected a store-reset incident.');
   return parseStoreResetIncidentManifest(readFileSync(join(quarantine, incident, STORE_RESET_MANIFEST_FILE_NAME)));
 }
 
-function supersededTransitionEvidencePath(recordAudit: ReturnType<typeof vi.fn>, failureCode: string): string {
-  const call = recordAudit.mock.calls.find(([event]) => event === 'active-store-transition-superseded');
-  expect(call?.[1]).toMatchObject({ failureCode });
-  const evidencePath = (call?.[1] as { readonly evidencePath?: unknown } | undefined)?.evidencePath;
-  if (typeof evidencePath !== 'string') throw new Error('Expected superseded transition evidence path.');
-  return evidencePath;
+function retainedTransitionEvidencePaths(runtime: Runtime): string[] {
+  const root = join(
+    runtime.paths.coral.store.dbDir,
+    STORE_RESET_QUARANTINE_DIRECTORY,
+    'retained-active-store-transitions',
+  );
+  return readdirSync(root)
+    .sort()
+    .map((entry) => join(root, entry));
 }
 
 afterEach(() => {
@@ -177,8 +174,6 @@ describe('active-store selection recovery', () => {
     const selectedManifest = manifest('2.0.0', '223e4567-e89b-42d3-a456-426614174000');
     const selected = selection(selectedManifest, createBundle(root, selectedManifest));
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(selected));
-    const classifyStore = vi.fn();
-    const openStore = vi.fn();
 
     const result = await routeOrOpenBackendStoreAtStartup({
       runtime,
@@ -187,13 +182,10 @@ describe('active-store selection recovery', () => {
       options: {
         storeFormat,
         currentSelection,
-        dependencies: { classifyStore, openStore },
       },
     });
 
     expect(result.kind).toBe('handoff');
-    expect(classifyStore).not.toHaveBeenCalled();
-    expect(openStore).not.toHaveBeenCalled();
     expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection: selected });
     expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(false);
   });
@@ -213,8 +205,7 @@ describe('active-store selection recovery', () => {
     const staleBytes = encodeActiveStoreTransition(staleTransition);
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(olderSelection));
     publish(runtime, 'transitionFile', staleBytes);
-    const db = fakeDatabase();
-    const recordAudit = vi.fn();
+    createCurrentStore(runtime);
 
     const result = await routeOrOpenBackendStoreAtStartup({
       runtime,
@@ -223,18 +214,14 @@ describe('active-store selection recovery', () => {
       options: {
         storeFormat,
         currentSelection,
-        dependencies: {
-          classifyStore: compatibleClassification,
-          openStore: () => db,
-          recordAudit,
-        },
       },
     });
 
-    expect(result).toEqual({ kind: 'open', db });
+    expect(result.kind).toBe('open');
+    if (result.kind === 'open') result.db.close();
     expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection: currentSelection });
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
-    expect(readFileSync(supersededTransitionEvidencePath(recordAudit, 'transition_current_build_mismatch'))).toEqual(
+    expect(retainedTransitionEvidencePaths(runtime).map((path) => readFileSync(path))).toContainEqual(
       Buffer.from(staleBytes),
     );
   });
@@ -254,10 +241,6 @@ describe('active-store selection recovery', () => {
     const staleBytes = encodeActiveStoreTransition(staleTransition);
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(newerSelection));
     publish(runtime, 'transitionFile', staleBytes);
-    const classifyStore = vi.fn();
-    const openStore = vi.fn();
-    const recordAudit = vi.fn();
-
     const result = await routeOrOpenBackendStoreAtStartup({
       runtime,
       authority,
@@ -265,15 +248,12 @@ describe('active-store selection recovery', () => {
       options: {
         storeFormat,
         currentSelection,
-        dependencies: { classifyStore, openStore, recordAudit },
       },
     });
 
     expect(result.kind).toBe('handoff');
-    expect(classifyStore).not.toHaveBeenCalled();
-    expect(openStore).not.toHaveBeenCalled();
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
-    expect(readFileSync(supersededTransitionEvidencePath(recordAudit, 'transition_current_build_mismatch'))).toEqual(
+    expect(retainedTransitionEvidencePaths(runtime).map((path) => readFileSync(path))).toContainEqual(
       Buffer.from(staleBytes),
     );
   });
@@ -283,8 +263,7 @@ describe('active-store selection recovery', () => {
     const malformedBytes = new TextEncoder().encode('{}');
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     publish(runtime, 'transitionFile', malformedBytes);
-    const db = fakeDatabase();
-    const recordAudit = vi.fn();
+    createCurrentStore(runtime);
 
     const result = await routeOrOpenBackendStoreAtStartup({
       runtime,
@@ -293,17 +272,13 @@ describe('active-store selection recovery', () => {
       options: {
         storeFormat,
         currentSelection,
-        dependencies: {
-          classifyStore: compatibleClassification,
-          openStore: () => db,
-          recordAudit,
-        },
       },
     });
 
-    expect(result).toEqual({ kind: 'open', db });
+    expect(result.kind).toBe('open');
+    if (result.kind === 'open') result.db.close();
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
-    expect(readFileSync(supersededTransitionEvidencePath(recordAudit, 'transition_invalid_schema'))).toEqual(
+    expect(retainedTransitionEvidencePaths(runtime).map((path) => readFileSync(path))).toContainEqual(
       Buffer.from(malformedBytes),
     );
   });
@@ -321,8 +296,7 @@ describe('active-store selection recovery', () => {
       } else {
         writeFileSync(join(selectedBundleDir, 'coral-backend.cjs'), 'tampered backend');
       }
-      const db = fakeDatabase();
-      const recordAudit = vi.fn();
+      createCurrentStore(runtime);
 
       const result = await routeOrOpenBackendStoreAtStartup({
         runtime,
@@ -331,23 +305,19 @@ describe('active-store selection recovery', () => {
         options: {
           storeFormat,
           currentSelection,
-          dependencies: {
-            classifyStore: compatibleClassification,
-            openStore: () => db,
-            recordAudit,
-          },
         },
       });
 
       expect(result).toMatchObject({
         kind: 'reset-newer-invalid',
         evidence: { failure: 'adjacent-bundle-mismatch' },
-        db,
       });
-      expect(recordAudit).toHaveBeenCalledWith(
-        'invalid-selection-recovery',
-        expect.objectContaining({ evidenceKind: 'valid-target-invalid' }),
-        'warn',
+      if (result.kind === 'reset-newer-invalid') result.db.close();
+      const retained = retainedTransitionEvidencePaths(runtime).map((path) => JSON.parse(readFileSync(path, 'utf8')));
+      expect(retained).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ evidence: expect.objectContaining({ kind: 'valid-target-invalid' }) }),
+        ]),
       );
       expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection: currentSelection });
       expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
@@ -362,13 +332,12 @@ describe('active-store selection recovery', () => {
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(selected));
     rmSync(selectedBundleDir, { recursive: true, force: true });
     createNewerStore(runtime);
-    const recordAudit = vi.fn();
 
     const result = await routeOrOpenBackendStoreAtStartup({
       runtime,
       authority,
       validateForeignTarget: createForeignTargetValidator(),
-      options: { storeFormat, currentSelection, dependencies: { recordAudit } },
+      options: { storeFormat, currentSelection },
     });
 
     expect(result).toMatchObject({
@@ -376,11 +345,6 @@ describe('active-store selection recovery', () => {
       evidence: { failure: 'bundle-dir-unavailable' },
     });
     if (result.kind === 'reset-newer-invalid') result.db.close();
-    expect(recordAudit).toHaveBeenCalledWith(
-      'invalid-selection-recovery',
-      expect.objectContaining({ evidenceKind: 'valid-target-invalid', failureCode: 'bundle-dir-unavailable' }),
-      'warn',
-    );
     expect(newestIncidentManifest(runtime)).toMatchObject({
       schemaVersion: 3,
       resetPolicyCause: 'newer-incompatible-invalid-target',
@@ -400,8 +364,7 @@ describe('active-store selection recovery', () => {
   it('should audit a malformed selection and open a readable store', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', new TextEncoder().encode('{malformed'));
-    const db = fakeDatabase();
-    const recordAudit = vi.fn();
+    createCurrentStore(runtime);
     const validateForeignTarget: ForeignTargetValidator = vi.fn(() => {
       throw new Error('validator should not run');
     });
@@ -413,20 +376,17 @@ describe('active-store selection recovery', () => {
       options: {
         storeFormat,
         currentSelection,
-        dependencies: {
-          classifyStore: compatibleClassification,
-          openStore: () => db,
-          recordAudit,
-        },
       },
     });
 
-    expect(result).toEqual({ kind: 'open', db });
+    expect(result.kind).toBe('open');
+    if (result.kind === 'open') result.db.close();
     expect(validateForeignTarget).not.toHaveBeenCalled();
-    expect(recordAudit).toHaveBeenCalledWith(
-      'invalid-selection-recovery',
-      expect.objectContaining({ evidenceKind: 'selection-malformed' }),
-      'warn',
+    const retained = retainedTransitionEvidencePaths(runtime).map((path) => JSON.parse(readFileSync(path, 'utf8')));
+    expect(retained).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ evidence: expect.objectContaining({ kind: 'selection-malformed' }) }),
+      ]),
     );
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
   });
@@ -437,17 +397,16 @@ describe('active-store selection recovery', () => {
     const failure = Object.assign(new Error('EACCES: permission denied while opening store.db'), { code: 'EACCES' });
 
     await expect(
-      routeOrOpenBackendStoreAtStartup({
-        runtime,
-        authority,
-        validateForeignTarget: createForeignTargetValidator(),
-        options: {
-          storeFormat,
-          currentSelection,
-          dependencies: {
-            classifyStore: () => {
-              throw failure;
-            },
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat,
+        currentSelection,
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+          classifyStore: () => {
+            throw failure;
           },
         },
       }),
@@ -514,8 +473,7 @@ describe('active-store selection recovery', () => {
     };
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     publish(runtime, 'transitionFile', encodeActiveStoreTransition(transition));
-    const db = fakeDatabase();
-    const recordAudit = vi.fn();
+    createCurrentStore(runtime);
     const validateForeignTarget: ForeignTargetValidator = vi.fn(() => {
       throw new Error('validator should not run');
     });
@@ -527,21 +485,16 @@ describe('active-store selection recovery', () => {
       options: {
         storeFormat,
         currentSelection,
-        dependencies: {
-          classifyStore: compatibleClassification,
-          openStore: () => db,
-          recordAudit,
-        },
       },
     });
 
     expect(result).toMatchObject({
       kind: 'reset-newer-invalid',
       evidence: { failure: 'adjacent-bundle-mismatch' },
-      db,
     });
+    if (result.kind === 'reset-newer-invalid') result.db.close();
     expect(validateForeignTarget).not.toHaveBeenCalled();
-    expect(recordAudit).toHaveBeenCalledOnce();
+    expect(retainedTransitionEvidencePaths(runtime)).toHaveLength(1);
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
   });
 });

@@ -18,7 +18,8 @@ import {
   type ActiveStoreSelection,
   type ActiveStoreTransition,
 } from '#src/store/active-store-selection.js';
-import { coordinateActiveStoreSelection, createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
+import { coordinateActiveStoreSelection } from '#src/store/active-store-selection-coordination.js';
+import { createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
 import type { Database } from '#src/store/db.js';
 import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -131,6 +132,10 @@ describe('active-store-selection locking', () => {
         storeFormat: currentCoralStoreFormat(),
         currentSelection,
         dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
           classifyStore: () => ({ kind: 'fresh' }),
           openStore: () => fakeDatabase(),
         },
@@ -163,6 +168,10 @@ describe('active-store-selection locking', () => {
       storeFormat: currentCoralStoreFormat(),
       currentSelection,
       dependencies: {
+        kind: 'operator',
+        validateSelectedTarget: () => {
+          throw new Error('validator should not run');
+        },
         classifyStore: () => {
           expect(existsSync(boundary.adoptionLock)).toBe(true);
           expect(existsSync(resetLock)).toBe(true);
@@ -203,7 +212,14 @@ describe('active-store-selection locking', () => {
         coordinateActiveStoreSelection(runtime, authority, {
           storeFormat: currentCoralStoreFormat(),
           currentSelection,
-          dependencies: { classifyStore, openStore },
+          dependencies: {
+            kind: 'operator',
+            validateSelectedTarget: () => {
+              throw new Error('validator should not run');
+            },
+            classifyStore,
+            openStore,
+          },
         }),
       ).rejects.toThrow(/published durably/u);
 
@@ -231,6 +247,7 @@ describe('active-store-selection locking', () => {
       storeFormat: currentCoralStoreFormat(),
       currentSelection,
       dependencies: {
+        kind: 'operator',
         validateSelectedTarget: (bundleDir, expectedManifest) => {
           expect(existsSync(boundary.adoptionLock)).toBe(true);
           return validate(bundleDir, expectedManifest);
@@ -274,6 +291,10 @@ describe('active-store-selection locking', () => {
       storeFormat,
       currentSelection,
       dependencies: {
+        kind: 'operator',
+        validateSelectedTarget: () => {
+          throw new Error('validator should not run');
+        },
         classifyStore: () => ({
           kind: 'compatible',
           currentFingerprint: storeFormat.fingerprint,
@@ -308,7 +329,13 @@ describe('active-store-selection locking', () => {
       coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
         currentSelection,
-        dependencies: { acquireStoreRecoveryLease },
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+          acquireStoreRecoveryLease,
+        },
       }),
     ).rejects.toMatchObject({
       code: 'active_store_coordination_invalid',
@@ -317,5 +344,36 @@ describe('active-store-selection locking', () => {
       context: { record: 'selection', failureCode: 'record_not_regular' },
     });
     expect(acquireStoreRecoveryLease).not.toHaveBeenCalled();
+  });
+
+  it('should refuse an in-memory path before creating any coordination or reset lock', async () => {
+    const { runtime, currentSelection } = harness();
+    const authority = createBackendStoreResetAuthority(
+      runtime,
+      { acquiredViaHandoff: false },
+      {
+        path: ':memory:',
+        namespace: 'selection-memory-test',
+        storeFormat: currentCoralStoreFormat(),
+        build: currentSelection.manifest,
+      },
+    );
+    const mkdirSync = vi.spyOn(runtime.storage, 'mkdirSync');
+
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        path: ':memory:',
+        storeFormat: currentCoralStoreFormat(),
+        currentSelection,
+        dependencies: {
+          kind: 'startup',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+        },
+      }),
+    ).rejects.toThrow('requires a real filesystem store path');
+
+    expect(mkdirSync).not.toHaveBeenCalled();
   });
 });
