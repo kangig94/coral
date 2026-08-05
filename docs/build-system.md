@@ -145,7 +145,15 @@ Tests run with:
 npm test
 ```
 
-The suites cover CLI routing, client helpers, backend handlers, providers, workflow execution, KB behavior, discuss behavior, shared contracts, and the debug-only simulation harness. `npm run test:simulation` is only a narrower single-batch shortcut for that harness.
+That command runs the repo typecheck, `tests/unit/**` plus `tests/invariants/**`, and the debug-only simulation harness. Those suites cover CLI routing, client helpers, backend handlers, providers, workflow execution, KB behavior, discuss behavior, and shared contracts. `npm run test:simulation` is only a narrower single-batch shortcut for the harness.
+
+It does **not** run `tests/integration/**`, which owns the multi-process suites — cross-version handoff, cold and warm start, and IPC carriage. Those need their own command:
+
+```bash
+npm run test:integration
+```
+
+Both are CI steps, so a change that only passes one of them is not verified. The end-to-end suites are separate again (`tests/e2e/**`, see the store-reset list below).
 
 Store-reset contract changes can be reproduced locally with:
 
