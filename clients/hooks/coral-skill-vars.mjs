@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { join } from 'node:path';
-import { coralProjectDir, exitIfChildProcess, exitIfWrongFlavor, readStdin, readUserMessage } from './lib/hook-utils.mjs';
-import { CORAL_SKILL_FIELD_PREFIX_RE, CORAL_SKILL_MESSAGE_RE } from './lib/coral-skills.mjs';
+import { coralProjectDir, exitIfChildProcess, exitIfWrongFlavor, readStdin, readUserMessage, writeHookOutput } from './lib/hook-utils.mjs';
+import { isCoralSkillField, CORAL_SKILL_MESSAGE_RE } from './lib/coral-skills.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -20,7 +20,7 @@ try {
     matched = CORAL_SKILL_MESSAGE_RE.test(readUserMessage(input));
   } else if (event === 'PreToolUse') {
     const skill = input.tool_input?.skill || '';
-    matched = CORAL_SKILL_FIELD_PREFIX_RE.test(skill);
+    matched = isCoralSkillField(skill);
   }
 
   if (!matched) process.exit(0);
@@ -30,12 +30,12 @@ try {
     `CORAL_METHODS: ${join(pluginRoot, 'methods')}/`,
   ].join('\n');
 
-  console.log(JSON.stringify({
+  writeHookOutput({
     hookSpecificOutput: {
       hookEventName: event,
       additionalContext: `Coral skill path variables — substitute these for the named placeholders in the skill body:\n${context}`,
     },
-  }));
+  });
 } catch {
   process.exit(0);
 }

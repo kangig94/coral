@@ -36,6 +36,35 @@ describe('bash-rewrite.mjs', () => {
     return command.replace(/^(\s*)coral-cli(\s|$)(.*)$/s, `$1node "${cliBundle}"$2$3`);
   }
 
+  it('keeps the rewrite enveloped under Copilot, which ignores a top-level updatedInput', () => {
+    const fixture = createFixture();
+    const command = 'coral-cli kb search foo';
+
+    const result = runHook(
+      BASH_REWRITE_HOOK,
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: fixture.projectRoot,
+        tool_input: { command },
+      },
+      { COPILOT_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+
+    expect(result.status).toBe(0);
+
+    // Copilot's envelope rule is per-field, not global: `additionalContext` is
+    // read only at the top level, but `permissionDecision`/`updatedInput` are
+    // read only inside `hookSpecificOutput` (A/B-verified on Copilot 1.0.78 —
+    // a flat updatedInput leaves the original command running). Hoisting these
+    // would silently disable every coral-cli rewrite under Copilot.
+    const output = expectBashRewriteOutput(result);
+    expect(output.hookSpecificOutput.updatedInput.command).toBe(expectedRewrittenCommand(command));
+    const flat = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(flat.updatedInput).toBeUndefined();
+    expect(flat.permissionDecision).toBeUndefined();
+  });
+
   it('leaves invalid top-level -f untouched for Commander to reject at parse time', () => {
     const fixture = createFixture();
     const command = 'coral-cli -f json codex -i "text with $HOME and `backticks`"';

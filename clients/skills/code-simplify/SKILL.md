@@ -13,7 +13,7 @@ Simplify and refine code for clarity and maintainability while preserving functi
 | Argument | Mode |
 |----------|------|
 | `<prompt>` | Self-execute on current host (default) |
-| `--delegate` | Delegate to the other host (Codex when current is Claude, Claude when current is Codex; current host comes from SessionStart `Current host:`) |
+| `--delegate` | Delegate to the other host (Claude → Codex, Codex → Claude, Copilot → Codex; current host comes from SessionStart `Current host:`) |
 | `--delegate <prompt>` | Same with prompt |
 
 Strip the `--delegate` flag before passing the prompt to the execution path.
@@ -63,7 +63,7 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
          or logical grouping — whichever fits the codebase).
        - If the scope is small or tightly coupled, proceed as a single pass.
     4) Execute (based on strategy from step 3):
-       Let `<other-host>` = Codex if current host is Claude; Claude if current host is Codex.
+       Let `<other-host>` = the delegation target for the current host (Claude → Codex, Codex → Claude, Copilot → Codex).
        Single pass:
        - Self-execute (default): run `<Execution>` directly on the target files.
        - Delegate (`--delegate`): run `coral-cli <other-host> -b -i "<Execution + Constraints + Failure_Modes_To_Avoid + Output_Format + target file paths + coding standards>" --work-dir "<project root>" -d`.

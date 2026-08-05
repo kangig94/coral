@@ -9,7 +9,7 @@
 
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { exitIfChildProcess, exitIfWrongFlavor, readStdin, resolveKbRoot } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, readStdin, resolveKbRoot, writeHookOutput } from './lib/hook-utils.mjs';
 import { isKbEnabled } from './lib/kb-toggle.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
@@ -44,12 +44,12 @@ try {
   const topics = [...new Set(files.map(f => f.replace(/\.md$/, '').replace(/-.*$/, '')))].sort();
   const prefix = event === 'PostToolUse' ? 'Silent failure detected in command output' : 'Error detected';
 
-  process.stdout.write(JSON.stringify({
+  writeHookOutput({
     hookSpecificOutput: {
       hookEventName: event,
       additionalContext: `${prefix}. Before debugging from scratch, use \`CLI kb search "<keywords>"\` to look for relevant knowledge. KB topics: ${topics.join(', ')}`,
     },
-  }) + '\n');
+  });
 } catch {
   process.exit(0);
 }

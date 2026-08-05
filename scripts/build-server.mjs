@@ -39,18 +39,32 @@ execFileSync('node', ['scripts/check-simulation.mjs'], { stdio: 'inherit' });
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
 
 // Sync manifest versions (single source of truth: package.json). The plugin
-// manifests live under clients/ (the plugin root); marketplace.json stays at
-// the repo root and points at ./clients via a git-subdir source.
+// manifests live under clients/ (the plugin root); marketplace manifests stay
+// at the repo root and point back at ./clients. Each client reads a different
+// manifest path, so all of them are kept in lockstep here:
+//   Claude Code — clients/.claude-plugin/plugin.json + .claude-plugin/marketplace.json
+//   Codex       — clients/.codex-plugin/plugin.json
+//   Copilot CLI — clients/.github/plugin/plugin.json + .github/plugin/marketplace.json
+//                 (Copilot also reads .claude-plugin/, but resolves .github/plugin/
+//                 first, so the Copilot-specific manifests win without the Claude
+//                 ones needing a Copilot-compatible shape.)
 for (const path of [
   'clients/.claude-plugin/plugin.json',
   '.claude-plugin/marketplace.json',
   'clients/.codex-plugin/plugin.json',
+  'clients/.github/plugin/plugin.json',
+  '.github/plugin/marketplace.json',
 ]) {
   const json = JSON.parse(readFileSync(path, 'utf8'));
   let changed = false;
 
-  if (json.version !== version) {
+  if (json.version !== undefined && json.version !== version) {
     json.version = version;
+    changed = true;
+  }
+
+  if (json.metadata?.version !== undefined && json.metadata.version !== version) {
+    json.metadata.version = version;
     changed = true;
   }
 

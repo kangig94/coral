@@ -1,0 +1,18 @@
+{
+  "name": "coral",
+  "owner": {
+    "name": "kangig94"
+  },
+  "metadata": {
+    "description": "Coral — structured agent workflows for Copilot CLI, Claude Code, and Codex",
+    "version": "0.10.4"
+  },
+  "plugins": [
+    {
+      "name": "coral",
+      "description": "Structured planning, execution, and review workflows for Copilot CLI — multi-round plan/review, verified execution loops, multi-agent discussion, and a persistent knowledge base.",
+      "version": "0.10.4",
+      "source": "./clients"
+    }
+  ]
+}

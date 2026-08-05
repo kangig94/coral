@@ -1,0 +1,25 @@
+{
+  "name": "coral",
+  "version": "0.10.4",
+  "description": "Structured planning, execution, and review workflows for Copilot CLI — multi-round plan/review, verified execution loops, multi-agent discussion, and a persistent knowledge base.",
+  "author": {
+    "name": "kangig94",
+    "url": "https://github.com/kangig94"
+  },
+  "homepage": "https://github.com/kangig94/coral",
+  "repository": "https://github.com/kangig94/coral",
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "codex",
+    "claude",
+    "copilot",
+    "workflow",
+    "bridge",
+    "orchestration"
+  ],
+  "category": "productivity",
+  "skills": "./skills/",
+  "agents": [],
+  "hooks": "./hooks/copilot.json"
+}

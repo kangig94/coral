@@ -2,7 +2,7 @@
 
 import { existsSync } from 'node:fs';
 import { resolveEquippedTools } from './lib/equip-tools.mjs';
-import { exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, readStdin, writeHookOutput } from './lib/hook-utils.mjs';
 import { renderInject } from './lib/inject-render.mjs';
 import { isKbEnabled } from './lib/kb-toggle.mjs';
 exitIfChildProcess();
@@ -25,11 +25,9 @@ try {
     equippedTools: resolveEquippedTools(),
   });
 
-  console.log(
-    JSON.stringify({
-      hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext: injectContent },
-    }),
-  );
+  writeHookOutput({
+    hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext: injectContent },
+  });
 } catch {
   process.exit(0);
 }
