@@ -1,5 +1,15 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,10 +28,17 @@ import {
   type ActiveStoreSelection,
   type ActiveStoreTransition,
 } from '#src/store/active-store-selection.js';
-import { coordinateActiveStoreSelection } from '#src/store/active-store-selection-coordination.js';
+import {
+  coordinateActiveStoreSelection,
+  type ActiveStoreSelectionRecoveryLease,
+} from '#src/store/active-store-selection-coordination.js';
 import { createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
 import type { Database } from '#src/store/db.js';
-import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
+import {
+  resolveGenerationBoundaryPaths,
+  type GenerationAdoptionLockLease,
+} from '#src/store/generation-mutation-coordination.js';
+import { STORE_RESET_QUARANTINE_DIRECTORY } from '#src/store/reset-incident.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 
 const roots: string[] = [];
@@ -99,6 +116,24 @@ function fakeDatabase(): Database {
     exec: vi.fn(),
     close: vi.fn(),
   } as unknown as Database;
+}
+
+function supersededTransition(currentSelection: ActiveStoreSelection): ActiveStoreTransition {
+  return {
+    version: 1,
+    transitionId: '323e4567-e89b-42d3-a456-426614174000',
+    kind: 'selection-recovery',
+    evidence: {
+      kind: 'selection-absent',
+      storeEvidence: { kind: 'pending-classification' },
+    },
+    currentManifest: manifest('0.9.0', '423e4567-e89b-42d3-a456-426614174000'),
+    currentBundleDir: currentSelection.bundleDir,
+  };
+}
+
+function retainedTransitionRoot(runtime: Runtime): string {
+  return join(runtime.paths.coral.store.dbDir, STORE_RESET_QUARANTINE_DIRECTORY, 'retained-active-store-transitions');
 }
 
 afterEach(() => {
@@ -314,6 +349,281 @@ describe('active-store-selection locking', () => {
       'warn',
     );
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
+  });
+
+  it.each(['record_changed', 'record_unavailable'] as const)(
+    'should supersede and recover from a transition read rejected as %s',
+    async (failureCode) => {
+      const { runtime, currentSelection, authority } = harness();
+      const paths = resolveActiveStoreRecordPaths(runtime);
+      publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+      publish(runtime, 'transitionFile', encodeActiveStoreTransition(supersededTransition(currentSelection)));
+      if (failureCode === 'record_changed') {
+        const readSync = runtime.storage.readSync.bind(runtime.storage);
+        let rejectRead = true;
+        runtime.storage.readSync = (descriptor, buffer, offset, length, position) => {
+          if (rejectRead) {
+            rejectRead = false;
+            return 0;
+          }
+          return readSync(descriptor, buffer, offset, length, position);
+        };
+      } else {
+        const lstatSync = runtime.storage.lstatSync.bind(runtime.storage);
+        let rejectStat = true;
+        runtime.storage.lstatSync = (path) => {
+          if (path === paths.transitionFile && rejectStat) {
+            rejectStat = false;
+            throw Object.assign(new Error('transition stat unavailable'), { code: 'EACCES' });
+          }
+          return lstatSync(path);
+        };
+      }
+      const recordAudit = vi.fn();
+      const db = fakeDatabase();
+
+      const result = await coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat: currentCoralStoreFormat(),
+        currentSelection,
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+          classifyStore: () => ({ kind: 'fresh' }),
+          openStore: () => db,
+          recordAudit,
+        },
+      });
+
+      expect(result).toEqual({ kind: 'opened', db });
+      expect(recordAudit).toHaveBeenCalledWith(
+        'active-store-transition-superseded',
+        expect.objectContaining({ failureCode }),
+        'warn',
+      );
+      expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
+      expect(readdirSync(retainedTransitionRoot(runtime))).toHaveLength(1);
+    },
+  );
+
+  it('should hard-refuse a transition rejection outside the supersede allowlist', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    mkdirSync(paths.transitionFile, { mode: 0o700 });
+    const classifyStore = vi.fn();
+    const openStore = vi.fn();
+
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat: currentCoralStoreFormat(),
+        currentSelection,
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+          classifyStore,
+          openStore,
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'active_store_coordination_invalid',
+      context: { record: 'transition', failureCode: 'record_not_regular' },
+    });
+    expect(classifyStore).not.toHaveBeenCalled();
+    expect(openStore).not.toHaveBeenCalled();
+    expect(existsSync(retainedTransitionRoot(runtime))).toBe(false);
+  });
+
+  it('should continue when a rejected transition disappears before retention', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    publish(runtime, 'transitionFile', encodeActiveStoreTransition(supersededTransition(currentSelection)));
+    const lstatSync = runtime.storage.lstatSync.bind(runtime.storage);
+    let removeBeforeRetention = true;
+    runtime.storage.lstatSync = (path) => {
+      if (path === paths.transitionFile && removeBeforeRetention) {
+        removeBeforeRetention = false;
+        runtime.storage.unlinkSync(path);
+        throw Object.assign(new Error('transition disappeared'), { code: 'EACCES' });
+      }
+      return lstatSync(path);
+    };
+    const recordAudit = vi.fn();
+    const db = fakeDatabase();
+
+    const result = await coordinateActiveStoreSelection(runtime, authority, {
+      storeFormat: currentCoralStoreFormat(),
+      currentSelection,
+      dependencies: {
+        kind: 'operator',
+        validateSelectedTarget: () => {
+          throw new Error('validator should not run');
+        },
+        classifyStore: () => ({ kind: 'fresh' }),
+        openStore: () => db,
+        recordAudit,
+      },
+    });
+
+    expect(result).toEqual({ kind: 'opened', db });
+    expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
+    expect(existsSync(retainedTransitionRoot(runtime))).toBe(false);
+    expect(recordAudit).toHaveBeenCalledWith(
+      'active-store-transition-superseded',
+      expect.not.objectContaining({ evidencePath: expect.anything() }),
+      'warn',
+    );
+  });
+
+  it('should refuse a non-missing transition copy failure', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    publish(runtime, 'transitionFile', encodeActiveStoreTransition(supersededTransition(currentSelection)));
+    const openSync = runtime.storage.openSync.bind(runtime.storage);
+    let transitionReadCount = 0;
+    runtime.storage.openSync = (path, flags, mode) => {
+      if (path === paths.transitionFile && flags === 'r') {
+        transitionReadCount += 1;
+        if (transitionReadCount === 2) {
+          throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+        }
+      }
+      return openSync(path, flags, mode);
+    };
+
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat: currentCoralStoreFormat(),
+        currentSelection,
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'store_reset_quarantine_failed',
+      context: { reason: 'active_store_transition_evidence' },
+    });
+    expect(readActiveStoreTransition(runtime).kind).toBe('valid');
+  });
+
+  it('should report clear failures without duplicating retained evidence on restart', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    publish(runtime, 'transitionFile', encodeActiveStoreTransition(supersededTransition(currentSelection)));
+    const unlinkSync = runtime.storage.unlinkSync.bind(runtime.storage);
+    runtime.storage.unlinkSync = (path) => {
+      if (path === paths.transitionFile) {
+        throw Object.assign(new Error('permission denied'), { code: 'EPERM' });
+      }
+      unlinkSync(path);
+    };
+    const recordAudit = vi.fn();
+    const options = {
+      storeFormat: currentCoralStoreFormat(),
+      currentSelection,
+      dependencies: {
+        kind: 'operator' as const,
+        validateSelectedTarget: () => {
+          throw new Error('validator should not run');
+        },
+        recordAudit,
+      },
+    };
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(coordinateActiveStoreSelection(runtime, authority, options)).rejects.toMatchObject({
+        code: 'active_store_coordination_invalid',
+        context: expect.objectContaining({
+          record: 'transition',
+          failureCode: 'record_unavailable',
+          cause: 'permission denied',
+        }),
+      });
+      expect(readdirSync(retainedTransitionRoot(runtime))).toHaveLength(1);
+    }
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it('should wrap a failed transition-clear directory sync in the coordination refusal', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    publish(runtime, 'transitionFile', encodeActiveStoreTransition(supersededTransition(currentSelection)));
+    const syncDirectory = runtime.storage.syncDirectoryDurableSync.bind(runtime.storage);
+    runtime.storage.syncDirectoryDurableSync = (path) =>
+      path === paths.coordinationRoot ? false : syncDirectory(path);
+
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat: currentCoralStoreFormat(),
+        currentSelection,
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'active_store_coordination_invalid',
+      context: expect.objectContaining({
+        record: 'transition',
+        failureCode: 'record_unavailable',
+        cause: 'Active-store transition clear could not be synchronized durably.',
+      }),
+    });
+    expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
+  });
+
+  it('should await the operator recovery lease before opening the prepared store', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    let grantLease: (lease: ActiveStoreSelectionRecoveryLease) => void = () => {
+      throw new Error('recovery lease resolver was not initialized');
+    };
+    const pendingLease = new Promise<ActiveStoreSelectionRecoveryLease>((resolve) => {
+      grantLease = resolve;
+    });
+    const acquireStoreRecoveryLease = vi.fn(() => pendingLease);
+    const assertOwned = vi.fn();
+    const release = vi.fn();
+    const db = fakeDatabase();
+    const openPreparedStore = vi.fn((adoption: GenerationAdoptionLockLease) => {
+      adoption.assertOwned();
+      return db;
+    });
+
+    const coordinating = coordinateActiveStoreSelection(runtime, authority, {
+      storeFormat: currentCoralStoreFormat(),
+      currentSelection,
+      dependencies: {
+        kind: 'operator',
+        validateSelectedTarget: () => {
+          throw new Error('validator should not run');
+        },
+        classifyStore: () => ({ kind: 'fresh' }),
+        acquireStoreRecoveryLease,
+        openPreparedStore,
+      },
+    });
+    await vi.waitFor(() => expect(acquireStoreRecoveryLease).toHaveBeenCalledOnce());
+    expect(openPreparedStore).not.toHaveBeenCalled();
+
+    grantLease({ assertOwned, release });
+    await expect(coordinating).resolves.toEqual({ kind: 'opened', db });
+    expect(assertOwned).toHaveBeenCalledOnce();
+    expect(openPreparedStore).toHaveBeenCalledOnce();
+    expect(assertOwned.mock.invocationCallOrder[0]).toBeLessThan(openPreparedStore.mock.invocationCallOrder[0]);
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it('should report a record trust violation before trying to acquire a recovery lease', async () => {

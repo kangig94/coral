@@ -72,6 +72,18 @@ db.prepare(`SELECT * FROM projection_jobs WHERE backend_namespace = ? AND phase 
 // === projected-live-sql-namespace-predicate|src/jobs/projection-row.ts|namespace equality SQL predicate outside allowlist
 db.prepare(`SELECT COUNT(*) FROM projection_jobs WHERE phase = 'running' AND backend_namespace = ?`);
 
+// === raw-sql-namespace-predicate|src/store/tenant-view.sql|namespace equality SQL predicate outside allowlist
+CREATE VIEW tenant_jobs AS SELECT * FROM projection_jobs WHERE backend_namespace = ?;
+
+// === colon-parameter-sql-namespace-predicate|src/jobs/projection-row.ts|namespace equality SQL predicate outside allowlist
+db.prepare("SELECT * FROM projection_jobs WHERE backend_namespace = :namespace");
+
+// === at-parameter-sql-namespace-predicate|src/jobs/projection-row.ts|namespace equality SQL predicate outside allowlist
+db.prepare("SELECT * FROM projection_jobs WHERE namespace = @ns");
+
+// === dollar-parameter-sql-namespace-predicate|src/jobs/projection-row.ts|namespace equality SQL predicate outside allowlist
+db.prepare("SELECT * FROM projection_jobs WHERE alias.namespace = $ns");
+
 // === bundle-hash-tenancy-outside-prune|src/jobs/reconcile/plan.ts|bundleHash work-tenancy comparison
 const foreign = job.bundleHash !== currentBundleHash;
 

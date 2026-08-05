@@ -41,6 +41,8 @@ import {
 } from './reset-incident.js';
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
+const RETAINED_TRANSITION_DIRECTORY = 'retained-active-store-transitions';
+const TRANSITION_EVIDENCE_SUFFIX = '.active-store-transition.v1.json';
 export const STEADY_STATE_BUSY_TIMEOUT_MS = 5_000;
 
 const BACKEND_STORE_RESET_AUTHORITY_BRAND: unique symbol = Symbol('BackendStoreResetAuthority');
@@ -996,28 +998,64 @@ export function resumeBackendStoreResetIncidentForOperator(
   return resumeInterruptedIncident(runtime, files)?.incident ?? null;
 }
 
-export type RetainedBackendStoreResetEvidence = Readonly<{
+export type RetainedStoreResetQuarantineFile = Readonly<{
   evidencePath: string;
   evidenceByteLength: number;
   evidenceSha256: string;
   sourceIdentity: StorageBigIntStat;
 }>;
 
-export function retainBackendStoreResetEvidence(
+function retainedTransitionName(sourceIdentity: StorageBigIntStat): string {
+  const identity = [
+    sourceIdentity.dev,
+    sourceIdentity.ino,
+    sourceIdentity.mode,
+    sourceIdentity.size,
+    sourceIdentity.mtimeNs,
+  ].join(':');
+  return `${createHash('sha256').update(identity).digest('hex')}${TRANSITION_EVIDENCE_SUFFIX}`;
+}
+
+export function retainTransitionFileInStoreResetQuarantine(
   runtime: Pick<Runtime, 'env' | 'storage'>,
   files: BackendStoreFileSet,
   sourcePath: string,
-  evidenceDirectoryName: string,
-  evidenceName: string,
-): RetainedBackendStoreResetEvidence {
+  adoption: GenerationAdoptionLockLease,
+): RetainedStoreResetQuarantineFile {
+  adoption.assertOwned();
+  const sourceIdentity = stablePathStat(runtime.storage, sourcePath);
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
-  const evidenceRoot = join(quarantineRoot, evidenceDirectoryName);
+  const evidenceRoot = join(quarantineRoot, RETAINED_TRANSITION_DIRECTORY);
+  const evidenceName = retainedTransitionName(sourceIdentity);
   const evidencePath = join(evidenceRoot, evidenceName);
 
   runtime.storage.mkdirSync(files.dbDir, { recursive: true });
   ensureQuarantineRoot(runtime.storage, quarantineRoot, runtime.env.platform());
   ensurePrivateDirectory(runtime.storage, evidenceRoot, runtime.env.platform());
   requireDirectorySync(runtime.storage, quarantineRoot);
+  // Retained transitions are bounded protocol evidence, not resumable reset incidents. The audit event's
+  // evidencePath is deliberately their only index so the reset-incident surface does not misrepresent them
+  // as operator-actionable incidents.
+  if (runtime.storage.existsSync(evidencePath)) {
+    const evidence = describeCandidate(
+      runtime.storage,
+      { source: sourcePath, name: evidenceName },
+      MAX_REPORT_HASH_BYTES,
+    );
+    const sourceAfter = stablePathStat(runtime.storage, sourcePath);
+    if (
+      !sameFileIdentity(sourceIdentity, sourceAfter) ||
+      !evidenceMatches(runtime.storage, { source: evidencePath, name: evidenceName }, evidence)
+    ) {
+      throw new Error('Retained active-store transition does not match its source identity.');
+    }
+    return {
+      evidencePath,
+      evidenceByteLength: evidence.sizeBytes,
+      evidenceSha256: evidence.sha256,
+      sourceIdentity,
+    };
+  }
   const copied = copyCandidateForPublication(
     runtime.storage,
     { source: sourcePath, name: evidenceName },

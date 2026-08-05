@@ -560,6 +560,16 @@ describe('active-store-selection crash cuts', () => {
     ).rejects.toThrow('crash:audit');
     expect(db.close).toHaveBeenCalledOnce();
     expect(readActiveStoreTransition(runtime).kind).toBe('valid');
+    const retainedRoot = join(
+      runtime.paths.coral.store.dbDir,
+      STORE_RESET_QUARANTINE_DIRECTORY,
+      'retained-active-store-transitions',
+    );
+    const retainedEntries = readdirSync(retainedRoot);
+    expect(retainedEntries).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(retainedRoot, retainedEntries[0]), 'utf8'))).toEqual(
+      expect.objectContaining({ evidence: expect.objectContaining({ kind: 'selection-malformed' }) }),
+    );
 
     const unavailableAudit = vi.fn();
     const resumed = await coordinateActiveStoreSelection(runtime, authority, {
@@ -570,19 +580,7 @@ describe('active-store-selection crash cuts', () => {
     expect(resumed.kind).toBe('opened');
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
     expect(unavailableAudit).toHaveBeenCalledWith('invalid-selection-recovery', expect.anything(), 'warn');
-    const retainedRoot = join(
-      runtime.paths.coral.store.dbDir,
-      STORE_RESET_QUARANTINE_DIRECTORY,
-      'retained-active-store-transitions',
-    );
-    const retainedEvidence = readdirSync(retainedRoot).map((entry) =>
-      JSON.parse(readFileSync(join(retainedRoot, entry), 'utf8')),
-    );
-    expect(retainedEvidence).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ evidence: expect.objectContaining({ kind: 'selection-malformed' }) }),
-      ]),
-    );
+    expect(readdirSync(retainedRoot)).toEqual(retainedEntries);
   });
 
   it('should replay the durable store outcome after a crash before adoption-lock release', async () => {

@@ -32,7 +32,7 @@ import {
   resolveBackendStoreFileSet,
   resumeAutomaticBackendStoreResetIncident,
   resumeBackendStoreResetIncidentForOperator,
-  retainBackendStoreResetEvidence,
+  retainTransitionFileInStoreResetQuarantine,
   STEADY_STATE_BUSY_TIMEOUT_MS,
   type BackendStoreFileSet,
   type BackendStoreResetAuthority,
@@ -49,9 +49,6 @@ import {
   inspectGenerationReadiness,
   type GenerationAdoptionLockLease,
 } from './generation-mutation-coordination.js';
-
-const RETAINED_ACTIVE_STORE_TRANSITION_DIRECTORY = 'retained-active-store-transitions';
-const ACTIVE_STORE_TRANSITION_EVIDENCE_SUFFIX = '.active-store-transition.v1.json';
 
 export type ActiveStoreSelectionProtocolResult =
   | { readonly kind: 'opened'; readonly db: Database }
@@ -95,6 +92,9 @@ export type ActiveStoreSelectionProtocolOptions = OpenOrResetBackendStoreOptions
 
 type ActiveStoreCoordinationRecord = 'selection' | 'transition';
 type ActiveStoreCoordinationFailureCode = ActiveStoreRecordReadFailureCode;
+type ActiveStoreTransitionClearEvidence =
+  | { readonly kind: 'clear'; readonly sourceIdentity?: StorageBigIntStat }
+  | { readonly kind: 'source-missing' };
 
 function createActiveStoreTransition(
   runtime: Runtime,
@@ -214,18 +214,21 @@ function recordAuditFor(options: ActiveStoreSelectionProtocolOptions): typeof wr
 function retainActiveStoreTransition(
   runtime: Runtime,
   options: ActiveStoreSelectionProtocolOptions,
-): ReturnType<typeof retainBackendStoreResetEvidence> {
+  adoption: GenerationAdoptionLockLease,
+): ReturnType<typeof retainTransitionFileInStoreResetQuarantine> | null {
   const files = resolveBackendStoreFileSet(runtime, options);
   const transitionFile = resolveActiveStoreRecordPaths(runtime).transitionFile;
   try {
-    return retainBackendStoreResetEvidence(
-      runtime,
-      files,
-      transitionFile,
-      RETAINED_ACTIVE_STORE_TRANSITION_DIRECTORY,
-      `${runtime.ids.uuid()}${ACTIVE_STORE_TRANSITION_EVIDENCE_SUFFIX}`,
-    );
+    return retainTransitionFileInStoreResetQuarantine(runtime, files, transitionFile, adoption);
   } catch (error: unknown) {
+    if (
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'ENOENT' &&
+      !runtime.storage.existsSync(transitionFile)
+    ) {
+      return null;
+    }
     throw documentedCoralSetupError({
       code: 'store_reset_quarantine_failed',
       reason: 'active_store_transition_evidence',
@@ -238,11 +241,13 @@ function retainInvalidSelectionRecovery(
   runtime: Runtime,
   options: ActiveStoreSelectionProtocolOptions,
   transition: ActiveStoreTransition,
-): StorageBigIntStat | undefined {
+  adoption: GenerationAdoptionLockLease,
+): ActiveStoreTransitionClearEvidence {
   if (transition.evidence.kind !== 'valid-target-invalid' && transition.evidence.kind !== 'selection-malformed') {
-    return undefined;
+    return { kind: 'clear' };
   }
-  const retained = retainActiveStoreTransition(runtime, options);
+  const retained = retainActiveStoreTransition(runtime, options, adoption);
+  if (retained === null) return { kind: 'source-missing' };
   recordAuditFor(options)(
     'invalid-selection-recovery',
     {
@@ -260,7 +265,7 @@ function retainInvalidSelectionRecovery(
     },
     'warn',
   );
-  return retained.sourceIdentity;
+  return { kind: 'clear', sourceIdentity: retained.sourceIdentity };
 }
 
 function inspectCurrentGeneration(runtime: Runtime, options: OpenOrResetBackendStoreOptions): void {
@@ -394,8 +399,10 @@ function recoverActiveStoreTransition(
       if (transition !== null) {
         // The live transition is cleared only after its invalid-selection basis has been copied into the
         // reset-quarantine durability boundary. Coordinator logging is deliberately not evidence authority.
-        const retainedIdentity = retainInvalidSelectionRecovery(runtime, options, transition);
-        clearActiveStoreTransition(runtime, retainedIdentity);
+        const clearEvidence = retainInvalidSelectionRecovery(runtime, options, transition, adoption);
+        if (clearEvidence.kind === 'clear') {
+          clearActiveStoreTransition(runtime, clearEvidence.sourceIdentity);
+        }
       }
       return db;
     } catch (error: unknown) {
@@ -429,6 +436,7 @@ function refuseActiveStoreCoordination(
   runtime: Runtime,
   record: ActiveStoreCoordinationRecord,
   failureCode: ActiveStoreCoordinationFailureCode,
+  cause?: string,
 ): never {
   const paths = resolveActiveStoreRecordPaths(runtime);
   throw documentedCoralSetupError({
@@ -437,27 +445,50 @@ function refuseActiveStoreCoordination(
     failureCode,
     coordinationRoot: paths.coordinationRoot,
     recordPath: record === 'selection' ? paths.selectionFile : paths.transitionFile,
+    ...(cause === undefined ? {} : { cause }),
   });
+}
+
+function transitionClearFailureCode(error: unknown): ActiveStoreCoordinationFailureCode {
+  return error instanceof Error && error.message === 'Active-store transition changed before durable clear.'
+    ? 'record_changed'
+    : 'record_unavailable';
 }
 
 function supersedeActiveStoreTransition(
   runtime: Runtime,
   options: ActiveStoreSelectionProtocolOptions,
+  adoption: GenerationAdoptionLockLease,
   failureCode:
     | ActiveStoreTransitionFailureCode
     | 'transition_current_build_mismatch'
     | 'record_changed'
     | 'record_unavailable',
 ): void {
-  const retained = retainActiveStoreTransition(runtime, options);
-  clearActiveStoreTransition(runtime, retained.sourceIdentity);
+  const retained = retainActiveStoreTransition(runtime, options, adoption);
+  if (retained !== null) {
+    try {
+      clearActiveStoreTransition(runtime, retained.sourceIdentity);
+    } catch (error: unknown) {
+      refuseActiveStoreCoordination(
+        runtime,
+        'transition',
+        transitionClearFailureCode(error),
+        error instanceof Error ? error.message : 'Active-store transition clear failed with a non-Error value.',
+      );
+    }
+  }
   recordAuditFor(options)(
     'active-store-transition-superseded',
     {
       failureCode,
-      evidencePath: retained.evidencePath,
-      evidenceByteLength: retained.evidenceByteLength,
-      evidenceSha256: retained.evidenceSha256,
+      ...(retained === null
+        ? {}
+        : {
+            evidencePath: retained.evidencePath,
+            evidenceByteLength: retained.evidenceByteLength,
+            evidenceSha256: retained.evidenceSha256,
+          }),
       currentVersion: options.currentSelection.manifest.version,
       currentBuildSetId: options.currentSelection.manifest.buildSetId,
     },
@@ -516,12 +547,12 @@ export async function coordinateActiveStoreSelection(
           db: await recoverActiveStoreSelection(runtime, authority, options, transitionRead.transition, adoption),
         };
       }
-      supersedeActiveStoreTransition(runtime, options, 'transition_current_build_mismatch');
+      supersedeActiveStoreTransition(runtime, options, adoption, 'transition_current_build_mismatch');
     } else if (transitionRead.kind === 'malformed') {
-      supersedeActiveStoreTransition(runtime, options, transitionRead.failureCode);
+      supersedeActiveStoreTransition(runtime, options, adoption, transitionRead.failureCode);
     } else if (transitionRead.kind === 'rejected') {
       if (transitionRead.failureCode === 'record_changed' || transitionRead.failureCode === 'record_unavailable') {
-        supersedeActiveStoreTransition(runtime, options, transitionRead.failureCode);
+        supersedeActiveStoreTransition(runtime, options, adoption, transitionRead.failureCode);
       } else {
         refuseActiveStoreCoordination(runtime, 'transition', transitionRead.failureCode);
       }

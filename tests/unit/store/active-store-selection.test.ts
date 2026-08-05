@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, write
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -237,6 +237,29 @@ describe('active-store-selection', () => {
 
     expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection });
     expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it.skipIf(process.getuid === undefined)('should refuse mode repair for a foreign-owned record', () => {
+    const { runtime, selection } = harness();
+    const path = publishRecord(runtime, 'selectionFile', encodeActiveStoreSelection(selection));
+    chmodSync(path, 0o755);
+    const stat = runtime.storage.statSync.bind(runtime.storage);
+    vi.spyOn(runtime.storage, 'statSync').mockImplementation((target, options) => {
+      const result = stat(target, options);
+      return target === path
+        ? {
+            ...result,
+            uid: BigInt(process.getuid?.() ?? 0) + 1n,
+            isDirectory: () => result.isDirectory(),
+            isFile: () => result.isFile(),
+          }
+        : result;
+    });
+    const chmod = vi.spyOn(runtime.storage, 'chmodSync');
+
+    expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'rejected', failureCode: 'record_mode' });
+    expect(chmod).not.toHaveBeenCalled();
+    expect(statSync(path).mode & 0o777).toBe(0o755);
   });
 
   it.skipIf(process.platform === 'win32')('should establish mode 0600 under a restrictive umask', () => {

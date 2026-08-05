@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
@@ -32,10 +32,20 @@ type Rule =
   | 'rebindNamespace outside recovery allowlist'
   | 'namespace provenance outside allowlist';
 
-type ProductionSource = Readonly<{
+type TypeScriptProductionSource = Readonly<{
+  kind: 'typescript';
   file: string;
   sourceFile: ts.SourceFile;
+  text: string;
 }>;
+
+type SqlProductionSource = Readonly<{
+  kind: 'sql';
+  file: string;
+  text: string;
+}>;
+
+type ProductionSource = TypeScriptProductionSource | SqlProductionSource;
 
 type MutationFixture = Readonly<{
   name: string;
@@ -80,14 +90,42 @@ const NAMESPACE_PROVENANCE_ALLOWLIST = new Map<string, number>([
   ['src/workflow/recover.ts#finalizationRecording', 1],
 ]);
 
+const NAMESPACE_SQL_PREDICATE_ALLOWLIST = new Map<string, number>();
+const NAMESPACE_SQL_PREDICATE = /\b(?:backend_)?namespace\s*=\s*(?:\?|[:@$][A-Za-z_][A-Za-z0-9_]*)/u;
+
+function listProductionSqlFiles(dirPath: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
+    const entryPath = join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listProductionSqlFiles(entryPath));
+    } else if (entry.isFile() && entry.name.endsWith('.sql')) {
+      files.push(entryPath);
+    }
+  }
+  return files.sort();
+}
+
 function productionSources(): ProductionSource[] {
-  return listProductionSourceFiles(resolve(REPO_ROOT, 'src')).map((filePath) => {
+  const sourceRoot = resolve(REPO_ROOT, 'src');
+  const typescript = listProductionSourceFiles(sourceRoot).map((filePath): TypeScriptProductionSource => {
     const file = relative(REPO_ROOT, filePath).replaceAll('\\', '/');
+    const text = readFileSync(filePath, 'utf8');
     return {
+      kind: 'typescript',
       file,
-      sourceFile: ts.createSourceFile(file, readFileSync(filePath, 'utf8'), ts.ScriptTarget.Latest, true),
+      text,
+      sourceFile: ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true),
     };
   });
+  const sql = listProductionSqlFiles(sourceRoot).map(
+    (filePath): SqlProductionSource => ({
+      kind: 'sql',
+      file: relative(REPO_ROOT, filePath).replaceAll('\\', '/'),
+      text: readFileSync(filePath, 'utf8'),
+    }),
+  );
+  return [...typescript, ...sql].sort((left, right) => left.file.localeCompare(right.file));
 }
 
 function parseMutationFixtures(): MutationFixture[] {
@@ -319,17 +357,41 @@ function scanNoBuildTenancySources(
   const rebindHits = new Map<string, number>();
   const staleArtifactHits = new Map<string, number>();
   const namespaceProvenanceHits = new Map<string, number>();
+  const namespaceSqlPredicateHits = new Map<string, number>();
 
-  const add = (source: ProductionSource, node: ts.Node, rule: Rule, symbol: string): void => {
-    const line = source.sourceFile.getLineAndCharacterOfPosition(node.getStart(source.sourceFile)).line + 1;
-    const message = `${source.file}:${line}: ${rule}: ${symbol}`;
+  const addAtLine = (file: string, line: number, rule: Rule, symbol: string): void => {
+    const message = `${file}:${line}: ${rule}: ${symbol}`;
     if (!seen.has(message)) {
       seen.add(message);
       violations.push(message);
     }
   };
 
+  const add = (source: TypeScriptProductionSource, node: ts.Node, rule: Rule, symbol: string): void => {
+    const line = source.sourceFile.getLineAndCharacterOfPosition(node.getStart(source.sourceFile)).line + 1;
+    addAtLine(source.file, line, rule, symbol);
+  };
+
   for (const source of sources) {
+    if (source.kind === 'sql') {
+      const matcher = new RegExp(NAMESPACE_SQL_PREDICATE.source, 'gu');
+      for (const match of source.text.matchAll(matcher)) {
+        const allowlistKey = `${source.file}#<sql>`;
+        if (NAMESPACE_SQL_PREDICATE_ALLOWLIST.has(allowlistKey)) {
+          namespaceSqlPredicateHits.set(allowlistKey, (namespaceSqlPredicateHits.get(allowlistKey) ?? 0) + 1);
+        } else {
+          const line = source.text.slice(0, match.index).split('\n').length;
+          addAtLine(
+            source.file,
+            line,
+            'namespace equality SQL predicate outside allowlist',
+            `${allowlistKey}: ${match[0]}`,
+          );
+        }
+      }
+      continue;
+    }
+
     const visit = (node: ts.Node): void => {
       if (ts.isIdentifier(node)) {
         if (node.text === 'belongsToNamespace') add(source, node, 'belongsToNamespace symbol', node.text);
@@ -474,10 +536,12 @@ function scanNoBuildTenancySources(
       }
 
       const sql = literalText(node);
-      if (sql !== null && /\b(?:backend_)?namespace\s*=\s*\?/u.test(sql)) {
+      if (sql !== null && NAMESPACE_SQL_PREDICATE.test(sql)) {
         const allowlistKey = `${source.file}#${enclosingSymbol(node)}`;
-        if (!NAMESPACE_PROVENANCE_ALLOWLIST.has(allowlistKey)) {
-          add(source, node, 'namespace equality SQL predicate outside allowlist', `${allowlistKey}: namespace = ?`);
+        if (NAMESPACE_SQL_PREDICATE_ALLOWLIST.has(allowlistKey)) {
+          namespaceSqlPredicateHits.set(allowlistKey, (namespaceSqlPredicateHits.get(allowlistKey) ?? 0) + 1);
+        } else {
+          add(source, node, 'namespace equality SQL predicate outside allowlist', `${allowlistKey}: ${sql}`);
         }
       }
 
@@ -502,14 +566,24 @@ function scanNoBuildTenancySources(
       if (actual !== expected)
         violations.push(`${key}: namespace-provenance allowlist expected ${expected}, found ${actual}`);
     }
+    for (const [key, expected] of NAMESPACE_SQL_PREDICATE_ALLOWLIST) {
+      const actual = namespaceSqlPredicateHits.get(key) ?? 0;
+      if (actual !== expected)
+        violations.push(`${key}: namespace SQL predicate allowlist expected ${expected}, found ${actual}`);
+    }
   }
 
   return violations.sort();
 }
 
 function mutationSource(fixture: MutationFixture): ProductionSource {
+  if (fixture.file.endsWith('.sql')) {
+    return { kind: 'sql', file: fixture.file, text: fixture.source };
+  }
   return {
+    kind: 'typescript',
     file: fixture.file,
+    text: fixture.source,
     sourceFile: ts.createSourceFile(fixture.file, fixture.source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS),
   };
 }

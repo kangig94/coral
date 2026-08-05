@@ -358,6 +358,9 @@ describe('store reset discipline invariants', () => {
     const importers = allSourcePaths()
       .filter((path) => sourceImports(path).includes(BACKEND_STORE_RESET_PATH))
       .sort();
+    const coordinationImporters = allSourcePaths()
+      .filter((path) => sourceImports(path).includes(ACTIVE_STORE_SELECTION_COORDINATION_PATH))
+      .sort();
     // Startup-store routing owns selection resolution, transition recovery, and the adoption-lock scope; it
     // is a deliberate reset owner, not leaked backend access.
     expect(importers).toEqual([
@@ -366,6 +369,7 @@ describe('store reset discipline invariants', () => {
       'src/store/operator-store-reset.ts',
       STARTUP_STORE_ROUTING_PATH,
     ]);
+    expect(coordinationImporters).toEqual(['src/store/operator-store-reset.ts', STARTUP_STORE_ROUTING_PATH]);
 
     const symbolAllowlist = new Set([
       BACKEND_STORE_RESET_PATH,
