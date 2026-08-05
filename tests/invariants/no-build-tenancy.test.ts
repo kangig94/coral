@@ -8,7 +8,6 @@ import { listProductionSourceFiles } from '#tests/helpers/ts-import-scanner.js';
 
 const REPO_ROOT = process.cwd();
 const FIXTURE_PATH = resolve(REPO_ROOT, 'tests/invariants/fixtures/no-build-tenancy.ts.txt');
-const CRASHED_SOURCE_FILE = 'src/jobs/crashed-job-terminalization-recovery-source.ts';
 const READ_STORE_FILE = 'src/cli/read-store.ts';
 const CORAL_STORE_FILE = 'src/read-model/coral-store.ts';
 
@@ -28,7 +27,7 @@ type Rule =
   | 'launchEventNamespace comparison'
   | 'crashedJobTerminalizationSource namespace parameter'
   | 'crashedJobTerminalizationSource namespace argument'
-  | 'crashed terminalization backend_namespace predicate'
+  | 'namespace equality SQL predicate outside allowlist'
   | 'bundleHash work-tenancy comparison'
   | 'rebindNamespace outside recovery allowlist'
   | 'namespace provenance outside allowlist';
@@ -475,8 +474,11 @@ function scanNoBuildTenancySources(
       }
 
       const sql = literalText(node);
-      if (source.file === CRASHED_SOURCE_FILE && sql !== null && /\bbackend_namespace\s*=\s*\?/u.test(sql)) {
-        add(source, node, 'crashed terminalization backend_namespace predicate', 'backend_namespace = ?');
+      if (sql !== null && /\b(?:backend_)?namespace\s*=\s*\?/u.test(sql)) {
+        const allowlistKey = `${source.file}#${enclosingSymbol(node)}`;
+        if (!NAMESPACE_PROVENANCE_ALLOWLIST.has(allowlistKey)) {
+          add(source, node, 'namespace equality SQL predicate outside allowlist', `${allowlistKey}: namespace = ?`);
+        }
       }
 
       ts.forEachChild(node, visit);

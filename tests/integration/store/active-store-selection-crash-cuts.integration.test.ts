@@ -309,6 +309,45 @@ describe('active-store-selection crash cuts', () => {
     },
   );
 
+  it('should serialize a concurrent coordinator behind the adoption lock', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    const boundary = resolveGenerationBoundaryPaths(runtime);
+    mkdirSync(boundary.generationRoot, { recursive: true });
+    const releaseAdoption = acquireDirectoryLockSync(boundary.adoptionLock, 1_000);
+    const classifyStore = vi.fn(() => ({ kind: 'fresh' as const }));
+    const openStore = vi.fn(() => fakeDatabase());
+    const originalSleep = runtime.time.sleep.bind(runtime.time);
+    let observeContention: () => void = () => undefined;
+    const contentionObserved = new Promise<void>((resolve) => {
+      observeContention = resolve;
+    });
+    vi.spyOn(runtime.time, 'sleep').mockImplementation(async (ms) => {
+      observeContention();
+      await originalSleep(ms);
+    });
+
+    const coordinating = coordinateActiveStoreSelection(runtime, authority, {
+      storeFormat: currentCoralStoreFormat(),
+      currentSelection,
+      dependencies: successfulDependencies({ classifyStore, openStore }),
+    });
+    await contentionObserved;
+    try {
+      expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'absent' });
+      expect(classifyStore).not.toHaveBeenCalled();
+      expect(openStore).not.toHaveBeenCalled();
+    } finally {
+      releaseAdoption();
+    }
+
+    const result = await coordinating;
+    expect(result.kind).toBe('opened');
+    expect(classifyStore).toHaveBeenCalledOnce();
+    expect(openStore).toHaveBeenCalledOnce();
+    expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection: currentSelection });
+    expect(existsSync(boundary.adoptionLock)).toBe(false);
+  });
+
   it('should reclassify an exact current selection when it crashes before newer-store intent publication', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));

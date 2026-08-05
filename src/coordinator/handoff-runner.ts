@@ -249,6 +249,28 @@ async function resolveHandoffRouting(pluginRoot?: string, timePort?: TimePort): 
   return { routing: routeAuthenticatedHealth(health), runtime, time };
 }
 
+async function resolveHandoffRoutingForOperation(
+  operation: HandoffOperation,
+  options: RunHandoffOptions,
+): Promise<RoutingResolution> {
+  if (options.activeSelectionTarget !== undefined) {
+    const flavor =
+      options.pluginRoot === undefined ? resolveBuildFlavor(process.env) : readBuildFlavor(options.pluginRoot);
+    const runtime = createRealRuntime(flavor);
+    return {
+      routing: { kind: 'handoff', target: options.activeSelectionTarget, source: 'active-selection' },
+      runtime,
+      time: options.time ?? runtime.time,
+    };
+  }
+
+  if (operation.kind === 'backend-startup') {
+    throw new Error('Backend startup handoff requires a validated active-store target.');
+  }
+
+  return resolveHandoffRouting(options.pluginRoot, options.time);
+}
+
 function observeChild(child: ChildProcess): ObservedChild {
   const spawnedPromise = new Promise<void>((resolve, reject) => {
     child.once('spawn', resolve);
@@ -383,24 +405,7 @@ export async function runHandoff(
     return { kind: 'run-current' };
   }
 
-  const resolution =
-    options.activeSelectionTarget !== undefined
-      ? (() => {
-          const flavor =
-            options.pluginRoot === undefined ? resolveBuildFlavor(process.env) : readBuildFlavor(options.pluginRoot);
-          const runtime = createRealRuntime(flavor);
-          return {
-            routing: { kind: 'handoff', target: options.activeSelectionTarget, source: 'active-selection' } as const,
-            runtime,
-            time: options.time ?? runtime.time,
-          };
-        })()
-      : operation.kind === 'backend-startup'
-        ? (() => {
-            throw new Error('Backend startup handoff requires a validated active-store target.');
-          })()
-        : await resolveHandoffRouting(options.pluginRoot, options.time);
-  const { routing, runtime, time } = resolution;
+  const { routing, runtime, time } = await resolveHandoffRoutingForOperation(operation, options);
   switch (routing.kind) {
     case 'use-current':
     case 'reset-newer-invalid':

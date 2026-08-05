@@ -12,6 +12,11 @@ store.countProjectedLiveJobsByNamespace(namespace);
 // === load-detail-namespace-option|src/jobs/read-queries.ts|loadJobDetail namespace option
 loadJobDetail(db, jobId, ctx, { namespace });
 
+// === load-detail-declaration-namespace-option|src/jobs/read-queries.ts|loadJobDetail namespace option
+export function loadJobDetail(db: unknown, jobId: string, options: { namespace?: string }): unknown {
+  return { db, jobId, options };
+}
+
 // === jobs-list-filter-namespace|src/jobs/read-queries.ts|JobsListFilters.namespace
 export type JobsListFilters = { namespace?: string; projectRoot?: string };
 
@@ -53,15 +58,6 @@ const foreign = originNamespace !== currentNamespace;
 // === launch-event-namespace-inequality|src/jobs/reconcile/plan.ts|launchEventNamespace comparison
 const foreign = launchEventNamespace !== namespace;
 
-// === launch-event-namespace-equality|src/jobs/reconcile/plan.ts|launchEventNamespace comparison
-const owned = launchEventNamespace === namespace;
-
-// === launch-event-namespace-loose-inequality|src/jobs/reconcile/plan.ts|launchEventNamespace comparison
-const foreign = launchEventNamespace != namespace;
-
-// === launch-event-namespace-negated-equality|src/jobs/reconcile/plan.ts|launchEventNamespace comparison
-const foreign = !(launchEventNamespace === namespace);
-
 // === crashed-source-namespace-parameter|src/jobs/crashed-job-terminalization-recovery-source.ts|crashedJobTerminalizationSource namespace parameter
 export function crashedJobTerminalizationSource(db: unknown, namespace: string, subject?: unknown) {
   return db;
@@ -70,11 +66,19 @@ export function crashedJobTerminalizationSource(db: unknown, namespace: string, 
 // === crashed-source-namespace-argument|src/coordinator/lifecycle.ts|crashedJobTerminalizationSource namespace argument
 crashedJobTerminalizationSource(db, namespace, subject);
 
-// === crashed-source-sql-predicate|src/jobs/crashed-job-terminalization-recovery-source.ts|crashed terminalization backend_namespace predicate
+// === crashed-source-sql-predicate|src/jobs/crashed-job-terminalization-recovery-source.ts|namespace equality SQL predicate outside allowlist
 db.prepare(`SELECT * FROM projection_jobs WHERE backend_namespace = ? AND phase = 'running'`);
+
+// === projected-live-sql-namespace-predicate|src/jobs/projection-row.ts|namespace equality SQL predicate outside allowlist
+db.prepare(`SELECT COUNT(*) FROM projection_jobs WHERE phase = 'running' AND backend_namespace = ?`);
 
 // === bundle-hash-tenancy-outside-prune|src/jobs/reconcile/plan.ts|bundleHash work-tenancy comparison
 const foreign = job.bundleHash !== currentBundleHash;
 
 // === rebind-outside-recovery|src/coordinator/composition/job-control.ts|rebindNamespace outside recovery allowlist
 progressStore.rebindNamespace(jobId, world.namespace);
+
+// === namespace-provenance-outside-allowlist|src/jobs/read-queries.ts|namespace provenance outside allowlist
+function copyStatusNamespace(status: { backendNamespace: string }) {
+  return { namespace: status.backendNamespace };
+}

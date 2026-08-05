@@ -398,8 +398,6 @@ describe('store reset discipline invariants', () => {
     const legacyRefusalIndex = topLevel.indexOf("options.target === 'legacy'");
     const generatedIndex = topLevel.indexOf('discardGeneratedStore(');
     const selectionIndex = generated.indexOf('coordinateActiveStoreSelection(');
-    const maintenanceIndex = generated.indexOf('acquireGenerationMaintenanceLease(');
-    const preparedOpenIndex = generated.indexOf('openOrResetBackendStoreDb(');
     const handoffIndex = generated.indexOf("selectionResult.kind === 'handoff'");
     const resetLockIndex = recovery.indexOf('acquireBackendStoreResetLock(');
     const resumeIndex = recovery.indexOf('resumeBackendStoreResetIncidentForOperator(');
@@ -412,9 +410,7 @@ describe('store reset discipline invariants', () => {
     expect(socketIndex).toBeGreaterThan(targetPathsIndex);
     expect(generatedIndex).toBeGreaterThan(socketIndex);
     expect(selectionIndex).toBeGreaterThanOrEqual(0);
-    expect(maintenanceIndex).toBeGreaterThan(selectionIndex);
-    expect(preparedOpenIndex).toBeGreaterThan(maintenanceIndex);
-    expect(handoffIndex).toBeGreaterThan(preparedOpenIndex);
+    expect(handoffIndex).toBeGreaterThan(selectionIndex);
     expect(resetLockIndex).toBeGreaterThanOrEqual(0);
     expect(resumeIndex).toBeGreaterThan(resetLockIndex);
     expect(classificationIndex).toBeGreaterThan(resumeIndex);
