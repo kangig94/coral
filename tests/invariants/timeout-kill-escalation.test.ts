@@ -18,6 +18,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { codeTextOnly } from '../helpers/ts-code-text.js';
+
 const REPO_ROOT = join(__dirname, '..', '..');
 const SRC_ROOT = 'src';
 
@@ -62,19 +64,8 @@ function canonicalSrcPath(filePath: string): string {
   return relative(REPO_ROOT, filePath).replace(/\\/g, '/');
 }
 
-/** Strips line/block comments and string literals so the scan ignores quoted
- * names and commented examples. */
-function stripCommentsAndStrings(source: string): string {
-  let result = source.replace(/\/\*[\s\S]*?\*\//gu, '');
-  result = result.replace(/(^|\n)\s*\/\/[^\n]*/gu, '$1');
-  result = result.replace(/'(?:\\.|[^'\\])*'/gu, "''");
-  result = result.replace(/"(?:\\.|[^"\\])*"/gu, '""');
-  result = result.replace(/`(?:\\.|\$\{[^}]*\}|[^`\\])*`/gu, '``');
-  return result;
-}
-
 function callsSafeKill(source: string): boolean {
-  return /(^|[^.\w$])safeKill\s*\(/u.test(stripCommentsAndStrings(source));
+  return /(^|[^.\w$])safeKill\s*\(/u.test(codeTextOnly(source));
 }
 
 describe('process kills escalate SIGTERM→SIGKILL', () => {

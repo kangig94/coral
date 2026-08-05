@@ -24,6 +24,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { codeTextOnly } from '../helpers/ts-code-text.js';
+
 const REPO_ROOT = join(__dirname, '..', '..');
 const SCOPED_ROOTS = ['src/kb', 'src/providers', 'src/jobs', 'src/store'] as const;
 const TIMER_SCOPED_ROOTS = [
@@ -119,28 +121,12 @@ function importsNodeChildProcess(source: string): boolean {
 }
 
 /**
- * Strips TypeScript line comments, block comments, and string literals from
- * a source so identifier scans never trip on quoted names or commented
- * examples. Backtick strings drop their interpolations as well — for the
- * timer scan we only care about whether the bare identifier appears in
- * executable / declarative code, not inside a template literal payload.
- */
-function stripCommentsAndStrings(source: string): string {
-  let result = source.replace(/\/\*[\s\S]*?\*\//gu, '');
-  result = result.replace(/(^|\n)\s*\/\/[^\n]*/gu, '$1');
-  result = result.replace(/'(?:\\.|[^'\\])*'/gu, "''");
-  result = result.replace(/"(?:\\.|[^"\\])*"/gu, '""');
-  result = result.replace(/`(?:\\.|\$\{[^}]*\}|[^`\\])*`/gu, '``');
-  return result;
-}
-
-/**
- * Returns the bare-global timer identifiers found in a source file (after
- * stripping comments and string literals). A bare identifier is one that
- * is NOT preceded by `.` — member access (`time.setTimeout`) is allowed.
+ * Returns the bare-global timer identifiers found in a source file (comments
+ * and string literals excluded). A bare identifier is one that is NOT preceded
+ * by `.` — member access (`time.setTimeout`) is allowed.
  */
 function findBareTimerIdentifiers(source: string): string[] {
-  const cleaned = stripCommentsAndStrings(source);
+  const cleaned = codeTextOnly(source);
   const pattern = /(^|[^.\w$])(setTimeout|setInterval|clearTimeout|clearInterval)\b/gu;
   const found: string[] = [];
   let match: RegExpExecArray | null;
@@ -151,7 +137,7 @@ function findBareTimerIdentifiers(source: string): string[] {
 }
 
 function findBareDateNow(source: string): string[] {
-  const cleaned = stripCommentsAndStrings(source);
+  const cleaned = codeTextOnly(source);
   const pattern = /(^|[^.\w$])(Date)\s*\.\s*now\s*\(/gu;
   const found: string[] = [];
   let match: RegExpExecArray | null;
