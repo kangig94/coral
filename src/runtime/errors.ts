@@ -117,15 +117,18 @@ function activeStoreCoordinationRemediation(context?: CoralSetupErrorContext): s
   const failureCode = stringContextValue(context, 'failureCode', 'unknown');
   const stop = "Run this build's own 'coral-cli backend shutdown'.";
   if (failureCode === 'record_mode') {
-    return `${stop} Verify that ${recordPath} is a regular file owned by the current user, set its mode to 0600, then retry. Preserve the record and store files if the refusal persists.`;
+    return `${stop} Restore ${recordPath} to the current user's ownership with mode 0600, then retry the command. Preserve the record and store files if the refusal persists.`;
   }
   if (failureCode.startsWith('coordination_directory_')) {
-    return `${stop} Verify that ${coordinationRoot} is an ordinary canonical directory owned by the current user, then retry. Preserve the coordination records and store files if the refusal persists.`;
+    return `${stop} Restore ${coordinationRoot} as an ordinary canonical directory owned by the current user, then retry the command. Preserve the coordination records and store files if the refusal persists.`;
   }
   if (failureCode === 'record_link' || failureCode === 'record_not_regular') {
-    return `${stop} Restore ${recordPath} as a regular non-link file owned by the current user with mode 0600, then retry. Preserve the existing entry and store files for diagnosis if its origin is unknown.`;
+    return `${stop} Restore ${recordPath} as a regular non-link file owned by the current user with mode 0600, then retry the command. Preserve the existing entry and store files for diagnosis if its origin is unknown.`;
   }
-  return `${stop} Retry once with the Coral build that owns this coordination state. If it still fails, preserve ${recordPath} and the store files and report this code with failureCode=${failureCode}; do not edit or delete them.`;
+  if (failureCode === 'record_changed' || failureCode === 'record_unavailable') {
+    return `${stop} Verify that ${recordPath} is stable and readable by the current user, then retry the command. If it still fails, preserve the record and store files and report failureCode=${failureCode}.`;
+  }
+  return `${stop} Preserve ${recordPath} and the store files, then report this error with failureCode=${failureCode}; do not edit or delete the evidence.`;
 }
 
 const DOCUMENTED_CORAL_SETUP_ERRORS = {
@@ -207,7 +210,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
   active_store_coordination_invalid: {
     userMessage: (context) =>
-      `Coral cannot safely use the active-store ${stringContextValue(context, 'record', '<selection|transition>')} record (${stringContextValue(context, 'failureCode', 'unknown')}).`,
+      `Coral cannot safely use the active-store ${stringContextValue(context, 'record', '<selection|transition>')} record.`,
     remediation: activeStoreCoordinationRemediation,
   },
   store_newer_incompatible: {
@@ -312,15 +315,19 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       context?.reason === 'interrupted'
         ? 'Coral detected an interrupted backend store reset and refused to resume it during startup.'
-        : context?.reason === 'classified_evidence_missing'
-          ? 'Coral found no active backend store files to quarantine after classifying the store for reset.'
-          : 'Coral could not quarantine the old backend store before reset.',
+        : context?.reason === 'active_store_transition_evidence'
+          ? 'Coral could not preserve a stale active-store transition before superseding it.'
+          : context?.reason === 'classified_evidence_missing'
+            ? 'Coral found no active backend store files to quarantine after classifying the store for reset.'
+            : 'Coral could not quarantine the old backend store before reset.',
     remediation: (context) =>
       context?.reason === 'interrupted'
         ? interruptedStoreResetRemediation(context)
-        : context?.reason === 'classified_evidence_missing'
-          ? "Retry startup once. If the store is classified for reset again without any active files, run 'coral-cli backend status' and report this code. Do not create, move, delete, restore, or upload DB, WAL, or SHM evidence."
-          : 'Check permissions and free disk space in the Coral store directory, then retry. Do not move, delete, restore, or upload DB, WAL, or SHM evidence.',
+        : context?.reason === 'active_store_transition_evidence'
+          ? 'Check permissions and free disk space in the Coral store directory, then retry. Preserve the active-store records and retained transition evidence.'
+          : context?.reason === 'classified_evidence_missing'
+            ? "Retry startup once. If the store is classified for reset again without any active files, run 'coral-cli backend status' and report this code. Do not create, move, delete, restore, or upload DB, WAL, or SHM evidence."
+            : 'Check permissions and free disk space in the Coral store directory, then retry. Do not move, delete, restore, or upload DB, WAL, or SHM evidence.',
   },
   recovery_quarantine_boundary_not_registered: {
     userMessage: 'That recovery boundary is not available for operator retry.',

@@ -157,6 +157,14 @@ function newestIncidentManifest(runtime: Runtime) {
   return parseStoreResetIncidentManifest(readFileSync(join(quarantine, incident, STORE_RESET_MANIFEST_FILE_NAME)));
 }
 
+function supersededTransitionEvidencePath(recordAudit: ReturnType<typeof vi.fn>, failureCode: string): string {
+  const call = recordAudit.mock.calls.find(([event]) => event === 'active-store-transition-superseded');
+  expect(call?.[1]).toMatchObject({ failureCode });
+  const evidencePath = (call?.[1] as { readonly evidencePath?: unknown } | undefined)?.evidencePath;
+  if (typeof evidencePath !== 'string') throw new Error('Expected superseded transition evidence path.');
+  return evidencePath;
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
@@ -188,6 +196,116 @@ describe('active-store selection recovery', () => {
     expect(openStore).not.toHaveBeenCalled();
     expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection: selected });
     expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(false);
+  });
+
+  it('should supersede an interrupted transition from an older build and preserve its bytes', async () => {
+    const { root, runtime, currentSelection, authority } = harness();
+    const olderManifest = manifest('0.0.0-rc.1', '223e4567-e89b-42d3-a456-426614174000');
+    const olderSelection = selection(olderManifest, createBundle(root, olderManifest));
+    const staleTransition: ActiveStoreTransition = {
+      version: 1,
+      transitionId: '323e4567-e89b-42d3-a456-426614174000',
+      kind: 'selection-recovery',
+      evidence: { kind: 'selection-absent', storeEvidence: { kind: 'pending-classification' } },
+      currentManifest: olderManifest,
+      currentBundleDir: olderSelection.bundleDir,
+    };
+    const staleBytes = encodeActiveStoreTransition(staleTransition);
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(olderSelection));
+    publish(runtime, 'transitionFile', staleBytes);
+    const db = fakeDatabase();
+    const recordAudit = vi.fn();
+
+    const result = await routeOrOpenBackendStoreAtStartup({
+      runtime,
+      authority,
+      validateForeignTarget: createForeignTargetValidator(),
+      options: {
+        storeFormat,
+        currentSelection,
+        dependencies: {
+          classifyStore: compatibleClassification,
+          openStore: () => db,
+          recordAudit,
+        },
+      },
+    });
+
+    expect(result).toEqual({ kind: 'open', db });
+    expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection: currentSelection });
+    expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
+    expect(readFileSync(supersededTransitionEvidencePath(recordAudit, 'transition_current_build_mismatch'))).toEqual(
+      Buffer.from(staleBytes),
+    );
+  });
+
+  it('should supersede a newer-build transition before handing off from an older build', async () => {
+    const { root, runtime, currentSelection, authority } = harness();
+    const newerManifest = manifest('99.0.0', '223e4567-e89b-42d3-a456-426614174000');
+    const newerSelection = selection(newerManifest, createBundle(root, newerManifest));
+    const staleTransition: ActiveStoreTransition = {
+      version: 1,
+      transitionId: '423e4567-e89b-42d3-a456-426614174000',
+      kind: 'selection-recovery',
+      evidence: { kind: 'selection-absent', storeEvidence: { kind: 'pending-classification' } },
+      currentManifest: newerManifest,
+      currentBundleDir: newerSelection.bundleDir,
+    };
+    const staleBytes = encodeActiveStoreTransition(staleTransition);
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(newerSelection));
+    publish(runtime, 'transitionFile', staleBytes);
+    const classifyStore = vi.fn();
+    const openStore = vi.fn();
+    const recordAudit = vi.fn();
+
+    const result = await routeOrOpenBackendStoreAtStartup({
+      runtime,
+      authority,
+      validateForeignTarget: createForeignTargetValidator(),
+      options: {
+        storeFormat,
+        currentSelection,
+        dependencies: { classifyStore, openStore, recordAudit },
+      },
+    });
+
+    expect(result.kind).toBe('handoff');
+    expect(classifyStore).not.toHaveBeenCalled();
+    expect(openStore).not.toHaveBeenCalled();
+    expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
+    expect(readFileSync(supersededTransitionEvidencePath(recordAudit, 'transition_current_build_mismatch'))).toEqual(
+      Buffer.from(staleBytes),
+    );
+  });
+
+  it('should supersede a malformed transition instead of refusing startup', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    const malformedBytes = new TextEncoder().encode('{}');
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    publish(runtime, 'transitionFile', malformedBytes);
+    const db = fakeDatabase();
+    const recordAudit = vi.fn();
+
+    const result = await routeOrOpenBackendStoreAtStartup({
+      runtime,
+      authority,
+      validateForeignTarget: createForeignTargetValidator(),
+      options: {
+        storeFormat,
+        currentSelection,
+        dependencies: {
+          classifyStore: compatibleClassification,
+          openStore: () => db,
+          recordAudit,
+        },
+      },
+    });
+
+    expect(result).toEqual({ kind: 'open', db });
+    expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
+    expect(readFileSync(supersededTransitionEvidencePath(recordAudit, 'transition_invalid_schema'))).toEqual(
+      Buffer.from(malformedBytes),
+    );
   });
 
   it.each(['pruned artifact', 'tampered artifact'] as const)(
@@ -236,6 +354,49 @@ describe('active-store selection recovery', () => {
     },
   );
 
+  it('should retain the selected manifest when the selected bundle directory was pruned', async () => {
+    const { root, runtime, currentSelection, authority } = harness();
+    const selectedManifest = manifest('2.0.0', '223e4567-e89b-42d3-a456-426614174000');
+    const selectedBundleDir = createBundle(root, selectedManifest);
+    const selected = selection(selectedManifest, selectedBundleDir);
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(selected));
+    rmSync(selectedBundleDir, { recursive: true, force: true });
+    createNewerStore(runtime);
+    const recordAudit = vi.fn();
+
+    const result = await routeOrOpenBackendStoreAtStartup({
+      runtime,
+      authority,
+      validateForeignTarget: createForeignTargetValidator(),
+      options: { storeFormat, currentSelection, dependencies: { recordAudit } },
+    });
+
+    expect(result).toMatchObject({
+      kind: 'reset-newer-invalid',
+      evidence: { failure: 'bundle-dir-unavailable' },
+    });
+    if (result.kind === 'reset-newer-invalid') result.db.close();
+    expect(recordAudit).toHaveBeenCalledWith(
+      'invalid-selection-recovery',
+      expect.objectContaining({ evidenceKind: 'valid-target-invalid', failureCode: 'bundle-dir-unavailable' }),
+      'warn',
+    );
+    expect(newestIncidentManifest(runtime)).toMatchObject({
+      schemaVersion: 3,
+      resetPolicyCause: 'newer-incompatible-invalid-target',
+      resetPolicyEvidence: {
+        validationFailure: { code: 'bundle-dir-unavailable' },
+        observedTarget: {
+          version: selectedManifest.version,
+          buildSetId: selectedManifest.buildSetId,
+          bundleHash: selectedManifest.bundleHash,
+          flavor: selectedManifest.flavor,
+          storeFormatFingerprint: selectedManifest.storeFormatFingerprint,
+        },
+      },
+    });
+  });
+
   it('should audit a malformed selection and open a readable store', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', new TextEncoder().encode('{malformed'));
@@ -268,6 +429,36 @@ describe('active-store selection recovery', () => {
       'warn',
     );
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
+  });
+
+  it('should wrap an unreadable store classification in the documented protocol error', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    const failure = Object.assign(new Error('EACCES: permission denied while opening store.db'), { code: 'EACCES' });
+
+    await expect(
+      routeOrOpenBackendStoreAtStartup({
+        runtime,
+        authority,
+        validateForeignTarget: createForeignTargetValidator(),
+        options: {
+          storeFormat,
+          currentSelection,
+          dependencies: {
+            classifyStore: () => {
+              throw failure;
+            },
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'store_corrupt_or_unsupported',
+      context: {
+        path: runtime.paths.coral.store.dbFile,
+        flavor: runtime.flavor,
+        cause: failure.message,
+      },
+    });
   });
 
   it.each([

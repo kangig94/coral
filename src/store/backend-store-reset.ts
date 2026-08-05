@@ -59,6 +59,8 @@ import {
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 const STEADY_STATE_BUSY_TIMEOUT_MS = 5_000;
+const SUPERSEDED_ACTIVE_STORE_TRANSITION_DIRECTORY = 'superseded-active-store-transitions';
+const ACTIVE_STORE_TRANSITION_EVIDENCE_SUFFIX = '.active-store-transition.v1.json';
 
 const BACKEND_STORE_RESET_AUTHORITY_BRAND: unique symbol = Symbol('BackendStoreResetAuthority');
 
@@ -117,10 +119,19 @@ type StoreFileSet = {
   readonly formatFile: string;
 };
 
-type StoreFileCandidate = {
+type EvidenceFileCandidate<Name extends string> = {
   readonly source: string;
-  readonly name: StoreResetEvidenceFileName;
+  readonly name: Name;
 };
+
+type PublishedEvidenceFile<Name extends string> = Omit<StoreResetIncidentFile, 'name'> & { readonly name: Name };
+
+type PublishedEvidenceCopy<Name extends string> = Readonly<{
+  evidence: PublishedEvidenceFile<Name>;
+  sourceIdentity: StorageBigIntStat;
+}>;
+
+type StoreFileCandidate = EvidenceFileCandidate<StoreResetEvidenceFileName>;
 
 type InterruptedStoreResetRefusalCode =
   | 'store_reset_interrupted_ambiguous'
@@ -315,11 +326,11 @@ function writeExactDescriptor(storage: StoragePort, descriptor: number, buffer: 
   }
 }
 
-function describeCandidate(
+function describeCandidate<Name extends string>(
   storage: StoragePort,
-  candidate: StoreFileCandidate,
+  candidate: EvidenceFileCandidate<Name>,
   remainingBudget: number,
-): StoreResetIncidentFile {
+): PublishedEvidenceFile<Name> {
   const pathBefore = stablePathStat(storage, candidate.source);
   if (
     !pathBefore.isFile() ||
@@ -363,12 +374,12 @@ function describeCandidate(
   };
 }
 
-function copyCandidateForPublication(
+function copyCandidateForPublication<Name extends string>(
   storage: StoragePort,
-  candidate: StoreFileCandidate,
+  candidate: EvidenceFileCandidate<Name>,
   destination: string,
   remainingBudget: number,
-): StoreResetIncidentFile {
+): PublishedEvidenceCopy<Name> {
   const pathBefore = stablePathStat(storage, candidate.source);
   if (
     !pathBefore.isFile() ||
@@ -382,7 +393,7 @@ function copyCandidateForPublication(
   let sourceDescriptor: number | null = null;
   let destinationDescriptor: number | null = null;
   let closeFailure = false;
-  let result: StoreResetIncidentFile | null = null;
+  let result: PublishedEvidenceCopy<Name> | null = null;
   try {
     sourceDescriptor = storage.openSync(candidate.source, 'r');
     const sourceOpened = storage.fstatSync(sourceDescriptor, { bigint: true });
@@ -408,10 +419,13 @@ function copyCandidateForPublication(
       throw new Error('Published store-reset evidence has an unexpected size.');
     }
     result = {
-      name: candidate.name,
-      sizeBytes: expectedSize,
-      mtimeMs: Number(sourceOpened.mtimeNs / 1_000_000n),
-      sha256: digest,
+      evidence: {
+        name: candidate.name,
+        sizeBytes: expectedSize,
+        mtimeMs: Number(sourceOpened.mtimeNs / 1_000_000n),
+        sha256: digest,
+      },
+      sourceIdentity: sourceOpened,
     };
   } finally {
     for (const descriptor of [destinationDescriptor, sourceDescriptor]) {
@@ -436,8 +450,8 @@ function copyCandidateForPublication(
   const destinationAfter = stablePathStat(storage, destination);
   if (
     !destinationAfter.isFile() ||
-    destinationAfter.size !== BigInt(result.sizeBytes) ||
-    !evidenceMatches(storage, { source: destination, name: candidate.name }, result)
+    destinationAfter.size !== BigInt(result.evidence.sizeBytes) ||
+    !evidenceMatches(storage, { source: destination, name: candidate.name }, result.evidence)
   ) {
     throw new Error('Published store-reset evidence failed stable verification.');
   }
@@ -570,10 +584,10 @@ function candidateForEvidence(files: StoreFileSet, name: StoreResetEvidenceFileN
   return { source, name };
 }
 
-function evidenceMatches(
+function evidenceMatches<Name extends string>(
   storage: StoragePort,
-  candidate: StoreFileCandidate,
-  expected: StoreResetIncidentFile,
+  candidate: EvidenceFileCandidate<Name>,
+  expected: PublishedEvidenceFile<Name>,
 ): boolean {
   if (!storage.existsSync(candidate.source)) return false;
   const actual = describeCandidate(storage, candidate, MAX_REPORT_HASH_BYTES);
@@ -773,14 +787,14 @@ function copyIncidentEvidence(
   let remainingBudget = MAX_REPORT_HASH_BYTES;
   return candidates.map((candidate) => {
     requireSameDirectory(storage, stagingDirectory, stagingIdentity);
-    const described = copyCandidateForPublication(
+    const copied = copyCandidateForPublication(
       storage,
       candidate,
       join(stagingDirectory, candidate.name),
       remainingBudget,
     );
-    remainingBudget -= described.sizeBytes;
-    return described;
+    remainingBudget -= copied.evidence.sizeBytes;
+    return copied.evidence;
   });
 }
 
@@ -1124,6 +1138,19 @@ function corruptClassificationFromFailure(
   };
 }
 
+function documentedStoreClassificationFailure(
+  runtime: Pick<Runtime, 'flavor'>,
+  files: StoreFileSet,
+  error: unknown,
+): ReturnType<typeof documentedCoralSetupError> {
+  return documentedCoralSetupError({
+    code: 'store_corrupt_or_unsupported',
+    path: files.dbFile,
+    flavor: runtime.flavor,
+    cause: error instanceof Error ? error.message : String(error),
+  });
+}
+
 export type ActiveStoreSelectionProtocolResult =
   | { readonly kind: 'opened'; readonly db: Database }
   | { readonly kind: 'handoff'; readonly target: ValidatedHandoffTarget };
@@ -1156,10 +1183,7 @@ export type ActiveStoreSelectionProtocolOptions = OpenOrResetBackendStoreOptions
 };
 
 type ActiveStoreCoordinationRecord = 'selection' | 'transition';
-type ActiveStoreCoordinationFailureCode =
-  | ActiveStoreRecordReadFailureCode
-  | ActiveStoreTransitionFailureCode
-  | 'transition_current_build_mismatch';
+type ActiveStoreCoordinationFailureCode = ActiveStoreRecordReadFailureCode;
 
 function ensureActiveStoreCoordinationDirectory(runtime: Runtime): void {
   const { coordinationRoot } = resolveActiveStoreRecordPaths(runtime);
@@ -1213,16 +1237,61 @@ function publishActiveStoreTransition(runtime: Runtime, transition: ActiveStoreT
   );
 }
 
-function clearActiveStoreTransition(runtime: Runtime): void {
+function clearActiveStoreTransition(runtime: Runtime, expectedIdentity?: StorageBigIntStat): void {
   const paths = resolveActiveStoreRecordPaths(runtime);
   if (!runtime.storage.existsSync(paths.transitionFile)) return;
-  const stat = runtime.storage.lstatSync(paths.transitionFile);
-  if (!stat.isFile() || stat.isSymbolicLink()) {
+  const link = runtime.storage.lstatSync(paths.transitionFile);
+  const stat = runtime.storage.statSync(paths.transitionFile, { bigint: true });
+  if (
+    !link.isFile() ||
+    link.isSymbolicLink() ||
+    !stat.isFile() ||
+    (expectedIdentity !== undefined && !sameFileIdentity(stat, expectedIdentity))
+  ) {
     throw new Error('Active-store transition changed before durable clear.');
   }
   runtime.storage.unlinkSync(paths.transitionFile);
   if (!runtime.storage.syncDirectoryDurableSync(paths.coordinationRoot)) {
     throw new Error('Active-store transition clear could not be synchronized durably.');
+  }
+}
+
+type SupersededActiveStoreTransitionEvidence = Readonly<{
+  evidencePath: string;
+  evidence: PublishedEvidenceFile<string>;
+  sourceIdentity: StorageBigIntStat;
+}>;
+
+function preserveSupersededActiveStoreTransition(
+  runtime: Runtime,
+  options: ActiveStoreSelectionProtocolOptions,
+): SupersededActiveStoreTransitionEvidence {
+  const files = resolveStoreFileSet(runtime, options);
+  const transitionFile = resolveActiveStoreRecordPaths(runtime).transitionFile;
+  const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
+  const evidenceRoot = join(quarantineRoot, SUPERSEDED_ACTIVE_STORE_TRANSITION_DIRECTORY);
+  const evidenceName = `${runtime.ids.uuid()}${ACTIVE_STORE_TRANSITION_EVIDENCE_SUFFIX}`;
+  const evidencePath = join(evidenceRoot, evidenceName);
+
+  try {
+    runtime.storage.mkdirSync(files.dbDir, { recursive: true });
+    ensureQuarantineRoot(runtime.storage, quarantineRoot, runtime.env.platform());
+    ensurePrivateDirectory(runtime.storage, evidenceRoot, runtime.env.platform());
+    requireDirectorySync(runtime.storage, quarantineRoot);
+    const copied = copyCandidateForPublication(
+      runtime.storage,
+      { source: transitionFile, name: evidenceName },
+      evidencePath,
+      MAX_REPORT_HASH_BYTES,
+    );
+    requireDirectorySync(runtime.storage, evidenceRoot);
+    return { evidencePath, evidence: copied.evidence, sourceIdentity: copied.sourceIdentity };
+  } catch (error: unknown) {
+    throw documentedCoralSetupError({
+      code: 'store_reset_quarantine_failed',
+      reason: 'active_store_transition_evidence',
+      cause: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -1261,7 +1330,7 @@ function classifyStoreForProtocol(
     return classify(files.dbFile, runtime.storage, options.storeFormat);
   } catch (error: unknown) {
     const corruptClassification = corruptClassificationFromFailure(error, options.storeFormat);
-    if (corruptClassification === null) throw error;
+    if (corruptClassification === null) throw documentedStoreClassificationFailure(runtime, files, error);
     return corruptClassification;
   }
 }
@@ -1527,28 +1596,44 @@ async function recoverActiveStoreSelection(
   }
 }
 
-async function refuseActiveStoreCoordination(
+function refuseActiveStoreCoordination(
   runtime: Runtime,
-  options: ActiveStoreSelectionProtocolOptions,
-  adoption: GenerationAdoptionLockLease,
   record: ActiveStoreCoordinationRecord,
   failureCode: ActiveStoreCoordinationFailureCode,
-): Promise<never> {
-  const recoveryLease = await options.dependencies?.acquireStoreRecoveryLease?.();
-  try {
-    adoption.assertOwned();
-    recoveryLease?.assertOwned();
-    const paths = resolveActiveStoreRecordPaths(runtime);
-    throw documentedCoralSetupError({
-      code: 'active_store_coordination_invalid',
-      record,
+): never {
+  const paths = resolveActiveStoreRecordPaths(runtime);
+  throw documentedCoralSetupError({
+    code: 'active_store_coordination_invalid',
+    record,
+    failureCode,
+    coordinationRoot: paths.coordinationRoot,
+    recordPath: record === 'selection' ? paths.selectionFile : paths.transitionFile,
+  });
+}
+
+function supersedeActiveStoreTransition(
+  runtime: Runtime,
+  options: ActiveStoreSelectionProtocolOptions,
+  failureCode:
+    | ActiveStoreTransitionFailureCode
+    | 'transition_current_build_mismatch'
+    | 'record_changed'
+    | 'record_unavailable',
+): void {
+  const retained = preserveSupersededActiveStoreTransition(runtime, options);
+  clearActiveStoreTransition(runtime, retained.sourceIdentity);
+  (options.dependencies?.recordAudit ?? writeAuditEvent)(
+    'active-store-transition-superseded',
+    {
       failureCode,
-      coordinationRoot: paths.coordinationRoot,
-      recordPath: record === 'selection' ? paths.selectionFile : paths.transitionFile,
-    });
-  } finally {
-    recoveryLease?.release();
-  }
+      evidencePath: retained.evidencePath,
+      evidenceByteLength: retained.evidence.sizeBytes,
+      evidenceSha256: retained.evidence.sha256,
+      currentVersion: options.currentSelection.manifest.version,
+      currentBuildSetId: options.currentSelection.manifest.buildSetId,
+    },
+    'warn',
+  );
 }
 
 function transitionForSelectionEvidence(
@@ -1591,29 +1676,28 @@ export async function coordinateActiveStoreSelection(
   try {
     adoption.assertOwned();
     const transitionRead = readActiveStoreTransition(runtime);
-    if (transitionRead.kind === 'malformed' || transitionRead.kind === 'rejected') {
-      return await refuseActiveStoreCoordination(runtime, options, adoption, 'transition', transitionRead.failureCode);
-    }
     if (transitionRead.kind === 'valid') {
-      if (!transitionMatchesCurrent(transitionRead.transition, options.currentSelection)) {
-        return await refuseActiveStoreCoordination(
-          runtime,
-          options,
-          adoption,
-          'transition',
-          'transition_current_build_mismatch',
-        );
+      if (transitionMatchesCurrent(transitionRead.transition, options.currentSelection)) {
+        publishActiveStoreSelection(runtime, options.currentSelection);
+        return {
+          kind: 'opened',
+          db: await recoverActiveStoreSelection(runtime, authority, options, transitionRead.transition, adoption),
+        };
       }
-      publishActiveStoreSelection(runtime, options.currentSelection);
-      return {
-        kind: 'opened',
-        db: await recoverActiveStoreSelection(runtime, authority, options, transitionRead.transition, adoption),
-      };
+      supersedeActiveStoreTransition(runtime, options, 'transition_current_build_mismatch');
+    } else if (transitionRead.kind === 'malformed') {
+      supersedeActiveStoreTransition(runtime, options, transitionRead.failureCode);
+    } else if (transitionRead.kind === 'rejected') {
+      if (transitionRead.failureCode === 'record_changed' || transitionRead.failureCode === 'record_unavailable') {
+        supersedeActiveStoreTransition(runtime, options, transitionRead.failureCode);
+      } else {
+        refuseActiveStoreCoordination(runtime, 'transition', transitionRead.failureCode);
+      }
     }
 
     const selection = readActiveStoreSelection(runtime);
     if (selection.kind === 'rejected') {
-      return await refuseActiveStoreCoordination(runtime, options, adoption, 'selection', selection.failureCode);
+      refuseActiveStoreCoordination(runtime, 'selection', selection.failureCode);
     }
     if (selection.kind === 'absent' || selection.kind === 'malformed') {
       const transition = transitionForSelectionEvidence(runtime, options.currentSelection, selection);
@@ -1629,7 +1713,7 @@ export async function coordinateActiveStoreSelection(
     if (relation === 'selected-newer') {
       const validate = options.dependencies?.validateSelectedTarget;
       if (validate === undefined) {
-        throw new Error('Active-store target validation is unavailable before V2.4 startup routing.');
+        throw new Error('Active-store target validation is required when the caller encounters a newer selection.');
       }
       const validation = validate(selection.selection.bundleDir, selection.selection.manifest);
       adoption.assertOwned();
@@ -1714,12 +1798,7 @@ export function openOrResetBackendStoreDb(
     } catch (error: unknown) {
       const corruptClassification = corruptClassificationFromFailure(error, options.storeFormat);
       if (corruptClassification === null) {
-        throw documentedCoralSetupError({
-          code: 'store_corrupt_or_unsupported',
-          path: files.dbFile,
-          flavor: runtime.flavor,
-          cause: error instanceof Error ? error.message : String(error),
-        });
+        throw documentedStoreClassificationFailure(runtime, files, error);
       }
       classification = corruptClassification;
     }

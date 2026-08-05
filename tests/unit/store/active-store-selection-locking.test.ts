@@ -294,4 +294,28 @@ describe('active-store-selection locking', () => {
     );
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
   });
+
+  it('should report a record trust violation before trying to acquire a recovery lease', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    mkdirSync(paths.coordinationRoot, { recursive: true, mode: 0o700 });
+    mkdirSync(paths.selectionFile, { mode: 0o700 });
+    const acquireStoreRecoveryLease = vi.fn(async () => {
+      throw new Error('maintenance lease must not replace the record refusal');
+    });
+
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat: currentCoralStoreFormat(),
+        currentSelection,
+        dependencies: { acquireStoreRecoveryLease },
+      }),
+    ).rejects.toMatchObject({
+      code: 'active_store_coordination_invalid',
+      userMessage: 'Coral cannot safely use the active-store selection record.',
+      remediation: expect.not.stringContaining('build that owns this coordination state'),
+      context: { record: 'selection', failureCode: 'record_not_regular' },
+    });
+    expect(acquireStoreRecoveryLease).not.toHaveBeenCalled();
+  });
 });

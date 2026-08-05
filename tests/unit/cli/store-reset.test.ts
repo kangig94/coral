@@ -575,10 +575,7 @@ describe('operator store-reset discard', () => {
     }
   });
 
-  it.each([
-    { record: 'selection', file: 'selectionFile', mode: 0o644 },
-    { record: 'transition', file: 'transitionFile', mode: 0o600 },
-  ] as const)('reports an unsafe $record record as a typed operator refusal with remediation', async (testCase) => {
+  it('reports an unsafe selection entry as a typed operator refusal with accurate remediation', async () => {
     const baseDir = root();
     const runtime = createRealRuntime('prod', { baseDir });
     const dbPath = runtime.paths.coral.store.dbFile;
@@ -586,8 +583,7 @@ describe('operator store-reset discard', () => {
     const before = readFileSync(dbPath);
     const selectionPaths = resolveActiveStoreRecordPaths(runtime);
     mkdirSync(selectionPaths.coordinationRoot, { recursive: true, mode: 0o700 });
-    writeFileSync(selectionPaths[testCase.file], '{}', { mode: 0o600 });
-    chmodSync(selectionPaths[testCase.file], testCase.mode);
+    mkdirSync(selectionPaths.selectionFile, { mode: 0o700 });
     const operations: StoreResetCommandOperations = {
       list: () => ({ incidents: [] }),
       report: async () => publicReport(),
@@ -608,12 +604,54 @@ describe('operator store-reset discard', () => {
     await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
 
     expect(stdout).toBe('');
-    expect(stderr).toContain(`active-store ${testCase.record} record`);
+    expect(stderr).toContain('active-store selection record.');
     expect(stderr).toContain('[code=active_store_coordination_invalid]');
     expect(stderr).toContain('remediation:');
+    expect(stderr).not.toContain('(record_not_regular)');
+    expect(stderr).not.toContain('build that owns this coordination state');
     expect(stderr).not.toContain('[code=internal]');
     expect(process.exitCode).toBe(1);
     expect(readFileSync(dbPath)).toEqual(before);
+  });
+
+  it('supersedes a malformed transition and completes the operator reset', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbPath = runtime.paths.coral.store.dbFile;
+    createMismatchStore(dbPath);
+    const selectionPaths = resolveActiveStoreRecordPaths(runtime);
+    mkdirSync(selectionPaths.coordinationRoot, { recursive: true, mode: 0o700 });
+    const malformedBytes = Buffer.from('{}');
+    writeFileSync(selectionPaths.transitionFile, malformedBytes, { mode: 0o600 });
+    chmodSync(selectionPaths.transitionFile, 0o600);
+    const operations: StoreResetCommandOperations = {
+      list: () => ({ incidents: [] }),
+      report: async () => publicReport(),
+      discard: async () =>
+        discardStoreReset({
+          target: 'gen2',
+          runtime,
+          build: CURRENT_BUILD,
+          storeFormat: STORE_FORMAT,
+          acquireSocketGuard: noSocketGuard,
+          currentBundleDir: baseDir,
+          validateSelectedTarget: () => {
+            throw new Error('no selected target is expected in this case');
+          },
+        }),
+    };
+
+    await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
+
+    expect(stdout).toContain(`initialized gen2 prod store at ${dbPath}.`);
+    expect(stderr).not.toContain('[code=active_store_coordination_invalid]');
+    expect(process.exitCode).toBeUndefined();
+    expect(classifyStoreFile(dbPath, runtime.storage, STORE_FORMAT).kind).toBe('compatible');
+    expect(existsSync(selectionPaths.transitionFile)).toBe(false);
+    const evidenceRoot = join(dirname(dbPath), 'store-reset-quarantine', 'superseded-active-store-transitions');
+    const evidenceFiles = readdirSync(evidenceRoot);
+    expect(evidenceFiles).toHaveLength(1);
+    expect(readFileSync(join(evidenceRoot, evidenceFiles[0]))).toEqual(malformedBytes);
   });
 
   it('refuses while the KB child holds its writer lease and leaves the store byte-identical', async () => {

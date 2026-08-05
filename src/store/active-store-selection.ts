@@ -373,32 +373,17 @@ function validateSelectionValue(value: unknown): ActiveStoreSelection {
   return parsed.data;
 }
 
-type BundleDirectoryStorage = Pick<StoragePort, 'lstatSync' | 'realpathSync'>;
-
-function isCanonicalBundleDirectory(storage: BundleDirectoryStorage, bundleDir: string): boolean {
-  try {
-    const stat = storage.lstatSync(bundleDir);
-    return stat.isDirectory() && !stat.isSymbolicLink() && storage.realpathSync(bundleDir) === bundleDir;
-  } catch {
-    return false;
-  }
-}
-
-export function decodeActiveStoreSelection(bytes: Uint8Array, storage: BundleDirectoryStorage): ActiveStoreSelection {
+export function decodeActiveStoreSelection(bytes: Uint8Array): ActiveStoreSelection {
   if (bytes.byteLength > ACTIVE_STORE_SELECTION_MAX_BYTES) {
     throw new ActiveStoreSelectionDecodeError('selection_too_large');
   }
-  const selection = validateSelectionValue(
+  return validateSelectionValue(
     parseJson(
       bytes,
       () => new ActiveStoreSelectionDecodeError('selection_invalid_utf8'),
       () => new ActiveStoreSelectionDecodeError('selection_invalid_json'),
     ),
   );
-  if (!isCanonicalBundleDirectory(storage, selection.bundleDir)) {
-    throw new ActiveStoreSelectionDecodeError('selection_bundle_dir_not_canonical');
-  }
-  return selection;
 }
 
 export function encodeActiveStoreSelection(selection: ActiveStoreSelection): Uint8Array {
@@ -594,7 +579,23 @@ function readBoundedRecord(
   }
   if (!pathBefore.isFile()) return { kind: 'rejected', failureCode: 'record_not_regular' };
   if ((pathBefore.mode & PERMISSION_BITS) !== PRIVATE_FILE_MODE) {
-    return { kind: 'rejected', failureCode: 'record_mode' };
+    const currentUid = process.getuid?.();
+    const ownerUid = (pathBefore as StorageBigIntStat & { readonly uid?: bigint }).uid;
+    // Mode drift is repairable only for the current user's regular file. A foreign owner is a trust boundary,
+    // not state an upgrade may silently adopt; abstract storage ports without uid metadata must prove authority
+    // by allowing the chmod itself.
+    if (currentUid !== undefined && ownerUid !== undefined && ownerUid !== BigInt(currentUid)) {
+      return { kind: 'rejected', failureCode: 'record_mode' };
+    }
+    try {
+      storage.chmodSync(path, Number(PRIVATE_FILE_MODE));
+      pathBefore = storage.statSync(path, { bigint: true });
+    } catch {
+      return { kind: 'rejected', failureCode: 'record_mode' };
+    }
+    if (!pathBefore.isFile() || (pathBefore.mode & PERMISSION_BITS) !== PRIVATE_FILE_MODE) {
+      return { kind: 'rejected', failureCode: 'record_mode' };
+    }
   }
   if (pathBefore.size < 0n) return { kind: 'rejected', failureCode: 'record_unavailable' };
   return readOpenedRecord(storage, path, pathBefore, maxBytes);
@@ -628,7 +629,7 @@ export function readActiveStoreSelection(runtime: Pick<Runtime, 'paths' | 'stora
   }
 
   try {
-    return { kind: 'valid', selection: decodeActiveStoreSelection(read.bytes, runtime.storage) };
+    return { kind: 'valid', selection: decodeActiveStoreSelection(read.bytes) };
   } catch (error: unknown) {
     const failureCode = error instanceof ActiveStoreSelectionDecodeError ? error.code : 'selection_invalid_schema';
     return { kind: 'malformed', evidence: malformedSelectionEvidence(read.bytes, failureCode) };

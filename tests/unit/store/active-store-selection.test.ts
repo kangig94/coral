@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -91,9 +91,9 @@ function transition(
   };
 }
 
-function expectSelectionDecodeCode(bytes: Uint8Array, runtime: Runtime, code: string): void {
+function expectSelectionDecodeCode(bytes: Uint8Array, code: string): void {
   try {
-    decodeActiveStoreSelection(bytes, runtime.storage);
+    decodeActiveStoreSelection(bytes);
   } catch (error: unknown) {
     expect(error).toBeInstanceOf(ActiveStoreSelectionDecodeError);
     expect((error as ActiveStoreSelectionDecodeError).code).toBe(code);
@@ -169,7 +169,7 @@ describe('active-store-selection', () => {
   it.each(invalidSelectionCases)('should distinguish %s', (_name, createBytes, code) => {
     const { runtime, selection } = harness();
     const bytes = createBytes(selection);
-    expectSelectionDecodeCode(bytes, runtime, code);
+    expectSelectionDecodeCode(bytes, code);
 
     publishRecord(runtime, 'selectionFile', bytes);
     expect(readActiveStoreSelection(runtime)).toMatchObject({
@@ -182,16 +182,15 @@ describe('active-store-selection', () => {
     });
   });
 
-  it('should reject a symlinked bundle directory as non-canonical', () => {
-    const { runtime, bundleDir, selection } = harness();
+  it('should leave filesystem target validation out of the lexical selection decoder', () => {
+    const { bundleDir, selection } = harness();
     const link = join(bundleDir, '..', 'bundle-link');
     symlinkSync(bundleDir, link, 'dir');
 
-    expectSelectionDecodeCode(
-      encoder.encode(JSON.stringify({ ...selection, bundleDir: link })),
-      runtime,
-      'selection_bundle_dir_not_canonical',
-    );
+    expect(decodeActiveStoreSelection(encoder.encode(JSON.stringify({ ...selection, bundleDir: link })))).toEqual({
+      ...selection,
+      bundleDir: link,
+    });
   });
 
   it('should return bounded digest-only evidence for malformed selection bytes', () => {
@@ -214,7 +213,6 @@ describe('active-store-selection', () => {
   it.each([
     ['selection link', 'record_link'],
     ['selection directory', 'record_not_regular'],
-    ['selection mode', 'record_mode'],
   ])('should distinguish an invalid %s', (_name, failureCode) => {
     const { runtime, selection } = harness();
     const paths = resolveActiveStoreRecordPaths(runtime);
@@ -227,12 +225,54 @@ describe('active-store-selection', () => {
       symlinkSync(target, paths.selectionFile);
     } else if (failureCode === 'record_not_regular') {
       mkdirSync(paths.selectionFile, { mode: 0o700 });
-    } else {
-      writeFileSync(paths.selectionFile, encodeActiveStoreSelection(selection), { mode: 0o600 });
-      chmodSync(paths.selectionFile, 0o755);
     }
 
     expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'rejected', failureCode });
+  });
+
+  it('should repair a wrong-mode record owned by the current user before reading it', () => {
+    const { runtime, selection } = harness();
+    const path = publishRecord(runtime, 'selectionFile', encodeActiveStoreSelection(selection));
+    chmodSync(path, 0o755);
+
+    expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection });
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it.skipIf(process.platform === 'win32')('should establish mode 0600 under a restrictive umask', () => {
+    const { runtime, selection } = harness();
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    mkdirSync(paths.coordinationRoot, { recursive: true, mode: 0o700 });
+    const previousUmask = process.umask(0o277);
+    try {
+      expect(
+        runtime.storage.writeAtomicDurableSync(paths.selectionFile, encodeActiveStoreSelection(selection), {
+          mode: 0o600,
+        }),
+      ).toBe(true);
+    } finally {
+      process.umask(previousUmask);
+    }
+
+    expect(statSync(paths.selectionFile).mode & 0o777).toBe(0o600);
+    expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection });
+  });
+
+  it.skipIf(process.platform === 'win32')('should correct a leftover temporary file mode before publication', () => {
+    const { runtime, selection } = harness();
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    mkdirSync(paths.coordinationRoot, { recursive: true, mode: 0o700 });
+    writeFileSync(`${paths.selectionFile}.tmp`, 'interrupted publication', { mode: 0o777 });
+    chmodSync(`${paths.selectionFile}.tmp`, 0o777);
+
+    expect(
+      runtime.storage.writeAtomicDurableSync(paths.selectionFile, encodeActiveStoreSelection(selection), {
+        mode: 0o600,
+      }),
+    ).toBe(true);
+
+    expect(statSync(paths.selectionFile).mode & 0o777).toBe(0o600);
+    expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection });
   });
 
   it('should tolerate a wider coordination directory while retaining private record checks', () => {
