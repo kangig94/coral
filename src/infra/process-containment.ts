@@ -233,9 +233,13 @@ function signalRecordedSet<Scope extends symbol>(
   }
 
   const signalPid = (pid: number): void => {
-    assertSignalCallWithinBounds(callStartedAt, exitDeadline, environment);
+    // The model bounds each process-control call, not the sweep: with a full recorded set a sweep of fast
+    // syscalls would otherwise exceed the per-call bound and abandon a reap that was progressing fine. The
+    // sweep as a whole stays bounded by `exitDeadline`, which every step below still checks.
+    const thisCallStartedAt = environment.clock.now();
+    assertSignalCallWithinBounds(thisCallStartedAt, exitDeadline, environment);
     environment.process.kill(pid, signal);
-    assertSignalCallWithinBounds(callStartedAt, exitDeadline, environment);
+    assertSignalCallWithinBounds(thisCallStartedAt, exitDeadline, environment);
   };
 
   try {
@@ -285,9 +289,10 @@ async function confirmAbsence<Scope extends symbol>(
     if (!allRecordedTargetsAbsent(observeRecordedSet(containment, providerRoots, environment))) {
       return false;
     }
-    await environment.clock.sleep(
-      Math.min(ABSENCE_POLL_MS, environment.clock.millisecondsBetween(environment.clock.now(), confirmationDeadline)),
-    );
+    // Observing the set can outlast the remaining window; clamping keeps that from becoming a negative
+    // sleep, which would throw outside this module's closed failure set and report an absent set as failed.
+    const remainingMs = environment.clock.millisecondsBetween(environment.clock.now(), confirmationDeadline);
+    await environment.clock.sleep(Math.max(0, Math.min(ABSENCE_POLL_MS, remainingMs)));
   }
   return allRecordedTargetsAbsent(observeRecordedSet(containment, providerRoots, environment));
 }

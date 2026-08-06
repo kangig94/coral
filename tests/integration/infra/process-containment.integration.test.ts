@@ -213,6 +213,44 @@ describe('real recorded process containment', () => {
   );
 
   // @flaky — process scheduling and OS signal delivery are timing-sensitive.
+  it.skipIf(process.platform !== 'linux')(
+    'reports success for the recorded set while an unrecorded escapee survives',
+    { retry: 2 },
+    async () => {
+      // The other half of the setsid split. A recorded root that leaves the group is still reached by
+      // identity; an unrecorded descendant is not, and never was — Coral never learned that pid exists.
+      // Asserting Coral kills it would encode a guarantee no pid- or group-based primitive can make, so the
+      // honest assertion is that every *recorded* target is absent and success is scoped to exactly those.
+      const leader = spawnDetached(
+        `
+          import { spawn } from 'node:child_process';
+          const escapee = spawn('setsid', [process.execPath, '--input-type=module', '--eval', 'setInterval(() => {}, 1000)'], {
+            stdio: 'ignore',
+          });
+          console.log(escapee.pid);
+          setInterval(() => {}, 1000);
+        `,
+        true,
+      );
+      const leaderIdentity = await recordProcess(leader.pid as number);
+      const escapeePid = Number.parseInt(await readStdoutLine(leader), 10);
+      if (!Number.isSafeInteger(escapeePid)) throw new Error('Escapee did not report a valid process id.');
+      // The harness owns this pid; it is deliberately never handed to the reap call.
+      cleanupGroups.add(escapeePid);
+
+      await reapRecordedContainment(
+        containmentFor(leaderIdentity),
+        [],
+        clock.shiftMilliseconds(clock.now(), 12_000),
+        environment([]),
+      );
+
+      expect(isAlive(leaderIdentity.pid)).toBe(false);
+      expect(isAlive(escapeePid)).toBe(true);
+    },
+  );
+
+  // @flaky — process scheduling and OS signal delivery are timing-sensitive.
   it('does not signal a live process whose pid has a different recorded start time', { retry: 2 }, async () => {
     const child = spawnDetached('setInterval(() => {}, 1000);');
     const actualIdentity = await recordProcess(child.pid as number);

@@ -51,8 +51,17 @@ export class LedgerError extends Error {
   }
 }
 
-/** One buffered event awaiting the coordinator's commit acknowledgement. */
-export type ReplayEvent = Readonly<{ providerSeq: number; byteLength: number }>;
+/**
+ * One buffered event awaiting the coordinator's commit acknowledgement. It carries the encoded frame,
+ * because a consumer that reconnects has to be sent the events again — a record of sizes alone could not
+ * replay anything, and a second buffer beside this one would be a second place for the accounting to drift.
+ */
+export type ReplayEvent = Readonly<{ providerSeq: number; frame: string }>;
+
+/** The frame's cost against both the per-operation and proxy-wide budgets. */
+function frameBytes(event: ReplayEvent): number {
+  return Buffer.byteLength(event.frame, 'utf8');
+}
 
 export type OperationLedgerEntry = Readonly<{
   key: ProviderOperationKey;
@@ -137,7 +146,13 @@ export function createOperationLedger(): OperationLedger {
 
   return {
     prepare({ key, reservationId, activationNonce, nowMs }): PrepareResult {
-      if (entries.has(keyOf(key))) {
+      const existing = entries.get(keyOf(key));
+      if (existing !== undefined) {
+        // A repeat of the same prepare is the same request arriving twice — a dropped reply, a retry. It
+        // returns the reservation already made; only a *different* payload for one identity is a conflict.
+        if (existing.reservationId === reservationId && existing.activationNonce === activationNonce) {
+          return { kind: 'reserved', entry: snapshot(existing) };
+        }
         throw new LedgerError('operation_duplicate', `${key.jobId}/${key.operationId} is already reserved.`);
       }
       if (entries.size >= MAX_PROXY_OPERATION_LEDGERS) {
@@ -178,6 +193,10 @@ export function createOperationLedger(): OperationLedger {
       if (entry.reservationId !== reservationId || entry.activationNonce !== activationNonce) {
         throw new LedgerError('reservation_mismatch', 'Activation presented a different reservation.');
       }
+      // A repeat for an operation already executing is the same request arriving twice, not a new one: the
+      // lease governs whether a reservation may *start*, so applying it here would let a late duplicate
+      // demote a running kernel to pending-recovery and from there to released.
+      if (entry.state === 'executing') return;
       if (entry.state === 'pending-recovery' || nowMs >= entry.leaseExpiresAtMs) {
         // An expired reservation forbids execution but stays queryable, so control can still cancel exactly
         // this reservation rather than losing track of what it authorized.
@@ -209,9 +228,10 @@ export function createOperationLedger(): OperationLedger {
       if (event.providerSeq <= floor) {
         throw new LedgerError('operation_invalid_transition', 'Provider sequence must increase monotonically.');
       }
+      const cost = frameBytes(event);
       entry.buffered.push(event);
-      entry.bufferedBytes += event.byteLength;
-      proxyBufferedBytes += event.byteLength;
+      entry.bufferedBytes += cost;
+      proxyBufferedBytes += cost;
       // Pausing before a crossing is what keeps the buffer bounded; the ACK that frees capacity resumes it.
       entry.paused =
         entry.buffered.length >= MAX_PROVIDER_REPLAY_EVENTS ||
@@ -228,7 +248,7 @@ export function createOperationLedger(): OperationLedger {
       const retained: ReplayEvent[] = [];
       let freed = 0;
       for (const event of entry.buffered) {
-        if (event.providerSeq <= committedThroughProviderSeq) freed += event.byteLength;
+        if (event.providerSeq <= committedThroughProviderSeq) freed += frameBytes(event);
         else retained.push(event);
       }
       entry.buffered = retained;

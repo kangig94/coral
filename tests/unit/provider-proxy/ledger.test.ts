@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   LedgerError,
+  MAX_PROVIDER_REPLAY_BYTES,
   MAX_PROVIDER_REPLAY_EVENTS,
+  MAX_PROXY_REPLAY_BYTES,
   PROXY_PENDING_ACTIVATION_LEASE_MS,
   createOperationLedger,
   type OperationLedger,
@@ -88,9 +90,9 @@ describe('provider-proxy operation ledger', () => {
   it('requires provider sequences to increase', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
-    ledger.recordEvent(KEY, { providerSeq: 1, byteLength: 10 });
+    ledger.recordEvent(KEY, { providerSeq: 1, frame: 'x'.repeat(10) });
 
-    expect(() => ledger.recordEvent(KEY, { providerSeq: 1, byteLength: 10 })).toThrow(/monotonically/u);
+    expect(() => ledger.recordEvent(KEY, { providerSeq: 1, frame: 'x'.repeat(10) })).toThrow(/monotonically/u);
   });
 
   it('pauses at the per-operation event ceiling and resumes on the acknowledgement that frees it', () => {
@@ -98,7 +100,7 @@ describe('provider-proxy operation ledger', () => {
     reserved(ledger);
     let paused = false;
     for (let seq = 1; seq <= MAX_PROVIDER_REPLAY_EVENTS; seq += 1) {
-      paused = ledger.recordEvent(KEY, { providerSeq: seq, byteLength: 1 }).paused;
+      paused = ledger.recordEvent(KEY, { providerSeq: seq, frame: 'x' }).paused;
     }
 
     expect(paused).toBe(true);
@@ -109,9 +111,9 @@ describe('provider-proxy operation ledger', () => {
   it('replays only what the consumer has not acknowledged', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
-    ledger.recordEvent(KEY, { providerSeq: 1, byteLength: 5 });
-    ledger.recordEvent(KEY, { providerSeq: 2, byteLength: 5 });
-    ledger.recordEvent(KEY, { providerSeq: 3, byteLength: 5 });
+    ledger.recordEvent(KEY, { providerSeq: 1, frame: 'x'.repeat(5) });
+    ledger.recordEvent(KEY, { providerSeq: 2, frame: 'y'.repeat(5) });
+    ledger.recordEvent(KEY, { providerSeq: 3, frame: 'z'.repeat(5) });
 
     ledger.acknowledge(KEY, 1);
 
@@ -122,7 +124,7 @@ describe('provider-proxy operation ledger', () => {
   it('refuses an acknowledgement that moves backwards', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
-    ledger.recordEvent(KEY, { providerSeq: 1, byteLength: 5 });
+    ledger.recordEvent(KEY, { providerSeq: 1, frame: 'x'.repeat(5) });
     ledger.acknowledge(KEY, 1);
 
     expect(() => ledger.acknowledge(KEY, 0)).toThrow(/backwards/u);
@@ -131,21 +133,109 @@ describe('provider-proxy operation ledger', () => {
   it('returns released capacity to the proxy-wide budget', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
-    ledger.recordEvent(KEY, { providerSeq: 1, byteLength: 1_024 });
+    ledger.recordEvent(KEY, { providerSeq: 1, frame: 'x'.repeat(1_024) });
 
     ledger.transition(KEY, 'released');
 
     // A second operation of the same size proves the released bytes were returned, not leaked.
     reserved(ledger, { jobId: 'job-1', operationId: 'op-2' });
-    expect(ledger.recordEvent({ jobId: 'job-1', operationId: 'op-2' }, { providerSeq: 1, byteLength: 1_024 })).toEqual({
+    expect(
+      ledger.recordEvent({ jobId: 'job-1', operationId: 'op-2' }, { providerSeq: 1, frame: 'x'.repeat(1_024) }),
+    ).toEqual({
       paused: false,
     });
   });
 
-  it('refuses a duplicate reservation for one operation', () => {
+  it('returns the existing reservation for a repeated prepare and refuses a conflicting one', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
 
-    expect(() => reserved(ledger)).toThrow(LedgerError);
+    // A retry of the same request must not be a conflict; only a different payload for one identity is.
+    reserved(ledger);
+    expect(ledger.size()).toBe(1);
+
+    expect(() => ledger.prepare({ key: KEY, reservationId: 'other', activationNonce: 'nonce-1', nowMs: 0 })).toThrow(
+      LedgerError,
+    );
+  });
+
+  it('pauses on the per-operation byte ceiling with far fewer than the event ceiling', () => {
+    const ledger = createOperationLedger();
+    reserved(ledger);
+    const chunk = 'x'.repeat(1024 * 1024);
+
+    let paused = false;
+    let seq = 0;
+    while (!paused) {
+      seq += 1;
+      paused = ledger.recordEvent(KEY, { providerSeq: seq, frame: chunk }).paused;
+    }
+
+    // Byte pressure must bite on its own; the count ceiling is nowhere near reached here.
+    expect(seq).toBeLessThan(MAX_PROVIDER_REPLAY_EVENTS);
+    expect(ledger.get(KEY)?.bufferedBytes).toBeGreaterThanOrEqual(MAX_PROVIDER_REPLAY_BYTES);
+  });
+
+  it('refuses a new reservation once the proxy-wide byte budget is spent', () => {
+    const ledger = createOperationLedger();
+    const chunk = 'x'.repeat(1024 * 1024);
+    let seq = 0;
+
+    // Each operation stops at its own ceiling, so several together are what reach the proxy-wide budget.
+    const perOperation = MAX_PROVIDER_REPLAY_BYTES / chunk.length;
+    const operations = MAX_PROXY_REPLAY_BYTES / MAX_PROVIDER_REPLAY_BYTES;
+    for (let index = 0; index < operations; index += 1) {
+      const key = { jobId: 'job-1', operationId: `op-${index}` };
+      reserved(ledger, key);
+      for (let event = 0; event < perOperation; event += 1) {
+        seq += 1;
+        ledger.recordEvent(key, { providerSeq: seq, frame: chunk });
+      }
+    }
+
+    const refused = ledger.prepare({
+      key: { jobId: 'job-1', operationId: 'late' },
+      reservationId: 'res-late',
+      activationNonce: 'nonce-late',
+      nowMs: 0,
+    });
+
+    expect(refused).toEqual({ kind: 'capacity', retryable: true, reason: 'replay-bytes' });
+  });
+
+  it('reaches released only through the suspend arm once suspended', () => {
+    const ledger = createOperationLedger();
+    reserved(ledger);
+    ledger.activate(KEY, 'res-1', 'nonce-1', 0);
+
+    ledger.transition(KEY, 'suspended-awaiting-durable-decision');
+
+    // A suspended operation awaits a durable decision; it cannot slip back into executing or terminal.
+    expect(() => ledger.transition(KEY, 'executing')).toThrow(LedgerError);
+    expect(() => ledger.transition(KEY, 'terminal-awaiting-journal-ack')).toThrow(LedgerError);
+    ledger.transition(KEY, 'released');
+    expect(ledger.get(KEY)).toBeNull();
+  });
+
+  it('replays the frames a reconnecting consumer has not acknowledged', () => {
+    const ledger = createOperationLedger();
+    reserved(ledger);
+    ledger.recordEvent(KEY, { providerSeq: 1, frame: 'first' });
+    ledger.recordEvent(KEY, { providerSeq: 2, frame: 'second' });
+    ledger.acknowledge(KEY, 1);
+
+    // The point of buffering: what comes back is the events themselves, not a record that they existed.
+    expect(ledger.replayFrom(KEY, 1)).toEqual([{ providerSeq: 2, frame: 'second' }]);
+  });
+
+  it('treats a repeated activation of a running operation as the same request', () => {
+    const ledger = createOperationLedger();
+    reserved(ledger);
+    ledger.activate(KEY, 'res-1', 'nonce-1', 0);
+
+    // Arriving after the lease would otherwise demote a live kernel to pending-recovery.
+    ledger.activate(KEY, 'res-1', 'nonce-1', PROXY_PENDING_ACTIVATION_LEASE_MS * 2);
+
+    expect(ledger.get(KEY)?.state).toBe('executing');
   });
 });
