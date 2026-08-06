@@ -1,4 +1,8 @@
-import { MAX_PROXY_OPERATION_LEDGERS } from '../infra/process-constants.js';
+/**
+ * How many operations one proxy may carry at once. It lives here because it is a ledger bound; the
+ * containment primitive takes it as an injected limit rather than naming a provider-proxy concept.
+ */
+export const MAX_PROXY_OPERATION_LEDGERS = 128;
 
 /** Per-operation replay ceilings. Both are checked, because either can be reached first. */
 export const MAX_PROVIDER_REPLAY_EVENTS = 4_096;

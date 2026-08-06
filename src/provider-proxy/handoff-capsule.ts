@@ -9,7 +9,7 @@ import {
   hostFingerprintSchema,
   proxyHandoffOperationSchema,
 } from './protocol.js';
-import { MAX_PROXY_OPERATION_LEDGERS } from '../infra/process-constants.js';
+import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 
 /** Read cap applied before parsing, so an oversize file is refused without being decoded. */
 export const MAX_HANDOFF_CAPSULE_BYTES = 64 * 1024;

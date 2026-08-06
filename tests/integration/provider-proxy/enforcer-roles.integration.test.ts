@@ -112,6 +112,7 @@ async function startSet() {
       isAlive: (pid: number) => (pid < 0 ? alive.has(-pid) : alive.has(pid)),
     },
     platform: 'linux' as const,
+    maxRecordedRoots: 128,
     readProcessStartedAtSeconds: (pid: number) =>
       !alive.has(pid)
         ? null

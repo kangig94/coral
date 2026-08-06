@@ -1,7 +1,6 @@
 import { probeProcessStartedAtSeconds } from './node-process.js';
 import type { MonotonicClock, MonotonicInstant } from './monotonic-clock.js';
 import {
-  MAX_PROXY_OPERATION_LEDGERS,
   PROXY_DISAPPEARANCE_CONFIRM_MS,
   PROXY_PROCESS_CONTROL_CALL_MAX_MS,
   SIGKILL_GRACE_MS,
@@ -24,6 +23,12 @@ export type RecordedContainmentIdentity = RecordedProcessIdentity &
 
 /** Runtime capabilities required to reap one recorded containment. */
 export type ProcessContainmentEnvironment<Scope extends symbol = symbol> = {
+  /**
+   * The largest recorded set this containment will act on. It is injected because "how many targets" is the
+   * caller's bound, not a process-control constant — naming a provider concept here would put a domain
+   * vocabulary in infra.
+   */
+  readonly maxRecordedRoots: number;
   readonly clock: MonotonicClock<Scope>;
   readonly process: {
     kill(pid: number, signal: NodeJS.Signals | 0): boolean;
@@ -84,11 +89,12 @@ function assertProcessIdentity(identity: RecordedProcessIdentity, field: string)
 function assertRecordedSet(
   containment: RecordedContainmentIdentity,
   providerRoots: readonly RecordedProcessIdentity[],
+  maxRecordedRoots: number,
 ): void {
-  if (providerRoots.length > MAX_PROXY_OPERATION_LEDGERS) {
-    throw reapFailure(`Recorded provider-root count exceeds the ${MAX_PROXY_OPERATION_LEDGERS} target cap.`, {
+  if (providerRoots.length > maxRecordedRoots) {
+    throw reapFailure(`Recorded target count exceeds the ${maxRecordedRoots} limit.`, {
       observed: providerRoots.length,
-      limit: MAX_PROXY_OPERATION_LEDGERS,
+      limit: maxRecordedRoots,
     });
   }
 
@@ -306,7 +312,7 @@ export async function reapRecordedContainment<Scope extends symbol>(
   exitDeadline: MonotonicInstant<Scope>,
   environment: ProcessContainmentEnvironment<Scope>,
 ): Promise<void> {
-  assertRecordedSet(containment, providerRoots);
+  assertRecordedSet(containment, providerRoots, environment.maxRecordedRoots);
 
   let observation = observeRecordedSet(containment, providerRoots, environment);
   if (allRecordedTargetsAbsent(observation)) {

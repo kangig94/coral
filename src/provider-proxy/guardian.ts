@@ -26,7 +26,7 @@ import {
   proxyIdentitySchema,
   reaperIdentitySchema,
 } from './protocol.js';
-import { MAX_PROXY_OPERATION_LEDGERS } from '../infra/process-constants.js';
+import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 import type { GuardianDeadlineStateMachine } from './orphan-deadline.js';
 
 const providerRootSchema = z

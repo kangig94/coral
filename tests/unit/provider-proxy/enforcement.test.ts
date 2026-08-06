@@ -87,6 +87,8 @@ function createHarness(options: { adoptionInMs: number; alive?: Set<number>; stu
         isAlive: (pid) => (pid < 0 ? alive.has(-pid) : alive.has(pid)),
       },
       platform: 'linux',
+      maxRecordedRoots: 128,
+      maxRecordedRoots: 128,
       // A start time is only readable while the process exists, which is what makes it identity evidence.
       readProcessStartedAtSeconds: (pid) => {
         if (!alive.has(pid)) return null;

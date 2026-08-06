@@ -26,7 +26,7 @@ import {
   reaperIdentitySchema,
 } from './protocol.js';
 import type { ReaperDeadlineStateMachine } from './orphan-deadline.js';
-import { MAX_PROXY_OPERATION_LEDGERS } from '../infra/process-constants.js';
+import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 
 /**
  * The containment the reaper retains. It is recorded once at open and never revised, because the reaper's

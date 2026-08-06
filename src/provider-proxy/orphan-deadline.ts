@@ -15,6 +15,9 @@ export const DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = 30_000;
 export const MIN_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = 19_001;
 export const MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = 300_000;
 
+/** How many recently issued challenges are remembered for reuse rejection. */
+const RECENT_CHALLENGE_HISTORY = 64;
+
 export const PROXY_CONTROL_HEARTBEAT_MS = 1_000;
 export const PROXY_CONTROL_LEASE_MS = 5_000;
 export const PROXY_ENDPOINT_CLEANUP_BUDGET_MS = 1_000;
@@ -196,6 +199,8 @@ type PendingChallenge<Scope extends symbol> = Readonly<{
 class EnforcerDeadlineEvidence<Scope extends symbol> {
   readonly #clock: MonotonicClock<Scope>;
   readonly #configuration: ProviderProxyDeadlineConfiguration;
+  // Bounded: the one-use property needs the outstanding challenge plus a rejection of recent reuse, not a
+  // record of every challenge ever issued — an unbounded history grows for the life of the process.
   readonly #seenChallenges = new Set<string>();
   #lastRoundTripEvidenceAt: MonotonicInstant<Scope>;
   #eofAt: MonotonicInstant<Scope> | null = null;
@@ -302,6 +307,10 @@ class EnforcerDeadlineEvidence<Scope extends symbol> {
       throw new Error('A heartbeat challenge must be non-empty and one-use.');
     }
     this.#seenChallenges.add(challenge);
+    if (this.#seenChallenges.size > RECENT_CHALLENGE_HISTORY) {
+      const oldest = this.#seenChallenges.values().next();
+      if (!oldest.done) this.#seenChallenges.delete(oldest.value);
+    }
     this.#pendingChallenge = Object.freeze({ value: challenge, issuedAt, allowAfterControlLoss });
   }
 }

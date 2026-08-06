@@ -8,7 +8,7 @@ import {
   type RecordedContainmentIdentity,
   type RecordedProcessIdentity,
 } from '#src/infra/process-containment.js';
-import { MAX_PROXY_OPERATION_LEDGERS } from '#src/infra/process-constants.js';
+import { MAX_PROXY_OPERATION_LEDGERS } from '#src/provider-proxy/ledger.js';
 
 const containment: RecordedContainmentIdentity = {
   pid: 100,
@@ -66,6 +66,7 @@ function createFakeEnvironment(
         },
       },
       platform: 'linux',
+      maxRecordedRoots: 128,
       readProcessStartedAtSeconds: (pid) => {
         if (options.unreadablePids?.has(pid)) return null;
         if (pid === containment.pid && state.leaderAlive) return containment.processStartedAtSeconds;

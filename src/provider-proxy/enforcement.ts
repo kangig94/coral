@@ -4,7 +4,7 @@ import {
   type RecordedContainmentIdentity,
   type RecordedProcessIdentity,
 } from '../infra/process-containment.js';
-import { MAX_PROXY_OPERATION_LEDGERS } from '../infra/process-constants.js';
+import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 import type { MonotonicClock, MonotonicInstant } from '../infra/monotonic-clock.js';
 import {
   PROXY_ENFORCER_MAX_WAKE_LATENCY_MS,

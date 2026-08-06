@@ -2,5 +2,4 @@ export const SIGTERM_GRACE_MS = 5_000;
 export const SIGKILL_GRACE_MS = 5_000;
 export const PROXY_DISAPPEARANCE_CONFIRM_MS = 1_000;
 export const PROXY_PROCESS_CONTROL_CALL_MAX_MS = 500;
-export const MAX_PROXY_OPERATION_LEDGERS = 128;
 export const MAX_BUFFER = 10 * 1024 * 1024;
