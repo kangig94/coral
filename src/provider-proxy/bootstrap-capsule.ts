@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { dirname, isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
@@ -6,6 +7,7 @@ import { resolveStrictBundleIdentity, type StrictBundleIdentityResult } from '..
 import { isNoEntryError } from '../infra/fs-errors.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import {
+  ProxyControlProtocolError,
   canonicalEndpointSchema,
   canonicalUuidSchema,
   flavorSchema,
@@ -84,6 +86,38 @@ export const providerBootstrapCapsuleSchema = z.discriminatedUnion('role', [
 
 export type ProviderBootstrapCapsule = z.infer<typeof providerBootstrapCapsuleSchema>;
 export type ProviderBootstrapRole = ProviderBootstrapCapsule['role'];
+
+/**
+ * The one-use half of a bootstrap capsule, held by the role the capsule was issued to. Presenting it is how
+ * a coordinator proves it is the one that started this process; the first acceptance spends it, so the nonce
+ * authorizes exactly one control tenancy and a replay opens no second one. The spend lives here rather than
+ * in the control endpoint because a credential's one-shot belongs to whoever owns the credential — the same
+ * reason a handoff grant's one-shot lives in its registry.
+ */
+export interface BootstrapNonceCredential {
+  /** Throws `unauthorized_control` unless `offered` is the unspent nonce; spends it on acceptance. */
+  spend(offered: unknown): void;
+}
+
+export function createBootstrapNonceCredential(nonce: string): BootstrapNonceCredential {
+  const expected = Buffer.from(nonce, 'utf8');
+  let spent = false;
+  return {
+    spend(offered: unknown): void {
+      if (spent) {
+        throw new ProxyControlProtocolError('unauthorized_control', 'The bootstrap nonce was already spent.');
+      }
+      const presented = typeof offered === 'string' ? Buffer.from(offered, 'utf8') : Buffer.alloc(0);
+      if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
+        throw new ProxyControlProtocolError(
+          'unauthorized_control',
+          'Control open did not present the bootstrap nonce.',
+        );
+      }
+      spent = true;
+    },
+  };
+}
 
 type ProviderBootstrapCapsuleStorage = Pick<
   StoragePort,

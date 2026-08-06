@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
 import type { ProcessContainmentEnvironment, RecordedContainmentIdentity } from '../infra/process-containment.js';
-import type { GuardianBootstrapCapsule } from './bootstrap-capsule.js';
+import { createBootstrapNonceCredential, type GuardianBootstrapCapsule } from './bootstrap-capsule.js';
 import type { ControlClient } from './control-client.js';
 import {
   createControlEndpoint,
@@ -17,14 +17,22 @@ import {
   type EnforcementScheduler,
 } from './enforcement.js';
 import {
+  createGrantRegistry,
+  grantSecretDigestSchema,
+  grantSecretSchema,
+  type GrantBinding,
+} from './handoff-capsule.js';
+import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
   canonicalUuidSchema,
   coordinatorIdentitySchema,
   guardianIdentitySchema,
   operationIdentitySchema,
+  proxyHandoffOperationSchema,
   proxyIdentitySchema,
   reaperIdentitySchema,
+  type CoordinatorIdentity,
 } from './protocol.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 import type { EnforcerDeadlineStateMachine } from './orphan-deadline.js';
@@ -78,6 +86,28 @@ const stopAndReapParamsSchema = z
     reaper: reaperIdentitySchema,
     proxy: proxyIdentitySchema,
     providerRoots: z.array(providerRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
+  })
+  .strict();
+
+const handoffOperationSetSchema = z.array(proxyHandoffOperationSchema).max(MAX_PROXY_OPERATION_LEDGERS);
+
+const handoffInstallParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    secretSha256: grantSecretDigestSchema,
+    successor: coordinatorIdentitySchema,
+    operations: handoffOperationSetSchema,
+    orphanTimeoutMs: z.number().int().positive(),
+    teardownReserveMs: z.number().int().positive(),
+  })
+  .strict();
+
+const handoffRedeemParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    secret: grantSecretSchema,
+    successor: coordinatorIdentitySchema,
+    operations: handoffOperationSetSchema,
   })
   .strict();
 
@@ -140,9 +170,93 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
     canonicalControlEndpoint: capsule.canonicalControlEndpoint,
   });
 
+  /**
+   * Every grant this guardian issues is bound to its own set, taken from its own capsule. A coordinator
+   * therefore cannot install a grant naming a set it does not belong to — it never supplies the binding.
+   */
+  const setBinding: GrantBinding = Object.freeze({
+    generation: capsule.generation,
+    flavor: capsule.flavor,
+    buildSetId: capsule.buildSetId,
+    hostFingerprint: capsule.hostFingerprint,
+    guardianInstanceId: capsule.guardianInstanceId,
+    reaperInstanceId: capsule.reaperInstanceId,
+    proxyInstanceId: capsule.proxyInstanceId,
+  });
+
+  /** A grant is build-bound, so only a coordinator of this exact build may install or redeem one. */
+  const assertNamedCoordinatorBuild = (coordinator: CoordinatorIdentity): void => {
+    if (
+      coordinator.generation !== capsule.generation ||
+      coordinator.flavor !== capsule.flavor ||
+      coordinator.buildSetId !== capsule.buildSetId
+    ) {
+      throw new ProxyControlProtocolError('identity_mismatch', 'The named coordinator belongs to a different build.');
+    }
+  };
+
+  const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
+  const grants = createGrantRegistry(mintReceipt);
   const staged = new Map<string, StagedMembership>();
 
   const methods = new Map<string, ControlMethod>([
+    [
+      'guardian.open.v1',
+      {
+        authority: 'establishes-control',
+        handle: (params) => {
+          const request = openParamsSchema.parse(params);
+          bootstrapNonce.spend(request.bootstrapNonce);
+          assertNamedCoordinatorBuild(request.coordinator);
+          // The result names the proxy this guardian was issued for, so a coordinator that opened against
+          // the wrong set learns it from the response rather than from a later staging failure.
+          return { guardian: identity, proxy: request.proxy };
+        },
+      },
+    ],
+    [
+      'guardian.handoff-install.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = handoffInstallParamsSchema.parse(params);
+          assertNamedCoordinatorBuild(request.successor);
+          return grants.install({
+            grantId: request.grantId,
+            secretSha256: request.secretSha256,
+            ...setBinding,
+            operationIds: request.operations.map((entry) => entry.operation.operationId),
+            orphanTimeoutMs: request.orphanTimeoutMs,
+            teardownReserveMs: request.teardownReserveMs,
+          });
+        },
+      },
+    ],
+    [
+      'guardian.handoff-redeem.v1',
+      {
+        // The grant is the credential, and it is checked and spent by the registry that owns it — the
+        // endpoint only learns that a tenancy was earned. Admission can still refuse: an incumbent holding
+        // live control is not displaced by a successor that merely presents a valid grant.
+        authority: 'establishes-control',
+        handle: (params) => {
+          const request = handoffRedeemParamsSchema.parse(params);
+          assertNamedCoordinatorBuild(request.successor);
+          const redemption = grants.redeem({
+            grantId: request.grantId,
+            secret: request.secret,
+            successorInstanceId: request.successor.instanceId,
+            operationIds: request.operations.map((entry) => entry.operation.operationId),
+            binding: setBinding,
+          });
+          return {
+            state: 'redeemed-provisional',
+            redemptionReceipt: redemption.redemptionReceipt,
+            operations: redemption.grant.operationIds,
+          };
+        },
+      },
+    ],
     [
       'guardian.register-provider-root.v1',
       {
@@ -284,15 +398,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
   const endpoint: ControlEndpoint = createControlEndpoint({
     socketPath: capsule.canonicalControlEndpoint,
     role: {
-      openMethod: 'guardian.open.v1',
       heartbeatMethod: 'guardian.heartbeat.v1',
-      bootstrapNonce: capsule.bootstrapNonce,
-      openResult: (params) => {
-        const request = openParamsSchema.parse(params);
-        // The plan's open result names the proxy this guardian was issued for, so a coordinator that opened
-        // against the wrong set learns it from the response rather than from a later staging failure.
-        return { guardian: identity, proxy: request.proxy };
-      },
       methods,
       // The proxy→guardian channel the plan gives root registration its own authority on.
       pairing: { openMethod: 'guardian.pair.v1', secret: capsule.proxyGuardianAuthSecret },

@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 
 import {
+  ProxyControlProtocolError,
   canonicalEndpointSchema,
   canonicalUuidSchema,
   flavorSchema,
@@ -16,9 +17,14 @@ export const MAX_HANDOFF_CAPSULE_BYTES = 64 * 1024;
 /** Discovery fails closed on the candidate after this many, rather than truncating the set silently. */
 export const MAX_HANDOFF_CAPSULES_PER_STARTUP = 128;
 
-const grantSecretSchema = z
+export const grantSecretSchema = z
   .string()
   .regex(/^[0-9a-f]{64}$/u, 'grant secrets are 32 random bytes as 64 lowercase hexadecimal characters');
+
+/** The installed half never carries the secret itself, only its SHA-256. */
+export const grantSecretDigestSchema = z
+  .string()
+  .regex(/^[0-9a-f]{64}$/u, 'a grant secret digest is SHA-256 as 64 lowercase hexadecimal characters');
 
 /**
  * The successor half of one grant. It names the exact set it may rotate and the complete byte-sorted
@@ -82,11 +88,12 @@ export type InstalledGrant = Readonly<{
   teardownReserveMs: number;
 }>;
 
-export type HandoffCapsuleErrorCode =
-  | 'handoff_capsule_too_large'
-  | 'handoff_capsule_invalid'
-  | 'grant_invalid'
-  | 'grant_replayed';
+/**
+ * Only the decoding failures. A grant that is refused once it is *on* the wire — wrong secret, wrong set,
+ * a second successor — refuses with the protocol's own `grant_invalid`/`grant_replayed`, so no layer has to
+ * translate one vocabulary into the other on the way out.
+ */
+export type HandoffCapsuleErrorCode = 'handoff_capsule_too_large' | 'handoff_capsule_invalid';
 
 export class HandoffCapsuleError extends Error {
   readonly code: HandoffCapsuleErrorCode;
@@ -148,6 +155,25 @@ function digestsMatch(left: string, right: string): boolean {
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
+/** What one successful redemption produced. Returned again, unchanged, to that successor's exact retry. */
+export type GrantRedemption = Readonly<{
+  grant: InstalledGrant;
+  redemptionReceipt: string;
+  successorInstanceId: string;
+}>;
+
+/** The set the redeemer believes it is rotating. Compared against what was installed. */
+export type GrantBinding = Pick<
+  InstalledGrant,
+  | 'generation'
+  | 'flavor'
+  | 'buildSetId'
+  | 'hostFingerprint'
+  | 'guardianInstanceId'
+  | 'reaperInstanceId'
+  | 'proxyInstanceId'
+>;
+
 /**
  * One set-wide grant, consumed by the first redemption that presents the matching secret and the identical
  * operation set. Install is idempotent only for the exact same value: re-installing a different digest or a
@@ -155,29 +181,28 @@ function digestsMatch(left: string, right: string): boolean {
  */
 export interface GrantRegistry {
   install(grant: InstalledGrant): { state: 'installed-dormant'; grantId: string };
+  /**
+   * Consumes the grant for one successor. Single-use means one *successor*, not one call: a successor whose
+   * reply was lost in transit retries with the identical grant, secret, set and identity, and must get back
+   * what it already earned — refusing it would hand the set to a teardown it had already prevented. The
+   * recorded redemption is what tells "the same one, again" from "a different one", so retry-safety and
+   * replay-refusal are the same comparison rather than two mechanisms.
+   */
   redeem(input: {
     grantId: string;
     secret: string;
+    /** Who is redeeming. Recorded on the first success and required to match on every retry. */
+    successorInstanceId: string;
     operationIds: readonly string[];
-    /** The set the redeemer believes it is rotating. Compared against what was installed. */
-    binding: Pick<
-      InstalledGrant,
-      | 'generation'
-      | 'flavor'
-      | 'buildSetId'
-      | 'hostFingerprint'
-      | 'guardianInstanceId'
-      | 'reaperInstanceId'
-      | 'proxyInstanceId'
-    >;
-  }): InstalledGrant;
+    binding: GrantBinding;
+  }): GrantRedemption;
   installed(): InstalledGrant | null;
-  redeemed(): boolean;
+  redemption(): GrantRedemption | null;
 }
 
-export function createGrantRegistry(): GrantRegistry {
+export function createGrantRegistry(mintReceipt: () => string): GrantRegistry {
   let installed: InstalledGrant | null = null;
-  let consumed = false;
+  let redemption: GrantRedemption | null = null;
 
   const sameSet = (left: readonly string[], right: readonly string[]): boolean =>
     left.length === right.length && left.every((value, index) => value === right[index]);
@@ -201,7 +226,7 @@ export function createGrantRegistry(): GrantRegistry {
           !digestsMatch(installed.secretSha256, grant.secretSha256) ||
           !sameSet(installed.operationIds, grant.operationIds)
         ) {
-          throw new HandoffCapsuleError('grant_invalid', 'A different grant is already installed for this set.');
+          throw new ProxyControlProtocolError('grant_invalid', 'A different grant is already installed for this set.');
         }
         return { state: 'installed-dormant', grantId: installed.grantId };
       }
@@ -209,29 +234,41 @@ export function createGrantRegistry(): GrantRegistry {
       return { state: 'installed-dormant', grantId: grant.grantId };
     },
 
-    redeem({ grantId, secret, operationIds, binding }): InstalledGrant {
-      if (installed === null) throw new HandoffCapsuleError('grant_invalid', 'No grant is installed for this set.');
-      if (consumed) throw new HandoffCapsuleError('grant_replayed', 'This grant was already redeemed.');
+    redeem({ grantId, secret, successorInstanceId, operationIds, binding }): GrantRedemption {
+      if (installed === null)
+        throw new ProxyControlProtocolError('grant_invalid', 'No grant is installed for this set.');
       if (installed.grantId !== grantId || !digestsMatch(installed.secretSha256, handoffSecretDigest(secret))) {
-        throw new HandoffCapsuleError('grant_invalid', 'Redemption did not present the installed grant.');
+        throw new ProxyControlProtocolError('grant_invalid', 'Redemption did not present the installed grant.');
       }
       if (!sameBinding(installed, { ...installed, ...binding })) {
         // A capsule from another set is a replay of a grant that was never for this one.
-        throw new HandoffCapsuleError('grant_replayed', 'Redemption named a different guardian/reaper/proxy set.');
+        throw new ProxyControlProtocolError(
+          'grant_replayed',
+          'Redemption named a different guardian/reaper/proxy set.',
+        );
       }
       if (!sameSet(installed.operationIds, operationIds)) {
-        throw new HandoffCapsuleError('grant_replayed', 'Redemption named a different operation set.');
+        throw new ProxyControlProtocolError('grant_replayed', 'Redemption named a different operation set.');
       }
-      consumed = true;
-      return installed;
+      if (redemption !== null) {
+        if (redemption.successorInstanceId !== successorInstanceId) {
+          throw new ProxyControlProtocolError(
+            'grant_replayed',
+            'This grant was already redeemed by another successor.',
+          );
+        }
+        return redemption;
+      }
+      redemption = Object.freeze({ grant: installed, redemptionReceipt: mintReceipt(), successorInstanceId });
+      return redemption;
     },
 
     installed(): InstalledGrant | null {
       return installed;
     },
 
-    redeemed(): boolean {
-      return consumed;
+    redemption(): GrantRedemption | null {
+      return redemption;
     },
   };
 }

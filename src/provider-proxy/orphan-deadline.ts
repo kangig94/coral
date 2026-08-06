@@ -251,12 +251,12 @@ class EnforcerDeadlineEvidence<Scope extends symbol> {
     return this.#clock.compare(now, this.bounds().controlLossAt) < 0;
   }
 
-  issueFirstChallenge(challenge: string, issuedAt: MonotonicInstant<Scope>): void {
-    if (this.#firstChallengeIssuedAt !== null || this.#pendingChallenge !== null) {
-      throw new Error('The first control challenge has already been issued.');
-    }
+  /** False when a first challenge already exists. A second tenancy is a successor, not a first. */
+  issueFirstChallenge(challenge: string, issuedAt: MonotonicInstant<Scope>): boolean {
+    if (this.#firstChallengeIssuedAt !== null || this.#pendingChallenge !== null) return false;
     this.#installChallenge(challenge, issuedAt, false);
     this.#firstChallengeIssuedAt = issuedAt;
+    return true;
   }
 
   beginSuccessorControl(challenge: string, issuedAt: MonotonicInstant<Scope>): void {
@@ -350,7 +350,9 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
     issueFirstChallenge: (challenge: string): DeadlineDispatchResult => {
       const now = sampleBeforeQueuedWork();
       if (now === null) return { accepted: false, reason: 'teardown-latched' };
-      evidence.issueFirstChallenge(challenge, now);
+      // A refusal, not a throw: "a first challenge already exists" is a state this machine models, and the
+      // endpoint has to be able to answer the caller rather than fail the connection over it.
+      if (!evidence.issueFirstChallenge(challenge, now)) return { accepted: false, reason: 'invalid-state' };
       return { accepted: true };
     },
     echoChallenge: (challenge: string, nextChallenge: string): ChallengeEchoResult => {

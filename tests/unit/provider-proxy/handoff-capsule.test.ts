@@ -57,6 +57,18 @@ function bindingOf(grant: ReturnType<typeof installedGrantFromCapsule>) {
   };
 }
 
+/** A deterministic receipt minter, so a memoized redemption is visibly the *same* receipt. */
+function mintReceipt(): () => string {
+  let issued = 0;
+  return () => {
+    issued += 1;
+    return `receipt-${issued}`;
+  };
+}
+
+const SUCCESSOR = 'c3333333-3333-4333-8333-333333333333';
+const OTHER_SUCCESSOR = 'd4444444-4444-4444-8444-444444444444';
+
 function encode(capsule: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(capsule));
 }
@@ -92,7 +104,7 @@ describe('provider-proxy handoff capsule', () => {
   });
 
   it('installs idempotently for the identical value and refuses a different one', () => {
-    const registry = createGrantRegistry();
+    const registry = createGrantRegistry(mintReceipt());
     const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
 
     expect(registry.install(grant)).toEqual({ state: 'installed-dormant', grantId: grant.grantId });
@@ -102,27 +114,52 @@ describe('provider-proxy handoff capsule', () => {
     expect(() => registry.install(other)).toThrow(/different grant/u);
   });
 
-  it('redeems once against the matching secret and complete set', () => {
-    const registry = createGrantRegistry();
+  it('redeems once, and returns that same redemption to the same successor retrying', () => {
+    const registry = createGrantRegistry(mintReceipt());
     const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
     registry.install(grant);
-
-    const redeemed = registry.redeem({
+    const request = {
       grantId: grant.grantId,
       secret: SECRET,
+      successorInstanceId: SUCCESSOR,
       operationIds: ORDERED,
       binding: bindingOf(grant),
-    });
-    expect(redeemed.grantId).toBe(grant.grantId);
-    expect(registry.redeemed()).toBe(true);
+    };
 
-    expect(() =>
-      registry.redeem({ grantId: grant.grantId, secret: SECRET, operationIds: ORDERED, binding: bindingOf(grant) }),
-    ).toThrow(/already redeemed/u);
+    const redeemed = registry.redeem(request);
+
+    expect(redeemed.grant.grantId).toBe(grant.grantId);
+    expect(redeemed.redemptionReceipt).toBe('receipt-1');
+    // A successor whose reply was lost retries with the identical request. Refusing it would hand the set
+    // to a teardown it had already earned the right to prevent, so it gets back exactly what it earned —
+    // the same receipt, not a fresh one that would invalidate the first.
+    expect(registry.redeem(request)).toEqual(redeemed);
+    expect(registry.redemption()).toEqual(redeemed);
+  });
+
+  it('refuses a second, different successor presenting the same valid grant', () => {
+    const registry = createGrantRegistry(mintReceipt());
+    const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
+    registry.install(grant);
+    const request = {
+      grantId: grant.grantId,
+      secret: SECRET,
+      successorInstanceId: SUCCESSOR,
+      operationIds: ORDERED,
+      binding: bindingOf(grant),
+    };
+    registry.redeem(request);
+
+    // Single-use means one successor, not one call: two racing coordinators reading the same capsule must
+    // not both come away believing they own the set.
+    expect(() => registry.redeem({ ...request, successorInstanceId: OTHER_SUCCESSOR })).toThrow(
+      /already redeemed by another successor/u,
+    );
+    expect(registry.redemption()?.successorInstanceId).toBe(SUCCESSOR);
   });
 
   it('refuses redemption presenting the wrong secret', () => {
-    const registry = createGrantRegistry();
+    const registry = createGrantRegistry(mintReceipt());
     const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
     registry.install(grant);
 
@@ -130,15 +167,16 @@ describe('provider-proxy handoff capsule', () => {
       registry.redeem({
         grantId: grant.grantId,
         secret: 'e'.repeat(64),
+        successorInstanceId: SUCCESSOR,
         operationIds: ORDERED,
         binding: bindingOf(grant),
       }),
     ).toThrow(/did not present the installed grant/u);
-    expect(registry.redeemed()).toBe(false);
+    expect(registry.redemption()).toBeNull();
   });
 
   it('refuses redemption from another set even when the secret and operation list match', () => {
-    const registry = createGrantRegistry();
+    const registry = createGrantRegistry(mintReceipt());
     const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
     registry.install(grant);
 
@@ -147,11 +185,12 @@ describe('provider-proxy handoff capsule', () => {
       registry.redeem({
         grantId: grant.grantId,
         secret: SECRET,
+        successorInstanceId: SUCCESSOR,
         operationIds: ORDERED,
         binding: { ...bindingOf(grant), buildSetId: '99999999-9999-4999-8999-999999999999' },
       }),
     ).toThrow(/different guardian\/reaper\/proxy set/u);
-    expect(registry.redeemed()).toBe(false);
+    expect(registry.redemption()).toBeNull();
   });
 
   it('encodes the largest legal capsule well inside the read cap', () => {
@@ -170,7 +209,7 @@ describe('provider-proxy handoff capsule', () => {
   });
 
   it('refuses redemption naming a different operation set', () => {
-    const registry = createGrantRegistry();
+    const registry = createGrantRegistry(mintReceipt());
     const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
     registry.install(grant);
 
@@ -178,20 +217,22 @@ describe('provider-proxy handoff capsule', () => {
       registry.redeem({
         grantId: grant.grantId,
         secret: SECRET,
+        successorInstanceId: SUCCESSOR,
         operationIds: [ORDERED[0]],
         binding: bindingOf(grant),
       }),
     ).toThrow(/different operation set/u);
-    expect(registry.redeemed()).toBe(false);
+    expect(registry.redemption()).toBeNull();
   });
 
   it('refuses redemption when nothing is installed', () => {
-    const registry = createGrantRegistry();
+    const registry = createGrantRegistry(mintReceipt());
 
     expect(() =>
       registry.redeem({
         grantId: randomUUID(),
         secret: SECRET,
+        successorInstanceId: SUCCESSOR,
         operationIds: [],
         binding: bindingOf(installedGrantFromCapsule(capsuleFor(ORDERED))),
       }),

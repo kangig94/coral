@@ -10,6 +10,7 @@ import {
   type RecordedContainmentIdentity,
   type RecordedProcessIdentity,
 } from '#src/infra/process-containment.js';
+import { MAX_PROXY_RECORDED_PROVIDER_ROOTS } from '#src/provider-proxy/enforcement.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
 const runtime = createRealRuntime('dev');
@@ -104,6 +105,7 @@ function environment(
       },
     },
     platform: process.platform,
+    maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
   };
 }
 

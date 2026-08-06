@@ -9,7 +9,6 @@ import {
 } from '#src/infra/process-constants.js';
 import {
   createEnforcerDeadlineStateMachine,
-  createEnforcerDeadlineStateMachine,
   DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
   MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
   MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
@@ -348,8 +347,8 @@ describe('provider proxy deadline state machines', () => {
     guardianFake.set(16_000);
     reaperFake.set(16_000);
 
-    expect(guardian.admitSuccessor('guardian-successor', vi.fn())).toEqual({ accepted: true });
-    expect(reaper.admitSuccessor('reaper-successor', vi.fn())).toEqual({ accepted: true });
+    expect(guardian.admitSuccessor('guardian-successor')).toEqual({ accepted: true });
+    expect(reaper.admitSuccessor('reaper-successor')).toEqual({ accepted: true });
     expect(guardian.state()).toBe('accepting-control');
     expect(reaper.state()).toBe('accepting-control');
     expectSameInstant(guardianFake.clock, guardian.bounds().exitDeadline, guardianBefore.exitDeadline);
@@ -370,8 +369,8 @@ describe('provider proxy deadline state machines', () => {
     guardian.observeEof();
     guardianFake.set(16_000);
     reaperFake.set(16_000);
-    guardian.admitSuccessor('guardian-successor', vi.fn());
-    reaper.admitSuccessor('reaper-successor', vi.fn());
+    guardian.admitSuccessor('guardian-successor');
+    reaper.admitSuccessor('reaper-successor');
     guardianFake.set(17_000);
     reaperFake.set(17_000);
 
@@ -405,7 +404,7 @@ describe('provider proxy deadline state machines', () => {
     guardian.markExited();
 
     expect(guardian.state()).toBe('exited');
-    expect(guardian.admitSuccessor('too-late', vi.fn())).toEqual({
+    expect(guardian.admitSuccessor('too-late')).toEqual({
       accepted: false,
       reason: 'teardown-latched',
     });

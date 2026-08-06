@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -132,8 +132,9 @@ async function startSet() {
       firstChallengeExpiresAt: null,
     };
   };
+  let controlLive = true;
   const accepting = {
-    controlIsLive: () => true,
+    controlIsLive: () => controlLive,
     issueFirstChallenge: () => ({ accepted: true }) as const,
     admitSuccessor: () => ({ accepted: true }) as const,
     echoChallenge: () => ({ accepted: true }) as const,
@@ -248,12 +249,47 @@ async function startSet() {
     proxyIdentity,
     guardianIdentity,
     reaperIdentity,
+    coordinatorIdentity,
+    guardianEndpoint,
     operationFor,
     opened,
     reaperOutcomes,
     guardianOutcomes,
     alive,
+    /** Ends the incumbent's control the way a lapsed lease does, leaving its socket alone. */
+    lapseControl: () => {
+      controlLive = false;
+    },
   };
+}
+
+const GRANT_SECRET = 'f'.repeat(64);
+
+/** Installs one grant over active control and returns the request a successor would redeem it with. */
+async function installGrant(
+  set: SetUnderTest,
+  operations: ReadonlyArray<Record<string, string>>,
+): Promise<Record<string, unknown>> {
+  const grantId = randomUUID();
+  const handoffOperations = [...operations]
+    .sort((left, right) => (left.operationId < right.operationId ? -1 : 1))
+    .map((operation) => ({ operation, carrierState: 'executing' as const, committedThroughProviderSeq: 7 }));
+
+  const installed = (await set.control.call(
+    'guardian.handoff-install.v1',
+    {
+      grantId,
+      secretSha256: createHash('sha256').update(GRANT_SECRET, 'utf8').digest('hex'),
+      successor: set.coordinatorIdentity,
+      operations: handoffOperations,
+      orphanTimeoutMs: 30_000,
+      teardownReserveMs: 14_000,
+    },
+    5_000,
+  )) as { state: string; grantId: string };
+  expect(installed).toEqual({ state: 'installed-dormant', grantId });
+
+  return { grantId, secret: GRANT_SECRET, successor: set.coordinatorIdentity, operations: handoffOperations };
 }
 
 async function stage(
@@ -421,5 +457,93 @@ describe('provider-proxy guardian and reaper', () => {
         5_000,
       ),
     ).rejects.toThrow(/different provider-root set/u);
+  });
+
+  it('installs a dormant grant and lets exactly one successor redeem it into control', async () => {
+    const set = await startSet();
+    const { operation } = await stage(set);
+    const request = await installGrant(set, [operation]);
+    // The grant is dormant while the incumbent holds control; loss is what makes it redeemable.
+    set.lapseControl();
+    set.control.close();
+
+    const successor = await connectControlClient(set.guardianEndpoint, timer, 5_000);
+    cleanups.push(() => successor.close());
+    const redeemed = (await successor.call('guardian.handoff-redeem.v1', request, 5_000)) as {
+      state: string;
+      redemptionReceipt: string;
+      controlEpoch: number;
+      operations: string[];
+      heartbeatChallenge: string;
+    };
+
+    expect(redeemed.state).toBe('redeemed-provisional');
+    expect(redeemed.operations).toEqual([operation.operationId]);
+    // Redemption yields a tenancy that is provisional until echoed, exactly like a bootstrap open — the
+    // endpoint adds the epoch and first challenge; the grant only proves the successor earned them.
+    expect(redeemed.controlEpoch).toBe(2);
+    const beat = (await successor.call(
+      'guardian.heartbeat.v1',
+      { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
+      5_000,
+    )) as { state: string };
+    expect(beat.state).toBe('active');
+  });
+
+  it('returns the same redemption to an identical retry and refuses a different successor', async () => {
+    const set = await startSet();
+    const { operation } = await stage(set);
+    const request = await installGrant(set, [operation]);
+    set.lapseControl();
+    set.control.close();
+
+    const redeemOn = async (request_: Record<string, unknown>): Promise<{ redemptionReceipt: string }> => {
+      // A lost reply means the connection broke, so the retry necessarily arrives on a fresh one.
+      const client = await connectControlClient(set.guardianEndpoint, timer, 5_000);
+      cleanups.push(() => client.close());
+      return (await client.call('guardian.handoff-redeem.v1', request_, 5_000)) as { redemptionReceipt: string };
+    };
+    const first = await redeemOn(request);
+
+    // A retry whose first reply was lost must get back what it earned. A fresh receipt would silently
+    // invalidate the one the successor may already be holding.
+    expect((await redeemOn(request)).redemptionReceipt).toBe(first.redemptionReceipt);
+
+    const other = { ...set.coordinatorIdentity, instanceId: randomUUID() };
+    await expect(redeemOn({ ...request, successor: other })).rejects.toThrow(/already redeemed by another successor/u);
+  });
+
+  it('refuses a grant redeemed against a different operation set', async () => {
+    const set = await startSet();
+    const { operation } = await stage(set);
+    const request = await installGrant(set, [operation]);
+    set.lapseControl();
+    set.control.close();
+
+    const successor = await connectControlClient(set.guardianEndpoint, timer, 5_000);
+    cleanups.push(() => successor.close());
+
+    await expect(successor.call('guardian.handoff-redeem.v1', { ...request, operations: [] }, 5_000)).rejects.toThrow(
+      /different operation set/u,
+    );
+  });
+
+  it('refuses installing a grant for a coordinator of another build', async () => {
+    const set = await startSet();
+
+    await expect(
+      set.control.call(
+        'guardian.handoff-install.v1',
+        {
+          grantId: randomUUID(),
+          secretSha256: createHash('sha256').update(GRANT_SECRET, 'utf8').digest('hex'),
+          successor: { ...set.coordinatorIdentity, buildSetId: randomUUID() },
+          operations: [],
+          orphanTimeoutMs: 30_000,
+          teardownReserveMs: 14_000,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/different build/u);
   });
 });

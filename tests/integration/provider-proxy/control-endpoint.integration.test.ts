@@ -4,17 +4,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createBootstrapNonceCredential } from '#src/provider-proxy/bootstrap-capsule.js';
 import {
   createControlEndpoint,
   type ControlChallenge,
   type ControlEndpoint,
-  type ControlEndpointRole,
+  type ControlMethod,
 } from '#src/provider-proxy/control-endpoint.js';
 
 const BOOTSTRAP_NONCE = 'a'.repeat(64);
 
 type Client = Readonly<{
-  call(method: string, params: unknown): Promise<{ result?: unknown; error?: { code: number; message: string } }>;
+  call(
+    method: string,
+    params: unknown,
+  ): Promise<{ result?: unknown; error?: { code: number; message: string; data?: { code?: string } } }>;
   socket: Socket;
   close(): void;
 }>;
@@ -34,15 +38,14 @@ function realTimer() {
   };
 }
 
-async function startEndpoint(
-  overrides: Partial<ControlEndpointRole> = {},
-  observer = { onControlLost: vi.fn() },
-): Promise<{
+async function startEndpoint(options: { echo?: (params: unknown) => void } = {}): Promise<{
   endpoint: ControlEndpoint;
   socketPath: string;
   observer: { onControlLost: ReturnType<typeof vi.fn> };
   challenges: ControlChallenge[];
   accepted: ControlChallenge[];
+  /** Lapses the lease without an EOF, which is how a wedged coordinator loses control. */
+  lapseControl(): void;
 }> {
   const directory = mkdtempSync(join(tmpdir(), 'coral-ctl-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
@@ -50,30 +53,70 @@ async function startEndpoint(
   const challenges: ControlChallenge[] = [];
   const accepted: ControlChallenge[] = [];
   let outstanding: ControlChallenge | null = null;
+  let controlLive = false;
   let minted = 0;
+  // Mirrors the real wiring: an observed EOF is control loss, and the deadline machine is what records it.
+  const observer = { onControlLost: vi.fn(() => (controlLive = false)) };
 
+  const bootstrapNonce = createBootstrapNonceCredential(BOOTSTRAP_NONCE);
   const endpoint = createControlEndpoint({
     socketPath,
     role: {
-      openMethod: 'role.open.v1',
       heartbeatMethod: 'role.heartbeat.v1',
-      bootstrapNonce: BOOTSTRAP_NONCE,
-      openResult: () => ({ role: 'guardian' }),
-      methods: new Map([['role.work.v1', { authority: 'active' as const, handle: () => ({ state: 'worked' }) }]]),
-      ...overrides,
+      methods: new Map<string, ControlMethod>([
+        [
+          'role.open.v1',
+          {
+            authority: 'establishes-control',
+            handle: (params) => {
+              bootstrapNonce.spend((params as { bootstrapNonce?: unknown } | null)?.bootstrapNonce);
+              return { role: 'guardian' };
+            },
+          },
+        ],
+        ['role.work.v1', { authority: 'active', handle: () => ({ state: 'worked' }) }],
+        // A second opening method with its own credential — the successor's analogue of a handoff grant.
+        [
+          'role.redeem.v1',
+          {
+            authority: 'establishes-control',
+            handle: () => ({ role: 'successor' }),
+          },
+        ],
+        [
+          'role.echo.v1',
+          {
+            authority: 'active',
+            handle: (params) => {
+              options.echo?.(params);
+              return { state: 'worked' };
+            },
+          },
+        ],
+      ]),
     },
     // A minimal stand-in for the deadline machine: it owns the outstanding challenge and consumes it on a
     // matching echo, which is the property the endpoint depends on.
     challenges: {
-      // The double reports control live once a tenancy is open, matching the deadline model's meaning.
-      controlIsLive: () => outstanding !== null,
+      // Control liveness is tracked apart from the outstanding challenge, because the real machine ends
+      // control two ways: an observed EOF, and a lease that lapses while the socket is still open.
+      controlIsLive: () => controlLive,
       issueFirstChallenge: (challenge) => {
         outstanding = challenge;
+        controlLive = true;
+        return { accepted: true };
+      },
+      admitSuccessor: (challenge) => {
+        if (controlLive) return { accepted: false, reason: 'control-active' };
+        outstanding = challenge;
+        controlLive = true;
         return { accepted: true };
       },
       echoChallenge: (challenge, nextChallenge) => {
         if (outstanding === null || challenge !== outstanding) return { accepted: false, reason: 'challenge-mismatch' };
         outstanding = nextChallenge;
+        // Round-trip evidence pushes control loss into the future, so an echo revives a lapsed lease.
+        controlLive = true;
         accepted.push(challenge);
         return { accepted: true };
       },
@@ -91,13 +134,25 @@ async function startEndpoint(
 
   await endpoint.listen();
   cleanups.push(() => endpoint.close());
-  return { endpoint, socketPath, observer, challenges, accepted };
+  return {
+    endpoint,
+    socketPath,
+    observer,
+    challenges,
+    accepted,
+    lapseControl: () => {
+      controlLive = false;
+    },
+  };
 }
 
 function connect(socketPath: string): Promise<Client> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);
-    const pending = new Map<number, (value: { result?: unknown; error?: { code: number; message: string } }) => void>();
+    const pending = new Map<
+      number,
+      (value: { result?: unknown; error?: { code: number; message: string; data?: { code?: string } } }) => void
+    >();
     let buffer = '';
     let nextId = 1;
 
@@ -131,7 +186,9 @@ function connect(socketPath: string): Promise<Client> {
             socket.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
           }),
       };
-      cleanups.push(() => socket.destroy());
+      cleanups.push(() => {
+        socket.destroy();
+      });
       resolve(client);
     });
   });
@@ -207,6 +264,78 @@ describe('provider-proxy control endpoint', () => {
     expect(unknown.error?.code).toBe(-32_601);
   });
 
+  it('refuses a successor whose credential arrives after the incumbent reasserts control', async () => {
+    const set = await startEndpoint();
+    const incumbent = await connect(set.socketPath);
+    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    // The lease lapses, so the successor's connection is admitted rather than refused at accept.
+    set.lapseControl();
+    const successor = await connect(set.socketPath);
+    // ...and then the incumbent's heartbeat lands first, reviving its control before the redeem arrives.
+    await incumbent.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    const refused = await successor.call('role.redeem.v1', {});
+
+    // A valid credential is not a licence to displace a coordinator that is merely slow. Accept-time
+    // refusal cannot cover this race, so admission is where the deadline machine gets the final word.
+    expect(refused.error?.message).toContain('control-active');
+    expect(refused.error?.data?.code).toBe('invalid_state');
+    expect(set.endpoint.currentEpoch()).toBe(1);
+  });
+
+  it('hands a successor the next epoch once control has lapsed, without reporting the new tenancy lost', async () => {
+    const { socketPath, observer, endpoint } = await startEndpoint();
+    const incumbent = await connect(socketPath);
+    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    // Control lapses the way the deadline machine sees it: the outstanding challenge goes unanswered.
+    incumbent.close();
+    await vi.waitFor(() => expect(observer.onControlLost).toHaveBeenCalledExactlyOnceWith(1));
+
+    const successor = await connect(socketPath);
+    const redeemed = await successor.call('role.redeem.v1', {});
+
+    expect(redeemed.result).toEqual({ role: 'successor', controlEpoch: 2, heartbeatChallenge: 'challenge-2' });
+    const beat = await successor.call('role.heartbeat.v1', { controlEpoch: 2, heartbeatChallenge: 'challenge-2' });
+    expect(beat.result).toEqual({ state: 'active', nextHeartbeatChallenge: 'challenge-3' });
+    // The predecessor's socket must not be able to report a loss that lands on the successor's tenancy.
+    expect(observer.onControlLost).toHaveBeenCalledExactlyOnceWith(1);
+    expect(endpoint.currentEpoch()).toBe(2);
+  });
+
+  it('destroys the displaced connection without ending the tenancy that replaced it', async () => {
+    const set = await startEndpoint();
+    const { socketPath, observer, endpoint } = set;
+    const incumbent = await connect(socketPath);
+    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await incumbent.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+    // A wedged predecessor: its lease lapses while its socket stays open, so socket liveness and control
+    // liveness disagree — the case a successor could never get past when admission read the socket.
+    set.lapseControl();
+
+    const successor = await connect(socketPath);
+    await successor.call('role.redeem.v1', {});
+
+    await vi.waitFor(() => expect(incumbent.socket.destroyed).toBe(true));
+    // Recording the replacement before destroying the predecessor is what keeps its close from being read
+    // as a control loss at all: the tenancy it would name is already gone, and reporting one here would
+    // hand the deadline machine an EOF that collapses the successor's own control window.
+    expect(observer.onControlLost).not.toHaveBeenCalled();
+    expect(endpoint.currentEpoch()).toBe(2);
+  });
+
+  it('refuses a second tenancy on the connection that already holds one', async () => {
+    const { socketPath } = await startEndpoint();
+    const client = await connect(socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    const second = await client.call('role.redeem.v1', {});
+
+    // Establishing here would destroy the displaced socket, which is this very connection.
+    expect(second.error?.message).toContain('already holds a control tenancy');
+    expect(client.socket.destroyed).toBe(false);
+  });
+
   it('refuses a second concurrent connection instead of queueing it', async () => {
     const { socketPath } = await startEndpoint();
     const first = await connect(socketPath);
@@ -249,18 +378,9 @@ describe('provider-proxy control endpoint', () => {
   it('carries a multi-byte payload intact when its frame is split across socket writes', async () => {
     const received: unknown[] = [];
     const set = await startEndpoint({
-      methods: new Map([
-        [
-          'role.echo.v1',
-          {
-            authority: 'active' as const,
-            handle: (params: unknown) => {
-              received.push(params);
-              return { state: 'worked' };
-            },
-          },
-        ],
-      ]),
+      echo: (params: unknown) => {
+        received.push(params);
+      },
     });
     const client = await connect(set.socketPath);
     await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });

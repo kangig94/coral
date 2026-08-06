@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import { createControlEndpoint } from '#src/provider-proxy/control-endpoint.js';
+import { createBootstrapNonceCredential } from '#src/provider-proxy/bootstrap-capsule.js';
+import { createControlEndpoint, type ControlMethod } from '#src/provider-proxy/control-endpoint.js';
 import {
   createEnforcerDeadlineStateMachine,
   resolveProviderProxyDeadlineConfiguration,
@@ -24,18 +25,20 @@ const timer = {
   clearTimeout: (handle: { unref?: () => void }) => clearTimeout(handle as unknown as NodeJS.Timeout),
 };
 
-function call(socketPath: string, frames: ReadonlyArray<(previous: unknown) => unknown>): Promise<unknown[]> {
+type Frame = Readonly<{ method: string; body: unknown }>;
+
+function call(socketPath: string, frames: ReadonlyArray<(previous: unknown) => Frame>): Promise<unknown[]> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);
-    cleanups.push(() => socket.destroy());
+    cleanups.push(() => {
+      socket.destroy();
+    });
     const results: unknown[] = [];
     let buffer = '';
     let index = 0;
     const send = (): void => {
-      const params = frames[index](results.at(-1));
-      socket.write(
-        `${JSON.stringify({ jsonrpc: '2.0', id: index + 1, method: params.method, params: params.body })}\n`,
-      );
+      const frame = frames[index](results.at(-1));
+      socket.write(`${JSON.stringify({ jsonrpc: '2.0', id: index + 1, method: frame.method, params: frame.body })}\n`);
     };
     socket.on('data', (chunk) => {
       buffer += chunk.toString('utf8');
@@ -73,15 +76,24 @@ describe('control heartbeats reach the deadline machine', () => {
     const configuration = resolveProviderProxyDeadlineConfiguration({ get: () => undefined });
     // A live coordinator: the echo only counts when one is there to have sent it.
     const deadlines = createEnforcerDeadlineStateMachine(clock, configuration, () => true);
+    const bootstrapNonce = createBootstrapNonceCredential(NONCE);
 
     const endpoint = createControlEndpoint({
       socketPath,
       role: {
-        openMethod: 'guardian.open.v1',
         heartbeatMethod: 'guardian.heartbeat.v1',
-        bootstrapNonce: NONCE,
-        openResult: () => ({}),
-        methods: new Map(),
+        methods: new Map<string, ControlMethod>([
+          [
+            'guardian.open.v1',
+            {
+              authority: 'establishes-control',
+              handle: (params) => {
+                bootstrapNonce.spend((params as { bootstrapNonce?: unknown } | null)?.bootstrapNonce);
+                return {};
+              },
+            },
+          ],
+        ]),
       },
       // The real machine, not a stub: this test exists because a stubbed one cannot show the wiring.
       challenges: deadlines,
@@ -129,15 +141,24 @@ describe('control heartbeats reach the deadline machine', () => {
       resolveProviderProxyDeadlineConfiguration({ get: () => undefined }),
       () => true,
     );
+    const bootstrapNonce = createBootstrapNonceCredential(NONCE);
 
     const endpoint = createControlEndpoint({
       socketPath,
       role: {
-        openMethod: 'guardian.open.v1',
         heartbeatMethod: 'guardian.heartbeat.v1',
-        bootstrapNonce: NONCE,
-        openResult: () => ({}),
-        methods: new Map(),
+        methods: new Map<string, ControlMethod>([
+          [
+            'guardian.open.v1',
+            {
+              authority: 'establishes-control',
+              handle: (params) => {
+                bootstrapNonce.spend((params as { bootstrapNonce?: unknown } | null)?.bootstrapNonce);
+                return {};
+              },
+            },
+          ],
+        ]),
       },
       challenges: deadlines,
       observer: { onControlLost: () => deadlines.observeEof() },

@@ -5,6 +5,7 @@ import type { RecordedProcessIdentity } from '#src/infra/process-containment.js'
 import {
   createArmedEnforcer,
   EnforcementError,
+  MAX_PROXY_RECORDED_PROVIDER_ROOTS,
   type EnforcementOutcome,
   type EnforcementScheduler,
 } from '#src/provider-proxy/enforcement.js';
@@ -87,8 +88,7 @@ function createHarness(options: { adoptionInMs: number; alive?: Set<number>; stu
         isAlive: (pid) => (pid < 0 ? alive.has(-pid) : alive.has(pid)),
       },
       platform: 'linux',
-      maxRecordedRoots: 128,
-      maxRecordedRoots: 128,
+      maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
       // A start time is only readable while the process exists, which is what makes it identity evidence.
       readProcessStartedAtSeconds: (pid) => {
         if (!alive.has(pid)) return null;

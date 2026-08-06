@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
 import type { ProcessContainmentEnvironment, RecordedContainmentIdentity } from '../infra/process-containment.js';
-import type { ReaperBootstrapCapsule } from './bootstrap-capsule.js';
+import { createBootstrapNonceCredential, type ReaperBootstrapCapsule } from './bootstrap-capsule.js';
 import {
   createControlEndpoint,
   type ControlEndpoint,
@@ -153,11 +153,23 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     containmentKind: containment.containmentKind,
   });
 
+  const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
   const staged = new Map<string, string>();
 
   // Staging arrives over the guardian pairing channel, not the coordinator's control connection: the
   // guardian must be able to stage a root while the coordinator's own control is still provisional.
   const methods = new Map<string, ControlMethod>([
+    [
+      'reaper.open.v1',
+      {
+        authority: 'establishes-control',
+        handle: (params) => {
+          const request = openParamsSchema.parse(params);
+          bootstrapNonce.spend(request.bootstrapNonce);
+          return { reaper: identity };
+        },
+      },
+    ],
     [
       'reaper.register-provider-root.v1',
       {
@@ -219,13 +231,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
   const endpoint: ControlEndpoint = createControlEndpoint({
     socketPath: capsule.canonicalControlEndpoint,
     role: {
-      openMethod: 'reaper.open.v1',
       heartbeatMethod: 'reaper.heartbeat.v1',
-      bootstrapNonce: capsule.bootstrapNonce,
-      openResult: (params) => {
-        openParamsSchema.parse(params);
-        return { reaper: identity };
-      },
       methods,
       pairing: { openMethod: 'reaper.pair.v1', secret: capsule.guardianReaperAuthSecret },
     },

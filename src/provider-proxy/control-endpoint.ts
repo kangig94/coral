@@ -61,39 +61,38 @@ class UnknownControlMethodError extends Error {
 export type ControlMethodHandler = (params: unknown) => Promise<unknown> | unknown;
 
 /**
- * Which credential a method requires. Declaring it per method rather than per map is what lets one endpoint
- * serve tiers that differ in kind: the coordinator's control tenancy, the peer enforcer's capsule-secret
- * channel, and — once redemption lands — a successor presenting a grant rather than either.
+ * An opening method returns the role-specific result fields; the endpoint merges the epoch and the first
+ * challenge into them. Typed apart from an ordinary handler because those two fields are the endpoint's to
+ * add, and a role that supplied them itself would be naming a tenancy it has not been granted.
  */
-export type ControlAuthority = 'active' | 'pairing';
+export type ControlOpenHandler = (params: unknown) => Promise<Record<string, unknown>> | Record<string, unknown>;
 
-export type ControlMethod = Readonly<{
-  authority: ControlAuthority;
-  /**
-   * Absolute budget for this method, defaulting to the endpoint's. Teardown declares its own because it may
-   * legitimately spend the TERM and KILL graces plus a disappearance confirmation; cutting it off would
-   * report a failure for a reap still in progress.
-   */
-  budgetMs?: number | 'caller-deadline';
-  handle: ControlMethodHandler;
-}>;
+/**
+ * One method and the credential it requires. Declaring the authority per method rather than per map is what
+ * lets one endpoint serve tiers that differ in kind: the coordinator's control tenancy, the peer enforcer's
+ * capsule-secret channel, and a successor presenting a grant rather than either.
+ *
+ * `establishes-control` is the tier that has no tenancy yet — the endpoint knows only that such a method
+ * yields one, never which credential proves it. That is deliberate: a bootstrap nonce and a handoff grant
+ * are checked and spent by their own owners, so the endpoint never learns a secret to hold or to leak.
+ */
+export type ControlMethod = Readonly<
+  {
+    /**
+     * Absolute budget for this method, defaulting to the endpoint's. Teardown declares its own because it
+     * may legitimately spend the TERM and KILL graces plus a disappearance confirmation; cutting it off
+     * would report a failure for a reap still in progress.
+     */
+    budgetMs?: number | 'caller-deadline';
+  } & (
+    | { authority: 'establishes-control'; handle: ControlOpenHandler }
+    | { authority: 'active' | 'pairing'; handle: ControlMethodHandler }
+  )
+>;
 
 export type ControlEndpointRole = Readonly<{
-  /** Method name for this role's tenancy-opening call, e.g. `guardian.open.v1`. */
-  openMethod: string;
   /** Method name for this role's challenge echo, e.g. `guardian.heartbeat.v1`. */
   heartbeatMethod: string;
-  /**
-   * The one-use secret from this role's bootstrap capsule, compared in constant time. It is spent by the
-   * first accepted open, so a second open cannot reuse it.
-   */
-  bootstrapNonce: string;
-  /**
-   * Validates the role-specific `open` params and returns the result fields that are not the generic
-   * `controlEpoch`/`heartbeatChallenge` pair. Throwing rejects the open without establishing a tenancy.
-   */
-  openResult(params: unknown): Record<string, unknown>;
-  /** Methods requiring active control. */
   /** Every method this role serves, each declaring the authority it requires. */
   methods: ReadonlyMap<string, ControlMethod>;
   /**
@@ -110,8 +109,13 @@ export type ControlEndpointRole = Readonly<{
  * another, which is exactly the seam where a heartbeat can look accepted while no deadline advances.
  */
 export interface ControlChallengeAuthority {
-  /** Records the challenge minted for a new tenancy. A refusal means the tenancy must not open. */
-  issueFirstChallenge(challenge: ControlChallenge): { readonly accepted: boolean };
+  /** Records the challenge minted for the bootstrap tenancy. A refusal means the tenancy must not open. */
+  issueFirstChallenge(challenge: ControlChallenge): { readonly accepted: boolean; readonly reason?: string };
+  /**
+   * Records the challenge minted for a tenancy that replaces a lapsed one. Refused while the incumbent still
+   * holds control, so a successor cannot displace a coordinator that is merely slow.
+   */
+  admitSuccessor(firstSuccessorChallenge: ControlChallenge): { readonly accepted: boolean; readonly reason?: string };
   /**
    * Whether the established tenancy still holds control. Admission reads this rather than socket liveness:
    * a wedged coordinator keeps its socket open indefinitely, and a successor has to be able to reach the
@@ -164,6 +168,20 @@ function failure(id: string | number | null, code: number, message: string): Pro
   return { jsonrpc: '2.0', id, error: { code, message } };
 }
 
+/**
+ * Maps a thrown handler error onto the wire. The protocol's own code travels in `data` because the caller
+ * has to act on it differently: `grant_replayed` means give up, while a refusal from a still-live incumbent
+ * means retry. Collapsing both into one JSON-RPC number would leave a successor parsing prose to decide.
+ */
+function handlerFailure(id: string | number, error: unknown): ProxyControlJsonRpcMessage {
+  const message = error instanceof Error ? error.message : 'Control request failed.';
+  if (error instanceof UnknownControlMethodError) return failure(id, JSON_RPC_METHOD_NOT_FOUND, message);
+  if (error instanceof ProxyControlProtocolError) {
+    return { jsonrpc: '2.0', id, error: { code: JSON_RPC_INVALID_REQUEST, message, data: { code: error.code } } };
+  }
+  return failure(id, JSON_RPC_INVALID_REQUEST, message);
+}
+
 function success(id: string | number, result: unknown): ProxyControlJsonRpcMessage {
   return { jsonrpc: '2.0', id, result };
 }
@@ -199,7 +217,6 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   let server: NetServer | null = null;
   let tenancy: Tenancy | null = null;
   let nextEpoch: ControlEpoch = 1;
-  let nonceSpent = false;
   let pairedSocket: Socket | null = null;
   let closed = false;
 
@@ -208,16 +225,42 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     socket.write(encodeProxyControlFrame(message));
   };
 
-  const openTenancy = (socket: Socket, params: unknown): Record<string, unknown> => {
-    const fields = role.openResult(params);
-    const heartbeatChallenge = mintChallenge();
-    if (!challenges.issueFirstChallenge(heartbeatChallenge).accepted) {
-      throw new ProxyControlProtocolError('invalid_state', 'The challenge authority refused a first challenge.');
+  /**
+   * Opens a tenancy on this connection. The credential is proven first and by its own owner — a bootstrap
+   * nonce by the role that holds it, a handoff grant by its registry — so the endpoint learns no secret and
+   * spends none. Admission then runs against the deadline machine, which is what can still say no: an
+   * incumbent that holds live control is not displaced by a successor that merely presents a valid grant.
+   */
+  const establishControl = async (socket: Socket, handle: ControlOpenHandler, params: unknown): Promise<unknown> => {
+    const fields = await handle(params);
+    // Only after the credential has answered: a caller replaying a spent nonce deserves to hear that its
+    // credential is spent, not a generic complaint about its connection. A grant, by contrast, memoizes its
+    // redemption and so reaches here twice — and a second tenancy on the same socket would destroy the very
+    // connection it just granted, because the displaced socket and the new one are the same.
+    if (tenancy?.socket === socket) {
+      throw new ProxyControlProtocolError('invalid_state', 'This connection already holds a control tenancy.');
     }
+    const heartbeatChallenge = mintChallenge();
+    // The first tenancy this endpoint ever opens is the bootstrap one; every later one is by construction a
+    // successor. Deriving it leaves no way for a role to declare itself first twice.
+    const admitted =
+      nextEpoch === 1
+        ? challenges.issueFirstChallenge(heartbeatChallenge)
+        : challenges.admitSuccessor(heartbeatChallenge);
+    if (!admitted.accepted) {
+      throw new ProxyControlProtocolError(
+        'invalid_state',
+        `Control admission was refused (${admitted.reason ?? 'rejected'}).`,
+      );
+    }
+    const displaced = tenancy;
     const epoch = nextEpoch;
     nextEpoch += 1;
+    // Record the replacement before destroying the predecessor: its `close` handler then sees a tenancy that
+    // is not its own and reports no control loss. Reporting one would hand the deadline machine an EOF for
+    // the tenancy that just began, and the successor would inherit its predecessor's death.
     tenancy = { epoch, socket, active: false };
-    nonceSpent = true;
+    displaced?.socket.destroy();
     return { ...fields, controlEpoch: epoch, heartbeatChallenge };
   };
 
@@ -248,21 +291,6 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   };
 
   const dispatch = async (socket: Socket, method: string, params: unknown): Promise<unknown> => {
-    if (method === role.openMethod) {
-      if (nonceSpent) {
-        throw new ProxyControlProtocolError('unauthorized_control', 'The bootstrap nonce was already spent.');
-      }
-      const supplied = (params as { bootstrapNonce?: unknown } | null)?.bootstrapNonce;
-      const expected = Buffer.from(role.bootstrapNonce, 'utf8');
-      const offered = typeof supplied === 'string' ? Buffer.from(supplied, 'utf8') : Buffer.alloc(0);
-      if (offered.length !== expected.length || !timingSafeEqual(offered, expected)) {
-        throw new ProxyControlProtocolError(
-          'unauthorized_control',
-          'Control open did not present the bootstrap nonce.',
-        );
-      }
-      return openTenancy(socket, params);
-    }
     if (method === role.heartbeatMethod) {
       return echoChallenge(socket, params);
     }
@@ -289,6 +317,9 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     if (entry === undefined) {
       throw new UnknownControlMethodError(method);
     }
+    if (entry.authority === 'establishes-control') {
+      return establishControl(socket, entry.handle, params);
+    }
     if (entry.authority === 'pairing') {
       if (pairedSocket !== socket) {
         throw new ProxyControlProtocolError('unauthorized_control', `${method} requires the paired peer channel.`);
@@ -314,8 +345,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       try {
         write(socket, success(id, await dispatch(socket, method, params)));
       } catch (error: unknown) {
-        const code = error instanceof UnknownControlMethodError ? JSON_RPC_METHOD_NOT_FOUND : JSON_RPC_INVALID_REQUEST;
-        write(socket, failure(id, code, error instanceof Error ? error.message : 'Control request failed.'));
+        write(socket, handlerFailure(id, error));
       }
       return;
     }
@@ -335,8 +365,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     } catch (error: unknown) {
       if (settled) return;
       settled = true;
-      const code = error instanceof UnknownControlMethodError ? JSON_RPC_METHOD_NOT_FOUND : JSON_RPC_INVALID_REQUEST;
-      write(socket, failure(id, code, error instanceof Error ? error.message : 'Control request failed.'));
+      write(socket, handlerFailure(id, error));
     } finally {
       timer.clearTimeout(budget);
     }
