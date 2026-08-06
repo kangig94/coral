@@ -47,12 +47,12 @@ export function clearIdleTimer(entry: ProviderHostEntry, time: Pick<TimePort, 'c
   entry.idleTimer = null;
 }
 
-function usesHostStats(entry: ProviderHostEntry): boolean {
-  return entry.spec.leaseMode === 'shared' && entry.spec.idlePolicy === 'host-stats';
+function retiresOnHostReport(entry: ProviderHostEntry): boolean {
+  return entry.spec.leaseMode === 'shared' && entry.spec.idleRetirement === 'host-reported';
 }
 
-function hasDaemonLifetime(entry: ProviderHostEntry): boolean {
-  return entry.spec.leaseMode === 'shared' && entry.spec.idlePolicy === 'daemon';
+function neverRetiresWhenIdle(entry: ProviderHostEntry): boolean {
+  return entry.spec.leaseMode === 'shared' && entry.spec.idleRetirement === 'none';
 }
 
 function isHostIdleFromStats(entry: ProviderHostEntry): boolean {
@@ -67,10 +67,10 @@ function canCloseIdleHost(entry: ProviderHostEntry, entries: Map<string, Provide
   if (activePinCount(entry) > 0) {
     return false;
   }
-  if (hasDaemonLifetime(entry)) {
+  if (neverRetiresWhenIdle(entry)) {
     return false;
   }
-  if (usesHostStats(entry)) {
+  if (retiresOnHostReport(entry)) {
     return isHostIdleFromStats(entry);
   }
   return true;
@@ -91,11 +91,11 @@ export function maybeArmIdleTimer(
   if (activePinCount(entry) > 0) {
     return;
   }
-  if (hasDaemonLifetime(entry)) {
+  if (neverRetiresWhenIdle(entry)) {
     clearIdleTimer(entry, options.runtime.time);
     return;
   }
-  if (usesHostStats(entry) && !isHostIdleFromStats(entry)) {
+  if (retiresOnHostReport(entry) && !isHostIdleFromStats(entry)) {
     return;
   }
 
@@ -123,7 +123,7 @@ export function attachHostNotificationListener(
   entry.disposeHostNotifications?.();
   entry.disposeHostNotifications = null;
 
-  if (!usesHostStats(entry)) {
+  if (!retiresOnHostReport(entry)) {
     entry.hostStats = null;
     return;
   }

@@ -416,7 +416,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
   args: string[];
   cwd: string;
   leaseMode: 'shared';
-  idlePolicy: 'host-stats' | 'daemon';
+  idleRetirement: 'host-reported' | 'none';
 }): Provider {
   return {
     name: 'claude',

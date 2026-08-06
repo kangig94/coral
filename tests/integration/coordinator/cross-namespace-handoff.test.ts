@@ -56,7 +56,7 @@ function createRecoveryProvider(): ProviderRegistry {
         args: [],
         cwd: '/handoff/cross-namespace',
         leaseMode: 'shared',
-        idlePolicy: 'daemon',
+        idleRetirement: 'none',
       },
       interrupt: async () => {},
       probe: async (_transport, continuity) => ({ resumable: true, updatedContinuity: continuity }),

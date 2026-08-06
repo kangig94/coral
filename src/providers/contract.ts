@@ -97,12 +97,16 @@ export type ProviderServerSpec = ProviderServerSpecBase &
   (
     | {
         leaseMode: 'shared';
-        /** Evidence required before the manager may retire an unpinned shared host. */
-        idlePolicy: 'host-stats' | 'daemon';
+        /**
+         * What retires an unpinned shared host. `'host-reported'` retires it once the host itself
+         * reports no live controllers and no active turns; `'none'` keeps it until an explicit
+         * shutdown, so idleness alone never ends its lifetime.
+         */
+        idleRetirement: 'host-reported' | 'none';
       }
     | {
         leaseMode: 'job-exclusive';
-        idlePolicy?: never;
+        idleRetirement?: never;
       }
   );
 

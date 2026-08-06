@@ -18,9 +18,9 @@ function expectedHost(spec: ProviderServerSpec, jobId = 'shared-attachment') {
 
 describe('provider host pool', () => {
   it.each([
-    [{ ...createSharedSpec(), idlePolicy: undefined }, 'shared hosts require idlePolicy'],
-    [{ ...createSharedSpec(), idlePolicy: 'implicit-timeout' }, 'shared hosts require idlePolicy'],
-    [{ ...createExclusiveSpec(), idlePolicy: 'daemon' }, 'job-exclusive hosts cannot declare idlePolicy'],
+    [{ ...createSharedSpec(), idleRetirement: undefined }, 'shared hosts require idleRetirement'],
+    [{ ...createSharedSpec(), idleRetirement: 'implicit-timeout' }, 'shared hosts require idleRetirement'],
+    [{ ...createExclusiveSpec(), idleRetirement: 'none' }, 'job-exclusive hosts cannot declare idleRetirement'],
     [{ ...createExclusiveSpec(), leaseMode: 'unknown' }, "leaseMode must be 'shared' or 'job-exclusive'"],
   ])('rejects malformed runtime lifecycle policy before spawning', async (spec, expected) => {
     const server = createFakeProviderServerHandle();
@@ -63,7 +63,7 @@ describe('provider host pool', () => {
       hostKeyFromSpec({ ...base, env: { CODEX_HOME: '/accounts/b' } }),
     );
     const shared = createSharedSpec();
-    expect(hostKeyFromSpec({ ...shared, idlePolicy: 'daemon' })).toBe(hostKeyFromSpec(shared));
+    expect(hostKeyFromSpec({ ...shared, idleRetirement: 'none' })).toBe(hostKeyFromSpec(shared));
     const initialized = createExclusiveSpec({
       initializeRequest: { method: 'initialize', params: { beta: 2, alpha: { y: 2, x: 1 } } },
       initializeTimeoutMs: 1_000,
@@ -265,12 +265,12 @@ describe('provider host pool', () => {
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
     });
-    const statsSpec = createSharedSpec();
-    const lease = await manager.openSession(createLaunch(statsSpec));
-    const daemonSpec = createSharedSpec({ idlePolicy: 'daemon' });
+    const hostReportedSpec = createSharedSpec();
+    const lease = await manager.openSession(createLaunch(hostReportedSpec));
+    const noRetirementSpec = createSharedSpec({ idleRetirement: 'none' });
 
-    await expect(manager.openSession(createLaunch(daemonSpec))).rejects.toThrow('provider_host_policy_conflict');
-    await expect(manager.attachSession(lease.hostRef, expectedHost(daemonSpec))).resolves.toBeNull();
+    await expect(manager.openSession(createLaunch(noRetirementSpec))).rejects.toThrow('provider_host_policy_conflict');
+    await expect(manager.attachSession(lease.hostRef, expectedHost(noRetirementSpec))).resolves.toBeNull();
 
     lease.close();
     await manager.shutdown();
@@ -471,7 +471,7 @@ describe('provider host pool', () => {
     expect(server.closeMock).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps daemon-lifetime shared hosts alive regardless of pins or host notifications', async () => {
+  it('keeps shared hosts with idle retirement disabled alive regardless of pins or host notifications', async () => {
     vi.useFakeTimers();
     const server = createFakeProviderServerHandle({ generation: 74 });
     const manager = new DefaultProviderHostManager({
@@ -479,7 +479,7 @@ describe('provider host pool', () => {
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       idleTimeoutMs: 10,
     });
-    const lease = await manager.openSession(createLaunch(createSharedSpec({ idlePolicy: 'daemon' })));
+    const lease = await manager.openSession(createLaunch(createSharedSpec({ idleRetirement: 'none' })));
 
     lease.close();
     server.emitNotification({ method: 'host/stats', params: { liveControllers: 0, activeTurns: 0 } });

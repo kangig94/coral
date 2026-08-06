@@ -17,7 +17,7 @@ export function createSharedSpec(overrides: Partial<SharedProviderServerSpec> = 
     args: ['broker.js'],
     cwd: process.cwd(),
     leaseMode: 'shared',
-    idlePolicy: 'host-stats',
+    idleRetirement: 'host-reported',
     ...overrides,
   };
 }

@@ -470,7 +470,7 @@ describe('provider execution plan', () => {
     const otherProfile = prepare('/accounts/b', 'session-c', 'handle-c');
 
     expect(first.plan.host.leaseMode).toBe('shared');
-    expect(codexLaunch(first).idlePolicy).toBe('daemon');
+    expect(codexLaunch(first).idleRetirement).toBe('none');
     expect(hostKeyFromSpec(codexLaunch(first))).toBe(hostKeyFromSpec(codexLaunch(second)));
     expect(hostKeyFromSpec(codexLaunch(first))).not.toBe(hostKeyFromSpec(codexLaunch(otherProfile)));
     expect(codexThreadEnvironment(first)).toMatchObject({

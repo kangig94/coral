@@ -64,7 +64,7 @@ export function hostFingerprintFromSpec(spec: ProviderServerSpec): string {
       JSON.stringify({
         identity: hostKeyFromSpec(spec),
         leaseMode: spec.leaseMode,
-        idlePolicy: spec.leaseMode === 'shared' ? spec.idlePolicy : null,
+        idleRetirement: spec.leaseMode === 'shared' ? spec.idleRetirement : null,
       }),
     )
     .digest('hex');

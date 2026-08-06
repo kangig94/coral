@@ -51,12 +51,12 @@ function compileLaunchEnvironment(spec: ProviderServerSpec, platform: string): R
 function assertProviderHostPolicy(spec: ProviderServerSpec): void {
   const value = spec as unknown as Record<string, unknown>;
   if (value.leaseMode === 'shared') {
-    if (value.idlePolicy === 'host-stats' || value.idlePolicy === 'daemon') return;
-    throw new Error("provider_host_policy_invalid: shared hosts require idlePolicy 'host-stats' or 'daemon'");
+    if (value.idleRetirement === 'host-reported' || value.idleRetirement === 'none') return;
+    throw new Error("provider_host_policy_invalid: shared hosts require idleRetirement 'host-reported' or 'none'");
   }
   if (value.leaseMode === 'job-exclusive') {
-    if (!Object.hasOwn(value, 'idlePolicy')) return;
-    throw new Error('provider_host_policy_invalid: job-exclusive hosts cannot declare idlePolicy');
+    if (!Object.hasOwn(value, 'idleRetirement')) return;
+    throw new Error('provider_host_policy_invalid: job-exclusive hosts cannot declare idleRetirement');
   }
   throw new Error("provider_host_policy_invalid: leaseMode must be 'shared' or 'job-exclusive'");
 }
@@ -293,7 +293,7 @@ export class DefaultProviderHostManager implements ProviderHostManager {
     jobId: string | undefined,
   ): ProviderHostEntry {
     const identityKey = hostKeyFromSpec(spec);
-    const requestedPolicy = spec.leaseMode === 'shared' ? `${spec.leaseMode}:${spec.idlePolicy}` : spec.leaseMode;
+    const requestedPolicy = spec.leaseMode === 'shared' ? `${spec.leaseMode}:${spec.idleRetirement}` : spec.leaseMode;
     const existingPolicy = this.lifecyclePolicies.get(identityKey);
     if (existingPolicy !== undefined && existingPolicy !== requestedPolicy) {
       throw new Error(

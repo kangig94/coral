@@ -611,7 +611,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
   args: string[];
   cwd: string;
   leaseMode: 'shared';
-  idlePolicy: 'host-stats' | 'daemon';
+  idleRetirement: 'host-reported' | 'none';
 }): Provider {
   return {
     name: 'claude',
@@ -2873,7 +2873,7 @@ describe('ExecutionService', () => {
                 cwd: ctx.projectRoot,
                 env: {},
                 leaseMode: 'shared',
-                idlePolicy: 'daemon',
+                idleRetirement: 'none',
               },
               interrupt: async () => {},
               finalizeInterrupted: (probeResult, _continuity, context) =>
