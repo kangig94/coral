@@ -23,6 +23,7 @@ const DOMAIN_BUCKET_PREFIXES = [
   'shared',
   'types',
   'providers',
+  'provider-proxy',
   'workflow',
   'kb-daemon',
   'kb',
