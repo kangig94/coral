@@ -80,6 +80,16 @@ export type ControlEndpointRole = Readonly<{
   openResult(params: unknown): Record<string, unknown>;
   /** Methods requiring active control. */
   methods: ReadonlyMap<string, ControlMethodHandler>;
+  /**
+   * The capsule-authenticated peer channel, held open for the lifetime of the set alongside control. It is
+   * a separate authority: the guardian stages a provider root over it while the coordinator's own control
+   * connection is still provisional, and its loss is evidence in its own right.
+   */
+  pairing?: Readonly<{
+    openMethod: string;
+    secret: string;
+    methods: ReadonlyMap<string, ControlMethodHandler>;
+  }>;
 }>;
 
 export type ControlEndpointObserver = Readonly<{
@@ -87,6 +97,8 @@ export type ControlEndpointObserver = Readonly<{
   onChallengeEcho(epoch: ControlEpoch): void;
   /** The control connection ended. The owner may treat this as its local `eofAt`. */
   onControlLost(epoch: ControlEpoch): void;
+  /** The paired peer channel ended. Pairing loss accelerates an already-armed enforcer. */
+  onPairingLost?(): void;
 }>;
 
 export type ControlEndpointOptions = Readonly<{
@@ -150,6 +162,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   let tenancy: Tenancy | null = null;
   let nextEpoch: ControlEpoch = 1;
   let nonceSpent = false;
+  let pairedSocket: Socket | null = null;
   let closed = false;
 
   const write = (socket: Socket, message: ProxyControlJsonRpcMessage): void => {
@@ -206,6 +219,22 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     if (method === role.heartbeatMethod) {
       return echoChallenge(socket, params);
     }
+    const pairing = role.pairing;
+    if (pairing !== undefined && method === pairing.openMethod) {
+      const supplied = (params as { pairingSecret?: unknown } | null)?.pairingSecret;
+      if (typeof supplied !== 'string' || supplied !== pairing.secret) {
+        throw new ProxyControlProtocolError('unauthorized_control', 'Pairing did not present the shared secret.');
+      }
+      pairedSocket = socket;
+      return { state: 'paired' };
+    }
+    const pairedHandler = pairing?.methods.get(method);
+    if (pairedHandler !== undefined) {
+      if (pairedSocket !== socket) {
+        throw new ProxyControlProtocolError('unauthorized_control', `${method} requires the paired peer channel.`);
+      }
+      return pairedHandler(params);
+    }
     const handler = role.methods.get(method);
     if (handler === undefined) {
       throw new UnknownControlMethodError(method);
@@ -247,9 +276,12 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   };
 
   const acceptConnection = (socket: Socket): void => {
-    // Exactly one connection may hold control. A second concurrent peer is refused rather than queued, so
-    // two coordinators can never both believe they own this set.
-    if (tenancy !== null && !tenancy.socket.destroyed) {
+    // One connection holds control and, when the role has a peer, one more may hold pairing. Anything
+    // beyond that is refused rather than queued, so two coordinators can never both believe they own this
+    // set and no third party can sit on the endpoint waiting for a slot.
+    const controlTaken = tenancy !== null && !tenancy.socket.destroyed;
+    const pairingTaken = pairedSocket !== null && !pairedSocket.destroyed;
+    if (controlTaken && (role.pairing === undefined || pairingTaken)) {
       socket.destroy();
       return;
     }
@@ -273,6 +305,10 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     socket.on('data', read);
     socket.on('error', () => socket.destroy());
     socket.on('close', () => {
+      if (pairedSocket === socket) {
+        pairedSocket = null;
+        observer.onPairingLost?.();
+      }
       const live = tenancy;
       if (live === null || live.socket !== socket) return;
       tenancy = null;
@@ -315,6 +351,8 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       const live = tenancy;
       tenancy = null;
       live?.socket.destroy();
+      pairedSocket?.destroy();
+      pairedSocket = null;
       const running = server;
       server = null;
       if (running === null) return;
