@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createMonotonicClock, type MonotonicClock, type MonotonicInstant } from '#src/infra/monotonic-clock.js';
-import {
-  ControlLeaseEvidence,
-  RECENT_CHALLENGE_HISTORY,
-  type ControlLeasePolicy,
-} from '#src/provider-proxy/control-lease.js';
+import { ControlLeaseEvidence, RECENT_CHALLENGE_HISTORY } from '#src/provider-proxy/control-lease.js';
 
 const scope = Symbol('control-lease-test');
 
@@ -25,14 +21,14 @@ function createFakeClock<Scope extends symbol>(
   };
 }
 
-/** A policy an individual test can mutate after construction, since the class now reads it live. */
-function createMutablePolicy<Scope extends symbol>(): ControlLeasePolicy<Scope> & {
+/** A ceiling an individual test can mutate after construction, since the class now reads it live. */
+function createMutableCeiling<Scope extends symbol>(): Readonly<{
+  expiryCeiling(): MonotonicInstant<Scope> | null;
   setCeiling(next: MonotonicInstant<Scope> | null): void;
-} {
+}> {
   let ceiling: MonotonicInstant<Scope> | null = null;
   return {
     expiryCeiling: () => ceiling,
-    coordinatorIsLive: () => true,
     setCeiling: (next) => {
       ceiling = next;
     },
@@ -42,8 +38,8 @@ function createMutablePolicy<Scope extends symbol>(): ControlLeasePolicy<Scope> 
 describe('ControlLeaseEvidence', () => {
   it('clamps the outstanding challenge expiry to the given ceiling, and applies none when null', () => {
     const fake = createFakeClock(scope, 0);
-    const policy = createMutablePolicy<typeof scope>();
-    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), policy);
+    const ceiling = createMutableCeiling<typeof scope>();
+    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), ceiling.expiryCeiling);
     fake.set(1_000);
     const issuedAt = fake.clock.now();
     evidence.issueFirstChallenge('c1', issuedAt);
@@ -52,23 +48,23 @@ describe('ControlLeaseEvidence', () => {
     const lateCeiling = fake.clock.shiftMilliseconds(issuedAt, 9_000);
 
     // A ceiling earlier than the lease wins.
-    policy.setCeiling(earlyCeiling);
+    ceiling.setCeiling(earlyCeiling);
     expect(fake.clock.compare(evidence.challengeExpiresAt()!, earlyCeiling)).toBe(0);
     // A ceiling later than the lease never pushes expiry out past the lease itself.
-    policy.setCeiling(lateCeiling);
+    ceiling.setCeiling(lateCeiling);
     expect(fake.clock.compare(evidence.challengeExpiresAt()!, leaseExpiry)).toBe(0);
     // No ceiling at all is the plain lease expiry.
-    policy.setCeiling(null);
+    ceiling.setCeiling(null);
     expect(fake.clock.compare(evidence.challengeExpiresAt()!, leaseExpiry)).toBe(0);
   });
 
   it('refuses an echo past a clamped ceiling even though the lease itself has not expired', () => {
     const fake = createFakeClock(scope, 0);
-    const policy = createMutablePolicy<typeof scope>();
-    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), policy);
+    const ceiling = createMutableCeiling<typeof scope>();
+    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), ceiling.expiryCeiling);
     fake.set(1_000);
     evidence.issueFirstChallenge('c1', fake.clock.now());
-    policy.setCeiling(fake.clock.shiftMilliseconds(fake.clock.now(), 2_000));
+    ceiling.setCeiling(fake.clock.shiftMilliseconds(fake.clock.now(), 2_000));
     fake.set(3_001);
 
     expect(evidence.echoChallenge(fake.clock.now(), 'c1', 'c2')).toEqual({
@@ -79,10 +75,7 @@ describe('ControlLeaseEvidence', () => {
 
   it('allows exactly the first successor echo after control loss, then enforces liveness again', () => {
     const fake = createFakeClock(scope, 0);
-    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), {
-      expiryCeiling: () => null,
-      coordinatorIsLive: () => true,
-    });
+    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), () => null);
     fake.set(1_000);
     evidence.issueFirstChallenge('c1', fake.clock.now());
     fake.set(1_100);
@@ -108,10 +101,7 @@ describe('ControlLeaseEvidence', () => {
     const fake = createFakeClock(scope, 0);
     // A lease this long keeps every round trip in this test well inside it, so only the history bound is
     // under test, not expiry.
-    const evidence = new ControlLeaseEvidence(fake.clock, 1_000_000, fake.clock.now(), {
-      expiryCeiling: () => null,
-      coordinatorIsLive: () => true,
-    });
+    const evidence = new ControlLeaseEvidence(fake.clock, 1_000_000, fake.clock.now(), () => null);
     evidence.issueFirstChallenge('c0', fake.clock.now());
 
     let previous = 'c0';
@@ -131,10 +121,7 @@ describe('ControlLeaseEvidence', () => {
 
   it('refuses a second first challenge once one is already outstanding', () => {
     const fake = createFakeClock(scope, 0);
-    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), {
-      expiryCeiling: () => null,
-      coordinatorIsLive: () => true,
-    });
+    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), () => null);
 
     expect(evidence.issueFirstChallenge('c1', fake.clock.now())).toBe(true);
     expect(evidence.issueFirstChallenge('c2', fake.clock.now())).toBe(false);
@@ -142,10 +129,7 @@ describe('ControlLeaseEvidence', () => {
 
   it('clears an observed EOF when a live connection carries the tenancy forward again', () => {
     const fake = createFakeClock(scope, 0);
-    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), {
-      expiryCeiling: () => null,
-      coordinatorIsLive: () => true,
-    });
+    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), () => null);
     fake.set(1_000);
     evidence.issueFirstChallenge('c1', fake.clock.now());
     fake.set(1_500);

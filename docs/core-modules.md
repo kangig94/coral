@@ -42,8 +42,8 @@ Each domain is self-contained: its own contract (events, projection, read-models
 
 | Domain   | Responsibility                                                                                                                                                  |
 | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Jobs     | Job lifecycle truth — launch, admit, wait, abort, terminal outcome, cause references, startup reconciliation.                                                   |
-| Provider proxy | Control protocol, bootstrap capsules, control-lease round-trip evidence, enforcement deadlines and containment teardown, three role processes (guardian, reaper, and the proxy that owns the operation ledger), and handoff grants for provider processes that survive a coordinator handoff. Opens no store; binds no coordinator socket. |
+| Jobs     | Job lifecycle truth — launch, admit, wait, abort, terminal outcome, cause references, startup reconciliation — plus the durable provider-operation runtime-meta locator codec and the single transactional seam that applies a proxy-reported provider event as durable job/session effects. |
+| Provider proxy | Control protocol, bootstrap capsules, argv-mode dispatch and the process entry point shared by all three roles, control-lease round-trip evidence, enforcement deadlines and containment teardown, three role processes (guardian, reaper, and the proxy that owns the operation ledger), and handoff grants for provider processes that survive a coordinator handoff. The domain spawns its own peer roles — the guardian spawns the reaper, then the proxy — but the coordinator spawns the guardian itself, because only the guardian watches the proxy's process group come into being and can observe the identity of what it spawned. Opens no store; binds no coordinator socket. |
 | Sessions | Session persistence and continuity — open, checkpoint, interrupt, provider failure, close, atomic storage, lookup by id or ref.                                 |
 | Workflow | DSL parsing, semantic plan compilation, pipeline execution (launch and retry intertwined), drain handling, resume-from-projection.                              |
 | Discuss  | Multi-agent discussion loop — pure state machine at the core, imperative shell around it for persistence, bids, speeches, follow-ups, synthesis, and snapshots. |
@@ -127,6 +127,7 @@ Infrastructure helpers sit below every domain: schemas, small utilities, SSE par
 | `workflow/`           | Plan and slot semantics                          | Provider/session persistence              |
 | `discuss/`            | Discussion state and shell loop                  | Coordinator lifecycle                     |
 | `kb/`                 | Corpus authority and query semantics             | Expansion lifecycle ownership             |
+| `provider-proxy/`     | Control protocol, bootstrap capsules, and each role's own peer-spawning | Coordinator wiring, the store, or the coordinator socket |
 | `coordinator/`        | Live state, startup order, cross-domain assembly | Domain vocabulary                         |
 | `transport/`          | Wire parsing and response mapping                | Business behavior                         |
 | `cli/`                | User command surface and local startup glue      | Backend/domain truth                      |

@@ -19,8 +19,14 @@ export interface ProviderProxySetAuthority {
   snapshotOperations(signal: AbortSignal): Promise<readonly string[]>;
   /**
    * Installs one grant across guardian, reaper and proxy over the exact snapshot, then writes and fsyncs the
-   * successor capsule. Both halves are one step because a grant with no capsule is unredeemable and a capsule
-   * with no grant is a secret nobody honours — either alone strands the set.
+   * successor capsule. Both halves are meant to be one step, because a grant with no capsule is unredeemable
+   * and a capsule with no grant is a secret nobody honours — either alone strands the set.
+   *
+   * Not implemented yet: today's only implementation refuses unconditionally, with
+   * `ProviderProxyHandoffGrantUnavailableError`. The reaper has no install RPC and no successor capsule is
+   * ever written, so there is no way to honour the contract above without half-installing a grant nothing
+   * could redeem. Wiring both is the coordinated-shutdown / operation-ledger work (plan item W2.3); until
+   * then, refusing is what this method guarantees.
    */
   installHandoffGrant(operationIds: readonly string[], signal: AbortSignal): Promise<void>;
   /**

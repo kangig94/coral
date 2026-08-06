@@ -4,7 +4,7 @@ import type { MonotonicClock } from '../infra/monotonic-clock.js';
 // The stop cause is shared with the coordinator's durable side. It lives in `providers/` because both sides
 // may reach it and neither may reach the other: this tree is barred from `jobs/`, and the reverse edge would
 // point the dependency the wrong way.
-import { providerStopCauseSchema, type ProviderStopCause } from '../providers/contract.js';
+import { isInterruptionStopCause, providerStopCauseSchema, type ProviderStopCause } from '../providers/contract.js';
 import { createBootstrapNonceCredential, type ProxyBootstrapCapsule } from './bootstrap-capsule.js';
 import { ControlLeaseEvidence } from './control-lease.js';
 import {
@@ -190,11 +190,8 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
   // proxy's own start is the evidence, exactly as the ledger's own baseline already was.
   const startedAt = clock.now();
   const nowMs = (): number => clock.millisecondsBetween(startedAt, clock.now());
-  const evidence = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, startedAt, {
-    // Operational control is evidence for no containment window, and this process probes no coordinator.
-    expiryCeiling: () => null,
-    coordinatorIsLive: () => true,
-  });
+  // Operational control is evidence for no containment window, so it has no ceiling to clamp against.
+  const evidence = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, startedAt, () => null);
 
   const challenges: ControlChallengeAuthority = {
     controlIsLive: () => evidence.isControlLive(clock.now()),
@@ -409,10 +406,9 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           // entry here would drop the replay buffer that decision still needs. Only a recorded restart or
           // handoff suspends — the abort causes end the operation outright, and claiming they interrupted
           // it would write an interruption the user never suffered.
-          const next =
-            request.cause === 'restart' || request.cause === 'handoff'
-              ? 'suspended-awaiting-durable-decision'
-              : 'terminal-awaiting-journal-ack';
+          const next = isInterruptionStopCause(request.cause)
+            ? 'suspended-awaiting-durable-decision'
+            : 'terminal-awaiting-journal-ack';
           if (entry.state === 'executing') {
             await host.stop({ key, cause: request.cause });
             try {

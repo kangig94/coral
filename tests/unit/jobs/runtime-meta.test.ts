@@ -170,4 +170,81 @@ describe('encodeProviderOperationRuntimeMeta / decodeProviderOperationRuntimeMet
     expect(thrown).toBeInstanceOf(ProviderOperationRuntimeMetaCodecError);
     expect((thrown as ProviderOperationRuntimeMetaCodecError).code).toBe('meta_invalid');
   });
+
+  it('wraps a schema-invalid record in the same typed error decode uses, not a raw ZodError', () => {
+    const invalid = { ...validMeta(), jobId: 'not-a-uuid' } as ProviderOperationRuntimeMeta;
+
+    let thrown: unknown;
+    try {
+      encodeProviderOperationRuntimeMeta(invalid);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ProviderOperationRuntimeMetaCodecError);
+    expect((thrown as ProviderOperationRuntimeMetaCodecError).code).toBe('meta_invalid');
+  });
+
+  it('rejects a single over-long endpoint field as a field-attributable schema failure, not the record-level cap', () => {
+    // Below the whole-record cap alone, but large enough that combined with the rest of the record it would
+    // blow the 4096-byte budget — proving the endpoint field is bounded well under the record cap instead of
+    // relying on the record-level check to catch it (and mislabel it `meta_too_large`).
+    const overLongEndpoint = '/' + 'x'.repeat(3500);
+    const meta = validMeta({ canonicalEndpoint: overLongEndpoint });
+
+    let thrown: unknown;
+    try {
+      encodeProviderOperationRuntimeMeta(meta);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ProviderOperationRuntimeMetaCodecError);
+    expect((thrown as ProviderOperationRuntimeMetaCodecError).code).toBe('meta_invalid');
+  });
+
+  describe('the 4096-byte cap at its boundary', () => {
+    // `jointContainmentReceipt` is the one field the schema leaves unbounded, so padding it is how a record
+    // is engineered to encode to an exact byte count instead of merely "large enough to trip the cap" — an
+    // off-by-one cap (`>=` instead of `>`) would reject a legitimate maximal record and this is the only
+    // shape of test that would catch it.
+    function metaWithEncodedByteLength(targetBytes: number): ProviderOperationRuntimeMeta {
+      const probe = validMeta({ jointContainmentReceipt: 'x' });
+      const probeBytes = Buffer.byteLength(JSON.stringify(probe), 'utf8');
+      return validMeta({ jointContainmentReceipt: 'x'.repeat(targetBytes - probeBytes + 1) });
+    }
+
+    it('accepts a record that encodes to exactly the cap, on both encode and decode', () => {
+      const meta = metaWithEncodedByteLength(4096);
+
+      const encoded = encodeProviderOperationRuntimeMeta(meta);
+
+      expect(Buffer.byteLength(encoded, 'utf8')).toBe(4096);
+      expect(decodeProviderOperationRuntimeMeta(encoded)).toEqual(meta);
+    });
+
+    it('rejects a record that encodes to one byte over the cap, on both encode and decode', () => {
+      const meta = metaWithEncodedByteLength(4097);
+      const rawOneByteOver = JSON.stringify(meta);
+      expect(Buffer.byteLength(rawOneByteOver, 'utf8')).toBe(4097);
+
+      let encodeThrown: unknown;
+      try {
+        encodeProviderOperationRuntimeMeta(meta);
+      } catch (error) {
+        encodeThrown = error;
+      }
+      expect(encodeThrown).toBeInstanceOf(ProviderOperationRuntimeMetaCodecError);
+      expect((encodeThrown as ProviderOperationRuntimeMetaCodecError).code).toBe('meta_too_large');
+
+      let decodeThrown: unknown;
+      try {
+        decodeProviderOperationRuntimeMeta(rawOneByteOver);
+      } catch (error) {
+        decodeThrown = error;
+      }
+      expect(decodeThrown).toBeInstanceOf(ProviderOperationRuntimeMetaCodecError);
+      expect((decodeThrown as ProviderOperationRuntimeMetaCodecError).code).toBe('meta_too_large');
+    });
+  });
 });

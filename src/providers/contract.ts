@@ -267,6 +267,11 @@ export function isAbortStopCause(cause: ProviderStopCause): cause is AbortReason
   return (abortReasons as readonly string[]).includes(cause);
 }
 
+/** Whether a stop cause left the turn cut off, and therefore owes the job a truthful `session.interrupted`. */
+export function isInterruptionStopCause(cause: ProviderStopCause): cause is ProviderInterruptionCause {
+  return (PROVIDER_INTERRUPTION_CAUSES as readonly string[]).includes(cause);
+}
+
 export const providerFailureCauseSchema = z.discriminatedUnion('type', [
   z
     .object({

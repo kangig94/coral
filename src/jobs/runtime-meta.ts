@@ -25,10 +25,13 @@ const hostFingerprintSchema = z
   .string()
   .length(64)
   .regex(/^[0-9a-f]{64}$/);
+// Capped well under MAX_PROVIDER_OPERATION_RUNTIME_META_BYTES: a per-field max at (or near) the whole-record
+// cap would let one over-long endpoint alone exceed the record and surface as the record-level `meta_too_large`
+// instead of a schema failure attributable to the field that actually caused it.
 const canonicalEndpointSchema = z
   .string()
   .min(1)
-  .max(4096)
+  .max(1024)
   .refine((value) => isAbsolute(value) && normalize(value) === value, 'endpoint must be an absolute canonical path');
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
 const containmentKindSchema = z.string().min(1).max(64);
@@ -93,11 +96,20 @@ export function providerOperationRuntimeMetaKey(jobId: string, operationId: stri
 
 /**
  * Validates `meta` against the strict schema, then serializes it compactly and enforces the 4096-byte cap on
- * the encoded bytes (not the object) — the cap is on what actually goes in the `meta` row.
+ * the encoded bytes (not the object) — the cap is on what actually goes in the `meta` row. Schema failures
+ * surface through the same typed `ProviderOperationRuntimeMetaCodecError` `decode` uses, rather than letting a
+ * raw `ZodError` escape one direction of a round trip that is symmetric everywhere else.
  */
 export function encodeProviderOperationRuntimeMeta(meta: ProviderOperationRuntimeMeta): string {
-  const validated = providerOperationRuntimeMetaSchema.parse(meta);
-  const encoded = JSON.stringify(validated);
+  const result = providerOperationRuntimeMetaSchema.safeParse(meta);
+  if (!result.success) {
+    throw new ProviderOperationRuntimeMetaCodecError(
+      'meta_invalid',
+      `Provider operation runtime meta failed schema validation: ${result.error.message}`,
+      { cause: result.error },
+    );
+  }
+  const encoded = JSON.stringify(result.data);
   const byteLength = Buffer.byteLength(encoded, 'utf8');
   if (byteLength > MAX_PROVIDER_OPERATION_RUNTIME_META_BYTES) {
     throw new ProviderOperationRuntimeMetaCodecError(

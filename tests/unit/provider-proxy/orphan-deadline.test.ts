@@ -72,9 +72,9 @@ function issueMessages(raw: string): string[] {
 }
 
 /** A deterministic, prefix-tagged minter, so distinct machines in the same test never collide by accident. */
-function policy(prefix: string, coordinatorIsLive: () => boolean = () => true): EnforcerChallengePolicy {
+function policy(prefix: string): EnforcerChallengePolicy {
   let count = 0;
-  return { coordinatorIsLive, mintChallenge: () => `${prefix}-${(count += 1)}` };
+  return { mintChallenge: () => `${prefix}-${(count += 1)}` };
 }
 
 /** Narrows an `{ accepted }`-discriminated result, failing the test loudly instead of silently continuing. */
@@ -278,29 +278,6 @@ describe('provider proxy enforcer deadline evidence', () => {
     expectSameInstant(fake.clock, after.exitDeadline, before.exitDeadline);
     expectSameInstant(fake.clock, after.adoptionDeadline, before.adoptionDeadline);
     expect(work).toHaveBeenCalledTimes(2);
-  });
-
-  it('rejects a buffered echo after coordinator death without counting its receive time', () => {
-    const fake = createFakeClock(guardianClockScope, 500);
-    let coordinatorLive = true;
-    const guardian = createEnforcerDeadlineStateMachine(
-      fake.clock,
-      configuration(),
-      policy('c', () => coordinatorLive),
-    );
-    fake.set(1_000);
-    const countedIssuance = fake.clock.now();
-    const first = mustAccept(guardian.issueFirstChallenge());
-    fake.set(1_100);
-    const second = mustAccept(guardian.echoChallenge(first.challenge));
-    coordinatorLive = false;
-    fake.set(1_501);
-
-    expect(guardian.echoChallenge(second.nextChallenge)).toEqual({
-      accepted: false,
-      reason: 'coordinator-not-live',
-    });
-    expectSameInstant(fake.clock, guardian.bounds().lastRoundTripEvidenceAt, countedIssuance);
   });
 
   it('ignores positive and negative wall-clock jumps', () => {

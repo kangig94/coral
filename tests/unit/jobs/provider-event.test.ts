@@ -4,11 +4,14 @@ import {
   applyProviderEventAtSeq,
   ProviderEventDurableStateUncommittedError,
   ProviderEventIdentityMismatchError,
+  ProviderEventInvalidSeqError,
+  type ApplyProviderEventInput,
   type ApplyProviderEventResult,
   type ProviderEventEffectPort,
   type ProviderOperationEventIdentity,
 } from '#src/jobs/provider-event.js';
 import {
+  PROVIDER_INTERRUPTION_CAUSES,
   PROVIDER_STOP_CAUSES,
   type ProviderContinuityEventBody,
   type ProviderProgressEventBody,
@@ -107,6 +110,17 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
   throw new Error('expected the promise to reject');
 }
 
+// A suspended event without a recorded cause is unstateable now that `recordedStopCause` lives on the
+// `suspended` variant of `ApplyProviderEventBody` itself rather than as an optional sibling field — this
+// function is never called; `tsc -p tsconfig/typecheck.json` (`npm run typecheck:tests`) is what proves it.
+function compileTimeAssertions(): void {
+  // @ts-expect-error a suspended event must carry its recordedStopCause inline; this shape cannot be built.
+  const unstateable: ApplyProviderEventInput = { identity: IDENTITY, seq: 1, event: SUSPENDED_EVENT };
+  void unstateable;
+}
+
+void compileTimeAssertions;
+
 describe('applyProviderEventAtSeq', () => {
   it('is effect-free and acknowledges the current watermark when seq is at or below it', async () => {
     const { port, calls } = createFakePort({ initialWatermark: 5 });
@@ -147,6 +161,22 @@ describe('applyProviderEventAtSeq', () => {
 
     expect(error).toBeInstanceOf(ProviderEventIdentityMismatchError);
     expect(calls).toEqual(['verifyIdentity']);
+  });
+
+  // NaN defeats both watermark guards (`NaN <= watermark` and `NaN > watermark + 1` are both false), and a
+  // fractional or negative seq is equally nonsensical as an event ordinal — all three must be refused before
+  // `runInTransaction` is even called, not merely before a write.
+  it.each([
+    ['NaN', NaN],
+    ['fractional', 1.5],
+    ['negative', -1],
+  ])('refuses a %s seq before any write', async (_label, seq) => {
+    const { port, calls } = createFakePort({ initialWatermark: 0 });
+
+    const error = await rejection(applyProviderEventAtSeq(port, { identity: IDENTITY, seq, event: PROGRESS_EVENT }));
+
+    expect(error).toBeInstanceOf(ProviderEventInvalidSeqError);
+    expect(calls).toEqual([]);
   });
 
   it('applies a progress event and advances the watermark atomically', async () => {
@@ -220,22 +250,33 @@ describe('applyProviderEventAtSeq', () => {
     expect(watermark()).toBe(4);
   });
 
-  it('requires a recorded stop cause for a suspended event', async () => {
-    const { port } = createFakePort({ initialWatermark: 0 });
+  // A cause outside the closed `ProviderStopCause` union can still reach this function at runtime (a value
+  // that bypassed schema validation, or a union member added on one side of the wire before the other is
+  // updated) — deciding by the positive and routing anything else through `assertNever` must refuse it
+  // instead of falling into the `else` branch and writing a false `session.interrupted`.
+  it('refuses an unrecognised stop cause instead of silently writing a false interruption', async () => {
+    const { port, calls } = createFakePort({ initialWatermark: 0 });
+    const unrecognisedCause = 'not_a_real_stop_cause' as ProviderStopCause;
 
     const error = await rejection(
-      applyProviderEventAtSeq(port, { identity: IDENTITY, seq: 1, event: SUSPENDED_EVENT }),
+      applyProviderEventAtSeq(port, {
+        identity: IDENTITY,
+        seq: 1,
+        event: { ...SUSPENDED_EVENT, recordedStopCause: unrecognisedCause },
+      }),
     );
 
-    expect((error as Error).message).toMatch(/recorded operation\.stop\.v1 cause/);
+    expect((error as Error).message).toContain('Unhandled case');
+    expect(calls).toEqual(['verifyIdentity', 'readWatermark']);
   });
 
-  const INTERRUPTION_CAUSES: readonly ProviderStopCause[] = ['restart', 'handoff'];
+  // Driven from the production-exported cause list, not a hand-written literal, so a future addition to
+  // `PROVIDER_INTERRUPTION_CAUSES` is exercised here automatically instead of the test silently going stale.
   const ABORT_CAUSES: readonly ProviderStopCause[] = PROVIDER_STOP_CAUSES.filter(
-    (cause) => !INTERRUPTION_CAUSES.includes(cause),
+    (cause) => !(PROVIDER_INTERRUPTION_CAUSES as readonly string[]).includes(cause),
   );
 
-  it.each(INTERRUPTION_CAUSES)(
+  it.each(PROVIDER_INTERRUPTION_CAUSES)(
     'writes a truthful session.interrupted before the terminal for a suspended event caused by %s',
     async (cause) => {
       const { port, calls } = createFakePort({ initialWatermark: 0 });
@@ -243,8 +284,7 @@ describe('applyProviderEventAtSeq', () => {
       const result = await applyProviderEventAtSeq(port, {
         identity: IDENTITY,
         seq: 1,
-        event: SUSPENDED_EVENT,
-        recordedStopCause: cause,
+        event: { ...SUSPENDED_EVENT, recordedStopCause: cause },
       });
 
       expect(result).toEqual<ApplyProviderEventResult>({ kind: 'ack', committedThroughProviderSeq: 1 });
@@ -267,8 +307,7 @@ describe('applyProviderEventAtSeq', () => {
       const result = await applyProviderEventAtSeq(port, {
         identity: IDENTITY,
         seq: 1,
-        event: SUSPENDED_EVENT,
-        recordedStopCause: cause,
+        event: { ...SUSPENDED_EVENT, recordedStopCause: cause },
       });
 
       expect(result).toEqual<ApplyProviderEventResult>({ kind: 'ack', committedThroughProviderSeq: 1 });

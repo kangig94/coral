@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -89,6 +90,11 @@ type FakeRoleEnvironmentOptions = Readonly<{
   /** Overrides the pid a role reports about itself (`ports.runtime.env.pid()`, read by `readSelfIdentity`).
    *  Defaults to the pid the fake spawn assigned it. Exists to engineer a deliberate self-report disagreement. */
   selfPidFor?(role: ProviderRole, spawnedPid: number): number;
+  /** Called synchronously the instant the fake spawn call for the *proxy* is made — after the reaper is
+   *  fully up, before `recordContainment`'s forward to it. Exists so a test can sever the guardian's own
+   *  pairing channel to the reaper right at that point, engineering a forward failure at the one cut nothing
+   *  else here can reach: everything up to it has already succeeded. */
+  onProxySpawning?(): void;
 }>;
 
 type FakeRoleEnvironment = Readonly<{
@@ -96,6 +102,14 @@ type FakeRoleEnvironment = Readonly<{
   killLog: Array<{ pid: number; signal: string }>;
   nestedErrors: unknown[];
   handles: { guardian?: GuardianRoleHandle; reaper?: ReaperRoleHandle; proxy?: ProxyRoleHandle };
+  /** One entry per `listen()`-vs-spawn event this environment can observe, appended in the order it actually
+   *  happened — so an ordering claim can be checked against the recorded sequence rather than against an
+   *  assertion that would hold regardless of which order ran. */
+  sequenceLog: string[];
+  /** Every code a role passed to `exitProcess` — real teardowns driven through this fake environment (e.g.
+   *  `stopAndReap`) reach `containment-absent` for real, and letting the default `process.exit` fire would
+   *  tear down the test worker itself; the fake below stands in for it and this records what would have run. */
+  exitLog: number[];
   /** Shared with every nested role's own ports, and exposed so a non-role caller (the coordinator's own
    *  acquisition steps) can inject the identical fake pid identity resolution. */
   readProcessStartedAtSeconds(pid: number, platform: NodeJS.Platform): number | null;
@@ -116,6 +130,8 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
   const killLog: Array<{ pid: number; signal: string }> = [];
   const nestedErrors: unknown[] = [];
   const handles: FakeRoleEnvironment['handles'] = {};
+  const sequenceLog: string[] = [];
+  const exitLog: number[] = [];
   const pidHandles = new Map<number, { close(): Promise<void> }>();
   const startedAtByPid = new Map<number, number | null>();
 
@@ -139,6 +155,8 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
       baseDir: options.baseDir,
       resolveStrictIdentity: options.resolveStrictIdentity,
       readProcessStartedAtSeconds,
+      onGuardianListening: () => sequenceLog.push('guardian-listening'),
+      exitProcess: (code) => exitLog.push(code),
     };
   }
 
@@ -149,6 +167,8 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
     if (role === undefined || capsulePath === undefined) {
       throw new Error(`fake spawn saw unrecognised role argv: ${JSON.stringify(spawnOptions.args)}`);
     }
+    sequenceLog.push(`${role}-spawn`);
+    if (role === 'proxy') options.onProxySpawning?.();
     const pid = nextPid;
     nextPid += 1;
     const selfPid = options.selfPidFor?.(role, pid) ?? pid;
@@ -207,6 +227,8 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
     killLog,
     nestedErrors,
     handles,
+    sequenceLog,
+    exitLog,
     readProcessStartedAtSeconds,
     topLevelPorts: () => portsFor(undefined),
     outerRuntime: () => runtimeWithFakeProcess(undefined),
@@ -239,7 +261,13 @@ function writeCapsuleSet(
   runtime: Runtime,
   baseDir: string,
   shared: SharedSetIdentity,
-): Readonly<{ guardianCapsulePath: string }> {
+  overrides: Readonly<{
+    /** The reaper's own copy of the pairing secret, defaulting to the guardian's. Set to a different value
+     *  to engineer a pairing refusal — the reaper spawns and comes up listening, but the guardian's
+     *  `reaper.pair.v1` call against it is refused, failing the cut right after the reaper spawn. */
+    reaperGuardianReaperAuthSecret?: string;
+  }> = {},
+): Readonly<{ guardianCapsulePath: string; guardianEndpoint: string }> {
   const guardianInstanceId = randomUUID();
   const reaperInstanceId = randomUUID();
   const proxyInstanceId = randomUUID();
@@ -293,7 +321,7 @@ function writeCapsuleSet(
     canonicalControlEndpoint: reaperEndpoint,
     guardianControlEndpoint: guardianEndpoint,
     proxyEndpoint,
-    guardianReaperAuthSecret,
+    guardianReaperAuthSecret: overrides.reaperGuardianReaperAuthSecret ?? guardianReaperAuthSecret,
   };
   createProviderBootstrapCapsule(reaperCapsulePath, reaperCapsule, capsuleEnv);
 
@@ -314,7 +342,7 @@ function writeCapsuleSet(
   };
   createProviderBootstrapCapsule(proxyCapsulePath, proxyCapsule, capsuleEnv);
 
-  return { guardianCapsulePath };
+  return { guardianCapsulePath, guardianEndpoint };
 }
 
 async function closeHandles(environment: FakeRoleEnvironment): Promise<void> {
@@ -351,10 +379,12 @@ describe('provider-proxy process topology: guardian role main', () => {
     expect(environment.handles.reaper).toBeDefined();
     expect(environment.handles.proxy).toBeDefined();
 
-    // The guardian's own control endpoint was already listening before the proxy spawn call was made:
-    // `startProviderGuardianRole` awaits `guardian.listen()` strictly before spawning the proxy, so a proxy
-    // handle existing at all here is only possible because that ordering held.
+    // The guardian's own control endpoint was already listening before the proxy spawn call was made: a
+    // sequence number recorded at each event (`onGuardianListening`, and at the fake spawn call itself) is
+    // what actually discriminates this from the reverse order — unlike `proxySpawn.pid` matching the second
+    // spawn log entry, which would hold either way.
     expect(handle.proxySpawn.pid).toBe(environment.spawnLog[1]?.pid);
+    expect(environment.sequenceLog).toEqual(['reaper-spawn', 'guardian-listening', 'proxy-spawn']);
 
     // Containment was recorded: both enforcers are armed, and neither could be without
     // `guardian.recordContainment` having run with the proxy's own spawn-derived pid and start time —
@@ -390,6 +420,95 @@ describe('provider-proxy process topology: guardian role main', () => {
     // No proxy handle: the same unreadable start time that failed the guardian's own spawn call also fails
     // the proxy's own self-identity read, so the phantom process this fake started never gets to `listen()`.
     expect(environment.handles.proxy).toBeUndefined();
+
+    // BLOCKING 2: an unarmed reaper is not a held one — the guardian created it, and a guardian that failed
+    // partway through must reap what it created rather than leave a live, unaccounted-for child behind. The
+    // old code left exactly this reaper running forever with nothing pointed at it.
+    const reaperPid = environment.spawnLog.find((entry) => entry.role === 'reaper')?.pid;
+    expect(reaperPid).toBeDefined();
+    expect(environment.killLog).toContainEqual({ pid: reaperPid, signal: 'SIGTERM' });
+  });
+
+  it('leaves no live child when pairing fails right after the reaper spawn', async () => {
+    const baseDir = scopedTempDir('coral-topology-pairing-fails-');
+    const shared = mintSharedSetIdentity();
+    const environment = createFakeRoleEnvironment({
+      base: createRealRuntime(FLAVOR),
+      pluginRoot: baseDir,
+      baseDir,
+      resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
+    });
+    cleanups.push(() => closeHandles(environment));
+    // The reaper's own copy of the pairing secret disagrees with the guardian's, so the reaper spawns and
+    // comes up listening fine, but `reaper.pair.v1` is refused — the cut right after the reaper spawn, with
+    // nothing else yet created.
+    const { guardianCapsulePath } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared, {
+      reaperGuardianReaperAuthSecret: randomBytes(32).toString('hex'),
+    });
+
+    await expect(startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts())).rejects.toThrow();
+
+    expect(environment.spawnLog.map((entry) => entry.role)).toEqual(['reaper']);
+    const reaperPid = environment.spawnLog[0]?.pid;
+    expect(environment.killLog).toContainEqual({ pid: reaperPid, signal: 'SIGTERM' });
+  });
+
+  it('leaves no live child when the guardian endpoint itself fails to bind', async () => {
+    const baseDir = scopedTempDir('coral-topology-listen-fails-');
+    const shared = mintSharedSetIdentity();
+    const environment = createFakeRoleEnvironment({
+      base: createRealRuntime(FLAVOR),
+      pluginRoot: baseDir,
+      baseDir,
+      resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
+    });
+    cleanups.push(() => closeHandles(environment));
+    const { guardianCapsulePath, guardianEndpoint } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared);
+
+    // Occupies the guardian's own instance-keyed socket path before it ever tries to bind it, so
+    // `guardian.listen()` itself fails (`EADDRINUSE`) — the cut right after `listen`, with the reaper already
+    // spawned and paired but nothing past it.
+    const blocker = createServer();
+    await new Promise<void>((resolve, reject) => {
+      blocker.once('error', reject);
+      blocker.listen(guardianEndpoint, resolve);
+    });
+    cleanups.push(() => new Promise<void>((resolve) => blocker.close(() => resolve())));
+
+    await expect(startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts())).rejects.toThrow();
+
+    expect(environment.spawnLog.map((entry) => entry.role)).toEqual(['reaper']);
+    const reaperPid = environment.spawnLog[0]?.pid;
+    expect(environment.killLog).toContainEqual({ pid: reaperPid, signal: 'SIGTERM' });
+  });
+
+  it('leaves no live child when the forward to the reaper fails at recordContainment', async () => {
+    const baseDir = scopedTempDir('coral-topology-forward-fails-');
+    const shared = mintSharedSetIdentity();
+    const environment = createFakeRoleEnvironment({
+      base: createRealRuntime(FLAVOR),
+      pluginRoot: baseDir,
+      baseDir,
+      resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
+      // Severs the guardian's own pairing channel to the reaper the instant the proxy spawn call is made —
+      // after the reaper is fully up and paired, before `recordContainment`'s forward reaches it. This is the
+      // one cut nothing else here can reach: everything up to it has already succeeded.
+      onProxySpawning: () => {
+        void environment.handles.reaper?.close();
+      },
+    });
+    cleanups.push(() => closeHandles(environment));
+    const { guardianCapsulePath } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared);
+
+    await expect(startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts())).rejects.toThrow();
+
+    // Both the reaper (an ordinary child, signalled by its own pid) and the proxy (a detached leader,
+    // signalled by its whole group — the negative pid) were reaped, not merely the one that failed.
+    expect(environment.spawnLog.map((entry) => entry.role)).toEqual(['reaper', 'proxy']);
+    const reaperPid = environment.spawnLog[0]?.pid;
+    const proxyPid = environment.spawnLog[1]?.pid;
+    expect(environment.killLog).toContainEqual({ pid: reaperPid, signal: 'SIGTERM' });
+    expect(environment.killLog).toContainEqual({ pid: -proxyPid, signal: 'SIGTERM' });
   });
 });
 
@@ -482,11 +601,12 @@ describe('provider-proxy process topology: acquisition', () => {
       strandedArtifacts: [],
     });
 
-    // Reaps the guardian: the undo targets the exact pid this acquisition itself spawned and observed, not
-    // the mismatched pid the guardian self-reported.
+    // Reaps the guardian by its own group (it is spawned `detached: true`, a leader in its own right): the
+    // undo targets the exact pid this acquisition itself spawned and observed, not the mismatched pid the
+    // guardian self-reported.
     const guardianSpawn = environment.spawnLog.find((entry) => entry.role === 'guardian');
     expect(guardianSpawn).toBeDefined();
-    expect(environment.killLog).toContainEqual({ pid: guardianSpawn?.pid, signal: 'SIGTERM' });
+    expect(environment.killLog).toContainEqual({ pid: -(guardianSpawn?.pid as number), signal: 'SIGTERM' });
 
     // Unwinds the capsules: the three capsule paths this acquisition itself minted were all handed to
     // `rmSync` with `force: true`, regardless of whether the underlying process had already consumed them.

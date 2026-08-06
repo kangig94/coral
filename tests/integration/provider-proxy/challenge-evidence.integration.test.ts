@@ -74,9 +74,7 @@ describe('control heartbeats reach the deadline machine', () => {
     let elapsed = 0n;
     const clock = createMonotonicClock(Symbol('evidence'), { readMilliseconds: () => elapsed });
     const configuration = resolveProviderProxyDeadlineConfiguration({ get: () => undefined });
-    // A live coordinator: the echo only counts when one is there to have sent it.
     const deadlines = createEnforcerDeadlineStateMachine(clock, configuration, {
-      coordinatorIsLive: () => true,
       mintChallenge: () => randomUUID(),
     });
     const bootstrapNonce = createBootstrapNonceCredential(NONCE);
@@ -141,7 +139,7 @@ describe('control heartbeats reach the deadline machine', () => {
     const deadlines = createEnforcerDeadlineStateMachine(
       clock,
       resolveProviderProxyDeadlineConfiguration({ get: () => undefined }),
-      { coordinatorIsLive: () => true, mintChallenge: () => randomUUID() },
+      { mintChallenge: () => randomUUID() },
     );
     const bootstrapNonce = createBootstrapNonceCredential(NONCE);
 

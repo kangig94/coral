@@ -13,9 +13,21 @@ import { errorMessage } from '../infra/error-format.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
-import { parseProviderRoleArgv } from '../provider-proxy/role-argv.js';
+import { parseProviderRoleArgv, type ProviderRole } from '../provider-proxy/role-argv.js';
 import { runProviderRoleMain } from '../provider-proxy/role-main.js';
 import { currentCoralStoreFormat } from '../store-format.js';
+
+/**
+ * Exit codes for a guardian/reaper/proxy role that failed to start, distinct from `0` (success), `1` (a
+ * coordinator's own generic startup failure), and `70` (`--print-store-reset-build-identity`'s own strict
+ * identity failure) — and distinct per role, so an operator reading the exit code alone knows which role
+ * process failed without needing to correlate it against a log line.
+ */
+const PROVIDER_ROLE_STARTUP_FAILURE_EXIT_CODES: Readonly<Record<ProviderRole, number>> = Object.freeze({
+  guardian: 71,
+  reaper: 72,
+  proxy: 73,
+});
 
 async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   const pathIdx = argv.indexOf('--path');
@@ -116,9 +128,19 @@ export async function main(): Promise<number> {
   // and running in `role-main.ts` — this is dispatch only.
   const providerRole = parseProviderRoleArgv(process.argv);
   if (providerRole.role !== 'none') {
-    return runProviderRoleMain(providerRole, {
-      pluginRoot: typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd(),
-    });
+    try {
+      return await runProviderRoleMain(providerRole, {
+        pluginRoot: typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd(),
+      });
+    } catch (error: unknown) {
+      // A guardian/reaper/proxy role failing to start is not a coordinator startup failure — it must not
+      // reach `writeBootstrapDiagnostic`/`auditBootstrapFailure` below, which are the coordinator's own
+      // diagnostic surface, or an operator reading them would see a role's own crash reported as if this
+      // process had tried and failed to become the backend itself. Distinct codes, mirroring this file's own
+      // `70` for `--print-store-reset-build-identity`, are what let the two be told apart from the outside.
+      backendLog.error(`Provider ${providerRole.role} role failed to start`, error);
+      return PROVIDER_ROLE_STARTUP_FAILURE_EXIT_CODES[providerRole.role];
+    }
   }
 
   if (process.env.CORAL_KB_DAEMON === '1') {

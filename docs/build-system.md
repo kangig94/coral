@@ -64,6 +64,21 @@ The runtime is anchored by two primary entry points:
 
 The build script also emits `clients/build/coral-claude-appserver.cjs` from `src/providers/claude/appserver/server.ts` for the Claude broker helper runtime. The filename is retained for bridge compatibility; the helper defaults to `claude -p` stream-json and can use the PTY TUI transport when `CORAL_CLAUDE_TRANSPORT=tui`.
 
+### Backend Entry Point Dispatch
+
+`coral-backend.cjs` is one artifact with six dispatch modes. Before `src/coordinator/bootstrap.ts`'s `main()` constructs the ordinary coordinator, it checks argv and env for five other invocations of that same artifact and returns without ever reaching `createCoordinatorServer`:
+
+| Invocation                                                                                                    | Behavior                                                                                                                             |
+| -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `--print-store-format-fingerprint`                                                                              | Prints the canonical store-format fingerprint and exits                                                                              |
+| `--print-store-reset-build-identity`                                                                            | Prints the strict embedded build identity as JSON and exits                                                                          |
+| `--provider-guardian <capsulePath>` \| `--provider-reaper <capsulePath>` \| `--provider-proxy <capsulePath>`   | Dispatches into one provider-proxy role process instead of the coordinator — `src/provider-proxy/role-argv.ts` parses the flag, `role-main.ts` runs the named role |
+| `CORAL_KB_DAEMON=1` (env)                                                                                        | Runs the KB daemon main instead of the coordinator                                                                                    |
+| `--smoke-open-store --path <dbPath>`                                                                            | Opens the named store file, round-trips one row inside a transaction, and exits — a build/release smoke check                        |
+| (none of the above)                                                                                              | Ordinary coordinator construction (`createCoordinatorServer`)                                                                         |
+
+The three provider-role flags are one dispatch branch in `main()` — `parseProviderRoleArgv` refuses more than one role flag per invocation — but name three distinct roles (guardian, reaper, proxy) documented under [Provider proxy](./architecture.md#module-map).
+
 ## Build Script Responsibilities
 
 The npm build commands run `scripts/clean-dist.mjs` before `tsc`. TypeScript

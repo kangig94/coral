@@ -93,6 +93,54 @@ function assertRecordedSetAgreement(
   }
 }
 
+/**
+ * The caller names the reaper it believes it is tearing down. A disagreement means it is reasoning about a
+ * different instance, which teardown must surface rather than silently act against this one — the check
+ * `guardian.ts`'s own `guardian.stop-and-reap.v1` already performs on its half of the same request.
+ */
+function assertNamedReaperIdentity(
+  claimed: z.infer<typeof reaperIdentitySchema>,
+  actual: z.infer<typeof reaperIdentitySchema>,
+): void {
+  if (
+    claimed.reaperInstanceId !== actual.reaperInstanceId ||
+    claimed.pid !== actual.pid ||
+    claimed.processStartedAtSeconds !== actual.processStartedAtSeconds ||
+    claimed.guardianInstanceId !== actual.guardianInstanceId ||
+    claimed.generation !== actual.generation ||
+    claimed.flavor !== actual.flavor ||
+    claimed.buildSetId !== actual.buildSetId ||
+    claimed.hostFingerprint !== actual.hostFingerprint ||
+    claimed.canonicalControlEndpoint !== actual.canonicalControlEndpoint ||
+    claimed.containmentKind !== actual.containmentKind
+  ) {
+    throw new ProxyControlProtocolError('identity_mismatch', 'Teardown named a different reaper than this one.');
+  }
+}
+
+/**
+ * The caller names the proxy it believes this reaper is staging or tearing down for. A disagreement means it
+ * is reasoning about a different proxy than the one this reaper's own capsule names — checked against the
+ * stable identity this reaper's own bootstrap capsule holds, never against anything the caller supplied.
+ * Deliberately not checked against the recorded containment's pid/start-time/group: those name *this
+ * containment's* leader, a fact `providerRoots`/`reaper.record-containment.v1` already carry and verify on
+ * their own terms, not a second channel for the same proxy-instance check this function exists to make.
+ */
+function assertNamedProxyIdentity(claimed: z.infer<typeof proxyIdentitySchema>, capsule: ReaperBootstrapCapsule): void {
+  if (
+    claimed.proxyInstanceId !== capsule.proxyInstanceId ||
+    claimed.guardianInstanceId !== capsule.guardianInstanceId ||
+    claimed.reaperInstanceId !== capsule.reaperInstanceId ||
+    claimed.generation !== capsule.generation ||
+    claimed.flavor !== capsule.flavor ||
+    claimed.buildSetId !== capsule.buildSetId ||
+    claimed.hostFingerprint !== capsule.hostFingerprint ||
+    claimed.canonicalEndpoint !== capsule.proxyEndpoint
+  ) {
+    throw new ProxyControlProtocolError('identity_mismatch', 'The named proxy does not match this reaper.');
+  }
+}
+
 export type ReaperOptions<Scope extends symbol> = Readonly<{
   capsule: ReaperBootstrapCapsule;
   clock: MonotonicClock<Scope>;
@@ -140,7 +188,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
 
   const identityOf = (
     containment: RecordedContainmentIdentity & { readonly containmentKind: string },
-  ): Record<string, unknown> =>
+  ): z.infer<typeof reaperIdentitySchema> =>
     Object.freeze({
       reaperInstanceId: capsule.reaperInstanceId,
       pid: self.pid,
@@ -189,6 +237,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
               'The coordinator named a different containment than the guardian recorded.',
             );
           }
+          assertNamedProxyIdentity(request.proxy, capsule);
           return { holder: request.coordinator.instanceId, fields: { reaper: identityOf(recorded) } };
         },
       },
@@ -285,6 +334,11 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         handle: async (params) => {
           const request = stopAndReapParamsSchema.parse(params);
           const armed = requireEnforcer();
+          // `recorded` and `enforcer` are set together in `reaper.record-containment.v1`, so a live enforcer
+          // guarantees a recorded identity to name the claimed reaper and proxy against.
+          const containment = recorded as RecordedContainmentIdentity & { readonly containmentKind: string };
+          assertNamedReaperIdentity(request.reaper, identityOf(containment));
+          assertNamedProxyIdentity(request.proxy, capsule);
           assertRecordedSetAgreement(request.providerRoots, armed.recordedRoots());
           const outcome = await armed.stopAndReap(deadlines.bounds().exitDeadline);
           if (outcome.kind !== 'containment-absent') {

@@ -1,4 +1,7 @@
+import { z } from 'zod';
+
 import { BUILD_FLAVOR_ENV_KEY } from '../../infra/build-flavor.js';
+import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import {
   providerGuardianBootstrapCapsulePath,
   providerGuardianEndpoint,
@@ -20,17 +23,23 @@ import {
   connectRoleControlWithRetry,
   runtimeControlTimer,
   spawnRoleProcess,
+  type RoleConnectRetryOptions,
   type RoleSpawnPorts,
   type SpawnedRoleProcess,
 } from '../../provider-proxy/role-spawn.js';
 import { DETACHED_CONTAINMENT_KIND } from '../../provider-proxy/guardian.js';
 import type { ControlClient } from '../../provider-proxy/control-client.js';
+import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_TEARDOWN_RESERVE_MS } from '../../provider-proxy/orphan-deadline.js';
 import {
-  DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
-  PROXY_CONTROL_HEARTBEAT_MS,
-  PROXY_TEARDOWN_RESERVE_MS,
-} from '../../provider-proxy/orphan-deadline.js';
-import { PROXY_CONTROL_RPC_TIMEOUT_MS, type CoordinatorIdentity } from '../../provider-proxy/protocol.js';
+  PROXY_CONTROL_RPC_TIMEOUT_MS,
+  guardianIdentitySchema,
+  proxyIdentitySchema,
+  reaperIdentitySchema,
+  type CoordinatorIdentity,
+  type GuardianIdentity,
+  type ProxyIdentity,
+  type ReaperIdentity,
+} from '../../provider-proxy/protocol.js';
 import { gracefulKillByPid } from './process-supervision.js';
 import type { AcquisitionUndo, ProviderProxyAcquisitionSteps } from './provider-proxy-acquisition.js';
 import type { ProviderProxySetAuthority } from './provider-proxy-authority.js';
@@ -41,6 +50,11 @@ import type { ProviderProxySetAuthority } from './provider-proxy-authority.js';
  * endpoints. Each method depends on state the previous one produced — capsule paths on minted identities,
  * control on a spawned guardian — so calling them out of order (or `establishControl` before `spawnGuardian`
  * has run) is a caller defect, not a recoverable outcome; `acquireProviderProxySet` never does this.
+ *
+ * Every RPC response is parsed with a strict schema before this file trusts a single field of it — a peer's
+ * bytes are wire input like any other, and a raw object cast here would forward unvalidated shapes straight
+ * into the next role's open request (see `establishRoleControl`) or report a malformed teardown as success
+ * (see `createProviderProxySetAuthority`'s `stopAndReap`).
  */
 
 const ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS = 2_000;
@@ -80,15 +94,60 @@ type MintedSet = Readonly<{
   proxyGuardianAuthSecret: string;
 }>;
 
+/** Refused not-yet-implemented calls carry this so a caller can distinguish "this operation is not wired
+ *  yet" from an ordinary RPC or identity failure. */
+export class ProviderProxyHandoffGrantUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProviderProxyHandoffGrantUnavailableError';
+    Object.setPrototypeOf(this, ProviderProxyHandoffGrantUnavailableError.prototype);
+  }
+}
+
+const heartbeatChallengeSchema = z.string().min(1);
+const controlEpochSchema = z.number().int().nonnegative().safe();
+
+/** `<role>.open.v1`'s reply shape: the endpoint always merges the freshly minted `controlEpoch` and first
+ *  `heartbeatChallenge` around exactly one role-identity field (see `control-endpoint.ts`'s `establishControl`
+ *  — `{ ...fields, controlEpoch, heartbeatChallenge }`), so these three schemas are that pairing per role,
+ *  not independent shapes. */
+const proxyOpenResultSchema = z
+  .object({
+    controlEpoch: controlEpochSchema,
+    heartbeatChallenge: heartbeatChallengeSchema,
+    proxy: proxyIdentitySchema,
+  })
+  .strict();
+const guardianOpenResultSchema = z
+  .object({
+    controlEpoch: controlEpochSchema,
+    heartbeatChallenge: heartbeatChallengeSchema,
+    guardian: guardianIdentitySchema,
+    proxy: proxyIdentitySchema,
+  })
+  .strict();
+const reaperOpenResultSchema = z
+  .object({
+    controlEpoch: controlEpochSchema,
+    heartbeatChallenge: heartbeatChallengeSchema,
+    reaper: reaperIdentitySchema,
+  })
+  .strict();
+const heartbeatResultSchema = z
+  .object({ state: z.literal('active'), nextHeartbeatChallenge: heartbeatChallengeSchema })
+  .strict();
+const stopAndReapResultSchema = z
+  .object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) })
+  .strict();
+
 async function heartbeatOnce(
   client: ControlClient,
   method: string,
   controlEpoch: number,
   heartbeatChallenge: string,
 ): Promise<{ nextHeartbeatChallenge: string }> {
-  return (await client.call(method, { controlEpoch, heartbeatChallenge }, PROXY_CONTROL_RPC_TIMEOUT_MS)) as {
-    nextHeartbeatChallenge: string;
-  };
+  const raw = await client.call(method, { controlEpoch, heartbeatChallenge }, PROXY_CONTROL_RPC_TIMEOUT_MS);
+  return heartbeatResultSchema.parse(raw);
 }
 
 type HeartbeatLoop = Readonly<{ stop(): void }>;
@@ -142,6 +201,173 @@ function assertIdentityFieldsAgree(
       );
     }
   }
+}
+
+type ControlTimer = ReturnType<typeof runtimeControlTimer>;
+
+/** One role's connect→open→verify→heartbeat plan. `identity` pulls the role's own identity field out of the
+ *  already-schema-validated open result — a selector rather than a `result[role]` lookup, so the compiler
+ *  checks it against the concrete open-result type instead of trusting a string key at runtime. */
+type RoleControlPlan<TOpened extends { controlEpoch: number; heartbeatChallenge: string }> = Readonly<{
+  role: string;
+  endpoint: string;
+  openMethod: string;
+  openParams: Record<string, unknown>;
+  openResultSchema: z.ZodType<TOpened>;
+  identity: (opened: TOpened) => Record<string, unknown>;
+  heartbeatMethod: string;
+  expectedIdentity: Readonly<Record<string, string | number>>;
+}>;
+
+/**
+ * Connects one role's control endpoint, opens it, verifies the identity it reports against what this
+ * acquisition expects, and sends the first heartbeat — the sequence every one of the three roles goes
+ * through in the same order, differing only in which method/params/schema/expected-identity apply.
+ *
+ * `opened` is mutated (the connected client is pushed the moment it exists, before anything can fail) so the
+ * caller's own try/catch can still close every role connected so far, including this one, on a later
+ * failure — the same close-everything-opened behavior a single inline try/catch gave when this was one block
+ * per role instead of one shared function.
+ */
+async function establishRoleControl<TOpened extends { controlEpoch: number; heartbeatChallenge: string }>(
+  opened: ControlClient[],
+  timer: ControlTimer,
+  retry: RoleConnectRetryOptions,
+  plan: RoleControlPlan<TOpened>,
+): Promise<Readonly<{ client: ControlClient; opened: TOpened; nextHeartbeatChallenge: string }>> {
+  const client = await connectRoleControlWithRetry(plan.endpoint, timer, retry);
+  opened.push(client);
+  const raw = await client.call(plan.openMethod, plan.openParams, PROXY_CONTROL_RPC_TIMEOUT_MS);
+  const result = plan.openResultSchema.parse(raw);
+  assertIdentityFieldsAgree(plan.role, plan.expectedIdentity, plan.identity(result));
+  const beat = await heartbeatOnce(client, plan.heartbeatMethod, result.controlEpoch, result.heartbeatChallenge);
+  return { client, opened: result, nextHeartbeatChallenge: beat.nextHeartbeatChallenge };
+}
+
+/** Lets `signal` cut a pending call short without requiring `ControlClient.call` itself to understand
+ *  `AbortSignal` — it only ever takes a millisecond budget. If the signal wins the race the pending call is
+ *  left to settle on its own; `stopAndReap`'s caller treats a lost race and a rejected call identically
+ *  (both become `{ unconfirmed }`), so there is nothing further to do with it either way. */
+function raceAgainstAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new Error('the caller deadline elapsed before stop-and-reap confirmed absence'));
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    pending.then(resolve, reject);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+export type ProviderProxySetAuthorityDependencies = Readonly<{
+  proxyInstanceId: string;
+  guardianClient: ControlClient;
+  proxyClient: ControlClient;
+  reaperClient: ControlClient;
+  guardianIdentity: GuardianIdentity;
+  reaperIdentity: ReaperIdentity;
+  proxyIdentityFields: ProxyIdentity;
+  heartbeats: readonly HeartbeatLoop[];
+}>;
+
+/**
+ * Builds the `ProviderProxySetAuthority` shutdown sees, from three already-established role sessions. Split
+ * out from `establishControl` so it takes clients and identities as plain inputs rather than reaching into
+ * that function's closure — the same shape that lets a test drive `stopAndReap`/`installHandoffGrant` with a
+ * fake `ControlClient` instead of a real socket handshake.
+ */
+export function createProviderProxySetAuthority(
+  deps: ProviderProxySetAuthorityDependencies,
+): ProviderProxySetAuthority {
+  const {
+    proxyInstanceId,
+    guardianClient,
+    proxyClient,
+    reaperClient,
+    guardianIdentity,
+    reaperIdentity,
+    proxyIdentityFields,
+    heartbeats,
+  } = deps;
+
+  return {
+    proxyInstanceId,
+    // The proxy wire protocol has no operation-listing RPC yet — that lands with the operation ledger's
+    // replay protocol (plan item W2.3). A set this acquisition just built has never had an operation
+    // prepared on it, so empty is the accurate answer, not a placeholder.
+    snapshotOperations: async () => [],
+    installHandoffGrant: async () => {
+      // The contract this implements promises a grant installed on guardian, reaper AND proxy, then a
+      // written and fsynced successor capsule — a grant with no capsule is unredeemable, so half of that is
+      // worse than none. Today this can only reach guardian and proxy (`reaper.handoff-install.v1` does not
+      // exist) and writes no capsule at all, so it refuses outright rather than install a grant no successor
+      // could ever find. Wiring both is the coordinated-shutdown / operation-ledger work (plan item W2.3).
+      throw new ProviderProxyHandoffGrantUnavailableError(
+        'installHandoffGrant refuses: the reaper has no install RPC (reaper.handoff-install.v1 does not ' +
+          'exist) and no successor capsule is written, so a grant installed here would be unredeemable. ' +
+          'Wiring both is the coordinated-shutdown / operation-ledger work (plan item W2.3).',
+      );
+    },
+    stopAndReap: async (signal) => {
+      try {
+        const raw = await raceAgainstAbort(
+          guardianClient.call(
+            'guardian.stop-and-reap.v1',
+            { guardian: guardianIdentity, reaper: reaperIdentity, proxy: proxyIdentityFields, providerRoots: [] },
+            // `guardian.stop-and-reap.v1` is declared `budgetMs: 'caller-deadline'` on the server precisely
+            // so it is not cut off there: a legitimate reap can spend the SIGTERM grace, the SIGKILL grace,
+            // and the disappearance confirmation — an 11s floor inside `PROXY_TEARDOWN_RESERVE_MS`'s 14s,
+            // and the SIGTERM grace alone already exceeds `PROXY_CONTROL_RPC_TIMEOUT_MS`. Budgeting this call
+            // from the ordinary mutation-RPC timeout — the constant every other `client.call` in this file
+            // correctly uses, because the server enforces that same value as its default for those methods —
+            // would defeat the server's own carve-out and turn a legitimate hard reap into a guaranteed
+            // `{ unconfirmed }`. `PROXY_TEARDOWN_RESERVE_MS` is that floor with margin, so it is the ceiling
+            // here instead; the caller's own `signal` (raced below) is what actually bounds this in practice.
+            PROXY_TEARDOWN_RESERVE_MS,
+          ),
+          signal,
+        );
+        return { disappearanceReceipt: stopAndReapResultSchema.parse(raw).disappearanceReceipt };
+      } catch (error: unknown) {
+        return { unconfirmed: error instanceof Error ? error.message : 'stop-and-reap did not confirm absence' };
+      }
+    },
+    stopHeartbeats: () => {
+      for (const heartbeat of heartbeats) heartbeat.stop();
+    },
+    initiateControlClose: async () => {
+      proxyClient.close();
+      guardianClient.close();
+      reaperClient.close();
+    },
+  };
+}
+
+/**
+ * The guardian's own acquisition-time undo: a graceful group kill, gated on the pid this acquisition
+ * observed still being the process it spawned.
+ *
+ * The guardian is spawned `detached: true`, so it is its own process-group leader, and it in turn spawns the
+ * reaper into that same group before the coordinator ever holds control on either — so a later cut's cleanup
+ * has to reap the whole group via the negative-pid convention `gracefulKillByPid` forwards straight to
+ * `process.kill`, not the guardian's own bare pid alone, or the reaper it already spawned outlives it.
+ *
+ * And a pid is not an identity on its own: the OS recycles it. This re-reads the pid's start time
+ * immediately before signalling and refuses if it no longer matches what this acquisition recorded at spawn
+ * time — signalling a mismatched pid would kill whatever unrelated process now holds it, which is the
+ * project's BLOCKING process rule.
+ */
+export function buildGuardianSpawnUndo(
+  runtime: Runtime,
+  spawned: SpawnedRoleProcess,
+  platform: NodeJS.Platform,
+  readProcessStartedAtSeconds: (pid: number, platform: NodeJS.Platform) => number | null,
+): () => void {
+  return () => {
+    if (readProcessStartedAtSeconds(spawned.pid, platform) !== spawned.processStartedAtSeconds) return;
+    gracefulKillByPid(runtime, -spawned.pid);
+  };
 }
 
 export function createProviderProxyAcquisitionSteps(
@@ -278,12 +504,13 @@ export function createProviderProxyAcquisitionSteps(
         throw new Error('createCapsules must run before spawnGuardian.');
       }
       const setMinted = minted;
+      const platform = runtime.env.platform() as NodeJS.Platform;
+      const readProcessStartedAtSeconds = options.readProcessStartedAtSeconds ?? probeProcessStartedAtSeconds;
       const spawnPorts: RoleSpawnPorts = {
         process: runtime.process,
-        platform: runtime.env.platform() as NodeJS.Platform,
-        ...(options.readProcessStartedAtSeconds === undefined
-          ? {}
-          : { readProcessStartedAtSeconds: options.readProcessStartedAtSeconds }),
+        time: runtime.time,
+        platform,
+        readProcessStartedAtSeconds,
       };
       const spawned = spawnRoleProcess('guardian', setMinted.guardianCapsulePath, spawnPorts, {
         pluginRoot: options.pluginRoot,
@@ -295,7 +522,7 @@ export function createProviderProxyAcquisitionSteps(
       guardianSpawn = spawned;
       return {
         label: 'guardian',
-        run: () => gracefulKillByPid(runtime, spawned.pid),
+        run: buildGuardianSpawnUndo(runtime, spawned, platform, readProcessStartedAtSeconds),
       };
     },
 
@@ -306,7 +533,7 @@ export function createProviderProxyAcquisitionSteps(
       const setMinted = minted;
       const spawnedGuardian = guardianSpawn;
       const timer = runtimeControlTimer(runtime);
-      const retry = {
+      const retry: RoleConnectRetryOptions = {
         connectTimeoutMs: ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
         retryIntervalMs: ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
         overallDeadlineMs: ESTABLISH_CONTROL_READY_DEADLINE_MS,
@@ -318,16 +545,15 @@ export function createProviderProxyAcquisitionSteps(
       try {
         // The proxy is reached first: only it can report its own pid, start time, and process-group id, and
         // both `guardian.open.v1` and `reaper.open.v1` need that identity as an input.
-        const proxyClient = await connectRoleControlWithRetry(setMinted.proxyEndpoint, timer, retry);
-        opened.push(proxyClient);
-        const proxyOpened = (await proxyClient.call(
-          'control.open.v1',
-          { bootstrapNonce: setMinted.proxyBootstrapNonce, coordinator: coordinatorIdentity },
-          PROXY_CONTROL_RPC_TIMEOUT_MS,
-        )) as { controlEpoch: number; heartbeatChallenge: string; proxy: Record<string, unknown> };
-        assertIdentityFieldsAgree(
-          'proxy',
-          {
+        const proxySession = await establishRoleControl(opened, timer, retry, {
+          role: 'proxy',
+          endpoint: setMinted.proxyEndpoint,
+          openMethod: 'control.open.v1',
+          openParams: { bootstrapNonce: setMinted.proxyBootstrapNonce, coordinator: coordinatorIdentity },
+          openResultSchema: proxyOpenResultSchema,
+          identity: (opened) => opened.proxy,
+          heartbeatMethod: 'control.heartbeat.v1',
+          expectedIdentity: {
             proxyInstanceId: setMinted.proxyInstanceId,
             guardianInstanceId: setMinted.guardianInstanceId,
             reaperInstanceId: setMinted.reaperInstanceId,
@@ -337,36 +563,23 @@ export function createProviderProxyAcquisitionSteps(
             hostFingerprint,
             canonicalEndpoint: setMinted.proxyEndpoint,
           },
-          proxyOpened.proxy,
-        );
-        const proxyBeat = await heartbeatOnce(
-          proxyClient,
-          'control.heartbeat.v1',
-          proxyOpened.controlEpoch,
-          proxyOpened.heartbeatChallenge,
-        );
+        });
 
-        const guardianClient = await connectRoleControlWithRetry(setMinted.guardianEndpoint, timer, retry);
-        opened.push(guardianClient);
-        const guardianOpened = (await guardianClient.call(
-          'guardian.open.v1',
-          {
-            bootstrapNonce: setMinted.guardianBootstrapNonce,
-            coordinator: coordinatorIdentity,
-            proxy: proxyOpened.proxy,
-          },
-          PROXY_CONTROL_RPC_TIMEOUT_MS,
-        )) as {
-          controlEpoch: number;
-          heartbeatChallenge: string;
-          guardian: Record<string, unknown>;
-          proxy: Record<string, unknown>;
-        };
         // The one identity this acquisition can verify in full: it spawned the guardian itself and observed
         // its pid and start time directly, rather than trusting a self-report with nothing to check it against.
-        assertIdentityFieldsAgree(
-          'guardian',
-          {
+        const guardianSession = await establishRoleControl(opened, timer, retry, {
+          role: 'guardian',
+          endpoint: setMinted.guardianEndpoint,
+          openMethod: 'guardian.open.v1',
+          openParams: {
+            bootstrapNonce: setMinted.guardianBootstrapNonce,
+            coordinator: coordinatorIdentity,
+            proxy: proxySession.opened.proxy,
+          },
+          openResultSchema: guardianOpenResultSchema,
+          identity: (opened) => opened.guardian,
+          heartbeatMethod: 'guardian.heartbeat.v1',
+          expectedIdentity: {
             guardianInstanceId: setMinted.guardianInstanceId,
             pid: spawnedGuardian.pid,
             processStartedAtSeconds: spawnedGuardian.processStartedAtSeconds,
@@ -376,32 +589,21 @@ export function createProviderProxyAcquisitionSteps(
             hostFingerprint,
             canonicalControlEndpoint: setMinted.guardianEndpoint,
           },
-          guardianOpened.guardian,
-        );
-        const guardianBeat = await heartbeatOnce(
-          guardianClient,
-          'guardian.heartbeat.v1',
-          guardianOpened.controlEpoch,
-          guardianOpened.heartbeatChallenge,
-        );
+        });
 
-        const proxyIdentity = proxyOpened.proxy as {
-          pid: number;
-          processStartedAtSeconds: number;
-          processGroupId: number;
-        };
-        const reaperClient = await connectRoleControlWithRetry(setMinted.reaperEndpoint, timer, retry);
-        opened.push(reaperClient);
-        const reaperOpened = (await reaperClient.call(
-          'reaper.open.v1',
-          {
+        const proxyIdentity = proxySession.opened.proxy;
+        // Named from the proxy's own self-report, not re-derived: if this disagrees with what the guardian
+        // recorded, `reaper.open.v1` itself refuses — the cross-check this acquisition needs for free, from
+        // the one RPC built to make that exact disagreement visible.
+        const reaperSession = await establishRoleControl(opened, timer, retry, {
+          role: 'reaper',
+          endpoint: setMinted.reaperEndpoint,
+          openMethod: 'reaper.open.v1',
+          openParams: {
             bootstrapNonce: setMinted.reaperBootstrapNonce,
             coordinator: coordinatorIdentity,
-            guardian: guardianOpened.guardian,
-            proxy: proxyOpened.proxy,
-            // Named from the proxy's own self-report, not re-derived: if this disagrees with what the
-            // guardian recorded, `reaper.open.v1` itself refuses — the cross-check this acquisition needs
-            // for free, from the one RPC built to make that exact disagreement visible.
+            guardian: guardianSession.opened.guardian,
+            proxy: proxySession.opened.proxy,
             containment: {
               pid: proxyIdentity.pid,
               processStartedAtSeconds: proxyIdentity.processStartedAtSeconds,
@@ -409,11 +611,10 @@ export function createProviderProxyAcquisitionSteps(
               containmentKind: DETACHED_CONTAINMENT_KIND,
             },
           },
-          PROXY_CONTROL_RPC_TIMEOUT_MS,
-        )) as { controlEpoch: number; heartbeatChallenge: string; reaper: Record<string, unknown> };
-        assertIdentityFieldsAgree(
-          'reaper',
-          {
+          openResultSchema: reaperOpenResultSchema,
+          identity: (opened) => opened.reaper,
+          heartbeatMethod: 'reaper.heartbeat.v1',
+          expectedIdentity: {
             reaperInstanceId: setMinted.reaperInstanceId,
             guardianInstanceId: setMinted.guardianInstanceId,
             generation,
@@ -423,114 +624,45 @@ export function createProviderProxyAcquisitionSteps(
             canonicalControlEndpoint: setMinted.reaperEndpoint,
             containmentKind: DETACHED_CONTAINMENT_KIND,
           },
-          reaperOpened.reaper,
-        );
-        const reaperBeat = await heartbeatOnce(
-          reaperClient,
-          'reaper.heartbeat.v1',
-          reaperOpened.controlEpoch,
-          reaperOpened.heartbeatChallenge,
-        );
+        });
 
         const heartbeats = [
           startHeartbeatLoop(
-            proxyClient,
+            proxySession.client,
             'control.heartbeat.v1',
             runtime,
-            proxyOpened.controlEpoch,
-            proxyBeat.nextHeartbeatChallenge,
+            proxySession.opened.controlEpoch,
+            proxySession.nextHeartbeatChallenge,
             () => {},
           ),
           startHeartbeatLoop(
-            guardianClient,
+            guardianSession.client,
             'guardian.heartbeat.v1',
             runtime,
-            guardianOpened.controlEpoch,
-            guardianBeat.nextHeartbeatChallenge,
+            guardianSession.opened.controlEpoch,
+            guardianSession.nextHeartbeatChallenge,
             () => {},
           ),
           startHeartbeatLoop(
-            reaperClient,
+            reaperSession.client,
             'reaper.heartbeat.v1',
             runtime,
-            reaperOpened.controlEpoch,
-            reaperBeat.nextHeartbeatChallenge,
+            reaperSession.opened.controlEpoch,
+            reaperSession.nextHeartbeatChallenge,
             () => {},
           ),
         ];
 
-        const guardianIdentity = guardianOpened.guardian;
-        const reaperIdentity = reaperOpened.reaper;
-        const proxyIdentityFields = proxyOpened.proxy;
-
-        const set: ProviderProxySetAuthority = {
+        const set = createProviderProxySetAuthority({
           proxyInstanceId: setMinted.proxyInstanceId,
-          // The proxy wire protocol has no operation-listing RPC yet — that lands with the operation
-          // ledger's replay protocol (plan item W2.3). A set this acquisition just built has never had an
-          // operation prepared on it, so empty is the accurate answer, not a placeholder.
-          snapshotOperations: async () => [],
-          installHandoffGrant: async (operationIds) => {
-            if (operationIds.length > 0) {
-              throw new Error(
-                'Handoff grant installation for a non-empty operation set is wired by the operation ledger work (plan item W2.3).',
-              );
-            }
-            const grantId = runtime.ids.uuid();
-            const secret = mintSecret();
-            const secretSha256 = runtime.ids.sha256(secret);
-            await guardianClient.call(
-              'guardian.handoff-install.v1',
-              {
-                grantId,
-                secretSha256,
-                successor: coordinatorIdentity,
-                operations: [],
-                orphanTimeoutMs: DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
-                teardownReserveMs: PROXY_TEARDOWN_RESERVE_MS,
-              },
-              PROXY_CONTROL_RPC_TIMEOUT_MS,
-            );
-            await proxyClient.call(
-              'handoff.install.v1',
-              {
-                grantId,
-                secretSha256,
-                generation,
-                hostFingerprint,
-                buildSetId,
-                proxyInstanceId: setMinted.proxyInstanceId,
-                operations: [],
-                orphanTimeoutMs: DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
-              },
-              PROXY_CONTROL_RPC_TIMEOUT_MS,
-            );
-          },
-          stopAndReap: async () => {
-            try {
-              const result = (await guardianClient.call(
-                'guardian.stop-and-reap.v1',
-                {
-                  guardian: guardianIdentity,
-                  reaper: reaperIdentity,
-                  proxy: proxyIdentityFields,
-                  providerRoots: [],
-                },
-                PROXY_CONTROL_RPC_TIMEOUT_MS,
-              )) as { disappearanceReceipt: string };
-              return { disappearanceReceipt: result.disappearanceReceipt };
-            } catch (error: unknown) {
-              return { unconfirmed: error instanceof Error ? error.message : 'stop-and-reap did not confirm absence' };
-            }
-          },
-          stopHeartbeats: () => {
-            for (const heartbeat of heartbeats) heartbeat.stop();
-          },
-          initiateControlClose: async () => {
-            proxyClient.close();
-            guardianClient.close();
-            reaperClient.close();
-          },
-        };
+          guardianClient: guardianSession.client,
+          proxyClient: proxySession.client,
+          reaperClient: reaperSession.client,
+          guardianIdentity: guardianSession.opened.guardian,
+          reaperIdentity: reaperSession.opened.reaper,
+          proxyIdentityFields: proxySession.opened.proxy,
+          heartbeats,
+        });
 
         return {
           set,
@@ -538,9 +670,9 @@ export function createProviderProxyAcquisitionSteps(
             label: 'control',
             run: () => {
               for (const heartbeat of heartbeats) heartbeat.stop();
-              proxyClient.close();
-              guardianClient.close();
-              reaperClient.close();
+              proxySession.client.close();
+              guardianSession.client.close();
+              reaperSession.client.close();
             },
           },
         };

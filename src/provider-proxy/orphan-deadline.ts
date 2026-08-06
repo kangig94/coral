@@ -224,13 +224,12 @@ function assertExitedTransition(state: EnforcerDeadlineState): void {
 }
 
 /**
- * What the enforcer needs from its composer to construct its challenge authority: whether a coordinator is
- * there to have sent an echo, and how to mint a challenge. Minting joins this construction rather than
- * staying a `createControlEndpoint` option, the same shape `createGrantRegistry(mintReceipt)` already
- * establishes — the authority that admits a tenancy is the authority that mints its challenges.
+ * What the enforcer needs from its composer to construct its challenge authority: how to mint a challenge.
+ * Minting joins this construction rather than staying a `createControlEndpoint` option, the same shape
+ * `createGrantRegistry(mintReceipt)` already establishes — the authority that admits a tenancy is the
+ * authority that mints its challenges.
  */
 export type EnforcerChallengePolicy = Readonly<{
-  coordinatorIsLive(): boolean;
   mintChallenge(): string;
 }>;
 
@@ -244,7 +243,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   }
   let state: EnforcerDeadlineState = 'accepting-control';
   // Deliberately not on `ControlLeaseEvidence`: that class is round-trip evidence for one control
-  // connection, and the standalone proxy holds it with no `adoptionDeadline` of its own to accelerate.
+  // tenancy, and the standalone proxy holds it with no `adoptionDeadline` of its own to accelerate.
   // Pairing loss is a third, independent input — this machine's own state, not the lease's.
   let pairingLossAt: MonotonicInstant<Scope> | null = null;
 
@@ -260,11 +259,8 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
     return pairingLossAt === null ? derived : clock.earlier(derived, pairingLossAt);
   }
 
-  const evidence = new ControlLeaseEvidence(clock, configuration.leaseMs, clock.now(), {
-    // A challenge may not outlive the window it is evidence for, so its expiry is clamped to adoption.
-    expiryCeiling: adoptionDeadline,
-    coordinatorIsLive: policy.coordinatorIsLive,
-  });
+  // A challenge may not outlive the window it is evidence for, so its expiry is clamped to adoption.
+  const evidence = new ControlLeaseEvidence(clock, configuration.leaseMs, clock.now(), adoptionDeadline);
 
   /**
    * The teardown deadlines this enforcer adds on top of the lease. Both are anchored on the same round-trip

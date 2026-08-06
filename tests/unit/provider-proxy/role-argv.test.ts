@@ -35,6 +35,20 @@ describe('parseProviderRoleArgv', () => {
     ).toThrow(/more than one mode/u);
   });
 
+  it('refuses a repeated identical flag rather than silently claiming the first capsule and stranding the second', () => {
+    const secondCapsulePath = '/home/coral/.coral/gen2/run/provider-proxy-b.bootstrap.json';
+    expect(() =>
+      parseProviderRoleArgv([
+        'node',
+        'coral-backend.cjs',
+        '--provider-proxy',
+        CAPSULE_PATH,
+        '--provider-proxy',
+        secondCapsulePath,
+      ]),
+    ).toThrow(/more than once/u);
+  });
+
   it('refuses a role flag with no following capsule path', () => {
     expect(() => parseProviderRoleArgv(['node', 'coral-backend.cjs', '--provider-guardian'])).toThrow(
       /did not name a capsule path/u,

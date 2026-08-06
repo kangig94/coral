@@ -1,11 +1,13 @@
 import { assertNever } from '../infra/error-format.js';
 import {
   isAbortStopCause,
+  isInterruptionStopCause,
   type ProviderArtifactHandleEventBody,
   type ProviderContinuityEventBody,
   type ProviderEventBody,
   type ProviderProgressEventBody,
   type ProviderStopCause,
+  type ProviderSuspendedEventBody,
   type ProviderTerminalEventBody,
 } from '../providers/contract.js';
 import type { AbortReason } from './outcome.js';
@@ -29,6 +31,25 @@ export class ProviderEventIdentityMismatchError extends Error {
     this.identity = identity;
     this.name = 'ProviderEventIdentityMismatchError';
     Object.setPrototypeOf(this, ProviderEventIdentityMismatchError.prototype);
+  }
+}
+
+/**
+ * `seq` is the value this seam exists to order the watermark by, so a value outside "non-negative safe
+ * integer" cannot be let anywhere near the watermark comparisons: `NaN <= watermark` and `NaN > watermark + 1`
+ * are both false, so a `NaN` (or fractional, or negative) `seq` would pass every guard, reach the effect, and
+ * wedge the watermark at a value every later comparison also treats as false. Refused before
+ * `runInTransaction` is even called, giving the same "zero writes happened" guarantee an identity mismatch
+ * gets.
+ */
+export class ProviderEventInvalidSeqError extends Error {
+  readonly seq: number;
+
+  constructor(seq: number) {
+    super(`Provider event seq must be a non-negative safe integer; got ${seq}.`);
+    this.seq = seq;
+    this.name = 'ProviderEventInvalidSeqError';
+    Object.setPrototypeOf(this, ProviderEventInvalidSeqError.prototype);
   }
 }
 
@@ -94,15 +115,21 @@ export interface ProviderEventEffectPort<Tx> {
   readonly releaseSessionClaim: (tx: Tx, identity: ProviderOperationEventIdentity) => Promise<void>;
 }
 
+/**
+ * The wire event, with `suspended` carrying its `recordedStopCause` inline instead of as an optional sibling
+ * field on the input. A `suspended` body (`{ kind: 'suspended', reason: 'interrupt_unconfirmed' }`) carries no
+ * terminal content of its own — the durable decision comes from the recorded `operation.stop.v1` cause — so
+ * folding the cause into the suspended variant makes "a suspended event with no recorded cause" unstateable at
+ * the caller boundary instead of a runtime check inside the transaction (design-philosophy §8).
+ */
+export type ApplyProviderEventBody =
+  | Exclude<ProviderEventBody, ProviderSuspendedEventBody>
+  | (ProviderSuspendedEventBody & { readonly recordedStopCause: ProviderStopCause });
+
 export interface ApplyProviderEventInput {
   readonly identity: ProviderOperationEventIdentity;
   readonly seq: number;
-  readonly event: ProviderEventBody;
-  /**
-   * The `operation.stop.v1` cause that produced this event. Required if and only if `event.kind === 'suspended'`
-   * — every other event kind carries its own durable content and needs no external cause.
-   */
-  readonly recordedStopCause?: ProviderStopCause;
+  readonly event: ApplyProviderEventBody;
 }
 
 export type ApplyProviderEventResult =
@@ -127,7 +154,12 @@ export async function applyProviderEventAtSeq<Tx>(
   port: ProviderEventEffectPort<Tx>,
   input: ApplyProviderEventInput,
 ): Promise<ApplyProviderEventResult> {
-  const { identity, seq, event, recordedStopCause } = input;
+  const { identity, seq, event } = input;
+
+  if (!Number.isSafeInteger(seq) || seq < 0) {
+    throw new ProviderEventInvalidSeqError(seq);
+  }
+
   let watermarkAtRead: number | undefined;
 
   try {
@@ -148,7 +180,7 @@ export async function applyProviderEventAtSeq<Tx>(
         return { kind: 'replay', replayFromProviderSeq: watermark + 1, reason: 'sequence_gap' };
       }
 
-      await applyEffect(port, tx, identity, seq, event, recordedStopCause);
+      await applyEffect(port, tx, identity, seq, event);
       await port.advanceWatermark(tx, identity, seq);
       return { kind: 'ack', committedThroughProviderSeq: seq };
     });
@@ -165,8 +197,7 @@ async function applyEffect<Tx>(
   tx: Tx,
   identity: ProviderOperationEventIdentity,
   seq: number,
-  event: ProviderEventBody,
-  recordedStopCause: ProviderStopCause | undefined,
+  event: ApplyProviderEventBody,
 ): Promise<void> {
   switch (event.kind) {
     case 'progress':
@@ -181,7 +212,7 @@ async function applyEffect<Tx>(
       await port.releaseSessionClaim(tx, identity);
       return;
     case 'suspended':
-      await applySuspendedEffect(port, tx, identity, seq, recordedStopCause);
+      await applySuspendedEffect(port, tx, identity, seq, event.recordedStopCause);
       return;
     default:
       assertNever(event);
@@ -192,25 +223,25 @@ async function applyEffect<Tx>(
  * A `suspended` event means the proxy could not confirm whether its interrupt landed. `restart`/`handoff`
  * owe the job a truthful `session.interrupted` before its terminal; the three abort causes were deliberate
  * stops, so writing `session.interrupted` for them would record an interruption nobody suffered — they get
- * only the existing abort terminal. Both paths still release the claim in the same transaction as a direct
- * terminal does.
+ * only the existing abort terminal. Deciding by the positive (`isInterruptionStopCause` first) means an
+ * unrecognised or future stop cause falls through to `assertNever` instead of silently picking the
+ * interruption side — the opposite of a fail-safe default. Both paths still release the claim in the same
+ * transaction as a direct terminal does.
  */
 async function applySuspendedEffect<Tx>(
   port: ProviderEventEffectPort<Tx>,
   tx: Tx,
   identity: ProviderOperationEventIdentity,
   seq: number,
-  recordedStopCause: ProviderStopCause | undefined,
+  recordedStopCause: ProviderStopCause,
 ): Promise<void> {
-  if (recordedStopCause === undefined) {
-    throw new Error('applyProviderEventAtSeq: a suspended event requires the recorded operation.stop.v1 cause.');
-  }
-
-  if (isAbortStopCause(recordedStopCause)) {
-    await port.appendJobTerminal(tx, identity, seq, { kind: 'abort', reason: recordedStopCause });
-  } else {
+  if (isInterruptionStopCause(recordedStopCause)) {
     await port.appendSessionInterrupted(tx, identity, seq);
     await port.appendJobTerminal(tx, identity, seq, { kind: 'interrupted' });
+  } else if (isAbortStopCause(recordedStopCause)) {
+    await port.appendJobTerminal(tx, identity, seq, { kind: 'abort', reason: recordedStopCause });
+  } else {
+    assertNever(recordedStopCause);
   }
   await port.releaseSessionClaim(tx, identity);
 }

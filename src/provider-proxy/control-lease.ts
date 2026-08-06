@@ -7,21 +7,8 @@ export type ControlLeaseEchoResult =
   | Readonly<{ accepted: true }>
   | Readonly<{
       accepted: false;
-      reason: 'challenge-expired' | 'challenge-mismatch' | 'control-lost' | 'coordinator-not-live';
+      reason: 'challenge-expired' | 'challenge-mismatch' | 'control-lost';
     }>;
-
-/**
- * What the holder's own composer knows about this lease that the lease itself must not read off any
- * shared clock. Declared once at construction, not threaded through every call: the enforcer's ceiling is
- * always its own adoption deadline and the proxy's is always null, and `coordinatorIsLive` never varied
- * within a call anyway — both were being restated at every call site for a value fixed by who is composing.
- */
-export type ControlLeasePolicy<Scope extends symbol> = Readonly<{
-  /** The window these challenges are evidence for. Operational control bounds no window and answers null. */
-  expiryCeiling(): MonotonicInstant<Scope> | null;
-  /** Whether a coordinator is there to have sent an echo. A false makes any echo prove nothing. */
-  coordinatorIsLive(): boolean;
-}>;
 
 /**
  * What one control tenancy has proven, on the holder's own clock.
@@ -38,7 +25,11 @@ export type ControlLeasePolicy<Scope extends symbol> = Readonly<{
 export class ControlLeaseEvidence<Scope extends symbol> {
   readonly #arithmetic: MonotonicArithmetic<Scope>;
   readonly #leaseMs: number;
-  readonly #policy: ControlLeasePolicy<Scope>;
+  // The window these challenges are evidence for, fixed by whoever composes this lease: the enforcer's is
+  // always its own adoption deadline, the proxy's is always null. Declared once at construction rather than
+  // threaded through every call, since it never varies within one — a plain closure over that composer-fixed
+  // value needs no wrapper type to say so.
+  readonly #expiryCeiling: () => MonotonicInstant<Scope> | null;
   // Bounded: the one-use property needs the outstanding challenge plus a rejection of recent reuse, not a
   // record of every challenge ever issued — an unbounded history grows for the life of the process.
   readonly #seenChallenges = new Set<string>();
@@ -55,11 +46,11 @@ export class ControlLeaseEvidence<Scope extends symbol> {
     arithmetic: MonotonicArithmetic<Scope>,
     leaseMs: number,
     startedAt: MonotonicInstant<Scope>,
-    policy: ControlLeasePolicy<Scope>,
+    expiryCeiling: () => MonotonicInstant<Scope> | null,
   ) {
     this.#arithmetic = arithmetic;
     this.#leaseMs = leaseMs;
-    this.#policy = policy;
+    this.#expiryCeiling = expiryCeiling;
     // Before any round trip, the holder's own start is the evidence. A set whose coordinator never arrives is
     // still bounded, rather than waiting forever for a first echo that will not come.
     this.#lastRoundTripEvidenceAt = startedAt;
@@ -119,7 +110,9 @@ export class ControlLeaseEvidence<Scope extends symbol> {
   }
 
   echoChallenge(now: MonotonicInstant<Scope>, challenge: string, nextChallenge: string): ControlLeaseEchoResult {
-    if (!this.#policy.coordinatorIsLive()) return { accepted: false, reason: 'coordinator-not-live' };
+    // No separate "is a coordinator there" gate: this call is only ever reached over a socket already bound
+    // to an open tenancy, and opening one already proved a live process was on the other end. The comparison
+    // below is that proof's actual instrument — a stale liveness flag would only restate it less reliably.
     if (this.#pendingChallenge === null || this.#pendingChallenge.value !== challenge) {
       return { accepted: false, reason: 'challenge-mismatch' };
     }
@@ -138,14 +131,14 @@ export class ControlLeaseEvidence<Scope extends symbol> {
     return { accepted: true };
   }
 
-  /** When the outstanding challenge stops being answerable, given the policy's ceiling. */
+  /** When the outstanding challenge stops being answerable, given the composer's expiry ceiling. */
   challengeExpiresAt(): MonotonicInstant<Scope> | null {
     return this.#firstChallengeIssuedAt === null ? null : this.#challengeExpiresAt(this.#firstChallengeIssuedAt);
   }
 
   #challengeExpiresAt(issuedAt: MonotonicInstant<Scope>): MonotonicInstant<Scope> {
     const leaseExpiry = this.#arithmetic.shiftMilliseconds(issuedAt, this.#leaseMs);
-    const ceiling = this.#policy.expiryCeiling();
+    const ceiling = this.#expiryCeiling();
     return ceiling === null ? leaseExpiry : this.#arithmetic.earlier(leaseExpiry, ceiling);
   }
 

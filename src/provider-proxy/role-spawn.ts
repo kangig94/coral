@@ -2,6 +2,7 @@ import { basename, join } from 'node:path';
 
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
+import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import type { Runtime } from '../runtime/ports.js';
 import { connectControlClient, type ControlClient, type ControlClientTimer } from './control-client.js';
 import type { ControlEndpointTimer } from './control-endpoint.js';
@@ -39,6 +40,12 @@ export class RoleSpawnError extends Error {
 
 export type RoleSpawnPorts = Readonly<{
   process: Pick<Runtime['process'], 'spawn'>;
+  /** Used only to escalate a spawn that must be killed before it ever became a role this module tracks
+   *  (`role_spawn_no_pid` / `role_spawn_start_time_unavailable`) from SIGTERM to SIGKILL after a grace
+   *  period, the same shape `coordinator/live/process-supervision.ts`'s `gracefulKill` uses — reimplemented
+   *  locally because the provider proxy may import nothing under `src/coordinator/`
+   *  (`architecture-layering.test.ts`, `provider-proxy-no-store.test.ts`). */
+  time: Pick<Runtime['time'], 'setTimeout' | 'clearTimeout'>;
   platform: NodeJS.Platform;
   /** Injected so a test can fake a spawned pid's start time without a real process existing. Defaults to
    *  the real cross-platform `/proc` or `ps` probe. */
@@ -61,6 +68,14 @@ export type SpawnedRoleProcess = Readonly<{
   child: ChildProcessLike;
   pid: number;
   processStartedAtSeconds: number;
+  /**
+   * Rejects if this child later emits an async spawn error (Node reports ENOENT/EACCES this way, after the
+   * synchronous `spawn()` call above already returned a pid); never settles otherwise. A caller races this
+   * against its own readiness wait so a failure Node reports asynchronously surfaces there as a rejected
+   * promise, not as an uncaught exception in this process — the same race `kb-daemon-supervisor.ts` runs
+   * against its own spawned child's `'error'` event.
+   */
+  spawnFailed: Promise<never>;
 }>;
 
 /** Mirrors `kb-daemon-supervisor.ts`'s own entrypoint resolution: reuse the artifact already running when
@@ -70,6 +85,32 @@ function resolveBackendArtifact(pluginRoot: string, currentEntrypoint: string | 
     return currentEntrypoint;
   }
   return join(pluginRoot, 'bridge', 'coral-backend.cjs');
+}
+
+/**
+ * SIGTERM, escalating to SIGKILL after the standard grace period if the child has not exited by then. Kills
+ * only the exact spawned handle — never a bare pid — so there is no window in which a recycled pid could be
+ * signalled. This is `gracefulKill`'s own shape (`coordinator/live/process-supervision.ts`), reimplemented
+ * here rather than imported: the provider proxy may reach nothing under `src/coordinator/`.
+ */
+function killSpawnedRoleProcess(
+  child: ChildProcessLike,
+  time: Pick<Runtime['time'], 'setTimeout' | 'clearTimeout'>,
+): void {
+  try {
+    child.kill('SIGTERM');
+  } catch {
+    return; // Already gone; nothing left to escalate.
+  }
+  const escalation = time.setTimeout(() => {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // Already gone.
+    }
+  }, SIGTERM_GRACE_MS);
+  escalation.unref?.();
+  child.on('close', () => time.clearTimeout(escalation));
 }
 
 /**
@@ -95,13 +136,30 @@ export function spawnRoleProcess(
     detached: options.detached,
   });
 
-  const killFailedSpawn = (): void => {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      // Already gone; nothing left to reap.
-    }
-  };
+  // Attached unconditionally and first: Node reports ENOENT/EACCES asynchronously on this event, and an
+  // EventEmitter with no listener re-throws it as an uncaught exception in *this* process — the coordinator,
+  // when this spawns the guardian, or the guardian, when this spawns the reaper or the proxy. The internal
+  // `.catch` keeps an uncollected `spawnFailed` from itself becoming an unhandled rejection on the failure
+  // paths below that throw before a caller ever gets the chance to observe it.
+  const spawnFailed = new Promise<never>((_resolve, reject) => {
+    child.on('error', reject);
+  });
+  spawnFailed.catch(() => {});
+
+  // Nothing in this process reads the role's stdout/stderr. Draining keeps the OS pipe buffer from filling
+  // and backpressuring the role's own writes, and the `'error'` listeners keep a later stream error from
+  // reaching this process as an uncaught exception — the same guard `kb-daemon-supervisor.ts` installs on
+  // its own spawned child's stdin.
+  child.stdout?.on('data', () => {});
+  child.stdout?.on('error', () => {});
+  child.stderr?.on('data', () => {});
+  child.stderr?.on('error', () => {});
+  // A role is meant to outlive the process that spawned it, exactly like `runtime/real.ts`'s own detached,
+  // unref'd durable-CLI wrapper spawn — so holding this handle must not itself keep this process's event
+  // loop alive.
+  child.unref?.();
+
+  const killFailedSpawn = (): void => killSpawnedRoleProcess(child, ports.time);
 
   if (typeof child.pid !== 'number') {
     killFailedSpawn();
@@ -119,7 +177,7 @@ export function spawnRoleProcess(
     );
   }
 
-  return { child, pid: child.pid, processStartedAtSeconds };
+  return { child, pid: child.pid, processStartedAtSeconds, spawnFailed };
 }
 
 /** Adapts the `Runtime` time port to the shape every control endpoint and client in this domain expects.

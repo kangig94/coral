@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createMonotonicClock, type MonotonicClock } from '#src/infra/monotonic-clock.js';
-import { connectControlClient } from '#src/provider-proxy/control-client.js';
+import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
 import { createReaper, type Reaper } from '#src/provider-proxy/reaper.js';
 import {
@@ -238,18 +238,36 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     await guardian.recordContainment(CONTAINMENT);
   }
 
-  const control = await connectControlClient(guardianEndpoint, timer, 5_000);
-  cleanups.push(() => control.close());
-  const opened = (await control.call(
-    'guardian.open.v1',
-    { bootstrapNonce: NONCE, coordinator: coordinatorIdentity, proxy: proxyIdentity },
-    5_000,
-  )) as { heartbeatChallenge: string; controlEpoch: number; proxy: unknown };
-  await control.call(
-    'guardian.heartbeat.v1',
-    { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
-    5_000,
-  );
+  // `guardian.open.v1` now refuses while no containment is recorded (mirroring `reaper.open.v1`), so a set
+  // built with `recordContainment: false` cannot open control at all. Neither test using that option reaches
+  // into `control`/`opened` — they exercise the window before containment exists through `guardian` and
+  // `proxyChannel` (pairing, a separate authority) instead — so both are a throw-on-touch placeholder rather
+  // than a real connection, making an accidental future use fail loudly instead of hanging on a refused open.
+  const unreachableBeforeContainment = <T extends object>(what: string): T =>
+    new Proxy({} as T, {
+      get(): never {
+        throw new Error(`${what} is unavailable: guardian.open.v1 refuses while no containment is recorded.`);
+      },
+    });
+  let control: ControlClient;
+  let opened: { heartbeatChallenge: string; controlEpoch: number; proxy: unknown };
+  if (options.recordContainment ?? true) {
+    control = await connectControlClient(guardianEndpoint, timer, 5_000);
+    cleanups.push(() => control.close());
+    opened = (await control.call(
+      'guardian.open.v1',
+      { bootstrapNonce: NONCE, coordinator: coordinatorIdentity, proxy: proxyIdentity },
+      5_000,
+    )) as { heartbeatChallenge: string; controlEpoch: number; proxy: unknown };
+    await control.call(
+      'guardian.heartbeat.v1',
+      { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
+      5_000,
+    );
+  } else {
+    control = unreachableBeforeContainment('set.control');
+    opened = unreachableBeforeContainment('set.opened');
+  }
 
   // The proxy holds the guardian's peer channel on its own connection: it is the only party that knows the
   // real provider pid, which is why root registration lives there rather than on coordinator control.
@@ -485,6 +503,27 @@ describe('provider-proxy guardian and reaper', () => {
     expect(jointContainmentReceipt).toMatch(/^receipt-/u);
   });
 
+  it('refuses guardian.register-provider-root.v1 naming a proxy instance that is not this guardian’s own', async () => {
+    const set = await startSet();
+
+    // The paired channel is proxy-authenticated only by its pairing secret, not by proxy identity — a caller
+    // presenting some other proxy's instance id must be refused rather than staging a root against it.
+    await expect(
+      set.proxyChannel.call(
+        'guardian.register-provider-root.v1',
+        {
+          proxy: { ...set.proxyIdentity, proxyInstanceId: randomUUID() },
+          operation: set.operationFor(),
+          reservationId: randomUUID(),
+          activationNonce: randomUUID(),
+          providerPid: ROOT.pid,
+          providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/does not match this guardian/u);
+  });
+
   it('serves root registration on the peer channel only, never on coordinator control', async () => {
     const set = await startSet();
 
@@ -566,21 +605,93 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toMatchObject({ protocolCode: 'invalid_state' });
   });
 
-  it('refuses guardian.stop-and-reap.v1 with a typed protocol error while no containment is recorded', async () => {
+  // `guardian.stop-and-reap.v1` still refuses via its own `requireEnforcer()` while no containment is
+  // recorded (unchanged), but that state is no longer reachable through active control at all: control
+  // cannot open in the first place without a recorded containment (see the `guardian.open.v1` test below),
+  // and `stop-and-reap.v1` is an `authority: 'active'` method — reachable only once open already succeeded,
+  // which by then guarantees containment is recorded. The equivalent guarantee for a method reachable
+  // without active control (`authority: 'pairing'`) is still exercised directly, above.
+
+  it('refuses guardian.open.v1 while no containment is recorded, and the nonce survives for a later successful open', async () => {
     const set = await startSet({ recordContainment: false });
 
+    // Mirrors `reaper.open.v1` exactly, including the ordering: readiness is checked before the one-shot
+    // bootstrap nonce is spent, so a retryable race between this open and `recordContainment` cannot burn a
+    // credential that can never be reissued.
+    const firstAttempt = await connectControlClient(set.guardianEndpoint, timer, 5_000);
+    cleanups.push(() => firstAttempt.close());
     await expect(
-      set.control.call(
-        'guardian.stop-and-reap.v1',
-        {
-          guardian: set.guardianIdentity,
-          reaper: set.reaperIdentity,
-          proxy: set.proxyIdentity,
-          providerRoots: [],
-        },
+      firstAttempt.call(
+        'guardian.open.v1',
+        { bootstrapNonce: NONCE, coordinator: set.coordinatorIdentity, proxy: set.proxyIdentity },
         5_000,
       ),
     ).rejects.toMatchObject({ protocolCode: 'invalid_state' });
+
+    await set.guardian.recordContainment(CONTAINMENT);
+
+    // The same nonce the refusal above did not spend still opens control now that this guardian actually
+    // holds something to enforce.
+    const secondAttempt = await connectControlClient(set.guardianEndpoint, timer, 5_000);
+    cleanups.push(() => secondAttempt.close());
+    const opened = (await secondAttempt.call(
+      'guardian.open.v1',
+      { bootstrapNonce: NONCE, coordinator: set.coordinatorIdentity, proxy: set.proxyIdentity },
+      5_000,
+    )) as { controlEpoch: number };
+    expect(opened.controlEpoch).toBe(1);
+  });
+
+  it('arms its own enforcer on the observed containment even when the forward to the reaper fails', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'coral-arm-before-forward-'));
+    cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+    const shared = bareSharedIdentity();
+    const clock = createMonotonicClock(Symbol('arm-before-forward'), { readMilliseconds: () => 0n });
+    const containmentEnvironment = {
+      clock,
+      process: { kill: () => true, isAlive: () => true },
+      platform: 'linux' as const,
+      maxRecordedRoots: 128,
+      readProcessStartedAtSeconds: () => CONTAINMENT.processStartedAtSeconds,
+    };
+    // The peer this guardian is the *origin* for, not a relay of: the forward below always fails, standing
+    // in for a reaper that is unreachable (crashed, network partition, anything short of a normal reply).
+    const unreachableReaperChannel = {
+      call: async (): Promise<never> => {
+        throw new Error('reaper unreachable');
+      },
+      close: (): void => {},
+    };
+    const guardian = createGuardian({
+      capsule: {
+        role: 'guardian',
+        ...shared,
+        canonicalControlEndpoint: join(directory, 'g.sock'),
+        reaperControlEndpoint: join(directory, 'r.sock'),
+        proxyEndpoint: join(directory, 'p.sock'),
+        guardianReaperAuthSecret: PAIR_SECRET,
+        proxyGuardianAuthSecret: PAIR_SECRET,
+      },
+      clock,
+      deadlines: bareDeadlines(clock),
+      containmentEnvironment,
+      scheduler: idleScheduler,
+      timer,
+      mintReceipt: () => 'receipt-arm-before-forward',
+      reaperChannel: unreachableReaperChannel,
+      self: { pid: 5_102, processStartedAtSeconds: 902 },
+      onOutcome: () => {},
+      onProgressViolation: () => {},
+    });
+    cleanups.push(() => guardian.close());
+
+    await expect(guardian.recordContainment(CONTAINMENT)).rejects.toThrow(/reaper unreachable/u);
+
+    // BLOCKING 1: the guardian is the party that watched this exact group come into being — it must hold
+    // what it saw regardless of whether the reaper ever learned it. The old ordering forwarded first, so a
+    // failed forward left neither party holding the proxy: no enforcer here, and nothing armed on the peer
+    // either, for a live detached process-group leader that nothing could ever reap.
+    expect(guardian.enforcer()).not.toBeNull();
   });
 
   it('re-records an identical containment idempotently and refuses a mismatched one', async () => {
@@ -829,6 +940,49 @@ describe('provider-proxy guardian and reaper', () => {
         5_000,
       ),
     ).rejects.toThrow(/different provider-root set/u);
+  });
+
+  it('refuses a teardown that names a different reaper than this one', async () => {
+    const set = await startSet();
+    // Reach the reaper directly so its own identity check is the one under test — its own comment used to
+    // claim `assertRecordedSetAgreement` alone already covered this; it did not.
+    const reaperControl = await connectControlClient(set.reaperIdentity.canonicalControlEndpoint, timer, 5_000);
+    cleanups.push(() => reaperControl.close());
+    const opened = (await reaperControl.call(
+      'reaper.open.v1',
+      {
+        bootstrapNonce: NONCE,
+        coordinator: {
+          instanceId: randomUUID(),
+          pid: 4_000,
+          processStartedAtSeconds: 700,
+          generation: 'gen2',
+          flavor: 'prod',
+          buildSetId: set.reaperIdentity.buildSetId,
+        },
+        guardian: set.guardianIdentity,
+        proxy: set.proxyIdentity,
+        containment: CONTAINMENT,
+      },
+      5_000,
+    )) as { controlEpoch: number; heartbeatChallenge: string };
+    await reaperControl.call(
+      'reaper.heartbeat.v1',
+      { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
+      5_000,
+    );
+
+    await expect(
+      reaperControl.call(
+        'reaper.stop-and-reap.v1',
+        {
+          reaper: { ...set.reaperIdentity, pid: set.reaperIdentity.pid + 1 },
+          proxy: set.proxyIdentity,
+          providerRoots: [],
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/different reaper than this one/u);
   });
 
   it('installs a dormant grant and lets exactly one successor redeem it into control', async () => {
@@ -1093,7 +1247,7 @@ describe('provider-proxy guardian and reaper', () => {
     const deadlines = createEnforcerDeadlineStateMachine(
       clock,
       resolveProviderProxyDeadlineConfiguration({ get: () => undefined }),
-      { coordinatorIsLive: () => true, mintChallenge: () => randomUUID() },
+      { mintChallenge: () => randomUUID() },
     );
     // Whichever of these two the reaper's pairing-close observer actually calls resolves this — the
     // assertions below are what tell the fixed wiring apart from the defect, so the synchronization itself
