@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from '#src/provider-proxy/ledger.js';
+import { PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import { createProxy, type SemanticOperationHost } from '#src/provider-proxy/proxy.js';
 
 const NONCE = 'a'.repeat(64);
@@ -427,5 +428,66 @@ describe('provider-proxy operation lifecycle', () => {
         5_000,
       ),
     ).rejects.toThrow(/not this proxy/u);
+  });
+
+  it('refuses an unsorted or duplicated operation set at handoff.install.v1 ingress', async () => {
+    const set = await startProxy();
+    const opA = set.operationFor();
+    const opB = set.operationFor();
+    // Deliberately descending: whichever of the two sorts later goes first.
+    const [first, second] = opA.operationId < opB.operationId ? [opB, opA] : [opA, opB];
+    const entry = (operation: ReturnType<typeof set.operationFor>) => ({
+      operation,
+      carrierState: 'executing' as const,
+      committedThroughProviderSeq: 0,
+    });
+    const install = (operations: ReturnType<typeof entry>[]): Promise<unknown> =>
+      set.control.call(
+        'handoff.install.v1',
+        {
+          grantId: randomUUID(),
+          secretSha256: createHash('sha256').update(GRANT_SECRET, 'utf8').digest('hex'),
+          generation: set.shared.generation,
+          hostFingerprint: FINGERPRINT,
+          buildSetId: set.shared.buildSetId,
+          proxyInstanceId: set.shared.proxyInstanceId,
+          operations,
+          orphanTimeoutMs: 30_000,
+        },
+        5_000,
+      );
+
+    // Only the capsule's own copy of this schema used to carry the byte-sort refinement; the wire schema
+    // this method actually parses did not, so an unsorted set installed here and a sorted redemption later
+    // disagreed without either looking malformed.
+    await expect(install([entry(first), entry(second)])).rejects.toThrow();
+    // Duplicated is refused for the same reason, not merely unsorted.
+    await expect(install([entry(first), entry(first)])).rejects.toThrow();
+  });
+
+  it("keeps a redeemed successor's first challenge answerable for the full lease, unclamped by any ceiling", async () => {
+    const set = await startProxy();
+    // A grant that names no operations is enough: only the tenancy this redemption opens is under test.
+    const redeem = await installGrant(set, []);
+    set.control.close();
+    set.advance(5_001);
+
+    const successor = await connectControlClient(set.endpoint, timer, 5_000);
+    cleanups.push(() => successor.close());
+    const redeemed = (await successor.call('handoff.redeem.v1', redeem, 5_000)) as {
+      controlEpoch: number;
+      heartbeatChallenge: string;
+    };
+
+    // Right up to — but not reaching — the bare lease boundary measured from redemption itself: operational
+    // control carries no adoption-style ceiling to clamp this any earlier, unlike the enforcer's own first
+    // challenge (see orphan-deadline.test.ts's "caps the first challenge at the adoption deadline").
+    set.advance(PROXY_CONTROL_LEASE_MS - 1);
+    const stillLive = (await successor.call(
+      'control.heartbeat.v1',
+      { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
+      5_000,
+    )) as { state: string };
+    expect(stillLive.state).toBe('active');
   });
 });

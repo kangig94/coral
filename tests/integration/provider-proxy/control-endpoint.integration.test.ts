@@ -9,6 +9,7 @@ import { createBootstrapNonceCredential } from '#src/provider-proxy/bootstrap-ca
 import {
   createControlEndpoint,
   type ControlChallenge,
+  type ControlChallengeAuthority,
   type ControlEndpoint,
   type ControlEndpointRole,
   type ControlMethod,
@@ -53,6 +54,8 @@ async function startEndpoint(
   accepted: ControlChallenge[];
   /** Lapses the lease without an EOF, which is how a wedged coordinator loses control. */
   lapseControl(): void;
+  /** Simulates the containment retiring: every later admission refuses, including a reattach. */
+  latchTeardown(): void;
 }> {
   const directory = mkdtempSync(join(tmpdir(), 'coral-ctl-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
@@ -61,11 +64,57 @@ async function startEndpoint(
   const accepted: ControlChallenge[] = [];
   let outstanding: ControlChallenge | null = null;
   let controlLive = false;
+  let teardownLatched = false;
   let minted = 0;
   // Mirrors the real wiring: an observed EOF is control loss, and the deadline machine is what records it.
   const observer = { onControlLost: vi.fn(() => (controlLive = false)) };
 
+  const mint = (): ControlChallenge => {
+    minted += 1;
+    const challenge = `challenge-${minted}`;
+    challenges.push(challenge);
+    return challenge;
+  };
+
   const bootstrapNonce = createBootstrapNonceCredential(BOOTSTRAP_NONCE);
+  // The same-successor memoization a real `GrantRegistry` already provides: a retry presenting the same
+  // identity gets back the exact fields it earned, not a freshly computed set. This is what proves the
+  // defect lived in the endpoint's own forgotten epoch/challenge, not in this registry-like memoization.
+  const redemptions = new Map<string, Record<string, unknown>>();
+  let redemptionReceipts = 0;
+
+  // A minimal stand-in for the deadline machine: it owns the outstanding challenge and consumes it on a
+  // matching echo, which is the property the endpoint depends on.
+  const challengeAuthority: ControlChallengeAuthority = {
+    // Control liveness is tracked apart from the outstanding challenge, because the real machine ends
+    // control two ways: an observed EOF, and a lease that lapses while the socket is still open.
+    controlIsLive: () => controlLive,
+    issueFirstChallenge: () => {
+      outstanding = mint();
+      // Mirrors real evidence: before any round trip, the holder's own recent start is itself evidence, so
+      // a freshly bootstrapped tenancy is live immediately.
+      controlLive = true;
+      return { accepted: true, challenge: outstanding };
+    },
+    admitSuccessor: () => {
+      if (controlLive) return { accepted: false, reason: 'control-active' };
+      outstanding = mint();
+      // Not yet live: a successor's tenancy proves nothing about itself until its own first echo lands —
+      // exactly the window a duplicate redeem's forgotten challenge used to destroy.
+      return { accepted: true, challenge: outstanding };
+    },
+    reattachControl: () => (teardownLatched ? { accepted: false, reason: 'teardown-latched' } : { accepted: true }),
+    echoChallenge: (challenge) => {
+      if (outstanding === null || challenge !== outstanding) return { accepted: false, reason: 'challenge-mismatch' };
+      const nextChallenge = mint();
+      outstanding = nextChallenge;
+      // Round-trip evidence pushes control loss into the future, so an echo revives a lapsed lease.
+      controlLive = true;
+      accepted.push(challenge);
+      return { accepted: true, nextChallenge };
+    },
+  };
+
   const endpoint = createControlEndpoint({
     socketPath,
     role: {
@@ -77,17 +126,27 @@ async function startEndpoint(
             authority: 'establishes-control',
             handle: (params) => {
               bootstrapNonce.spend((params as { bootstrapNonce?: unknown } | null)?.bootstrapNonce);
-              return { role: 'guardian' };
+              return { holder: 'incumbent', fields: { role: 'guardian' } };
             },
           },
         ],
         ['role.work.v1', { authority: 'active', handle: () => ({ state: 'worked' }) }],
         // A second opening method with its own credential — the successor's analogue of a handoff grant.
+        // `holder` is named by the caller, mirroring how a real grant derives it from `successor.instanceId`.
         [
           'role.redeem.v1',
           {
             authority: 'establishes-control',
-            handle: () => ({ role: 'successor' }),
+            handle: (params) => {
+              const named = (params as { successorId?: unknown } | null)?.successorId;
+              const holder = typeof named === 'string' ? named : 'successor';
+              const existing = redemptions.get(holder);
+              if (existing !== undefined) return { holder, fields: existing };
+              redemptionReceipts += 1;
+              const fields = { role: 'successor', redemptionReceipt: `receipt-${redemptionReceipts}` };
+              redemptions.set(holder, fields);
+              return { holder, fields };
+            },
           },
         ],
         [
@@ -124,40 +183,9 @@ async function startEndpoint(
       ]),
       pairing: options.pairing,
     },
-    // A minimal stand-in for the deadline machine: it owns the outstanding challenge and consumes it on a
-    // matching echo, which is the property the endpoint depends on.
-    challenges: {
-      // Control liveness is tracked apart from the outstanding challenge, because the real machine ends
-      // control two ways: an observed EOF, and a lease that lapses while the socket is still open.
-      controlIsLive: () => controlLive,
-      issueFirstChallenge: (challenge) => {
-        outstanding = challenge;
-        controlLive = true;
-        return { accepted: true };
-      },
-      admitSuccessor: (challenge) => {
-        if (controlLive) return { accepted: false, reason: 'control-active' };
-        outstanding = challenge;
-        controlLive = true;
-        return { accepted: true };
-      },
-      echoChallenge: (challenge, nextChallenge) => {
-        if (outstanding === null || challenge !== outstanding) return { accepted: false, reason: 'challenge-mismatch' };
-        outstanding = nextChallenge;
-        // Round-trip evidence pushes control loss into the future, so an echo revives a lapsed lease.
-        controlLive = true;
-        accepted.push(challenge);
-        return { accepted: true };
-      },
-    },
+    challenges: challengeAuthority,
     observer,
     timer: realTimer(),
-    mintChallenge: () => {
-      minted += 1;
-      const challenge = `challenge-${minted}`;
-      challenges.push(challenge);
-      return challenge;
-    },
     requestTimeoutMs: 5_000,
   });
 
@@ -171,6 +199,9 @@ async function startEndpoint(
     accepted,
     lapseControl: () => {
       controlLive = false;
+    },
+    latchTeardown: () => {
+      teardownLatched = true;
     },
   };
 }
@@ -308,7 +339,9 @@ describe('provider-proxy control endpoint', () => {
     const refused = await successor.call('role.redeem.v1', {});
 
     // A valid credential is not a licence to displace a coordinator that is merely slow. Accept-time
-    // refusal cannot cover this race, so admission is where the deadline machine gets the final word.
+    // refusal cannot cover this race, so admission is where the deadline machine gets the final word. This
+    // successor's identity ('successor') also never matches the incumbent's ('incumbent'), so the reattach
+    // path is not in play here — the ordinary admission refusal is.
     expect(refused.error?.message).toContain('control-active');
     expect(refused.error?.data?.code).toBe('invalid_state');
     // 'invalid_state' alone cannot tell "retry" from "give up" — the reason has to travel as its own
@@ -328,7 +361,12 @@ describe('provider-proxy control endpoint', () => {
     const successor = await connect(socketPath);
     const redeemed = await successor.call('role.redeem.v1', {});
 
-    expect(redeemed.result).toEqual({ role: 'successor', controlEpoch: 2, heartbeatChallenge: 'challenge-2' });
+    expect(redeemed.result).toEqual({
+      role: 'successor',
+      redemptionReceipt: 'receipt-1',
+      controlEpoch: 2,
+      heartbeatChallenge: 'challenge-2',
+    });
     const beat = await successor.call('role.heartbeat.v1', { controlEpoch: 2, heartbeatChallenge: 'challenge-2' });
     expect(beat.result).toEqual({ state: 'active', nextHeartbeatChallenge: 'challenge-3' });
     // The predecessor's socket must not be able to report a loss that lands on the successor's tenancy.
@@ -363,11 +401,98 @@ describe('provider-proxy control endpoint', () => {
     await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
     await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
 
+    // A different holder ('successor', the default) than the one this very socket already holds
+    // ('incumbent') — establishing here would destroy the displaced socket, which is this very connection.
     const second = await client.call('role.redeem.v1', {});
 
-    // Establishing here would destroy the displaced socket, which is this very connection.
     expect(second.error?.message).toContain('already holds a control tenancy');
     expect(client.socket.destroyed).toBe(false);
+  });
+
+  it('replays the identical opening for a same-successor retry on the same connection, not invalid_state', async () => {
+    const set = await startEndpoint();
+    const { socketPath } = set;
+    const incumbent = await connect(socketPath);
+    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    set.lapseControl();
+    const successor = await connect(socketPath);
+
+    const first = await successor.call('role.redeem.v1', { successorId: 'successor-same-socket' });
+    // The identical redeem, again, on the identical connection — a caller retrying without ever having
+    // learned whether its first request landed.
+    const retry = await successor.call('role.redeem.v1', { successorId: 'successor-same-socket' });
+
+    expect(retry.result).toEqual(first.result);
+    expect(retry.error).toBeUndefined();
+  });
+
+  it('returns the identical opening to a same-successor retry on a new socket, and keeps the first challenge live', async () => {
+    const set = await startEndpoint();
+    const { socketPath } = set;
+    const incumbent = await connect(socketPath);
+    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    set.lapseControl();
+
+    const first = await connect(socketPath);
+    const opened = await first.call('role.redeem.v1', { successorId: 'successor-new-socket' });
+    expect(opened.result).toMatchObject({ role: 'successor', redemptionReceipt: expect.any(String) });
+
+    // The reply never reached the successor — network partition, timeout, anything — so it retries on a
+    // brand-new connection while the first is still open and its challenge still unechoed.
+    const retry = await connect(socketPath);
+    const retried = await retry.call('role.redeem.v1', { successorId: 'successor-new-socket' });
+
+    // The severe defect: today this mints a fresh epoch and challenge, destroying the one the successor is
+    // still holding — so the fix is proven by every field of the reply being byte-identical, including the
+    // registry's own memoized receipt.
+    expect(retried.result).toEqual(opened.result);
+
+    // And proof the outstanding challenge itself survived, not just the reply: the exact challenge from the
+    // *first* redemption is still the one this tenancy answers to.
+    const { controlEpoch, heartbeatChallenge } = opened.result as { controlEpoch: number; heartbeatChallenge: string };
+    const beat = await retry.call('role.heartbeat.v1', { controlEpoch, heartbeatChallenge });
+    expect(beat.result).toMatchObject({ state: 'active' });
+
+    // The superseded first connection is retired without being read as a loss of the tenancy it opened.
+    await vi.waitFor(() => expect(first.socket.destroyed).toBe(true));
+    expect(set.observer.onControlLost).not.toHaveBeenCalled();
+  });
+
+  it('refuses a genuinely different holder while a tenancy is live, not the reattach shortcut', async () => {
+    const set = await startEndpoint();
+    const { socketPath } = set;
+    const incumbent = await connect(socketPath);
+    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    // The lease lapses, so the stranger's connection is admitted at accept rather than refused there —
+    // exactly the race that lets a live-control refusal (not an accept-time one) be the one under test.
+    set.lapseControl();
+    const stranger = await connect(socketPath);
+    // ...and then the incumbent's heartbeat lands first, reasserting live control before the redeem arrives.
+    await incumbent.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    const refused = await stranger.call('role.redeem.v1', { successorId: 'someone-else' });
+
+    // A holder that never earned this tenancy is not let in just because *a* tenancy happens to be open.
+    expect(refused.error?.data?.code).toBe('invalid_state');
+    expect(refused.error?.data?.reason).toBe('control-active');
+  });
+
+  it('refuses reattachment once teardown has latched, and the reason reaches error.data', async () => {
+    const set = await startEndpoint();
+    const { socketPath } = set;
+    const incumbent = await connect(socketPath);
+    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    set.lapseControl();
+    const first = await connect(socketPath);
+    await first.call('role.redeem.v1', { successorId: 'successor-teardown' });
+
+    set.latchTeardown();
+    const retry = await connect(socketPath);
+    const refused = await retry.call('role.redeem.v1', { successorId: 'successor-teardown' });
+
+    expect(refused.result).toBeUndefined();
+    expect(refused.error?.data?.code).toBe('invalid_state');
+    expect(refused.error?.data?.reason).toBe('teardown-latched');
   });
 
   it('refuses a second concurrent connection instead of queueing it', async () => {

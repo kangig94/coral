@@ -27,6 +27,29 @@ export const grantSecretDigestSchema = z
   .regex(/^[0-9a-f]{64}$/u, 'a grant secret digest is SHA-256 as 64 lowercase hexadecimal characters');
 
 /**
+ * One handoff operation set, on the wire everywhere it appears: the capsule, both guardian methods, and
+ * both proxy methods. Byte order is what makes the set comparable across the three authorities — `sameSet`
+ * in this file compares position by position — so the ordering invariant belongs here, next to that
+ * comparison, rather than beside `proxyHandoffOperationSchema` in `protocol.ts`, which owns only the element.
+ * An unsorted or duplicated set is refused at every ingress rather than made order-insensitive downstream:
+ * canonical values are established at the boundary, not repaired past it.
+ */
+export const handoffOperationSetSchema = z
+  .array(proxyHandoffOperationSchema)
+  .max(MAX_PROXY_OPERATION_LEDGERS)
+  .superRefine((operations, context) => {
+    const ordered = operations.every(
+      (operation, index) =>
+        index === 0 || operations[index - 1].operation.operationId < operation.operation.operationId,
+    );
+    if (!ordered) {
+      // Byte order is what makes the set comparable across the three authorities; an unsorted or duplicated
+      // set would let two capsules disagree about the same proxy without either looking malformed.
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'operations must be byte-sorted and unique' });
+    }
+  });
+
+/**
  * The successor half of one grant. It names the exact set it may rotate and the complete byte-sorted
  * operation set, so a capsule cannot be redeemed against a set it was not issued for.
  */
@@ -45,26 +68,11 @@ export const handoffCapsuleSchema = z
     guardianControlEndpoint: canonicalEndpointSchema,
     reaperControlEndpoint: canonicalEndpointSchema,
     proxyEndpoint: canonicalEndpointSchema,
-    operations: z.array(proxyHandoffOperationSchema).max(MAX_PROXY_OPERATION_LEDGERS),
+    operations: handoffOperationSetSchema,
     orphanTimeoutMs: z.number().int().positive(),
     teardownReserveMs: z.number().int().positive(),
   })
-  .strict()
-  .superRefine((capsule, context) => {
-    const ordered = [...capsule.operations].every(
-      (operation, index) =>
-        index === 0 || capsule.operations[index - 1].operation.operationId < operation.operation.operationId,
-    );
-    if (!ordered) {
-      // Byte order is what makes the set comparable across the three authorities; an unsorted or duplicated
-      // set would let two capsules disagree about the same proxy without either looking malformed.
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['operations'],
-        message: 'operations must be byte-sorted and unique',
-      });
-    }
-  });
+  .strict();
 
 export type HandoffCapsule = z.infer<typeof handoffCapsuleSchema>;
 

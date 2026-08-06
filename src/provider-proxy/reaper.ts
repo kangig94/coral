@@ -10,6 +10,7 @@ import {
   type ControlMethod,
 } from './control-endpoint.js';
 import {
+  EnforcementError,
   createArmedEnforcer,
   type ArmedEnforcer,
   type EnforcementOutcome,
@@ -18,10 +19,8 @@ import {
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
-  canonicalUuidSchema,
   coordinatorIdentitySchema,
   guardianIdentitySchema,
-  operationIdentitySchema,
   proxyIdentitySchema,
   reaperIdentitySchema,
 } from './protocol.js';
@@ -41,19 +40,14 @@ const containmentSchema = z
   })
   .strict();
 
-const registerProviderRootParamsSchema = z
+// The reaper's unit of account is the provider root, not the operation: it never reads an operation,
+// reservation, or activation identity, so it never parses one.
+const providerRootParamsSchema = z
   .object({
-    operation: operationIdentitySchema,
-    reservationId: canonicalUuidSchema,
-    activationNonce: canonicalUuidSchema,
     providerRoot: z
       .object({ pid: z.number().int().nonnegative(), processStartedAtSeconds: z.number().int().nonnegative() })
       .strict(),
   })
-  .strict();
-
-const operationActivateParamsSchema = registerProviderRootParamsSchema
-  .extend({ reaperContainmentReceipt: z.string().min(1) })
   .strict();
 
 const recordedRootSchema = z
@@ -106,8 +100,6 @@ export type ReaperOptions<Scope extends symbol> = Readonly<{
   containmentEnvironment: ProcessContainmentEnvironment<Scope>;
   scheduler: EnforcementScheduler;
   timer: ControlEndpointTimer;
-  mintChallenge(): string;
-  mintReceipt(): string;
   /** The reaper's own pid/start identity, reported in `ReaperIdentity`. */
   self: Readonly<{ pid: number; processStartedAtSeconds: number }>;
   onOutcome(outcome: EnforcementOutcome): void;
@@ -135,7 +127,7 @@ export interface Reaper<Scope extends symbol> {
  * group being created, so it is the one party that may name it.
  */
 export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>): Reaper<Scope> {
-  const { capsule, clock, deadlines, scheduler, timer, mintChallenge, mintReceipt, self } = options;
+  const { capsule, clock, deadlines, scheduler, timer, self } = options;
   let recorded: (RecordedContainmentIdentity & { readonly containmentKind: string }) | null = null;
   let enforcer: ArmedEnforcer<Scope> | null = null;
 
@@ -163,12 +155,6 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     });
 
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
-  // The root is kept alongside the receipt, not just the receipt alone, so a repeat for the same operation
-  // can be told apart from a report that silently redirects it to a different process.
-  const staged = new Map<
-    string,
-    Readonly<{ receipt: string; root: Readonly<{ pid: number; processStartedAtSeconds: number }> }>
-  >();
 
   // Staging arrives over the guardian pairing channel, not the coordinator's control connection: the
   // guardian must be able to stage a root while the coordinator's own control is still provisional.
@@ -203,7 +189,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
               'The coordinator named a different containment than the guardian recorded.',
             );
           }
-          return { reaper: identityOf(recorded) };
+          return { holder: request.coordinator.instanceId, fields: { reaper: identityOf(recorded) } };
         },
       },
     ],
@@ -249,55 +235,43 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       {
         authority: 'pairing',
         handle: (params) => {
-          const request = registerProviderRootParamsSchema.parse(params);
-          // Idempotent by stable identity: a repeat for the same operation and the same root gets back the
-          // receipt it already holds, rather than a fresh one that silently invalidates the guardian's copy.
-          // A repeat naming a different root is a disagreement to report, not something to stage over.
-          const already = staged.get(request.operation.operationId);
-          if (already !== undefined) {
-            if (
-              already.root.pid !== request.providerRoot.pid ||
-              already.root.processStartedAtSeconds !== request.providerRoot.processStartedAtSeconds
-            ) {
-              throw new ProxyControlProtocolError(
-                'identity_mismatch',
-                'This operation already staged a different provider root.',
-              );
+          const request = providerRootParamsSchema.parse(params);
+          try {
+            // Idempotent by construction, not by a receipt this handler manages: the enforcer's own record
+            // returns early when this exact root is already held, so a repeat costs nothing and a long-lived
+            // set re-presenting the same root every prepare/cancel cycle never approaches the cap below.
+            requireEnforcer().registerProviderRoot(request.providerRoot);
+          } catch (error: unknown) {
+            // `EnforcementError` is this module's internal vocabulary, not a protocol code, and must not
+            // cross the wire untranslated: the caller would get a message with no code to act on.
+            if (error instanceof EnforcementError) {
+              throw new ProxyControlProtocolError('invalid_state', error.message);
             }
-            return { state: 'staged-contained', reaperContainmentReceipt: already.receipt };
+            throw error;
           }
-          // Checked before recording: the enforcer's own record is permanent (nothing ever un-registers a
-          // root), so refusing an over-cap request only after recording it would leave this reaper holding
-          // a root for a staging it just refused.
-          if (staged.size >= MAX_PROXY_OPERATION_LEDGERS) {
-            throw new ProxyControlProtocolError('invalid_state', 'This reaper holds its maximum staged operations.');
-          }
-          // Recording precedes execution: a root the reaper never staged is outside the containment it can
-          // reach, so staging is what the activation authority is later granted against.
-          requireEnforcer().registerProviderRoot(request.providerRoot);
-          const receipt = mintReceipt();
-          staged.set(request.operation.operationId, { receipt, root: request.providerRoot });
-          return { state: 'staged-contained', reaperContainmentReceipt: receipt };
+          return { state: 'root-recorded' };
         },
       },
     ],
     [
-      'reaper.operation-activate.v1',
+      'reaper.confirm-provider-root.v1',
       {
         authority: 'pairing',
         handle: (params) => {
-          const request = operationActivateParamsSchema.parse(params);
-          const expected = staged.get(request.operation.operationId);
-          if (expected === undefined || expected.receipt !== request.reaperContainmentReceipt) {
-            throw new ProxyControlProtocolError(
-              'unauthorized_control',
-              'Activation must present this reaper\u2019s staging receipt.',
+          const request = providerRootParamsSchema.parse(params);
+          const isRecorded = requireEnforcer()
+            .recordedRoots()
+            .some(
+              (root) =>
+                root.pid === request.providerRoot.pid &&
+                root.processStartedAtSeconds === request.providerRoot.processStartedAtSeconds,
             );
+          // Confirms the same thing the old activation authorization proved: the reaper is still alive and
+          // still holding this exact root at this instant, without authorizing an operation it never held.
+          if (!isRecorded) {
+            throw new ProxyControlProtocolError('invalid_state', 'This reaper never recorded the named provider root.');
           }
-          // The receipt is spent by the activation it authorizes; nothing reads it afterwards, and the
-          // reaper has no release RPC, so retaining it would grow this map for the life of the set.
-          staged.delete(request.operation.operationId);
-          return { state: 'activation-authorized', reaperActivationReceipt: mintReceipt() };
+          return { state: 'root-recorded' };
         },
       },
     ],
@@ -342,7 +316,6 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       onPairingLost: () => deadlines.observePairingLoss(),
     },
     timer,
-    mintChallenge,
     requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     // Teardown may legitimately spend the TERM and KILL graces plus the disappearance confirmation, which
     // is longer than a mutation RPC's budget. Cutting it off would report a failure for a reap in progress.

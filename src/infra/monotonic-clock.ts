@@ -26,6 +26,9 @@ export type MonotonicClock<Scope extends symbol> = Readonly<{
   millisecondsBetween(from: MonotonicInstant<Scope>, to: MonotonicInstant<Scope>): number;
 }>;
 
+/** Instant arithmetic with no reading. Only the shell samples; the model computes. */
+export type MonotonicArithmetic<Scope extends symbol> = Omit<MonotonicClock<Scope>, 'now' | 'sleep'>;
+
 function defaultReadMilliseconds(): bigint {
   return process.hrtime.bigint() / 1_000_000n;
 }

@@ -78,12 +78,18 @@ class ControlAdmissionRefusedError extends ProxyControlProtocolError {
 
 export type ControlMethodHandler = (params: unknown) => Promise<unknown> | unknown;
 
+/** Who holds a control tenancy. Two opens naming the same holder are one tenancy re-reported, not two. */
+export type ControlTenancyHolder = string;
+
 /**
- * An opening method returns the role-specific result fields; the endpoint merges the epoch and the first
- * challenge into them. Typed apart from an ordinary handler because those two fields are the endpoint's to
- * add, and a role that supplied them itself would be naming a tenancy it has not been granted.
+ * What an opening method answers: who earned the tenancy, and the role-specific result fields. The endpoint
+ * merges the epoch and the first challenge into `fields`; a role that supplied those itself would be naming
+ * a tenancy it has not been granted. `holder` is what lets a retry be recognised as the same tenancy rather
+ * than refused or silently re-minted — every opening method already derives it from `coordinator.instanceId`
+ * or `successor.instanceId`, so naming it here costs nothing the credential check did not already establish.
  */
-export type ControlOpenHandler = (params: unknown) => Promise<Record<string, unknown>> | Record<string, unknown>;
+export type ControlOpening = Readonly<{ holder: ControlTenancyHolder; fields: Record<string, unknown> }>;
+export type ControlOpenHandler = (params: unknown) => Promise<ControlOpening> | ControlOpening;
 
 /**
  * One method and the credential it requires. Declaring the authority per method rather than per map is what
@@ -121,19 +127,39 @@ export type ControlEndpointRole = Readonly<{
   pairing?: Readonly<{ openMethod: string; secret: string }>;
 }>;
 
+/** What `issueFirstChallenge`/`admitSuccessor` answer: the minted challenge on acceptance, or a refusal. */
+export type ControlChallengeIssue =
+  | Readonly<{ accepted: true; challenge: ControlChallenge }>
+  | Readonly<{ accepted: false; reason?: string }>;
+
+/** What `echoChallenge` answers: the next minted challenge on acceptance, or a refusal. */
+export type ControlChallengeEcho =
+  | Readonly<{ accepted: true; nextChallenge: ControlChallenge }>
+  | Readonly<{ accepted: false; reason?: string }>;
+
 /**
  * The single owner of challenge state. The endpoint deliberately keeps none of its own: two stores each
  * claiming one-use semantics is how round-trip evidence ends up recorded in one place and checked in
  * another, which is exactly the seam where a heartbeat can look accepted while no deadline advances.
+ *
+ * The authority mints every challenge it hands out, rather than receiving one minted by the endpoint: minting
+ * and recording were one act that the endpoint used to split in two, and a mint the authority never recorded
+ * is exactly what let a duplicate open destroy the challenge a live successor was still waiting to echo.
  */
 export interface ControlChallengeAuthority {
-  /** Records the challenge minted for the bootstrap tenancy. A refusal means the tenancy must not open. */
-  issueFirstChallenge(challenge: ControlChallenge): { readonly accepted: boolean; readonly reason?: string };
+  /** Mints and records the challenge for the bootstrap tenancy. A refusal means the tenancy must not open. */
+  issueFirstChallenge(): ControlChallengeIssue;
   /**
-   * Records the challenge minted for a tenancy that replaces a lapsed one. Refused while the incumbent still
-   * holds control, so a successor cannot displace a coordinator that is merely slow.
+   * Mints and records the challenge for a tenancy that replaces a lapsed one. Refused while the incumbent
+   * still holds control, so a successor cannot displace a coordinator that is merely slow.
    */
-  admitSuccessor(firstSuccessorChallenge: ControlChallenge): { readonly accepted: boolean; readonly reason?: string };
+  admitSuccessor(): ControlChallengeIssue;
+  /**
+   * A live connection carries an already-granted tenancy again — the same holder retrying its open, on the
+   * same socket or a new one. No new challenge is minted: the one already outstanding stays answerable.
+   * Refused once teardown has latched, the one condition that makes carrying the tenancy forward meaningless.
+   */
+  reattachControl(): { readonly accepted: boolean; readonly reason?: string };
   /**
    * Whether the established tenancy still holds control. Admission reads this rather than socket liveness:
    * a wedged coordinator keeps its socket open indefinitely, and a successor has to be able to reach the
@@ -142,13 +168,10 @@ export interface ControlChallengeAuthority {
   controlIsLive(): boolean;
   /**
    * Verifies an echoed challenge against the outstanding one and, on acceptance, records the round-trip
-   * evidence and installs the replacement. The authority owns the comparison, so the endpoint cannot
-   * accept an echo the deadline model rejects.
+   * evidence and mints and installs the replacement. The authority owns the comparison, so the endpoint
+   * cannot accept an echo the deadline model rejects.
    */
-  echoChallenge(
-    challenge: ControlChallenge,
-    nextChallenge: ControlChallenge,
-  ): { readonly accepted: boolean; readonly reason?: string };
+  echoChallenge(challenge: ControlChallenge): ControlChallengeEcho;
 }
 
 export type ControlEndpointObserver = Readonly<{
@@ -164,7 +187,6 @@ export type ControlEndpointOptions = Readonly<{
   observer: ControlEndpointObserver;
   challenges: ControlChallengeAuthority;
   timer: ControlEndpointTimer;
-  mintChallenge(): ControlChallenge;
   /** Default absolute budget for one request handler, in milliseconds. */
   requestTimeoutMs: number;
 }>;
@@ -172,13 +194,16 @@ export type ControlEndpointOptions = Readonly<{
 export interface ControlEndpoint {
   listen(): Promise<void>;
   close(): Promise<void>;
-  /** The epoch of the live tenancy, or null when no connection holds control. */
+  /** The epoch of the open tenancy, or null when none is open. */
   currentEpoch(): ControlEpoch | null;
 }
 
 type Tenancy = {
   readonly epoch: ControlEpoch;
-  readonly socket: Socket;
+  readonly holder: ControlTenancyHolder;
+  /** The exact reply this tenancy opened with. Re-sent verbatim on a reattach; never recomputed. */
+  readonly opening: Record<string, unknown>;
+  socket: Socket; // one tenancy, successive connections
   active: boolean;
 };
 
@@ -248,7 +273,7 @@ function createFrameReader(onFrame: (frame: string) => void, onOversize: () => v
 }
 
 export function createControlEndpoint(options: ControlEndpointOptions): ControlEndpoint {
-  const { socketPath, role, observer, challenges, timer, mintChallenge, requestTimeoutMs } = options;
+  const { socketPath, role, observer, challenges, timer, requestTimeoutMs } = options;
   let server: NetServer | null = null;
   let tenancy: Tenancy | null = null;
   let nextEpoch: ControlEpoch = 1;
@@ -269,15 +294,29 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   /**
    * Opens a tenancy on this connection. The credential is proven first and by its own owner — a bootstrap
    * nonce by the role that holds it, a handoff grant by its registry — so the endpoint learns no secret and
-   * spends none. Admission then runs against the deadline machine, which is what can still say no: an
-   * incumbent that holds live control is not displaced by a successor that merely presents a valid grant.
+   * spends none. A bootstrap nonce throws on replay and so never reaches the check below; a grant memoizes
+   * its redemption and answers with the same holder on every retry, which is what that check recognises.
    */
   const establishControl = async (socket: Socket, handle: ControlOpenHandler, params: unknown): Promise<unknown> => {
-    const fields = await handle(params);
-    // Only after the credential has answered: a caller replaying a spent nonce deserves to hear that its
-    // credential is spent, not a generic complaint about its connection. A grant, by contrast, memoizes its
-    // redemption and so reaches here twice — and a second tenancy on the same socket would destroy the very
-    // connection it just granted, because the displaced socket and the new one are the same.
+    const { holder, fields } = await handle(params);
+    const live = tenancy;
+    if (live !== null && live.holder === holder) {
+      // The same tenancy earned again, on this socket or a new one — not a second tenancy to admit, so the
+      // reply that opened it is replayed verbatim rather than re-minted.
+      const admitted = challenges.reattachControl();
+      if (!admitted.accepted) throw new ControlAdmissionRefusedError(admitted.reason ?? 'rejected');
+      if (live.socket !== socket) {
+        const stale = live.socket;
+        // Reassign before destroying: the stale socket's own `close` handler then sees a tenancy that is no
+        // longer its own, and reports no control loss for a connection this retry has already superseded.
+        live.socket = socket;
+        live.active = false;
+        stale.destroy();
+      }
+      return live.opening;
+    }
+    // A different holder on a socket that already holds a tenancy is refused outright: establishing here
+    // would destroy the displaced socket, which is this very connection.
     if (tenancy?.socket === socket) {
       throw new ProxyControlProtocolError('invalid_state', 'This connection already holds a control tenancy.');
     }
@@ -287,25 +326,22 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       // two-ACK staging rule depends on.
       throw new ProxyControlProtocolError('unauthorized_control', 'The paired connection may not also open control.');
     }
-    const heartbeatChallenge = mintChallenge();
     // The first tenancy this endpoint ever opens is the bootstrap one; every later one is by construction a
     // successor. Deriving it leaves no way for a role to declare itself first twice.
-    const admitted =
-      nextEpoch === 1
-        ? challenges.issueFirstChallenge(heartbeatChallenge)
-        : challenges.admitSuccessor(heartbeatChallenge);
-    if (!admitted.accepted) {
-      throw new ControlAdmissionRefusedError(admitted.reason ?? 'rejected');
+    const issued = nextEpoch === 1 ? challenges.issueFirstChallenge() : challenges.admitSuccessor();
+    if (!issued.accepted) {
+      throw new ControlAdmissionRefusedError(issued.reason ?? 'rejected');
     }
     const displaced = tenancy;
     const epoch = nextEpoch;
     nextEpoch += 1;
+    const opening = { ...fields, controlEpoch: epoch, heartbeatChallenge: issued.challenge };
     // Record the replacement before destroying the predecessor: its `close` handler then sees a tenancy that
     // is not its own and reports no control loss. Reporting one would hand the deadline machine an EOF for
     // the tenancy that just began, and the successor would inherit its predecessor's death.
-    tenancy = { epoch, socket, active: false };
+    tenancy = { epoch, holder, opening, socket, active: false };
     displaced?.socket.destroy();
-    return { ...fields, controlEpoch: epoch, heartbeatChallenge };
+    return opening;
   };
 
   const echoChallenge = (socket: Socket, params: unknown): unknown => {
@@ -322,8 +358,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     }
     // The authority compares and consumes, so a replayed frame cannot re-earn evidence and the endpoint
     // cannot accept an echo the deadline model has already ruled out.
-    const nextHeartbeatChallenge = mintChallenge();
-    const recorded = challenges.echoChallenge(echo.heartbeatChallenge, nextHeartbeatChallenge);
+    const recorded = challenges.echoChallenge(echo.heartbeatChallenge);
     if (!recorded.accepted) {
       throw new ProxyControlProtocolError(
         'invalid_request',
@@ -331,7 +366,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       );
     }
     live.active = true;
-    return { state: 'active', nextHeartbeatChallenge };
+    return { state: 'active', nextHeartbeatChallenge: recorded.nextChallenge };
   };
 
   const dispatch = async (socket: Socket, method: string, params: unknown): Promise<unknown> => {

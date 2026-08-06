@@ -14,10 +14,10 @@ import {
   createGrantRegistry,
   grantSecretDigestSchema,
   grantSecretSchema,
+  handoffOperationSetSchema,
   type GrantBinding,
 } from './handoff-capsule.js';
 import {
-  MAX_PROXY_OPERATION_LEDGERS,
   LedgerError,
   createOperationLedger,
   type OperationLedger,
@@ -33,7 +33,6 @@ import {
   generationSchema,
   hostFingerprintSchema,
   operationIdentitySchema,
-  proxyHandoffOperationSchema,
   type CoordinatorIdentity,
   type ProxyIdentity,
 } from './protocol.js';
@@ -87,8 +86,6 @@ const stopParamsSchema = z.object({ operation: operationIdentitySchema, cause: s
 const adoptParamsSchema = z
   .object({ operation: operationIdentitySchema, committedThroughProviderSeq: nonNegativeSeqSchema })
   .strict();
-
-const handoffOperationSetSchema = z.array(proxyHandoffOperationSchema).max(MAX_PROXY_OPERATION_LEDGERS);
 
 /**
  * The set half of a grant tuple, repeated on the wire so a coordinator holding two proxies cannot install
@@ -189,25 +186,45 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
   const ledger = createOperationLedger();
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
   const grants = createGrantRegistry(mintReceipt);
-  const evidence = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS);
-  // Operational control carries no expiry ceiling: the ceiling exists to stop a challenge outliving the
-  // containment window it is evidence for, and this lease is evidence for no window.
-  const echoOptions = { coordinatorIsLive: true, expiryCeiling: null } as const;
+  // Ledger leases are plain milliseconds on the proxy's own clock, measured from its start. The branded
+  // instants never leave this file, so a lease can never be compared against another process's reading. The
+  // same start instant seeds the control lease's round-trip evidence below: before any heartbeat, this
+  // proxy's own start is the evidence, exactly as the ledger's own baseline already was.
+  const startedAt = clock.now();
+  const nowMs = (): number => clock.millisecondsBetween(startedAt, clock.now());
+  const evidence = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, startedAt, {
+    // Operational control is evidence for no containment window, and this process probes no coordinator.
+    expiryCeiling: () => null,
+    coordinatorIsLive: () => true,
+  });
 
   const challenges: ControlChallengeAuthority = {
-    controlIsLive: () => evidence.isControlLive(evidence.sample()),
-    issueFirstChallenge: (challenge) =>
-      evidence.issueFirstChallenge(challenge, evidence.sample())
-        ? { accepted: true }
-        : { accepted: false, reason: 'invalid-state' },
-    admitSuccessor: (challenge) => {
-      const now = evidence.sample();
+    controlIsLive: () => evidence.isControlLive(clock.now()),
+    issueFirstChallenge: () => {
+      const now = clock.now();
+      const challenge = mintChallenge();
+      return evidence.issueFirstChallenge(challenge, now)
+        ? { accepted: true, challenge }
+        : { accepted: false, reason: 'invalid-state' };
+    },
+    admitSuccessor: () => {
+      const now = clock.now();
       if (evidence.isControlLive(now)) return { accepted: false, reason: 'control-active' };
+      const challenge = mintChallenge();
       evidence.beginSuccessorControl(challenge, now);
+      return { accepted: true, challenge };
+    },
+    // No teardown to refuse against: operational control carries no latch, so a live connection always
+    // carries its tenancy forward.
+    reattachControl: () => {
+      evidence.reattachControl();
       return { accepted: true };
     },
-    echoChallenge: (challenge, nextChallenge) =>
-      evidence.echoChallenge(evidence.sample(), challenge, nextChallenge, echoOptions),
+    echoChallenge: (challenge) => {
+      const nextChallenge = mintChallenge();
+      const recorded = evidence.echoChallenge(clock.now(), challenge, nextChallenge);
+      return recorded.accepted ? { accepted: true, nextChallenge } : recorded;
+    },
   };
 
   /** As on the guardian: the set comes from this proxy's own capsule, the timeout from the installer. */
@@ -245,11 +262,6 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     }
   };
 
-  // Ledger leases are plain milliseconds on the proxy's own clock, measured from its start. The branded
-  // instants never leave this file, so a lease can never be compared against another process's reading.
-  const startedAt = clock.now();
-  const nowMs = (): number => clock.millisecondsBetween(startedAt, clock.now());
-
   const methods = new Map<string, ControlMethod>([
     [
       'control.open.v1',
@@ -259,7 +271,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const request = openParamsSchema.parse(params);
           bootstrapNonce.spend(request.bootstrapNonce);
           assertNamedCoordinatorBuild(request.coordinator);
-          return { proxy: identity };
+          return { holder: request.coordinator.instanceId, fields: { proxy: identity } };
         },
       },
     ],
@@ -488,10 +500,13 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             binding: setIdentity,
           });
           return {
-            state: 'redeemed-provisional',
-            redemptionReceipt: redemption.redemptionReceipt,
-            proxy: identity,
-            operations: redemption.grant.operationIds,
+            holder: request.successor.instanceId,
+            fields: {
+              state: 'redeemed-provisional',
+              redemptionReceipt: redemption.redemptionReceipt,
+              proxy: identity,
+              operations: redemption.grant.operationIds,
+            },
           };
         },
       },
@@ -504,9 +519,8 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     challenges,
     // EOF revokes operational control. It stops mutation and makes the dormant grant redeemable; it never
     // reaps anything, because this process is inside the containment the enforcers would be reaping.
-    observer: { onControlLost: () => evidence.observeEof(evidence.sample()) },
+    observer: { onControlLost: () => evidence.observeEof(clock.now()) },
     timer,
-    mintChallenge,
     requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
   });
 

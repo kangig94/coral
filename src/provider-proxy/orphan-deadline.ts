@@ -157,24 +157,47 @@ export type DeadlineDispatchResult =
       reason: 'control-active' | 'control-lost' | 'invalid-state' | 'teardown-latched';
     }>;
 
-export type ChallengeEchoResult = ControlLeaseEchoResult | Readonly<{ accepted: false; reason: 'teardown-latched' }>;
+/** `DeadlineDispatchResult`'s own refusal reasons, named once so a challenge-carrying result can reuse them. */
+type DeadlineDispatchRefusalReason = Extract<DeadlineDispatchResult, { accepted: false }>['reason'];
+
+/**
+ * What `issueFirstChallenge`/`admitSuccessor` answer: the minted challenge on acceptance, since the
+ * authority that admits a tenancy is the authority that mints its first challenge — or one of the same
+ * refusal reasons an ordinary dispatch reports.
+ */
+export type DeadlineChallengeIssueResult =
+  | Readonly<{ accepted: true; challenge: string }>
+  | Readonly<{ accepted: false; reason: DeadlineDispatchRefusalReason }>;
+
+export type ChallengeEchoResult =
+  | Readonly<{ accepted: true; nextChallenge: string }>
+  | Exclude<ControlLeaseEchoResult, { accepted: true }>
+  | Readonly<{ accepted: false; reason: 'teardown-latched' }>;
 
 export type ProviderProxyOrdinaryFrameKind = 'proxy-heartbeat' | 'authenticated-frame';
 
 export type EnforcerDeadlineStateMachine<Scope extends symbol> = Readonly<{
   state(): EnforcerDeadlineState;
   bounds(): ProviderProxyEnforcerBounds<Scope>;
-  issueFirstChallenge(challenge: string): DeadlineDispatchResult;
+  /** Mints and installs the tenancy's first challenge in one act; the challenge travels back in the result. */
+  issueFirstChallenge(): DeadlineChallengeIssueResult;
   /** Whether the established tenancy still holds control on this enforcer's own clock. */
   controlIsLive(): boolean;
-  echoChallenge(challenge: string, nextChallenge: string): ChallengeEchoResult;
+  echoChallenge(challenge: string): ChallengeEchoResult;
+  /**
+   * A live connection carries an already-granted tenancy again — the same holder retrying its open, on the
+   * same socket or a new one. No new challenge: the one already outstanding stays answerable. Refused only
+   * once teardown has latched, the one condition that makes carrying the tenancy forward meaningless.
+   */
+  reattachControl(): DeadlineDispatchResult;
   observeEof(): void;
   dispatchOrdinaryFrame(kind: ProviderProxyOrdinaryFrameKind, work: () => void): DeadlineDispatchResult;
   /**
-   * Admits a successor control tenancy. Refused while control is live or once teardown has latched. The
-   * credential's one-shot lives with its owner, so this authorizes and does not also consume.
+   * Admits a successor control tenancy and mints its first challenge. Refused while control is live or once
+   * teardown has latched. The credential's one-shot lives with its owner, so this authorizes and does not
+   * also consume.
    */
-  admitSuccessor(firstSuccessorChallenge: string): DeadlineDispatchResult;
+  admitSuccessor(): DeadlineChallengeIssueResult;
   /**
    * Records that the paired peer channel closed. The party that linearizes an ordered redemption is gone,
    * so admitting a successor can now only ever fail — `adoptionDeadline` collapses to (at most) this
@@ -200,20 +223,48 @@ function assertExitedTransition(state: EnforcerDeadlineState): void {
   }
 }
 
+/**
+ * What the enforcer needs from its composer to construct its challenge authority: whether a coordinator is
+ * there to have sent an echo, and how to mint a challenge. Minting joins this construction rather than
+ * staying a `createControlEndpoint` option, the same shape `createGrantRegistry(mintReceipt)` already
+ * establishes — the authority that admits a tenancy is the authority that mints its challenges.
+ */
+export type EnforcerChallengePolicy = Readonly<{
+  coordinatorIsLive(): boolean;
+  mintChallenge(): string;
+}>;
+
 export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   clock: MonotonicClock<Scope>,
   configuration: ProviderProxyDeadlineConfiguration,
-  isCoordinatorLive: () => boolean,
+  policy: EnforcerChallengePolicy,
 ): EnforcerDeadlineStateMachine<Scope> {
   if (configuration[providerProxyDeadlineConfigurationBrand] !== true) {
     throw new Error('Provider proxy deadline configuration must be validated before use.');
   }
-  const evidence = new ControlLeaseEvidence(clock, configuration.leaseMs);
   let state: EnforcerDeadlineState = 'accepting-control';
   // Deliberately not on `ControlLeaseEvidence`: that class is round-trip evidence for one control
   // connection, and the standalone proxy holds it with no `adoptionDeadline` of its own to accelerate.
   // Pairing loss is a third, independent input — this machine's own state, not the lease's.
   let pairingLossAt: MonotonicInstant<Scope> | null = null;
+
+  /**
+   * The adoption deadline on its own, apart from `bounds()`: the evidence's own expiry ceiling is this
+   * value, and computing it through `bounds()` — which itself reads the evidence's challenge expiry — would
+   * recurse. Pairing loss may pull it earlier, never later, once the party that would linearize a successor
+   * is gone.
+   */
+  function adoptionDeadline(): MonotonicInstant<Scope> {
+    const exit = clock.shiftMilliseconds(evidence.lastRoundTripEvidenceAt(), configuration.orphanTimeoutMs);
+    const derived = clock.shiftMilliseconds(exit, -configuration.teardownReserveMs);
+    return pairingLossAt === null ? derived : clock.earlier(derived, pairingLossAt);
+  }
+
+  const evidence = new ControlLeaseEvidence(clock, configuration.leaseMs, clock.now(), {
+    // A challenge may not outlive the window it is evidence for, so its expiry is clamped to adoption.
+    expiryCeiling: adoptionDeadline,
+    coordinatorIsLive: policy.coordinatorIsLive,
+  });
 
   /**
    * The teardown deadlines this enforcer adds on top of the lease. Both are anchored on the same round-trip
@@ -222,21 +273,13 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
    */
   const bounds = (): ProviderProxyEnforcerBounds<Scope> => {
     const lastRoundTripEvidenceAt = evidence.lastRoundTripEvidenceAt();
-    const exitDeadline = clock.shiftMilliseconds(lastRoundTripEvidenceAt, configuration.orphanTimeoutMs);
-    const derivedAdoptionDeadline = clock.shiftMilliseconds(exitDeadline, -configuration.teardownReserveMs);
-    const adoptionDeadline =
-      pairingLossAt === null ? derivedAdoptionDeadline : clock.earlier(derivedAdoptionDeadline, pairingLossAt);
     return Object.freeze({
       lastRoundTripEvidenceAt,
       eofAt: evidence.eofAt(),
       controlLossAt: evidence.controlLossAt(),
-      exitDeadline,
-      adoptionDeadline,
-      // A challenge may not outlive the window it is evidence for, so its expiry is clamped to adoption.
-      firstChallengeExpiresAt: evidence.challengeExpiresAt({
-        coordinatorIsLive: true,
-        expiryCeiling: adoptionDeadline,
-      }),
+      exitDeadline: clock.shiftMilliseconds(lastRoundTripEvidenceAt, configuration.orphanTimeoutMs),
+      adoptionDeadline: adoptionDeadline(),
+      firstChallengeExpiresAt: evidence.challengeExpiresAt(),
     });
   };
 
@@ -244,10 +287,10 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
     if (state === 'accepting-control') state = 'teardown-latched';
   };
   const sampleBeforeQueuedWork = (): MonotonicInstant<Scope> | null => {
-    const now = evidence.sample();
+    const now = clock.now();
     // Sampling before any queued work is what makes equality and processed-after lose: a handler that was
     // enqueued while the set was still adoptable must not act on that stale belief.
-    if (clock.compare(now, bounds().adoptionDeadline) >= 0) latchTeardown();
+    if (clock.compare(now, adoptionDeadline()) >= 0) latchTeardown();
     return state === 'accepting-control' ? now : null;
   };
 
@@ -255,23 +298,29 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
     state: (): EnforcerDeadlineState => state,
     // One definition of "control is held": round-trip evidence on this enforcer's clock. A socket that is
     // merely still open belongs to a wedged coordinator, and a successor must be able to redeem past it.
-    controlIsLive: (): boolean => evidence.isControlLive(evidence.sample()),
+    controlIsLive: (): boolean => evidence.isControlLive(clock.now()),
     bounds,
-    issueFirstChallenge: (challenge: string): DeadlineDispatchResult => {
+    issueFirstChallenge: (): DeadlineChallengeIssueResult => {
       const now = sampleBeforeQueuedWork();
       if (now === null) return { accepted: false, reason: 'teardown-latched' };
+      const challenge = policy.mintChallenge();
       // A refusal, not a throw: "a first challenge already exists" is a state this machine models, and the
       // endpoint has to be able to answer the caller rather than fail the connection over it.
       if (!evidence.issueFirstChallenge(challenge, now)) return { accepted: false, reason: 'invalid-state' };
-      return { accepted: true };
+      return { accepted: true, challenge };
     },
-    echoChallenge: (challenge: string, nextChallenge: string): ChallengeEchoResult => {
+    echoChallenge: (challenge: string): ChallengeEchoResult => {
       const now = sampleBeforeQueuedWork();
       if (now === null) return { accepted: false, reason: 'teardown-latched' };
-      return evidence.echoChallenge(now, challenge, nextChallenge, {
-        coordinatorIsLive: isCoordinatorLive(),
-        expiryCeiling: bounds().adoptionDeadline,
-      });
+      const nextChallenge = policy.mintChallenge();
+      const recorded = evidence.echoChallenge(now, challenge, nextChallenge);
+      return recorded.accepted ? { accepted: true, nextChallenge } : recorded;
+    },
+    reattachControl: (): DeadlineDispatchResult => {
+      const now = sampleBeforeQueuedWork();
+      if (now === null) return { accepted: false, reason: 'teardown-latched' };
+      evidence.reattachControl();
+      return { accepted: true };
     },
     observeEof: (): void => {
       const now = sampleBeforeQueuedWork();
@@ -293,15 +342,16 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       work();
       return { accepted: true };
     },
-    admitSuccessor: (firstSuccessorChallenge: string): DeadlineDispatchResult => {
+    admitSuccessor: (): DeadlineChallengeIssueResult => {
       const now = sampleBeforeQueuedWork();
       if (now === null) return { accepted: false, reason: 'teardown-latched' };
       if (evidence.isControlLive(now)) return { accepted: false, reason: 'control-active' };
+      const challenge = policy.mintChallenge();
       // Authorizes, and does not also consume: the credential's one-shot belongs to whoever owns the
       // credential. Installing a challenge before the grant is checked would let a refused replay poison a
       // legitimate successor's retry, while the reverse order costs nothing — the set is torn down anyway.
-      evidence.beginSuccessorControl(firstSuccessorChallenge, now);
-      return { accepted: true };
+      evidence.beginSuccessorControl(challenge, now);
+      return { accepted: true, challenge };
     },
     latchTeardown,
     markContainmentAbsent: (): void => {

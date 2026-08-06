@@ -8,7 +8,12 @@ import { createMonotonicClock, type MonotonicClock } from '#src/infra/monotonic-
 import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
 import { createReaper, type Reaper } from '#src/provider-proxy/reaper.js';
-import type { EnforcementOutcome, EnforcementScheduler } from '#src/provider-proxy/enforcement.js';
+import {
+  MAX_PROXY_RECORDED_PROVIDER_ROOTS,
+  type EnforcementOutcome,
+  type EnforcementScheduler,
+} from '#src/provider-proxy/enforcement.js';
+import { MAX_PROXY_OPERATION_LEDGERS } from '#src/provider-proxy/ledger.js';
 import {
   createEnforcerDeadlineStateMachine,
   resolveProviderProxyDeadlineConfiguration,
@@ -138,11 +143,17 @@ async function startSet() {
     };
   };
   let controlLive = true;
+  let challengeCount = 0;
+  const mintRoleChallenge = (): string => {
+    challengeCount += 1;
+    return `roles-challenge-${challengeCount}`;
+  };
   const accepting = {
     controlIsLive: () => controlLive,
-    issueFirstChallenge: () => ({ accepted: true }) as const,
-    admitSuccessor: () => ({ accepted: true }) as const,
-    echoChallenge: () => ({ accepted: true }) as const,
+    issueFirstChallenge: () => ({ accepted: true, challenge: mintRoleChallenge() }) as const,
+    admitSuccessor: () => ({ accepted: true, challenge: mintRoleChallenge() }) as const,
+    reattachControl: () => ({ accepted: true }) as const,
+    echoChallenge: () => ({ accepted: true, nextChallenge: mintRoleChallenge() }) as const,
     observeEof: () => {},
     observePairingLoss: () => {},
     dispatchOrdinaryFrame: () => ({ accepted: true }) as const,
@@ -177,8 +188,6 @@ async function startSet() {
     containmentEnvironment,
     scheduler: idleScheduler,
     timer,
-    mintChallenge: () => randomUUID(),
-    mintReceipt,
     self: { pid: reaperIdentity.pid, processStartedAtSeconds: reaperIdentity.processStartedAtSeconds },
     onOutcome: (outcome) => reaperOutcomes.push(outcome),
     onProgressViolation: () => {},
@@ -215,7 +224,6 @@ async function startSet() {
     containmentEnvironment,
     scheduler: idleScheduler,
     timer,
-    mintChallenge: () => randomUUID(),
     mintReceipt,
     reaperChannel,
     self: { pid: guardianIdentity.pid, processStartedAtSeconds: guardianIdentity.processStartedAtSeconds },
@@ -264,6 +272,12 @@ async function startSet() {
     reaperOutcomes,
     guardianOutcomes,
     alive,
+    // Exposed for tests that assert directly on the in-process reaper's own recorded state — the wire
+    // protocol has no read query for it, and none should exist merely to serve a test.
+    reaper,
+    // The guardian's own pairing channel to the reaper: the reaper accepts exactly one paired peer, and the
+    // guardian already holds it, so a test driving `reaper.*` pairing methods directly must reuse this one.
+    reaperChannel,
     /** Ends the incumbent's control the way a lapsed lease does, leaving its socket alone. */
     lapseControl: () => {
       controlLive = false;
@@ -300,24 +314,29 @@ async function installGrant(
   return { grantId, secret: GRANT_SECRET, successor: set.coordinatorIdentity, operations: handoffOperations };
 }
 
-async function stage(
-  set: SetUnderTest,
-): Promise<{ jointContainmentReceipt: string; operation: Record<string, string> }> {
+async function stage(set: SetUnderTest): Promise<{
+  jointContainmentReceipt: string;
+  operation: Record<string, string>;
+  reservationId: string;
+  activationNonce: string;
+}> {
   const operation = set.operationFor();
+  const reservationId = randomUUID();
+  const activationNonce = randomUUID();
   const staged = (await set.proxyChannel.call(
     'guardian.register-provider-root.v1',
     {
       proxy: set.proxyIdentity,
       operation,
-      reservationId: randomUUID(),
-      activationNonce: randomUUID(),
+      reservationId,
+      activationNonce,
       providerPid: ROOT.pid,
       providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
     },
     5_000,
   )) as { state: string; jointContainmentReceipt: string };
   expect(staged.state).toBe('staged-contained');
-  return { jointContainmentReceipt: staged.jointContainmentReceipt, operation };
+  return { jointContainmentReceipt: staged.jointContainmentReceipt, operation, reservationId, activationNonce };
 }
 
 type BareSharedIdentity = Readonly<{
@@ -386,11 +405,17 @@ function bareOpenRequest(directory: string, shared: BareSharedIdentity): Record<
 
 /** A deadline machine that never itself refuses, for tests driving one reaper's raw protocol directly. */
 function bareDeadlines<Scope extends symbol>(clock: MonotonicClock<Scope>): EnforcerDeadlineStateMachine<Scope> {
+  let challengeCount = 0;
+  const mintChallenge = (): string => {
+    challengeCount += 1;
+    return `bare-challenge-${challengeCount}`;
+  };
   return {
     controlIsLive: () => true,
-    issueFirstChallenge: () => ({ accepted: true }) as const,
-    admitSuccessor: () => ({ accepted: true }) as const,
-    echoChallenge: () => ({ accepted: true }) as const,
+    issueFirstChallenge: () => ({ accepted: true, challenge: mintChallenge() }) as const,
+    admitSuccessor: () => ({ accepted: true, challenge: mintChallenge() }) as const,
+    reattachControl: () => ({ accepted: true }) as const,
+    echoChallenge: () => ({ accepted: true, nextChallenge: mintChallenge() }) as const,
     observeEof: () => {},
     observePairingLoss: () => {},
     dispatchOrdinaryFrame: () => ({ accepted: true }) as const,
@@ -437,8 +462,6 @@ async function startBareReaper<Scope extends symbol>(
     },
     scheduler: idleScheduler,
     timer,
-    mintChallenge: () => randomUUID(),
-    mintReceipt: () => randomUUID(),
     self: { pid: 5_101, processStartedAtSeconds: 901 },
     onOutcome: () => {},
     onProgressViolation: () => {},
@@ -507,13 +530,127 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toThrow(/joint containment receipt/u);
   });
 
-  it('keeps a released membership recorded so only teardown may conclude absence', async () => {
+  it('never exhausts the reaper across many prepare-then-release cycles for the same provider root', async () => {
+    const set = await startSet();
+
+    // Well past MAX_PROXY_OPERATION_LEDGERS: the defect capped registrations by operation count, so this
+    // loop would have leaked one reaper slot per cycle and failed near iteration 128 under the old code.
+    const cycles = MAX_PROXY_OPERATION_LEDGERS + 40;
+    for (let cycle = 0; cycle < cycles; cycle += 1) {
+      const { operation, reservationId, activationNonce, jointContainmentReceipt } = await stage(set);
+      const released = (await set.control.call(
+        'guardian.operation-release.v1',
+        { operation, reservationId, activationNonce, jointContainmentReceipt },
+        5_000,
+      )) as { state: string };
+      expect(released.state).toBe('membership-released');
+    }
+
+    // The reaper's unit of account is the provider root: every cycle re-presented the same one, so exactly
+    // one is ever recorded no matter how many operations came and went.
+    expect(set.reaper.enforcer()?.recordedRoots()).toEqual([ROOT]);
+  });
+
+  it('lets a retried guardian.operation-activate.v1 succeed rather than being refused by the reaper', async () => {
+    const set = await startSet();
+    const { jointContainmentReceipt, operation, reservationId, activationNonce } = await stage(set);
+    const activate = () =>
+      set.control.call(
+        'guardian.operation-activate.v1',
+        { operation, reservationId, activationNonce, providerRoot: ROOT, jointContainmentReceipt },
+        5_000,
+      ) as Promise<{ state: string }>;
+
+    const first = await activate();
+    expect(first.state).toBe('activation-authorized');
+
+    // A retry presents the exact identity that already succeeded. The old reaper deleted its staging entry
+    // on the first activation, so this would be refused rather than repeated.
+    const retried = await activate();
+    expect(retried.state).toBe('activation-authorized');
+  });
+
+  it('refuses guardian.operation-activate.v1 presenting a different reservation for a known operation', async () => {
     const set = await startSet();
     const { jointContainmentReceipt, operation } = await stage(set);
 
+    await expect(
+      set.control.call(
+        'guardian.operation-activate.v1',
+        {
+          operation,
+          reservationId: randomUUID(),
+          activationNonce: randomUUID(),
+          providerRoot: ROOT,
+          jointContainmentReceipt,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/different reservation/u);
+  });
+
+  it('refuses guardian.operation-release.v1 presenting a different reservation for a known operation', async () => {
+    const set = await startSet();
+    const { jointContainmentReceipt, operation } = await stage(set);
+
+    await expect(
+      set.control.call(
+        'guardian.operation-release.v1',
+        { operation, reservationId: randomUUID(), activationNonce: randomUUID(), jointContainmentReceipt },
+        5_000,
+      ),
+    ).rejects.toThrow(/different reservation/u);
+  });
+
+  it('refuses reaper.confirm-provider-root.v1 for a root the reaper never recorded', async () => {
+    // The reaper accepts exactly one paired peer, and the guardian already holds it — reuse that channel
+    // rather than opening a second one, which the reaper would refuse outright.
+    const set = await startSet();
+
+    await expect(
+      set.reaperChannel.call('reaper.confirm-provider-root.v1', { providerRoot: ROOT }, 5_000),
+    ).rejects.toThrow(/never recorded/u);
+  });
+
+  it('translates an EnforcementError from the root cap into a closed-set protocol code, not the catch-all', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'coral-root-cap-'));
+    cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+    const shared = bareSharedIdentity();
+    const clock = createMonotonicClock(Symbol('root-cap'), { readMilliseconds: () => 0n });
+    const { reaperEndpoint, reaper } = await startBareReaper(directory, shared, clock, bareDeadlines(clock));
+    cleanups.push(() => reaper.close());
+
+    const pairing = await connectControlClient(reaperEndpoint, timer, 5_000);
+    cleanups.push(() => pairing.close());
+    await pairing.call('reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+    await pairing.call('reaper.record-containment.v1', CONTAINMENT, 5_000);
+
+    for (let index = 0; index < MAX_PROXY_RECORDED_PROVIDER_ROOTS; index += 1) {
+      await pairing.call(
+        'reaper.register-provider-root.v1',
+        { providerRoot: { pid: 20_000 + index, processStartedAtSeconds: 1 } },
+        5_000,
+      );
+    }
+
+    await expect(
+      pairing.call(
+        'reaper.register-provider-root.v1',
+        { providerRoot: { pid: 999_999, processStartedAtSeconds: 1 } },
+        5_000,
+      ),
+      // The rejection is a `ControlClientError` carrying the server's own closed-set code in `protocolCode`;
+      // the pre-fix behavior let `EnforcementError` escape untranslated, which reads as `protocol_violation`.
+    ).rejects.toMatchObject({ protocolCode: 'invalid_state' });
+  });
+
+  it('keeps a released membership recorded so only teardown may conclude absence', async () => {
+    const set = await startSet();
+    const { jointContainmentReceipt, operation, reservationId, activationNonce } = await stage(set);
+
     const released = (await set.control.call(
       'guardian.operation-release.v1',
-      { operation, reservationId: randomUUID(), activationNonce: randomUUID(), jointContainmentReceipt },
+      { operation, reservationId, activationNonce, jointContainmentReceipt },
       5_000,
     )) as { state: string };
     expect(released.state).toBe('membership-released');
@@ -718,6 +855,39 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toThrow(/different build/u);
   });
 
+  it('refuses an unsorted or duplicated operation set at guardian.handoff-install.v1 ingress', async () => {
+    const set = await startSet();
+    const a = set.operationFor();
+    const b = set.operationFor();
+    // Deliberately descending: whichever of the two sorts later goes first.
+    const [first, second] = a.operationId < b.operationId ? [b, a] : [a, b];
+    const entry = (operation: Record<string, string>) => ({
+      operation,
+      carrierState: 'executing' as const,
+      committedThroughProviderSeq: 0,
+    });
+    const install = (operations: ReturnType<typeof entry>[]): Promise<unknown> =>
+      set.control.call(
+        'guardian.handoff-install.v1',
+        {
+          grantId: randomUUID(),
+          secretSha256: createHash('sha256').update(GRANT_SECRET, 'utf8').digest('hex'),
+          successor: set.coordinatorIdentity,
+          operations,
+          orphanTimeoutMs: 30_000,
+          teardownReserveMs: 14_000,
+        },
+        5_000,
+      );
+
+    // Only the capsule's own copy of this schema used to carry the byte-sort refinement; the wire schema
+    // this method actually parses did not, so an unsorted install could disagree with a sorted redemption
+    // later — refused as `grant_replayed`, whose contract meaning is "give up", with nothing to diagnose.
+    await expect(install([entry(first), entry(second)])).rejects.toThrow();
+    // Duplicated is refused for the same reason, not merely unsorted.
+    await expect(install([entry(first), entry(first)])).rejects.toThrow();
+  });
+
   it('holds nothing until the guardian names the containment it watched being created', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'coral-unrecorded-'));
     cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
@@ -745,9 +915,10 @@ describe('provider-proxy guardian and reaper', () => {
       clock,
       deadlines: {
         controlIsLive: () => true,
-        issueFirstChallenge: () => ({ accepted: true }) as const,
-        admitSuccessor: () => ({ accepted: true }) as const,
-        echoChallenge: () => ({ accepted: true }) as const,
+        issueFirstChallenge: () => ({ accepted: true, challenge: randomUUID() }) as const,
+        admitSuccessor: () => ({ accepted: true, challenge: randomUUID() }) as const,
+        reattachControl: () => ({ accepted: true }) as const,
+        echoChallenge: () => ({ accepted: true, nextChallenge: randomUUID() }) as const,
         observeEof: () => {},
         observePairingLoss: () => {},
         dispatchOrdinaryFrame: () => ({ accepted: true }) as const,
@@ -773,8 +944,6 @@ describe('provider-proxy guardian and reaper', () => {
       },
       scheduler: idleScheduler,
       timer,
-      mintChallenge: () => randomUUID(),
-      mintReceipt: () => randomUUID(),
       self: { pid: 5_101, processStartedAtSeconds: 901 },
       onOutcome: () => {},
       onProgressViolation: () => {},
@@ -860,7 +1029,7 @@ describe('provider-proxy guardian and reaper', () => {
     const deadlines = createEnforcerDeadlineStateMachine(
       clock,
       resolveProviderProxyDeadlineConfiguration({ get: () => undefined }),
-      () => true,
+      { coordinatorIsLive: () => true, mintChallenge: () => randomUUID() },
     );
     // Whichever of these two the reaper's pairing-close observer actually calls resolves this — the
     // assertions below are what tell the fixed wiring apart from the defect, so the synchronization itself

@@ -75,7 +75,10 @@ describe('control heartbeats reach the deadline machine', () => {
     const clock = createMonotonicClock(Symbol('evidence'), { readMilliseconds: () => elapsed });
     const configuration = resolveProviderProxyDeadlineConfiguration({ get: () => undefined });
     // A live coordinator: the echo only counts when one is there to have sent it.
-    const deadlines = createEnforcerDeadlineStateMachine(clock, configuration, () => true);
+    const deadlines = createEnforcerDeadlineStateMachine(clock, configuration, {
+      coordinatorIsLive: () => true,
+      mintChallenge: () => randomUUID(),
+    });
     const bootstrapNonce = createBootstrapNonceCredential(NONCE);
 
     const endpoint = createControlEndpoint({
@@ -89,7 +92,7 @@ describe('control heartbeats reach the deadline machine', () => {
               authority: 'establishes-control',
               handle: (params) => {
                 bootstrapNonce.spend((params as { bootstrapNonce?: unknown } | null)?.bootstrapNonce);
-                return {};
+                return { holder: 'coordinator', fields: {} };
               },
             },
           ],
@@ -99,7 +102,6 @@ describe('control heartbeats reach the deadline machine', () => {
       challenges: deadlines,
       observer: { onControlLost: () => deadlines.observeEof() },
       timer,
-      mintChallenge: () => randomUUID(),
       requestTimeoutMs: 5_000,
     });
     await endpoint.listen();
@@ -139,7 +141,7 @@ describe('control heartbeats reach the deadline machine', () => {
     const deadlines = createEnforcerDeadlineStateMachine(
       clock,
       resolveProviderProxyDeadlineConfiguration({ get: () => undefined }),
-      () => true,
+      { coordinatorIsLive: () => true, mintChallenge: () => randomUUID() },
     );
     const bootstrapNonce = createBootstrapNonceCredential(NONCE);
 
@@ -154,7 +156,7 @@ describe('control heartbeats reach the deadline machine', () => {
               authority: 'establishes-control',
               handle: (params) => {
                 bootstrapNonce.spend((params as { bootstrapNonce?: unknown } | null)?.bootstrapNonce);
-                return {};
+                return { holder: 'coordinator', fields: {} };
               },
             },
           ],
@@ -163,7 +165,6 @@ describe('control heartbeats reach the deadline machine', () => {
       challenges: deadlines,
       observer: { onControlLost: () => deadlines.observeEof() },
       timer,
-      mintChallenge: () => randomUUID(),
       requestTimeoutMs: 5_000,
     });
     await endpoint.listen();

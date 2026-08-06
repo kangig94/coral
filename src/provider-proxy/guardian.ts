@@ -21,6 +21,7 @@ import {
   createGrantRegistry,
   grantSecretDigestSchema,
   grantSecretSchema,
+  handoffOperationSetSchema,
   type GrantBinding,
 } from './handoff-capsule.js';
 import {
@@ -30,7 +31,6 @@ import {
   coordinatorIdentitySchema,
   guardianIdentitySchema,
   operationIdentitySchema,
-  proxyHandoffOperationSchema,
   proxyIdentitySchema,
   reaperIdentitySchema,
   type CoordinatorIdentity,
@@ -133,8 +133,6 @@ function assertRecordedSetAgreement(
   }
 }
 
-const handoffOperationSetSchema = z.array(proxyHandoffOperationSchema).max(MAX_PROXY_OPERATION_LEDGERS);
-
 const handoffInstallParamsSchema = z
   .object({
     grantId: canonicalUuidSchema,
@@ -155,10 +153,16 @@ const handoffRedeemParamsSchema = z
   })
   .strict();
 
-/** Both authorities must ACK the same identity before a root may execute, so the receipt names both. */
+/**
+ * Both authorities must ACK the same identity before a root may execute, so the receipt names both — the
+ * reaper's own ACK is no longer a separate receipt, because the reaper holds nothing to revise it against.
+ * The reservation tuple is recorded, not just parsed, so a caller presenting a different one for a known
+ * operation is a disagreement this membership can detect rather than silently accept.
+ */
 type StagedMembership = Readonly<{
   jointContainmentReceipt: string;
-  reaperContainmentReceipt: string;
+  reservationId: string;
+  activationNonce: string;
   root: z.infer<typeof providerRootSchema>;
 }>;
 
@@ -170,7 +174,6 @@ export type GuardianOptions<Scope extends symbol> = Readonly<{
   containmentEnvironment: ProcessContainmentEnvironment<Scope>;
   scheduler: EnforcementScheduler;
   timer: ControlEndpointTimer;
-  mintChallenge(): string;
   mintReceipt(): string;
   /** The paired reaper channel, held open for the lifetime of the set. */
   reaperChannel: ControlClient;
@@ -191,7 +194,7 @@ export interface Guardian<Scope extends symbol> {
  * it can enforce the same disappearance condition, but it can neither move nor extend the reaper's deadline.
  */
 export function createGuardian<Scope extends symbol>(options: GuardianOptions<Scope>): Guardian<Scope> {
-  const { capsule, clock, deadlines, containment, scheduler, timer, mintChallenge, mintReceipt, self } = options;
+  const { capsule, clock, deadlines, containment, scheduler, timer, mintReceipt, self } = options;
 
   const enforcer = createArmedEnforcer({
     clock,
@@ -259,7 +262,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           assertNamedCoordinatorBuild(request.coordinator);
           // The result names the proxy this guardian was issued for, so a coordinator that opened against
           // the wrong set learns it from the response rather than from a later staging failure.
-          return { guardian: identity, proxy: request.proxy };
+          return { holder: request.coordinator.instanceId, fields: { guardian: identity, proxy: request.proxy } };
         },
       },
     ],
@@ -307,9 +310,12 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             binding: setIdentity,
           });
           return {
-            state: 'redeemed-provisional',
-            redemptionReceipt: redemption.redemptionReceipt,
-            operations: redemption.grant.operationIds,
+            holder: request.successor.instanceId,
+            fields: {
+              state: 'redeemed-provisional',
+              redemptionReceipt: redemption.redemptionReceipt,
+              operations: redemption.grant.operationIds,
+            },
           };
         },
       },
@@ -354,22 +360,18 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               'This guardian holds its maximum recorded provider roots.',
             );
           }
-          // Forward the exact root; a receipt is only issued once both authorities ACK the same identity, so
-          // neither can be talked into containing something the other never recorded.
+          // Forward the exact root; the joint receipt is only minted once both authorities ACK the same
+          // identity, so neither can be talked into containing something the other never recorded. The
+          // reaper is asked to record a root, not an operation — it has no operation vocabulary to forward.
           const reaperResult = (await options.reaperChannel.call(
             'reaper.register-provider-root.v1',
-            {
-              operation: request.operation,
-              reservationId: request.reservationId,
-              activationNonce: request.activationNonce,
-              providerRoot: root,
-            },
+            { providerRoot: root },
             PROXY_CONTROL_RPC_TIMEOUT_MS,
-          )) as { state?: string; reaperContainmentReceipt?: string };
-          if (reaperResult.state !== 'staged-contained' || typeof reaperResult.reaperContainmentReceipt !== 'string') {
+          )) as { state?: string };
+          if (reaperResult.state !== 'root-recorded') {
             throw new ProxyControlProtocolError(
               'invalid_state',
-              'The reaper did not stage the reported provider root.',
+              'The reaper did not record the reported provider root.',
             );
           }
           try {
@@ -386,7 +388,8 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           const jointContainmentReceipt = mintReceipt();
           staged.set(request.operation.operationId, {
             jointContainmentReceipt,
-            reaperContainmentReceipt: reaperResult.reaperContainmentReceipt,
+            reservationId: request.reservationId,
+            activationNonce: request.activationNonce,
             root,
           });
           return { state: 'staged-contained', providerRoot: root, jointContainmentReceipt };
@@ -406,26 +409,33 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               'Activation must present the joint containment receipt.',
             );
           }
+          // A known operation staged under a specific reservation; a caller presenting a different one is
+          // reasoning about a different prepare than the one this membership records, not a legitimate retry.
+          if (
+            membership.reservationId !== request.reservationId ||
+            membership.activationNonce !== request.activationNonce
+          ) {
+            throw new ProxyControlProtocolError(
+              'identity_mismatch',
+              'Activation named a different reservation than this operation staged.',
+            );
+          }
           if (
             membership.root.pid !== request.providerRoot.pid ||
             membership.root.processStartedAtSeconds !== request.providerRoot.processStartedAtSeconds
           ) {
             throw new ProxyControlProtocolError('identity_mismatch', 'Activation named a different provider root.');
           }
-          // Activation authority is converted only after the reaper confirms the same target is registered.
+          // Activation authority is converted only after the reaper confirms it still holds the same root —
+          // proof this reaper is alive and still containing the target at the instant of activation. There is
+          // no operation for it to authorize, so a retry that reaches an unchanged root always succeeds.
           const reaperResult = (await options.reaperChannel.call(
-            'reaper.operation-activate.v1',
-            {
-              operation: request.operation,
-              reservationId: request.reservationId,
-              activationNonce: request.activationNonce,
-              providerRoot: request.providerRoot,
-              reaperContainmentReceipt: membership.reaperContainmentReceipt,
-            },
+            'reaper.confirm-provider-root.v1',
+            { providerRoot: request.providerRoot },
             PROXY_CONTROL_RPC_TIMEOUT_MS,
           )) as { state?: string };
-          if (reaperResult.state !== 'activation-authorized') {
-            throw new ProxyControlProtocolError('invalid_state', 'The reaper did not authorize activation.');
+          if (reaperResult.state !== 'root-recorded') {
+            throw new ProxyControlProtocolError('invalid_state', 'The reaper did not confirm the provider root.');
           }
           return { state: 'activation-authorized', jointActivationReceipt: mintReceipt() };
         },
@@ -442,6 +452,17 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             throw new ProxyControlProtocolError(
               'unauthorized_control',
               'Release must present the joint containment receipt.',
+            );
+          }
+          // Same disagreement `guardian.operation-activate.v1` refuses: a different reservation for a known
+          // operation is reasoning about a different prepare, not the one this membership records.
+          if (
+            membership.reservationId !== request.reservationId ||
+            membership.activationNonce !== request.activationNonce
+          ) {
+            throw new ProxyControlProtocolError(
+              'identity_mismatch',
+              'Release named a different reservation than this operation staged.',
             );
           }
           // The membership record is dropped, but the recorded root stays in the enforcer: a released
@@ -489,7 +510,6 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       onControlLost: () => deadlines.observeEof(),
     },
     timer,
-    mintChallenge,
     requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     // Teardown may legitimately spend the TERM and KILL graces plus the disappearance confirmation, which
     // is longer than a mutation RPC's budget. Cutting it off would report a failure for a reap in progress.
