@@ -66,6 +66,7 @@ function createHarness(options: { adoptionInMs: number; alive?: Set<number>; stu
   const stubborn = options.stubborn ?? new Set<number>();
   const scheduler = createManualScheduler();
   const outcomes: EnforcementOutcome[] = [];
+  const violations: number[] = [];
 
   const enforcer = createArmedEnforcer({
     clock,
@@ -94,9 +95,10 @@ function createHarness(options: { adoptionInMs: number; alive?: Set<number>; stu
     },
     scheduler,
     onOutcome: (outcome) => outcomes.push(outcome),
+    onProgressViolation: (lateness) => violations.push(lateness),
   });
 
-  return { clock, advance, enforcer, scheduler, outcomes, latchTeardown, markContainmentAbsent, alive };
+  return { clock, advance, enforcer, scheduler, outcomes, violations, latchTeardown, markContainmentAbsent, alive };
 }
 
 describe('armed provider-proxy enforcer', () => {
@@ -141,15 +143,37 @@ describe('armed provider-proxy enforcer', () => {
     expect(harness.scheduler.pending()).toBe(1);
   });
 
-  it('reports a wake later than the model bound as a progress-premise violation instead of reaping', () => {
+  it('reports a late wake as a progress-premise violation and still tears the containment down', async () => {
     const harness = createHarness({ adoptionInMs: 0 });
     harness.advance(1_001);
 
     harness.enforcer.arm();
     harness.scheduler.runDue();
+    await vi.waitFor(() => expect(harness.outcomes).toHaveLength(1));
 
-    expect(harness.outcomes[0]).toEqual({ kind: 'deadline-progress-violation', observedWakeLatencyMs: 1_001 });
-    expect(harness.latchTeardown).not.toHaveBeenCalled();
+    // Reporting the violation must not abandon teardown: the loaded host that made the wake late is
+    // exactly the case where an abandoned containment survives indefinitely.
+    expect(harness.violations).toEqual([1_001]);
+    expect(harness.outcomes[0]?.kind).toBe('containment-absent');
+    expect(harness.latchTeardown).toHaveBeenCalledOnce();
+  });
+
+  it('is idempotent across a repeat and a concurrent stop-and-reap', async () => {
+    const harness = createHarness({ adoptionInMs: 0 });
+    const deadline = harness.clock.shiftMilliseconds(harness.clock.now(), 14_000);
+
+    const [first, second] = await Promise.all([
+      harness.enforcer.stopAndReap(deadline),
+      harness.enforcer.stopAndReap(deadline),
+    ]);
+    const third = await harness.enforcer.stopAndReap(deadline);
+
+    // A retry after a successful reap must report that success, not throw — the shutdown step that
+    // retries would otherwise record a failure for work that completed.
+    expect(first).toEqual(second);
+    expect(third).toEqual(first);
+    expect(harness.markContainmentAbsent).toHaveBeenCalledOnce();
+    expect(harness.outcomes).toHaveLength(1);
   });
 
   it('still reaps at exactly the model bound', async () => {

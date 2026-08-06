@@ -129,6 +129,7 @@ async function startSet(): Promise<{
     mintReceipt,
     self: { pid: 5_101, processStartedAtSeconds: 901 },
     onOutcome: (outcome) => reaperOutcomes.push(outcome),
+    onProgressViolation: () => {},
   });
   await reaper.listen();
   cleanups.push(() => reaper.close());
@@ -171,6 +172,7 @@ async function startSet(): Promise<{
     reaperChannel,
     self: { pid: 5_102, processStartedAtSeconds: 902 },
     onOutcome: (outcome) => guardianOutcomes.push(outcome),
+    onProgressViolation: () => {},
   });
   await guardian.listen();
   cleanups.push(() => guardian.close());

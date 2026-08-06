@@ -29,7 +29,6 @@ export interface EnforcementScheduler {
 
 export type EnforcementOutcome =
   | Readonly<{ kind: 'containment-absent'; disappearanceReceipt: string }>
-  | Readonly<{ kind: 'deadline-progress-violation'; observedWakeLatencyMs: number }>
   | Readonly<{ kind: 'reap-failed'; reason: string }>;
 
 export type EnforcementErrorCode = 'provider_root_cap_exceeded' | 'provider_root_conflict';
@@ -53,6 +52,12 @@ export type ArmedEnforcerOptions<Scope extends symbol> = Readonly<{
   scheduler: EnforcementScheduler;
   /** Called once when teardown completes, so the role can report and exit. */
   onOutcome(outcome: EnforcementOutcome): void;
+  /**
+   * A wake later than the model's bound. Reported as the detected progress-premise failure it is — but it
+   * is a diagnostic, not a terminal state: abandoning teardown here would leave the containment alive on
+   * exactly the loaded host the guarantee is about.
+   */
+  onProgressViolation(observedWakeLatencyMs: number): void;
 }>;
 
 export interface ArmedEnforcer<Scope extends symbol> {
@@ -92,24 +97,23 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
   const { clock, deadlines, containment, containmentEnvironment, scheduler, onOutcome } = options;
   const roots = new Map<string, RecordedProcessIdentity>();
   let handle: { unref?: () => void } | null = null;
-  let tearingDown = false;
-  let settled = false;
+  let teardownInFlight: Promise<EnforcementOutcome> | null = null;
+  let settledOutcome: EnforcementOutcome | null = null;
 
   const orderedRoots = (): readonly RecordedProcessIdentity[] => [...roots.values()];
 
   const settle = (outcome: EnforcementOutcome): EnforcementOutcome => {
-    if (!settled) {
-      settled = true;
+    if (settledOutcome === null) {
+      settledOutcome = outcome;
       onOutcome(outcome);
     }
-    return outcome;
+    return settledOutcome;
   };
 
-  const teardown = async (exitDeadline: MonotonicInstant<Scope>): Promise<EnforcementOutcome> => {
+  const runTeardown = async (exitDeadline: MonotonicInstant<Scope>): Promise<EnforcementOutcome> => {
     // Latch before any awaited work so a concurrent path cannot observe an un-latched machine and act as if
     // the set were still adoptable.
     deadlines.latchTeardown();
-    tearingDown = true;
     try {
       await reapRecordedContainment(containment, orderedRoots(), exitDeadline, containmentEnvironment);
     } catch (error: unknown) {
@@ -122,9 +126,20 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     });
   };
 
+  /**
+   * Teardown is idempotent by construction: a repeat returns the settled outcome and a concurrent call
+   * joins the one in flight. Two overlapping reaps would signal the same targets twice and let two callers
+   * disagree about a single set's fate.
+   */
+  const teardown = (exitDeadline: MonotonicInstant<Scope>): Promise<EnforcementOutcome> => {
+    if (settledOutcome !== null) return Promise.resolve(settledOutcome);
+    teardownInFlight ??= runTeardown(exitDeadline);
+    return teardownInFlight;
+  };
+
   const tick = (): void => {
     handle = null;
-    if (tearingDown || settled) return;
+    if (teardownInFlight !== null || settledOutcome !== null) return;
     const bounds = deadlines.bounds();
     const now = clock.now();
     if (clock.compare(now, bounds.adoptionDeadline) < 0) {
@@ -135,14 +150,13 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     // silently counts as satisfying the guarantee.
     const lateness = clock.millisecondsBetween(bounds.adoptionDeadline, now);
     if (lateness > PROXY_ENFORCER_MAX_WAKE_LATENCY_MS) {
-      settle({ kind: 'deadline-progress-violation', observedWakeLatencyMs: lateness });
-      return;
+      options.onProgressViolation(lateness);
     }
     void teardown(bounds.exitDeadline);
   };
 
   const schedule = (): void => {
-    if (handle !== null || tearingDown || settled) return;
+    if (handle !== null || teardownInFlight !== null || settledOutcome !== null) return;
     const bounds = deadlines.bounds();
     const remaining = clock.millisecondsBetween(clock.now(), bounds.adoptionDeadline);
     // Never sleep past the wake bound: a long remaining window still gets checked often enough that a

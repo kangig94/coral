@@ -74,6 +74,8 @@ export type GuardianOptions<Scope extends symbol> = Readonly<{
   reaperChannel: ControlClient;
   self: Readonly<{ pid: number; processStartedAtSeconds: number }>;
   onOutcome(outcome: EnforcementOutcome): void;
+  /** A wake later than the model's bound. Reported, but teardown still proceeds. */
+  onProgressViolation(observedWakeLatencyMs: number): void;
 }>;
 
 export interface Guardian<Scope extends symbol> {
@@ -96,6 +98,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
     containmentEnvironment: options.containmentEnvironment,
     scheduler,
     onOutcome: options.onOutcome,
+    onProgressViolation: options.onProgressViolation,
   });
 
   const identity = Object.freeze({
@@ -209,15 +212,16 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       openResult: () => ({ guardian: identity }),
       methods,
     },
+    challenges: deadlines,
     observer: {
-      onChallengeEcho: () => {
-        // The deadline machine owns what a round trip is worth; the endpoint only reports that one happened.
-      },
       onControlLost: () => deadlines.observeEof(),
     },
     timer,
     mintChallenge,
     requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
+    // Teardown may legitimately spend the TERM and KILL graces plus the disappearance confirmation, which
+    // is longer than a mutation RPC's budget. Cutting it off would report a failure for a reap in progress.
+    unbudgetedMethods: new Set([`${'}${role}${'}.stop-and-reap.v1`]),
   });
 
   return {

@@ -68,7 +68,6 @@ export async function connectControlClient(
   const pending = new Map<number, Pending>();
   let nextId = 1;
   let closed = false;
-  let buffer = '';
 
   const failAll = (error: Error): void => {
     for (const [id, waiter] of pending) {
@@ -78,18 +77,22 @@ export async function connectControlClient(
     }
   };
 
+  // Frames are split on the newline byte and each complete frame is decoded once. Decoding a socket chunk
+  // on its own would corrupt any multi-byte character straddling the boundary, and the damage would survive
+  // JSON.parse and strict validation because it lands inside a JSON string.
+  let pendingBytes: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   socket.on('data', (chunk: Buffer) => {
-    buffer += chunk.toString('utf8');
-    if (Buffer.byteLength(buffer, 'utf8') > MAX_PROXY_CONTROL_FRAME_BYTES) {
-      buffer = '';
+    pendingBytes = pendingBytes.byteLength === 0 ? chunk : Buffer.concat([pendingBytes, chunk]);
+    if (pendingBytes.byteLength > MAX_PROXY_CONTROL_FRAME_BYTES) {
+      pendingBytes = Buffer.alloc(0);
       socket.destroy();
       return;
     }
-    let newline = buffer.indexOf('\n');
+    let newline = pendingBytes.indexOf(0x0a);
     while (newline !== -1) {
-      const frame = buffer.slice(0, newline + 1);
-      buffer = buffer.slice(newline + 1);
-      newline = buffer.indexOf('\n');
+      const frame = pendingBytes.subarray(0, newline + 1).toString('utf8');
+      pendingBytes = pendingBytes.subarray(newline + 1);
+      newline = pendingBytes.indexOf(0x0a);
       let message;
       try {
         message = decodeProxyControlFrame(frame);

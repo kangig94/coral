@@ -92,9 +92,26 @@ export type ControlEndpointRole = Readonly<{
   }>;
 }>;
 
+/**
+ * The single owner of challenge state. The endpoint deliberately keeps none of its own: two stores each
+ * claiming one-use semantics is how round-trip evidence ends up recorded in one place and checked in
+ * another, which is exactly the seam where a heartbeat can look accepted while no deadline advances.
+ */
+export interface ControlChallengeAuthority {
+  /** Records the challenge minted for a new tenancy. A refusal means the tenancy must not open. */
+  issueFirstChallenge(challenge: ControlChallenge): { readonly accepted: boolean };
+  /**
+   * Verifies an echoed challenge against the outstanding one and, on acceptance, records the round-trip
+   * evidence and installs the replacement. The authority owns the comparison, so the endpoint cannot
+   * accept an echo the deadline model rejects.
+   */
+  echoChallenge(
+    challenge: ControlChallenge,
+    nextChallenge: ControlChallenge,
+  ): { readonly accepted: boolean; readonly reason?: string };
+}
+
 export type ControlEndpointObserver = Readonly<{
-  /** A challenge echo was accepted. The owner records round-trip evidence; the endpoint stores no deadline. */
-  onChallengeEcho(epoch: ControlEpoch): void;
   /** The control connection ended. The owner may treat this as its local `eofAt`. */
   onControlLost(epoch: ControlEpoch): void;
   /** The paired peer channel ended. Pairing loss accelerates an already-armed enforcer. */
@@ -105,10 +122,17 @@ export type ControlEndpointOptions = Readonly<{
   socketPath: string;
   role: ControlEndpointRole;
   observer: ControlEndpointObserver;
+  challenges: ControlChallengeAuthority;
   timer: ControlEndpointTimer;
   mintChallenge(): ControlChallenge;
   /** Absolute budget for one request handler, in milliseconds. */
   requestTimeoutMs: number;
+  /**
+   * Methods exempt from the generic budget because the work they serve has its own, longer deadline —
+   * teardown spends the TERM and KILL graces plus a disappearance confirmation. Cutting one off would
+   * report a failure for a reap that is still progressing, and the retry would then hit a completed set.
+   */
+  unbudgetedMethods?: ReadonlySet<string>;
 }>;
 
 export interface ControlEndpoint {
@@ -121,7 +145,6 @@ export interface ControlEndpoint {
 type Tenancy = {
   readonly epoch: ControlEpoch;
   readonly socket: Socket;
-  outstandingChallenge: ControlChallenge;
   active: boolean;
 };
 
@@ -134,30 +157,34 @@ function success(id: string | number, result: unknown): ProxyControlJsonRpcMessa
 }
 
 /**
- * Reads newline-delimited frames, enforcing the frame cap on the *accumulating* buffer rather than only on
- * complete frames — a peer that never sends a newline must not be able to grow this buffer without bound.
+ * Reads newline-delimited frames from raw socket bytes. Chunks are accumulated as bytes and each complete
+ * frame is decoded exactly once: decoding a chunk on its own would replace any multi-byte character split
+ * across the boundary with U+FFFD, and that damage lands inside a JSON string where both `JSON.parse` and
+ * strict validation still succeed. A newline byte cannot occur inside a multi-byte sequence, so splitting on
+ * the byte is safe. The cap is applied to the accumulating buffer, not only to complete frames, so a peer
+ * that never sends a newline cannot grow it without bound.
  */
 function createFrameReader(onFrame: (frame: string) => void, onOversize: () => void): (chunk: Buffer) => void {
-  let pending = '';
+  let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   return (chunk: Buffer): void => {
-    pending += chunk.toString('utf8');
-    if (Buffer.byteLength(pending, 'utf8') > MAX_PROXY_CONTROL_FRAME_BYTES) {
-      pending = '';
+    pending = pending.byteLength === 0 ? chunk : Buffer.concat([pending, chunk]);
+    if (pending.byteLength > MAX_PROXY_CONTROL_FRAME_BYTES) {
+      pending = Buffer.alloc(0);
       onOversize();
       return;
     }
-    let newline = pending.indexOf('\n');
+    let newline = pending.indexOf(0x0a);
     while (newline !== -1) {
-      const frame = pending.slice(0, newline + 1);
-      pending = pending.slice(newline + 1);
-      onFrame(frame);
-      newline = pending.indexOf('\n');
+      onFrame(pending.subarray(0, newline + 1).toString('utf8'));
+      pending = pending.subarray(newline + 1);
+      newline = pending.indexOf(0x0a);
     }
   };
 }
 
 export function createControlEndpoint(options: ControlEndpointOptions): ControlEndpoint {
-  const { socketPath, role, observer, timer, mintChallenge, requestTimeoutMs } = options;
+  const { socketPath, role, observer, challenges, timer, mintChallenge, requestTimeoutMs } = options;
+  const unbudgetedMethods = options.unbudgetedMethods ?? new Set<string>();
   let server: NetServer | null = null;
   let tenancy: Tenancy | null = null;
   let nextEpoch: ControlEpoch = 1;
@@ -172,10 +199,13 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
 
   const openTenancy = (socket: Socket, params: unknown): Record<string, unknown> => {
     const fields = role.openResult(params);
+    const heartbeatChallenge = mintChallenge();
+    if (!challenges.issueFirstChallenge(heartbeatChallenge).accepted) {
+      throw new ProxyControlProtocolError('invalid_state', 'The challenge authority refused a first challenge.');
+    }
     const epoch = nextEpoch;
     nextEpoch += 1;
-    const heartbeatChallenge = mintChallenge();
-    tenancy = { epoch, socket, outstandingChallenge: heartbeatChallenge, active: false };
+    tenancy = { epoch, socket, active: false };
     nonceSpent = true;
     return { ...fields, controlEpoch: epoch, heartbeatChallenge };
   };
@@ -186,20 +216,24 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       throw new ProxyControlProtocolError('invalid_request', 'No control tenancy is open on this connection.');
     }
     const echo = params as { controlEpoch?: unknown; heartbeatChallenge?: unknown } | null;
-    if (
-      typeof echo !== 'object' ||
-      echo === null ||
-      echo.controlEpoch !== live.epoch ||
-      typeof echo.heartbeatChallenge !== 'string' ||
-      echo.heartbeatChallenge !== live.outstandingChallenge
-    ) {
-      throw new ProxyControlProtocolError('invalid_request', 'Heartbeat did not echo the outstanding challenge.');
+    if (typeof echo !== 'object' || echo === null || echo.controlEpoch !== live.epoch) {
+      throw new ProxyControlProtocolError('invalid_request', 'Heartbeat did not name this control tenancy.');
     }
-    // The echoed challenge is consumed here, so a replay of the same frame cannot re-earn evidence.
-    live.outstandingChallenge = mintChallenge();
+    if (typeof echo.heartbeatChallenge !== 'string') {
+      throw new ProxyControlProtocolError('invalid_request', 'Heartbeat carried no challenge.');
+    }
+    // The authority compares and consumes, so a replayed frame cannot re-earn evidence and the endpoint
+    // cannot accept an echo the deadline model has already ruled out.
+    const nextHeartbeatChallenge = mintChallenge();
+    const recorded = challenges.echoChallenge(echo.heartbeatChallenge, nextHeartbeatChallenge);
+    if (!recorded.accepted) {
+      throw new ProxyControlProtocolError(
+        'invalid_request',
+        `Heartbeat echo was not accepted (${recorded.reason ?? 'rejected'}).`,
+      );
+    }
     live.active = true;
-    observer.onChallengeEcho(live.epoch);
-    return { state: 'active', nextHeartbeatChallenge: live.outstandingChallenge };
+    return { state: 'active', nextHeartbeatChallenge };
   };
 
   const dispatch = async (socket: Socket, method: string, params: unknown): Promise<unknown> => {
@@ -254,6 +288,15 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     }
     const { id, method, params } = message;
     let settled = false;
+    if (unbudgetedMethods.has(method)) {
+      try {
+        write(socket, success(id, await dispatch(socket, method, params)));
+      } catch (error: unknown) {
+        const code = error instanceof UnknownControlMethodError ? JSON_RPC_METHOD_NOT_FOUND : JSON_RPC_INVALID_REQUEST;
+        write(socket, failure(id, code, error instanceof Error ? error.message : 'Control request failed.'));
+      }
+      return;
+    }
     const budget = timer.setTimeout(() => {
       if (settled) return;
       settled = true;

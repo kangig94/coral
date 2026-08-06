@@ -72,6 +72,8 @@ export type ReaperOptions<Scope extends symbol> = Readonly<{
   /** The reaper's own pid/start identity, reported in `ReaperIdentity`. */
   self: Readonly<{ pid: number; processStartedAtSeconds: number }>;
   onOutcome(outcome: EnforcementOutcome): void;
+  /** A wake later than the model's bound. Reported, but teardown still proceeds. */
+  onProgressViolation(observedWakeLatencyMs: number): void;
 }>;
 
 export interface Reaper<Scope extends symbol> {
@@ -95,6 +97,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     containmentEnvironment: options.containmentEnvironment,
     scheduler,
     onOutcome: options.onOutcome,
+    onProgressViolation: options.onProgressViolation,
   });
 
   const identity = Object.freeze({
@@ -168,10 +171,10 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         methods: pairedMethods,
       },
     },
+    // The deadline machine is the challenge authority: it compares the echo, records the round-trip
+    // evidence that moves this enforcer's deadlines, and installs the replacement.
+    challenges: deadlines,
     observer: {
-      onChallengeEcho: () => {
-        // Evidence is recorded by the deadline machine, which owns what a round trip is worth.
-      },
       onControlLost: () => deadlines.observeEof(),
       // Pairing loss accelerates an already-armed reaper; it never extends its exit deadline.
       onPairingLost: () => deadlines.observeEof(),
@@ -179,6 +182,9 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     timer,
     mintChallenge,
     requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
+    // Teardown may legitimately spend the TERM and KILL graces plus the disappearance confirmation, which
+    // is longer than a mutation RPC's budget. Cutting it off would report a failure for a reap in progress.
+    unbudgetedMethods: new Set([`${'}${role}${'}.stop-and-reap.v1`]),
   });
 
   return {

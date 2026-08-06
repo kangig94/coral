@@ -36,17 +36,20 @@ function realTimer() {
 
 async function startEndpoint(
   overrides: Partial<ControlEndpointRole> = {},
-  observer = { onChallengeEcho: vi.fn(), onControlLost: vi.fn() },
+  observer = { onControlLost: vi.fn() },
 ): Promise<{
   endpoint: ControlEndpoint;
   socketPath: string;
-  observer: { onChallengeEcho: ReturnType<typeof vi.fn>; onControlLost: ReturnType<typeof vi.fn> };
+  observer: { onControlLost: ReturnType<typeof vi.fn> };
   challenges: ControlChallenge[];
+  accepted: ControlChallenge[];
 }> {
   const directory = mkdtempSync(join(tmpdir(), 'coral-ctl-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const socketPath = join(directory, 'c.sock');
   const challenges: ControlChallenge[] = [];
+  const accepted: ControlChallenge[] = [];
+  let outstanding: ControlChallenge | null = null;
   let minted = 0;
 
   const endpoint = createControlEndpoint({
@@ -58,6 +61,20 @@ async function startEndpoint(
       openResult: () => ({ role: 'guardian' }),
       methods: new Map([['role.work.v1', () => ({ state: 'worked' })]]),
       ...overrides,
+    },
+    // A minimal stand-in for the deadline machine: it owns the outstanding challenge and consumes it on a
+    // matching echo, which is the property the endpoint depends on.
+    challenges: {
+      issueFirstChallenge: (challenge) => {
+        outstanding = challenge;
+        return { accepted: true };
+      },
+      echoChallenge: (challenge, nextChallenge) => {
+        if (outstanding === null || challenge !== outstanding) return { accepted: false, reason: 'challenge-mismatch' };
+        outstanding = nextChallenge;
+        accepted.push(challenge);
+        return { accepted: true };
+      },
     },
     observer,
     timer: realTimer(),
@@ -72,7 +89,7 @@ async function startEndpoint(
 
   await endpoint.listen();
   cleanups.push(() => endpoint.close());
-  return { endpoint, socketPath, observer, challenges };
+  return { endpoint, socketPath, observer, challenges, accepted };
 }
 
 function connect(socketPath: string): Promise<Client> {
@@ -141,19 +158,19 @@ describe('provider-proxy control endpoint', () => {
   });
 
   it('activates on a matching echo, rotates the challenge, and reports round-trip evidence once', async () => {
-    const { socketPath, observer } = await startEndpoint();
-    const client = await connect(socketPath);
+    const set = await startEndpoint();
+    const client = await connect(set.socketPath);
     await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
 
     const beat = await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
 
     expect(beat.result).toEqual({ state: 'active', nextHeartbeatChallenge: 'challenge-2' });
-    expect(observer.onChallengeEcho).toHaveBeenCalledExactlyOnceWith(1);
+    expect(set.accepted).toEqual(['challenge-1']);
 
     // The consumed challenge cannot re-earn evidence.
     const replay = await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
-    expect(replay.error?.message).toContain('did not echo the outstanding challenge');
-    expect(observer.onChallengeEcho).toHaveBeenCalledTimes(1);
+    expect(replay.error?.message).toContain('not accepted');
+    expect(set.accepted).toEqual(['challenge-1']);
   });
 
   it('rejects a heartbeat carrying a foreign epoch', async () => {
@@ -163,7 +180,7 @@ describe('provider-proxy control endpoint', () => {
 
     const wrongEpoch = await client.call('role.heartbeat.v1', { controlEpoch: 2, heartbeatChallenge: 'challenge-1' });
 
-    expect(wrongEpoch.error?.message).toContain('did not echo the outstanding challenge');
+    expect(wrongEpoch.error?.message).toContain('did not name this control tenancy');
   });
 
   it('serves role methods only once control is active', async () => {
@@ -225,6 +242,39 @@ describe('provider-proxy control endpoint', () => {
       setTimeout(() => resolve(false), 5_000);
     });
     expect(closed).toBe(true);
+  });
+
+  it('carries a multi-byte payload intact when its frame is split across socket writes', async () => {
+    const received: unknown[] = [];
+    const set = await startEndpoint({
+      methods: new Map([
+        [
+          'role.echo.v1',
+          (params) => {
+            received.push(params);
+            return { state: 'worked' };
+          },
+        ],
+      ]),
+    });
+    const client = await connect(set.socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    // Split the frame mid-character. Decoding each chunk on its own would replace the straddling bytes with
+    // U+FFFD, and the damage would sit inside a JSON string where JSON.parse and strict validation both
+    // still succeed — silent corruption rather than a rejected frame.
+    const text = '안녕하세요 🌊 provider prompt';
+    const frame = Buffer.from(
+      `${JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'role.echo.v1', params: { text } })}\n`,
+    );
+    const cut = frame.indexOf(Buffer.from('안')) + 1;
+    client.socket.write(frame.subarray(0, cut));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    client.socket.write(frame.subarray(cut));
+
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    expect(received[0]).toEqual({ text });
   });
 
   it('destroys a connection that sends a frame failing strict JSON-RPC validation', async () => {
