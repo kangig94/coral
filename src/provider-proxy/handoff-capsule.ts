@@ -62,10 +62,20 @@ export const handoffCapsuleSchema = z
 
 export type HandoffCapsule = z.infer<typeof handoffCapsuleSchema>;
 
-/** What the three authorities retain. The secret itself is never stored beside the digest. */
+/**
+ * What the three authorities retain. The secret itself is never stored beside the digest, and the whole
+ * identity tuple is kept: a grant is bound to one exact set, so a capsule replayed from another build set
+ * or another proxy cannot be redeemed here just because its secret and operation list happen to match.
+ */
 export type InstalledGrant = Readonly<{
   grantId: string;
   secretSha256: string;
+  generation: string;
+  flavor: string;
+  buildSetId: string;
+  hostFingerprint: string;
+  guardianInstanceId: string;
+  reaperInstanceId: string;
   proxyInstanceId: string;
   operationIds: readonly string[];
   orphanTimeoutMs: number;
@@ -76,8 +86,7 @@ export type HandoffCapsuleErrorCode =
   | 'handoff_capsule_too_large'
   | 'handoff_capsule_invalid'
   | 'grant_invalid'
-  | 'grant_replayed'
-  | 'grant_set_mismatch';
+  | 'grant_replayed';
 
 export class HandoffCapsuleError extends Error {
   readonly code: HandoffCapsuleErrorCode;
@@ -120,6 +129,12 @@ export function installedGrantFromCapsule(capsule: HandoffCapsule): InstalledGra
   return Object.freeze({
     grantId: capsule.grantId,
     secretSha256: handoffSecretDigest(capsule.secret),
+    generation: capsule.generation,
+    flavor: capsule.flavor,
+    buildSetId: capsule.buildSetId,
+    hostFingerprint: capsule.hostFingerprint,
+    guardianInstanceId: capsule.guardianInstanceId,
+    reaperInstanceId: capsule.reaperInstanceId,
     proxyInstanceId: capsule.proxyInstanceId,
     operationIds: Object.freeze(capsule.operations.map((entry) => entry.operation.operationId)),
     orphanTimeoutMs: capsule.orphanTimeoutMs,
@@ -140,7 +155,22 @@ function digestsMatch(left: string, right: string): boolean {
  */
 export interface GrantRegistry {
   install(grant: InstalledGrant): { state: 'installed-dormant'; grantId: string };
-  redeem(input: { grantId: string; secret: string; operationIds: readonly string[] }): InstalledGrant;
+  redeem(input: {
+    grantId: string;
+    secret: string;
+    operationIds: readonly string[];
+    /** The set the redeemer believes it is rotating. Compared against what was installed. */
+    binding: Pick<
+      InstalledGrant,
+      | 'generation'
+      | 'flavor'
+      | 'buildSetId'
+      | 'hostFingerprint'
+      | 'guardianInstanceId'
+      | 'reaperInstanceId'
+      | 'proxyInstanceId'
+    >;
+  }): InstalledGrant;
   installed(): InstalledGrant | null;
   redeemed(): boolean;
 }
@@ -152,11 +182,22 @@ export function createGrantRegistry(): GrantRegistry {
   const sameSet = (left: readonly string[], right: readonly string[]): boolean =>
     left.length === right.length && left.every((value, index) => value === right[index]);
 
+  /** Every field a grant is bound to. Two grants agreeing on all of them are the same grant. */
+  const sameBinding = (left: InstalledGrant, right: InstalledGrant): boolean =>
+    left.grantId === right.grantId &&
+    left.generation === right.generation &&
+    left.flavor === right.flavor &&
+    left.buildSetId === right.buildSetId &&
+    left.hostFingerprint === right.hostFingerprint &&
+    left.guardianInstanceId === right.guardianInstanceId &&
+    left.reaperInstanceId === right.reaperInstanceId &&
+    left.proxyInstanceId === right.proxyInstanceId;
+
   return {
     install(grant): { state: 'installed-dormant'; grantId: string } {
       if (installed !== null) {
         if (
-          installed.grantId !== grant.grantId ||
+          !sameBinding(installed, grant) ||
           !digestsMatch(installed.secretSha256, grant.secretSha256) ||
           !sameSet(installed.operationIds, grant.operationIds)
         ) {
@@ -168,14 +209,18 @@ export function createGrantRegistry(): GrantRegistry {
       return { state: 'installed-dormant', grantId: grant.grantId };
     },
 
-    redeem({ grantId, secret, operationIds }): InstalledGrant {
+    redeem({ grantId, secret, operationIds, binding }): InstalledGrant {
       if (installed === null) throw new HandoffCapsuleError('grant_invalid', 'No grant is installed for this set.');
       if (consumed) throw new HandoffCapsuleError('grant_replayed', 'This grant was already redeemed.');
       if (installed.grantId !== grantId || !digestsMatch(installed.secretSha256, handoffSecretDigest(secret))) {
         throw new HandoffCapsuleError('grant_invalid', 'Redemption did not present the installed grant.');
       }
+      if (!sameBinding(installed, { ...installed, ...binding })) {
+        // A capsule from another set is a replay of a grant that was never for this one.
+        throw new HandoffCapsuleError('grant_replayed', 'Redemption named a different guardian/reaper/proxy set.');
+      }
       if (!sameSet(installed.operationIds, operationIds)) {
-        throw new HandoffCapsuleError('grant_set_mismatch', 'Redemption named a different operation set.');
+        throw new HandoffCapsuleError('grant_replayed', 'Redemption named a different operation set.');
       }
       consumed = true;
       return installed;

@@ -44,8 +44,8 @@ project-specific when it is not.
 
 4. **Even unpinned, a codex host is never idle-retired.** Codex hosts are
    `leaseMode: 'shared'` (`src/providers/codex/execution-plan.ts`) with
-   `idlePolicy: 'daemon'` (`src/providers/codex/provider-facets.ts`).
-   `hasDaemonLifetime(entry)` therefore makes `canCloseIdleHost` return `false`
+   `idleRetirement: 'none'` (`src/providers/codex/provider-facets.ts`).
+   `neverRetiresWhenIdle(entry)` therefore makes `canCloseIdleHost` return `false`
    and makes `maybeArmIdleTimer` clear the timer outright
    (`provider-hosts/idle.ts`). The entry keeps `closingError === null` and
    `handle.isClosed() === false`, so it remains an acquisition candidate for the
@@ -102,7 +102,7 @@ terminalize its jobs correctly.
 legitimate turn may take. A wrong number kills real work. Note the 0.10.4 abort
 deadline was written specifically to *avoid* needing this answer.
 
-**D. Health-based retirement** — keep `idlePolicy: 'daemon'` but let a host that
+**D. Health-based retirement** — keep `idleRetirement: 'none'` but let a host that
 has failed to answer N consecutive requests stop being an acquisition candidate,
 without killing it.
 *For*: no policy about turn duration; a poisoned host simply stops receiving new

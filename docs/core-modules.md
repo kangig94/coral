@@ -43,6 +43,7 @@ Each domain is self-contained: its own contract (events, projection, read-models
 | Domain   | Responsibility                                                                                                                                                  |
 | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Jobs     | Job lifecycle truth — launch, admit, wait, abort, terminal outcome, cause references, startup reconciliation.                                                   |
+| Provider proxy | Control protocol, bootstrap capsules, enforcement deadlines and containment teardown, the operation ledger, and handoff grants for provider processes that survive a coordinator handoff. Opens no store; binds no coordinator socket. |
 | Sessions | Session persistence and continuity — open, checkpoint, interrupt, provider failure, close, atomic storage, lookup by id or ref.                                 |
 | Workflow | DSL parsing, semantic plan compilation, pipeline execution (launch and retry intertwined), drain handling, resume-from-projection.                              |
 | Discuss  | Multi-agent discussion loop — pure state machine at the core, imperative shell around it for persistence, bids, speeches, follow-ups, synthesis, and snapshots. |

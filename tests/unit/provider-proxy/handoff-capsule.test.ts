@@ -45,6 +45,18 @@ function capsuleFor(operationIds: readonly string[]): HandoffCapsule {
 
 const ORDERED = ['a1111111-1111-4111-8111-111111111111', 'b2222222-2222-4222-8222-222222222222'];
 
+function bindingOf(grant: ReturnType<typeof installedGrantFromCapsule>) {
+  return {
+    generation: grant.generation,
+    flavor: grant.flavor,
+    buildSetId: grant.buildSetId,
+    hostFingerprint: grant.hostFingerprint,
+    guardianInstanceId: grant.guardianInstanceId,
+    reaperInstanceId: grant.reaperInstanceId,
+    proxyInstanceId: grant.proxyInstanceId,
+  };
+}
+
 function encode(capsule: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(capsule));
 }
@@ -95,13 +107,18 @@ describe('provider-proxy handoff capsule', () => {
     const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
     registry.install(grant);
 
-    const redeemed = registry.redeem({ grantId: grant.grantId, secret: SECRET, operationIds: ORDERED });
+    const redeemed = registry.redeem({
+      grantId: grant.grantId,
+      secret: SECRET,
+      operationIds: ORDERED,
+      binding: bindingOf(grant),
+    });
     expect(redeemed.grantId).toBe(grant.grantId);
     expect(registry.redeemed()).toBe(true);
 
-    expect(() => registry.redeem({ grantId: grant.grantId, secret: SECRET, operationIds: ORDERED })).toThrow(
-      /already redeemed/u,
-    );
+    expect(() =>
+      registry.redeem({ grantId: grant.grantId, secret: SECRET, operationIds: ORDERED, binding: bindingOf(grant) }),
+    ).toThrow(/already redeemed/u);
   });
 
   it('refuses redemption presenting the wrong secret', () => {
@@ -109,10 +126,47 @@ describe('provider-proxy handoff capsule', () => {
     const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
     registry.install(grant);
 
-    expect(() => registry.redeem({ grantId: grant.grantId, secret: 'e'.repeat(64), operationIds: ORDERED })).toThrow(
-      /did not present the installed grant/u,
-    );
+    expect(() =>
+      registry.redeem({
+        grantId: grant.grantId,
+        secret: 'e'.repeat(64),
+        operationIds: ORDERED,
+        binding: bindingOf(grant),
+      }),
+    ).toThrow(/did not present the installed grant/u);
     expect(registry.redeemed()).toBe(false);
+  });
+
+  it('refuses redemption from another set even when the secret and operation list match', () => {
+    const registry = createGrantRegistry();
+    const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
+    registry.install(grant);
+
+    // A capsule replayed from a different build set is a grant that was never for this one.
+    expect(() =>
+      registry.redeem({
+        grantId: grant.grantId,
+        secret: SECRET,
+        operationIds: ORDERED,
+        binding: { ...bindingOf(grant), buildSetId: '99999999-9999-4999-8999-999999999999' },
+      }),
+    ).toThrow(/different guardian\/reaper\/proxy set/u);
+    expect(registry.redeemed()).toBe(false);
+  });
+
+  it('encodes the largest legal capsule well inside the read cap', () => {
+    // The plan budgets 384 bytes per operation and 4096 for the envelope, so the maximal capsule must fit
+    // 53,376 bytes and leave headroom under the 64 KiB pre-parse cap. If those budgets drift apart, a
+    // legitimate full-size capsule would be rejected as oversize in production.
+    const longest = Array.from(
+      { length: 128 },
+      (_, index) => `${index.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`,
+    ).sort();
+    const encoded = new TextEncoder().encode(JSON.stringify(capsuleFor(longest)));
+
+    expect(encoded.byteLength).toBeLessThanOrEqual(53_376);
+    expect(encoded.byteLength).toBeLessThan(MAX_HANDOFF_CAPSULE_BYTES);
+    expect(decodeHandoffCapsule(encoded).operations).toHaveLength(128);
   });
 
   it('refuses redemption naming a different operation set', () => {
@@ -120,17 +174,27 @@ describe('provider-proxy handoff capsule', () => {
     const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
     registry.install(grant);
 
-    expect(() => registry.redeem({ grantId: grant.grantId, secret: SECRET, operationIds: [ORDERED[0]] })).toThrow(
-      /different operation set/u,
-    );
+    expect(() =>
+      registry.redeem({
+        grantId: grant.grantId,
+        secret: SECRET,
+        operationIds: [ORDERED[0]],
+        binding: bindingOf(grant),
+      }),
+    ).toThrow(/different operation set/u);
     expect(registry.redeemed()).toBe(false);
   });
 
   it('refuses redemption when nothing is installed', () => {
     const registry = createGrantRegistry();
 
-    expect(() => registry.redeem({ grantId: randomUUID(), secret: SECRET, operationIds: [] })).toThrow(
-      /No grant is installed/u,
-    );
+    expect(() =>
+      registry.redeem({
+        grantId: randomUUID(),
+        secret: SECRET,
+        operationIds: [],
+        binding: bindingOf(installedGrantFromCapsule(capsuleFor(ORDERED))),
+      }),
+    ).toThrow(/No grant is installed/u);
   });
 });

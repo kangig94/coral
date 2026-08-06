@@ -293,7 +293,7 @@ Counts: 3 files = borderline (subdivide only if cohesion is unmistakable and the
 ### 9.7 Subdivision rejection (cases where subdividing makes the tree worse)
 
 - `infra/` is the canonical low-level dump by design; subdividing into `infra/paths/`, `infra/errors/`, etc. creates competing canonical homes inside a layer that should stay flat.
-  - **Exception**: `infra/path/` is permitted as a cohesive path-composition component (5 files: `compose`, `coordinator`, `engine`, `root`, `store`). The exception applies to components where the directory name names a clear internal concept and the file count justifies a subdir; it does NOT permit `infra/utils/`, `infra/helpers/`, or other content-blank groupings.
+  - **Exception**: `infra/path/` is permitted as a cohesive path-composition component (7 files: `coordinator`, `engine`, `index`, `kb-runtime`, `provider-proxy`, `root`, `store`). The exception applies to components where the directory name names a clear internal concept and the file count justifies a subdir; it does NOT permit `infra/utils/`, `infra/helpers/`, or other content-blank groupings.
 - The 4 Journal-stream domains (`jobs`, `sessions`, `discuss`, `workflow`) share a _minimum_ shape — `events.ts` and `read-queries.ts` at the domain root, plus `event-describers.ts` for cause-ref rendering. Beyond that minimum, each domain adds files to fit its own complexity, not a forced template:
   - `projections.ts` exists when the domain projects events to SQL tables (sessions/discuss/workflow).
   - `reducer.ts` exists only when the domain reconstructs in-memory state from events (currently only `discuss/`). Domains that project directly to SQL don't need a separate pure reducer.

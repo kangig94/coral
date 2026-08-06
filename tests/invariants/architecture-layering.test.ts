@@ -24,7 +24,32 @@ const DOMAIN_ROOTS = [
   'src/expansion/',
   'src/engines/',
 ] as const;
-const RUNTIME_INFRA_FORBIDDEN = [...DOMAIN_ROOTS, 'src/transport/', 'src/coordinator/', 'src/cli/'] as const;
+const RUNTIME_INFRA_FORBIDDEN = [
+  ...DOMAIN_ROOTS,
+  'src/transport/',
+  'src/coordinator/',
+  'src/cli/',
+  'src/provider-proxy/',
+] as const;
+
+/**
+ * The provider proxy is spawned as its own process from the backend artifact. Its whole safety argument is
+ * that it carries the live provider carrier without touching daemon-owned state: it never opens the store
+ * and never binds the coordinator socket, so a proxy that outlives a coordinator cannot corrupt anything
+ * the successor will read. The tree is clean today, which is exactly when stating it is cheap.
+ */
+const PROVIDER_PROXY_ROOT = 'src/provider-proxy/';
+const PROVIDER_PROXY_FORBIDDEN = [
+  'src/store/',
+  'src/coordinator/',
+  'src/transport/',
+  'src/read-model/',
+  'src/jobs/',
+  'src/sessions/',
+  'src/discuss/',
+  'src/workflow/',
+  'src/kb/',
+] as const;
 const SECURITY_ROOT = 'src/security/';
 const SECURITY_ALLOWED_TARGETS = new Set(['src/infra/port-types.ts', 'src/runtime/ports.ts']);
 const TRANSPORT_ALLOWED = new Set([
@@ -81,6 +106,7 @@ const COORDINATOR_ALLOWED = new Set([
 ]);
 const GENERIC_FILENAMES = ['utils.ts', 'types.ts', 'schemas.ts', 'shared.ts', 'shared-utils.ts'] as const;
 const DOMAIN_ROOT_DIRS = [
+  'src/provider-proxy',
   'src/jobs',
   'src/sessions',
   'src/discuss',
@@ -206,6 +232,14 @@ describe('architecture layering invariants', () => {
     const violations = collectViolations(
       (source, target) => source.startsWith('src/kb/') && target === 'src/transport/tool-result.ts',
     );
+
+    expect(violations).toEqual([]);
+  });
+
+  it('the provider proxy opens no store and reaches no coordinator surface', () => {
+    const violations = IMPORT_EDGES.filter((edge) => edge.source.startsWith(PROVIDER_PROXY_ROOT))
+      .filter((edge) => startsWithAny(edge.target, PROVIDER_PROXY_FORBIDDEN))
+      .map((edge) => `${edge.source} -> ${edge.target}`);
 
     expect(violations).toEqual([]);
   });
