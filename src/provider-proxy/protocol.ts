@@ -36,12 +36,18 @@ export class ProxyControlProtocolError extends Error {
   }
 }
 
-const canonicalUuidSchema = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-const hostFingerprintSchema = z.string().regex(/^[0-9a-f]{64}$/);
+export const canonicalUuidSchema = z
+  .string()
+  .length(36)
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+export const hostFingerprintSchema = z
+  .string()
+  .length(64)
+  .regex(/^[0-9a-f]{64}$/);
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
-const generationSchema = z.literal('gen2');
-const flavorSchema = z.enum(['prod', 'dev']);
-const canonicalEndpointSchema = z
+export const generationSchema = z.literal('gen2');
+export const flavorSchema = z.enum(['prod', 'dev']);
+export const canonicalEndpointSchema = z
   .string()
   .min(1)
   .max(4096)

@@ -5,8 +5,8 @@ import { hashToken } from '../hash.js';
 import type { StorageBigIntStat, StoragePort } from '../port-types.js';
 import { generationRunDir, socketPathByteLimit } from './coordinator.js';
 
-const PROVIDER_ENDPOINT_IDENTITY_HASH_LENGTH = 24;
-const PROVIDER_ENDPOINT_KIND_PREFIX = { guardian: '0', proxy: '1', reaper: '2' } as const;
+const PROVIDER_PATH_IDENTITY_HASH_LENGTH = 24;
+const PROVIDER_ROLE_PREFIX = { guardian: '0', proxy: '1', reaper: '2' } as const;
 const PRIVATE_DIRECTORY_MODE = 0o700n;
 const PERMISSION_BITS = 0o777n;
 
@@ -22,23 +22,27 @@ export type ProviderProxyEndpointEnvironment = {
   readonly storage: ProviderEndpointStorage;
 };
 
-type ProviderEndpointIdentity = {
+type ProviderSetIdentity = {
   readonly generation: 'gen2';
   readonly flavor: BuildFlavor;
   readonly buildSetId: string;
   readonly hostFingerprint: string;
 };
 
-export type ProviderProxyEndpointIdentity = ProviderEndpointIdentity & {
+export type ProviderProxyEndpointIdentity = ProviderSetIdentity & {
   readonly proxyInstanceId: string;
 };
 
-export type ProviderGuardianEndpointIdentity = ProviderEndpointIdentity & {
+export type ProviderGuardianEndpointIdentity = ProviderSetIdentity & {
   readonly guardianInstanceId: string;
 };
 
-export type ProviderReaperEndpointIdentity = ProviderEndpointIdentity & {
+export type ProviderReaperEndpointIdentity = ProviderSetIdentity & {
   readonly reaperInstanceId: string;
+};
+
+export type ProviderBootstrapCapsulePathOptions = {
+  readonly baseDir?: string;
 };
 
 export type ProviderProxyEndpointErrorCode = 'proxy_endpoint_insecure' | 'proxy_endpoint_too_long';
@@ -56,9 +60,9 @@ export class ProviderProxyEndpointError extends Error {
   }
 }
 
-function endpointIdentityHash(
+function providerPathIdentityHash(
   kind: 'guardian' | 'proxy' | 'reaper',
-  identity: ProviderEndpointIdentity,
+  identity: ProviderSetIdentity,
   instanceId: string,
 ): string {
   const hash = hashToken(
@@ -70,9 +74,9 @@ function endpointIdentityHash(
       identity.hostFingerprint,
       instanceId,
     ]),
-    PROVIDER_ENDPOINT_IDENTITY_HASH_LENGTH - 1,
+    PROVIDER_PATH_IDENTITY_HASH_LENGTH - 1,
   );
-  return `${PROVIDER_ENDPOINT_KIND_PREFIX[kind]}${hash}`;
+  return `${PROVIDER_ROLE_PREFIX[kind]}${hash}`;
 }
 
 function insecureEndpointError(
@@ -121,11 +125,11 @@ function ensurePrivateFallbackDirectory(fallbackDirectory: string, env: Provider
 
 function providerEndpoint(
   kind: 'guardian' | 'proxy' | 'reaper',
-  identity: ProviderEndpointIdentity,
+  identity: ProviderSetIdentity,
   instanceId: string,
   env: ProviderProxyEndpointEnvironment,
 ): string {
-  const identityHash = endpointIdentityHash(kind, identity, instanceId);
+  const identityHash = providerPathIdentityHash(kind, identity, instanceId);
   const filename = `provider-${identityHash}.sock`;
   const limit = socketPathByteLimit(env.platform);
   const candidate = join(generationRunDir(identity.flavor, { baseDir: env.baseDir }), filename);
@@ -144,6 +148,16 @@ function providerEndpoint(
 
   ensurePrivateFallbackDirectory(fallbackDirectory, env);
   return fallback;
+}
+
+function providerBootstrapCapsulePath(
+  kind: 'guardian' | 'proxy' | 'reaper',
+  identity: ProviderSetIdentity,
+  instanceId: string,
+  options?: ProviderBootstrapCapsulePathOptions,
+): string {
+  const identityHash = providerPathIdentityHash(kind, identity, instanceId);
+  return join(generationRunDir(identity.flavor, options), `provider-${identityHash}.bootstrap.json`);
 }
 
 export function providerProxyEndpoint(
@@ -165,4 +179,25 @@ export function providerReaperEndpoint(
   env: ProviderProxyEndpointEnvironment,
 ): string {
   return providerEndpoint('reaper', identity, identity.reaperInstanceId, env);
+}
+
+export function providerProxyBootstrapCapsulePath(
+  identity: ProviderProxyEndpointIdentity,
+  options?: ProviderBootstrapCapsulePathOptions,
+): string {
+  return providerBootstrapCapsulePath('proxy', identity, identity.proxyInstanceId, options);
+}
+
+export function providerGuardianBootstrapCapsulePath(
+  identity: ProviderGuardianEndpointIdentity,
+  options?: ProviderBootstrapCapsulePathOptions,
+): string {
+  return providerBootstrapCapsulePath('guardian', identity, identity.guardianInstanceId, options);
+}
+
+export function providerReaperBootstrapCapsulePath(
+  identity: ProviderReaperEndpointIdentity,
+  options?: ProviderBootstrapCapsulePathOptions,
+): string {
+  return providerBootstrapCapsulePath('reaper', identity, identity.reaperInstanceId, options);
 }

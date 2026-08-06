@@ -5,8 +5,11 @@ import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  providerGuardianBootstrapCapsulePath,
   providerGuardianEndpoint,
+  providerProxyBootstrapCapsulePath,
   providerProxyEndpoint,
+  providerReaperBootstrapCapsulePath,
   providerReaperEndpoint,
   ProviderProxyEndpointError,
   type ProviderProxyEndpointEnvironment,
@@ -80,12 +83,34 @@ afterEach(() => {
   }
 });
 
-describe('provider proxy endpoints', () => {
+describe('provider proxy paths', () => {
   it('places short endpoints in the flavor-specific generation run directory', () => {
     expect(providerProxyEndpoint(identity, environment())).toMatch(/^\/short\/gen2\/run\/provider-[0-9a-f]{24}\.sock$/);
     expect(providerProxyEndpoint({ ...identity, flavor: 'dev' }, environment())).toMatch(
       /^\/short\/gen2\/run-dev\/provider-[0-9a-f]{24}\.sock$/,
     );
+  });
+
+  it('places one disjoint capsule path per role in the flavor-specific generation run directory', () => {
+    const common = {
+      generation: 'gen2' as const,
+      flavor: 'prod' as const,
+      buildSetId: BUILD_SET_ID,
+      hostFingerprint: HOST_FINGERPRINT,
+    };
+    const paths = [
+      providerGuardianBootstrapCapsulePath({ ...common, guardianInstanceId: UUID_A }, { baseDir: '/short' }),
+      providerReaperBootstrapCapsulePath({ ...common, reaperInstanceId: UUID_A }, { baseDir: '/short' }),
+      providerProxyBootstrapCapsulePath({ ...common, proxyInstanceId: UUID_A }, { baseDir: '/short' }),
+    ];
+
+    expect(new Set(paths).size).toBe(3);
+    for (const path of paths) {
+      expect(path).toMatch(/^\/short\/gen2\/run\/provider-[0-9a-f]{24}\.bootstrap\.json$/);
+    }
+    expect(
+      providerProxyBootstrapCapsulePath({ ...common, flavor: 'dev', proxyInstanceId: UUID_A }, { baseDir: '/short' }),
+    ).toMatch(/^\/short\/gen2\/run-dev\/provider-[0-9a-f]{24}\.bootstrap\.json$/);
   });
 
   it('keeps proxy, guardian, and reaper endpoint identities disjoint for identical set inputs', () => {
