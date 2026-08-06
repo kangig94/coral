@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest';
 import {
   listProductionSourceFiles,
   parseProductionImportEdges,
-  parseSourceSubpathImportEdges,
   toCanonicalSrcPath,
   type ParsedImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
@@ -13,10 +12,10 @@ import { PROVIDER_ROLE_FLAGS } from '#src/provider-proxy/role-argv.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(join(REPO_ROOT, 'src'));
-const IMPORT_EDGES: Pick<ParsedImportEdge, 'source' | 'target'>[] = [
-  ...parseProductionImportEdges(REPO_ROOT, PRODUCTION_FILE_PATHS),
-  ...PRODUCTION_FILE_PATHS.flatMap((filePath) => parseSourceSubpathImportEdges(REPO_ROOT, filePath)),
-];
+const IMPORT_EDGES: Pick<ParsedImportEdge, 'source' | 'target'>[] = parseProductionImportEdges(
+  REPO_ROOT,
+  PRODUCTION_FILE_PATHS,
+);
 const CANONICAL_FILES = PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath));
 
 /**

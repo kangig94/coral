@@ -185,6 +185,14 @@ export function createOperationLedger(): OperationLedger {
     return entry;
   };
 
+  // Both the per-operation ceilings and the proxy-wide one can trip a pause; recomputed identically wherever
+  // the buffer changes, since `recordEvent` and `acknowledge` are the two places it can cross a bound in
+  // either direction.
+  const bufferAtCapacity = (entry: MutableEntry): boolean =>
+    entry.buffered.length >= MAX_PROVIDER_REPLAY_EVENTS ||
+    entry.bufferedBytes >= MAX_PROVIDER_REPLAY_BYTES ||
+    proxyBufferedBytes >= MAX_PROXY_REPLAY_BYTES;
+
   return {
     prepare({ key, reservationId, activationNonce, prepared, nowMs }): PrepareResult {
       const existing = entries.get(keyOf(key));
@@ -277,10 +285,7 @@ export function createOperationLedger(): OperationLedger {
       entry.bufferedBytes += cost;
       proxyBufferedBytes += cost;
       // Pausing before a crossing is what keeps the buffer bounded; the ACK that frees capacity resumes it.
-      entry.paused =
-        entry.buffered.length >= MAX_PROVIDER_REPLAY_EVENTS ||
-        entry.bufferedBytes >= MAX_PROVIDER_REPLAY_BYTES ||
-        proxyBufferedBytes >= MAX_PROXY_REPLAY_BYTES;
+      entry.paused = bufferAtCapacity(entry);
       return { paused: entry.paused };
     },
 
@@ -300,10 +305,7 @@ export function createOperationLedger(): OperationLedger {
       proxyBufferedBytes -= freed;
       entry.committedThroughProviderSeq = committedThroughProviderSeq;
       const wasPaused = entry.paused;
-      entry.paused =
-        entry.buffered.length >= MAX_PROVIDER_REPLAY_EVENTS ||
-        entry.bufferedBytes >= MAX_PROVIDER_REPLAY_BYTES ||
-        proxyBufferedBytes >= MAX_PROXY_REPLAY_BYTES;
+      entry.paused = bufferAtCapacity(entry);
       return { resumed: wasPaused && !entry.paused };
     },
 

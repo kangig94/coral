@@ -3,6 +3,8 @@ import { isDeepStrictEqual } from 'node:util';
 
 import { z } from 'zod';
 
+import type { ProviderOperationState } from './ledger.js';
+
 export const MAX_PROXY_CONTROL_FRAME_BYTES = 17 * 1024 * 1024;
 export const PROXY_CONTROL_RPC_TIMEOUT_MS = 5_000;
 export const PROXY_EVENT_COMMIT_TIMEOUT_MS = 30_000;
@@ -52,7 +54,15 @@ export const canonicalEndpointSchema = z
   .min(1)
   .max(4096)
   .refine((value) => isAbsolute(value) && normalize(value) === value, 'endpoint must be an absolute canonical path');
-const carrierStateSchema = z.enum(['pending-activation', 'executing', 'released']);
+// The states a handoff capsule may carry an operation in — a subset of `ProviderOperationState`
+// (`ledger.ts` owns the full vocabulary). Typed against that union via `satisfies` rather than hand-copied,
+// so a rename or removal in the ledger fails this file's compilation instead of drifting silently.
+const HANDOFF_CARRIER_STATES = [
+  'pending-activation',
+  'executing',
+  'released',
+] as const satisfies readonly ProviderOperationState[];
+const carrierStateSchema = z.enum(HANDOFF_CARRIER_STATES);
 
 export const coordinatorIdentitySchema = z
   .object({
@@ -150,6 +160,102 @@ export function identityAgreementSchema<Identity>(
   });
 }
 
+/** A grant or tenancy is build-bound: only a coordinator of the exact build a role's own capsule names may
+ *  install, redeem, or open one. Shared by every role that holds a bootstrap capsule, so the same check and
+ *  message are not hand-retyped per role. */
+export function assertNamedCoordinatorBuild(
+  coordinator: CoordinatorIdentity,
+  build: Readonly<{ generation: string; flavor: string; buildSetId: string }>,
+): void {
+  if (
+    coordinator.generation !== build.generation ||
+    coordinator.flavor !== build.flavor ||
+    coordinator.buildSetId !== build.buildSetId
+  ) {
+    throw new ProxyControlProtocolError('identity_mismatch', 'The named coordinator belongs to a different build.');
+  }
+}
+
+/** The caller names the roots it believes are recorded. A disagreement means one side is reasoning about a
+ *  different containment, which teardown must surface rather than silently reap its own view of — the same
+ *  check both the guardian and the reaper perform on their own half of the same stop-and-reap request. */
+export function assertRecordedSetAgreement(
+  role: 'guardian' | 'reaper',
+  claimed: readonly { pid: number; processStartedAtSeconds: number }[],
+  recorded: readonly { pid: number; processStartedAtSeconds: number }[],
+): void {
+  const key = (root: { pid: number; processStartedAtSeconds: number }): string =>
+    `${root.pid}@${root.processStartedAtSeconds}`;
+  const recordedKeys = new Set(recorded.map(key));
+  const claimedKeys = new Set(claimed.map(key));
+  if (recordedKeys.size !== claimedKeys.size || [...claimedKeys].some((entry) => !recordedKeys.has(entry))) {
+    throw new ProxyControlProtocolError(
+      'identity_mismatch',
+      `Teardown named a different provider-root set than this ${role} recorded.`,
+    );
+  }
+}
+
+/** The proxy-identity fields every bootstrap capsule that names a proxy shares — enough for
+ *  `assertNamedProxyIdentity` to check without depending on which role's own capsule shape it came from
+ *  (avoids a `bootstrap-capsule.ts` import here, which would cycle back to this file). */
+type ProxyNamingCapsule = Readonly<{
+  proxyInstanceId: string;
+  guardianInstanceId: string;
+  reaperInstanceId: string;
+  generation: string;
+  flavor: string;
+  buildSetId: string;
+  hostFingerprint: string;
+  proxyEndpoint: string;
+}>;
+
+/** The caller names the proxy it believes this guardian/reaper is staging or tearing down for. A disagreement
+ *  means it is reasoning about a different proxy than the one this role's own bootstrap capsule names —
+ *  checked against the stable identity the capsule holds, never against anything the caller supplied.
+ *  Deliberately not checked against the recorded containment's pid/start-time/group: those name *this
+ *  containment's* leader, a fact `providerRoots`/`record-containment.v1` already carry and verify on their
+ *  own terms, not a second channel for the same proxy-instance check this function exists to make. */
+export function assertNamedProxyIdentity(
+  role: 'guardian' | 'reaper',
+  claimed: ProxyIdentity,
+  capsule: ProxyNamingCapsule,
+): void {
+  if (
+    claimed.proxyInstanceId !== capsule.proxyInstanceId ||
+    claimed.guardianInstanceId !== capsule.guardianInstanceId ||
+    claimed.reaperInstanceId !== capsule.reaperInstanceId ||
+    claimed.generation !== capsule.generation ||
+    claimed.flavor !== capsule.flavor ||
+    claimed.buildSetId !== capsule.buildSetId ||
+    claimed.hostFingerprint !== capsule.hostFingerprint ||
+    claimed.canonicalEndpoint !== capsule.proxyEndpoint
+  ) {
+    throw new ProxyControlProtocolError('identity_mismatch', `The named proxy does not match this ${role}.`);
+  }
+}
+
+/** The caller names the reaper it believes it is addressing. A disagreement means it is reasoning about a
+ *  different instance, which teardown must surface rather than silently act against this one — checked by
+ *  both the reaper's own handler (against what it knows about itself) and the guardian's (against the reaper
+ *  it itself spawned and paired with). */
+export function assertNamedReaperIdentity(claimed: ReaperIdentity, actual: ReaperIdentity): void {
+  if (
+    claimed.reaperInstanceId !== actual.reaperInstanceId ||
+    claimed.pid !== actual.pid ||
+    claimed.processStartedAtSeconds !== actual.processStartedAtSeconds ||
+    claimed.guardianInstanceId !== actual.guardianInstanceId ||
+    claimed.generation !== actual.generation ||
+    claimed.flavor !== actual.flavor ||
+    claimed.buildSetId !== actual.buildSetId ||
+    claimed.hostFingerprint !== actual.hostFingerprint ||
+    claimed.canonicalControlEndpoint !== actual.canonicalControlEndpoint ||
+    claimed.containmentKind !== actual.containmentKind
+  ) {
+    throw new ProxyControlProtocolError('identity_mismatch', 'Teardown named a different reaper than this one.');
+  }
+}
+
 const jsonRpcIdSchema = z.union([z.string().min(1), z.number().safe()]);
 
 const proxyControlJsonRpcRequestSchema = z
@@ -239,4 +345,31 @@ export function decodeProxyControlFrame(frame: string | Buffer): ProxyControlJso
     if (error instanceof ProxyControlProtocolError) throw error;
     throw new ProxyControlProtocolError('invalid_request', 'Proxy control frame failed strict JSON-RPC validation.');
   }
+}
+
+/**
+ * Reads newline-delimited frames from raw socket bytes, shared by every control endpoint and client in this
+ * domain. Chunks are accumulated as bytes and each complete frame is decoded exactly once: decoding a chunk
+ * on its own would replace any multi-byte character split across the boundary with U+FFFD, and that damage
+ * lands inside a JSON string where both `JSON.parse` and strict validation still succeed. A newline byte
+ * cannot occur inside a multi-byte sequence, so splitting on the byte is safe. The cap is applied to the
+ * accumulating buffer, not only to complete frames, so a peer that never sends a newline cannot grow it
+ * without bound.
+ */
+export function createFrameReader(onFrame: (frame: string) => void, onOversize: () => void): (chunk: Buffer) => void {
+  let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+  return (chunk: Buffer): void => {
+    pending = pending.byteLength === 0 ? chunk : Buffer.concat([pending, chunk]);
+    if (pending.byteLength > MAX_PROXY_CONTROL_FRAME_BYTES) {
+      pending = Buffer.alloc(0);
+      onOversize();
+      return;
+    }
+    let newline = pending.indexOf(0x0a);
+    while (newline !== -1) {
+      onFrame(pending.subarray(0, newline + 1).toString('utf8'));
+      pending = pending.subarray(newline + 1);
+      newline = pending.indexOf(0x0a);
+    }
+  };
 }

@@ -330,7 +330,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       context?.reason === 'interrupted'
         ? interruptedStoreResetRemediation(context)
         : context?.reason === 'active_store_transition_evidence'
-          ? 'Check permissions and free disk space in the Coral store directory, then retry. Preserve the active-store records and retained transition evidence.'
+          ? 'Check permissions and free disk space in the Coral store directory, then retry; Coral republishes retained transition evidence itself on the next attempt. If this persists, report this code with its JSON context — do not hand-edit the active-store records or retained transition evidence.'
           : context?.reason === 'classified_evidence_missing'
             ? "Retry startup once. If the store is classified for reset again without any active files, run 'coral-cli backend status' and report this code. Do not create, move, delete, restore, or upload DB, WAL, or SHM evidence."
             : 'Check permissions and free disk space in the Coral store directory, then retry. Do not move, delete, restore, or upload DB, WAL, or SHM evidence.',

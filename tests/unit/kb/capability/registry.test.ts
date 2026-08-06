@@ -7,7 +7,7 @@ import {
 } from '#src/kb/capability/contract.js';
 import { createCapabilityRegistry } from '#src/kb/capability/registry.js';
 import { KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
-import { createScope } from '#src/expansion/scope.js';
+import { createScope } from '#src/infra/disposable-scope.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
 
 function descriptor(raw: string, label = 'Vendor Cache'): KbCapabilityDescriptor {

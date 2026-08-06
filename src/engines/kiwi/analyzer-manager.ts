@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { backendLog } from '../../infra/backend-log.js';
 import type { TimerHandle } from '../../infra/port-types.js';
 import { errorMessage } from '../../infra/error-format.js';
-import { decorateDispose } from '#src/expansion/scope.js';
+import { decorateDispose } from '#src/infra/disposable-scope.js';
 import type { KbDeclaredAnalyzer } from '../../kb/extra-langs.js';
 import type { Disposable, Runtime } from '../../runtime/ports.js';
 import {

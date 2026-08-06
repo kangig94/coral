@@ -3,8 +3,8 @@ import { createServer, type Server as NetServer, type Socket } from 'node:net';
 
 import { truncate } from '../infra/text.js';
 import {
-  MAX_PROXY_CONTROL_FRAME_BYTES,
   ProxyControlProtocolError,
+  createFrameReader,
   decodeProxyControlFrame,
   encodeProxyControlFrame,
   type ProxyControlJsonRpcMessage,
@@ -244,32 +244,6 @@ function handlerFailure(id: string | number, error: unknown): ProxyControlJsonRp
 
 function success(id: string | number, result: unknown): ProxyControlJsonRpcMessage {
   return { jsonrpc: '2.0', id, result };
-}
-
-/**
- * Reads newline-delimited frames from raw socket bytes. Chunks are accumulated as bytes and each complete
- * frame is decoded exactly once: decoding a chunk on its own would replace any multi-byte character split
- * across the boundary with U+FFFD, and that damage lands inside a JSON string where both `JSON.parse` and
- * strict validation still succeed. A newline byte cannot occur inside a multi-byte sequence, so splitting on
- * the byte is safe. The cap is applied to the accumulating buffer, not only to complete frames, so a peer
- * that never sends a newline cannot grow it without bound.
- */
-function createFrameReader(onFrame: (frame: string) => void, onOversize: () => void): (chunk: Buffer) => void {
-  let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-  return (chunk: Buffer): void => {
-    pending = pending.byteLength === 0 ? chunk : Buffer.concat([pending, chunk]);
-    if (pending.byteLength > MAX_PROXY_CONTROL_FRAME_BYTES) {
-      pending = Buffer.alloc(0);
-      onOversize();
-      return;
-    }
-    let newline = pending.indexOf(0x0a);
-    while (newline !== -1) {
-      onFrame(pending.subarray(0, newline + 1).toString('utf8'));
-      pending = pending.subarray(newline + 1);
-      newline = pending.indexOf(0x0a);
-    }
-  };
 }
 
 export function createControlEndpoint(options: ControlEndpointOptions): ControlEndpoint {

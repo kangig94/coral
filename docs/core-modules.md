@@ -14,7 +14,7 @@ Coral's product identity is a coding-assistant plugin for Claude Code and Codex.
 
 ## CLI and Client
 
-The CLI parses commands, follows detached launches via the `jobs.wait` IPC subscription, and formats output for humans and machines. The client layer owns backend startup, IPC dispatch/subscriptions, direct `read-model/CoralStore` read helpers for no-coordinator paths, and the HTTP gateway/admin helpers exposed through the public barrel.
+The CLI parses commands, follows detached launches via the `jobs.wait` IPC subscription, and formats output for humans and machines. The client layer owns backend startup, IPC dispatch/subscriptions, direct `read-model/CoralStore` read helpers for no-coordinator paths, and the HTTP gateway/admin helpers exposed through the public barrel. `cli/handoff-notice.ts` owns the one-time stderr notice printed after a CLI invocation is delegated to a newer build; it writes directly to `process.stderr` rather than through `emit.ts` so it never corrupts a machine-readable result on stdout.
 
 ## Backend
 
@@ -26,7 +26,7 @@ The backend uses a **single Runtime world** pattern: one interface with a fixed 
 
 ## Journal
 
-The Journal is the event-sourced truth spine for all domain state. It provides append, rebuild, strict envelope decoding, domain append-validator, and projection-reducer dispatch primitives backed by SQLite in WAL mode. `store/` exports the SQL/Journal substrate; product read APIs live in `read-model/CoralStore` and domain-owned read query modules. There are no body versions, upcasters, or old-format readers: the application-wide store format covers every persisted codec and executable DDL fragment. Startup automatically resets older or corrupt/unsupported state; a newer store still produces the typed operator-recovery refusal.
+The Journal is the event-sourced truth spine for all domain state. It provides append, rebuild, strict envelope decoding, domain append-validator, and projection-reducer dispatch primitives backed by SQLite in WAL mode. `store/` exports the SQL/Journal substrate; product read APIs live in `read-model/CoralStore` and domain-owned read query modules. There are no body versions, upcasters, or old-format readers: the application-wide store format covers every persisted codec and executable DDL fragment. Startup automatically resets older or corrupt/unsupported state; a newer store still produces the typed operator-recovery refusal. Before that classification, `store/active-store-selection.ts` and `store/active-store-selection-coordination.ts` own the active-store selection/transition coordination records and the recovery protocol that reconciles them against the current build, and `store/startup-store-routing.ts` (`routeOrOpenBackendStoreAtStartup`, wired into `coordinator/lifecycle.ts`) is the startup call site that turns that protocol into an opened store or a validated handoff to a newer local build.
 
 ## Causality
 
@@ -95,7 +95,7 @@ Projection freshness is not authority. A Corpus commit remains durable even if a
 
 ## Coordinator
 
-The coordinator layer owns process lifecycle, the three-era boot sequence (Kernel → Recovery → Runtime Health Components), projection-consumer wiring, provider-host coordination, job-backed KB source import/reindex proxying, and the corpus notify seam. It is the only place allowed to compose multiple parent-daemon domains together and the only place that speaks to both transport and domain owner modules/contracts at once.
+The coordinator layer owns process lifecycle, the three-era boot sequence (Kernel → Recovery → Runtime Health Components), projection-consumer wiring, provider-host coordination, job-backed KB source import/reindex proxying, and the corpus notify seam. It is the only place allowed to compose multiple parent-daemon domains together and the only place that speaks to both transport and domain owner modules/contracts at once. `coordinator/handoff-runner.ts` owns the cross-build handoff decision and execution — probing a live incumbent's health, resolving the routing decision, and spawning/delegating into a validated newer build — shared by CLI pre-flight delegation, `wait jobs` cursor resume, and backend cold-start handoff (`src/coordinator/bootstrap.ts` calls it when startup finds a newer active-store selection).
 
 ## Runtime Components
 
@@ -114,13 +114,13 @@ Workflow plans persist only semantic slots: slot id, dependencies, provider, ins
 
 ## Infrastructure
 
-Infrastructure helpers sit below every domain: schemas, small utilities, SSE parsing, cross-process locking, file tailing, and child-env construction. Infrastructure resolves canonical paths, build flavor, backend connection info, and expansion paths without becoming a generic domain dumping ground.
+Infrastructure helpers sit below every domain: schemas, small utilities, SSE parsing, cross-process locking, file tailing, and child-env construction. Infrastructure resolves canonical paths, build flavor, backend connection info, and expansion paths without becoming a generic domain dumping ground. `infra/backend-routing.ts` owns the closed cross-build routing decision (`use-current | handoff | reset-newer-invalid`); `infra/handoff-target.ts` owns the sealed `ValidatedHandoffTarget` capability and the foreign-target validator that hashes and re-verifies a candidate build before it is trusted; `infra/monotonic-clock.ts` owns branded, non-serializable elapsed-time arithmetic; `infra/process-containment.ts` owns the SIGTERM→SIGKILL reap of a recorded process/group identity verified by pid plus start time.
 
 ## Ownership Matrix
 
 | Area                  | Owns                                             | Does not own                              |
 | --------------------- | ------------------------------------------------ | ----------------------------------------- |
-| `store/`              | SQL schema, Journal append/reducer substrate     | Product read facade, domain policy        |
+| `store/`              | SQL schema, Journal append/reducer substrate, active-store selection/transition coordination records and their recovery protocol, and the startup routing call site | Product read facade, domain policy        |
 | `read-model/`         | Composed read API                                | Writes, recovery, domain truth            |
 | `jobs/`               | Job lifecycle and terminal vocabulary            | Provider process mechanics                |
 | `sessions/`           | Immutable provider binding and continuity        | Multi-provider scope, job terminal policy |
@@ -128,10 +128,10 @@ Infrastructure helpers sit below every domain: schemas, small utilities, SSE par
 | `discuss/`            | Discussion state and shell loop                  | Coordinator lifecycle                     |
 | `kb/`                 | Corpus authority and query semantics             | Expansion lifecycle ownership             |
 | `provider-proxy/`     | Control protocol, bootstrap capsules, and each role's own peer-spawning | Coordinator wiring, the store, or the coordinator socket |
-| `coordinator/`        | Live state, startup order, cross-domain assembly | Domain vocabulary                         |
+| `coordinator/`        | Live state, startup order, cross-domain assembly, and cross-build handoff decision/execution | Domain vocabulary                         |
 | `transport/`          | Wire parsing and response mapping                | Business behavior                         |
-| `cli/`                | User command surface and local startup glue      | Backend/domain truth                      |
-| `infra/` / `runtime/` | Low-level paths, flavor, I/O ports               | Domain concepts                           |
+| `cli/`                | User command surface, local startup glue, and the post-handoff delegation notice | Backend/domain truth                      |
+| `infra/` / `runtime/` | Low-level paths, flavor, I/O ports, cross-build routing decisions, and process-containment reap | Domain concepts                           |
 | `causality/`          | Cross-stream event-reference vocabulary          | Store/database access                     |
 | `recovery/`           | Single enumeration boundary, opaque source handles, quarantine persistence | Domain settlement, registry/pool knowledge |
 

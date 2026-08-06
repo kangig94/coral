@@ -4,7 +4,7 @@ import { dirname, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-import { listProductionSourceFiles } from '#tests/helpers/ts-import-scanner.js';
+import { listProductionSourceFiles, resolveSubpathSourcePath } from '#tests/helpers/ts-import-scanner.js';
 
 const REPO_ROOT = process.cwd();
 const RUNNER_MODULE = 'src/coordinator/handoff-runner.ts';
@@ -26,6 +26,14 @@ function productionSources(): ProductionSource[] {
 }
 
 function resolveImport(source: ProductionSource, specifier: string): string {
+  // The '#src/*' package.json#imports alias reaches the exact same file a
+  // relative import does — resolving it as an opaque bare specifier (the
+  // `!startsWith('.')` fallback below) would make `target !== TARGET_MODULE`
+  // never match an alias-spelled import, so the authority it guards could be
+  // reached and re-exported through the alias with zero violations reported.
+  if (specifier.startsWith('#src/')) {
+    return resolveSubpathSourcePath(specifier);
+  }
   if (!specifier.startsWith('.')) {
     return specifier;
   }
@@ -417,6 +425,25 @@ describe('handoff execution authority invariants', () => {
         { file: 'src/coordinator/rogue-validator.ts', sourceFile: mutation },
       ]),
     ).toContain('src/coordinator/rogue-validator.ts: foreign-validator constructor import');
+  });
+
+  it('should reject a foreign-validator constructor import spelled through the #src/ alias', () => {
+    // Same violation as the relative-path case above, spelled through the
+    // package.json#imports '#src/*' alias instead of a relative path — the
+    // spelling `resolveImport` must resolve identically to `TARGET_MODULE`.
+    const mutation = ts.createSourceFile(
+      'src/coordinator/rogue-validator-alias.ts',
+      `import { createForeignTargetValidator } from '#src/infra/handoff-target.js';\nvoid createForeignTargetValidator;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+
+    expect(
+      scanHandoffExecutionSources([
+        ...productionSources(),
+        { file: 'src/coordinator/rogue-validator-alias.ts', sourceFile: mutation },
+      ]),
+    ).toContain('src/coordinator/rogue-validator-alias.ts: foreign-validator constructor import');
   });
 
   it('should reject an exported foreign-validator capability', () => {

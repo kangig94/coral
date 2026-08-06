@@ -27,13 +27,17 @@ import {
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
+  assertNamedCoordinatorBuild,
+  assertNamedProxyIdentity,
+  assertNamedReaperIdentity,
+  assertRecordedSetAgreement,
   canonicalUuidSchema,
   coordinatorIdentitySchema,
   guardianIdentitySchema,
   operationIdentitySchema,
   proxyIdentitySchema,
   reaperIdentitySchema,
-  type CoordinatorIdentity,
+  type ReaperIdentity,
 } from './protocol.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
@@ -90,6 +94,13 @@ const stopAndReapParamsSchema = z
   })
   .strict();
 
+/** What every `reaper.*` RPC this guardian issues replies with: at minimum a state tag it can safely compare
+ *  against the one value that means success. Parsed rather than cast — a peer's bytes are wire input like
+ *  any other, and a raw cast would let a malformed or absent reply (`result: null` makes `.state` a
+ *  `TypeError`) crash instead of reporting the closed protocol vocabulary this domain's own acquisition-steps
+ *  header already promises every reply gets parsed into. */
+const reaperAckSchema = z.object({ state: z.string() }).passthrough();
+
 /**
  * The caller names the guardian it believes it is tearing down. A disagreement means it is reasoning about
  * a different instance, which teardown must surface rather than silently act against this one.
@@ -109,53 +120,6 @@ function assertNamedGuardianIdentity(
     claimed.canonicalControlEndpoint !== actual.canonicalControlEndpoint
   ) {
     throw new ProxyControlProtocolError('identity_mismatch', 'Teardown named a different guardian than this one.');
-  }
-}
-
-/**
- * The caller names the roots it believes are recorded. A disagreement means one side is reasoning about a
- * different containment, which teardown must surface rather than silently reap its own view of — the same
- * check the reaper performs on its own stop-and-reap request.
- */
-function assertRecordedSetAgreement(
-  claimed: readonly { pid: number; processStartedAtSeconds: number }[],
-  recorded: readonly { pid: number; processStartedAtSeconds: number }[],
-): void {
-  const key = (root: { pid: number; processStartedAtSeconds: number }): string =>
-    `${root.pid}@${root.processStartedAtSeconds}`;
-  const recordedKeys = new Set(recorded.map(key));
-  const claimedKeys = new Set(claimed.map(key));
-  if (recordedKeys.size !== claimedKeys.size || [...claimedKeys].some((entry) => !recordedKeys.has(entry))) {
-    throw new ProxyControlProtocolError(
-      'identity_mismatch',
-      'Teardown named a different provider-root set than this guardian recorded.',
-    );
-  }
-}
-
-/**
- * The caller names the proxy it believes this guardian is staging or tearing down for. A disagreement means
- * it is reasoning about a different proxy than the one this guardian's own capsule names — checked against
- * the stable identity this guardian's own bootstrap capsule holds, never against anything the caller
- * supplied. Deliberately not checked against the recorded containment's pid/start-time/group: those name
- * *this containment's* leader, a fact `providerRoots`/`recordContainment` already carry and verify on their
- * own terms, not a second channel for the same proxy-instance check this function exists to make.
- */
-function assertNamedProxyIdentity(
-  claimed: z.infer<typeof proxyIdentitySchema>,
-  capsule: GuardianBootstrapCapsule,
-): void {
-  if (
-    claimed.proxyInstanceId !== capsule.proxyInstanceId ||
-    claimed.guardianInstanceId !== capsule.guardianInstanceId ||
-    claimed.reaperInstanceId !== capsule.reaperInstanceId ||
-    claimed.generation !== capsule.generation ||
-    claimed.flavor !== capsule.flavor ||
-    claimed.buildSetId !== capsule.buildSetId ||
-    claimed.hostFingerprint !== capsule.hostFingerprint ||
-    claimed.canonicalEndpoint !== capsule.proxyEndpoint
-  ) {
-    throw new ProxyControlProtocolError('identity_mismatch', 'The named proxy does not match this guardian.');
   }
 }
 
@@ -210,6 +174,10 @@ export type GuardianOptions<Scope extends symbol> = Readonly<{
   /** The paired reaper channel, held open for the lifetime of the set. */
   reaperChannel: ControlClient;
   self: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+  /** The reaper this guardian itself spawned. A teardown's `reaper` claim is checked against this — the one
+   *  identity the guardian observed directly at spawn time, mirroring how it already checks `self` for its
+   *  own claim and the capsule for the proxy's. */
+  reaperSelf: Readonly<{ pid: number; processStartedAtSeconds: number }>;
   onOutcome(outcome: EnforcementOutcome): void;
   /** A wake later than the model's bound. Reported, but teardown still proceeds. */
   onProgressViolation(observedWakeLatencyMs: number): void;
@@ -264,10 +232,23 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
     canonicalControlEndpoint: capsule.canonicalControlEndpoint,
   });
 
-  /**
-   * Every grant this guardian issues is bound to its own set, taken from its own capsule. A coordinator
-   * therefore cannot install a grant naming a set it does not belong to — it never supplies the binding.
-   */
+  /** The reaper identity a teardown's `reaper` claim is checked against: the pid and start time this
+   *  guardian itself observed at spawn time, plus the same capsule-derived fields the reaper's own identity
+   *  uses. The guardian never learns this from the reaper directly — pairing carries no identity, only a
+   *  shared secret — so this is reconstructed from what the guardian itself watched come into being. */
+  const reaperSelfIdentity: ReaperIdentity = Object.freeze({
+    reaperInstanceId: capsule.reaperInstanceId,
+    pid: options.reaperSelf.pid,
+    processStartedAtSeconds: options.reaperSelf.processStartedAtSeconds,
+    guardianInstanceId: capsule.guardianInstanceId,
+    generation: capsule.generation,
+    flavor: capsule.flavor,
+    buildSetId: capsule.buildSetId,
+    hostFingerprint: capsule.hostFingerprint,
+    canonicalControlEndpoint: capsule.reaperControlEndpoint,
+    containmentKind: DETACHED_CONTAINMENT_KIND,
+  });
+
   /**
    * Every field a grant is bound to except the orphan timeout, which the installer names because it is the
    * budget a successor plans its attach against; the guardian supplies the rest from its own capsule so a
@@ -282,17 +263,6 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
     reaperInstanceId: capsule.reaperInstanceId,
     proxyInstanceId: capsule.proxyInstanceId,
   });
-
-  /** A grant is build-bound, so only a coordinator of this exact build may install or redeem one. */
-  const assertNamedCoordinatorBuild = (coordinator: CoordinatorIdentity): void => {
-    if (
-      coordinator.generation !== capsule.generation ||
-      coordinator.flavor !== capsule.flavor ||
-      coordinator.buildSetId !== capsule.buildSetId
-    ) {
-      throw new ProxyControlProtocolError('identity_mismatch', 'The named coordinator belongs to a different build.');
-    }
-  };
 
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
   const grants = createGrantRegistry(mintReceipt);
@@ -313,7 +283,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             throw new ProxyControlProtocolError('invalid_state', 'This guardian holds no containment yet.');
           }
           bootstrapNonce.spend(request.bootstrapNonce);
-          assertNamedCoordinatorBuild(request.coordinator);
+          assertNamedCoordinatorBuild(request.coordinator, capsule);
           // The result names the proxy this guardian was issued for, so a coordinator that opened against
           // the wrong set learns it from the response rather than from a later staging failure.
           return { holder: request.coordinator.instanceId, fields: { guardian: identity, proxy: request.proxy } };
@@ -326,7 +296,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         authority: 'active',
         handle: (params) => {
           const request = handoffInstallParamsSchema.parse(params);
-          assertNamedCoordinatorBuild(request.successor);
+          assertNamedCoordinatorBuild(request.successor, capsule);
           // The reserve is derived from this build's own process constants, not chosen per grant. A caller
           // naming a different one disagrees about arithmetic both sides compute, which is a mismatch to
           // report rather than a value to accept.
@@ -355,7 +325,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         authority: 'establishes-control',
         handle: (params) => {
           const request = handoffRedeemParamsSchema.parse(params);
-          assertNamedCoordinatorBuild(request.successor);
+          assertNamedCoordinatorBuild(request.successor, capsule);
           const redemption = grants.redeem({
             grantId: request.grantId,
             secret: request.secret,
@@ -383,7 +353,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         handle: async (params) => {
           const request = registerProviderRootParamsSchema.parse(params);
           const armed = requireEnforcer();
-          assertNamedProxyIdentity(request.proxy, capsule);
+          assertNamedProxyIdentity('guardian', request.proxy, capsule);
           const root = { pid: request.providerPid, processStartedAtSeconds: request.providerProcessStartedAtSeconds };
           // Idempotent by stable identity: the same operation reporting the same root gets the receipt it
           // already holds, rather than a fresh one that silently invalidates it.
@@ -419,11 +389,13 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           // Forward the exact root; the joint receipt is only minted once both authorities ACK the same
           // identity, so neither can be talked into containing something the other never recorded. The
           // reaper is asked to record a root, not an operation — it has no operation vocabulary to forward.
-          const reaperResult = (await options.reaperChannel.call(
-            'reaper.register-provider-root.v1',
-            { providerRoot: root },
-            PROXY_CONTROL_RPC_TIMEOUT_MS,
-          )) as { state?: string };
+          const reaperResult = reaperAckSchema.parse(
+            await options.reaperChannel.call(
+              'reaper.register-provider-root.v1',
+              { providerRoot: root },
+              PROXY_CONTROL_RPC_TIMEOUT_MS,
+            ),
+          );
           if (reaperResult.state !== 'root-recorded') {
             throw new ProxyControlProtocolError(
               'invalid_state',
@@ -485,11 +457,13 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           // Activation authority is converted only after the reaper confirms it still holds the same root —
           // proof this reaper is alive and still containing the target at the instant of activation. There is
           // no operation for it to authorize, so a retry that reaches an unchanged root always succeeds.
-          const reaperResult = (await options.reaperChannel.call(
-            'reaper.confirm-provider-root.v1',
-            { providerRoot: request.providerRoot },
-            PROXY_CONTROL_RPC_TIMEOUT_MS,
-          )) as { state?: string };
+          const reaperResult = reaperAckSchema.parse(
+            await options.reaperChannel.call(
+              'reaper.confirm-provider-root.v1',
+              { providerRoot: request.providerRoot },
+              PROXY_CONTROL_RPC_TIMEOUT_MS,
+            ),
+          );
           if (reaperResult.state !== 'root-recorded') {
             throw new ProxyControlProtocolError('invalid_state', 'The reaper did not confirm the provider root.');
           }
@@ -536,12 +510,14 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         handle: async (params) => {
           const request = stopAndReapParamsSchema.parse(params);
           const armed = requireEnforcer();
-          // All three agreements the reaper's own handler already makes on its half of the same request: the
-          // caller must be naming this guardian, this guardian's own proxy, and this containment's own
-          // recorded roots, so one authority can never accept a teardown request the other would refuse.
+          // The caller must be naming this exact guardian, the reaper it itself spawned and paired with, this
+          // guardian's own proxy, and this containment's own recorded roots — so a teardown request either
+          // authority would refuse can never be accepted by the other, and this guardian is never talked into
+          // reaping a set some other process spawned.
           assertNamedGuardianIdentity(request.guardian, identity);
-          assertNamedProxyIdentity(request.proxy, capsule);
-          assertRecordedSetAgreement(request.providerRoots, armed.recordedRoots());
+          assertNamedReaperIdentity(request.reaper, reaperSelfIdentity);
+          assertNamedProxyIdentity('guardian', request.proxy, capsule);
+          assertRecordedSetAgreement('guardian', request.providerRoots, armed.recordedRoots());
           const outcome = await armed.stopAndReap(deadlines.bounds().exitDeadline);
           if (outcome.kind !== 'containment-absent') {
             throw new ProxyControlProtocolError(
@@ -626,11 +602,9 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       // this guardian's own deadline.
       enforcer.arm();
 
-      const reaperResult = (await options.reaperChannel.call(
-        'reaper.record-containment.v1',
-        containment,
-        PROXY_CONTROL_RPC_TIMEOUT_MS,
-      )) as { state?: string };
+      const reaperResult = reaperAckSchema.parse(
+        await options.reaperChannel.call('reaper.record-containment.v1', containment, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      );
       if (reaperResult.state !== 'containment-recorded') {
         throw new ProxyControlProtocolError('invalid_state', 'The reaper did not record the containment.');
       }

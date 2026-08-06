@@ -4,7 +4,7 @@ import { loadBundledEngine } from '#src/expansion/bundled.js';
 import type { EngineManifest, Expansion } from '#src/expansion/contract.js';
 import { disposeExpansionScope } from '#src/expansion/host.js';
 import { validateManifestCompleteness } from '#src/expansion/manifest/completeness.js';
-import { createScope } from '#src/expansion/scope.js';
+import { createScope } from '#src/infra/disposable-scope.js';
 import type { RetrievalRole, RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
 import { KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';

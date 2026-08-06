@@ -163,7 +163,6 @@ async function activate(set: ProxyUnderTest, operation: unknown, reserved: Recor
       activationNonce: reserved.activationNonce,
       jointContainmentReceipt: reserved.jointContainmentReceipt,
       jointActivationReceipt: 'joint-activation-1',
-      committedThroughProviderSeq: 0,
     },
     5_000,
   );
@@ -292,6 +291,41 @@ describe('provider-proxy operation lifecycle', () => {
         5_000,
       ),
     ).toEqual({ state: 'released' });
+  });
+
+  it('renews a pending-activation reservation, extending its lease from the call’s own now', async () => {
+    const set = await startProxy();
+    const { operation, reserved } = await prepare(set);
+    set.advance(1_000);
+
+    const renewed = (await set.control.call(
+      'operation.renew-activation.v1',
+      { operation, reservationId: reserved.reservationId, activationNonce: reserved.activationNonce },
+      5_000,
+    )) as { state: string; leaseExpiresInMs: number };
+
+    expect(renewed.state).toBe('pending-activation');
+    // Renewed from *this* call's own now, not the original prepare's, so the fresh budget is the same full
+    // lease again rather than the original lease minus the second that already elapsed.
+    expect(renewed.leaseExpiresInMs).toBe(reserved.leaseExpiresInMs);
+
+    // The renewed lease actually took effect: activating well past the original (unrenewed) deadline still
+    // succeeds rather than being refused as expired.
+    set.advance(14_500);
+    expect(await activate(set, operation, reserved)).toMatchObject({ state: 'executing' });
+  });
+
+  it('refuses operation.renew-activation.v1 presenting a different reservation for a known operation', async () => {
+    const set = await startProxy();
+    const { operation, reserved } = await prepare(set);
+
+    await expect(
+      set.control.call(
+        'operation.renew-activation.v1',
+        { operation, reservationId: randomUUID(), activationNonce: reserved.activationNonce },
+        5_000,
+      ),
+    ).rejects.toThrow(/different reservation/u);
   });
 
   it('reports a repeated cancel as released rather than not-found', async () => {
@@ -460,9 +494,9 @@ describe('provider-proxy operation lifecycle', () => {
     // Only the capsule's own copy of this schema used to carry the byte-sort refinement; the wire schema
     // this method actually parses did not, so an unsorted set installed here and a sorted redemption later
     // disagreed without either looking malformed.
-    await expect(install([entry(first), entry(second)])).rejects.toThrow();
+    await expect(install([entry(first), entry(second)])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
     // Duplicated is refused for the same reason, not merely unsorted.
-    await expect(install([entry(first), entry(first)])).rejects.toThrow();
+    await expect(install([entry(first), entry(first)])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
   });
 
   it("keeps a redeemed successor's first challenge answerable for the full lease, unclamped by any ceiling", async () => {

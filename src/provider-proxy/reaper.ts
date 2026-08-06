@@ -19,6 +19,9 @@ import {
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
+  assertNamedProxyIdentity,
+  assertNamedReaperIdentity,
+  assertRecordedSetAgreement,
   coordinatorIdentitySchema,
   guardianIdentitySchema,
   proxyIdentitySchema,
@@ -74,70 +77,24 @@ const openParamsSchema = z
   .strict();
 
 /**
- * The caller names the roots it believes are recorded. A disagreement means one side is reasoning about a
- * different containment, which teardown must surface rather than silently reap its own view of.
+ * The caller names the guardian it believes paired with this reaper. Checked against the stable fields this
+ * reaper's own bootstrap capsule holds — pid and start time are deliberately excluded, since unlike the
+ * guardian (which spawned this reaper itself and observed both directly) this reaper never independently
+ * learns them: pairing carries only a shared secret, no identity.
  */
-function assertRecordedSetAgreement(
-  claimed: readonly { pid: number; processStartedAtSeconds: number }[],
-  recorded: readonly { pid: number; processStartedAtSeconds: number }[],
-): void {
-  const key = (root: { pid: number; processStartedAtSeconds: number }): string =>
-    `${root.pid}@${root.processStartedAtSeconds}`;
-  const recordedKeys = new Set(recorded.map(key));
-  const claimedKeys = new Set(claimed.map(key));
-  if (recordedKeys.size !== claimedKeys.size || [...claimedKeys].some((entry) => !recordedKeys.has(entry))) {
-    throw new ProxyControlProtocolError(
-      'identity_mismatch',
-      'Teardown named a different provider-root set than this reaper recorded.',
-    );
-  }
-}
-
-/**
- * The caller names the reaper it believes it is tearing down. A disagreement means it is reasoning about a
- * different instance, which teardown must surface rather than silently act against this one — the check
- * `guardian.ts`'s own `guardian.stop-and-reap.v1` already performs on its half of the same request.
- */
-function assertNamedReaperIdentity(
-  claimed: z.infer<typeof reaperIdentitySchema>,
-  actual: z.infer<typeof reaperIdentitySchema>,
+function assertNamedGuardianCapsuleIdentity(
+  claimed: z.infer<typeof guardianIdentitySchema>,
+  capsule: ReaperBootstrapCapsule,
 ): void {
   if (
-    claimed.reaperInstanceId !== actual.reaperInstanceId ||
-    claimed.pid !== actual.pid ||
-    claimed.processStartedAtSeconds !== actual.processStartedAtSeconds ||
-    claimed.guardianInstanceId !== actual.guardianInstanceId ||
-    claimed.generation !== actual.generation ||
-    claimed.flavor !== actual.flavor ||
-    claimed.buildSetId !== actual.buildSetId ||
-    claimed.hostFingerprint !== actual.hostFingerprint ||
-    claimed.canonicalControlEndpoint !== actual.canonicalControlEndpoint ||
-    claimed.containmentKind !== actual.containmentKind
-  ) {
-    throw new ProxyControlProtocolError('identity_mismatch', 'Teardown named a different reaper than this one.');
-  }
-}
-
-/**
- * The caller names the proxy it believes this reaper is staging or tearing down for. A disagreement means it
- * is reasoning about a different proxy than the one this reaper's own capsule names — checked against the
- * stable identity this reaper's own bootstrap capsule holds, never against anything the caller supplied.
- * Deliberately not checked against the recorded containment's pid/start-time/group: those name *this
- * containment's* leader, a fact `providerRoots`/`reaper.record-containment.v1` already carry and verify on
- * their own terms, not a second channel for the same proxy-instance check this function exists to make.
- */
-function assertNamedProxyIdentity(claimed: z.infer<typeof proxyIdentitySchema>, capsule: ReaperBootstrapCapsule): void {
-  if (
-    claimed.proxyInstanceId !== capsule.proxyInstanceId ||
     claimed.guardianInstanceId !== capsule.guardianInstanceId ||
-    claimed.reaperInstanceId !== capsule.reaperInstanceId ||
     claimed.generation !== capsule.generation ||
     claimed.flavor !== capsule.flavor ||
     claimed.buildSetId !== capsule.buildSetId ||
     claimed.hostFingerprint !== capsule.hostFingerprint ||
-    claimed.canonicalEndpoint !== capsule.proxyEndpoint
+    claimed.canonicalControlEndpoint !== capsule.guardianControlEndpoint
   ) {
-    throw new ProxyControlProtocolError('identity_mismatch', 'The named proxy does not match this reaper.');
+    throw new ProxyControlProtocolError('identity_mismatch', 'The named guardian does not match this reaper.');
   }
 }
 
@@ -237,7 +194,8 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
               'The coordinator named a different containment than the guardian recorded.',
             );
           }
-          assertNamedProxyIdentity(request.proxy, capsule);
+          assertNamedGuardianCapsuleIdentity(request.guardian, capsule);
+          assertNamedProxyIdentity('reaper', request.proxy, capsule);
           return { holder: request.coordinator.instanceId, fields: { reaper: identityOf(recorded) } };
         },
       },
@@ -338,8 +296,8 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           // guarantees a recorded identity to name the claimed reaper and proxy against.
           const containment = recorded as RecordedContainmentIdentity & { readonly containmentKind: string };
           assertNamedReaperIdentity(request.reaper, identityOf(containment));
-          assertNamedProxyIdentity(request.proxy, capsule);
-          assertRecordedSetAgreement(request.providerRoots, armed.recordedRoots());
+          assertNamedProxyIdentity('reaper', request.proxy, capsule);
+          assertRecordedSetAgreement('reaper', request.providerRoots, armed.recordedRoots());
           const outcome = await armed.stopAndReap(deadlines.bounds().exitDeadline);
           if (outcome.kind !== 'containment-absent') {
             throw new ProxyControlProtocolError('invalid_state', `Reaper teardown did not complete: ${outcome.kind}.`);

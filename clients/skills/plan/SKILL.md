@@ -142,7 +142,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     launch = Bash(`coral-cli workflow -e "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d`)
     ```
     Reviewers always run in `--deep` methodology and the resolver always runs — both are independent of the round budget.
-    `coral-cli wait jobs <job>` → the terminal output prints `Result path: <path>`; read that artifact for the full workflow result and locate the resolver's synthesis section there. Exit `0` means every job completed successfully; `1` means a failed, aborted, or faulted job (a `provider_exit` returns its normalized child code); `75` means work is still running, so resume with the printed cursor.
+    `coral-cli wait jobs <job>` → the terminal output prints `Result path: <path>`; read that artifact for the full workflow result and locate the resolver's synthesis section there. Exit `0` means every job completed successfully; `1` means a failed, aborted, or faulted job; `75` means work is still running — resume with `--cursor <cursor>` using the printed cursor, and keep looping until a non-`75` result before moving to 4b. A `provider_exit` outcome is separate: it exits with the provider's own normalized code (0–255, including `0`), not necessarily `1`.
 
     **4b. Post-Round Processing**
 

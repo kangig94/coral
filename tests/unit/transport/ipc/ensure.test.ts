@@ -681,6 +681,43 @@ describe('ipc ensure', () => {
     expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
+  it('retries once after a single dropped authenticated health reply instead of spawning a competitor', async () => {
+    makeHome();
+    const root = createPluginRoot();
+    writeDiscovery(root, {
+      port: 4270,
+      token: 'existing-token',
+      instanceId: 'existing-coordinator',
+    });
+
+    let calls = 0;
+    mockState.health.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 2) {
+        // Simulate a single dropped authenticated round-trip: the
+        // unauthenticated `ping` moments earlier already proved the
+        // incumbent is live, so this one failure is IPC noise, not evidence
+        // the incumbent is gone.
+        throw createErrnoError('ECONNRESET');
+      }
+      return {
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'existing-coordinator',
+        namespace: pluginRootNamespace(root),
+      };
+    });
+
+    const { ensure } = await importEnsure();
+    const ensured = await ensure(root);
+
+    expect(ensured.instanceId).toBe('existing-coordinator');
+    expect(mockState.spawn).not.toHaveBeenCalled();
+    expect(mockState.shutdown).not.toHaveBeenCalled();
+  });
+
   it('should reuse a healthy foreign-build incumbent without a shutdown token', async () => {
     makeHome();
     const root = createPluginRoot();

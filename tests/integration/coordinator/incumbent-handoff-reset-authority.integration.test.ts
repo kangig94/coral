@@ -285,7 +285,11 @@ describe('incumbent handoff reset authority', () => {
         runtime,
         backendNamespace: 'ns',
         bootSnapshot: {
-          version: '0.0.0-test',
+          // Strictly newer than the incumbent's 0.8.7, because that is what makes this a replacement at
+          // all: a contender may only evict an incumbent it outranks. The former placeholder here was
+          // '0.0.0-test', which real semver orders *below* 0.8.7 — the scenario only ever reached its
+          // assertions because nothing consulted version order.
+          version: '0.8.8',
           buildSetId: '00000000-0000-4000-8000-000000000000',
           bundleHash: '1111111111111111',
           flavor: 'prod',

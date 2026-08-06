@@ -49,6 +49,37 @@ function sourceFile(relativePath: string): ts.SourceFile {
   return parsed;
 }
 
+/**
+ * Blanks every comment in `text`, leaving string/template literal content
+ * untouched. The ordering assertions below match a function body's text for
+ * a specific call or comparison; a commented-out call satisfies a plain
+ * `.indexOf(...)` just as well as a live one, so a disabled authority, lock,
+ * or resume check would read as present and correctly ordered. Blanking
+ * literals too (as tests/helpers/ts-code-text.ts's `codeTextOnly` does, for
+ * identifier scanning) would erase the quoted comparison values several
+ * assertions below search for (e.g. `=== 'older-incompatible'`), so this
+ * strips comments only. Comment ranges come from the TypeScript scanner in
+ * trivia mode, not a hand-rolled quote-matching regex, for the same reason
+ * ts-code-text.ts avoids one: a regex stripper cannot pair quotes correctly.
+ */
+function withoutComments(text: string): string {
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false);
+  scanner.setText(text);
+  let blanked = '';
+  let cursor = 0;
+  let token = scanner.scan();
+  while (token !== ts.SyntaxKind.EndOfFileToken) {
+    if (token === ts.SyntaxKind.SingleLineCommentTrivia || token === ts.SyntaxKind.MultiLineCommentTrivia) {
+      const start = scanner.getTokenStart();
+      const end = scanner.getTokenEnd();
+      blanked += text.slice(cursor, start) + text.slice(start, end).replace(/[^\n]/g, ' ');
+      cursor = end;
+    }
+    token = scanner.scan();
+  }
+  return blanked + text.slice(cursor);
+}
+
 function propertyNameText(name: ts.PropertyName | ts.BindingName): string | null {
   if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
     return name.text;
@@ -236,7 +267,7 @@ describe('store reset discipline invariants', () => {
       GENERATION_MUTATION_COORDINATION_PATH,
       'acquireGenerationWriterLeaseAfterReadiness',
     );
-    const coordinationBody = acquireLease.body?.getText(coordinationSource) ?? '';
+    const coordinationBody = withoutComments(acquireLease.body?.getText(coordinationSource) ?? '');
     const completeIndex = coordinationBody.indexOf('coordination.completeReadiness(');
     const releaseReadinessIndex = coordinationBody.indexOf('readiness.release()');
     const writerLeaseIndex = coordinationBody.indexOf('coordination.acquireWriterLease(');
@@ -247,14 +278,14 @@ describe('store reset discipline invariants', () => {
 
     const installSource = sourceFile(EXPANSION_INSTALL_PATH);
     const coordinatedMutation = findFunction(EXPANSION_INSTALL_PATH, 'runGenerationCoordinatedMutation');
-    const coordinatedBody = coordinatedMutation.body?.getText(installSource) ?? '';
+    const coordinatedBody = withoutComments(coordinatedMutation.body?.getText(installSource) ?? '');
     expect(coordinatedBody.indexOf('acquirePackageOperationLock(')).toBeGreaterThan(
       coordinatedBody.indexOf('acquireGenerationWriterLeaseAfterReadiness('),
     );
 
     for (const functionName of ['installExpansion', 'uninstallExpansion']) {
       const mutation = findFunction(EXPANSION_INSTALL_PATH, functionName);
-      const body = mutation.body?.getText(installSource) ?? '';
+      const body = withoutComments(mutation.body?.getText(installSource) ?? '');
       expect(body.indexOf('runGenerationCoordinatedMutation(')).toBeGreaterThanOrEqual(0);
     }
   });
@@ -264,7 +295,7 @@ describe('store reset discipline invariants', () => {
     const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
     const authorityParam = resetFunction.parameters[1];
     const adoptionParam = resetFunction.parameters[2];
-    const body = resetFunction.body?.getText(source) ?? '';
+    const body = withoutComments(resetFunction.body?.getText(source) ?? '');
     const authorityIndex = body.indexOf('assertBackendStoreResetAuthority(');
     const lockIndex = body.indexOf('acquireBackendStoreResetLock(');
     const resumeIndex = body.indexOf('resumeAutomaticBackendStoreResetIncident(');
@@ -273,7 +304,7 @@ describe('store reset discipline invariants', () => {
     const openIndex = body.indexOf('openStoreDatabase(');
     const releaseIndex = body.indexOf('resetLock.release()');
     const lockFunction = findFunction(BACKEND_STORE_RESET_PATH, 'acquireBackendStoreResetLock');
-    const lockBody = lockFunction.body?.getText(source) ?? '';
+    const lockBody = withoutComments(lockFunction.body?.getText(source) ?? '');
     const adoptionOwnedIndex = lockBody.indexOf('adoption.assertOwned()');
     const mkdirIndex = lockBody.indexOf('runtime.storage.mkdirSync(');
     const lockPathIndex = lockBody.indexOf("join(files.dbDir, 'store.db.reset.lock')");
@@ -312,7 +343,7 @@ describe('store reset discipline invariants', () => {
     const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
     const body = resetFunction.body;
     expect(body).toBeDefined();
-    const bodyText = body?.getText(source) ?? '';
+    const bodyText = withoutComments(body?.getText(source) ?? '');
     const lockIndex = bodyText.indexOf('acquireBackendStoreResetLock(');
     const interruptedIndex = bodyText.indexOf('resumeAutomaticBackendStoreResetIncident(');
     const classificationIndex = bodyText.indexOf('classifyStoreFile(');
@@ -391,12 +422,17 @@ describe('store reset discipline invariants', () => {
     const operatorPath = 'src/store/operator-store-reset.ts';
     const operatorSource = sourceFile(operatorPath);
     const coordinationSource = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
-    const topLevel = findFunction(operatorPath, 'discardStoreReset').body?.getText(operatorSource) ?? '';
-    const generated = findFunction(operatorPath, 'discardGeneratedStore').body?.getText(operatorSource) ?? '';
-    const recovery =
+    const topLevel = withoutComments(
+      findFunction(operatorPath, 'discardStoreReset').body?.getText(operatorSource) ?? '',
+    );
+    const generated = withoutComments(
+      findFunction(operatorPath, 'discardGeneratedStore').body?.getText(operatorSource) ?? '',
+    );
+    const recovery = withoutComments(
       findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'recoverActiveStoreTransition').body?.getText(
         coordinationSource,
-      ) ?? '';
+      ) ?? '',
+    );
     const targetPathsIndex = topLevel.indexOf('resolveStoreResetTargetPaths(');
     const socketIndex = topLevel.indexOf('options.acquireSocketGuard(');
     const legacyRefusalIndex = topLevel.indexOf("options.target === 'legacy'");
@@ -442,5 +478,38 @@ describe('store reset discipline invariants', () => {
     expect(readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8')).not.toMatch(
       /export function (?:publishBackendStoreResetIncident|resumeInterruptedBackendStoreResetIncident)\b/u,
     );
+  });
+});
+
+describe('withoutComments', () => {
+  it('blanks a commented-out call so an ordering assertion cannot mistake it for a live one', () => {
+    // Reproduces the defect this file's ordering assertions guard against:
+    // on raw getText() output, a disabled (commented-out) authority check
+    // reads as present — `indexOf` finds it in the comment text just as
+    // readily as it would find a live call.
+    const source = [
+      'function openOrResetBackendStoreDb() {',
+      '  // assertBackendStoreResetAuthority(runtime, authority, options);',
+      '  acquireBackendStoreResetLock(runtime, files, adoption);',
+      '}',
+    ].join('\n');
+
+    expect(source.indexOf('assertBackendStoreResetAuthority(')).toBeGreaterThanOrEqual(0);
+
+    const stripped = withoutComments(source);
+    expect(stripped.indexOf('assertBackendStoreResetAuthority(')).toBe(-1);
+    expect(stripped).toContain('acquireBackendStoreResetLock(');
+  });
+
+  it('preserves quoted comparison values that ordering assertions search for', () => {
+    // tests/helpers/ts-code-text.ts's codeTextOnly blanks string/template
+    // literals too, which would erase the comparison values the ordering
+    // assertions above search for (e.g. classification.kind === 'older-
+    // incompatible'); withoutComments must leave literal content intact.
+    const source = "if (classification.kind === 'older-incompatible') { /* handled */ }";
+
+    const stripped = withoutComments(source);
+    expect(stripped).toContain("classification.kind === 'older-incompatible'");
+    expect(stripped).not.toContain('handled');
   });
 });

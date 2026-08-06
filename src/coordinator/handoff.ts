@@ -401,9 +401,16 @@ function verifySignalTarget(
 /**
  * Repeatedly attempt socket bind. On 'incumbent' result:
  *   1. open IPC client to incumbent's socket
- *   2. requestIncumbentShutdown() → health + transport.shutdown; if
- *      version/bundle/flavor/namespace match and the incumbent is not draining,
- *      throw IncumbentMatchesError (we're redundant)
+ *   2. requestIncumbentShutdown() → health + transport.shutdown; if the
+ *      incumbent outranks this contender (`incumbentOutranksContender`:
+ *      matching flavor/namespace, same-or-newer product version) and is not
+ *      draining, throw IncumbentMatchesError (we're redundant) instead of
+ *      requesting shutdown. This is the only version comparison on the bind
+ *      path, and it is the same precedence rule the CLI target-routing path
+ *      uses (`src/infra/backend-routing.ts`) — a contender never evicts a
+ *      live incumbent for a version difference alone, so two same-version
+ *      builds with different bundle hashes cannot both conclude the other
+ *      side should step down.
  *   3. poll bind until budget expires
  *   4. on budget expiry, escalate via process signals only after revalidating
  *      pid+processStartedAt

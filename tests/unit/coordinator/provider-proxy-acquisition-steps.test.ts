@@ -192,23 +192,35 @@ function fakeSpawnedGuardian(pid: number, processStartedAtSeconds: number): Spaw
   };
 }
 
-describe('buildGuardianSpawnUndo', () => {
-  it("signals the guardian's process group, not its bare pid", () => {
-    const time = new VirtualTime();
-    const killCalls: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
-    const runtime = {
-      time,
-      process: {
-        kill: (pid: number, signal: NodeJS.Signals | 0) => {
-          killCalls.push({ pid, signal });
-          return true;
-        },
+type SignalCall = { pid: number; signal: NodeJS.Signals | 0 };
+
+/**
+ * `isAlive` is answered by the test, not stubbed away: it is what decides between "the group went quietly"
+ * and "escalate", so a runtime missing it would let the escalation path pass untested — which is how the
+ * partial mock this replaces went unnoticed.
+ */
+function guardianUndoRuntime(time: VirtualTime, isAlive: () => boolean, killCalls: SignalCall[]): Runtime {
+  return {
+    time,
+    process: {
+      kill: (pid: number, signal: NodeJS.Signals | 0) => {
+        killCalls.push({ pid, signal });
+        return true;
       },
-    } as unknown as Runtime;
+      isAlive,
+    },
+  } as unknown as Runtime;
+}
+
+describe('buildGuardianSpawnUndo', () => {
+  it("signals the guardian's process group, not its bare pid", async () => {
+    const time = new VirtualTime();
+    const killCalls: SignalCall[] = [];
+    const runtime = guardianUndoRuntime(time, () => false, killCalls);
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
 
     const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.processStartedAtSeconds);
-    undo();
+    await undo();
 
     // detached:true makes the guardian its own process-group leader (and it spawns the reaper into that
     // group before this coordinator holds control on either), so undo must reap the whole group — the
@@ -216,25 +228,50 @@ describe('buildGuardianSpawnUndo', () => {
     expect(killCalls).toEqual([{ pid: -spawned.pid, signal: 'SIGTERM' }]);
   });
 
-  it('refuses to signal once the recorded start time no longer matches (recycled pid)', () => {
+  it('waits out the teardown reserve for a group still reaping rather than force-killing it mid-reap', async () => {
     const time = new VirtualTime();
-    const killCalls: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
-    const runtime = {
-      time,
-      process: {
-        kill: (pid: number, signal: NodeJS.Signals | 0) => {
-          killCalls.push({ pid, signal });
-          return true;
-        },
-      },
-    } as unknown as Runtime;
+    const killCalls: SignalCall[] = [];
+    // Alive while the guardian drives its own enforcer's stopAndReap, gone before the reserve runs out.
+    const disappearsAt = time.now() + PROXY_TEARDOWN_RESERVE_MS / 2;
+    const runtime = guardianUndoRuntime(time, () => time.now() < disappearsAt, killCalls);
+    const spawned = fakeSpawnedGuardian(4_242, 1_000);
+
+    const pending = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.processStartedAtSeconds)();
+    time.tick(PROXY_TEARDOWN_RESERVE_MS);
+    await pending;
+
+    expect(killCalls).toEqual([{ pid: -spawned.pid, signal: 'SIGTERM' }]);
+  });
+
+  it('escalates to SIGKILL on the group once the teardown reserve is spent', async () => {
+    const time = new VirtualTime();
+    const killCalls: SignalCall[] = [];
+    const runtime = guardianUndoRuntime(time, () => true, killCalls);
+    const spawned = fakeSpawnedGuardian(4_242, 1_000);
+
+    const pending = buildGuardianSpawnUndo(runtime, spawned, 'linux', () => spawned.processStartedAtSeconds)();
+    time.tick(PROXY_TEARDOWN_RESERVE_MS);
+    await pending;
+
+    // The same group, again: a guardian that spent its whole reserve without disappearing is not going to,
+    // and leaving it holding the proxy containment is the one outcome this undo exists to rule out.
+    expect(killCalls).toEqual([
+      { pid: -spawned.pid, signal: 'SIGTERM' },
+      { pid: -spawned.pid, signal: 'SIGKILL' },
+    ]);
+  });
+
+  it('refuses to signal once the recorded start time no longer matches (recycled pid)', async () => {
+    const time = new VirtualTime();
+    const killCalls: SignalCall[] = [];
+    const runtime = guardianUndoRuntime(time, () => true, killCalls);
     const spawned = fakeSpawnedGuardian(4_242, 1_000);
     // A different start time than what this acquisition recorded at spawn time: pid 4242 now names some
     // other process, and signalling it would kill a stranger.
     const readProcessStartedAtSeconds = (): number => 9_999;
 
     const undo = buildGuardianSpawnUndo(runtime, spawned, 'linux', readProcessStartedAtSeconds);
-    undo();
+    await undo();
 
     expect(killCalls).toEqual([]);
   });

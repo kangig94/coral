@@ -1,6 +1,6 @@
 import type { Disposable } from '../runtime/ports.js';
 import type { EngineManifest, Expansion, ExpansionHost } from './contract.js';
-import { createScope } from './scope.js';
+import { createScope } from '../infra/disposable-scope.js';
 
 type ExpansionModule = {
   default: Expansion;

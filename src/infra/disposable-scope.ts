@@ -1,4 +1,7 @@
-// Shared scope primitive used by the expansion loader and lifecycle.
+// The disposable-scope primitive. It lives in infra, not in a domain, because it names no domain concept:
+// it is `Symbol.dispose` chaining over the runtime's own `Disposable`. It was expansion-owned until the
+// engines tree needed it too, which made `engines -> expansion` a back-edge and closed a real dependency
+// cycle with `kb` — invisible until the import scanner learned to see `#src/` specifiers.
 // Each `createScope()` call returns a fresh `Disposable` whose `[Symbol.dispose]`
 // is decorated by `RuntimeBinding.bind` and `host.registerConsumer` to chain
 // teardown work in registration order. Single home so the loader (`src/expansion/loader.ts`)

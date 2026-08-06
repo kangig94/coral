@@ -170,7 +170,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
           go into one delegated call; independent ACs get separate parallel calls.
        `coral-cli <other-host> -b -i "<ACs + file paths + constraints>" --work-dir "<project root>" -d`
        Collect all job IDs from the detached launch lines.
-    2. `coral-cli wait jobs <job-id...> --embed` → each terminal block always prints `Result path: <path>`; read that path for the full artifact and use inline preview text only as a convenience. Exit `0` means every job completed successfully; `1` means a failed, aborted, or faulted job (a `provider_exit` returns its normalized child code); `75` means work is still running, so resume with the printed cursor.
+    2. `coral-cli wait jobs <job-id...> --embed` → each terminal block always prints `Result path: <path>`; read that path for the full artifact and use inline preview text only as a convenience. Exit `0` means every job completed successfully; `1` means a failed, aborted, or faulted job; `75` means work is still running — resume with `coral-cli wait jobs <job-id...> --cursor <cursor> --embed` using the printed cursor, and keep looping until every job returns a non-`75` result. Do not proceed to step 3 while any job is still `75`. A `provider_exit` outcome is separate: it exits with the provider's own normalized code (0–255, including `0`), not necessarily `1`.
     3. Verify changes yourself: read changed files, compare against acceptance criteria.
     4. All criteria pass → read all modified files, compare against plan, fix discrepancies yourself. Then continue to Step 4.
        Failed criteria → re-launch only the failed ACs, loop to 1.

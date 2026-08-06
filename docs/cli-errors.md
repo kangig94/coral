@@ -94,6 +94,29 @@ This only affects malformed or truncated backend responses. In normal operation 
 | `77` | Authorization failures that no retry fixes: `missing_capability` and `child_credentials_incomplete`. The same code is used by `coral-cli expansion …`, whose single-JSON-line output carries these two codes as an `InstallError`                                                  |
 | `70` | `internal`, `internal_error`, `store_reset_build_mismatch`, `store_reset_incident_build_mismatch`, `store_reset_reporting_failed`, and generic HTTP `500` fallback                                                                                                               |
 
+### Provider-proxy role process exit codes
+
+These are process exit codes for the backend artifact (`coral-backend.cjs`) itself when dispatched into a
+guardian, reaper, or proxy role via `--provider-guardian` / `--provider-reaper` / `--provider-proxy
+<capsule-path>` (`src/coordinator/bootstrap.ts`) — not `coral-cli` exit codes, and not part of the stderr
+error envelope above. They let an operator reading a role process's own exit code tell which role failed to
+start without correlating it against a log line, and are distinct per role and from `0` (success), `1` (a
+coordinator's own generic startup failure), and `70` (`--print-store-reset-build-identity`'s own strict
+identity failure):
+
+| Exit | Role       |
+| ---- | ---------- |
+| `71` | `guardian` |
+| `72` | `reaper`   |
+| `73` | `proxy`    |
+
+These three codes cover only a failure inside `runProviderRoleMain` after role dispatch succeeded. Parsing
+the role invocation itself (`parseProviderRoleArgv`) happens earlier and is not wrapped in that same
+try/catch: a malformed invocation — an unparseable or non-canonical capsule path, two role flags, or two
+occurrences of the same flag — throws synchronously out of `main()` and is caught only by the top-level
+`.catch()`, which exits `1`. A malformed provider-role argv therefore exits `1`, the same generic code as an
+ordinary coordinator startup failure, not a distinct code.
+
 Generation-boundary and offline-operator refusals keep the same CLI exit whether they arrive directly, over IPC, or through the HTTP gateway:
 
 | Code                                | Direct / IPC CLI exit | HTTP status | CLI exit after HTTP lift |

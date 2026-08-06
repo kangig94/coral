@@ -43,6 +43,7 @@ import {
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 const RETAINED_TRANSITION_DIRECTORY = 'retained-active-store-transitions';
 const TRANSITION_EVIDENCE_SUFFIX = '.active-store-transition.v1.json';
+const RETAINED_TRANSITION_STAGING_SUFFIX = '.tmp';
 export const STEADY_STATE_BUSY_TIMEOUT_MS = 5_000;
 
 const BACKEND_STORE_RESET_AUTHORITY_BRAND: unique symbol = Symbol('BackendStoreResetAuthority');
@@ -1028,6 +1029,7 @@ export function retainTransitionFileInStoreResetQuarantine(
   const evidenceRoot = join(quarantineRoot, RETAINED_TRANSITION_DIRECTORY);
   const evidenceName = retainedTransitionName(sourceIdentity);
   const evidencePath = join(evidenceRoot, evidenceName);
+  const stagingPath = `${evidencePath}${RETAINED_TRANSITION_STAGING_SUFFIX}`;
 
   runtime.storage.mkdirSync(files.dbDir, { recursive: true });
   ensureQuarantineRoot(runtime.storage, quarantineRoot, runtime.env.platform());
@@ -1043,25 +1045,37 @@ export function retainTransitionFileInStoreResetQuarantine(
       MAX_REPORT_HASH_BYTES,
     );
     const sourceAfter = stablePathStat(runtime.storage, sourcePath);
-    if (
-      !sameFileIdentity(sourceIdentity, sourceAfter) ||
-      !evidenceMatches(runtime.storage, { source: evidencePath, name: evidenceName }, evidence)
-    ) {
-      throw new Error('Retained active-store transition does not match its source identity.');
+    if (!sameFileIdentity(sourceIdentity, sourceAfter)) {
+      throw new Error('Retained active-store transition source changed identity during verification.');
     }
-    return {
-      evidencePath,
-      evidenceByteLength: evidence.sizeBytes,
-      evidenceSha256: evidence.sha256,
-      sourceIdentity,
-    };
+    if (evidenceMatches(runtime.storage, { source: evidencePath, name: evidenceName }, evidence)) {
+      return {
+        evidencePath,
+        evidenceByteLength: evidence.sizeBytes,
+        evidenceSha256: evidence.sha256,
+        sourceIdentity,
+      };
+    }
+    // The source is unchanged (checked above) but evidencePath's bytes don't match it. evidencePath is
+    // content-addressed to sourceIdentity, so with a stable source the only legitimate way to reach this
+    // state is a copy that never finished — republish over it rather than refusing forever.
   }
+
+  // Publish through a same-directory staging path rather than writing evidencePath directly: this mirrors
+  // copyIncidentEvidence's staging-then-rename commit, sized down to one file. copyCandidateForPublication's
+  // own cleanup only runs when the copy throws, not when the process dies mid-write, so the durable
+  // publication boundary has to be the rename below. A stale staging path from an earlier interrupted
+  // attempt is known-incomplete by construction (nothing ever reads it before it is renamed into place);
+  // discard it before writing fresh so copyCandidateForPublication's exclusive create does not refuse it.
+  runtime.storage.rmSync(stagingPath, { force: true });
   const copied = copyCandidateForPublication(
     runtime.storage,
     { source: sourcePath, name: evidenceName },
-    evidencePath,
+    stagingPath,
     MAX_REPORT_HASH_BYTES,
   );
+  requireDirectorySync(runtime.storage, evidenceRoot);
+  runtime.storage.renameSync(stagingPath, evidencePath);
   requireDirectorySync(runtime.storage, evidenceRoot);
   return {
     evidencePath,

@@ -15,10 +15,8 @@ import {
   createProductionFileIndex,
   listProductionSourceFiles,
   parseSourceImportEdges,
-  parseSourceSubpathImportEdges,
   toCanonicalSrcPath,
   type ParsedImportEdge,
-  type SubpathImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -74,10 +72,6 @@ for (const edge of PARSED_IMPORT_EDGES) {
   edgesForSource.push(edge);
   PARSED_IMPORT_EDGES_BY_SOURCE.set(edge.source, edgesForSource);
 }
-
-const PARSED_SUBPATH_IMPORT_EDGES: readonly SubpathImportEdge[] = PRODUCTION_FILE_PATHS.flatMap((filePath) =>
-  parseSourceSubpathImportEdges(REPO_ROOT, filePath),
-);
 
 type BoundaryViolation = {
   source: string;
@@ -1149,7 +1143,7 @@ describe('architecture boundary guard', () => {
       ]),
     ).toEqual([]);
 
-    expect(collectEngineImportViolations([...PARSED_IMPORT_EDGES, ...PARSED_SUBPATH_IMPORT_EDGES])).toEqual([]);
+    expect(collectEngineImportViolations(PARSED_IMPORT_EDGES)).toEqual([]);
   });
 
   it('engine-blind domains carry no engine-id string literals (AC7.2)', () => {

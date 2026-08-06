@@ -14,8 +14,6 @@ import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 
 /** Read cap applied before parsing, so an oversize file is refused without being decoded. */
 export const MAX_HANDOFF_CAPSULE_BYTES = 64 * 1024;
-/** Discovery fails closed on the candidate after this many, rather than truncating the set silently. */
-export const MAX_HANDOFF_CAPSULES_PER_STARTUP = 128;
 
 export const grantSecretSchema = z
   .string()

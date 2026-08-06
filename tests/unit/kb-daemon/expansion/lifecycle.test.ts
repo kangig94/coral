@@ -4,7 +4,7 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { ExpansionLifecycleService } from '#src/kb-daemon/expansion/lifecycle.js';
 import type { ExpansionStateRow, ExpansionStateStore } from '#src/kb-daemon/expansion/state.js';
 import { expansionStatusSchema, expansionViewSchema } from '#src/expansion/rpc-contract.js';
-import { createScope, decorateDispose } from '#src/expansion/scope.js';
+import { createScope, decorateDispose } from '#src/infra/disposable-scope.js';
 import { BUNDLED_ENGINES, BUNDLED_LOADERS } from '#src/expansion/bundled.js';
 import type { EngineManifest, Expansion } from '#src/expansion/contract.js';
 import { disposeExpansionScope } from '#src/expansion/host.js';

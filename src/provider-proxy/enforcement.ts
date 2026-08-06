@@ -84,16 +84,16 @@ export interface ArmedEnforcer<Scope extends symbol> {
   disarm(): void;
 }
 
-/**
- * Teardown produces a receipt naming what was confirmed absent, so a caller can tell "the recorded set is
- * gone" from "the leader exited". The group and every root appear, because leader exit alone is never
- * absence evidence.
- */
 /** The only key under which a root can be signalled. */
 function rootKey(root: RecordedProcessIdentity): string {
   return `${root.pid}@${root.processStartedAtSeconds}`;
 }
 
+/**
+ * Teardown produces a receipt naming what was confirmed absent, so a caller can tell "the recorded set is
+ * gone" from "the leader exited". The group and every root appear, because leader exit alone is never
+ * absence evidence.
+ */
 function disappearanceReceipt(
   containment: RecordedContainmentIdentity,
   roots: readonly RecordedProcessIdentity[],

@@ -177,12 +177,22 @@ export type GuardianRoleHandle = Readonly<{
   reaperSpawn: SpawnedRoleProcess;
   proxySpawn: SpawnedRoleProcess;
   close(): Promise<void>;
+  /** What a SIGTERM asks for: give up and reap the proxy containment this guardian's enforcer was armed on,
+   *  rather than merely disarm and disappear — the same close-and-exit path a cooperative
+   *  `guardian.stop-and-reap.v1` RPC takes, reached here directly instead of over the wire. Falls back to a
+   *  plain close on the (unreachable in production) window before any containment was ever recorded, since
+   *  there is nothing yet to reap. */
+  giveUp(): Promise<EnforcementOutcome>;
 }>;
 
 export type ReaperRoleHandle = Readonly<{
   role: 'reaper';
   reaper: Reaper<symbol>;
   close(): Promise<void>;
+  /** The reaper's own half of `GuardianRoleHandle.giveUp`: reaps the same containment its enforcer was
+   *  independently armed on, so a SIGTERM reaching this process (it shares the guardian's process group)
+   *  enforces rather than merely disarms even if the guardian did not survive to do so itself. */
+  giveUp(): Promise<EnforcementOutcome>;
 }>;
 
 export type ProxyRoleHandle = Readonly<{
@@ -352,6 +362,19 @@ async function unwindGuardianConstruction(
 }
 
 /**
+ * Races a role's own readiness against its spawn's async failure, so a spawn error the OS reports after the
+ * synchronous `spawn()` call already returned surfaces here as this attempt's own rejection rather than
+ * waiting out the full readiness wait — or worse, escaping as an uncaught exception with no listener at all.
+ * `readiness` is given a no-op catch: `Promise.race` never observes a losing promise's eventual settlement,
+ * so if the spawn failure wins the race first, `readiness`'s own later rejection must not become an
+ * unhandled one.
+ */
+function raceReadinessAgainstSpawnFailure<T>(readiness: Promise<T>, spawnFailed: Promise<never>): Promise<T> {
+  readiness.catch(() => {});
+  return Promise.race([readiness, spawnFailed]);
+}
+
+/**
  * Runs the guardian: consumes its capsule, spawns the reaper outside the future proxy group, pairs with it,
  * starts listening, spawns the proxy as a new process-group leader, and records the containment it watched
  * being created. Each step is awaited in this exact order because the next one depends on it: the reaper
@@ -392,12 +415,6 @@ export async function startProviderGuardianRole(
       envAdditions: flavorEnv,
     });
 
-    // Raced, not merely awaited, so an async spawn error the OS reports after the sync `spawn()` call
-    // already returned surfaces here as this attempt's own rejection rather than waiting out the full
-    // connect deadline — or worse, as an uncaught exception with no listener at all (BLOCKING 4). The
-    // connect attempt's own promise is given a no-op catch: `Promise.race` never observes a losing
-    // promise's eventual settlement, so if the spawn failure wins the race first, the connect attempt's own
-    // later rejection must not become an unhandled one.
     const reaperConnected = connectRoleControlWithRetry(capsule.reaperControlEndpoint, timer, {
       connectTimeoutMs: ROLE_CONNECT_TIMEOUT_MS,
       retryIntervalMs: ROLE_SPAWN_READY_RETRY_INTERVAL_MS,
@@ -405,8 +422,7 @@ export async function startProviderGuardianRole(
       now: () => ports.runtime.time.now(),
       sleep: (ms) => ports.runtime.time.sleep(ms),
     });
-    reaperConnected.catch(() => {});
-    reaperChannel = await Promise.race([reaperConnected, reaperSpawn.spawnFailed]);
+    reaperChannel = await raceReadinessAgainstSpawnFailure(reaperConnected, reaperSpawn.spawnFailed);
     await reaperChannel.call(
       'reaper.pair.v1',
       { pairingSecret: capsule.guardianReaperAuthSecret },
@@ -422,6 +438,9 @@ export async function startProviderGuardianRole(
       pairedReaperChannel.close();
       await guardianRef.close();
     };
+    // Captured once `close` holds its real value, so `giveUp` below closes over a function rather than the
+    // `(() => Promise<void>) | null` type `close` itself carries for the rest of this attempt.
+    const closeGuardian = close;
     const { onOutcome, onProgressViolation } = buildEnforcementOutcomeHandlers({
       role: 'guardian',
       deadlines,
@@ -439,6 +458,7 @@ export async function startProviderGuardianRole(
       mintReceipt: () => ports.runtime.ids.uuid(),
       reaperChannel: pairedReaperChannel,
       self: readSelfIdentity(ports),
+      reaperSelf: { pid: reaperSpawn.pid, processStartedAtSeconds: reaperSpawn.processStartedAtSeconds },
       onOutcome,
       onProgressViolation,
     });
@@ -453,19 +473,32 @@ export async function startProviderGuardianRole(
       envAdditions: flavorEnv,
     });
 
-    // Same race-and-guard shape as the reaper connect above: an async proxy spawn failure must surface as
-    // this attempt's own rejection, and `recordContainment`'s own eventual settlement must not become an
-    // unhandled rejection if the spawn failure wins the race first.
     const containmentRecorded = guardian.recordContainment({
       pid: proxySpawn.pid,
       processStartedAtSeconds: proxySpawn.processStartedAtSeconds,
       processGroupId: proxySpawn.pid,
       containmentKind: DETACHED_CONTAINMENT_KIND,
     });
-    containmentRecorded.catch(() => {});
-    await Promise.race([containmentRecorded, proxySpawn.spawnFailed]);
+    await raceReadinessAgainstSpawnFailure(containmentRecorded, proxySpawn.spawnFailed);
 
-    return { role: 'guardian', guardian, reaperSpawn, proxySpawn, close };
+    return {
+      role: 'guardian',
+      guardian,
+      reaperSpawn,
+      proxySpawn,
+      close,
+      giveUp: async (): Promise<EnforcementOutcome> => {
+        const armed = guardian.enforcer();
+        if (armed === null) {
+          // Unreachable once this handle exists — `recordContainment` above always succeeds before this
+          // function returns — but a null enforcer still has nothing to reap, so the plain close it would
+          // otherwise have gotten on SIGTERM is the correct fallback rather than a thrown assertion.
+          await closeGuardian();
+          return { kind: 'reap-failed', reason: 'no containment was recorded to reap' };
+        }
+        return armed.stopAndReap(deadlines.bounds().exitDeadline);
+      },
+    };
   } catch (error: unknown) {
     await unwindGuardianConstruction(ports, { close, reaperChannel, reaperSpawn, proxySpawn });
     throw error;
@@ -509,7 +542,21 @@ export async function startProviderReaperRole(
   });
   await reaperRef.listen();
 
-  return { role: 'reaper', reaper: reaperRef, close };
+  return {
+    role: 'reaper',
+    reaper: reaperRef,
+    close,
+    giveUp: async (): Promise<EnforcementOutcome> => {
+      const armed = reaperRef.enforcer();
+      if (armed === null) {
+        // The guardian has not yet forwarded a containment to reap — nothing armed, nothing to enforce, so
+        // the plain close this process would otherwise have gotten on SIGTERM is the correct fallback.
+        await close();
+        return { kind: 'reap-failed', reason: 'no containment was recorded to reap' };
+      }
+      return armed.stopAndReap(deadlines.bounds().exitDeadline);
+    },
+  };
 }
 
 /**
@@ -599,7 +646,14 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
         : await startProviderProxyRole(mode.capsulePath, ports);
 
   const shutdown = (): void => {
-    void handle.close();
+    // SIGTERM/SIGINT here means give up entirely — `buildGuardianSpawnUndo`'s acquisition-cleanup path is
+    // the production sender — never a negotiated handoff (that goes through `*.stop-and-reap.v1` over
+    // control, or a clean `initiateControlClose`). A guardian or reaper holds a proxy containment its own
+    // enforcer was armed on; `close()` alone only disarms it, and the proxy is a separate detached
+    // process-group leader outside this signal's own reach, so leaving it merely disarmed strands it
+    // forever. `giveUp()` reaps it first, through the same close-and-exit path a cooperative RPC teardown
+    // takes. The proxy holds no containment of its own — its control "bounds nothing" — so it just closes.
+    void (handle.role === 'proxy' ? handle.close() : handle.giveUp());
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);

@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { backendLog } from '#src/infra/backend-log.js';
@@ -35,6 +35,7 @@ import {
   publishClassifiedBackendStoreResetIncident,
   resolveBackendStoreFileSet,
   resumeBackendStoreResetIncidentForOperator,
+  retainTransitionFileInStoreResetQuarantine,
   type BackendStoreResetAuthority,
 } from '#src/store/backend-store-reset.js';
 import { classifyStoreFile, openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
@@ -1292,6 +1293,68 @@ describe('openOrResetBackendStoreDb', () => {
     for (const [index, path] of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}.format`].entries()) {
       expect(readFileSync(path)).toEqual(before[index]);
     }
+  });
+});
+
+describe('retainTransitionFileInStoreResetQuarantine', () => {
+  function retain(runtime: Runtime, dbPath: string, sourcePath: string) {
+    const files = resolveBackendStoreFileSet(runtime, { path: dbPath, storeFormat: STORE_FORMAT });
+    return retainTransitionFileInStoreResetQuarantine(runtime, files, sourcePath, adoptionLease());
+  }
+
+  it('republishes over a truncated file left at the final evidence path instead of wedging', () => {
+    const runtime = createRuntime();
+    const dbDir = makeTempRoot('coral-retained-transition-torn-');
+    const dbPath = join(dbDir, 'store.db');
+    const sourcePath = join(dbDir, 'active-store.transition.json');
+    writeFileSync(sourcePath, 'complete transition record bytes', 'utf-8');
+    const first = retain(runtime, dbPath, sourcePath);
+
+    // A hard kill mid-copy under the old direct-to-final-path publication left exactly this:
+    // a shorter file sitting at the path the complete evidence is supposed to occupy.
+    writeFileSync(first.evidencePath, 'complete transi', 'utf-8');
+
+    const healed = retain(runtime, dbPath, sourcePath);
+
+    expect(healed.evidencePath).toBe(first.evidencePath);
+    expect(healed.evidenceByteLength).toBe(first.evidenceByteLength);
+    expect(healed.evidenceSha256).toBe(first.evidenceSha256);
+    expect(readFileSync(first.evidencePath, 'utf-8')).toBe('complete transition record bytes');
+    expect(readdirSync(dirname(first.evidencePath))).toEqual([basename(first.evidencePath)]);
+  });
+
+  it('refuses a retained transition whose source identity changed mid-verification', () => {
+    const runtime = createRuntime();
+    const dbDir = makeTempRoot('coral-retained-transition-mismatch-');
+    const dbPath = join(dbDir, 'store.db');
+    const sourcePath = join(dbDir, 'active-store.transition.json');
+    writeFileSync(sourcePath, 'original transition record bytes', 'utf-8');
+    const first = retain(runtime, dbPath, sourcePath);
+
+    // stablePathStat runs four times while evidencePath already exists: the outer
+    // sourceIdentity, describeCandidate's own pathBefore/pathAfter pair, and the outer
+    // sourceAfter. Mutate only the last so describeCandidate's internal consistency checks
+    // stay satisfied and the outer identity-stability check is the one that trips.
+    const statSync = runtime.storage.statSync.bind(runtime.storage);
+    let sourceStatCalls = 0;
+    vi.spyOn(runtime.storage, 'statSync').mockImplementation((target, options) => {
+      const result = statSync(target, options);
+      if (target === sourcePath && options?.bigint === true) {
+        sourceStatCalls += 1;
+        if (sourceStatCalls === 4) {
+          return {
+            ...result,
+            mtimeNs: (result as { mtimeNs: bigint }).mtimeNs + 1n,
+            isDirectory: () => result.isDirectory(),
+            isFile: () => result.isFile(),
+          };
+        }
+      }
+      return result;
+    });
+
+    expect(() => retain(runtime, dbPath, sourcePath)).toThrow(/changed identity/);
+    expect(readFileSync(first.evidencePath, 'utf-8')).toBe('original transition record bytes');
   });
 });
 

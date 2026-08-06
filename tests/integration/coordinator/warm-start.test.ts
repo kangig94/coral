@@ -11,7 +11,6 @@ import {
   spawnCoordinator,
   stopCoordinator,
   updatePluginFixtureBundleHash,
-  waitForCondition,
   waitForDiscoveryRecord,
   waitForProcessExit,
   type SpawnedCoordinator,
@@ -19,10 +18,8 @@ import {
 
 const tempRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
-// Safety ceiling for the discovery handoff wait. Matches the historical
-// CONTENDER_BUDGET so the overall poll budget is unchanged after AC8.
-const HANDOFF_OBSERVATION_BUDGET_MS = 90_000;
-const EXPECTED_HANDOFF_MAX_MS = 30_000;
+// A contender that defers does so on one ping round-trip, so this only has to outlast process startup.
+const DEFERRAL_BUDGET_MS = 30_000;
 
 afterEach(async () => {
   while (coordinators.length > 0) {
@@ -38,7 +35,10 @@ afterEach(async () => {
 });
 
 describe('coordinator warm-start integration', () => {
-  it('hands off from bundle A to bundle B within the contender budget and updates discovery to the replacement bundle', async () => {
+  // The only real-process cover of the daemon bind election. `cross-version-election.test.ts` proves the
+  // same rule against a scripted incumbent in-process; this proves the built backend actually behaves that
+  // way end to end, discovery record and process lifetime included.
+  it('defers to the healthy incumbent when a rebuilt same-version bundle starts, leaving discovery untouched', async () => {
     if (!buildArtifactsAvailable()) {
       throw new Error('Expected clients/build/coral-backend.cjs to exist before running integration tests');
     }
@@ -62,8 +62,9 @@ describe('coordinator warm-start integration', () => {
     expect(initial.bundleHash).toBe(firstFixture.bundleHash);
     expect(isProcessAlive(initial.pid)).toBe(true);
 
+    // An ordinary rebuild without a version bump: same product version, different bundle hash.
     const secondFixture = updatePluginFixtureBundleHash(firstFixture, 'bbbbbbbbbbbbbbbb');
-    const handoffStartedAt = Date.now();
+    expect(secondFixture.bundleHash).not.toBe(firstFixture.bundleHash);
     const second = spawnCoordinator({
       fixture: secondFixture,
       home,
@@ -74,14 +75,9 @@ describe('coordinator warm-start integration', () => {
     });
     coordinators.push(second);
 
+    let secondExit: { code: number | null; signal: NodeJS.Signals | null };
     try {
-      await waitForCondition(() => {
-        if (second.child.exitCode !== null) {
-          throw new Error(`replacement exited with code ${second.child.exitCode}:\n${second.output()}`);
-        }
-        const record = readDiscoveryRecordForHome(home, 'prod');
-        return record !== null && record.bundleHash === secondFixture.bundleHash && record.pid !== initial.pid;
-      }, HANDOFF_OBSERVATION_BUDGET_MS);
+      secondExit = await waitForProcessExit(second, DEFERRAL_BUDGET_MS);
     } catch (error: unknown) {
       throw new Error(
         `${error instanceof Error ? error.message : String(error)}\nincumbent output:\n${first.output()}\nreplacement output:\n${second.output()}`,
@@ -89,17 +85,17 @@ describe('coordinator warm-start integration', () => {
       );
     }
 
-    const replacement = await waitForDiscoveryRecord(home, 'prod', 5_000);
-    const elapsedMs = Date.now() - handoffStartedAt;
-    const firstExit = await waitForProcessExit(first, 10_000);
+    // A bundle hash identifies a build; it does not order one. With nothing to order the two by, the
+    // contender is redundant rather than an upgrade, so it reports "already running" and exits cleanly —
+    // the same outcome from either side of the pair, which is what stops repeated rebuilds from
+    // alternating evictions that reset the store on every lap.
+    expect(secondExit).toEqual({ code: 0, signal: null });
 
-    // EXPECTED_HANDOFF_MAX_MS is the steady-state handoff bound; the polling
-    // budget above is just a safety ceiling.
-    expect(elapsedMs).toBeLessThan(EXPECTED_HANDOFF_MAX_MS);
-    expect(replacement.bundleHash).toBe(secondFixture.bundleHash);
-    expect(replacement.pid).not.toBe(initial.pid);
-    expect(firstExit.code).toBe(0);
-    expect(isProcessAlive(initial.pid)).toBe(false);
-    expect(isProcessAlive(replacement.pid)).toBe(true);
+    const afterContender = readDiscoveryRecordForHome(home, 'prod');
+    expect(afterContender).not.toBeNull();
+    expect(afterContender?.pid).toBe(initial.pid);
+    expect(afterContender?.bundleHash).toBe(firstFixture.bundleHash);
+    expect(afterContender?.instanceId).toBe(initial.instanceId);
+    expect(isProcessAlive(initial.pid)).toBe(true);
   });
 });

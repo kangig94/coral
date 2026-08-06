@@ -75,7 +75,6 @@ const activateParamsSchema = renewParamsSchema
   .extend({
     jointContainmentReceipt: z.string().min(1),
     jointActivationReceipt: z.string().min(1),
-    committedThroughProviderSeq: nonNegativeSeqSchema,
   })
   .strict();
 

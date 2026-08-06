@@ -40,7 +40,6 @@ import {
   type ProxyIdentity,
   type ReaperIdentity,
 } from '../../provider-proxy/protocol.js';
-import { gracefulKillByPid } from './process-supervision.js';
 import type { AcquisitionUndo, ProviderProxyAcquisitionSteps } from './provider-proxy-acquisition.js';
 import type { ProviderProxySetAuthority } from './provider-proxy-authority.js';
 
@@ -344,14 +343,32 @@ export function createProviderProxySetAuthority(
   };
 }
 
+/** How often `buildGuardianSpawnUndo` polls for the guardian's group to disappear before escalating.
+ *  Matches `infra/process-containment.ts`'s own `ABSENCE_POLL_MS`. */
+const GUARDIAN_GROUP_ABSENCE_POLL_MS = 25;
+
 /**
- * The guardian's own acquisition-time undo: a graceful group kill, gated on the pid this acquisition
+ * The guardian's own acquisition-time undo: SIGTERM to the whole group, gated on the pid this acquisition
  * observed still being the process it spawned.
  *
  * The guardian is spawned `detached: true`, so it is its own process-group leader, and it in turn spawns the
- * reaper into that same group before the coordinator ever holds control on either — so a later cut's cleanup
- * has to reap the whole group via the negative-pid convention `gracefulKillByPid` forwards straight to
- * `process.kill`, not the guardian's own bare pid alone, or the reaper it already spawned outlives it.
+ * reaper into that same group before the coordinator ever holds control on either — so this signals the whole
+ * group via the negative-pid convention, not the guardian's own bare pid alone, or the reaper it already
+ * spawned outlives it.
+ *
+ * SIGTERM here is what `role-main.ts`'s own shutdown handler treats as "give up": the guardian — and the
+ * reaper right alongside it, since they share this one process group — drives its own enforcer's
+ * `stopAndReap` on the detached, out-of-group proxy containment it holds before it exits, rather than merely
+ * disarming and leaving that live leader held by no one. Whoever creates a thing holds it: the coordinator
+ * created only the guardian, so its own undo can reach only the guardian's group directly, but asking the
+ * guardian to give up is what makes it reap the reaper and proxy it created in turn, rather than the
+ * coordinator having to reach across a boundary it has no standing to reach across itself.
+ *
+ * That reap can legitimately spend the same SIGTERM/SIGKILL grace and disappearance-confirmation budget any
+ * other teardown does (`PROXY_TEARDOWN_RESERVE_MS`), so this waits that same floor for the group's own
+ * disappearance before escalating to SIGKILL — a shorter fixed grace (`gracefulKillByPid`'s, built for a
+ * plain child with nothing of its own left to do) would force-kill the guardian mid-reap and strand the very
+ * containment it was just asked to hold.
  *
  * And a pid is not an identity on its own: the OS recycles it. This re-reads the pid's start time
  * immediately before signalling and refuses if it no longer matches what this acquisition recorded at spawn
@@ -363,10 +380,18 @@ export function buildGuardianSpawnUndo(
   spawned: SpawnedRoleProcess,
   platform: NodeJS.Platform,
   readProcessStartedAtSeconds: (pid: number, platform: NodeJS.Platform) => number | null,
-): () => void {
-  return () => {
+): () => Promise<void> {
+  return async () => {
     if (readProcessStartedAtSeconds(spawned.pid, platform) !== spawned.processStartedAtSeconds) return;
-    gracefulKillByPid(runtime, -spawned.pid);
+    const group = -spawned.pid;
+    runtime.process.kill(group, 'SIGTERM');
+    const graceDeadline = runtime.time.now() + PROXY_TEARDOWN_RESERVE_MS;
+    while (runtime.process.isAlive(group) && runtime.time.now() < graceDeadline) {
+      await runtime.time.sleep(GUARDIAN_GROUP_ABSENCE_POLL_MS);
+    }
+    if (runtime.process.isAlive(group)) {
+      runtime.process.kill(group, 'SIGKILL');
+    }
   };
 }
 
@@ -436,15 +461,13 @@ export function createProviderProxyAcquisitionSteps(
         storage: runtime.storage,
         uid,
       };
+      // Every capsule in a set shares this same 7-field identity; only its own bootstrap nonce and endpoint
+      // fields differ per role. Named once here, mirroring `bootstrap-capsule.ts`'s own
+      // `commonBootstrapCapsuleShape` precedent for the identical shape at the schema level.
+      const capsuleIdentityFields = { ...setIdentity, guardianInstanceId, reaperInstanceId, proxyInstanceId };
       const guardianCapsule: GuardianBootstrapCapsule = {
         role: 'guardian',
-        generation,
-        flavor,
-        buildSetId,
-        hostFingerprint,
-        guardianInstanceId,
-        reaperInstanceId,
-        proxyInstanceId,
+        ...capsuleIdentityFields,
         bootstrapNonce: next.guardianBootstrapNonce,
         canonicalControlEndpoint: guardianEndpoint,
         reaperControlEndpoint: reaperEndpoint,
@@ -454,13 +477,7 @@ export function createProviderProxyAcquisitionSteps(
       };
       const reaperCapsule: ReaperBootstrapCapsule = {
         role: 'reaper',
-        generation,
-        flavor,
-        buildSetId,
-        hostFingerprint,
-        guardianInstanceId,
-        reaperInstanceId,
-        proxyInstanceId,
+        ...capsuleIdentityFields,
         bootstrapNonce: next.reaperBootstrapNonce,
         canonicalControlEndpoint: reaperEndpoint,
         guardianControlEndpoint: guardianEndpoint,
@@ -469,13 +486,7 @@ export function createProviderProxyAcquisitionSteps(
       };
       const proxyCapsule: ProxyBootstrapCapsule = {
         role: 'proxy',
-        generation,
-        flavor,
-        buildSetId,
-        hostFingerprint,
-        guardianInstanceId,
-        reaperInstanceId,
-        proxyInstanceId,
+        ...capsuleIdentityFields,
         bootstrapNonce: next.proxyBootstrapNonce,
         canonicalEndpoint: proxyEndpoint,
         guardianControlEndpoint: guardianEndpoint,

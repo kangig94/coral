@@ -847,7 +847,27 @@ async function ensureTopLevelCoordinator(
     if (incumbent !== null) {
       return incumbent;
     }
-    replacementEvidence = null;
+    // `reuseServingIncumbent` failing is not proof the incumbent is gone — an
+    // unauthenticated `ping` already showed it live moments ago, and a single
+    // dropped authenticated round-trip looks identical to a dead incumbent.
+    // Re-probe and retry once before conceding: spawning a fresh coordinator
+    // against a still-serving incumbent is exactly how two builds end up
+    // racing `bindWithHandoff` for the same socket. `mayProcessReplaceIncumbent`
+    // is the same predicate `mayInvocationBeServedByIncumbent` complements —
+    // it is the explicit gate for "is spawning even on the table here".
+    replacementEvidence = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort));
+    if (mayInvocationBeServedByIncumbent(replacementEvidence)) {
+      const retried = await reuseServingIncumbent(paths, desired, replacementEvidence, timePort, capabilities);
+      if (retried !== null) {
+        return retried;
+      }
+    }
+    if (!mayProcessReplaceIncumbent(replacementEvidence)) {
+      throw new BackendUnreachableError(
+        'Coral coordinator is running but this invocation could not verify it after a retry (transient IPC ' +
+          'failure). Run `coral-cli backend status` and retry.',
+      );
+    }
   }
   await prepareTopLevelSpawn(paths, replacementEvidence, timePort);
 

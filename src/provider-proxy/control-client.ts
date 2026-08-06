@@ -1,9 +1,9 @@
 import { createConnection, type Socket } from 'node:net';
 
 import {
-  MAX_PROXY_CONTROL_FRAME_BYTES,
   PROXY_CONTROL_PROTOCOL_ERROR_CODES,
   ProxyControlProtocolError,
+  createFrameReader,
   decodeProxyControlFrame,
   encodeProxyControlFrame,
   type ProxyControlProtocolErrorCode,
@@ -102,19 +102,8 @@ export async function connectControlClient(
   // Frames are split on the newline byte and each complete frame is decoded once. Decoding a socket chunk
   // on its own would corrupt any multi-byte character straddling the boundary, and the damage would survive
   // JSON.parse and strict validation because it lands inside a JSON string.
-  let pendingBytes: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-  socket.on('data', (chunk: Buffer) => {
-    pendingBytes = pendingBytes.byteLength === 0 ? chunk : Buffer.concat([pendingBytes, chunk]);
-    if (pendingBytes.byteLength > MAX_PROXY_CONTROL_FRAME_BYTES) {
-      pendingBytes = Buffer.alloc(0);
-      socket.destroy();
-      return;
-    }
-    let newline = pendingBytes.indexOf(0x0a);
-    while (newline !== -1) {
-      const frame = pendingBytes.subarray(0, newline + 1).toString('utf8');
-      pendingBytes = pendingBytes.subarray(newline + 1);
-      newline = pendingBytes.indexOf(0x0a);
+  const read = createFrameReader(
+    (frame) => {
       let message;
       try {
         message = decodeProxyControlFrame(frame);
@@ -127,9 +116,9 @@ export async function connectControlClient(
         socket.destroy();
         return;
       }
-      if (message.id === null) continue;
+      if (message.id === null) return;
       const waiter = pending.get(Number(message.id));
-      if (waiter === undefined) continue;
+      if (waiter === undefined) return;
       pending.delete(Number(message.id));
       timer.clearTimeout(waiter.budget);
       if ('error' in message) {
@@ -139,8 +128,10 @@ export async function connectControlClient(
       } else {
         waiter.resolve(message.result);
       }
-    }
-  });
+    },
+    () => socket.destroy(),
+  );
+  socket.on('data', read);
   socket.on('error', () => socket.destroy());
   socket.on('close', () => {
     closed = true;

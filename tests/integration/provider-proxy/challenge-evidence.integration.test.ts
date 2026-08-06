@@ -182,6 +182,10 @@ describe('control heartbeats reach the deadline machine', () => {
     const afterFirst = deadlines.bounds();
     elapsed = 4_000n;
 
+    // The replay is sent on a brand-new connection (`call` never reuses a socket across invocations), so it
+    // is refused before the frame is ever read: control is still live on the first connection and this role
+    // has no pairing slot, so `acceptConnection` destroys the second socket outright — observed here as the
+    // client's own write failing, not a JSON-RPC error reply.
     await expect(
       call(socketPath, [
         () => ({
@@ -189,7 +193,7 @@ describe('control heartbeats reach the deadline machine', () => {
           body: { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
         }),
       ]),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/EPIPE|ECONNRESET/u);
 
     // A consumed challenge cannot re-earn evidence, so the replay buys no extra life.
     expect(clock.compare(deadlines.bounds().adoptionDeadline, afterFirst.adoptionDeadline)).toBe(0);

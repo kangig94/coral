@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { StrictBundleIdentityResult } from '#src/infra/bundle-manifest.js';
 import {
@@ -31,6 +31,7 @@ import {
   startProviderProxyRole,
   startProviderReaperRole,
   type GuardianRoleHandle,
+  type ProviderRoleHandle,
   type ProviderRoleMainPorts,
   type ProxyRoleHandle,
   type ReaperRoleHandle,
@@ -132,7 +133,7 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
   const handles: FakeRoleEnvironment['handles'] = {};
   const sequenceLog: string[] = [];
   const exitLog: number[] = [];
-  const pidHandles = new Map<number, { close(): Promise<void> }>();
+  const pidHandles = new Map<number, ProviderRoleHandle>();
   const startedAtByPid = new Map<number, number | null>();
 
   const readProcessStartedAtSeconds = (pid: number, platform: NodeJS.Platform): number | null => {
@@ -212,12 +213,29 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
     return child;
   }
 
+  /** The pid whose process group `pid` belongs to. A detached spawn is its own leader; the only non-detached
+   *  spawn in this topology is the reaper, which shares the guardian's group exactly as the real topology
+   *  does — mirroring `role-spawn.ts`'s own `detached` convention rather than tracking group ids separately. */
+  function groupLeaderPidOf(pid: number): number {
+    const entry = spawnLog.find((candidate) => candidate.pid === pid);
+    if (entry === undefined || entry.detached) return pid;
+    return spawnLog.find((candidate) => candidate.role === 'guardian')?.pid ?? pid;
+  }
+
   function fakeKill(pid: number, signal: NodeJS.Signals | 0): boolean {
     killLog.push({ pid, signal: String(signal) });
-    const handle = pidHandles.get(pid);
-    if (handle !== undefined) {
-      pidHandles.delete(pid);
-      void handle.close();
+    // A negative pid is the group-signal convention: every registered handle whose group leader is `-pid`
+    // receives it, exactly as a real OS `kill(-pid, …)` reaches every process in that group.
+    const targets =
+      pid < 0 ? [...pidHandles.keys()].filter((candidate) => groupLeaderPidOf(candidate) === -pid) : [pid];
+    for (const target of targets) {
+      const handle = pidHandles.get(target);
+      if (handle === undefined) continue;
+      pidHandles.delete(target);
+      if (signal !== 'SIGTERM') continue; // SIGKILL is not catchable; nothing left to run.
+      // Mirrors `runProviderRoleMain`'s own shutdown dispatch: a guardian or reaper must reap what it holds
+      // before it exits (`giveUp`); the proxy holds no containment of its own and just closes.
+      void (handle.role === 'proxy' ? handle.close() : handle.giveUp());
     }
     return true;
   }
@@ -446,7 +464,9 @@ describe('provider-proxy process topology: guardian role main', () => {
       reaperGuardianReaperAuthSecret: randomBytes(32).toString('hex'),
     });
 
-    await expect(startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts())).rejects.toThrow();
+    await expect(startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts())).rejects.toThrow(
+      /shared secret/u,
+    );
 
     expect(environment.spawnLog.map((entry) => entry.role)).toEqual(['reaper']);
     const reaperPid = environment.spawnLog[0]?.pid;
@@ -475,7 +495,9 @@ describe('provider-proxy process topology: guardian role main', () => {
     });
     cleanups.push(() => new Promise<void>((resolve) => blocker.close(() => resolve())));
 
-    await expect(startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts())).rejects.toThrow();
+    await expect(startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts())).rejects.toThrow(
+      /bind failed/u,
+    );
 
     expect(environment.spawnLog.map((entry) => entry.role)).toEqual(['reaper']);
     const reaperPid = environment.spawnLog[0]?.pid;
@@ -500,7 +522,9 @@ describe('provider-proxy process topology: guardian role main', () => {
     cleanups.push(() => closeHandles(environment));
     const { guardianCapsulePath } = writeCapsuleSet(environment.outerRuntime(), baseDir, shared);
 
-    await expect(startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts())).rejects.toThrow();
+    await expect(startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts())).rejects.toThrow(
+      /control channel closed/u,
+    );
 
     // Both the reaper (an ordinary child, signalled by its own pid) and the proxy (a detached leader,
     // signalled by its whole group — the negative pid) were reaped, not merely the one that failed.
@@ -607,6 +631,16 @@ describe('provider-proxy process topology: acquisition', () => {
     const guardianSpawn = environment.spawnLog.find((entry) => entry.role === 'guardian');
     expect(guardianSpawn).toBeDefined();
     expect(environment.killLog).toContainEqual({ pid: -(guardianSpawn?.pid as number), signal: 'SIGTERM' });
+
+    // BLOCKING: the guardian's own construction had already spawned and recorded the proxy containment by
+    // this point (it only rejects the coordinator's identity check *after* its own listen and
+    // recordContainment already succeeded), so the group SIGTERM above must make it (and the reaper right
+    // alongside it, sharing its process group) actually reap that containment, not merely disarm and
+    // disappear leaving the detached, out-of-group proxy held by no one. `exitProcess` is only ever called
+    // with `0` for a settled `containment-absent` outcome (`ROLE_ENFORCEMENT_FAILURE_EXIT_CODE` otherwise) —
+    // a plain `close()` never reaches it at all — so this is proof enforcement actually ran, not merely that
+    // a signal was sent. The old `handle.close()` shutdown left this unset, stranding the proxy forever.
+    await vi.waitFor(() => expect(environment.exitLog).toContain(0), { timeout: 5_000 });
 
     // Unwinds the capsules: the three capsule paths this acquisition itself minted were all handed to
     // `rmSync` with `force: true`, regardless of whether the underlying process had already consumed them.

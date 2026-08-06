@@ -226,6 +226,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     mintReceipt,
     reaperChannel,
     self: { pid: guardianIdentity.pid, processStartedAtSeconds: guardianIdentity.processStartedAtSeconds },
+    reaperSelf: { pid: reaperIdentity.pid, processStartedAtSeconds: reaperIdentity.processStartedAtSeconds },
     onOutcome: (outcome) => guardianOutcomes.push(outcome),
     onProgressViolation: () => {},
   });
@@ -554,7 +555,9 @@ describe('provider-proxy guardian and reaper', () => {
   it('refuses an open that omits the documented identities', async () => {
     const set = await startSet();
 
-    await expect(set.control.call('guardian.open.v1', { bootstrapNonce: NONCE }, 5_000)).rejects.toThrow();
+    await expect(set.control.call('guardian.open.v1', { bootstrapNonce: NONCE }, 5_000)).rejects.toMatchObject({
+      protocolCode: 'protocol_violation',
+    });
   });
 
   it('refuses activation that does not present the joint receipt', async () => {
@@ -680,6 +683,7 @@ describe('provider-proxy guardian and reaper', () => {
       mintReceipt: () => 'receipt-arm-before-forward',
       reaperChannel: unreachableReaperChannel,
       self: { pid: 5_102, processStartedAtSeconds: 902 },
+      reaperSelf: { pid: 5_101, processStartedAtSeconds: 901 },
       onOutcome: () => {},
       onProgressViolation: () => {},
     });
@@ -764,6 +768,25 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toThrow(/different reservation/u);
   });
 
+  it('refuses guardian.operation-activate.v1 presenting a different provider root than the one staged', async () => {
+    const set = await startSet();
+    const { jointContainmentReceipt, operation, reservationId, activationNonce } = await stage(set);
+
+    await expect(
+      set.control.call(
+        'guardian.operation-activate.v1',
+        {
+          operation,
+          reservationId,
+          activationNonce,
+          providerRoot: { pid: ROOT.pid + 1, processStartedAtSeconds: ROOT.processStartedAtSeconds },
+          jointContainmentReceipt,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/different provider root/u);
+  });
+
   it('refuses guardian.operation-release.v1 presenting a different reservation for a known operation', async () => {
     const set = await startSet();
     const { jointContainmentReceipt, operation } = await stage(set);
@@ -817,6 +840,251 @@ describe('provider-proxy guardian and reaper', () => {
       // The rejection is a `ControlClientError` carrying the server's own closed-set code in `protocolCode`;
       // the pre-fix behavior let `EnforcementError` escape untranslated, which reads as `protocol_violation`.
     ).rejects.toMatchObject({ protocolCode: 'invalid_state' });
+  });
+
+  it('refuses guardian.register-provider-root.v1 once this guardian holds its maximum staged operations', async () => {
+    const set = await startSet();
+
+    // Every registration reuses the same root, so only the staged-operation count — never the reaper's own
+    // root count — can be what refuses the one past the cap.
+    for (let index = 0; index < MAX_PROXY_OPERATION_LEDGERS; index += 1) {
+      const staged = (await set.proxyChannel.call(
+        'guardian.register-provider-root.v1',
+        {
+          proxy: set.proxyIdentity,
+          operation: set.operationFor(),
+          reservationId: randomUUID(),
+          activationNonce: randomUUID(),
+          providerPid: ROOT.pid,
+          providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+        },
+        5_000,
+      )) as { state: string };
+      expect(staged.state).toBe('staged-contained');
+    }
+
+    await expect(
+      set.proxyChannel.call(
+        'guardian.register-provider-root.v1',
+        {
+          proxy: set.proxyIdentity,
+          operation: set.operationFor(),
+          reservationId: randomUUID(),
+          activationNonce: randomUUID(),
+          providerPid: ROOT.pid,
+          providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/maximum staged operations/u);
+  });
+
+  it('refuses guardian.register-provider-root.v1 once this guardian holds its maximum recorded provider roots', async () => {
+    const set = await startSet();
+
+    // Each cycle stages a *distinct* root, then releases the membership — dropping the staged-operation count
+    // back to zero while the enforcer keeps every root it has ever recorded ("nothing is ever removed"). That
+    // is what lets this reach the provider-root cap without ever also tripping the staged-operation cap.
+    for (let index = 0; index < MAX_PROXY_RECORDED_PROVIDER_ROOTS; index += 1) {
+      const operation = set.operationFor();
+      const reservationId = randomUUID();
+      const activationNonce = randomUUID();
+      const staged = (await set.proxyChannel.call(
+        'guardian.register-provider-root.v1',
+        {
+          proxy: set.proxyIdentity,
+          operation,
+          reservationId,
+          activationNonce,
+          providerPid: 40_000 + index,
+          providerProcessStartedAtSeconds: 1,
+        },
+        5_000,
+      )) as { state: string; jointContainmentReceipt: string };
+      expect(staged.state).toBe('staged-contained');
+      const released = (await set.control.call(
+        'guardian.operation-release.v1',
+        { operation, reservationId, activationNonce, jointContainmentReceipt: staged.jointContainmentReceipt },
+        5_000,
+      )) as { state: string };
+      expect(released.state).toBe('membership-released');
+    }
+
+    await expect(
+      set.proxyChannel.call(
+        'guardian.register-provider-root.v1',
+        {
+          proxy: set.proxyIdentity,
+          operation: set.operationFor(),
+          reservationId: randomUUID(),
+          activationNonce: randomUUID(),
+          providerPid: 999_999,
+          providerProcessStartedAtSeconds: 1,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/maximum recorded provider roots/u);
+  });
+
+  /**
+   * A guardian with no real reaper behind it — `reaperChannel.call` is fully controlled by `stubReaperCall` —
+   * for tests that must observe the guardian's own disagreement-with-the-reaper checks. No real reaper's own
+   * handler ever triggers these: it always either confirms the exact request or throws, never replies with a
+   * foreign state, so exercising them needs a reaper that can be told to.
+   */
+  async function startBareGuardianWithStubReaper(
+    stubReaperCall: (method: string, params: unknown) => Promise<unknown>,
+  ): Promise<{
+    control: ControlClient;
+    proxyChannel: ControlClient;
+    proxyIdentity: Record<string, unknown>;
+    operationFor(): Record<string, string>;
+  }> {
+    const directory = mkdtempSync(join(tmpdir(), 'coral-bare-guardian-'));
+    cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+    const shared = bareSharedIdentity();
+    const clock = createMonotonicClock(Symbol('bare-guardian'), { readMilliseconds: () => 0n });
+    const containmentEnvironment = {
+      clock,
+      process: { kill: () => true, isAlive: () => true },
+      platform: 'linux' as const,
+      maxRecordedRoots: 128,
+      readProcessStartedAtSeconds: () => CONTAINMENT.processStartedAtSeconds,
+    };
+    const guardianEndpoint = join(directory, 'g.sock');
+    const guardian = createGuardian({
+      capsule: {
+        role: 'guardian',
+        ...shared,
+        canonicalControlEndpoint: guardianEndpoint,
+        reaperControlEndpoint: join(directory, 'r.sock'),
+        proxyEndpoint: join(directory, 'p.sock'),
+        guardianReaperAuthSecret: PAIR_SECRET,
+        proxyGuardianAuthSecret: PAIR_SECRET,
+      },
+      clock,
+      deadlines: bareDeadlines(clock),
+      containmentEnvironment,
+      scheduler: idleScheduler,
+      timer,
+      mintReceipt: () => 'receipt-bare-guardian',
+      reaperChannel: { call: stubReaperCall, close: (): void => {} },
+      self: { pid: 5_102, processStartedAtSeconds: 902 },
+      reaperSelf: { pid: 5_101, processStartedAtSeconds: 901 },
+      onOutcome: () => {},
+      onProgressViolation: () => {},
+    });
+    await guardian.listen();
+    cleanups.push(() => guardian.close());
+    await guardian.recordContainment(CONTAINMENT);
+
+    const proxyChannel = await connectControlClient(guardianEndpoint, timer, 5_000);
+    cleanups.push(() => proxyChannel.close());
+    await proxyChannel.call('guardian.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+
+    const proxyIdentity = {
+      proxyInstanceId: shared.proxyInstanceId,
+      pid: 6_000,
+      processStartedAtSeconds: 850,
+      processGroupId: CONTAINMENT.processGroupId,
+      guardianInstanceId: shared.guardianInstanceId,
+      reaperInstanceId: shared.reaperInstanceId,
+      generation: shared.generation,
+      flavor: shared.flavor,
+      buildSetId: shared.buildSetId,
+      hostFingerprint: FINGERPRINT,
+      canonicalEndpoint: join(directory, 'p.sock'),
+    };
+
+    // A second, separate connection: pairing and control are different authorities, and
+    // `guardian.operation-activate.v1` requires the latter.
+    const control = await connectControlClient(guardianEndpoint, timer, 5_000);
+    cleanups.push(() => control.close());
+    const coordinatorIdentity = {
+      instanceId: randomUUID(),
+      pid: 4_000,
+      processStartedAtSeconds: 700,
+      generation: shared.generation,
+      flavor: shared.flavor,
+      buildSetId: shared.buildSetId,
+    };
+    const opened = (await control.call(
+      'guardian.open.v1',
+      { bootstrapNonce: NONCE, coordinator: coordinatorIdentity, proxy: proxyIdentity },
+      5_000,
+    )) as { controlEpoch: number; heartbeatChallenge: string };
+    await control.call(
+      'guardian.heartbeat.v1',
+      { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
+      5_000,
+    );
+
+    const operationFor = (): Record<string, string> => ({
+      jobId: randomUUID(),
+      operationId: randomUUID(),
+      proxyInstanceId: shared.proxyInstanceId,
+      buildSetId: shared.buildSetId,
+    });
+
+    return { control, proxyChannel, proxyIdentity, operationFor };
+  }
+
+  it('refuses guardian.register-provider-root.v1 when the reaper does not confirm it recorded the root', async () => {
+    const bare = await startBareGuardianWithStubReaper(async (method) =>
+      method === 'reaper.record-containment.v1' ? { state: 'containment-recorded' } : { state: 'not-recorded' },
+    );
+
+    await expect(
+      bare.proxyChannel.call(
+        'guardian.register-provider-root.v1',
+        {
+          proxy: bare.proxyIdentity,
+          operation: bare.operationFor(),
+          reservationId: randomUUID(),
+          activationNonce: randomUUID(),
+          providerPid: ROOT.pid,
+          providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/did not record the reported provider root/u);
+  });
+
+  it('refuses guardian.operation-activate.v1 when the reaper does not confirm it still holds the root', async () => {
+    const bare = await startBareGuardianWithStubReaper(async (method) => {
+      if (method === 'reaper.record-containment.v1') return { state: 'containment-recorded' };
+      if (method === 'reaper.register-provider-root.v1') return { state: 'root-recorded' };
+      return { state: 'not-recorded' };
+    });
+    const operation = bare.operationFor();
+    const reservationId = randomUUID();
+    const activationNonce = randomUUID();
+    const staged = (await bare.proxyChannel.call(
+      'guardian.register-provider-root.v1',
+      {
+        proxy: bare.proxyIdentity,
+        operation,
+        reservationId,
+        activationNonce,
+        providerPid: ROOT.pid,
+        providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+      },
+      5_000,
+    )) as { jointContainmentReceipt: string };
+
+    await expect(
+      bare.control.call(
+        'guardian.operation-activate.v1',
+        {
+          operation,
+          reservationId,
+          activationNonce,
+          providerRoot: ROOT,
+          jointContainmentReceipt: staged.jointContainmentReceipt,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/did not confirm the provider root/u);
   });
 
   it('keeps a released membership recorded so only teardown may conclude absence', async () => {
@@ -898,6 +1166,23 @@ describe('provider-proxy guardian and reaper', () => {
         5_000,
       ),
     ).rejects.toThrow(/different guardian than this one/u);
+  });
+
+  it('refuses a teardown at the guardian that names a different reaper than the one it spawned', async () => {
+    const set = await startSet();
+
+    await expect(
+      set.control.call(
+        'guardian.stop-and-reap.v1',
+        {
+          guardian: set.guardianIdentity,
+          reaper: { ...set.reaperIdentity, pid: set.reaperIdentity.pid + 1 },
+          proxy: set.proxyIdentity,
+          providerRoots: [],
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/different reaper than this one/u);
   });
 
   it('refuses a teardown that names a provider-root set the reaper never recorded', async () => {
@@ -1101,9 +1386,9 @@ describe('provider-proxy guardian and reaper', () => {
     // Only the capsule's own copy of this schema used to carry the byte-sort refinement; the wire schema
     // this method actually parses did not, so an unsorted install could disagree with a sorted redemption
     // later — refused as `grant_replayed`, whose contract meaning is "give up", with nothing to diagnose.
-    await expect(install([entry(first), entry(second)])).rejects.toThrow();
+    await expect(install([entry(first), entry(second)])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
     // Duplicated is refused for the same reason, not merely unsorted.
-    await expect(install([entry(first), entry(first)])).rejects.toThrow();
+    await expect(install([entry(first), entry(first)])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
   });
 
   it('holds nothing until the guardian names the containment it watched being created', async () => {
