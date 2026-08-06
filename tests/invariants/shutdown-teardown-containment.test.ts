@@ -9,7 +9,7 @@ const SHUTDOWN_PATH = 'src/coordinator/shutdown.ts';
 const ADMISSION_PATH = 'src/coordinator/live/admission.ts';
 const FIXTURE_ROOT = 'tests/invariants/fixtures/shutdown-teardown-containment';
 
-const SHUTDOWN_CONTAINMENT_HELPERS = new Set(['runStep', 'runBudgetedStep']);
+const SHUTDOWN_CONTAINMENT_HELPERS = new Set(['runStep', 'runBudgetedStep', 'runRequiredBudgetedStep']);
 const SHUTDOWN_NON_FINALIZER_AWAIT_ALLOWLIST = new Set([
   'waitForObservedShutdownTask(serverClosed)',
   'waitForObservedShutdownTask(ipcServerClosed)',
@@ -153,7 +153,7 @@ function shutdownAwaitViolations(sourceFile: ts.SourceFile): string[] {
         formatViolation(
           shutdownSequence,
           node,
-          `await ${awaitedExpressionLabel(node)} bypasses containment helpers runStep and runBudgetedStep`,
+          `await ${awaitedExpressionLabel(node)} bypasses containment helpers ${[...SHUTDOWN_CONTAINMENT_HELPERS].join(', ')}`,
         ),
       );
     }
@@ -242,7 +242,7 @@ describe('shutdown teardown containment invariant', () => {
   it('rejects a bare awaited shutdown finalizer mutation', () => {
     expect(shutdownAwaitViolations(readFixture('shutdown-bare-await'))).toEqual([
       `${FIXTURE_ROOT}/shutdown-bare-await.ts:2 runShutdownSequence: ` +
-        'await terminateAllFn() bypasses containment helpers runStep and runBudgetedStep',
+        'await terminateAllFn() bypasses containment helpers runStep, runBudgetedStep, runRequiredBudgetedStep',
     ]);
   });
 

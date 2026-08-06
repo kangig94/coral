@@ -4,6 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS, runShutdownSequence } from '#src/coordinator/shutdown.js';
+import type {
+  ProviderProxyAuthorityRegistry,
+  ProviderProxySetAuthority,
+} from '#src/coordinator/live/provider-proxy-authority.js';
 import type { IpcListener } from '#src/transport/ipc/server.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
@@ -27,6 +31,8 @@ interface Harness {
 function buildHarness(opts: {
   hooksOnShutdown?: (signal: AbortSignal) => Promise<void>;
   closeIpcServerFn?: (listener: IpcListener) => Promise<void>;
+  reason?: string;
+  providerProxyAuthority?: ProviderProxyAuthorityRegistry;
 }): Harness {
   const time = new VirtualTime();
   const callLog: CallLog = [];
@@ -57,7 +63,7 @@ function buildHarness(opts: {
     });
 
   const ctx: Parameters<typeof runShutdownSequence>[0] = {
-    reason: 'replaced', // → mode='handoff' → drain=HANDOFF_DRAIN_TIMEOUT_MS
+    reason: opts.reason ?? 'replaced', // → mode='handoff' → drain=HANDOFF_DRAIN_TIMEOUT_MS
     state: { ownershipCheckerTeardown: null },
     teardownRecoveryCoordinator: async () => {
       callLog.push('teardownRecoveryCoordinator');
@@ -102,6 +108,7 @@ function buildHarness(opts: {
       },
       shutdown: async () => {},
     } as never,
+    providerProxyAuthority: opts.providerProxyAuthority,
     storeServicesRef: {
       tryGet: () => storeServices,
       get: () => storeServices,
@@ -416,5 +423,188 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.callLog.indexOf('lifecycleReactor.dispose')).toBeLessThan(
       harness.callLog.indexOf('closeIpcServerFn:start'),
     );
+  });
+});
+
+/** One live set whose every step the test drives. Defaults are the healthy path. */
+function fakeSet(
+  proxyInstanceId: string,
+  callLog: CallLog,
+  overrides: Partial<ProviderProxySetAuthority> = {},
+): ProviderProxySetAuthority {
+  return {
+    proxyInstanceId,
+    snapshotOperations: async () => ['op-1'],
+    installHandoffGrant: async () => {
+      callLog.push(`install:${proxyInstanceId}`);
+    },
+    stopAndReap: async () => {
+      callLog.push(`reap:${proxyInstanceId}`);
+      return { disappearanceReceipt: `gone:${proxyInstanceId}` };
+    },
+    stopHeartbeats: () => {
+      callLog.push(`heartbeats:${proxyInstanceId}`);
+    },
+    initiateControlClose: async () => {
+      callLog.push(`control:${proxyInstanceId}`);
+    },
+    ...overrides,
+  };
+}
+
+function registryOf(sets: readonly ProviderProxySetAuthority[]): ProviderProxyAuthorityRegistry {
+  return { liveSets: () => sets };
+}
+
+/** Shutdown aggregates its failures, so the detail a test cares about lives in `errors`, not the summary. */
+async function shutdownFailureDetail(ctx: Parameters<typeof runShutdownSequence>[0]): Promise<string> {
+  try {
+    await runShutdownSequence(ctx);
+  } catch (error: unknown) {
+    if (error instanceof AggregateError) {
+      return error.errors.map((entry: unknown) => (entry instanceof Error ? entry.message : String(entry))).join(' | ');
+    }
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error('expected the shutdown sequence to report a failure');
+}
+
+describe('required provider-proxy shutdown steps', () => {
+  it('reaps every live set on a hard shutdown before terminating owned children', async () => {
+    const callLog: CallLog = [];
+    const harness = buildHarness({
+      reason: 'fatal',
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: registryOf([fakeSet('p1', callLog), fakeSet('p2', callLog)]),
+    });
+    harness.ctx.terminateAllFn = () => {
+      callLog.push('terminateAll');
+    };
+
+    await runShutdownSequence(harness.ctx);
+
+    // The detached sets outlive this coordinator, so they must be reaped by identity before the handle-based
+    // termination that only reaches children this process still owns.
+    expect(callLog).toEqual(['reap:p1', 'reap:p2', 'terminateAll']);
+  });
+
+  it('fails the shutdown when a reap completes without confirming disappearance', async () => {
+    const callLog: CallLog = [];
+    const harness = buildHarness({
+      reason: 'fatal',
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: registryOf([
+        fakeSet('p1', callLog, { stopAndReap: async () => ({ unconfirmed: 'a recorded root is still alive' }) }),
+      ]),
+    });
+
+    // "The reap RPC returned" is not "the containment is gone"; reporting clean success here would leave a
+    // live provider carrier behind a shutdown that claimed to have removed it.
+    expect(await shutdownFailureDetail(harness.ctx)).toMatch(/unconfirmed: p1: a recorded root is still alive/u);
+  });
+
+  it('fails the shutdown when a reap rejects, naming the set that could not be released', async () => {
+    const callLog: CallLog = [];
+    const harness = buildHarness({
+      reason: 'fatal',
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: registryOf([
+        fakeSet('p1', callLog, {
+          stopAndReap: () => Promise.reject(new Error('signal refused')),
+        }),
+        fakeSet('p2', callLog),
+      ]),
+    });
+
+    // The healthy set is still reaped: one failure must not skip the others.
+    expect(await shutdownFailureDetail(harness.ctx)).toMatch(/p1: .*signal refused/u);
+    expect(callLog).toContain('reap:p2');
+  });
+
+  it('installs one grant per carrier and reaps only the carriers with nothing to hand off', async () => {
+    const callLog: CallLog = [];
+    const empty = fakeSet('p-empty', callLog, { snapshotOperations: async () => [] });
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: registryOf([fakeSet('p-live', callLog), empty]),
+    });
+
+    await runShutdownSequence(harness.ctx);
+
+    expect(callLog).toContain('install:p-live');
+    // A carrier with no live operation has nothing a successor could adopt, so leaving it running would
+    // strand it; a carrier that does have work is handed over instead of killed.
+    expect(callLog).toContain('reap:p-empty');
+    expect(callLog).not.toContain('reap:p-live');
+    expect(callLog).not.toContain('install:p-empty');
+  });
+
+  it('hard-transitions only the carrier whose grant install failed', async () => {
+    const callLog: CallLog = [];
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: registryOf([
+        fakeSet('p-bad', callLog, { installHandoffGrant: () => Promise.reject(new Error('reaper refused')) }),
+        fakeSet('p-good', callLog),
+      ]),
+    });
+
+    expect(await shutdownFailureDetail(harness.ctx)).toMatch(/reaper refused/u);
+    // The failed carrier goes down; the healthy one keeps its grant, because one failed install must not
+    // strand every other operation behind a single EOF.
+    expect(callLog).toContain('reap:p-bad');
+    expect(callLog).toContain('install:p-good');
+    expect(callLog).not.toContain('reap:p-good');
+  });
+
+  it('triggers the IPC socket release even when every control close rejects', async () => {
+    const callLog: CallLog = [];
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: registryOf([
+        fakeSet('p1', callLog, { initiateControlClose: () => Promise.reject(new Error('control gone')) }),
+      ]),
+    });
+    harness.ctx.closeIpcServerFn = async () => {
+      callLog.push('closeIpcServerFn:start');
+    };
+
+    // The socket is what the successor is waiting on. A control close that rejects must not suppress its
+    // release, or the successor waits out an adoption window it was never meant to spend.
+    expect(await shutdownFailureDetail(harness.ctx)).toMatch(/control p1: .*control gone/u);
+    expect(callLog).toContain('closeIpcServerFn:start');
+  });
+
+  it('stops every heartbeat before initiating any close', async () => {
+    const callLog: CallLog = [];
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: registryOf([fakeSet('p1', callLog), fakeSet('p2', callLog)]),
+    });
+    harness.ctx.closeIpcServerFn = async () => {
+      callLog.push('closeIpcServerFn:start');
+    };
+
+    await runShutdownSequence(harness.ctx);
+
+    // A heartbeat landing mid-release would renew the very lease this shutdown is giving up.
+    const released = callLog.filter((entry) => /^(heartbeats|control):/u.test(entry) || entry.startsWith('closeIpc'));
+    expect(released).toEqual(['heartbeats:p1', 'heartbeats:p2', 'control:p1', 'control:p2', 'closeIpcServerFn:start']);
+  });
+
+  it('remains fatal when the controls close but the IPC release fails', async () => {
+    const callLog: CallLog = [];
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: registryOf([fakeSet('p1', callLog)]),
+      closeIpcServerFn: async () => {
+        throw new Error('socket stuck');
+      },
+    });
+
+    // The already-armed reaper still enforces its own fixed deadline, but this shutdown must not claim it
+    // released authority cleanly.
+    expect(await shutdownFailureDetail(harness.ctx)).toMatch(/IPC socket release: .*socket stuck/u);
+    expect(callLog).toContain('control:p1');
   });
 });

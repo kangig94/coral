@@ -44,6 +44,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/live/durable-transport.ts',
   'src/coordinator/live/idle.ts',
   'src/coordinator/live/process-supervision.ts',
+  'src/coordinator/live/provider-proxy-authority.ts',
   'src/coordinator/live/provider-server-transport.ts',
   'src/coordinator/live/provider-hosts/drain.ts',
   'src/coordinator/live/provider-hosts/idle.ts',
