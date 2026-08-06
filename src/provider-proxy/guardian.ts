@@ -152,6 +152,28 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         handle: async (params) => {
           const request = registerProviderRootParamsSchema.parse(params);
           const root = { pid: request.providerPid, processStartedAtSeconds: request.providerProcessStartedAtSeconds };
+          // Idempotent by stable identity: the same operation reporting the same root gets the receipt it
+          // already holds, rather than a fresh one that silently invalidates it.
+          const already = staged.get(request.operation.operationId);
+          if (already !== undefined) {
+            if (
+              already.root.pid !== root.pid ||
+              already.root.processStartedAtSeconds !== root.processStartedAtSeconds
+            ) {
+              throw new ProxyControlProtocolError(
+                'identity_mismatch',
+                'This operation already reported a different provider root.',
+              );
+            }
+            return {
+              state: 'staged-contained',
+              providerRoot: already.root,
+              jointContainmentReceipt: already.jointContainmentReceipt,
+            };
+          }
+          if (staged.size >= MAX_PROXY_OPERATION_LEDGERS) {
+            throw new ProxyControlProtocolError('invalid_state', 'This guardian holds its maximum staged operations.');
+          }
           // Forward the exact root; a receipt is only issued once both authorities ACK the same identity, so
           // neither can be talked into containing something the other never recorded.
           const reaperResult = (await options.reaperChannel.call(
@@ -170,7 +192,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               'The reaper did not stage the reported provider root.',
             );
           }
-          enforcer.registerProviderRoot(request.operation.operationId, root);
+          enforcer.registerProviderRoot(root);
           const jointContainmentReceipt = mintReceipt();
           staged.set(request.operation.operationId, {
             jointContainmentReceipt,

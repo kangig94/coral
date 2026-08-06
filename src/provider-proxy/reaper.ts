@@ -166,8 +166,11 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           const request = registerProviderRootParamsSchema.parse(params);
           // Recording precedes execution: a root the reaper never staged is outside the containment it can
           // reach, so staging is what the activation authority is later granted against.
-          enforcer.registerProviderRoot(request.operation.operationId, request.providerRoot);
+          enforcer.registerProviderRoot(request.providerRoot);
           const receipt = mintReceipt();
+          if (staged.size >= MAX_PROXY_OPERATION_LEDGERS) {
+            throw new ProxyControlProtocolError('invalid_state', 'This reaper holds its maximum staged operations.');
+          }
           staged.set(request.operation.operationId, receipt);
           return { state: 'staged-contained', reaperContainmentReceipt: receipt };
         },
@@ -186,6 +189,9 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
               'Activation must present this reaper\u2019s staging receipt.',
             );
           }
+          // The receipt is spent by the activation it authorizes; nothing reads it afterwards, and the
+          // reaper has no release RPC, so retaining it would grow this map for the life of the set.
+          staged.delete(request.operation.operationId);
           return { state: 'activation-authorized', reaperActivationReceipt: mintReceipt() };
         },
       },

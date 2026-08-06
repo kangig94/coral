@@ -107,7 +107,7 @@ describe('armed provider-proxy enforcer', () => {
   it('reaps the recorded set once the adoption deadline arrives', async () => {
     const alive = new Set([CONTAINMENT.pid, 7_001]);
     const harness = createHarness({ adoptionInMs: 0, alive });
-    harness.enforcer.registerProviderRoot('op-1', root(7_001));
+    harness.enforcer.registerProviderRoot(root(7_001));
 
     harness.enforcer.arm();
     harness.scheduler.runDue();
@@ -121,8 +121,8 @@ describe('armed provider-proxy enforcer', () => {
 
   it('names the group, the leader and every recorded root in the disappearance receipt', async () => {
     const harness = createHarness({ adoptionInMs: 0 });
-    harness.enforcer.registerProviderRoot('op-1', root(7_001));
-    harness.enforcer.registerProviderRoot('op-2', root(7_002));
+    harness.enforcer.registerProviderRoot(root(7_001));
+    harness.enforcer.registerProviderRoot(root(7_002));
 
     const outcome = await harness.enforcer.stopAndReap(harness.clock.shiftMilliseconds(harness.clock.now(), 14_000));
 
@@ -203,23 +203,21 @@ describe('armed provider-proxy enforcer', () => {
   it('refuses a root count over the recorded cap', () => {
     const harness = createHarness({ adoptionInMs: 60_000 });
     for (let index = 0; index < 128; index += 1) {
-      harness.enforcer.registerProviderRoot(`op-${index}`, root(9_000 + index));
+      harness.enforcer.registerProviderRoot(root(9_000 + index));
     }
 
-    expect(() => harness.enforcer.registerProviderRoot('op-128', root(9_128))).toThrow(EnforcementError);
+    expect(() => harness.enforcer.registerProviderRoot(root(9_128))).toThrow(EnforcementError);
     expect(harness.enforcer.recordedRoots()).toHaveLength(128);
   });
 
-  it('refuses to re-record one operation under a different identity but tolerates an exact repeat', () => {
+  it('treats a different start time on the same pid as a different target', () => {
     const harness = createHarness({ adoptionInMs: 60_000 });
-    harness.enforcer.registerProviderRoot('op-1', root(7_001));
+    harness.enforcer.registerProviderRoot(root(7_001));
 
-    harness.enforcer.registerProviderRoot('op-1', root(7_001));
-    expect(harness.enforcer.recordedRoots()).toHaveLength(1);
+    // A recycled pid is not the process that was recorded, so it is a separate target rather than a clash.
+    harness.enforcer.registerProviderRoot({ pid: 7_001, processStartedAtSeconds: 3_000 });
 
-    expect(() => harness.enforcer.registerProviderRoot('op-1', { pid: 7_001, processStartedAtSeconds: 3_000 })).toThrow(
-      /already recorded a different provider root/u,
-    );
+    expect(harness.enforcer.recordedRoots()).toHaveLength(2);
   });
 
   it('reports a reap failure rather than claiming absence', async () => {
@@ -229,7 +227,7 @@ describe('armed provider-proxy enforcer', () => {
       alive: new Set([CONTAINMENT.pid, 7_001]),
       stubborn: new Set([7_001]),
     });
-    harness.enforcer.registerProviderRoot('op-1', root(7_001));
+    harness.enforcer.registerProviderRoot(root(7_001));
 
     const outcome = await harness.enforcer.stopAndReap(harness.clock.shiftMilliseconds(harness.clock.now(), 14_000));
 
