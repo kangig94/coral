@@ -22,6 +22,7 @@ import {
   formatWaitProgress,
   formatWaitQueued,
   formatWaitTerminal,
+  formatWaitCarrierInterrupted,
   formatWaitWaiting,
   renderWaitLine,
   type WaitRenderContext,
@@ -128,6 +129,9 @@ function emitWaitEvent(
         describeCauseRef: renderCauseRef ? (ref) => renderCauseRef(ref, event.result.outcome) : undefined,
         verbose: renderOptions.verbose,
       });
+      break;
+    case 'interrupted':
+      line = formatWaitCarrierInterrupted(event);
       break;
     case 'waiting':
       line = formatWaitWaiting(event, cursor, resumeJobIds);

@@ -9,6 +9,7 @@ import { formatUsageSegment } from './usage.js';
 type WaitProgressEvent = Extract<WaitStreamEvent, { type: 'progress' }>;
 type WaitQueuedEvent = Extract<WaitStreamEvent, { type: 'queued' }>;
 type WaitTerminalEvent = Extract<WaitStreamEvent, { type: 'terminal' }>;
+type WaitCarrierInterruptedEvent = Extract<WaitStreamEvent, { type: 'interrupted' }>;
 type WaitWaitingEvent = Extract<WaitStreamEvent, { type: 'waiting' }>;
 
 export type WaitRenderContext = {
@@ -91,6 +92,18 @@ export function formatWaitTerminal(
   ]);
 }
 
+/**
+ * Reports what was observed without claiming the job ended. The wording is deliberately about the carrier,
+ * not the job — "still waiting" stays true, because this event releases nothing and the durable terminal is
+ * still the only thing that will end the stream.
+ */
+export function formatWaitCarrierInterrupted(event: WaitCarrierInterruptedEvent): string {
+  return joinLines([
+    `Job ${event.jobId} carrier is no longer present (stored phase: ${event.storedPhase}); still waiting for a durable result.`,
+    formatWaitContinuation(event.remainingJobIds),
+  ]);
+}
+
 export function formatWaitWaiting(
   event: WaitWaitingEvent,
   cursor: string | null,
@@ -103,8 +116,17 @@ export function formatWaitWaiting(
       ? `Still waiting on ${waitingCount} ${waitingCount === 1 ? 'job' : 'jobs'}.`
       : `Still waiting; jobs: ${jobs}.`;
   const resumeArgs = resumeJobIds.length > 0 ? ` ${resumeJobIds.join(' ')}` : '';
+  // Named as unconfirmed rather than folded into the waiting list: these are the jobs nothing could answer
+  // for, and a reader deciding whether to keep waiting needs that distinction.
+  const unknown =
+    event.carrierUnknownJobIds === undefined
+      ? undefined
+      : `Carrier unconfirmed for: ${event.carrierUnknownJobIds.join(', ')}.`;
 
-  return appendCursor(`${status} Run coral-cli wait jobs${resumeArgs} again to continue waiting.`, cursor);
+  return appendCursor(
+    joinLines([`${status} Run coral-cli wait jobs${resumeArgs} again to continue waiting.`, unknown]),
+    cursor,
+  );
 }
 
 export function renderWaitLine(text: string, ctx: WaitRenderContext): string {

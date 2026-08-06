@@ -1,6 +1,7 @@
 import type { JobTerminal } from './records.js';
 import type { ContinuitySnapshot } from '../sessions/continuity.js';
 import type { JobProgressTiming } from './event-bodies.js';
+import type { JobPhase } from './phase.js';
 import type { UsageSummary } from '../providers/contract.js';
 
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
@@ -74,7 +75,33 @@ export type WaitStreamEvent =
       continuity?: ContinuitySnapshot | null;
       usage?: UsageSummary;
     }
-  | { type: 'waiting'; waitingJobIds: string[] };
+  | CarrierInterruptedWaitEvent
+  | {
+      type: 'waiting';
+      waitingJobIds: string[];
+      /** Sorted; omitted entirely when empty, so "nothing unknown" costs no wire field. */
+      carrierUnknownJobIds?: string[];
+    };
+
+/**
+ * The wire-only report that a job's carrier was observed absent.
+ *
+ * Deliberately nonterminal, and deliberately missing everything a terminal has: no journal `seq`, no
+ * `result`, no `resultPath`, no continuity snapshot, and no session release. Derived absence may tell a
+ * waiting human what it sees; it may not end the job, free its claim, or become a stored
+ * `SessionInterruptedFault`. The subscription stays open and the exit code stays pending, because the
+ * journal terminal is still the only thing that decides either — and if one arrives after this, it wins.
+ */
+export type CarrierInterruptedWaitEvent = {
+  type: 'interrupted';
+  jobId: string;
+  storedPhase: JobPhase;
+  observedMaxJournalSeq: number;
+  remainingJobIds: string[];
+  observation: { kind: 'carrier_interrupted'; reason: 'carrier_absent' };
+  continuity: 'unavailable';
+  outcome: 'unknown';
+};
 
 /**
  * Coordinator-facing wait surface that the jobs domain exposes. Defined here

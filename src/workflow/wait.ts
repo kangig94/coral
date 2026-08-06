@@ -240,6 +240,11 @@ function handleWaitEvent(
       return 'handled';
     }
 
+    case 'interrupted':
+      // An internal wait completes only on a durable terminal or session release. Observational absence is
+      // not either one, so this drains no atom and fails no step — treating it as terminal here would end a
+      // workflow branch on a derived reading that the journal may still contradict.
+      return 'handled';
     case 'waiting':
       return 'check-stale';
   }
