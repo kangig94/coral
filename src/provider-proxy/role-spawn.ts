@@ -1,0 +1,163 @@
+import { basename, join } from 'node:path';
+
+import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
+import type { ChildProcessLike } from '../infra/port-types.js';
+import type { Runtime } from '../runtime/ports.js';
+import { connectControlClient, type ControlClient, type ControlClientTimer } from './control-client.js';
+import type { ControlEndpointTimer } from './control-endpoint.js';
+import { PROVIDER_ROLE_FLAGS, type ProviderRole } from './role-argv.js';
+
+/**
+ * The shared mechanics every role-spawning caller needs: launching one role process from the existing
+ * backend artifact, and reaching the control endpoint it will eventually bind. Both the coordinator (spawning
+ * the guardian) and the guardian's own role main (spawning the reaper, then the proxy) go through this file
+ * rather than each re-deriving the artifact path or re-implementing a connect retry loop.
+ */
+
+/** Reverse of `PROVIDER_ROLE_FLAGS`, derived rather than hand-copied so a role added to the flag table stays spawnable. */
+const ROLE_FLAG_BY_ROLE: Readonly<Record<ProviderRole, string>> = Object.freeze(
+  Object.fromEntries(Object.entries(PROVIDER_ROLE_FLAGS).map(([flag, role]) => [role, flag])) as Record<
+    ProviderRole,
+    string
+  >,
+);
+
+export type RoleSpawnErrorCode = 'role_spawn_no_pid' | 'role_spawn_start_time_unavailable';
+
+export class RoleSpawnError extends Error {
+  readonly code: RoleSpawnErrorCode;
+  readonly role: ProviderRole;
+
+  constructor(code: RoleSpawnErrorCode, role: ProviderRole, message: string) {
+    super(message);
+    this.name = 'RoleSpawnError';
+    this.code = code;
+    this.role = role;
+    Object.setPrototypeOf(this, RoleSpawnError.prototype);
+  }
+}
+
+export type RoleSpawnPorts = Readonly<{
+  process: Pick<Runtime['process'], 'spawn'>;
+  platform: NodeJS.Platform;
+  /** Injected so a test can fake a spawned pid's start time without a real process existing. Defaults to
+   *  the real cross-platform `/proc` or `ps` probe. */
+  readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
+}>;
+
+export type RoleSpawnOptions = Readonly<{
+  pluginRoot: string;
+  /** `true` makes the child a new process-group leader (the future proxy containment); `false` for an
+   *  ordinary child that inherits its parent's group. */
+  detached: boolean;
+  envAdditions?: Record<string, string>;
+  /** Overrides "am I already running as the backend artifact"; defaults to `process.argv[1]`. */
+  currentEntrypoint?: string;
+  /** Overrides the node executable used to re-invoke the artifact; defaults to `process.execPath`. */
+  command?: string;
+}>;
+
+export type SpawnedRoleProcess = Readonly<{
+  child: ChildProcessLike;
+  pid: number;
+  processStartedAtSeconds: number;
+}>;
+
+/** Mirrors `kb-daemon-supervisor.ts`'s own entrypoint resolution: reuse the artifact already running when
+ *  its basename matches, otherwise resolve it under the plugin root's bundled bridge. */
+function resolveBackendArtifact(pluginRoot: string, currentEntrypoint: string | undefined): string {
+  if (typeof currentEntrypoint === 'string' && basename(currentEntrypoint) === 'coral-backend.cjs') {
+    return currentEntrypoint;
+  }
+  return join(pluginRoot, 'bridge', 'coral-backend.cjs');
+}
+
+/**
+ * Spawns one role process from the existing backend artifact and verifies its identity before returning it.
+ *
+ * A pid alone is not an identity — it is recycled — so a spawn whose start time cannot be read fails rather
+ * than handing back a bare pid nothing could later verify against. The failed child is killed rather than
+ * left to run unaccounted for.
+ */
+export function spawnRoleProcess(
+  role: ProviderRole,
+  capsulePath: string,
+  ports: RoleSpawnPorts,
+  options: RoleSpawnOptions,
+): SpawnedRoleProcess {
+  const entrypoint = resolveBackendArtifact(options.pluginRoot, options.currentEntrypoint ?? process.argv[1]);
+  const command = options.command ?? process.execPath;
+  const child = ports.process.spawn({
+    command,
+    args: [entrypoint, ROLE_FLAG_BY_ROLE[role], capsulePath],
+    cwd: options.pluginRoot,
+    envAdditions: options.envAdditions ?? {},
+    detached: options.detached,
+  });
+
+  const killFailedSpawn = (): void => {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // Already gone; nothing left to reap.
+    }
+  };
+
+  if (typeof child.pid !== 'number') {
+    killFailedSpawn();
+    throw new RoleSpawnError('role_spawn_no_pid', role, `Spawning the ${role} role did not return a pid.`);
+  }
+
+  const readStartedAt = ports.readProcessStartedAtSeconds ?? probeProcessStartedAtSeconds;
+  const processStartedAtSeconds = readStartedAt(child.pid, ports.platform);
+  if (processStartedAtSeconds === null) {
+    killFailedSpawn();
+    throw new RoleSpawnError(
+      'role_spawn_start_time_unavailable',
+      role,
+      `Could not read the start time of the spawned ${role} process (pid ${child.pid}).`,
+    );
+  }
+
+  return { child, pid: child.pid, processStartedAtSeconds };
+}
+
+/** Adapts the `Runtime` time port to the shape every control endpoint and client in this domain expects.
+ *  Both role main and the coordinator's own acquisition steps need this exact adapter, so it lives here
+ *  rather than being rebuilt at each call site. */
+export function runtimeControlTimer(runtime: Pick<Runtime, 'time'>): ControlEndpointTimer & ControlClientTimer {
+  return {
+    setTimeout: (callback, ms) => runtime.time.setTimeout(callback, ms),
+    clearTimeout: (handle) => runtime.time.clearTimeout(handle),
+  };
+}
+
+export type RoleConnectRetryOptions = Readonly<{
+  connectTimeoutMs: number;
+  retryIntervalMs: number;
+  overallDeadlineMs: number;
+  now(): number;
+  sleep(ms: number): Promise<void>;
+}>;
+
+/**
+ * Connects to a freshly spawned role's control endpoint, retrying until it is reachable or the overall
+ * budget elapses. A spawn call returns as soon as the OS has scheduled the process, not once it has bound
+ * its socket — so the first connect attempt legitimately racing a not-yet-listening peer is the ordinary
+ * case, not a failure.
+ */
+export async function connectRoleControlWithRetry(
+  socketPath: string,
+  timer: ControlClientTimer,
+  options: RoleConnectRetryOptions,
+): Promise<ControlClient> {
+  const deadline = options.now() + options.overallDeadlineMs;
+  while (true) {
+    try {
+      return await connectControlClient(socketPath, timer, options.connectTimeoutMs);
+    } catch (error: unknown) {
+      if (options.now() >= deadline) throw error;
+      await options.sleep(options.retryIntervalMs);
+    }
+  }
+}

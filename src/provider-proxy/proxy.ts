@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
+// The stop cause is shared with the coordinator's durable side. It lives in `providers/` because both sides
+// may reach it and neither may reach the other: this tree is barred from `jobs/`, and the reverse edge would
+// point the dependency the wrong way.
+import { providerStopCauseSchema, type ProviderStopCause } from '../providers/contract.js';
 import { createBootstrapNonceCredential, type ProxyBootstrapCapsule } from './bootstrap-capsule.js';
 import { ControlLeaseEvidence } from './control-lease.js';
 import {
@@ -36,12 +40,6 @@ import {
   type CoordinatorIdentity,
   type ProxyIdentity,
 } from './protocol.js';
-
-/**
- * Why an operation stopped. The proxy does not interpret these — the coordinator's durable side does — but
- * the enum is closed so a caller cannot smuggle a cause the journal has no event for.
- */
-const stopCauseSchema = z.enum(['restart', 'handoff', 'user_abort', 'signal_abort', 'queue_shutdown']);
 
 const nonNegativeSeqSchema = z.number().int().nonnegative().safe();
 
@@ -81,7 +79,7 @@ const activateParamsSchema = renewParamsSchema
   })
   .strict();
 
-const stopParamsSchema = z.object({ operation: operationIdentitySchema, cause: stopCauseSchema }).strict();
+const stopParamsSchema = z.object({ operation: operationIdentitySchema, cause: providerStopCauseSchema }).strict();
 
 const adoptParamsSchema = z
   .object({ operation: operationIdentitySchema, committedThroughProviderSeq: nonNegativeSeqSchema })
@@ -127,7 +125,7 @@ export interface SemanticOperationHost {
   /** Starts the kernel for an activated operation. Throwing leaves the ledger entry untouched. */
   start(input: Readonly<{ key: ProviderOperationKey; prepared: unknown }>): Promise<void> | void;
   /** Stops a running kernel. Called for every recorded stop cause, including a clean handoff. */
-  stop(input: Readonly<{ key: ProviderOperationKey; cause: z.infer<typeof stopCauseSchema> }>): Promise<void> | void;
+  stop(input: Readonly<{ key: ProviderOperationKey; cause: ProviderStopCause }>): Promise<void> | void;
 }
 
 export type ProxyOptions<Scope extends symbol> = Readonly<{

@@ -9,6 +9,7 @@ import {
   toCanonicalSrcPath,
   type ParsedImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
+import { PROVIDER_ROLE_FLAGS } from '#src/provider-proxy/role-argv.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(join(REPO_ROOT, 'src'));
@@ -19,19 +20,20 @@ const IMPORT_EDGES: Pick<ParsedImportEdge, 'source' | 'target'>[] = [
 const CANONICAL_FILES = PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath));
 
 /**
- * The three role processes. Each is intended to run the same backend artifact as its own process, so "the
- * proxy is safe" is only a third of the claim: a guardian or reaper that opened the store would bypass V2's
- * rule that only the selected build may mutate it, and it would do so from a process that by design outlives
- * the coordinator.
+ * The three role processes, plus the module that is now their actual process entry point. Each is intended
+ * to run the same backend artifact as its own process, so "the proxy is safe" is only a third of the claim:
+ * a guardian or reaper that opened the store would bypass V2's rule that only the selected build may mutate
+ * it, and it would do so from a process that by design outlives the coordinator.
  *
- * Named here rather than derived from an argv dispatch table because there is not one yet — `bootstrap.ts`
- * dispatches no role modes today. The property is worth holding before the wiring exists: it is far cheaper
- * to keep these three clean than to disentangle a store dependency after one lands.
+ * `role-main.ts` is included because `bootstrap.ts` dispatches into it, not into `guardian.ts` / `reaper.ts`
+ * / `proxy.ts` directly — a walk that stopped at those three would miss whatever `role-main.ts` itself pulls
+ * in (composing the real runtime among it) to run them.
  */
 const ROLE_ENTRY_MODULES = [
   'src/provider-proxy/guardian.ts',
   'src/provider-proxy/reaper.ts',
   'src/provider-proxy/proxy.ts',
+  'src/provider-proxy/role-main.ts',
 ] as const;
 
 /**
@@ -85,7 +87,18 @@ describe('provider proxy role processes open no store and bind no coordinator so
     expect(violations).toEqual([]);
   });
 
-  // A real argv-dispatch check belongs here once `src/coordinator/bootstrap.ts` actually dispatches these
-  // modes. That wiring was reverted (`spawnGuardian` in provider-proxy-acquisition.ts is still an
-  // unimplemented interface method), so there is currently no argv-mode fact to assert against.
+  it('names exactly the role entry modules, derived from the flag table rather than a hardcoded copy', () => {
+    // Derived from `PROVIDER_ROLE_FLAGS` itself, not from a second list of the same three names: a role
+    // added to the flag table without a matching `<role>.ts` entry module — or the reverse — is what this
+    // must be able to catch. Comparing two copies of the same hand-written list can never fail that way.
+    const derivedFromFlagTable = new Set(
+      Object.values(PROVIDER_ROLE_FLAGS).map((role) => `src/provider-proxy/${role}.ts`),
+    );
+    // `role-main.ts` is the dispatch target, not a role the flag table names — excluded by identity, not by
+    // repeating the three role names it would otherwise collide with.
+    const dispatchedRoleModules = new Set(
+      ROLE_ENTRY_MODULES.filter((module) => module !== 'src/provider-proxy/role-main.ts'),
+    );
+    expect(derivedFromFlagTable).toEqual(dispatchedRoleModules);
+  });
 });

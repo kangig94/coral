@@ -13,6 +13,8 @@ import { errorMessage } from '../infra/error-format.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
+import { parseProviderRoleArgv } from '../provider-proxy/role-argv.js';
+import { runProviderRoleMain } from '../provider-proxy/role-main.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 
 async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
@@ -107,6 +109,16 @@ export async function main(): Promise<number> {
     if (!identity.ok) return 70;
     process.stdout.write(`${JSON.stringify(identity.manifest)}\n`);
     return 0;
+  }
+
+  // Provider-proxy role dispatch runs before ordinary coordinator construction: a guardian, reaper, or proxy
+  // process is a role of this same backend artifact, never a coordinator. Parsing lives in `role-argv.ts`
+  // and running in `role-main.ts` — this is dispatch only.
+  const providerRole = parseProviderRoleArgv(process.argv);
+  if (providerRole.role !== 'none') {
+    return runProviderRoleMain(providerRole, {
+      pluginRoot: typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd(),
+    });
   }
 
   if (process.env.CORAL_KB_DAEMON === '1') {

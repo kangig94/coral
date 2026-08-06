@@ -242,6 +242,31 @@ export type ProviderEventBody =
 
 const abortReasons = ['signal_abort', 'user_abort', 'queue_shutdown'] as const satisfies readonly AbortReason[];
 
+/**
+ * Why an operation was stopped mid-flight rather than deliberately ended. Only these two leave the turn cut
+ * off, so only these two may record an interruption; every other cause is a stop the user or the system
+ * chose, and documenting harm that never happened would be a lie in the journal.
+ */
+export const PROVIDER_INTERRUPTION_CAUSES = ['restart', 'handoff'] as const;
+export type ProviderInterruptionCause = (typeof PROVIDER_INTERRUPTION_CAUSES)[number];
+
+/**
+ * Every cause `operation.stop.v1` accepts. Derived from `abortReasons` rather than restated, so "the
+ * deliberate stop causes are exactly the abort reasons" is structural: a fourth abort reason joins this set
+ * by construction instead of silently diverging from a second flat list somewhere else.
+ *
+ * It lives here because both sides of the wire may reach `providers/` and neither may reach the other — the
+ * proxy is barred from `jobs/`, and a `jobs/`-to-proxy edge would point the dependency the wrong way.
+ */
+export const PROVIDER_STOP_CAUSES = [...PROVIDER_INTERRUPTION_CAUSES, ...abortReasons] as const;
+export type ProviderStopCause = (typeof PROVIDER_STOP_CAUSES)[number];
+export const providerStopCauseSchema = z.enum(PROVIDER_STOP_CAUSES);
+
+/** Whether a stop cause is a deliberate abort, and therefore records no interruption. */
+export function isAbortStopCause(cause: ProviderStopCause): cause is AbortReason {
+  return (abortReasons as readonly string[]).includes(cause);
+}
+
 export const providerFailureCauseSchema = z.discriminatedUnion('type', [
   z
     .object({

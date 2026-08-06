@@ -41,7 +41,7 @@ const idleScheduler: EnforcementScheduler = { schedule: () => ({}), cancel: () =
 
 type SetUnderTest = Awaited<ReturnType<typeof startSet>>;
 
-async function startSet() {
+async function startSet(options: { recordContainment?: boolean } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'coral-roles-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const guardianEndpoint = join(directory, 'g.sock');
@@ -220,7 +220,6 @@ async function startSet() {
       bounds: boundsOf,
       state: () => 'accepting-control' as const,
     },
-    containment: CONTAINMENT,
     containmentEnvironment,
     scheduler: idleScheduler,
     timer,
@@ -232,6 +231,12 @@ async function startSet() {
   });
   await guardian.listen();
   cleanups.push(() => guardian.close());
+  // The guardian must already be listening before the proxy it will contain even exists, so recording the
+  // containment is a step after `listen()`, not part of construction — mirroring the reaper's own
+  // `reaper.record-containment.v1`. Tests covering the window before this call pass `recordContainment: false`.
+  if (options.recordContainment ?? true) {
+    await guardian.recordContainment(CONTAINMENT);
+  }
 
   const control = await connectControlClient(guardianEndpoint, timer, 5_000);
   cleanups.push(() => control.close());
@@ -272,9 +277,10 @@ async function startSet() {
     reaperOutcomes,
     guardianOutcomes,
     alive,
-    // Exposed for tests that assert directly on the in-process reaper's own recorded state — the wire
-    // protocol has no read query for it, and none should exist merely to serve a test.
+    // Exposed for tests that assert directly on the in-process reaper's/guardian's own recorded state — the
+    // wire protocol has no read query for either, and none should exist merely to serve a test.
     reaper,
+    guardian,
     // The guardian's own pairing channel to the reaper: the reaper accepts exactly one paired peer, and the
     // guardian already holds it, so a test driving `reaper.*` pairing methods directly must reuse this one.
     reaperChannel,
@@ -528,6 +534,64 @@ describe('provider-proxy guardian and reaper', () => {
         5_000,
       ),
     ).rejects.toThrow(/joint containment receipt/u);
+  });
+
+  it('holds nothing until the guardian itself records the containment it watched being created', async () => {
+    const set = await startSet({ recordContainment: false });
+
+    // An enforcer without a containment could only ever confirm the absence of nothing, so there is none —
+    // the same guarantee the reaper makes before `reaper.record-containment.v1`.
+    expect(set.guardian.enforcer()).toBeNull();
+  });
+
+  it('refuses guardian.register-provider-root.v1 with a typed protocol error while no containment is recorded', async () => {
+    const set = await startSet({ recordContainment: false });
+
+    // The whole reason the guardian loses its constructor containment is that it must be listening before
+    // the proxy it will contain even exists — so this window is real behaviour, not an edge case, and the
+    // refusal in it must be the closed protocol vocabulary, not whatever the catch-all maps an uncaught throw to.
+    await expect(
+      set.proxyChannel.call(
+        'guardian.register-provider-root.v1',
+        {
+          proxy: set.proxyIdentity,
+          operation: set.operationFor(),
+          reservationId: randomUUID(),
+          activationNonce: randomUUID(),
+          providerPid: ROOT.pid,
+          providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+        },
+        5_000,
+      ),
+    ).rejects.toMatchObject({ protocolCode: 'invalid_state' });
+  });
+
+  it('refuses guardian.stop-and-reap.v1 with a typed protocol error while no containment is recorded', async () => {
+    const set = await startSet({ recordContainment: false });
+
+    await expect(
+      set.control.call(
+        'guardian.stop-and-reap.v1',
+        {
+          guardian: set.guardianIdentity,
+          reaper: set.reaperIdentity,
+          proxy: set.proxyIdentity,
+          providerRoots: [],
+        },
+        5_000,
+      ),
+    ).rejects.toMatchObject({ protocolCode: 'invalid_state' });
+  });
+
+  it('re-records an identical containment idempotently and refuses a mismatched one', async () => {
+    const set = await startSet();
+
+    // `startSet()` already recorded `CONTAINMENT` once; the identical value again must be a no-op, not a
+    // second commitment that could silently move what this guardian holds.
+    await expect(set.guardian.recordContainment(CONTAINMENT)).resolves.toBeUndefined();
+    await expect(set.guardian.recordContainment({ ...CONTAINMENT, processGroupId: 9_999 })).rejects.toThrow(
+      /already holds a containment/u,
+    );
   });
 
   it('never exhausts the reaper across many prepare-then-release cycles for the same provider root', async () => {
