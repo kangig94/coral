@@ -1,6 +1,7 @@
 import { MAX_BUFFER } from '../../infra/process-constants.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { readAppendedLines } from '../../infra/file-tail.js';
+import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPool } from '../../jobs/contracts/admission.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
@@ -36,6 +37,13 @@ type SpawnCliOptions = {
 export type SpawnDurableJobOptions = SpawnCliOptions & {
   jobDir: string;
   onRuntimeRecord?: (record: JobRuntime) => void;
+  /**
+   * Reports the launched child's recorded identity, once, at the only moment it can be captured honestly:
+   * the pid is known and the process is known to be the one just launched. A start time probed later could
+   * belong to a recycled pid, which is precisely the confusion the pair exists to prevent — so a probe that
+   * comes back empty reports nothing rather than a pid on its own.
+   */
+  onDurableProcessIdentity?: (identity: { pid: number; processStartedAtSeconds: number }) => void;
 };
 
 export async function spawnDurableJobTransport(params: {
@@ -67,6 +75,13 @@ export async function spawnDurableJobTransport(params: {
       envAdditions: options.extraEnv,
       env: options.exactEnv,
     });
+    // Captured here because this is where the pid first exists and is still known to name this child.
+    // A failure to probe stays silent: the recorded identity is what makes a later `absent` verdict
+    // trustworthy, so a half-record — a pid with no start time — would be worse than none.
+    const startedAtSeconds = probeProcessStartedAtSeconds(durable.pid, runtime.env.platform() as NodeJS.Platform);
+    if (startedAtSeconds !== null) {
+      options.onDurableProcessIdentity?.({ pid: durable.pid, processStartedAtSeconds: startedAtSeconds });
+    }
     cleanupKey = Symbol();
     const cleanup = (): void => {
       gracefulKillByPid(runtime, durable.pid);

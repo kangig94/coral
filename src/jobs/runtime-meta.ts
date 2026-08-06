@@ -155,3 +155,66 @@ export function decodeProviderOperationRuntimeMeta(raw: string): ProviderOperati
 
   return result.data;
 }
+
+/**
+ * `durable_cli_process.v1:<jobId>` — the recorded identity of one durable CLI child.
+ *
+ * Small on purpose. A durable CLI has no operation tuple and no control channel, so the only thing that can
+ * later be checked against it is which process was launched — and a pid alone cannot answer that, because
+ * the OS recycles it. Pairing the pid with the kernel-supplied start second is what makes "the process we
+ * launched is still running" distinguishable from "some unrelated process now holds that number".
+ *
+ * Like the operation locator above, this is ordinary key/value `meta`: a runtime fact about a live process,
+ * never domain history, never a persisted codec, and never a substitute for `job.runtime.started`.
+ */
+export const durableCliProcessRuntimeMetaSchema = z
+  .object({
+    version: z.literal(1),
+    jobId: canonicalUuidSchema,
+    pid: nonNegativeSafeIntegerSchema,
+    processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+  })
+  .strict();
+
+export type DurableCliProcessRuntimeMeta = z.infer<typeof durableCliProcessRuntimeMetaSchema>;
+
+/** The meta table key for one durable CLI child's recorded identity. Only the coordinator writes this key. */
+export function durableCliProcessRuntimeMetaKey(jobId: string): string {
+  return `durable_cli_process.v1:${canonicalUuidSchema.parse(jobId)}`;
+}
+
+export function encodeDurableCliProcessRuntimeMeta(meta: DurableCliProcessRuntimeMeta): string {
+  const result = durableCliProcessRuntimeMetaSchema.safeParse(meta);
+  if (!result.success) {
+    throw new ProviderOperationRuntimeMetaCodecError(
+      'meta_invalid',
+      `Durable CLI process runtime meta failed schema validation: ${result.error.message}`,
+      { cause: result.error },
+    );
+  }
+  return JSON.stringify(result.data);
+}
+
+/**
+ * Decodes a recorded durable CLI identity, or reports that there is nothing usable to check against.
+ *
+ * `null` rather than a throw, and deliberately so: every failure here — absent row, corrupt bytes, a shape
+ * from some other writer — means the same thing to the only caller that asks, which is that observation has
+ * no recorded identity and must answer `unknown`. Making that an exception would push a decision the
+ * classifier already models into a `catch` at every call site.
+ */
+export function decodeDurableCliProcessRuntimeMeta(
+  raw: string | null | undefined,
+): DurableCliProcessRuntimeMeta | null {
+  if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > MAX_PROVIDER_OPERATION_RUNTIME_META_BYTES) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const result = durableCliProcessRuntimeMetaSchema.safeParse(parsed);
+  return result.success ? result.data : null;
+}
