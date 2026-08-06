@@ -113,6 +113,12 @@ export interface ControlChallengeAuthority {
   /** Records the challenge minted for a new tenancy. A refusal means the tenancy must not open. */
   issueFirstChallenge(challenge: ControlChallenge): { readonly accepted: boolean };
   /**
+   * Whether the established tenancy still holds control. Admission reads this rather than socket liveness:
+   * a wedged coordinator keeps its socket open indefinitely, and a successor has to be able to reach the
+   * endpoint past it once the lease has lapsed.
+   */
+  controlIsLive(): boolean;
+  /**
    * Verifies an echoed challenge against the outstanding one and, on acceptance, records the round-trip
    * evidence and installs the replacement. The authority owns the comparison, so the endpoint cannot
    * accept an echo the deadline model rejects.
@@ -340,7 +346,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     // One connection holds control and, when the role has a peer, one more may hold pairing. Anything
     // beyond that is refused rather than queued, so two coordinators can never both believe they own this
     // set and no third party can sit on the endpoint waiting for a slot.
-    const controlTaken = tenancy !== null && !tenancy.socket.destroyed;
+    const controlTaken = tenancy !== null && !tenancy.socket.destroyed && challenges.controlIsLive();
     const pairingTaken = pairedSocket !== null && !pairedSocket.destroyed;
     if (controlTaken && (role.pairing === undefined || pairingTaken)) {
       socket.destroy();

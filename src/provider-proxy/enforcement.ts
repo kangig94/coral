@@ -6,18 +6,11 @@ import {
 } from '../infra/process-containment.js';
 
 import type { MonotonicClock, MonotonicInstant } from '../infra/monotonic-clock.js';
-import {
-  PROXY_ENFORCER_MAX_WAKE_LATENCY_MS,
-  type GuardianDeadlineStateMachine,
-  type ReaperDeadlineStateMachine,
-} from './orphan-deadline.js';
+import { PROXY_ENFORCER_MAX_WAKE_LATENCY_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
 
-/**
- * The subset of the two deadline machines this loop drives. Both roles latch, mark and expose bounds the
- * same way; only their state vocabularies differ, which the loop never inspects.
- */
+/** The subset of the deadline machine this loop drives. */
 export type EnforcementDeadlineMachine<Scope extends symbol> = Pick<
-  GuardianDeadlineStateMachine<Scope> & ReaperDeadlineStateMachine<Scope>,
+  EnforcerDeadlineStateMachine<Scope>,
   'bounds' | 'latchTeardown' | 'markContainmentAbsent'
 >;
 

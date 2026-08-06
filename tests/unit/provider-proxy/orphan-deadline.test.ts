@@ -8,8 +8,8 @@ import {
   SIGTERM_GRACE_MS,
 } from '#src/infra/process-constants.js';
 import {
-  createGuardianDeadlineStateMachine,
-  createReaperDeadlineStateMachine,
+  createEnforcerDeadlineStateMachine,
+  createEnforcerDeadlineStateMachine,
   DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
   MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
   MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
@@ -145,7 +145,7 @@ describe('provider proxy orphan deadline configuration', () => {
       teardownReserveMs: 14_000,
     } as unknown as ProviderProxyDeadlineConfiguration;
 
-    expect(() => createGuardianDeadlineStateMachine(fake.clock, unvalidated, () => true)).toThrow(
+    expect(() => createEnforcerDeadlineStateMachine(fake.clock, unvalidated, () => true)).toThrow(
       'must be validated before use',
     );
   });
@@ -155,7 +155,7 @@ describe('provider proxy enforcer deadline evidence', () => {
   it('uses the process-local start time before the first round trip', () => {
     const fake = createFakeClock(guardianClockScope, 500);
     const startedAt = fake.clock.now();
-    const guardian = createGuardianDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
     const bounds = guardian.bounds();
 
     expectSameInstant(fake.clock, bounds.lastRoundTripEvidenceAt, startedAt);
@@ -165,7 +165,7 @@ describe('provider proxy enforcer deadline evidence', () => {
 
   it('derives the exact EOF-observed vector from challenge issuance, not receive time', () => {
     const fake = createFakeClock(guardianClockScope, 500);
-    const guardian = createGuardianDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
     fake.set(1_000);
     const issuedAt = fake.clock.now();
     expect(guardian.issueFirstChallenge('challenge-1')).toEqual({ accepted: true });
@@ -184,7 +184,7 @@ describe('provider proxy enforcer deadline evidence', () => {
 
   it('derives control loss from the lease when EOF is suppressed', () => {
     const fake = createFakeClock(reaperClockScope, 500);
-    const reaper = createReaperDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const reaper = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
     fake.set(1_000);
     const issuedAt = fake.clock.now();
     reaper.issueFirstChallenge('challenge-1');
@@ -200,7 +200,7 @@ describe('provider proxy enforcer deadline evidence', () => {
 
   it('caps the first challenge at the adoption deadline', () => {
     const fake = createFakeClock(guardianClockScope, 0);
-    const guardian = createGuardianDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
     const adoptionDeadline = guardian.bounds().adoptionDeadline;
     fake.set(12_000);
     guardian.issueFirstChallenge('late-first-challenge');
@@ -210,10 +210,11 @@ describe('provider proxy enforcer deadline evidence', () => {
 
   it('rejects a successor challenge at its strict lease expiry', () => {
     const fake = createFakeClock(reaperClockScope, 1_000);
-    const reaper = createReaperDeadlineStateMachine(fake.clock, configuration(), () => true);
-    fake.set(2_000);
-    reaper.rotateSuccessor('successor-challenge', vi.fn());
+    const reaper = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
+    // A successor is admitted only after control is no longer live, so move past the lease first.
     fake.set(7_000);
+    reaper.admitSuccessor('successor-challenge');
+    fake.set(12_001);
 
     expect(reaper.echoChallenge('successor-challenge', 'next-challenge')).toEqual({
       accepted: false,
@@ -223,7 +224,7 @@ describe('provider proxy enforcer deadline evidence', () => {
 
   it('does not move evidence for a stale or already-used challenge', () => {
     const fake = createFakeClock(guardianClockScope, 500);
-    const guardian = createGuardianDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
     fake.set(1_000);
     guardian.issueFirstChallenge('challenge-1');
     fake.set(1_100);
@@ -240,7 +241,7 @@ describe('provider proxy enforcer deadline evidence', () => {
 
   it('does not move either deadline for proxy heartbeats or ordinary authenticated frames', () => {
     const fake = createFakeClock(guardianClockScope, 500);
-    const guardian = createGuardianDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
     fake.set(1_000);
     guardian.issueFirstChallenge('challenge-1');
     fake.set(1_100);
@@ -260,7 +261,7 @@ describe('provider proxy enforcer deadline evidence', () => {
   it('rejects a buffered echo after coordinator death without counting its receive time', () => {
     const fake = createFakeClock(guardianClockScope, 500);
     let coordinatorLive = true;
-    const guardian = createGuardianDeadlineStateMachine(fake.clock, configuration(), () => coordinatorLive);
+    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => coordinatorLive);
     fake.set(1_000);
     const countedIssuance = fake.clock.now();
     guardian.issueFirstChallenge('challenge-1');
@@ -278,7 +279,7 @@ describe('provider proxy enforcer deadline evidence', () => {
 
   it('ignores positive and negative wall-clock jumps', () => {
     const fake = createFakeClock(guardianClockScope, 500);
-    const guardian = createGuardianDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
     const before = guardian.bounds();
     const dateNow = vi.spyOn(Date, 'now');
     dateNow.mockReturnValue(9_999_999_999_999);
@@ -295,13 +296,13 @@ describe('provider proxy enforcer deadline evidence', () => {
 describe('provider proxy deadline state machines', () => {
   it('latches guardian teardown at adoption equality before redemption work', () => {
     const fake = createFakeClock(guardianClockScope, 1_000);
-    const guardian = createGuardianDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
     fake.set(1_500);
     guardian.observeEof();
     fake.set(17_000);
     const work = vi.fn();
 
-    expect(guardian.redeemSuccessor('successor-challenge', work)).toEqual({
+    expect(guardian.admitSuccessor('successor-challenge')).toEqual({
       accepted: false,
       reason: 'teardown-latched',
     });
@@ -311,11 +312,11 @@ describe('provider proxy deadline state machines', () => {
 
   it('latches reaper teardown at adoption equality before rotation work', () => {
     const fake = createFakeClock(reaperClockScope, 1_000);
-    const reaper = createReaperDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const reaper = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
     fake.set(17_000);
     const work = vi.fn();
 
-    expect(reaper.rotateSuccessor('successor-challenge', work)).toEqual({
+    expect(reaper.admitSuccessor('successor-challenge')).toEqual({
       accepted: false,
       reason: 'teardown-latched',
     });
@@ -325,10 +326,10 @@ describe('provider proxy deadline state machines', () => {
 
   it('rejects work queued before the boundary but dequeued after it', () => {
     const fake = createFakeClock(reaperClockScope, 1_000);
-    const reaper = createReaperDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const reaper = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
     const work = vi.fn();
     fake.set(16_999);
-    const queuedHandler = (): unknown => reaper.rotateSuccessor('successor-challenge', work);
+    const queuedHandler = (): unknown => reaper.admitSuccessor('successor-challenge');
     fake.set(17_001);
 
     expect(queuedHandler()).toEqual({ accepted: false, reason: 'teardown-latched' });
@@ -338,8 +339,8 @@ describe('provider proxy deadline state machines', () => {
   it('accepts redemption and rotation strictly before the local adoption deadlines without moving them', () => {
     const guardianFake = createFakeClock(guardianClockScope, 1_000);
     const reaperFake = createFakeClock(reaperClockScope, 1_000);
-    const guardian = createGuardianDeadlineStateMachine(guardianFake.clock, configuration(), () => true);
-    const reaper = createReaperDeadlineStateMachine(reaperFake.clock, configuration(), () => true);
+    const guardian = createEnforcerDeadlineStateMachine(guardianFake.clock, configuration(), () => true);
+    const reaper = createEnforcerDeadlineStateMachine(reaperFake.clock, configuration(), () => true);
     guardianFake.set(1_500);
     guardian.observeEof();
     const guardianBefore = guardian.bounds();
@@ -347,10 +348,10 @@ describe('provider proxy deadline state machines', () => {
     guardianFake.set(16_000);
     reaperFake.set(16_000);
 
-    expect(guardian.redeemSuccessor('guardian-successor', vi.fn())).toEqual({ accepted: true });
-    expect(reaper.rotateSuccessor('reaper-successor', vi.fn())).toEqual({ accepted: true });
+    expect(guardian.admitSuccessor('guardian-successor', vi.fn())).toEqual({ accepted: true });
+    expect(reaper.admitSuccessor('reaper-successor', vi.fn())).toEqual({ accepted: true });
     expect(guardian.state()).toBe('accepting-control');
-    expect(reaper.state()).toBe('successor-rotated');
+    expect(reaper.state()).toBe('accepting-control');
     expectSameInstant(guardianFake.clock, guardian.bounds().exitDeadline, guardianBefore.exitDeadline);
     expectSameInstant(reaperFake.clock, reaper.bounds().exitDeadline, reaperBefore.exitDeadline);
 
@@ -363,14 +364,14 @@ describe('provider proxy deadline state machines', () => {
   it('requires the first successor echo strictly before both local adoption deadlines', () => {
     const guardianFake = createFakeClock(guardianClockScope, 1_000);
     const reaperFake = createFakeClock(reaperClockScope, 1_000);
-    const guardian = createGuardianDeadlineStateMachine(guardianFake.clock, configuration(), () => true);
-    const reaper = createReaperDeadlineStateMachine(reaperFake.clock, configuration(), () => true);
+    const guardian = createEnforcerDeadlineStateMachine(guardianFake.clock, configuration(), () => true);
+    const reaper = createEnforcerDeadlineStateMachine(reaperFake.clock, configuration(), () => true);
     guardianFake.set(1_500);
     guardian.observeEof();
     guardianFake.set(16_000);
     reaperFake.set(16_000);
-    guardian.redeemSuccessor('guardian-successor', vi.fn());
-    reaper.rotateSuccessor('reaper-successor', vi.fn());
+    guardian.admitSuccessor('guardian-successor', vi.fn());
+    reaper.admitSuccessor('reaper-successor', vi.fn());
     guardianFake.set(17_000);
     reaperFake.set(17_000);
 
@@ -386,7 +387,7 @@ describe('provider proxy deadline state machines', () => {
 
   it.each([17_001, 30_999])('keeps the reaper exit deadline fixed when guardian exit is observed at %i', (at) => {
     const fake = createFakeClock(reaperClockScope, 1_000);
-    const reaper = createReaperDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const reaper = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
     const exitDeadline = reaper.bounds().exitDeadline;
     fake.set(at);
 
@@ -398,24 +399,36 @@ describe('provider proxy deadline state machines', () => {
 
   it('makes the teardown latch irreversible through confirmed absence and exit', () => {
     const fake = createFakeClock(guardianClockScope, 1_000);
-    const guardian = createGuardianDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
     guardian.latchTeardown();
     guardian.markContainmentAbsent();
     guardian.markExited();
 
     expect(guardian.state()).toBe('exited');
-    expect(guardian.redeemSuccessor('too-late', vi.fn())).toEqual({
+    expect(guardian.admitSuccessor('too-late', vi.fn())).toEqual({
       accepted: false,
       reason: 'teardown-latched',
     });
   });
 
-  it('does not reopen a reaper when accepted rotation work latches teardown reentrantly', () => {
+  it('admits a successor only once control is no longer live', () => {
     const fake = createFakeClock(reaperClockScope, 1_000);
-    const reaper = createReaperDeadlineStateMachine(fake.clock, configuration(), () => true);
-    fake.set(2_000);
+    const enforcer = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
 
-    expect(reaper.rotateSuccessor('successor-challenge', () => reaper.latchTeardown())).toEqual({ accepted: true });
-    expect(reaper.state()).toBe('teardown-latched');
+    // While the incumbent still holds control, a successor has nothing to take over.
+    fake.set(2_000);
+    expect(enforcer.admitSuccessor('successor-challenge')).toEqual({ accepted: false, reason: 'control-active' });
+
+    fake.set(7_000);
+    expect(enforcer.admitSuccessor('successor-challenge')).toEqual({ accepted: true });
+  });
+
+  it('refuses a successor once teardown has latched', () => {
+    const fake = createFakeClock(reaperClockScope, 1_000);
+    const enforcer = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
+    enforcer.latchTeardown();
+
+    fake.set(7_000);
+    expect(enforcer.admitSuccessor('successor-challenge')).toEqual({ accepted: false, reason: 'teardown-latched' });
   });
 });

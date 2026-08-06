@@ -133,7 +133,9 @@ async function startSet() {
     };
   };
   const accepting = {
+    controlIsLive: () => true,
     issueFirstChallenge: () => ({ accepted: true }) as const,
+    admitSuccessor: () => ({ accepted: true }) as const,
     echoChallenge: () => ({ accepted: true }) as const,
     observeEof: () => {},
     dispatchOrdinaryFrame: () => ({ accepted: true }) as const,
@@ -163,8 +165,7 @@ async function startSet() {
     deadlines: {
       ...accepting,
       bounds: boundsOf,
-      state: () => 'armed' as const,
-      rotateSuccessor: () => ({ accepted: true }) as const,
+      state: () => 'accepting-control' as const,
     },
     containment: CONTAINMENT,
     containmentEnvironment,
@@ -200,7 +201,6 @@ async function startSet() {
       ...accepting,
       bounds: boundsOf,
       state: () => 'accepting-control' as const,
-      redeemSuccessor: () => ({ accepted: true }) as const,
     },
     containment: CONTAINMENT,
     containmentEnvironment,

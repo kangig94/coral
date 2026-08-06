@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { createControlEndpoint } from '#src/provider-proxy/control-endpoint.js';
 import {
-  createGuardianDeadlineStateMachine,
+  createEnforcerDeadlineStateMachine,
   resolveProviderProxyDeadlineConfiguration,
 } from '#src/provider-proxy/orphan-deadline.js';
 
@@ -72,7 +72,7 @@ describe('control heartbeats reach the deadline machine', () => {
     const clock = createMonotonicClock(Symbol('evidence'), { readMilliseconds: () => elapsed });
     const configuration = resolveProviderProxyDeadlineConfiguration({ get: () => undefined });
     // A live coordinator: the echo only counts when one is there to have sent it.
-    const deadlines = createGuardianDeadlineStateMachine(clock, configuration, () => true);
+    const deadlines = createEnforcerDeadlineStateMachine(clock, configuration, () => true);
 
     const endpoint = createControlEndpoint({
       socketPath,
@@ -124,7 +124,7 @@ describe('control heartbeats reach the deadline machine', () => {
 
     let elapsed = 0n;
     const clock = createMonotonicClock(Symbol('evidence-replay'), { readMilliseconds: () => elapsed });
-    const deadlines = createGuardianDeadlineStateMachine(
+    const deadlines = createEnforcerDeadlineStateMachine(
       clock,
       resolveProviderProxyDeadlineConfiguration({ get: () => undefined }),
       () => true,

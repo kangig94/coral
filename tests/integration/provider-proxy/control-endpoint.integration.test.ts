@@ -65,6 +65,8 @@ async function startEndpoint(
     // A minimal stand-in for the deadline machine: it owns the outstanding challenge and consumes it on a
     // matching echo, which is the property the endpoint depends on.
     challenges: {
+      // The double reports control live once a tenancy is open, matching the deadline model's meaning.
+      controlIsLive: () => outstanding !== null,
       issueFirstChallenge: (challenge) => {
         outstanding = challenge;
         return { accepted: true };

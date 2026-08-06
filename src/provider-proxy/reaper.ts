@@ -25,7 +25,7 @@ import {
   proxyIdentitySchema,
   reaperIdentitySchema,
 } from './protocol.js';
-import type { ReaperDeadlineStateMachine } from './orphan-deadline.js';
+import type { EnforcerDeadlineStateMachine } from './orphan-deadline.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 
 /**
@@ -102,7 +102,7 @@ function assertRecordedSetAgreement(
 export type ReaperOptions<Scope extends symbol> = Readonly<{
   capsule: ReaperBootstrapCapsule;
   clock: MonotonicClock<Scope>;
-  deadlines: ReaperDeadlineStateMachine<Scope>;
+  deadlines: EnforcerDeadlineStateMachine<Scope>;
   containment: RecordedContainmentIdentity & { readonly containmentKind: string };
   containmentEnvironment: ProcessContainmentEnvironment<Scope>;
   scheduler: EnforcementScheduler;

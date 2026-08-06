@@ -27,7 +27,7 @@ import {
   reaperIdentitySchema,
 } from './protocol.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
-import type { GuardianDeadlineStateMachine } from './orphan-deadline.js';
+import type { EnforcerDeadlineStateMachine } from './orphan-deadline.js';
 
 const providerRootSchema = z
   .object({ pid: z.number().int().nonnegative(), processStartedAtSeconds: z.number().int().nonnegative() })
@@ -91,7 +91,7 @@ type StagedMembership = Readonly<{
 export type GuardianOptions<Scope extends symbol> = Readonly<{
   capsule: GuardianBootstrapCapsule;
   clock: MonotonicClock<Scope>;
-  deadlines: GuardianDeadlineStateMachine<Scope>;
+  deadlines: EnforcerDeadlineStateMachine<Scope>;
   containment: RecordedContainmentIdentity;
   containmentEnvironment: ProcessContainmentEnvironment<Scope>;
   scheduler: EnforcementScheduler;

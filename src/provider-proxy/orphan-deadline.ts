@@ -145,8 +145,12 @@ export type ProviderProxyEnforcerBounds<Scope extends symbol> = Readonly<{
   firstChallengeExpiresAt: MonotonicInstant<Scope> | null;
 }>;
 
-export type GuardianDeadlineState = 'accepting-control' | 'teardown-latched' | 'containment-absent' | 'exited';
-export type ReaperDeadlineState = 'armed' | 'successor-rotated' | 'teardown-latched' | 'containment-absent' | 'exited';
+/**
+ * Both enforcers hold the same states. The reaper's `armed` was `accepting-control` under another name, and
+ * its `successor-rotated` encoded a credential's one-shot in the deadline model — that belongs to the
+ * credential owner, so it is gone and the two machines are one.
+ */
+export type EnforcerDeadlineState = 'accepting-control' | 'teardown-latched' | 'containment-absent' | 'exited';
 
 export type DeadlineDispatchResult =
   | Readonly<{ accepted: true }>
@@ -164,27 +168,20 @@ export type ChallengeEchoResult =
 
 export type ProviderProxyOrdinaryFrameKind = 'proxy-heartbeat' | 'authenticated-frame';
 
-export type GuardianDeadlineStateMachine<Scope extends symbol> = Readonly<{
-  state(): GuardianDeadlineState;
+export type EnforcerDeadlineStateMachine<Scope extends symbol> = Readonly<{
+  state(): EnforcerDeadlineState;
   bounds(): ProviderProxyEnforcerBounds<Scope>;
   issueFirstChallenge(challenge: string): DeadlineDispatchResult;
+  /** Whether the established tenancy still holds control on this enforcer's own clock. */
+  controlIsLive(): boolean;
   echoChallenge(challenge: string, nextChallenge: string): ChallengeEchoResult;
   observeEof(): void;
   dispatchOrdinaryFrame(kind: ProviderProxyOrdinaryFrameKind, work: () => void): DeadlineDispatchResult;
-  redeemSuccessor(firstSuccessorChallenge: string, work: () => void): DeadlineDispatchResult;
-  latchTeardown(): void;
-  markContainmentAbsent(): void;
-  markExited(): void;
-}>;
-
-export type ReaperDeadlineStateMachine<Scope extends symbol> = Readonly<{
-  state(): ReaperDeadlineState;
-  bounds(): ProviderProxyEnforcerBounds<Scope>;
-  issueFirstChallenge(challenge: string): DeadlineDispatchResult;
-  echoChallenge(challenge: string, nextChallenge: string): ChallengeEchoResult;
-  observeEof(): void;
-  dispatchOrdinaryFrame(kind: ProviderProxyOrdinaryFrameKind, work: () => void): DeadlineDispatchResult;
-  rotateSuccessor(firstSuccessorChallenge: string, work: () => void): DeadlineDispatchResult;
+  /**
+   * Admits a successor control tenancy. Refused while control is live or once teardown has latched. The
+   * credential's one-shot lives with its owner, so this authorizes and does not also consume.
+   */
+  admitSuccessor(firstSuccessorChallenge: string): DeadlineDispatchResult;
   latchTeardown(): void;
   markContainmentAbsent(): void;
   markExited(): void;
@@ -315,26 +312,25 @@ class EnforcerDeadlineEvidence<Scope extends symbol> {
   }
 }
 
-function assertContainmentAbsentTransition(state: GuardianDeadlineState | ReaperDeadlineState): void {
+function assertContainmentAbsentTransition(state: EnforcerDeadlineState): void {
   if (state !== 'teardown-latched') {
     throw new Error('Containment can be marked absent only after teardown is latched.');
   }
 }
 
-function assertExitedTransition(state: GuardianDeadlineState | ReaperDeadlineState): void {
+function assertExitedTransition(state: EnforcerDeadlineState): void {
   if (state !== 'containment-absent') {
     throw new Error('The enforcer can exit only after containment absence is confirmed.');
   }
 }
 
-export function createGuardianDeadlineStateMachine<Scope extends symbol>(
+export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   clock: MonotonicClock<Scope>,
   configuration: ProviderProxyDeadlineConfiguration,
   isCoordinatorLive: () => boolean,
-): GuardianDeadlineStateMachine<Scope> {
+): EnforcerDeadlineStateMachine<Scope> {
   const evidence = new EnforcerDeadlineEvidence(clock, configuration);
-  let state: GuardianDeadlineState = 'accepting-control';
-  let successorRedeemed = false;
+  let state: EnforcerDeadlineState = 'accepting-control';
 
   const latchTeardown = (): void => {
     if (state === 'accepting-control') state = 'teardown-latched';
@@ -346,7 +342,10 @@ export function createGuardianDeadlineStateMachine<Scope extends symbol>(
   };
 
   return Object.freeze({
-    state: (): GuardianDeadlineState => state,
+    state: (): EnforcerDeadlineState => state,
+    // One definition of "control is held": round-trip evidence on this enforcer's clock. A socket that is
+    // merely still open belongs to a wedged coordinator, and a successor must be able to redeem past it.
+    controlIsLive: (): boolean => evidence.isControlLive(evidence.sample()),
     bounds: (): ProviderProxyEnforcerBounds<Scope> => evidence.bounds(),
     issueFirstChallenge: (challenge: string): DeadlineDispatchResult => {
       const now = sampleBeforeQueuedWork();
@@ -370,77 +369,14 @@ export function createGuardianDeadlineStateMachine<Scope extends symbol>(
       work();
       return { accepted: true };
     },
-    redeemSuccessor: (firstSuccessorChallenge: string, work: () => void): DeadlineDispatchResult => {
+    admitSuccessor: (firstSuccessorChallenge: string): DeadlineDispatchResult => {
       const now = sampleBeforeQueuedWork();
       if (now === null) return { accepted: false, reason: 'teardown-latched' };
-      if (successorRedeemed) return { accepted: false, reason: 'invalid-state' };
       if (evidence.isControlLive(now)) return { accepted: false, reason: 'control-active' };
+      // Authorizes, and does not also consume: the credential's one-shot belongs to whoever owns the
+      // credential. Installing a challenge before the grant is checked would let a refused replay poison a
+      // legitimate successor's retry, while the reverse order costs nothing — the set is torn down anyway.
       evidence.beginSuccessorControl(firstSuccessorChallenge, now);
-      successorRedeemed = true;
-      work();
-      return { accepted: true };
-    },
-    latchTeardown,
-    markContainmentAbsent: (): void => {
-      assertContainmentAbsentTransition(state);
-      state = 'containment-absent';
-    },
-    markExited: (): void => {
-      assertExitedTransition(state);
-      state = 'exited';
-    },
-  });
-}
-
-export function createReaperDeadlineStateMachine<Scope extends symbol>(
-  clock: MonotonicClock<Scope>,
-  configuration: ProviderProxyDeadlineConfiguration,
-  isCoordinatorLive: () => boolean,
-): ReaperDeadlineStateMachine<Scope> {
-  const evidence = new EnforcerDeadlineEvidence(clock, configuration);
-  let state: ReaperDeadlineState = 'armed';
-
-  const latchTeardown = (): void => {
-    if (state === 'armed' || state === 'successor-rotated') state = 'teardown-latched';
-  };
-  const sampleBeforeQueuedWork = (): MonotonicInstant<Scope> | null => {
-    const now = evidence.sample();
-    if (evidence.isAtOrAfterAdoptionDeadline(now)) latchTeardown();
-    return state === 'armed' || state === 'successor-rotated' ? now : null;
-  };
-
-  return Object.freeze({
-    state: (): ReaperDeadlineState => state,
-    bounds: (): ProviderProxyEnforcerBounds<Scope> => evidence.bounds(),
-    issueFirstChallenge: (challenge: string): DeadlineDispatchResult => {
-      const now = sampleBeforeQueuedWork();
-      if (now === null) return { accepted: false, reason: 'teardown-latched' };
-      evidence.issueFirstChallenge(challenge, now);
-      return { accepted: true };
-    },
-    echoChallenge: (challenge: string, nextChallenge: string): ChallengeEchoResult => {
-      const now = sampleBeforeQueuedWork();
-      if (now === null) return { accepted: false, reason: 'teardown-latched' };
-      return evidence.echoChallenge(now, challenge, nextChallenge, isCoordinatorLive());
-    },
-    observeEof: (): void => {
-      const now = sampleBeforeQueuedWork();
-      if (now !== null) evidence.observeEof(now);
-    },
-    dispatchOrdinaryFrame: (_kind: ProviderProxyOrdinaryFrameKind, work: () => void): DeadlineDispatchResult => {
-      const now = sampleBeforeQueuedWork();
-      if (now === null) return { accepted: false, reason: 'teardown-latched' };
-      if (!evidence.isControlLive(now)) return { accepted: false, reason: 'control-lost' };
-      work();
-      return { accepted: true };
-    },
-    rotateSuccessor: (firstSuccessorChallenge: string, work: () => void): DeadlineDispatchResult => {
-      const now = sampleBeforeQueuedWork();
-      if (now === null) return { accepted: false, reason: 'teardown-latched' };
-      if (state !== 'armed') return { accepted: false, reason: 'invalid-state' };
-      evidence.beginSuccessorControl(firstSuccessorChallenge, now);
-      state = 'successor-rotated';
-      work();
       return { accepted: true };
     },
     latchTeardown,
