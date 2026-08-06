@@ -168,7 +168,6 @@ async function startSet() {
       bounds: boundsOf,
       state: () => 'accepting-control' as const,
     },
-    containment: CONTAINMENT,
     containmentEnvironment,
     scheduler: idleScheduler,
     timer,
@@ -186,6 +185,9 @@ async function startSet() {
   const reaperChannel = await connectControlClient(reaperEndpoint, timer, 5_000);
   cleanups.push(() => reaperChannel.close());
   await reaperChannel.call('reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+  // The guardian names the containment it watched being created. Until it does, the reaper holds nothing and
+  // arms nothing — there is no identity for it to enforce.
+  await reaperChannel.call('reaper.record-containment.v1', CONTAINMENT, 5_000);
 
   const guardian = createGuardian({
     capsule: {
@@ -545,5 +547,138 @@ describe('provider-proxy guardian and reaper', () => {
         5_000,
       ),
     ).rejects.toThrow(/different build/u);
+  });
+
+  it('holds nothing until the guardian names the containment it watched being created', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'coral-unrecorded-'));
+    cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+    const reaperEndpoint = join(directory, 'r.sock');
+    const shared = {
+      generation: 'gen2' as const,
+      flavor: 'prod' as const,
+      buildSetId: randomUUID(),
+      hostFingerprint: FINGERPRINT,
+      guardianInstanceId: randomUUID(),
+      reaperInstanceId: randomUUID(),
+      proxyInstanceId: randomUUID(),
+      bootstrapNonce: NONCE,
+    };
+    const clock = createMonotonicClock(Symbol('unrecorded'), { readMilliseconds: () => 0n });
+    const reaper = createReaper({
+      capsule: {
+        role: 'reaper',
+        ...shared,
+        canonicalControlEndpoint: reaperEndpoint,
+        guardianControlEndpoint: join(directory, 'g.sock'),
+        proxyEndpoint: join(directory, 'p.sock'),
+        guardianReaperAuthSecret: PAIR_SECRET,
+      },
+      clock,
+      deadlines: {
+        controlIsLive: () => true,
+        issueFirstChallenge: () => ({ accepted: true }) as const,
+        admitSuccessor: () => ({ accepted: true }) as const,
+        echoChallenge: () => ({ accepted: true }) as const,
+        observeEof: () => {},
+        dispatchOrdinaryFrame: () => ({ accepted: true }) as const,
+        latchTeardown: () => {},
+        markContainmentAbsent: () => {},
+        markExited: () => {},
+        bounds: () => ({
+          lastRoundTripEvidenceAt: clock.now(),
+          eofAt: null,
+          controlLossAt: clock.now(),
+          adoptionDeadline: clock.shiftMilliseconds(clock.now(), 60_000),
+          exitDeadline: clock.shiftMilliseconds(clock.now(), 74_000),
+          firstChallengeExpiresAt: null,
+        }),
+        state: () => 'accepting-control' as const,
+      },
+      containmentEnvironment: {
+        clock,
+        process: { kill: () => true, isAlive: () => false },
+        platform: 'linux' as const,
+        maxRecordedRoots: 128,
+        readProcessStartedAtSeconds: () => null,
+      },
+      scheduler: idleScheduler,
+      timer,
+      mintChallenge: () => randomUUID(),
+      mintReceipt: () => randomUUID(),
+      self: { pid: 5_101, processStartedAtSeconds: 901 },
+      onOutcome: () => {},
+      onProgressViolation: () => {},
+    });
+    await reaper.listen();
+    cleanups.push(() => reaper.close());
+
+    // An enforcer without a containment could only ever confirm the absence of nothing, so there is none.
+    expect(reaper.enforcer()).toBeNull();
+
+    const control = await connectControlClient(reaperEndpoint, timer, 5_000);
+    cleanups.push(() => control.close());
+    await expect(
+      control.call(
+        'reaper.open.v1',
+        {
+          bootstrapNonce: NONCE,
+          coordinator: {
+            instanceId: randomUUID(),
+            pid: 4_000,
+            processStartedAtSeconds: 700,
+            generation: shared.generation,
+            flavor: shared.flavor,
+            buildSetId: shared.buildSetId,
+          },
+          guardian: {
+            guardianInstanceId: shared.guardianInstanceId,
+            pid: 5_102,
+            processStartedAtSeconds: 902,
+            generation: shared.generation,
+            flavor: shared.flavor,
+            buildSetId: shared.buildSetId,
+            hostFingerprint: FINGERPRINT,
+            canonicalControlEndpoint: join(directory, 'g.sock'),
+          },
+          proxy: {
+            proxyInstanceId: shared.proxyInstanceId,
+            pid: 6_000,
+            processStartedAtSeconds: 850,
+            processGroupId: 6_000,
+            guardianInstanceId: shared.guardianInstanceId,
+            reaperInstanceId: shared.reaperInstanceId,
+            generation: shared.generation,
+            flavor: shared.flavor,
+            buildSetId: shared.buildSetId,
+            hostFingerprint: FINGERPRINT,
+            canonicalEndpoint: join(directory, 'p.sock'),
+          },
+          containment: CONTAINMENT,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/holds no containment yet/u);
+  });
+
+  it('refuses a coordinator that names a different containment than the guardian recorded', async () => {
+    const set = await startSet();
+    const control = await connectControlClient(set.reaperIdentity.canonicalControlEndpoint, timer, 5_000);
+    cleanups.push(() => control.close());
+
+    // The coordinator's `containment` is an agreement check, not the source. A disagreement means the two
+    // are reasoning about different sets, which teardown must surface rather than silently act on.
+    await expect(
+      control.call(
+        'reaper.open.v1',
+        {
+          bootstrapNonce: NONCE,
+          coordinator: set.coordinatorIdentity,
+          guardian: set.guardianIdentity,
+          proxy: set.proxyIdentity,
+          containment: { ...CONTAINMENT, processGroupId: 9_999 },
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/different containment than the guardian recorded/u);
   });
 });

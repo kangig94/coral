@@ -103,7 +103,6 @@ export type ReaperOptions<Scope extends symbol> = Readonly<{
   capsule: ReaperBootstrapCapsule;
   clock: MonotonicClock<Scope>;
   deadlines: EnforcerDeadlineStateMachine<Scope>;
-  containment: RecordedContainmentIdentity & { readonly containmentKind: string };
   containmentEnvironment: ProcessContainmentEnvironment<Scope>;
   scheduler: EnforcementScheduler;
   timer: ControlEndpointTimer;
@@ -119,39 +118,49 @@ export type ReaperOptions<Scope extends symbol> = Readonly<{
 export interface Reaper<Scope extends symbol> {
   listen(): Promise<void>;
   close(): Promise<void>;
-  enforcer(): ArmedEnforcer<Scope>;
+  /** Null until the guardian has recorded the containment this reaper is to enforce. */
+  enforcer(): ArmedEnforcer<Scope> | null;
 }
 
 /**
- * The reaper is armed before the first operation and stays armed while the guardian is healthy. It accepts
- * a successor rotation only through the guardian's redemption receipt; ordinary traffic never refreshes it.
+ * The reaper is armed as soon as it knows what to enforce, and stays armed while the guardian is healthy. It
+ * accepts a successor rotation only through the guardian's redemption receipt; ordinary traffic never
+ * refreshes it.
+ *
+ * Containment arrives from the guardian over the pairing channel rather than in the capsule or at
+ * `reaper.open.v1`, because of when each party knows it. The guardian spawns the reaper *before* the proxy —
+ * so no capsule written at spawn time can name a process group that does not exist yet — and the coordinator
+ * only learns the group from the guardian's readiness, so having it supply the value at open would let the
+ * reaper be told to enforce a containment nobody verified. The guardian is the one party that observes the
+ * group being created, so it is the one party that may name it.
  */
 export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>): Reaper<Scope> {
-  const { capsule, clock, deadlines, containment, scheduler, timer, mintChallenge, mintReceipt, self } = options;
-  containmentSchema.parse(containment);
+  const { capsule, clock, deadlines, scheduler, timer, mintChallenge, mintReceipt, self } = options;
+  let recorded: (RecordedContainmentIdentity & { readonly containmentKind: string }) | null = null;
+  let enforcer: ArmedEnforcer<Scope> | null = null;
 
-  const enforcer = createArmedEnforcer({
-    clock,
-    deadlines,
-    containment,
-    containmentEnvironment: options.containmentEnvironment,
-    scheduler,
-    onOutcome: options.onOutcome,
-    onProgressViolation: options.onProgressViolation,
-  });
+  const requireEnforcer = (): ArmedEnforcer<Scope> => {
+    if (enforcer === null) {
+      throw new ProxyControlProtocolError('invalid_state', 'This reaper has not been given a containment to hold.');
+    }
+    return enforcer;
+  };
 
-  const identity = Object.freeze({
-    reaperInstanceId: capsule.reaperInstanceId,
-    pid: self.pid,
-    processStartedAtSeconds: self.processStartedAtSeconds,
-    guardianInstanceId: capsule.guardianInstanceId,
-    generation: capsule.generation,
-    flavor: capsule.flavor,
-    buildSetId: capsule.buildSetId,
-    hostFingerprint: capsule.hostFingerprint,
-    canonicalControlEndpoint: capsule.canonicalControlEndpoint,
-    containmentKind: containment.containmentKind,
-  });
+  const identityOf = (
+    containment: RecordedContainmentIdentity & { readonly containmentKind: string },
+  ): Record<string, unknown> =>
+    Object.freeze({
+      reaperInstanceId: capsule.reaperInstanceId,
+      pid: self.pid,
+      processStartedAtSeconds: self.processStartedAtSeconds,
+      guardianInstanceId: capsule.guardianInstanceId,
+      generation: capsule.generation,
+      flavor: capsule.flavor,
+      buildSetId: capsule.buildSetId,
+      hostFingerprint: capsule.hostFingerprint,
+      canonicalControlEndpoint: capsule.canonicalControlEndpoint,
+      containmentKind: containment.containmentKind,
+    });
 
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
   const staged = new Map<string, string>();
@@ -166,7 +175,60 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         handle: (params) => {
           const request = openParamsSchema.parse(params);
           bootstrapNonce.spend(request.bootstrapNonce);
-          return { reaper: identity };
+          if (recorded === null) {
+            throw new ProxyControlProtocolError('invalid_state', 'This reaper holds no containment yet.');
+          }
+          // The coordinator's `containment` is an agreement check, not the source: it learned the group from
+          // the guardian's readiness, and a disagreement means the two are reasoning about different sets.
+          if (
+            request.containment.pid !== recorded.pid ||
+            request.containment.processStartedAtSeconds !== recorded.processStartedAtSeconds ||
+            request.containment.processGroupId !== recorded.processGroupId ||
+            request.containment.containmentKind !== recorded.containmentKind
+          ) {
+            throw new ProxyControlProtocolError(
+              'identity_mismatch',
+              'The coordinator named a different containment than the guardian recorded.',
+            );
+          }
+          return { reaper: identityOf(recorded) };
+        },
+      },
+    ],
+    [
+      'reaper.record-containment.v1',
+      {
+        // The guardian's channel, because the guardian is the party that watched the group come into being.
+        authority: 'pairing',
+        handle: (params) => {
+          const request = containmentSchema.parse(params);
+          if (recorded !== null) {
+            // Idempotent for the identical containment, a mismatch otherwise: revising it would silently
+            // move what this reaper is holding, and only one group was ever created for this set.
+            if (
+              recorded.pid !== request.pid ||
+              recorded.processStartedAtSeconds !== request.processStartedAtSeconds ||
+              recorded.processGroupId !== request.processGroupId ||
+              recorded.containmentKind !== request.containmentKind
+            ) {
+              throw new ProxyControlProtocolError('identity_mismatch', 'This reaper already holds a containment.');
+            }
+            return { state: 'containment-recorded', reaper: identityOf(recorded) };
+          }
+          recorded = request;
+          enforcer = createArmedEnforcer({
+            clock,
+            deadlines,
+            containment: request,
+            containmentEnvironment: options.containmentEnvironment,
+            scheduler,
+            onOutcome: options.onOutcome,
+            onProgressViolation: options.onProgressViolation,
+          });
+          // Armed the moment it knows what to enforce, so a coordinator that dies immediately afterwards is
+          // already bounded by this reaper's own deadline.
+          enforcer.arm();
+          return { state: 'containment-recorded', reaper: identityOf(request) };
         },
       },
     ],
@@ -178,7 +240,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           const request = registerProviderRootParamsSchema.parse(params);
           // Recording precedes execution: a root the reaper never staged is outside the containment it can
           // reach, so staging is what the activation authority is later granted against.
-          enforcer.registerProviderRoot(request.providerRoot);
+          requireEnforcer().registerProviderRoot(request.providerRoot);
           const receipt = mintReceipt();
           if (staged.size >= MAX_PROXY_OPERATION_LEDGERS) {
             throw new ProxyControlProtocolError('invalid_state', 'This reaper holds its maximum staged operations.');
@@ -217,8 +279,9 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         budgetMs: 'caller-deadline',
         handle: async (params) => {
           const request = stopAndReapParamsSchema.parse(params);
-          assertRecordedSetAgreement(request.providerRoots, enforcer.recordedRoots());
-          const outcome = await enforcer.stopAndReap(deadlines.bounds().exitDeadline);
+          const armed = requireEnforcer();
+          assertRecordedSetAgreement(request.providerRoots, armed.recordedRoots());
+          const outcome = await armed.stopAndReap(deadlines.bounds().exitDeadline);
           if (outcome.kind !== 'containment-absent') {
             throw new ProxyControlProtocolError('invalid_state', `Reaper teardown did not complete: ${outcome.kind}.`);
           }
@@ -252,15 +315,15 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
 
   return {
     async listen(): Promise<void> {
+      // Arming waits for `reaper.record-containment.v1`: before it, there is no identity to enforce, and an
+      // enforcer without one could only ever confirm the absence of nothing.
       await endpoint.listen();
-      // Armed before the first operation, so a coordinator that dies during startup is still bounded.
-      enforcer.arm();
     },
     async close(): Promise<void> {
-      enforcer.disarm();
+      enforcer?.disarm();
       await endpoint.close();
     },
-    enforcer(): ArmedEnforcer<Scope> {
+    enforcer(): ArmedEnforcer<Scope> | null {
       return enforcer;
     },
   };
