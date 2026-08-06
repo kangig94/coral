@@ -1,0 +1,480 @@
+import { z } from 'zod';
+
+import type { MonotonicClock } from '../infra/monotonic-clock.js';
+import { createBootstrapNonceCredential, type ProxyBootstrapCapsule } from './bootstrap-capsule.js';
+import { ControlLeaseEvidence } from './control-lease.js';
+import {
+  createControlEndpoint,
+  type ControlChallengeAuthority,
+  type ControlEndpoint,
+  type ControlEndpointTimer,
+  type ControlMethod,
+} from './control-endpoint.js';
+import {
+  createGrantRegistry,
+  grantSecretDigestSchema,
+  grantSecretSchema,
+  type GrantBinding,
+} from './handoff-capsule.js';
+import {
+  MAX_PROXY_OPERATION_LEDGERS,
+  LedgerError,
+  createOperationLedger,
+  type OperationLedger,
+  type PrepareResult,
+  type ProviderOperationKey,
+} from './ledger.js';
+import { PROXY_CONTROL_LEASE_MS } from './orphan-deadline.js';
+import {
+  PROXY_CONTROL_RPC_TIMEOUT_MS,
+  ProxyControlProtocolError,
+  canonicalUuidSchema,
+  coordinatorIdentitySchema,
+  generationSchema,
+  hostFingerprintSchema,
+  operationIdentitySchema,
+  proxyHandoffOperationSchema,
+  type CoordinatorIdentity,
+  type ProxyIdentity,
+} from './protocol.js';
+
+/**
+ * Why an operation stopped. The proxy does not interpret these — the coordinator's durable side does — but
+ * the enum is closed so a caller cannot smuggle a cause the journal has no event for.
+ */
+const stopCauseSchema = z.enum(['restart', 'handoff', 'user_abort', 'signal_abort', 'queue_shutdown']);
+
+const nonNegativeSeqSchema = z.number().int().nonnegative().safe();
+
+const openParamsSchema = z
+  .object({ bootstrapNonce: z.string().min(1), coordinator: coordinatorIdentitySchema })
+  .strict();
+
+/**
+ * The semantic operation envelope. Because the frame is JSON, functions, symbols and accessors cannot reach
+ * here at all — what remains is field-level validation, and that belongs to the envelope's own owner, the
+ * semantic host. The proxy requires only that one arrived: a prepare that reserved capacity without carrying
+ * the work would leave a reservation nothing could ever activate.
+ */
+const preparedOperationSchema = z.record(z.unknown());
+
+const prepareParamsSchema = z
+  .object({
+    operation: operationIdentitySchema,
+    hostFingerprint: hostFingerprintSchema,
+    prepared: preparedOperationSchema,
+  })
+  .strict();
+
+const renewParamsSchema = z
+  .object({
+    operation: operationIdentitySchema,
+    reservationId: canonicalUuidSchema,
+    activationNonce: canonicalUuidSchema,
+  })
+  .strict();
+
+const activateParamsSchema = renewParamsSchema
+  .extend({
+    jointContainmentReceipt: z.string().min(1),
+    jointActivationReceipt: z.string().min(1),
+    committedThroughProviderSeq: nonNegativeSeqSchema,
+  })
+  .strict();
+
+const stopParamsSchema = z.object({ operation: operationIdentitySchema, cause: stopCauseSchema }).strict();
+
+const adoptParamsSchema = z
+  .object({ operation: operationIdentitySchema, committedThroughProviderSeq: nonNegativeSeqSchema })
+  .strict();
+
+const handoffOperationSetSchema = z.array(proxyHandoffOperationSchema).max(MAX_PROXY_OPERATION_LEDGERS);
+
+/**
+ * The set half of a grant tuple, repeated on the wire so a coordinator holding two proxies cannot install
+ * one proxy's grant on the other by presenting the right secret alone.
+ */
+const grantSetShape = {
+  generation: generationSchema,
+  hostFingerprint: hostFingerprintSchema,
+  buildSetId: canonicalUuidSchema,
+  proxyInstanceId: canonicalUuidSchema,
+} as const;
+
+const handoffInstallParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    secretSha256: grantSecretDigestSchema,
+    ...grantSetShape,
+    operations: handoffOperationSetSchema,
+    orphanTimeoutMs: z.number().int().positive(),
+  })
+  .strict();
+
+const handoffRedeemParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    secret: grantSecretSchema,
+    successor: coordinatorIdentitySchema,
+    ...grantSetShape,
+    operations: handoffOperationSetSchema,
+  })
+  .strict();
+
+/**
+ * Who actually runs a provider operation. The proxy owns the protocol, the ledger and the replay buffer; it
+ * does not own the Claude/Codex kernel. Injecting the host is what keeps this file free of the provider
+ * execution stack — and what lets the ledger's state machine be tested without spawning anything.
+ */
+export interface SemanticOperationHost {
+  /** Starts the kernel for an activated operation. Throwing leaves the ledger entry untouched. */
+  start(input: Readonly<{ key: ProviderOperationKey; prepared: unknown }>): Promise<void> | void;
+  /** Stops a running kernel. Called for every recorded stop cause, including a clean handoff. */
+  stop(input: Readonly<{ key: ProviderOperationKey; cause: z.infer<typeof stopCauseSchema> }>): Promise<void> | void;
+}
+
+export type ProxyOptions<Scope extends symbol> = Readonly<{
+  capsule: ProxyBootstrapCapsule;
+  clock: MonotonicClock<Scope>;
+  identity: ProxyIdentity;
+  host: SemanticOperationHost;
+  timer: ControlEndpointTimer;
+  mintChallenge(): string;
+  mintReceipt(): string;
+  mintReservationId(): string;
+  mintActivationNonce(): string;
+  /**
+   * The joint receipt the guardian issued for this operation's provider root, and the activation receipt it
+   * later converts. The proxy verifies both before starting a kernel, so a root neither authority recorded
+   * can never execute.
+   */
+  containment: Readonly<{
+    stageProviderRoot(key: ProviderOperationKey): Promise<Readonly<{ providerRoot: unknown; receipt: string }>>;
+  }>;
+}>;
+
+export interface Proxy {
+  listen(): Promise<void>;
+  close(): Promise<void>;
+  ledger(): OperationLedger;
+}
+
+/** A ledger refusal is a protocol refusal; this is the one place the two vocabularies meet. */
+const LEDGER_WIRE_CODES = new Set(['operation_not_found', 'reservation_expired']);
+
+function asProtocolError(error: unknown): never {
+  if (error instanceof LedgerError) {
+    const code = LEDGER_WIRE_CODES.has(error.code) ? (error.code as 'operation_not_found') : 'invalid_state';
+    throw new ProxyControlProtocolError(code, error.message);
+  }
+  throw error;
+}
+
+function ledgerKey(operation: z.infer<typeof operationIdentitySchema>): ProviderOperationKey {
+  return { jobId: operation.jobId, operationId: operation.operationId };
+}
+
+/**
+ * The proxy holds the live carrier and the operation ledger. Its control tenancy is *operational*: losing it
+ * stops mutation, but unlike the guardian's and the reaper's it bounds nothing — containment is the
+ * enforcers' job, and giving the proxy a teardown deadline would make a wedged proxy able to reap the very
+ * set it belongs to.
+ */
+export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>): Proxy {
+  const { capsule, clock, identity, host, timer, mintChallenge, mintReceipt } = options;
+  const ledger = createOperationLedger();
+  const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
+  const grants = createGrantRegistry(mintReceipt);
+  const evidence = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS);
+  // Operational control carries no expiry ceiling: the ceiling exists to stop a challenge outliving the
+  // containment window it is evidence for, and this lease is evidence for no window.
+  const echoOptions = { coordinatorIsLive: true, expiryCeiling: null } as const;
+
+  const challenges: ControlChallengeAuthority = {
+    controlIsLive: () => evidence.isControlLive(evidence.sample()),
+    issueFirstChallenge: (challenge) =>
+      evidence.issueFirstChallenge(challenge, evidence.sample())
+        ? { accepted: true }
+        : { accepted: false, reason: 'invalid-state' },
+    admitSuccessor: (challenge) => {
+      const now = evidence.sample();
+      if (evidence.isControlLive(now)) return { accepted: false, reason: 'control-active' };
+      evidence.beginSuccessorControl(challenge, now);
+      return { accepted: true };
+    },
+    echoChallenge: (challenge, nextChallenge) =>
+      evidence.echoChallenge(evidence.sample(), challenge, nextChallenge, echoOptions),
+  };
+
+  /** As on the guardian: the set comes from this proxy's own capsule, the timeout from the installer. */
+  const setIdentity: GrantBinding = Object.freeze({
+    generation: capsule.generation,
+    flavor: capsule.flavor,
+    buildSetId: capsule.buildSetId,
+    hostFingerprint: capsule.hostFingerprint,
+    guardianInstanceId: capsule.guardianInstanceId,
+    reaperInstanceId: capsule.reaperInstanceId,
+    proxyInstanceId: capsule.proxyInstanceId,
+  });
+
+  /** The set a caller names must be this proxy's own, or the grant it presents was never for this carrier. */
+  const assertNamedSet = (
+    named: Readonly<{ generation: string; hostFingerprint: string; buildSetId: string; proxyInstanceId: string }>,
+  ): void => {
+    if (
+      named.generation !== capsule.generation ||
+      named.hostFingerprint !== capsule.hostFingerprint ||
+      named.buildSetId !== capsule.buildSetId ||
+      named.proxyInstanceId !== capsule.proxyInstanceId
+    ) {
+      throw new ProxyControlProtocolError('identity_mismatch', 'The named set is not this proxy.');
+    }
+  };
+
+  const assertNamedCoordinatorBuild = (coordinator: CoordinatorIdentity): void => {
+    if (
+      coordinator.generation !== capsule.generation ||
+      coordinator.flavor !== capsule.flavor ||
+      coordinator.buildSetId !== capsule.buildSetId
+    ) {
+      throw new ProxyControlProtocolError('identity_mismatch', 'The named coordinator belongs to a different build.');
+    }
+  };
+
+  // Ledger leases are plain milliseconds on the proxy's own clock, measured from its start. The branded
+  // instants never leave this file, so a lease can never be compared against another process's reading.
+  const startedAt = clock.now();
+  const nowMs = (): number => clock.millisecondsBetween(startedAt, clock.now());
+
+  const methods = new Map<string, ControlMethod>([
+    [
+      'control.open.v1',
+      {
+        authority: 'establishes-control',
+        handle: (params) => {
+          const request = openParamsSchema.parse(params);
+          bootstrapNonce.spend(request.bootstrapNonce);
+          assertNamedCoordinatorBuild(request.coordinator);
+          return { proxy: identity };
+        },
+      },
+    ],
+    [
+      'operation.prepare.v1',
+      {
+        authority: 'active',
+        handle: async (params) => {
+          const request = prepareParamsSchema.parse(params);
+          if (request.hostFingerprint !== capsule.hostFingerprint) {
+            throw new ProxyControlProtocolError('identity_mismatch', 'Prepare named a different host fingerprint.');
+          }
+          const key = ledgerKey(request.operation);
+          const reservationId = options.mintReservationId();
+          const activationNonce = options.mintActivationNonce();
+          let reserved: PrepareResult;
+          try {
+            reserved = ledger.prepare({ key, reservationId, activationNonce, nowMs: nowMs() });
+          } catch (error: unknown) {
+            asProtocolError(error);
+          }
+          // Capacity is a typed retryable answer, not an error: admission stays with the coordinator, and
+          // the proxy writes nothing it would then have to unwind.
+          if (reserved.kind === 'capacity') {
+            return { state: 'capacity', retryable: true, reason: reserved.reason };
+          }
+          // The root is staged with both enforcers before the reservation is reported, so a reservation the
+          // coordinator commits always names a root the containment can already reach.
+          const staged = await options.containment.stageProviderRoot(key);
+          return {
+            state: 'pending-activation',
+            reservationId: reserved.entry.reservationId,
+            activationNonce: reserved.entry.activationNonce,
+            leaseExpiresInMs: reserved.entry.leaseExpiresAtMs - nowMs(),
+            providerRoot: staged.providerRoot,
+            jointContainmentReceipt: staged.receipt,
+          };
+        },
+      },
+    ],
+    [
+      'operation.renew-activation.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = renewParamsSchema.parse(params);
+          try {
+            const entry = ledger.renew(ledgerKey(request.operation), request.reservationId, nowMs());
+            return { state: 'pending-activation', leaseExpiresInMs: entry.leaseExpiresAtMs - nowMs() };
+          } catch (error: unknown) {
+            asProtocolError(error);
+          }
+        },
+      },
+    ],
+    [
+      'operation.activate.v1',
+      {
+        authority: 'active',
+        handle: async (params) => {
+          const request = activateParamsSchema.parse(params);
+          const key = ledgerKey(request.operation);
+          const before = ledger.get(key);
+          try {
+            ledger.activate(key, request.reservationId, request.activationNonce, nowMs());
+          } catch (error: unknown) {
+            asProtocolError(error);
+          }
+          // Only a transition into `executing` starts a kernel. A repeat activation is the same request
+          // arriving twice; starting a second kernel for it would fork the carrier this proxy exists to own.
+          if (before?.state !== 'executing') {
+            await host.start({ key, prepared: request });
+          }
+          const entry = ledger.get(key);
+          return { state: 'executing', committedThroughProviderSeq: entry?.committedThroughProviderSeq ?? 0 };
+        },
+      },
+    ],
+    [
+      'operation.cancel-pending.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = renewParamsSchema.parse(params);
+          const key = ledgerKey(request.operation);
+          const entry = ledger.get(key);
+          // Idempotent: an entry already gone is a cancel that already landed, and reporting `released`
+          // is the truthful answer rather than a not-found the caller would have to special-case.
+          if (entry === null) return { state: 'released' };
+          if (entry.reservationId !== request.reservationId || entry.activationNonce !== request.activationNonce) {
+            throw new ProxyControlProtocolError('invalid_request', 'Cancel presented a different reservation.');
+          }
+          try {
+            ledger.transition(key, 'released');
+          } catch (error: unknown) {
+            asProtocolError(error);
+          }
+          return { state: 'released' };
+        },
+      },
+    ],
+    [
+      'operation.stop.v1',
+      {
+        authority: 'active',
+        handle: async (params) => {
+          const request = stopParamsSchema.parse(params);
+          const key = ledgerKey(request.operation);
+          const entry = ledger.get(key);
+          if (entry === null) throw new ProxyControlProtocolError('operation_not_found', 'No such operation.');
+          await host.stop({ key, cause: request.cause });
+          // The terminal is not `released`: the coordinator must durably decide first, and deleting the
+          // entry here would drop the replay buffer that decision still needs. Only a recorded restart or
+          // handoff suspends — the abort causes end the operation outright, and claiming they interrupted
+          // it would write an interruption the user never suffered.
+          const next =
+            request.cause === 'restart' || request.cause === 'handoff'
+              ? 'suspended-awaiting-durable-decision'
+              : 'terminal-awaiting-journal-ack';
+          if (entry.state === 'executing') {
+            try {
+              ledger.transition(key, next);
+            } catch (error: unknown) {
+              asProtocolError(error);
+            }
+          }
+          const after = ledger.get(key);
+          return {
+            state: after?.state ?? 'released',
+            committedThroughProviderSeq: after?.committedThroughProviderSeq ?? 0,
+          };
+        },
+      },
+    ],
+    [
+      'operation.adopt.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = adoptParamsSchema.parse(params);
+          const redemption = grants.redemption();
+          if (redemption === null) {
+            throw new ProxyControlProtocolError('invalid_state', 'No grant has been redeemed on this proxy.');
+          }
+          // Set-scoping, not a separate authority: an operation outside the redeemed set is one this
+          // successor never earned, however valid its control tenancy is.
+          if (!redemption.grant.operationIds.includes(request.operation.operationId)) {
+            throw new ProxyControlProtocolError('operation_not_found', 'That operation is outside the redeemed set.');
+          }
+          const key = ledgerKey(request.operation);
+          const entry = ledger.get(key);
+          if (entry === null) throw new ProxyControlProtocolError('operation_not_found', 'No such operation.');
+          try {
+            ledger.acknowledge(key, request.committedThroughProviderSeq);
+          } catch (error: unknown) {
+            asProtocolError(error);
+          }
+          return { state: entry.state, replayFromProviderSeq: request.committedThroughProviderSeq + 1 };
+        },
+      },
+    ],
+    [
+      'handoff.install.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = handoffInstallParamsSchema.parse(params);
+          assertNamedSet(request);
+          return grants.install({
+            grantId: request.grantId,
+            secretSha256: request.secretSha256,
+            ...setIdentity,
+            operationIds: request.operations.map((entry) => entry.operation.operationId),
+            orphanTimeoutMs: request.orphanTimeoutMs,
+          });
+        },
+      },
+    ],
+    [
+      'handoff.redeem.v1',
+      {
+        authority: 'establishes-control',
+        handle: (params) => {
+          const request = handoffRedeemParamsSchema.parse(params);
+          assertNamedSet(request);
+          assertNamedCoordinatorBuild(request.successor);
+          const redemption = grants.redeem({
+            grantId: request.grantId,
+            secret: request.secret,
+            successorInstanceId: request.successor.instanceId,
+            operationIds: request.operations.map((entry) => entry.operation.operationId),
+            binding: setIdentity,
+          });
+          return {
+            state: 'redeemed-provisional',
+            redemptionReceipt: redemption.redemptionReceipt,
+            proxy: identity,
+            operations: redemption.grant.operationIds,
+          };
+        },
+      },
+    ],
+  ]);
+
+  const endpoint: ControlEndpoint = createControlEndpoint({
+    socketPath: capsule.canonicalEndpoint,
+    role: { heartbeatMethod: 'control.heartbeat.v1', methods },
+    challenges,
+    // EOF revokes operational control. It stops mutation and makes the dormant grant redeemable; it never
+    // reaps anything, because this process is inside the containment the enforcers would be reaping.
+    observer: { onControlLost: () => evidence.observeEof(evidence.sample()) },
+    timer,
+    mintChallenge,
+    requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
+  });
+
+  return {
+    listen: () => endpoint.listen(),
+    close: () => endpoint.close(),
+    ledger: () => ledger,
+  };
+}

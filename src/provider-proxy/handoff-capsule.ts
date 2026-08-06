@@ -84,8 +84,11 @@ export type InstalledGrant = Readonly<{
   reaperInstanceId: string;
   proxyInstanceId: string;
   operationIds: readonly string[];
+  /**
+   * Part of what the grant is bound to, not decoration: a successor computes its attach budget from this,
+   * so a grant installed under one orphan timeout must not be redeemable against a set running another.
+   */
   orphanTimeoutMs: number;
-  teardownReserveMs: number;
 }>;
 
 /**
@@ -145,7 +148,6 @@ export function installedGrantFromCapsule(capsule: HandoffCapsule): InstalledGra
     proxyInstanceId: capsule.proxyInstanceId,
     operationIds: Object.freeze(capsule.operations.map((entry) => entry.operation.operationId)),
     orphanTimeoutMs: capsule.orphanTimeoutMs,
-    teardownReserveMs: capsule.teardownReserveMs,
   });
 }
 
@@ -162,7 +164,11 @@ export type GrantRedemption = Readonly<{
   successorInstanceId: string;
 }>;
 
-/** The set the redeemer believes it is rotating. Compared against what was installed. */
+/**
+ * The set the redeemer believes it is rotating, compared against what was installed. The orphan timeout is
+ * deliberately absent: a redeemer never names it, so it is checked where it *is* named — a second install
+ * under the same id but a different timeout is a conflict, not an update.
+ */
 export type GrantBinding = Pick<
   InstalledGrant,
   | 'generation'
@@ -207,7 +213,7 @@ export function createGrantRegistry(mintReceipt: () => string): GrantRegistry {
   const sameSet = (left: readonly string[], right: readonly string[]): boolean =>
     left.length === right.length && left.every((value, index) => value === right[index]);
 
-  /** Every field a grant is bound to. Two grants agreeing on all of them are the same grant. */
+  /** Every field a grant is bound to, including the timeout only an installer names. */
   const sameBinding = (left: InstalledGrant, right: InstalledGrant): boolean =>
     left.grantId === right.grantId &&
     left.generation === right.generation &&
@@ -216,7 +222,8 @@ export function createGrantRegistry(mintReceipt: () => string): GrantRegistry {
     left.hostFingerprint === right.hostFingerprint &&
     left.guardianInstanceId === right.guardianInstanceId &&
     left.reaperInstanceId === right.reaperInstanceId &&
-    left.proxyInstanceId === right.proxyInstanceId;
+    left.proxyInstanceId === right.proxyInstanceId &&
+    left.orphanTimeoutMs === right.orphanTimeoutMs;
 
   return {
     install(grant): { state: 'installed-dormant'; grantId: string } {

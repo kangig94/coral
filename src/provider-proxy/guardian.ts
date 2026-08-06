@@ -35,7 +35,7 @@ import {
   type CoordinatorIdentity,
 } from './protocol.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
-import type { EnforcerDeadlineStateMachine } from './orphan-deadline.js';
+import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
 
 const providerRootSchema = z
   .object({ pid: z.number().int().nonnegative(), processStartedAtSeconds: z.number().int().nonnegative() })
@@ -174,7 +174,12 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
    * Every grant this guardian issues is bound to its own set, taken from its own capsule. A coordinator
    * therefore cannot install a grant naming a set it does not belong to — it never supplies the binding.
    */
-  const setBinding: GrantBinding = Object.freeze({
+  /**
+   * Every field a grant is bound to except the orphan timeout, which the installer names because it is the
+   * budget a successor plans its attach against; the guardian supplies the rest from its own capsule so a
+   * coordinator can never install a grant for a set it does not belong to.
+   */
+  const setIdentity: GrantBinding = Object.freeze({
     generation: capsule.generation,
     flavor: capsule.flavor,
     buildSetId: capsule.buildSetId,
@@ -221,13 +226,21 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         handle: (params) => {
           const request = handoffInstallParamsSchema.parse(params);
           assertNamedCoordinatorBuild(request.successor);
+          // The reserve is derived from this build's own process constants, not chosen per grant. A caller
+          // naming a different one disagrees about arithmetic both sides compute, which is a mismatch to
+          // report rather than a value to accept.
+          if (request.teardownReserveMs !== PROXY_TEARDOWN_RESERVE_MS) {
+            throw new ProxyControlProtocolError(
+              'identity_mismatch',
+              `The named teardown reserve is not this build's ${PROXY_TEARDOWN_RESERVE_MS}ms.`,
+            );
+          }
           return grants.install({
             grantId: request.grantId,
             secretSha256: request.secretSha256,
-            ...setBinding,
+            ...setIdentity,
             operationIds: request.operations.map((entry) => entry.operation.operationId),
             orphanTimeoutMs: request.orphanTimeoutMs,
-            teardownReserveMs: request.teardownReserveMs,
           });
         },
       },
@@ -247,7 +260,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             secret: request.secret,
             successorInstanceId: request.successor.instanceId,
             operationIds: request.operations.map((entry) => entry.operation.operationId),
-            binding: setBinding,
+            binding: setIdentity,
           });
           return {
             state: 'redeemed-provisional',

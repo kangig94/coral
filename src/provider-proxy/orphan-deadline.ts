@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import type { MonotonicClock, MonotonicInstant } from '../infra/monotonic-clock.js';
+import { ControlLeaseEvidence, type ControlLeaseEchoResult } from './control-lease.js';
 import type { EnvPort } from '../infra/port-types.js';
 import {
   PROXY_DISAPPEARANCE_CONFIRM_MS,
@@ -14,9 +15,6 @@ export const CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV = 'CORAL_PROVIDER_PROXY_
 export const DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = 30_000;
 export const MIN_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = 19_001;
 export const MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = 300_000;
-
-/** How many recently issued challenges are remembered for reuse rejection. */
-const RECENT_CHALLENGE_HISTORY = 64;
 
 export const PROXY_CONTROL_HEARTBEAT_MS = 1_000;
 export const PROXY_CONTROL_LEASE_MS = 5_000;
@@ -159,12 +157,7 @@ export type DeadlineDispatchResult =
       reason: 'control-active' | 'control-lost' | 'invalid-state' | 'teardown-latched';
     }>;
 
-export type ChallengeEchoResult =
-  | Readonly<{ accepted: true }>
-  | Readonly<{
-      accepted: false;
-      reason: 'challenge-expired' | 'challenge-mismatch' | 'control-lost' | 'coordinator-not-live' | 'teardown-latched';
-    }>;
+export type ChallengeEchoResult = ControlLeaseEchoResult | Readonly<{ accepted: false; reason: 'teardown-latched' }>;
 
 export type ProviderProxyOrdinaryFrameKind = 'proxy-heartbeat' | 'authenticated-frame';
 
@@ -187,131 +180,6 @@ export type EnforcerDeadlineStateMachine<Scope extends symbol> = Readonly<{
   markExited(): void;
 }>;
 
-type PendingChallenge<Scope extends symbol> = Readonly<{
-  value: string;
-  issuedAt: MonotonicInstant<Scope>;
-  allowAfterControlLoss: boolean;
-}>;
-
-class EnforcerDeadlineEvidence<Scope extends symbol> {
-  readonly #clock: MonotonicClock<Scope>;
-  readonly #configuration: ProviderProxyDeadlineConfiguration;
-  // Bounded: the one-use property needs the outstanding challenge plus a rejection of recent reuse, not a
-  // record of every challenge ever issued — an unbounded history grows for the life of the process.
-  readonly #seenChallenges = new Set<string>();
-  #lastRoundTripEvidenceAt: MonotonicInstant<Scope>;
-  #eofAt: MonotonicInstant<Scope> | null = null;
-  #firstChallengeIssuedAt: MonotonicInstant<Scope> | null = null;
-  #pendingChallenge: PendingChallenge<Scope> | null = null;
-
-  constructor(clock: MonotonicClock<Scope>, configuration: ProviderProxyDeadlineConfiguration) {
-    if (configuration[providerProxyDeadlineConfigurationBrand] !== true) {
-      throw new Error('Provider proxy deadline configuration must be validated before use.');
-    }
-    this.#clock = clock;
-    this.#configuration = configuration;
-    this.#lastRoundTripEvidenceAt = clock.now();
-  }
-
-  sample(): MonotonicInstant<Scope> {
-    return this.#clock.now();
-  }
-
-  bounds(): ProviderProxyEnforcerBounds<Scope> {
-    const leaseLossAt = this.#clock.shiftMilliseconds(this.#lastRoundTripEvidenceAt, this.#configuration.leaseMs);
-    const controlLossAt = this.#eofAt === null ? leaseLossAt : this.#clock.earlier(this.#eofAt, leaseLossAt);
-    const exitDeadline = this.#clock.shiftMilliseconds(
-      this.#lastRoundTripEvidenceAt,
-      this.#configuration.orphanTimeoutMs,
-    );
-    const adoptionDeadline = this.#clock.shiftMilliseconds(exitDeadline, -this.#configuration.teardownReserveMs);
-    const firstChallengeExpiresAt =
-      this.#firstChallengeIssuedAt === null
-        ? null
-        : this.#clock.earlier(
-            this.#clock.shiftMilliseconds(this.#firstChallengeIssuedAt, this.#configuration.leaseMs),
-            adoptionDeadline,
-          );
-
-    return Object.freeze({
-      lastRoundTripEvidenceAt: this.#lastRoundTripEvidenceAt,
-      eofAt: this.#eofAt,
-      controlLossAt,
-      exitDeadline,
-      adoptionDeadline,
-      firstChallengeExpiresAt,
-    });
-  }
-
-  isAtOrAfterAdoptionDeadline(now: MonotonicInstant<Scope>): boolean {
-    return this.#clock.compare(now, this.bounds().adoptionDeadline) >= 0;
-  }
-
-  isControlLive(now: MonotonicInstant<Scope>): boolean {
-    return this.#clock.compare(now, this.bounds().controlLossAt) < 0;
-  }
-
-  /** False when a first challenge already exists. A second tenancy is a successor, not a first. */
-  issueFirstChallenge(challenge: string, issuedAt: MonotonicInstant<Scope>): boolean {
-    if (this.#firstChallengeIssuedAt !== null || this.#pendingChallenge !== null) return false;
-    this.#installChallenge(challenge, issuedAt, false);
-    this.#firstChallengeIssuedAt = issuedAt;
-    return true;
-  }
-
-  beginSuccessorControl(challenge: string, issuedAt: MonotonicInstant<Scope>): void {
-    this.#installChallenge(challenge, issuedAt, true);
-    this.#firstChallengeIssuedAt = issuedAt;
-    this.#eofAt = null;
-  }
-
-  observeEof(observedAt: MonotonicInstant<Scope>): void {
-    this.#eofAt = this.#eofAt === null ? observedAt : this.#clock.earlier(this.#eofAt, observedAt);
-  }
-
-  echoChallenge(
-    now: MonotonicInstant<Scope>,
-    challenge: string,
-    nextChallenge: string,
-    coordinatorIsLive: boolean,
-  ): ChallengeEchoResult {
-    if (!coordinatorIsLive) return { accepted: false, reason: 'coordinator-not-live' };
-    if (this.#pendingChallenge === null || this.#pendingChallenge.value !== challenge) {
-      return { accepted: false, reason: 'challenge-mismatch' };
-    }
-    // Redemption necessarily follows old-control loss, so its provisional first
-    // challenge is bounded by its own expiry and the unchanged adoption deadline.
-    if (!this.#pendingChallenge.allowAfterControlLoss && !this.isControlLive(now)) {
-      return { accepted: false, reason: 'control-lost' };
-    }
-
-    const challengeExpiresAt = this.#clock.earlier(
-      this.#clock.shiftMilliseconds(this.#pendingChallenge.issuedAt, this.#configuration.leaseMs),
-      this.bounds().adoptionDeadline,
-    );
-    if (this.#clock.compare(now, challengeExpiresAt) >= 0) {
-      return { accepted: false, reason: 'challenge-expired' };
-    }
-
-    const evidenceAt = this.#pendingChallenge.issuedAt;
-    this.#installChallenge(nextChallenge, now, false);
-    this.#lastRoundTripEvidenceAt = evidenceAt;
-    return { accepted: true };
-  }
-
-  #installChallenge(challenge: string, issuedAt: MonotonicInstant<Scope>, allowAfterControlLoss: boolean): void {
-    if (challenge.length === 0 || this.#seenChallenges.has(challenge)) {
-      throw new Error('A heartbeat challenge must be non-empty and one-use.');
-    }
-    this.#seenChallenges.add(challenge);
-    if (this.#seenChallenges.size > RECENT_CHALLENGE_HISTORY) {
-      const oldest = this.#seenChallenges.values().next();
-      if (!oldest.done) this.#seenChallenges.delete(oldest.value);
-    }
-    this.#pendingChallenge = Object.freeze({ value: challenge, issuedAt, allowAfterControlLoss });
-  }
-}
-
 function assertContainmentAbsentTransition(state: EnforcerDeadlineState): void {
   if (state !== 'teardown-latched') {
     throw new Error('Containment can be marked absent only after teardown is latched.');
@@ -329,15 +197,42 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   configuration: ProviderProxyDeadlineConfiguration,
   isCoordinatorLive: () => boolean,
 ): EnforcerDeadlineStateMachine<Scope> {
-  const evidence = new EnforcerDeadlineEvidence(clock, configuration);
+  if (configuration[providerProxyDeadlineConfigurationBrand] !== true) {
+    throw new Error('Provider proxy deadline configuration must be validated before use.');
+  }
+  const evidence = new ControlLeaseEvidence(clock, configuration.leaseMs);
   let state: EnforcerDeadlineState = 'accepting-control';
+
+  /**
+   * The teardown deadlines this enforcer adds on top of the lease. Both are anchored on the same round-trip
+   * evidence, so nothing but a genuine echo can move either one.
+   */
+  const bounds = (): ProviderProxyEnforcerBounds<Scope> => {
+    const lastRoundTripEvidenceAt = evidence.lastRoundTripEvidenceAt();
+    const exitDeadline = clock.shiftMilliseconds(lastRoundTripEvidenceAt, configuration.orphanTimeoutMs);
+    const adoptionDeadline = clock.shiftMilliseconds(exitDeadline, -configuration.teardownReserveMs);
+    return Object.freeze({
+      lastRoundTripEvidenceAt,
+      eofAt: evidence.eofAt(),
+      controlLossAt: evidence.controlLossAt(),
+      exitDeadline,
+      adoptionDeadline,
+      // A challenge may not outlive the window it is evidence for, so its expiry is clamped to adoption.
+      firstChallengeExpiresAt: evidence.challengeExpiresAt({
+        coordinatorIsLive: true,
+        expiryCeiling: adoptionDeadline,
+      }),
+    });
+  };
 
   const latchTeardown = (): void => {
     if (state === 'accepting-control') state = 'teardown-latched';
   };
   const sampleBeforeQueuedWork = (): MonotonicInstant<Scope> | null => {
     const now = evidence.sample();
-    if (evidence.isAtOrAfterAdoptionDeadline(now)) latchTeardown();
+    // Sampling before any queued work is what makes equality and processed-after lose: a handler that was
+    // enqueued while the set was still adoptable must not act on that stale belief.
+    if (clock.compare(now, bounds().adoptionDeadline) >= 0) latchTeardown();
     return state === 'accepting-control' ? now : null;
   };
 
@@ -346,7 +241,7 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
     // One definition of "control is held": round-trip evidence on this enforcer's clock. A socket that is
     // merely still open belongs to a wedged coordinator, and a successor must be able to redeem past it.
     controlIsLive: (): boolean => evidence.isControlLive(evidence.sample()),
-    bounds: (): ProviderProxyEnforcerBounds<Scope> => evidence.bounds(),
+    bounds,
     issueFirstChallenge: (challenge: string): DeadlineDispatchResult => {
       const now = sampleBeforeQueuedWork();
       if (now === null) return { accepted: false, reason: 'teardown-latched' };
@@ -358,7 +253,10 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
     echoChallenge: (challenge: string, nextChallenge: string): ChallengeEchoResult => {
       const now = sampleBeforeQueuedWork();
       if (now === null) return { accepted: false, reason: 'teardown-latched' };
-      return evidence.echoChallenge(now, challenge, nextChallenge, isCoordinatorLive());
+      return evidence.echoChallenge(now, challenge, nextChallenge, {
+        coordinatorIsLive: isCoordinatorLive(),
+        expiryCeiling: bounds().adoptionDeadline,
+      });
     },
     observeEof: (): void => {
       const now = sampleBeforeQueuedWork();
