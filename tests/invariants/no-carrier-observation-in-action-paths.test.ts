@@ -45,6 +45,20 @@ const OBSERVATION_AUTHORITIES: readonly ObservationAuthority[] = [
       // what appears here.
       'src/coordinator/live/idle.ts',
       'src/coordinator/composition/',
+      // The observer shares the verdict vocabulary it produces; the two halves must agree on what
+      // `live | absent | unknown` means or the tri-state has no single owner.
+      'src/coordinator/live/carrier-observer.ts',
+    ],
+  },
+  {
+    module: 'src/coordinator/live/carrier-observer.ts',
+    what: 'the bounded network observer',
+    permittedImporters: [
+      // Strictly narrower than the classifier's. Going and asking a foreign process is only ever done to
+      // render a read; letting it reach anywhere else is how a remote answer would end up deciding the
+      // fate of local durable state.
+      'src/read-model/',
+      'src/coordinator/composition/',
     ],
   },
 ];

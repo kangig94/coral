@@ -110,7 +110,7 @@ export type ControlMethod = Readonly<
     budgetMs?: number | 'caller-deadline';
   } & (
     | { authority: 'establishes-control'; handle: ControlOpenHandler }
-    | { authority: 'active' | 'pairing'; handle: ControlMethodHandler }
+    | { authority: 'active' | 'pairing' | 'observation'; handle: ControlMethodHandler }
   )
 >;
 
@@ -377,6 +377,17 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       if (pairedSocket !== socket) {
         throw new ProxyControlProtocolError('unauthorized_control', `${method} requires the paired peer channel.`);
       }
+      return entry.handle(params);
+    }
+    if (entry.authority === 'observation') {
+      // Deliberately holds no tenancy. Control is single-occupancy and belongs to whoever is running the
+      // set, so requiring it here would mean only the owner could ever ask — and the whole point of an
+      // observation is that someone *else* wants to know whether this proxy still holds an operation.
+      //
+      // The handler checks identity instead, and the tuple it checks is the credential: naming this
+      // proxy's instance, build set, job, and operation together requires the runtime meta only a
+      // coordinator's own store holds. The reply then discloses nothing the asker did not already name.
+      // Read-only is what makes that trade sound — an observation moves no deadline and spends nothing.
       return entry.handle(params);
     }
     const live = tenancy;

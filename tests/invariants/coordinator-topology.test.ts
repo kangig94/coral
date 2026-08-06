@@ -41,6 +41,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/runtime-components/recovery-component.ts',
   'src/coordinator/live/kb-daemon-supervisor.ts',
   'src/coordinator/live/admission.ts',
+  'src/coordinator/live/carrier-observer.ts',
   'src/coordinator/live/durable-transport.ts',
   'src/coordinator/live/idle.ts',
   'src/coordinator/live/process-supervision.ts',
@@ -95,6 +96,8 @@ const CONTRACT_TARGETS = new Set([
   'src/jobs/launch.ts',
   'src/jobs/outcome.ts',
   'src/jobs/wait.ts',
+  // The pure carrier classifier: a jobs read contract, and the vocabulary the observer's verdicts use.
+  'src/jobs/carrier-observation.ts',
   'src/kb/contract.ts',
   'src/kb/state/corpus-state.ts',
   'src/kb/search/contract.ts',

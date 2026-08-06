@@ -23,6 +23,7 @@ import {
 } from './handoff-capsule.js';
 import {
   LedgerError,
+  MAX_PROXY_OPERATION_LEDGERS,
   createOperationLedger,
   type OperationLedger,
   type PrepareResult,
@@ -82,6 +83,14 @@ const stopParamsSchema = z.object({ operation: operationIdentitySchema, cause: p
 
 const adoptParamsSchema = z
   .object({ operation: operationIdentitySchema, committedThroughProviderSeq: nonNegativeSeqSchema })
+  .strict();
+
+/**
+ * Bounded by the ledger's own capacity rather than a second 128: a request asking about more operations
+ * than this proxy could ever hold is asking about operations that are not here, and one cap is one fact.
+ */
+const operationStatusParamsSchema = z
+  .object({ operations: z.array(operationIdentitySchema).min(1).max(MAX_PROXY_OPERATION_LEDGERS) })
   .strict();
 
 /**
@@ -457,6 +466,44 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             asProtocolError(error);
           }
           return { state: entry.state, replayFromProviderSeq: request.committedThroughProviderSeq + 1 };
+        },
+      },
+    ],
+    [
+      'operation.status.v1',
+      {
+        // The one method served without holding control: an observation is asked by whoever is *not*
+        // running this set. It reads the ledger and returns; it moves no deadline, spends no credential,
+        // and transitions nothing, so answering it can never change what this proxy would otherwise do.
+        authority: 'observation',
+        handle: (params) => {
+          const request = operationStatusParamsSchema.parse(params);
+          // Every named operation must name *this* proxy. Refusing the whole request rather than the
+          // offending entry is deliberate: a caller that mixed two proxies' operations together has a bug
+          // in what it believes about its own store, and answering the half that happened to match would
+          // hide it behind a plausible-looking reply.
+          for (const operation of request.operations) {
+            if (operation.proxyInstanceId !== capsule.proxyInstanceId || operation.buildSetId !== capsule.buildSetId) {
+              throw new ProxyControlProtocolError('identity_mismatch', 'A named operation is not this proxy.');
+            }
+          }
+          return {
+            proxyInstanceId: capsule.proxyInstanceId,
+            operations: request.operations.map((operation) => {
+              const entry = ledger.get({ jobId: operation.jobId, operationId: operation.operationId });
+              // `absent` is a positive finding from the one authority that can make it: this proxy is
+              // alive, it answered, and it holds no such operation. It is not the same as an unanswered
+              // probe, and the caller must be able to tell them apart.
+              return entry === null
+                ? { operation, held: false as const }
+                : {
+                    operation,
+                    held: true as const,
+                    state: entry.state,
+                    committedThroughProviderSeq: entry.committedThroughProviderSeq,
+                  };
+            }),
+          };
         },
       },
     ],

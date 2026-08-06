@@ -91,6 +91,7 @@ const COORDINATOR_EXEMPT_PREFIXES = [
   'src/coordinator/runtime-components/',
 ] as const;
 const COORDINATOR_ALLOWED = new Set([
+  'src/jobs/carrier-observation.ts',
   'src/jobs/contracts/admission.ts',
   'src/jobs/launch.ts',
   'src/jobs/outcome.ts',
