@@ -7,7 +7,7 @@ import {
   createControlEndpoint,
   type ControlEndpoint,
   type ControlEndpointTimer,
-  type ControlMethodHandler,
+  type ControlMethod,
 } from './control-endpoint.js';
 import {
   createArmedEnforcer,
@@ -15,8 +15,18 @@ import {
   type EnforcementOutcome,
   type EnforcementScheduler,
 } from './enforcement.js';
-import { PROXY_CONTROL_RPC_TIMEOUT_MS, canonicalUuidSchema, proxyIdentitySchema } from './protocol.js';
+import {
+  PROXY_CONTROL_RPC_TIMEOUT_MS,
+  ProxyControlProtocolError,
+  canonicalUuidSchema,
+  coordinatorIdentitySchema,
+  guardianIdentitySchema,
+  operationIdentitySchema,
+  proxyIdentitySchema,
+  reaperIdentitySchema,
+} from './protocol.js';
 import type { ReaperDeadlineStateMachine } from './orphan-deadline.js';
+import { MAX_PROXY_OPERATION_LEDGERS } from '../infra/process-constants.js';
 
 /**
  * The containment the reaper retains. It is recorded once at open and never revised, because the reaper's
@@ -33,7 +43,7 @@ const containmentSchema = z
 
 const registerProviderRootParamsSchema = z
   .object({
-    operation: z.object({ operationId: canonicalUuidSchema }).passthrough(),
+    operation: operationIdentitySchema,
     reservationId: canonicalUuidSchema,
     activationNonce: canonicalUuidSchema,
     providerRoot: z
@@ -46,18 +56,48 @@ const operationActivateParamsSchema = registerProviderRootParamsSchema
   .extend({ reaperContainmentReceipt: z.string().min(1) })
   .strict();
 
+const recordedRootSchema = z
+  .object({ pid: z.number().int().nonnegative(), processStartedAtSeconds: z.number().int().nonnegative() })
+  .strict();
+
 const stopAndReapParamsSchema = z
   .object({
+    reaper: reaperIdentitySchema,
     proxy: proxyIdentitySchema,
-    providerRoots: z
-      .array(
-        z
-          .object({ pid: z.number().int().nonnegative(), processStartedAtSeconds: z.number().int().nonnegative() })
-          .strict(),
-      )
-      .max(128),
+    providerRoots: z.array(recordedRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
   })
   .strict();
+
+/** The plan's `reaper.open.v1` request. Validating it is what makes identity disagreement reportable. */
+const openParamsSchema = z
+  .object({
+    bootstrapNonce: z.string().min(1),
+    coordinator: coordinatorIdentitySchema,
+    guardian: guardianIdentitySchema,
+    proxy: proxyIdentitySchema,
+    containment: containmentSchema,
+  })
+  .strict();
+
+/**
+ * The caller names the roots it believes are recorded. A disagreement means one side is reasoning about a
+ * different containment, which teardown must surface rather than silently reap its own view of.
+ */
+function assertRecordedSetAgreement(
+  claimed: readonly { pid: number; processStartedAtSeconds: number }[],
+  recorded: readonly { pid: number; processStartedAtSeconds: number }[],
+): void {
+  const key = (root: { pid: number; processStartedAtSeconds: number }): string =>
+    `${root.pid}@${root.processStartedAtSeconds}`;
+  const recordedKeys = new Set(recorded.map(key));
+  const claimedKeys = new Set(claimed.map(key));
+  if (recordedKeys.size !== claimedKeys.size || [...claimedKeys].some((entry) => !recordedKeys.has(entry))) {
+    throw new ProxyControlProtocolError(
+      'identity_mismatch',
+      'Teardown named a different provider-root set than this reaper recorded.',
+    );
+  }
+}
 
 export type ReaperOptions<Scope extends symbol> = Readonly<{
   capsule: ReaperBootstrapCapsule;
@@ -117,42 +157,55 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
 
   // Staging arrives over the guardian pairing channel, not the coordinator's control connection: the
   // guardian must be able to stage a root while the coordinator's own control is still provisional.
-  const pairedMethods = new Map<string, ControlMethodHandler>([
+  const methods = new Map<string, ControlMethod>([
     [
       'reaper.register-provider-root.v1',
-      (params) => {
-        const request = registerProviderRootParamsSchema.parse(params);
-        // Recording precedes execution: a root the reaper never staged is outside the containment it can
-        // reach, so staging is what the activation authority is later granted against.
-        enforcer.registerProviderRoot(request.operation.operationId, request.providerRoot);
-        const receipt = mintReceipt();
-        staged.set(request.operation.operationId, receipt);
-        return { state: 'staged-contained', reaperContainmentReceipt: receipt };
+      {
+        authority: 'pairing',
+        handle: (params) => {
+          const request = registerProviderRootParamsSchema.parse(params);
+          // Recording precedes execution: a root the reaper never staged is outside the containment it can
+          // reach, so staging is what the activation authority is later granted against.
+          enforcer.registerProviderRoot(request.operation.operationId, request.providerRoot);
+          const receipt = mintReceipt();
+          staged.set(request.operation.operationId, receipt);
+          return { state: 'staged-contained', reaperContainmentReceipt: receipt };
+        },
       },
     ],
     [
       'reaper.operation-activate.v1',
-      (params) => {
-        const request = operationActivateParamsSchema.parse(params);
-        const expected = staged.get(request.operation.operationId);
-        if (expected === undefined || expected !== request.reaperContainmentReceipt) {
-          throw new Error('reaper_activation_unstaged: activation must present this reaper’s staging receipt.');
-        }
-        return { state: 'activation-authorized', reaperActivationReceipt: mintReceipt() };
+      {
+        authority: 'pairing',
+        handle: (params) => {
+          const request = operationActivateParamsSchema.parse(params);
+          const expected = staged.get(request.operation.operationId);
+          if (expected === undefined || expected !== request.reaperContainmentReceipt) {
+            throw new ProxyControlProtocolError(
+              'unauthorized_control',
+              'Activation must present this reaper\u2019s staging receipt.',
+            );
+          }
+          return { state: 'activation-authorized', reaperActivationReceipt: mintReceipt() };
+        },
       },
     ],
-  ]);
-
-  const methods = new Map<string, ControlMethodHandler>([
     [
       'reaper.stop-and-reap.v1',
-      async (params) => {
-        stopAndReapParamsSchema.parse(params);
-        const outcome = await enforcer.stopAndReap(deadlines.bounds().exitDeadline);
-        if (outcome.kind !== 'containment-absent') {
-          throw new Error(`reaper_stop_and_reap_failed: ${outcome.kind}`);
-        }
-        return { state: 'containment-absent', disappearanceReceipt: outcome.disappearanceReceipt };
+      {
+        authority: 'active',
+        // Teardown spends the TERM and KILL graces plus a disappearance confirmation, which is longer than
+        // a mutation RPC's budget; the caller's own deadline governs instead.
+        budgetMs: 'caller-deadline',
+        handle: async (params) => {
+          const request = stopAndReapParamsSchema.parse(params);
+          assertRecordedSetAgreement(request.providerRoots, enforcer.recordedRoots());
+          const outcome = await enforcer.stopAndReap(deadlines.bounds().exitDeadline);
+          if (outcome.kind !== 'containment-absent') {
+            throw new ProxyControlProtocolError('invalid_state', `Reaper teardown did not complete: ${outcome.kind}.`);
+          }
+          return { state: 'containment-absent', disappearanceReceipt: outcome.disappearanceReceipt };
+        },
       },
     ],
   ]);
@@ -163,13 +216,12 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       openMethod: 'reaper.open.v1',
       heartbeatMethod: 'reaper.heartbeat.v1',
       bootstrapNonce: capsule.bootstrapNonce,
-      openResult: () => ({ reaper: identity }),
-      methods,
-      pairing: {
-        openMethod: 'reaper.pair.v1',
-        secret: capsule.guardianReaperAuthSecret,
-        methods: pairedMethods,
+      openResult: (params) => {
+        openParamsSchema.parse(params);
+        return { reaper: identity };
       },
+      methods,
+      pairing: { openMethod: 'reaper.pair.v1', secret: capsule.guardianReaperAuthSecret },
     },
     // The deadline machine is the challenge authority: it compares the echo, records the round-trip
     // evidence that moves this enforcer's deadlines, and installs the replacement.
@@ -184,7 +236,6 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     // Teardown may legitimately spend the TERM and KILL graces plus the disappearance confirmation, which
     // is longer than a mutation RPC's budget. Cutting it off would report a failure for a reap in progress.
-    unbudgetedMethods: new Set([`${'}${role}${'}.stop-and-reap.v1`]),
   });
 
   return {

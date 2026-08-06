@@ -59,7 +59,7 @@ async function startEndpoint(
       heartbeatMethod: 'role.heartbeat.v1',
       bootstrapNonce: BOOTSTRAP_NONCE,
       openResult: () => ({ role: 'guardian' }),
-      methods: new Map([['role.work.v1', () => ({ state: 'worked' })]]),
+      methods: new Map([['role.work.v1', { authority: 'active' as const, handle: () => ({ state: 'worked' }) }]]),
       ...overrides,
     },
     // A minimal stand-in for the deadline machine: it owns the outstanding challenge and consumes it on a
@@ -250,9 +250,12 @@ describe('provider-proxy control endpoint', () => {
       methods: new Map([
         [
           'role.echo.v1',
-          (params) => {
-            received.push(params);
-            return { state: 'worked' };
+          {
+            authority: 'active' as const,
+            handle: (params: unknown) => {
+              received.push(params);
+              return { state: 'worked' };
+            },
           },
         ],
       ]),

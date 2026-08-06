@@ -8,7 +8,7 @@ import {
   createControlEndpoint,
   type ControlEndpoint,
   type ControlEndpointTimer,
-  type ControlMethodHandler,
+  type ControlMethod,
 } from './control-endpoint.js';
 import {
   createArmedEnforcer,
@@ -16,7 +16,17 @@ import {
   type EnforcementOutcome,
   type EnforcementScheduler,
 } from './enforcement.js';
-import { PROXY_CONTROL_RPC_TIMEOUT_MS, canonicalUuidSchema, proxyIdentitySchema } from './protocol.js';
+import {
+  PROXY_CONTROL_RPC_TIMEOUT_MS,
+  ProxyControlProtocolError,
+  canonicalUuidSchema,
+  coordinatorIdentitySchema,
+  guardianIdentitySchema,
+  operationIdentitySchema,
+  proxyIdentitySchema,
+  reaperIdentitySchema,
+} from './protocol.js';
+import { MAX_PROXY_OPERATION_LEDGERS } from '../infra/process-constants.js';
 import type { GuardianDeadlineStateMachine } from './orphan-deadline.js';
 
 const providerRootSchema = z
@@ -26,7 +36,7 @@ const providerRootSchema = z
 const registerProviderRootParamsSchema = z
   .object({
     proxy: proxyIdentitySchema,
-    operation: z.object({ operationId: canonicalUuidSchema }).passthrough(),
+    operation: operationIdentitySchema,
     reservationId: canonicalUuidSchema,
     activationNonce: canonicalUuidSchema,
     providerPid: z.number().int().nonnegative(),
@@ -36,7 +46,7 @@ const registerProviderRootParamsSchema = z
 
 const operationActivateParamsSchema = z
   .object({
-    operation: z.object({ operationId: canonicalUuidSchema }).passthrough(),
+    operation: operationIdentitySchema,
     reservationId: canonicalUuidSchema,
     activationNonce: canonicalUuidSchema,
     providerRoot: providerRootSchema,
@@ -46,10 +56,28 @@ const operationActivateParamsSchema = z
 
 const operationReleaseParamsSchema = z
   .object({
-    operation: z.object({ operationId: canonicalUuidSchema }).passthrough(),
+    operation: operationIdentitySchema,
     reservationId: canonicalUuidSchema,
     activationNonce: canonicalUuidSchema,
     jointContainmentReceipt: z.string().min(1),
+  })
+  .strict();
+
+/** The plan's `guardian.open.v1` request. Parsing it is what makes identity disagreement reportable. */
+const openParamsSchema = z
+  .object({
+    bootstrapNonce: z.string().min(1),
+    coordinator: coordinatorIdentitySchema,
+    proxy: proxyIdentitySchema,
+  })
+  .strict();
+
+const stopAndReapParamsSchema = z
+  .object({
+    guardian: guardianIdentitySchema,
+    reaper: reaperIdentitySchema,
+    proxy: proxyIdentitySchema,
+    providerRoots: z.array(providerRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
   })
   .strict();
 
@@ -114,91 +142,119 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
 
   const staged = new Map<string, StagedMembership>();
 
-  const methods = new Map<string, ControlMethodHandler>([
+  const methods = new Map<string, ControlMethod>([
     [
       'guardian.register-provider-root.v1',
-      async (params) => {
-        const request = registerProviderRootParamsSchema.parse(params);
-        const root = { pid: request.providerPid, processStartedAtSeconds: request.providerProcessStartedAtSeconds };
-        // Forward the exact root; a receipt is only issued once both authorities ACK the same identity, so
-        // neither can be talked into containing something the other never recorded.
-        const reaperResult = (await options.reaperChannel.call(
-          'reaper.register-provider-root.v1',
-          {
-            operation: request.operation,
-            reservationId: request.reservationId,
-            activationNonce: request.activationNonce,
-            providerRoot: root,
-          },
-          PROXY_CONTROL_RPC_TIMEOUT_MS,
-        )) as { state?: string; reaperContainmentReceipt?: string };
-        if (reaperResult.state !== 'staged-contained' || typeof reaperResult.reaperContainmentReceipt !== 'string') {
-          throw new Error('guardian_staging_unconfirmed: the reaper did not stage the reported provider root.');
-        }
-        enforcer.registerProviderRoot(request.operation.operationId, root);
-        const jointContainmentReceipt = mintReceipt();
-        staged.set(request.operation.operationId, {
-          jointContainmentReceipt,
-          reaperContainmentReceipt: reaperResult.reaperContainmentReceipt,
-          root,
-        });
-        return { state: 'staged-contained', providerRoot: root, jointContainmentReceipt };
+      {
+        // The proxy is the only party that knows the real provider pid, and it reaches the guardian over
+        // its own capsule-authenticated channel — not the coordinator's control tenancy.
+        authority: 'pairing',
+        handle: async (params) => {
+          const request = registerProviderRootParamsSchema.parse(params);
+          const root = { pid: request.providerPid, processStartedAtSeconds: request.providerProcessStartedAtSeconds };
+          // Forward the exact root; a receipt is only issued once both authorities ACK the same identity, so
+          // neither can be talked into containing something the other never recorded.
+          const reaperResult = (await options.reaperChannel.call(
+            'reaper.register-provider-root.v1',
+            {
+              operation: request.operation,
+              reservationId: request.reservationId,
+              activationNonce: request.activationNonce,
+              providerRoot: root,
+            },
+            PROXY_CONTROL_RPC_TIMEOUT_MS,
+          )) as { state?: string; reaperContainmentReceipt?: string };
+          if (reaperResult.state !== 'staged-contained' || typeof reaperResult.reaperContainmentReceipt !== 'string') {
+            throw new ProxyControlProtocolError(
+              'invalid_state',
+              'The reaper did not stage the reported provider root.',
+            );
+          }
+          enforcer.registerProviderRoot(request.operation.operationId, root);
+          const jointContainmentReceipt = mintReceipt();
+          staged.set(request.operation.operationId, {
+            jointContainmentReceipt,
+            reaperContainmentReceipt: reaperResult.reaperContainmentReceipt,
+            root,
+          });
+          return { state: 'staged-contained', providerRoot: root, jointContainmentReceipt };
+        },
       },
     ],
     [
       'guardian.operation-activate.v1',
-      async (params) => {
-        const request = operationActivateParamsSchema.parse(params);
-        const membership = staged.get(request.operation.operationId);
-        if (membership === undefined || membership.jointContainmentReceipt !== request.jointContainmentReceipt) {
-          throw new Error('guardian_activation_unstaged: activation must present the joint containment receipt.');
-        }
-        if (
-          membership.root.pid !== request.providerRoot.pid ||
-          membership.root.processStartedAtSeconds !== request.providerRoot.processStartedAtSeconds
-        ) {
-          throw new Error('guardian_activation_identity_mismatch: activation named a different provider root.');
-        }
-        // Activation authority is converted only after the reaper confirms the same target is registered.
-        const reaperResult = (await options.reaperChannel.call(
-          'reaper.operation-activate.v1',
-          {
-            operation: request.operation,
-            reservationId: request.reservationId,
-            activationNonce: request.activationNonce,
-            providerRoot: request.providerRoot,
-            reaperContainmentReceipt: membership.reaperContainmentReceipt,
-          },
-          PROXY_CONTROL_RPC_TIMEOUT_MS,
-        )) as { state?: string };
-        if (reaperResult.state !== 'activation-authorized') {
-          throw new Error('guardian_activation_unconfirmed: the reaper did not authorize activation.');
-        }
-        return { state: 'activation-authorized', jointActivationReceipt: mintReceipt() };
+      {
+        authority: 'active',
+        handle: async (params) => {
+          const request = operationActivateParamsSchema.parse(params);
+          const membership = staged.get(request.operation.operationId);
+          if (membership === undefined || membership.jointContainmentReceipt !== request.jointContainmentReceipt) {
+            throw new ProxyControlProtocolError(
+              'unauthorized_control',
+              'Activation must present the joint containment receipt.',
+            );
+          }
+          if (
+            membership.root.pid !== request.providerRoot.pid ||
+            membership.root.processStartedAtSeconds !== request.providerRoot.processStartedAtSeconds
+          ) {
+            throw new ProxyControlProtocolError('identity_mismatch', 'Activation named a different provider root.');
+          }
+          // Activation authority is converted only after the reaper confirms the same target is registered.
+          const reaperResult = (await options.reaperChannel.call(
+            'reaper.operation-activate.v1',
+            {
+              operation: request.operation,
+              reservationId: request.reservationId,
+              activationNonce: request.activationNonce,
+              providerRoot: request.providerRoot,
+              reaperContainmentReceipt: membership.reaperContainmentReceipt,
+            },
+            PROXY_CONTROL_RPC_TIMEOUT_MS,
+          )) as { state?: string };
+          if (reaperResult.state !== 'activation-authorized') {
+            throw new ProxyControlProtocolError('invalid_state', 'The reaper did not authorize activation.');
+          }
+          return { state: 'activation-authorized', jointActivationReceipt: mintReceipt() };
+        },
       },
     ],
     [
       'guardian.operation-release.v1',
-      (params) => {
-        const request = operationReleaseParamsSchema.parse(params);
-        const membership = staged.get(request.operation.operationId);
-        if (membership === undefined || membership.jointContainmentReceipt !== request.jointContainmentReceipt) {
-          throw new Error('guardian_release_unstaged: release must present the joint containment receipt.');
-        }
-        // The membership record is dropped, but the recorded root stays in the enforcer: a released
-        // operation does not prove its process is gone, and only teardown may conclude absence.
-        staged.delete(request.operation.operationId);
-        return { state: 'membership-released' };
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = operationReleaseParamsSchema.parse(params);
+          const membership = staged.get(request.operation.operationId);
+          if (membership === undefined || membership.jointContainmentReceipt !== request.jointContainmentReceipt) {
+            throw new ProxyControlProtocolError(
+              'unauthorized_control',
+              'Release must present the joint containment receipt.',
+            );
+          }
+          // The membership record is dropped, but the recorded root stays in the enforcer: a released
+          // operation does not prove its process is gone, and only teardown may conclude absence.
+          staged.delete(request.operation.operationId);
+          return { state: 'membership-released' };
+        },
       },
     ],
     [
       'guardian.stop-and-reap.v1',
-      async () => {
-        const outcome = await enforcer.stopAndReap(deadlines.bounds().exitDeadline);
-        if (outcome.kind !== 'containment-absent') {
-          throw new Error(`guardian_stop_and_reap_failed: ${outcome.kind}`);
-        }
-        return { state: 'containment-absent', disappearanceReceipt: outcome.disappearanceReceipt };
+      {
+        authority: 'active',
+        budgetMs: 'caller-deadline',
+        handle: async (params) => {
+          stopAndReapParamsSchema.parse(params);
+          const outcome = await enforcer.stopAndReap(deadlines.bounds().exitDeadline);
+          if (outcome.kind !== 'containment-absent') {
+            throw new ProxyControlProtocolError(
+              'invalid_state',
+              `Guardian teardown did not complete: ${outcome.kind}.`,
+            );
+          }
+          return { state: 'containment-absent', disappearanceReceipt: outcome.disappearanceReceipt };
+        },
       },
     ],
   ]);
@@ -209,8 +265,15 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       openMethod: 'guardian.open.v1',
       heartbeatMethod: 'guardian.heartbeat.v1',
       bootstrapNonce: capsule.bootstrapNonce,
-      openResult: () => ({ guardian: identity }),
+      openResult: (params) => {
+        const request = openParamsSchema.parse(params);
+        // The plan's open result names the proxy this guardian was issued for, so a coordinator that opened
+        // against the wrong set learns it from the response rather than from a later staging failure.
+        return { guardian: identity, proxy: request.proxy };
+      },
       methods,
+      // The proxy→guardian channel the plan gives root registration its own authority on.
+      pairing: { openMethod: 'guardian.pair.v1', secret: capsule.proxyGuardianAuthSecret },
     },
     challenges: deadlines,
     observer: {
@@ -221,7 +284,6 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
     requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     // Teardown may legitimately spend the TERM and KILL graces plus the disappearance confirmation, which
     // is longer than a mutation RPC's budget. Cutting it off would report a failure for a reap in progress.
-    unbudgetedMethods: new Set([`${'}${role}${'}.stop-and-reap.v1`]),
   });
 
   return {

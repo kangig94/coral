@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { createServer, type Server as NetServer, type Socket } from 'node:net';
 
 import {
@@ -57,11 +58,25 @@ class UnknownControlMethodError extends Error {
   }
 }
 
-/**
- * A method served only while the connection holds active control. `open` and `heartbeat` are not in this
- * map — the endpoint owns their tenancy semantics so no role can implement them inconsistently.
- */
 export type ControlMethodHandler = (params: unknown) => Promise<unknown> | unknown;
+
+/**
+ * Which credential a method requires. Declaring it per method rather than per map is what lets one endpoint
+ * serve tiers that differ in kind: the coordinator's control tenancy, the peer enforcer's capsule-secret
+ * channel, and — once redemption lands — a successor presenting a grant rather than either.
+ */
+export type ControlAuthority = 'active' | 'pairing';
+
+export type ControlMethod = Readonly<{
+  authority: ControlAuthority;
+  /**
+   * Absolute budget for this method, defaulting to the endpoint's. Teardown declares its own because it may
+   * legitimately spend the TERM and KILL graces plus a disappearance confirmation; cutting it off would
+   * report a failure for a reap still in progress.
+   */
+  budgetMs?: number | 'caller-deadline';
+  handle: ControlMethodHandler;
+}>;
 
 export type ControlEndpointRole = Readonly<{
   /** Method name for this role's tenancy-opening call, e.g. `guardian.open.v1`. */
@@ -69,8 +84,8 @@ export type ControlEndpointRole = Readonly<{
   /** Method name for this role's challenge echo, e.g. `guardian.heartbeat.v1`. */
   heartbeatMethod: string;
   /**
-   * The one-use secret from this role's bootstrap capsule. The endpoint compares it in constant length
-   * and forgets it after the first accepted open, so a second open cannot reuse it.
+   * The one-use secret from this role's bootstrap capsule, compared in constant time. It is spent by the
+   * first accepted open, so a second open cannot reuse it.
    */
   bootstrapNonce: string;
   /**
@@ -79,17 +94,14 @@ export type ControlEndpointRole = Readonly<{
    */
   openResult(params: unknown): Record<string, unknown>;
   /** Methods requiring active control. */
-  methods: ReadonlyMap<string, ControlMethodHandler>;
+  /** Every method this role serves, each declaring the authority it requires. */
+  methods: ReadonlyMap<string, ControlMethod>;
   /**
    * The capsule-authenticated peer channel, held open for the lifetime of the set alongside control. It is
    * a separate authority: the guardian stages a provider root over it while the coordinator's own control
    * connection is still provisional, and its loss is evidence in its own right.
    */
-  pairing?: Readonly<{
-    openMethod: string;
-    secret: string;
-    methods: ReadonlyMap<string, ControlMethodHandler>;
-  }>;
+  pairing?: Readonly<{ openMethod: string; secret: string }>;
 }>;
 
 /**
@@ -125,14 +137,8 @@ export type ControlEndpointOptions = Readonly<{
   challenges: ControlChallengeAuthority;
   timer: ControlEndpointTimer;
   mintChallenge(): ControlChallenge;
-  /** Absolute budget for one request handler, in milliseconds. */
+  /** Default absolute budget for one request handler, in milliseconds. */
   requestTimeoutMs: number;
-  /**
-   * Methods exempt from the generic budget because the work they serve has its own, longer deadline —
-   * teardown spends the TERM and KILL graces plus a disappearance confirmation. Cutting one off would
-   * report a failure for a reap that is still progressing, and the retry would then hit a completed set.
-   */
-  unbudgetedMethods?: ReadonlySet<string>;
 }>;
 
 export interface ControlEndpoint {
@@ -184,7 +190,6 @@ function createFrameReader(onFrame: (frame: string) => void, onOversize: () => v
 
 export function createControlEndpoint(options: ControlEndpointOptions): ControlEndpoint {
   const { socketPath, role, observer, challenges, timer, mintChallenge, requestTimeoutMs } = options;
-  const unbudgetedMethods = options.unbudgetedMethods ?? new Set<string>();
   let server: NetServer | null = null;
   let tenancy: Tenancy | null = null;
   let nextEpoch: ControlEpoch = 1;
@@ -242,7 +247,9 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
         throw new ProxyControlProtocolError('unauthorized_control', 'The bootstrap nonce was already spent.');
       }
       const supplied = (params as { bootstrapNonce?: unknown } | null)?.bootstrapNonce;
-      if (typeof supplied !== 'string' || supplied !== role.bootstrapNonce) {
+      const expected = Buffer.from(role.bootstrapNonce, 'utf8');
+      const offered = typeof supplied === 'string' ? Buffer.from(supplied, 'utf8') : Buffer.alloc(0);
+      if (offered.length !== expected.length || !timingSafeEqual(offered, expected)) {
         throw new ProxyControlProtocolError(
           'unauthorized_control',
           'Control open did not present the bootstrap nonce.',
@@ -255,29 +262,38 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     }
     const pairing = role.pairing;
     if (pairing !== undefined && method === pairing.openMethod) {
+      if (pairedSocket !== null && !pairedSocket.destroyed && pairedSocket !== socket) {
+        throw new ProxyControlProtocolError('unauthorized_control', 'A peer already holds the pairing channel.');
+      }
       const supplied = (params as { pairingSecret?: unknown } | null)?.pairingSecret;
-      if (typeof supplied !== 'string' || supplied !== pairing.secret) {
+      const expected = Buffer.from(pairing.secret, 'utf8');
+      const offered = typeof supplied === 'string' ? Buffer.from(supplied, 'utf8') : Buffer.alloc(0);
+      if (offered.length !== expected.length || !timingSafeEqual(offered, expected)) {
         throw new ProxyControlProtocolError('unauthorized_control', 'Pairing did not present the shared secret.');
+      }
+      // The control tenancy and the peer channel are different authorities; one connection holding both
+      // would collapse the distinction the two-ACK staging rule depends on.
+      if (tenancy?.socket === socket) {
+        throw new ProxyControlProtocolError('unauthorized_control', 'The control connection may not also pair.');
       }
       pairedSocket = socket;
       return { state: 'paired' };
     }
-    const pairedHandler = pairing?.methods.get(method);
-    if (pairedHandler !== undefined) {
+    const entry = role.methods.get(method);
+    if (entry === undefined) {
+      throw new UnknownControlMethodError(method);
+    }
+    if (entry.authority === 'pairing') {
       if (pairedSocket !== socket) {
         throw new ProxyControlProtocolError('unauthorized_control', `${method} requires the paired peer channel.`);
       }
-      return pairedHandler(params);
-    }
-    const handler = role.methods.get(method);
-    if (handler === undefined) {
-      throw new UnknownControlMethodError(method);
+      return entry.handle(params);
     }
     const live = tenancy;
     if (live === null || live.socket !== socket || !live.active) {
       throw new ProxyControlProtocolError('unauthorized_control', `${method} requires active control.`);
     }
-    return handler(params);
+    return entry.handle(params);
   };
 
   const serveRequest = async (socket: Socket, message: ProxyControlJsonRpcMessage): Promise<void> => {
@@ -288,7 +304,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     }
     const { id, method, params } = message;
     let settled = false;
-    if (unbudgetedMethods.has(method)) {
+    if (role.methods.get(method)?.budgetMs === 'caller-deadline') {
       try {
         write(socket, success(id, await dispatch(socket, method, params)));
       } catch (error: unknown) {
@@ -297,11 +313,13 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       }
       return;
     }
+    const declared = role.methods.get(method)?.budgetMs;
+    const budgetMs = typeof declared === 'number' ? declared : requestTimeoutMs;
     const budget = timer.setTimeout(() => {
       if (settled) return;
       settled = true;
-      write(socket, failure(id, JSON_RPC_INTERNAL_ERROR, `${method} exceeded its ${requestTimeoutMs}ms budget.`));
-    }, requestTimeoutMs);
+      write(socket, failure(id, JSON_RPC_INTERNAL_ERROR, `${method} exceeded its ${budgetMs}ms budget.`));
+    }, budgetMs);
     budget.unref?.();
     try {
       const result = await dispatch(socket, method, params);
