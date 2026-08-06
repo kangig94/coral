@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { createMonotonicClock, type MonotonicInstant } from '#src/infra/monotonic-clock.js';
 import {
   ProcessContainmentError,
   reapRecordedContainment,
@@ -15,6 +16,7 @@ const containment: RecordedContainmentIdentity = {
   processGroupId: 100,
 };
 const providerRoot: RecordedProcessIdentity = { pid: 101, processStartedAtSeconds: 2 };
+const containmentClockScope = Symbol('process-containment-test');
 
 type FakeState = {
   groupAlive: boolean;
@@ -26,7 +28,7 @@ function createFakeEnvironment(
   state: FakeState,
   options: { signalCostMs?: number; unreadablePids?: ReadonlySet<number> } = {},
 ): {
-  environment: ProcessContainmentEnvironment;
+  environment: ProcessContainmentEnvironment<typeof containmentClockScope>;
   now: () => number;
   signals: Array<{ pid: number; signal: NodeJS.Signals | 0; at: number }>;
 } {
@@ -39,16 +41,18 @@ function createFakeEnvironment(
     return false;
   };
 
+  const clock = createMonotonicClock(containmentClockScope, {
+    readMilliseconds: () => BigInt(elapsedMs),
+    sleep: async (ms) => {
+      elapsedMs += ms;
+    },
+  });
+
   return {
     now: () => elapsedMs,
     signals,
     environment: {
-      clock: {
-        now: () => elapsedMs,
-        sleep: async (ms) => {
-          elapsedMs += ms;
-        },
-      },
+      clock,
       process: {
         isAlive,
         kill: (pid, signal) => {
@@ -72,6 +76,13 @@ function createFakeEnvironment(
   };
 }
 
+function deadlineAfter(
+  environment: ProcessContainmentEnvironment<typeof containmentClockScope>,
+  milliseconds: number,
+): MonotonicInstant<typeof containmentClockScope> {
+  return environment.clock.shiftMilliseconds(environment.clock.now(), milliseconds);
+}
+
 describe('recorded process containment', () => {
   it('uses TERM then KILL and confirms absence within one absolute deadline', async () => {
     const fake = createFakeEnvironment(
@@ -79,7 +90,12 @@ describe('recorded process containment', () => {
       { signalCostMs: 125 },
     );
 
-    await reapRecordedContainment(containment, [providerRoot], 6_500, fake.environment);
+    await reapRecordedContainment(
+      containment,
+      [providerRoot],
+      deadlineAfter(fake.environment, 6_500),
+      fake.environment,
+    );
 
     expect(fake.signals).toEqual([
       { pid: -100, signal: 'SIGTERM', at: 0 },
@@ -94,7 +110,9 @@ describe('recorded process containment', () => {
     const state = { groupAlive: true, leaderAlive: true, providerRootAlive: true };
     const fake = createFakeEnvironment(state, { signalCostMs: 125 });
 
-    await expect(reapRecordedContainment(containment, [providerRoot], 5_300, fake.environment)).rejects.toMatchObject({
+    await expect(
+      reapRecordedContainment(containment, [providerRoot], deadlineAfter(fake.environment, 5_300), fake.environment),
+    ).rejects.toMatchObject({
       code: 'process_containment_reap_failed',
     });
 
@@ -113,7 +131,7 @@ describe('recorded process containment', () => {
       { signalCostMs: 500 },
     );
 
-    await reapRecordedContainment(containment, [], 7_000, fake.environment);
+    await reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 7_000), fake.environment);
 
     expect(fake.signals).toEqual([
       { pid: -100, signal: 'SIGTERM', at: 0 },
@@ -128,7 +146,9 @@ describe('recorded process containment', () => {
       { signalCostMs: 501 },
     );
 
-    await expect(reapRecordedContainment(containment, [], 10_000, fake.environment)).rejects.toMatchObject({
+    await expect(
+      reapRecordedContainment(containment, [], deadlineAfter(fake.environment, 10_000), fake.environment),
+    ).rejects.toMatchObject({
       code: 'process_containment_reap_failed',
       context: { callDurationMs: 501, limit: 500 },
     });
@@ -141,9 +161,12 @@ describe('recorded process containment', () => {
       { unreadablePids: new Set([containment.pid]) },
     );
 
-    const failure = await reapRecordedContainment(containment, [], 10_000, fake.environment).catch(
-      (error: unknown) => error,
-    );
+    const failure = await reapRecordedContainment(
+      containment,
+      [],
+      deadlineAfter(fake.environment, 10_000),
+      fake.environment,
+    ).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(ProcessContainmentError);
     expect(failure).toMatchObject({ code: 'process_identity_unverified' });
@@ -153,7 +176,7 @@ describe('recorded process containment', () => {
   it('rejects provider root 129 before probing or signalling', async () => {
     let probed = false;
     const fake = createFakeEnvironment({ groupAlive: false, leaderAlive: false, providerRootAlive: false });
-    const environment: ProcessContainmentEnvironment = {
+    const environment: ProcessContainmentEnvironment<typeof containmentClockScope> = {
       ...fake.environment,
       readProcessStartedAtSeconds: () => {
         probed = true;
@@ -165,7 +188,9 @@ describe('recorded process containment', () => {
       processStartedAtSeconds: 1,
     }));
 
-    await expect(reapRecordedContainment(containment, roots, 10_000, environment)).rejects.toMatchObject({
+    await expect(
+      reapRecordedContainment(containment, roots, deadlineAfter(environment, 10_000), environment),
+    ).rejects.toMatchObject({
       code: 'process_containment_reap_failed',
     });
     expect(probed).toBe(false);

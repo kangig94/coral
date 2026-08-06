@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import {
   reapRecordedContainment,
@@ -14,13 +15,13 @@ import { createRealRuntime } from '#src/runtime/real.js';
 const runtime = createRealRuntime('dev');
 const cleanupTargets = new Map<number, RecordedProcessIdentity>();
 const cleanupGroups = new Set<number>();
+const containmentClockScope = Symbol('process-containment-integration');
 
-const clock = {
-  now: (): number => Number(process.hrtime.bigint() / 1_000_000n),
-  sleep: async (ms: number): Promise<void> => {
+const clock = createMonotonicClock(containmentClockScope, {
+  sleep: async (ms): Promise<void> => {
     await new Promise<void>((resolve) => setTimeout(resolve, ms));
   },
-};
+});
 
 function isAlive(pid: number): boolean {
   try {
@@ -90,7 +91,9 @@ function containmentFor(identity: RecordedProcessIdentity): RecordedContainmentI
   return { ...identity, processGroupId: identity.pid };
 }
 
-function environment(signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }>): ProcessContainmentEnvironment {
+function environment(
+  signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }>,
+): ProcessContainmentEnvironment<typeof containmentClockScope> {
   return {
     clock,
     process: {
@@ -158,7 +161,12 @@ describe('real recorded process containment', () => {
     expect(isAlive(memberPid)).toBe(true);
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
 
-    await reapRecordedContainment(containmentFor(leaderIdentity), [], clock.now() + 12_000, environment(signals));
+    await reapRecordedContainment(
+      containmentFor(leaderIdentity),
+      [],
+      clock.shiftMilliseconds(clock.now(), 12_000),
+      environment(signals),
+    );
 
     expect(signals).toContainEqual({ pid: -leaderIdentity.pid, signal: 'SIGTERM' });
     expect(isAlive(leaderIdentity.pid)).toBe(false);
@@ -195,7 +203,7 @@ describe('real recorded process containment', () => {
       await reapRecordedContainment(
         containmentFor(leaderIdentity),
         [escapedIdentity],
-        clock.now() + 12_000,
+        clock.shiftMilliseconds(clock.now(), 12_000),
         environment(signals),
       );
 
@@ -214,7 +222,12 @@ describe('real recorded process containment', () => {
     };
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
 
-    await reapRecordedContainment(containmentFor(recycledIdentity), [], clock.now() + 2_000, environment(signals));
+    await reapRecordedContainment(
+      containmentFor(recycledIdentity),
+      [],
+      clock.shiftMilliseconds(clock.now(), 2_000),
+      environment(signals),
+    );
 
     expect(signals).toEqual([]);
     expect(isAlive(actualIdentity.pid)).toBe(true);
@@ -228,7 +241,12 @@ describe('real recorded process containment', () => {
     await waitFor(() => linuxProcessState(identity.pid) === 'T');
     const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
 
-    await reapRecordedContainment(containmentFor(identity), [], clock.now() + 12_000, environment(signals));
+    await reapRecordedContainment(
+      containmentFor(identity),
+      [],
+      clock.shiftMilliseconds(clock.now(), 12_000),
+      environment(signals),
+    );
 
     expect(signals).toContainEqual({ pid: -identity.pid, signal: 'SIGKILL' });
     expect(isAlive(identity.pid)).toBe(false);
