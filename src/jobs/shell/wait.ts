@@ -1,4 +1,5 @@
-import { isTerminalPhase } from '../phase.js';
+import { isTerminalPhase, type JobPhase } from '../phase.js';
+import type { CarrierLiveness } from '../carrier-observation.js';
 import {
   isWorkflowJobKind,
   type JobEvent,
@@ -8,6 +9,7 @@ import {
 } from '../records.js';
 import {
   WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS,
+  type CarrierInterruptedWaitEvent,
   type WaitRequest,
   type WaitStreamEvent,
   type WaitStreamOnceResult,
@@ -187,6 +189,65 @@ export interface WaitCoordinatorDeps {
   getCurrentJournalSeq: () => number;
   resultJobsRoot: string;
   ensureResultArtifact?: (jobId: string) => string;
+  /**
+   * Reports what is carrying each still-pending job. Optional because a wait works without it — the journal
+   * is what ends a job either way — and a build that cannot answer must keep waiting silently rather than
+   * report absences it did not observe.
+   */
+  observeCarriers?: (jobIds: readonly string[]) => Promise<CarrierWaitObservation[]>;
+}
+
+/** One job's carrier verdict, as the wait stream needs it: which job, and what was found. */
+export type CarrierWaitObservation = Readonly<{
+  jobId: string;
+  liveness: CarrierLiveness;
+  storedPhase: JobPhase;
+  observedMaxJournalSeq: number;
+}>;
+
+export type CarrierWaitPlan = Readonly<{
+  interrupted: readonly CarrierInterruptedWaitEvent[];
+  unknownJobIds: readonly string[];
+}>;
+
+const EMPTY_CARRIER_PLAN: CarrierWaitPlan = Object.freeze({ interrupted: [], unknownJobIds: [] });
+
+/**
+ * Turns carrier verdicts into what the wait stream should say about them.
+ *
+ * Pure so the rule is checkable without a journal: absence becomes one event per job per stream — it
+ * reports a discovery, not a snapshot, so repeating it every poll tick would restate the same thing while
+ * the job is still pending — and `unknown` is collected for the waiting snapshot instead, because a job
+ * nothing could answer for is not a job that ended. Neither outcome removes anything from `pending`; only
+ * the journal ends a job.
+ */
+export function planCarrierWaitEvents(
+  observations: readonly CarrierWaitObservation[],
+  pending: ReadonlySet<string>,
+  alreadyReported: Set<string>,
+): CarrierWaitPlan {
+  const interrupted: CarrierInterruptedWaitEvent[] = [];
+  const unknownJobIds: string[] = [];
+  for (const observation of observations) {
+    if (!pending.has(observation.jobId)) continue;
+    if (observation.liveness === 'unknown') {
+      unknownJobIds.push(observation.jobId);
+      continue;
+    }
+    if (observation.liveness !== 'absent' || alreadyReported.has(observation.jobId)) continue;
+    alreadyReported.add(observation.jobId);
+    interrupted.push({
+      type: 'interrupted',
+      jobId: observation.jobId,
+      storedPhase: observation.storedPhase,
+      observedMaxJournalSeq: observation.observedMaxJournalSeq,
+      remainingJobIds: [...pending],
+      observation: { kind: 'carrier_interrupted', reason: 'carrier_absent' },
+      continuity: 'unavailable',
+      outcome: 'unknown',
+    });
+  }
+  return { interrupted, unknownJobIds: unknownJobIds.sort() };
 }
 
 export class WaitCoordinator {
@@ -224,6 +285,43 @@ export class WaitCoordinator {
       return this.deps.aggregateWorkflowUsage(event.jobId);
     }
     return event.usage;
+  }
+
+  /**
+   * Asks what is carrying the still-pending jobs, and turns the answer into stream events.
+   *
+   * Absence is reported once per job per stream: it is an event about a discovery, not a snapshot, so
+   * repeating it every poll tick would say the same thing over and over while the job is still pending —
+   * and it *stays* pending, because nothing here removes it from `pending` or ends the stream. Unknowns are
+   * returned rather than emitted, since they belong on the waiting snapshot as a list of jobs nothing could
+   * answer for.
+   *
+   * A failure to observe yields nothing at all. The wait is still correct without it — the journal is what
+   * ends a job — and a build that could not ask must not report absences it never saw.
+   */
+  private async observePendingCarriers(
+    pending: ReadonlySet<string>,
+    alreadyReported: Set<string>,
+  ): Promise<CarrierWaitPlan> {
+    const observe = this.deps.observeCarriers;
+    if (observe === undefined || pending.size === 0) return EMPTY_CARRIER_PLAN;
+
+    try {
+      return planCarrierWaitEvents(await observe([...pending]), pending, alreadyReported);
+    } catch (error: unknown) {
+      backendLog.warn(`wait: carrier observation failed: ${errorMessage(error)}`);
+      return EMPTY_CARRIER_PLAN;
+    }
+  }
+
+  /**
+   * The waiting snapshot, with unconfirmed carriers named only when there are any. Omitted rather than
+   * empty so a reader can tell "nothing unknown" from a build that does not report unknowns at all.
+   */
+  private waitingSnapshot(pending: ReadonlySet<string>, carrierUnknownJobIds: readonly string[]): WaitStreamEvent {
+    return carrierUnknownJobIds.length === 0
+      ? { type: 'waiting', waitingJobIds: [...pending] }
+      : { type: 'waiting', waitingJobIds: [...pending], carrierUnknownJobIds: [...carrierUnknownJobIds] };
   }
 
   private resultPathFor(jobId: string): string {
@@ -433,12 +531,22 @@ export class WaitCoordinator {
       }
       observedSeq = Math.max(observedSeq, catchUpMaxSeq);
 
+      // Once after catch-up: the journal has had its say about every pending job, so anything still
+      // pending here is a job whose carrier is worth asking about.
+      const carrierReported = new Set<string>();
+      let carrierUnknownJobIds: readonly string[] = [];
+      {
+        const observed = await this.observePendingCarriers(pending, carrierReported);
+        carrierUnknownJobIds = observed.unknownJobIds;
+        for (const event of observed.interrupted) yield event;
+      }
+
       timeoutWaiter = createTimeoutWaiter(this.deps.time, Math.max(0, deadlineMs - this.deps.time.now()));
 
       while (pending.size > 0) {
         const now = this.deps.time.now();
         if (now > deadlineMs) {
-          yield { type: 'waiting', waitingJobIds: [...pending] };
+          yield this.waitingSnapshot(pending, carrierUnknownJobIds);
           return;
         }
 
@@ -472,11 +580,16 @@ export class WaitCoordinator {
             }
           }
           observedSeq = Math.max(observedSeq, maxSeq);
+          // After the replay, never before it: a terminal that arrived in this same tick has already
+          // returned above, so an observation can never contradict a journal result that exists.
+          const observed = await this.observePendingCarriers(pending, carrierReported);
+          carrierUnknownJobIds = observed.unknownJobIds;
+          for (const event of observed.interrupted) yield event;
           continue;
         }
 
         if (next === TIMED_OUT) {
-          yield { type: 'waiting', waitingJobIds: [...pending] };
+          yield this.waitingSnapshot(pending, carrierUnknownJobIds);
           return;
         }
 
