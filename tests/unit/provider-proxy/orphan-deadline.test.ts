@@ -197,6 +197,14 @@ describe('provider proxy enforcer deadline evidence', () => {
     );
   });
 
+  it('refuses a second first challenge as invalid state once one is already outstanding', () => {
+    const fake = createFakeClock(guardianClockScope, 0);
+    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
+
+    expect(guardian.issueFirstChallenge('challenge-1')).toEqual({ accepted: true });
+    expect(guardian.issueFirstChallenge('challenge-2')).toEqual({ accepted: false, reason: 'invalid-state' });
+  });
+
   it('caps the first challenge at the adoption deadline', () => {
     const fake = createFakeClock(guardianClockScope, 0);
     const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
@@ -429,5 +437,66 @@ describe('provider proxy deadline state machines', () => {
 
     fake.set(7_000);
     expect(enforcer.admitSuccessor('successor-challenge')).toEqual({ accepted: false, reason: 'teardown-latched' });
+  });
+});
+
+describe('provider proxy pairing loss', () => {
+  it('collapses adoption to the pairing-loss instant, leaves exit and control-loss evidence untouched', () => {
+    const fake = createFakeClock(reaperClockScope, 1_000);
+    const reaper = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const before = reaper.bounds();
+    fake.set(5_000);
+    const pairingLossAt = fake.clock.now();
+
+    reaper.observePairingLoss();
+    const after = reaper.bounds();
+
+    expectSameInstant(fake.clock, after.adoptionDeadline, pairingLossAt);
+    expectSameInstant(fake.clock, after.exitDeadline, before.exitDeadline);
+    expect(after.eofAt).toBeNull();
+    expectSameInstant(fake.clock, after.controlLossAt, before.controlLossAt);
+    expect(reaper.controlIsLive()).toBe(true);
+  });
+
+  it('never collapses adoption to an instant later than it already stood at', () => {
+    const fake = createFakeClock(reaperClockScope, 1_000);
+    const reaper = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
+    const naturalAdoptionDeadline = reaper.bounds().adoptionDeadline;
+    fake.set(5_000);
+
+    reaper.observePairingLoss();
+
+    expect(fake.clock.compare(reaper.bounds().adoptionDeadline, naturalAdoptionDeadline)).toBeLessThan(0);
+  });
+
+  it('makes a heartbeat past the collapsed deadline latch teardown, proving the acceleration is real', () => {
+    const fake = createFakeClock(reaperClockScope, 1_000);
+    const reaper = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
+    fake.set(5_000);
+    reaper.observePairingLoss();
+    fake.set(5_001);
+    const work = vi.fn();
+
+    expect(reaper.dispatchOrdinaryFrame('authenticated-frame', work)).toEqual({
+      accepted: false,
+      reason: 'teardown-latched',
+    });
+
+    expect(work).not.toHaveBeenCalled();
+    expect(reaper.state()).toBe('teardown-latched');
+  });
+
+  it('is a no-op once its own collapse has already passed, like every other dispatch method', () => {
+    const fake = createFakeClock(reaperClockScope, 1_000);
+    const reaper = createEnforcerDeadlineStateMachine(fake.clock, configuration(), () => true);
+    fake.set(5_000);
+    reaper.observePairingLoss();
+    const collapsedAdoptionDeadline = reaper.bounds().adoptionDeadline;
+    fake.set(5_001);
+
+    reaper.observePairingLoss();
+
+    expect(reaper.state()).toBe('teardown-latched');
+    expectSameInstant(fake.clock, reaper.bounds().adoptionDeadline, collapsedAdoptionDeadline);
   });
 });

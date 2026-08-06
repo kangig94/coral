@@ -150,6 +150,10 @@ export type ProxyOptions<Scope extends symbol> = Readonly<{
    */
   containment: Readonly<{
     stageProviderRoot(key: ProviderOperationKey): Promise<Readonly<{ providerRoot: unknown; receipt: string }>>;
+    /** Throws unless the guardian recognises both receipts for this exact operation. */
+    confirmActivation(
+      input: Readonly<{ key: ProviderOperationKey; jointContainmentReceipt: string; jointActivationReceipt: string }>,
+    ): Promise<void>;
   }>;
 }>;
 
@@ -273,7 +277,13 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const activationNonce = options.mintActivationNonce();
           let reserved: PrepareResult;
           try {
-            reserved = ledger.prepare({ key, reservationId, activationNonce, nowMs: nowMs() });
+            reserved = ledger.prepare({
+              key,
+              reservationId,
+              activationNonce,
+              prepared: request.prepared,
+              nowMs: nowMs(),
+            });
           } catch (error: unknown) {
             asProtocolError(error);
           }
@@ -285,6 +295,9 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           // The root is staged with both enforcers before the reservation is reported, so a reservation the
           // coordinator commits always names a root the containment can already reach.
           const staged = await options.containment.stageProviderRoot(key);
+          // Retained on the ledger entry — the single owner of this operation's state — so activate can
+          // refuse a caller presenting a receipt nobody staged.
+          ledger.recordContainmentReceipt(key, staged.receipt);
           return {
             state: 'pending-activation',
             reservationId: reserved.entry.reservationId,
@@ -319,17 +332,33 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const request = activateParamsSchema.parse(params);
           const key = ledgerKey(request.operation);
           const before = ledger.get(key);
+          // The containment receipt is the ledger's own record of which staged root this reservation was
+          // reported against; a caller presenting any other string is activating against a root nobody
+          // staged with either enforcer.
+          if (before !== null && before.jointContainmentReceipt !== request.jointContainmentReceipt) {
+            throw new ProxyControlProtocolError(
+              'unauthorized_control',
+              'Activation named a different containment receipt.',
+            );
+          }
+          // The guardian mints the activation receipt independently of the ledger, so only it — not a
+          // string comparison here — can confirm the pair belongs to this exact operation.
+          await options.containment.confirmActivation({
+            key,
+            jointContainmentReceipt: request.jointContainmentReceipt,
+            jointActivationReceipt: request.jointActivationReceipt,
+          });
           try {
             ledger.activate(key, request.reservationId, request.activationNonce, nowMs());
           } catch (error: unknown) {
             asProtocolError(error);
           }
+          const entry = ledger.get(key);
           // Only a transition into `executing` starts a kernel. A repeat activation is the same request
           // arriving twice; starting a second kernel for it would fork the carrier this proxy exists to own.
           if (before?.state !== 'executing') {
-            await host.start({ key, prepared: request });
+            await host.start({ key, prepared: entry?.prepared });
           }
-          const entry = ledger.get(key);
           return { state: 'executing', committedThroughProviderSeq: entry?.committedThroughProviderSeq ?? 0 };
         },
       },
@@ -366,7 +395,6 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const key = ledgerKey(request.operation);
           const entry = ledger.get(key);
           if (entry === null) throw new ProxyControlProtocolError('operation_not_found', 'No such operation.');
-          await host.stop({ key, cause: request.cause });
           // The terminal is not `released`: the coordinator must durably decide first, and deleting the
           // entry here would drop the replay buffer that decision still needs. Only a recorded restart or
           // handoff suspends — the abort causes end the operation outright, and claiming they interrupted
@@ -376,8 +404,18 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
               ? 'suspended-awaiting-durable-decision'
               : 'terminal-awaiting-journal-ack';
           if (entry.state === 'executing') {
+            await host.stop({ key, cause: request.cause });
             try {
               ledger.transition(key, next);
+            } catch (error: unknown) {
+              asProtocolError(error);
+            }
+          } else {
+            // `SemanticOperationHost.stop`'s contract is "stops a running kernel" — an entry that never
+            // reached `executing` has none to stop. Releasing it here is what keeps a pending-activation or
+            // pending-recovery entry from being stuck forever with nothing left to end it.
+            try {
+              ledger.transition(key, 'released');
             } catch (error: unknown) {
               asProtocolError(error);
             }

@@ -3,12 +3,14 @@ import { createConnection, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import { createBootstrapNonceCredential } from '#src/provider-proxy/bootstrap-capsule.js';
 import {
   createControlEndpoint,
   type ControlChallenge,
   type ControlEndpoint,
+  type ControlEndpointRole,
   type ControlMethod,
 } from '#src/provider-proxy/control-endpoint.js';
 
@@ -18,7 +20,10 @@ type Client = Readonly<{
   call(
     method: string,
     params: unknown,
-  ): Promise<{ result?: unknown; error?: { code: number; message: string; data?: { code?: string } } }>;
+  ): Promise<{
+    result?: unknown;
+    error?: { code: number; message: string; data?: { code?: string; reason?: string } };
+  }>;
   socket: Socket;
   close(): void;
 }>;
@@ -38,7 +43,9 @@ function realTimer() {
   };
 }
 
-async function startEndpoint(options: { echo?: (params: unknown) => void } = {}): Promise<{
+async function startEndpoint(
+  options: { echo?: (params: unknown) => void; pairing?: ControlEndpointRole['pairing'] } = {},
+): Promise<{
   endpoint: ControlEndpoint;
   socketPath: string;
   observer: { onControlLost: ReturnType<typeof vi.fn> };
@@ -93,7 +100,29 @@ async function startEndpoint(options: { echo?: (params: unknown) => void } = {})
             },
           },
         ],
+        // Throws a raw ZodError, unwrapped — the shape a real role produces from its own `.parse()` calls,
+        // which control-endpoint.ts must map to the closed set without knowing anything about zod or roles.
+        [
+          'role.strict.v1',
+          {
+            authority: 'active',
+            handle: (params) =>
+              z
+                .object({
+                  a: z.string(),
+                  b: z.string(),
+                  c: z.string(),
+                  d: z.string(),
+                  e: z.string(),
+                  f: z.string(),
+                  g: z.string(),
+                  h: z.string(),
+                })
+                .parse(params),
+          },
+        ],
       ]),
+      pairing: options.pairing,
     },
     // A minimal stand-in for the deadline machine: it owns the outstanding challenge and consumes it on a
     // matching echo, which is the property the endpoint depends on.
@@ -226,9 +255,11 @@ describe('provider-proxy control endpoint', () => {
     expect(beat.result).toEqual({ state: 'active', nextHeartbeatChallenge: 'challenge-2' });
     expect(set.accepted).toEqual(['challenge-1']);
 
-    // The consumed challenge cannot re-earn evidence.
+    // The consumed challenge cannot re-earn evidence. "not accepted" is the wrapper text every refusal
+    // reason shares, so assert the specific reason this authority actually reported instead.
     const replay = await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
-    expect(replay.error?.message).toContain('not accepted');
+    expect(replay.error?.message).toContain('challenge-mismatch');
+    expect(replay.error?.data?.code).toBe('invalid_request');
     expect(set.accepted).toEqual(['challenge-1']);
   });
 
@@ -280,6 +311,9 @@ describe('provider-proxy control endpoint', () => {
     // refusal cannot cover this race, so admission is where the deadline machine gets the final word.
     expect(refused.error?.message).toContain('control-active');
     expect(refused.error?.data?.code).toBe('invalid_state');
+    // 'invalid_state' alone cannot tell "retry" from "give up" — the reason has to travel as its own
+    // structured field, not only inside the human-readable message, for a caller to act on it.
+    expect(refused.error?.data?.reason).toBe('control-active');
     expect(set.endpoint.currentEpoch()).toBe(1);
   });
 
@@ -351,6 +385,36 @@ describe('provider-proxy control endpoint', () => {
     expect(first.socket.destroyed).toBe(false);
   });
 
+  it('does not hang close() on a connection that was accepted but never claimed a slot', async () => {
+    const { socketPath, endpoint } = await startEndpoint();
+    // Connects and sends nothing: never opens, never pairs. Before every accepted socket was tracked, close()
+    // awaited server.close()'s callback, which Node fires only once every existing connection has ended —
+    // and this one would never end on its own.
+    await connect(socketPath);
+
+    const closed = await Promise.race([
+      endpoint.close().then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2_000)),
+    ]);
+
+    expect(closed).toBe(true);
+  });
+
+  it('refuses establishing control from the socket that already holds pairing', async () => {
+    const { socketPath } = await startEndpoint({ pairing: { openMethod: 'role.pair.v1', secret: 'shared-secret' } });
+    const client = await connect(socketPath);
+
+    const paired = await client.call('role.pair.v1', { pairingSecret: 'shared-secret' });
+    expect(paired.result).toEqual({ state: 'paired' });
+
+    // The mirror of the already-covered "control may not also pair" direction: one connection holding both
+    // authorities would collapse the distinction the two-ACK staging rule depends on, whichever order it
+    // claims them in.
+    const opened = await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    expect(opened.error?.message).toContain('may not also open control');
+    expect(opened.error?.data?.code).toBe('unauthorized_control');
+  });
+
   it('reports control loss with the epoch that ended', async () => {
     const { socketPath, observer, endpoint } = await startEndpoint();
     const client = await connect(socketPath);
@@ -413,5 +477,21 @@ describe('provider-proxy control endpoint', () => {
       setTimeout(() => resolve(false), 5_000);
     });
     expect(closed).toBe(true);
+  });
+
+  it('reports a handler-thrown ZodError under the closed set rather than leaking it raw', async () => {
+    const { socketPath } = await startEndpoint();
+    const client = await connect(socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    // Missing every required field, so the ZodError this throws pretty-prints as a multi-issue JSON dump —
+    // exactly the shape that must not reach the wire as the whole payload.
+    const failed = await client.call('role.strict.v1', {});
+
+    expect(failed.error?.code).toBe(-32_600);
+    expect(failed.error?.data?.code).toBe('protocol_violation');
+    // Bounded, not the raw dump verbatim: eight missing-field issues pretty-print to well over this length.
+    expect(failed.error?.message.length ?? 0).toBeLessThanOrEqual(203);
   });
 });

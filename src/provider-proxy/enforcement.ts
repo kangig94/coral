@@ -67,6 +67,13 @@ export interface ArmedEnforcer<Scope extends symbol> {
    * which is what the reaper's own set-agreement check already assumes.
    */
   registerProviderRoot(root: RecordedProcessIdentity): void;
+  /**
+   * Whether recording `root` would hit the cap `registerProviderRoot` enforces, without recording anything.
+   * A caller that stages the same root on a peer authority before recording it here needs to know it will
+   * be accepted *before* committing to that round trip — finding out only afterward would leave the two
+   * authorities disagreeing about what this containment holds.
+   */
+  wouldExceedProviderRootCap(root: RecordedProcessIdentity): boolean;
   /** The roots recorded so far, in registration order. */
   recordedRoots(): readonly RecordedProcessIdentity[];
   /** Latches teardown now and reaps, regardless of the deadline. Used by `*.stop-and-reap.v1`. */
@@ -107,6 +114,8 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
   let settledOutcome: EnforcementOutcome | null = null;
 
   const orderedRoots = (): readonly RecordedProcessIdentity[] => [...roots.values()];
+  const wouldExceedRootCap = (root: RecordedProcessIdentity): boolean =>
+    !roots.has(rootKey(root)) && roots.size >= MAX_PROXY_RECORDED_PROVIDER_ROOTS;
 
   const settle = (outcome: EnforcementOutcome): EnforcementOutcome => {
     if (settledOutcome === null) {
@@ -178,7 +187,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
       // Nothing is ever removed: entries are indexed by the process that must die, so dropping one would
       // assert it is gone — and only teardown may conclude that.
       if (roots.has(key)) return;
-      if (roots.size >= MAX_PROXY_RECORDED_PROVIDER_ROOTS) {
+      if (wouldExceedRootCap(root)) {
         throw new EnforcementError(
           'provider_root_cap_exceeded',
           `Recorded provider roots would exceed the ${MAX_PROXY_RECORDED_PROVIDER_ROOTS} cap.`,
@@ -186,6 +195,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
       }
       roots.set(key, root);
     },
+    wouldExceedProviderRootCap: wouldExceedRootCap,
     recordedRoots(): readonly RecordedProcessIdentity[] {
       return orderedRoots();
     },

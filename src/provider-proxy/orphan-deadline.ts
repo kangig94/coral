@@ -175,6 +175,14 @@ export type EnforcerDeadlineStateMachine<Scope extends symbol> = Readonly<{
    * credential's one-shot lives with its owner, so this authorizes and does not also consume.
    */
   admitSuccessor(firstSuccessorChallenge: string): DeadlineDispatchResult;
+  /**
+   * Records that the paired peer channel closed. The party that linearizes an ordered redemption is gone,
+   * so admitting a successor can now only ever fail — `adoptionDeadline` collapses to (at most) this
+   * instant to stop trying. `exitDeadline` is untouched: teardown still gets its full reserve regardless of
+   * which authority failed first, and `eofAt`/`controlLossAt` are untouched too, because this is not
+   * evidence about the coordinator's control — a live coordinator keeps heartbeating through it.
+   */
+  observePairingLoss(): void;
   latchTeardown(): void;
   markContainmentAbsent(): void;
   markExited(): void;
@@ -202,15 +210,22 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
   }
   const evidence = new ControlLeaseEvidence(clock, configuration.leaseMs);
   let state: EnforcerDeadlineState = 'accepting-control';
+  // Deliberately not on `ControlLeaseEvidence`: that class is round-trip evidence for one control
+  // connection, and the standalone proxy holds it with no `adoptionDeadline` of its own to accelerate.
+  // Pairing loss is a third, independent input — this machine's own state, not the lease's.
+  let pairingLossAt: MonotonicInstant<Scope> | null = null;
 
   /**
    * The teardown deadlines this enforcer adds on top of the lease. Both are anchored on the same round-trip
-   * evidence, so nothing but a genuine echo can move either one.
+   * evidence, so nothing but a genuine echo can move either one — except `adoptionDeadline`, which pairing
+   * loss may also pull earlier, never later, once the party that would linearize a successor is gone.
    */
   const bounds = (): ProviderProxyEnforcerBounds<Scope> => {
     const lastRoundTripEvidenceAt = evidence.lastRoundTripEvidenceAt();
     const exitDeadline = clock.shiftMilliseconds(lastRoundTripEvidenceAt, configuration.orphanTimeoutMs);
-    const adoptionDeadline = clock.shiftMilliseconds(exitDeadline, -configuration.teardownReserveMs);
+    const derivedAdoptionDeadline = clock.shiftMilliseconds(exitDeadline, -configuration.teardownReserveMs);
+    const adoptionDeadline =
+      pairingLossAt === null ? derivedAdoptionDeadline : clock.earlier(derivedAdoptionDeadline, pairingLossAt);
     return Object.freeze({
       lastRoundTripEvidenceAt,
       eofAt: evidence.eofAt(),
@@ -261,6 +276,15 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
     observeEof: (): void => {
       const now = sampleBeforeQueuedWork();
       if (now !== null) evidence.observeEof(now);
+    },
+    observePairingLoss: (): void => {
+      const now = sampleBeforeQueuedWork();
+      if (now === null) return;
+      // Earliest wins, matching `observeEof`: a second report of the same loss cannot walk the collapse
+      // back out. In practice this is the only report that can ever land — the moment it is recorded,
+      // `adoptionDeadline` itself collapses to `now`, so any later call already sees itself latched out by
+      // `sampleBeforeQueuedWork` above.
+      pairingLossAt = pairingLossAt === null ? now : clock.earlier(pairingLossAt, now);
     },
     dispatchOrdinaryFrame: (_kind: ProviderProxyOrdinaryFrameKind, work: () => void): DeadlineDispatchResult => {
       const now = sampleBeforeQueuedWork();

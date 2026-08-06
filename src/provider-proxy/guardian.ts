@@ -11,6 +11,7 @@ import {
   type ControlMethod,
 } from './control-endpoint.js';
 import {
+  EnforcementError,
   createArmedEnforcer,
   type ArmedEnforcer,
   type EnforcementOutcome,
@@ -88,6 +89,49 @@ const stopAndReapParamsSchema = z
     providerRoots: z.array(providerRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
   })
   .strict();
+
+/**
+ * The caller names the guardian it believes it is tearing down. A disagreement means it is reasoning about
+ * a different instance, which teardown must surface rather than silently act against this one.
+ */
+function assertNamedGuardianIdentity(
+  claimed: z.infer<typeof guardianIdentitySchema>,
+  actual: z.infer<typeof guardianIdentitySchema>,
+): void {
+  if (
+    claimed.guardianInstanceId !== actual.guardianInstanceId ||
+    claimed.pid !== actual.pid ||
+    claimed.processStartedAtSeconds !== actual.processStartedAtSeconds ||
+    claimed.generation !== actual.generation ||
+    claimed.flavor !== actual.flavor ||
+    claimed.buildSetId !== actual.buildSetId ||
+    claimed.hostFingerprint !== actual.hostFingerprint ||
+    claimed.canonicalControlEndpoint !== actual.canonicalControlEndpoint
+  ) {
+    throw new ProxyControlProtocolError('identity_mismatch', 'Teardown named a different guardian than this one.');
+  }
+}
+
+/**
+ * The caller names the roots it believes are recorded. A disagreement means one side is reasoning about a
+ * different containment, which teardown must surface rather than silently reap its own view of — the same
+ * check the reaper performs on its own stop-and-reap request.
+ */
+function assertRecordedSetAgreement(
+  claimed: readonly { pid: number; processStartedAtSeconds: number }[],
+  recorded: readonly { pid: number; processStartedAtSeconds: number }[],
+): void {
+  const key = (root: { pid: number; processStartedAtSeconds: number }): string =>
+    `${root.pid}@${root.processStartedAtSeconds}`;
+  const recordedKeys = new Set(recorded.map(key));
+  const claimedKeys = new Set(claimed.map(key));
+  if (recordedKeys.size !== claimedKeys.size || [...claimedKeys].some((entry) => !recordedKeys.has(entry))) {
+    throw new ProxyControlProtocolError(
+      'identity_mismatch',
+      'Teardown named a different provider-root set than this guardian recorded.',
+    );
+  }
+}
 
 const handoffOperationSetSchema = z.array(proxyHandoffOperationSchema).max(MAX_PROXY_OPERATION_LEDGERS);
 
@@ -301,6 +345,15 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           if (staged.size >= MAX_PROXY_OPERATION_LEDGERS) {
             throw new ProxyControlProtocolError('invalid_state', 'This guardian holds its maximum staged operations.');
           }
+          // Checked before the reaper round trip, not after: this guardian's own enforcer can refuse a root
+          // on its own cap too, and finding that out only after the reaper has already staged it would leave
+          // the two authorities disagreeing about what this containment holds.
+          if (enforcer.wouldExceedProviderRootCap(root)) {
+            throw new ProxyControlProtocolError(
+              'invalid_state',
+              'This guardian holds its maximum recorded provider roots.',
+            );
+          }
           // Forward the exact root; a receipt is only issued once both authorities ACK the same identity, so
           // neither can be talked into containing something the other never recorded.
           const reaperResult = (await options.reaperChannel.call(
@@ -319,7 +372,17 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               'The reaper did not stage the reported provider root.',
             );
           }
-          enforcer.registerProviderRoot(root);
+          try {
+            enforcer.registerProviderRoot(root);
+          } catch (error: unknown) {
+            // The cap was already checked above, so reaching this is a defect rather than an expected race —
+            // but `EnforcementError` is this module's internal vocabulary, not a protocol code, and it must
+            // not cross the wire untranslated: the caller would get a message with no code to act on.
+            if (error instanceof EnforcementError) {
+              throw new ProxyControlProtocolError('invalid_state', error.message);
+            }
+            throw error;
+          }
           const jointContainmentReceipt = mintReceipt();
           staged.set(request.operation.operationId, {
             jointContainmentReceipt,
@@ -394,7 +457,12 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         authority: 'active',
         budgetMs: 'caller-deadline',
         handle: async (params) => {
-          stopAndReapParamsSchema.parse(params);
+          const request = stopAndReapParamsSchema.parse(params);
+          // Both agreements the reaper's own handler already makes on its half of the same request: the
+          // caller must be naming this guardian and this containment's own recorded roots, so one authority
+          // can never accept a teardown request the other would refuse.
+          assertNamedGuardianIdentity(request.guardian, identity);
+          assertRecordedSetAgreement(request.providerRoots, enforcer.recordedRoots());
           const outcome = await enforcer.stopAndReap(deadlines.bounds().exitDeadline);
           if (outcome.kind !== 'containment-absent') {
             throw new ProxyControlProtocolError(

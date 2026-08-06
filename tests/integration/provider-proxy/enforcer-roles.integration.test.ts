@@ -4,11 +4,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
+import { createMonotonicClock, type MonotonicClock } from '#src/infra/monotonic-clock.js';
 import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
-import { createReaper } from '#src/provider-proxy/reaper.js';
+import { createReaper, type Reaper } from '#src/provider-proxy/reaper.js';
 import type { EnforcementOutcome, EnforcementScheduler } from '#src/provider-proxy/enforcement.js';
+import {
+  createEnforcerDeadlineStateMachine,
+  resolveProviderProxyDeadlineConfiguration,
+  type EnforcerDeadlineStateMachine,
+} from '#src/provider-proxy/orphan-deadline.js';
 
 const NONCE = 'a'.repeat(64);
 const PAIR_SECRET = 'c'.repeat(64);
@@ -139,6 +144,7 @@ async function startSet() {
     admitSuccessor: () => ({ accepted: true }) as const,
     echoChallenge: () => ({ accepted: true }) as const,
     observeEof: () => {},
+    observePairingLoss: () => {},
     dispatchOrdinaryFrame: () => ({ accepted: true }) as const,
     latchTeardown: () => {},
     markContainmentAbsent: () => {},
@@ -314,6 +320,133 @@ async function stage(
   return { jointContainmentReceipt: staged.jointContainmentReceipt, operation };
 }
 
+type BareSharedIdentity = Readonly<{
+  generation: 'gen2';
+  flavor: 'prod';
+  buildSetId: string;
+  hostFingerprint: string;
+  guardianInstanceId: string;
+  reaperInstanceId: string;
+  proxyInstanceId: string;
+  bootstrapNonce: string;
+}>;
+
+/** A fresh build/instance identity set for a reaper driven directly, with no guardian or proxy alongside it. */
+function bareSharedIdentity(): BareSharedIdentity {
+  return {
+    generation: 'gen2',
+    flavor: 'prod',
+    buildSetId: randomUUID(),
+    hostFingerprint: FINGERPRINT,
+    guardianInstanceId: randomUUID(),
+    reaperInstanceId: randomUUID(),
+    proxyInstanceId: randomUUID(),
+    bootstrapNonce: NONCE,
+  };
+}
+
+/** The `reaper.open.v1` request an authentic coordinator would send for `CONTAINMENT`. Rebuildable per call. */
+function bareOpenRequest(directory: string, shared: BareSharedIdentity): Record<string, unknown> {
+  return {
+    bootstrapNonce: NONCE,
+    coordinator: {
+      instanceId: randomUUID(),
+      pid: 4_000,
+      processStartedAtSeconds: 700,
+      generation: shared.generation,
+      flavor: shared.flavor,
+      buildSetId: shared.buildSetId,
+    },
+    guardian: {
+      guardianInstanceId: shared.guardianInstanceId,
+      pid: 5_102,
+      processStartedAtSeconds: 902,
+      generation: shared.generation,
+      flavor: shared.flavor,
+      buildSetId: shared.buildSetId,
+      hostFingerprint: FINGERPRINT,
+      canonicalControlEndpoint: join(directory, 'g.sock'),
+    },
+    proxy: {
+      proxyInstanceId: shared.proxyInstanceId,
+      pid: 6_000,
+      processStartedAtSeconds: 850,
+      processGroupId: CONTAINMENT.processGroupId,
+      guardianInstanceId: shared.guardianInstanceId,
+      reaperInstanceId: shared.reaperInstanceId,
+      generation: shared.generation,
+      flavor: shared.flavor,
+      buildSetId: shared.buildSetId,
+      hostFingerprint: FINGERPRINT,
+      canonicalEndpoint: join(directory, 'p.sock'),
+    },
+    containment: CONTAINMENT,
+  };
+}
+
+/** A deadline machine that never itself refuses, for tests driving one reaper's raw protocol directly. */
+function bareDeadlines<Scope extends symbol>(clock: MonotonicClock<Scope>): EnforcerDeadlineStateMachine<Scope> {
+  return {
+    controlIsLive: () => true,
+    issueFirstChallenge: () => ({ accepted: true }) as const,
+    admitSuccessor: () => ({ accepted: true }) as const,
+    echoChallenge: () => ({ accepted: true }) as const,
+    observeEof: () => {},
+    observePairingLoss: () => {},
+    dispatchOrdinaryFrame: () => ({ accepted: true }) as const,
+    latchTeardown: () => {},
+    markContainmentAbsent: () => {},
+    markExited: () => {},
+    bounds: () => ({
+      lastRoundTripEvidenceAt: clock.now(),
+      eofAt: null,
+      controlLossAt: clock.now(),
+      adoptionDeadline: clock.shiftMilliseconds(clock.now(), 60_000),
+      exitDeadline: clock.shiftMilliseconds(clock.now(), 74_000),
+      firstChallengeExpiresAt: null,
+    }),
+    state: () => 'accepting-control' as const,
+  };
+}
+
+/** A reaper with no guardian or coordinator wired up yet, for tests that drive its raw protocol directly. */
+async function startBareReaper<Scope extends symbol>(
+  directory: string,
+  shared: BareSharedIdentity,
+  clock: MonotonicClock<Scope>,
+  deadlines: EnforcerDeadlineStateMachine<Scope>,
+): Promise<{ reaperEndpoint: string; reaper: Reaper<Scope> }> {
+  const reaperEndpoint = join(directory, 'r.sock');
+  const reaper = createReaper({
+    capsule: {
+      role: 'reaper',
+      ...shared,
+      canonicalControlEndpoint: reaperEndpoint,
+      guardianControlEndpoint: join(directory, 'g.sock'),
+      proxyEndpoint: join(directory, 'p.sock'),
+      guardianReaperAuthSecret: PAIR_SECRET,
+    },
+    clock,
+    deadlines,
+    containmentEnvironment: {
+      clock,
+      process: { kill: () => true, isAlive: () => true },
+      platform: 'linux' as const,
+      maxRecordedRoots: 128,
+      readProcessStartedAtSeconds: () => CONTAINMENT.processStartedAtSeconds,
+    },
+    scheduler: idleScheduler,
+    timer,
+    mintChallenge: () => randomUUID(),
+    mintReceipt: () => randomUUID(),
+    self: { pid: 5_101, processStartedAtSeconds: 901 },
+    onOutcome: () => {},
+    onProgressViolation: () => {},
+  });
+  await reaper.listen();
+  return { reaperEndpoint, reaper };
+}
+
 describe('provider-proxy guardian and reaper', () => {
   it('issues a joint containment receipt only after the reaper stages the same root', async () => {
     const set = await startSet();
@@ -417,6 +550,42 @@ describe('provider-proxy guardian and reaper', () => {
     expect(reaped.state).toBe('containment-absent');
     expect(reaped.disappearanceReceipt).toContain(`group:${CONTAINMENT.processGroupId}`);
     expect(set.alive.has(CONTAINMENT.pid)).toBe(false);
+  });
+
+  it('refuses a teardown that names a provider-root set the guardian never recorded', async () => {
+    const set = await startSet();
+
+    // The same set-agreement the reaper enforces on its own half of this request — one authority must not
+    // accept a teardown the other would refuse.
+    await expect(
+      set.control.call(
+        'guardian.stop-and-reap.v1',
+        {
+          guardian: set.guardianIdentity,
+          reaper: set.reaperIdentity,
+          proxy: set.proxyIdentity,
+          providerRoots: [{ pid: 9_999, processStartedAtSeconds: 1 }],
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/different provider-root set/u);
+  });
+
+  it('refuses a teardown that names a different guardian than this one', async () => {
+    const set = await startSet();
+
+    await expect(
+      set.control.call(
+        'guardian.stop-and-reap.v1',
+        {
+          guardian: { ...set.guardianIdentity, pid: set.guardianIdentity.pid + 1 },
+          reaper: set.reaperIdentity,
+          proxy: set.proxyIdentity,
+          providerRoots: [],
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/different guardian than this one/u);
   });
 
   it('refuses a teardown that names a provider-root set the reaper never recorded', async () => {
@@ -580,6 +749,7 @@ describe('provider-proxy guardian and reaper', () => {
         admitSuccessor: () => ({ accepted: true }) as const,
         echoChallenge: () => ({ accepted: true }) as const,
         observeEof: () => {},
+        observePairingLoss: () => {},
         dispatchOrdinaryFrame: () => ({ accepted: true }) as const,
         latchTeardown: () => {},
         markContainmentAbsent: () => {},
@@ -680,5 +850,128 @@ describe('provider-proxy guardian and reaper', () => {
         5_000,
       ),
     ).rejects.toThrow(/different containment than the guardian recorded/u);
+  });
+
+  it('keeps the coordinator’s earned control evidence intact when its pairing peer disconnects', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'coral-pairing-loss-'));
+    cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+    const shared = bareSharedIdentity();
+    const clock = createMonotonicClock(Symbol('pairing-loss'), { readMilliseconds: () => 0n });
+    const deadlines = createEnforcerDeadlineStateMachine(
+      clock,
+      resolveProviderProxyDeadlineConfiguration({ get: () => undefined }),
+      () => true,
+    );
+    // Whichever of these two the reaper's pairing-close observer actually calls resolves this — the
+    // assertions below are what tell the fixed wiring apart from the defect, so the synchronization itself
+    // must not presume which one fires.
+    let observePairingClose: () => void = () => undefined;
+    const pairingClosed = new Promise<void>((resolve) => {
+      observePairingClose = resolve;
+    });
+    const watchedDeadlines = {
+      ...deadlines,
+      observeEof: (): void => {
+        deadlines.observeEof();
+        observePairingClose();
+      },
+      observePairingLoss: (): void => {
+        deadlines.observePairingLoss();
+        observePairingClose();
+      },
+    };
+
+    const { reaperEndpoint, reaper } = await startBareReaper(directory, shared, clock, watchedDeadlines);
+    cleanups.push(() => reaper.close());
+
+    const pairing = await connectControlClient(reaperEndpoint, timer, 5_000);
+    cleanups.push(() => pairing.close());
+    await pairing.call('reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+    await pairing.call('reaper.record-containment.v1', CONTAINMENT, 5_000);
+
+    const coordinator = await connectControlClient(reaperEndpoint, timer, 5_000);
+    cleanups.push(() => coordinator.close());
+    const opened = (await coordinator.call('reaper.open.v1', bareOpenRequest(directory, shared), 5_000)) as {
+      controlEpoch: number;
+      heartbeatChallenge: string;
+    };
+    const firstBeat = (await coordinator.call(
+      'reaper.heartbeat.v1',
+      { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
+      5_000,
+    )) as { state: string; nextHeartbeatChallenge: string };
+    expect(firstBeat.state).toBe('active');
+
+    // The guardian pairing peer disappears — a crash, not a graceful close — while the coordinator's own
+    // control connection stays open and current, having just earned live control.
+    pairing.close();
+    await pairingClosed;
+
+    // The defect collapses the coordinator's own round-trip evidence too, because both losses wrote the
+    // same field. Fixed, pairing loss must leave it exactly as the coordinator left it: live.
+    expect(deadlines.controlIsLive()).toBe(true);
+
+    // The containment is now retiring — every deadline collapses once *any* authority is touched again, by
+    // the very design that makes the acceleration real — but the coordinator did nothing wrong, so that
+    // refusal must read as the containment retiring, never as this coordinator having lost control.
+    await expect(
+      coordinator.call(
+        'reaper.heartbeat.v1',
+        { controlEpoch: opened.controlEpoch, heartbeatChallenge: firstBeat.nextHeartbeatChallenge },
+        5_000,
+      ),
+    ).rejects.toThrow(/teardown-latched/u);
+  });
+
+  it('does not spend the bootstrap nonce when reaper.open.v1 is refused for missing containment', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'coral-nonce-retry-'));
+    cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+    const shared = bareSharedIdentity();
+    const clock = createMonotonicClock(Symbol('nonce-retry'), { readMilliseconds: () => 0n });
+    const { reaperEndpoint, reaper } = await startBareReaper(directory, shared, clock, bareDeadlines(clock));
+    cleanups.push(() => reaper.close());
+
+    const first = await connectControlClient(reaperEndpoint, timer, 5_000);
+    cleanups.push(() => first.close());
+    await expect(first.call('reaper.open.v1', bareOpenRequest(directory, shared), 5_000)).rejects.toThrow(
+      /holds no containment yet/u,
+    );
+
+    const pairing = await connectControlClient(reaperEndpoint, timer, 5_000);
+    cleanups.push(() => pairing.close());
+    await pairing.call('reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+    await pairing.call('reaper.record-containment.v1', CONTAINMENT, 5_000);
+
+    // The refusal above must not have spent the one-shot nonce: the same value still opens control once
+    // this reaper actually has something to enforce.
+    const second = await connectControlClient(reaperEndpoint, timer, 5_000);
+    cleanups.push(() => second.close());
+    const opened = (await second.call('reaper.open.v1', bareOpenRequest(directory, shared), 5_000)) as {
+      controlEpoch: number;
+    };
+    expect(opened.controlEpoch).toBe(1);
+  });
+
+  it('re-records an identical containment idempotently and refuses a mismatched one', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'coral-containment-repeat-'));
+    cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+    const shared = bareSharedIdentity();
+    const clock = createMonotonicClock(Symbol('containment-repeat'), { readMilliseconds: () => 0n });
+    const { reaperEndpoint, reaper } = await startBareReaper(directory, shared, clock, bareDeadlines(clock));
+    cleanups.push(() => reaper.close());
+
+    const pairing = await connectControlClient(reaperEndpoint, timer, 5_000);
+    cleanups.push(() => pairing.close());
+    await pairing.call('reaper.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+
+    const first = (await pairing.call('reaper.record-containment.v1', CONTAINMENT, 5_000)) as { state: string };
+    expect(first.state).toBe('containment-recorded');
+
+    const repeat = (await pairing.call('reaper.record-containment.v1', CONTAINMENT, 5_000)) as { state: string };
+    expect(repeat.state).toBe('containment-recorded');
+
+    await expect(
+      pairing.call('reaper.record-containment.v1', { ...CONTAINMENT, processGroupId: 9_999 }, 5_000),
+    ).rejects.toThrow(/already holds a containment/u);
   });
 });

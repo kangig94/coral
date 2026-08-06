@@ -42,6 +42,11 @@ export interface ProviderProxySetAuthority {
 }
 
 export interface ProviderProxyAuthorityRegistry {
-  /** Every live set, snapshotted once. An empty list is the ordinary case before any provider work runs. */
+  /**
+   * Every live set, as a query snapshot at the moment of the call — not a live cursor. Calling it again after
+   * the caller has stopped and reaped some of what it returned is not guaranteed to exclude those sets: a
+   * caller that reaps a set itself owns retiring it from further use and must not rely on a later
+   * `liveSets()` call to do that for it. An empty list is the ordinary case before any provider work runs.
+   */
   liveSets(): readonly ProviderProxySetAuthority[];
 }

@@ -163,7 +163,12 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     });
 
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
-  const staged = new Map<string, string>();
+  // The root is kept alongside the receipt, not just the receipt alone, so a repeat for the same operation
+  // can be told apart from a report that silently redirects it to a different process.
+  const staged = new Map<
+    string,
+    Readonly<{ receipt: string; root: Readonly<{ pid: number; processStartedAtSeconds: number }> }>
+  >();
 
   // Staging arrives over the guardian pairing channel, not the coordinator's control connection: the
   // guardian must be able to stage a root while the coordinator's own control is still provisional.
@@ -174,10 +179,17 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         authority: 'establishes-control',
         handle: (params) => {
           const request = openParamsSchema.parse(params);
-          bootstrapNonce.spend(request.bootstrapNonce);
+          // Readiness before the credential — deliberately not credential-first. Credential-first exists so
+          // an unauthenticated caller learns nothing it should not; "not ready yet" leaks nothing, because
+          // every caller gets the identical answer regardless of what nonce it presented, or whether it
+          // presented one at all. Spending first would instead burn the one-shot nonce on a pure ordering
+          // race between the coordinator's open and the guardian's containment record, after which this
+          // reaper could never be opened by anyone — a retryable race must not cost a credential that
+          // cannot be reissued.
           if (recorded === null) {
             throw new ProxyControlProtocolError('invalid_state', 'This reaper holds no containment yet.');
           }
+          bootstrapNonce.spend(request.bootstrapNonce);
           // The coordinator's `containment` is an agreement check, not the source: it learned the group from
           // the guardian's readiness, and a disagreement means the two are reasoning about different sets.
           if (
@@ -238,14 +250,33 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         authority: 'pairing',
         handle: (params) => {
           const request = registerProviderRootParamsSchema.parse(params);
+          // Idempotent by stable identity: a repeat for the same operation and the same root gets back the
+          // receipt it already holds, rather than a fresh one that silently invalidates the guardian's copy.
+          // A repeat naming a different root is a disagreement to report, not something to stage over.
+          const already = staged.get(request.operation.operationId);
+          if (already !== undefined) {
+            if (
+              already.root.pid !== request.providerRoot.pid ||
+              already.root.processStartedAtSeconds !== request.providerRoot.processStartedAtSeconds
+            ) {
+              throw new ProxyControlProtocolError(
+                'identity_mismatch',
+                'This operation already staged a different provider root.',
+              );
+            }
+            return { state: 'staged-contained', reaperContainmentReceipt: already.receipt };
+          }
+          // Checked before recording: the enforcer's own record is permanent (nothing ever un-registers a
+          // root), so refusing an over-cap request only after recording it would leave this reaper holding
+          // a root for a staging it just refused.
+          if (staged.size >= MAX_PROXY_OPERATION_LEDGERS) {
+            throw new ProxyControlProtocolError('invalid_state', 'This reaper holds its maximum staged operations.');
+          }
           // Recording precedes execution: a root the reaper never staged is outside the containment it can
           // reach, so staging is what the activation authority is later granted against.
           requireEnforcer().registerProviderRoot(request.providerRoot);
           const receipt = mintReceipt();
-          if (staged.size >= MAX_PROXY_OPERATION_LEDGERS) {
-            throw new ProxyControlProtocolError('invalid_state', 'This reaper holds its maximum staged operations.');
-          }
-          staged.set(request.operation.operationId, receipt);
+          staged.set(request.operation.operationId, { receipt, root: request.providerRoot });
           return { state: 'staged-contained', reaperContainmentReceipt: receipt };
         },
       },
@@ -257,7 +288,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         handle: (params) => {
           const request = operationActivateParamsSchema.parse(params);
           const expected = staged.get(request.operation.operationId);
-          if (expected === undefined || expected !== request.reaperContainmentReceipt) {
+          if (expected === undefined || expected.receipt !== request.reaperContainmentReceipt) {
             throw new ProxyControlProtocolError(
               'unauthorized_control',
               'Activation must present this reaper\u2019s staging receipt.',
@@ -303,8 +334,12 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     challenges: deadlines,
     observer: {
       onControlLost: () => deadlines.observeEof(),
-      // Pairing loss accelerates an already-armed reaper; it never extends its exit deadline.
-      onPairingLost: () => deadlines.observeEof(),
+      // The guardian pairing peer is a separate authority from the coordinator's control (see `pairing`
+      // above): its death proves nothing about the coordinator's own heartbeats, which must keep working.
+      // What it does mean is that the party that linearizes an ordered redemption is gone, so admitting a
+      // successor can now only fail — hence its own vocabulary, `observePairingLoss`, rather than folding
+      // it into `observeEof` and collapsing two separate authorities into one.
+      onPairingLost: () => deadlines.observePairingLoss(),
     },
     timer,
     mintChallenge,

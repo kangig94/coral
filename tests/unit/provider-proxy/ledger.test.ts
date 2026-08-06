@@ -14,7 +14,7 @@ import {
 const KEY: ProviderOperationKey = { jobId: 'job-1', operationId: 'op-1' };
 
 function reserved(ledger: OperationLedger, key = KEY, nowMs = 0): void {
-  const result = ledger.prepare({ key, reservationId: 'res-1', activationNonce: 'nonce-1', nowMs });
+  const result = ledger.prepare({ key, reservationId: 'res-1', activationNonce: 'nonce-1', prepared: {}, nowMs });
   if (result.kind !== 'reserved') throw new Error('expected a reservation');
 }
 
@@ -63,6 +63,24 @@ describe('provider-proxy operation ledger', () => {
     expect(() => ledger.renew(KEY, 'res-1', 10_000)).toThrow(/Cannot renew from executing/u);
   });
 
+  it('refuses a renew after the lease has expired and moves the entry to pending-recovery', () => {
+    const ledger = createOperationLedger();
+    reserved(ledger);
+
+    let caught: unknown;
+    try {
+      ledger.renew(KEY, 'res-1', PROXY_PENDING_ACTIVATION_LEASE_MS);
+    } catch (error: unknown) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(LedgerError);
+    expect((caught as InstanceType<typeof LedgerError>).code).toBe('reservation_expired');
+    // Forbidding execution is the point, but the reservation itself must stay queryable so control can
+    // still cancel exactly it rather than losing track of what it authorized.
+    expect(ledger.get(KEY)?.state).toBe('pending-recovery');
+  });
+
   it('refuses activation that presents a different nonce', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
@@ -80,6 +98,7 @@ describe('provider-proxy operation ledger', () => {
       key: { jobId: 'job-1', operationId: 'op-128' },
       reservationId: 'res-x',
       activationNonce: 'nonce-x',
+      prepared: {},
       nowMs: 0,
     });
 
@@ -154,9 +173,9 @@ describe('provider-proxy operation ledger', () => {
     reserved(ledger);
     expect(ledger.size()).toBe(1);
 
-    expect(() => ledger.prepare({ key: KEY, reservationId: 'other', activationNonce: 'nonce-1', nowMs: 0 })).toThrow(
-      LedgerError,
-    );
+    expect(() =>
+      ledger.prepare({ key: KEY, reservationId: 'other', activationNonce: 'nonce-1', prepared: {}, nowMs: 0 }),
+    ).toThrow(LedgerError);
   });
 
   it('pauses on the per-operation byte ceiling with far fewer than the event ceiling', () => {
@@ -197,6 +216,7 @@ describe('provider-proxy operation ledger', () => {
       key: { jobId: 'job-1', operationId: 'late' },
       reservationId: 'res-late',
       activationNonce: 'nonce-late',
+      prepared: {},
       nowMs: 0,
     });
 

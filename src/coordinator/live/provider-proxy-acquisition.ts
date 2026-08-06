@@ -51,7 +51,8 @@ export type ProviderProxyAcquisitionOptions = Readonly<{
   /**
    * The one absolute budget the whole attempt — including its cleanup — is bounded by. An acquisition that
    * hung would hold the caller's single-flight slot forever, and the set it was building reaps itself on a
-   * deadline nobody is watching.
+   * deadline nobody is watching. `unwind` races every undo against this same signal, so a hung cleanup
+   * action cannot hold the slot open past it either.
    */
   deadlineSignal: AbortSignal;
   onCleanupFailure?(label: string, error: unknown): void;
@@ -59,6 +60,34 @@ export type ProviderProxyAcquisitionOptions = Readonly<{
 
 function failureReason(error: unknown): string {
   return error instanceof Error ? error.message : 'unknown error';
+}
+
+/** Rejects once `deadlineSignal` aborts, and never otherwise. */
+function deadlineElapsed(deadlineSignal: AbortSignal): Promise<never> {
+  const reason = new Error('the acquisition deadline elapsed during cleanup');
+  if (deadlineSignal.aborted) return Promise.reject(reason);
+  return new Promise((_resolve, reject) => {
+    deadlineSignal.addEventListener('abort', () => reject(reason), { once: true });
+  });
+}
+
+/**
+ * Runs one undo, bounded by the same deadline the whole acquisition attempt is bounded by.
+ *
+ * `run()` is invoked eagerly here, before the race — a hung close still gets triggered — but this call site
+ * never waits on it past the deadline: a cleanup that could hold the caller's single-flight slot forever is
+ * exactly the failure a bounded attempt exists to rule out. What the hung action eventually does is no longer
+ * this attempt's concern, so its rejection is swallowed here instead of surfacing as unhandled later.
+ */
+function boundedUndo(undo: AcquisitionUndo, deadlineSignal: AbortSignal): Promise<void> {
+  let attempt: Promise<void>;
+  try {
+    attempt = Promise.resolve(undo.run());
+  } catch (error: unknown) {
+    attempt = Promise.reject(error instanceof Error ? error : new Error(String(error)));
+  }
+  void attempt.catch(() => {});
+  return Promise.race([attempt, deadlineElapsed(deadlineSignal)]);
 }
 
 /**
@@ -71,12 +100,13 @@ function failureReason(error: unknown): string {
  */
 async function unwind(
   undos: readonly AcquisitionUndo[],
+  deadlineSignal: AbortSignal,
   onCleanupFailure: ((label: string, error: unknown) => void) | undefined,
 ): Promise<string[]> {
   const stranded: string[] = [];
   for (const undo of [...undos].reverse()) {
     try {
-      await undo.run();
+      await boundedUndo(undo, deadlineSignal);
     } catch (error: unknown) {
       stranded.push(undo.label);
       onCleanupFailure?.(undo.label, error);
@@ -101,7 +131,7 @@ export async function acquireProviderProxySet(
     kind: 'provider_proxy_acquisition_failed',
     cut,
     reason,
-    strandedArtifacts: await unwind(undos, options.onCleanupFailure),
+    strandedArtifacts: await unwind(undos, options.deadlineSignal, options.onCleanupFailure),
   });
 
   const runCut = async <T>(cut: string, step: () => Promise<T>): Promise<T | ProviderProxyAcquisitionFailure> => {

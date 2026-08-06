@@ -74,6 +74,18 @@ export type OperationLedgerEntry = Readonly<{
   activationNonce: string;
   /** Lease expiry on the proxy's own monotonic clock, in its milliseconds. */
   leaseExpiresAtMs: number;
+  /**
+   * The semantic envelope prepare validated, retained here so activate starts the kernel with what was
+   * actually reserved rather than with activate's own request payload — a second map keyed the same way
+   * would drift the first time one side is updated without the other.
+   */
+  prepared: unknown;
+  /**
+   * The guardian's receipt for the staged provider root. Null until prepare's staging completes, since
+   * capacity is checked — and the entry created — before that root is ever staged. Activate compares a
+   * caller's receipt against this one, so an activation can never name a root nobody staged.
+   */
+  jointContainmentReceipt: string | null;
   committedThroughProviderSeq: number;
   bufferedEvents: readonly ReplayEvent[];
   bufferedBytes: number;
@@ -92,8 +104,15 @@ export interface OperationLedger {
     key: ProviderOperationKey;
     reservationId: string;
     activationNonce: string;
+    prepared: unknown;
     nowMs: number;
   }): PrepareResult;
+  /**
+   * Attaches the guardian's staging receipt once prepare's async staging completes. A separate step because
+   * capacity must be checked — and the entry created — before an operation is ever staged; folding the
+   * receipt into `prepare`'s input would mean staging every reservation before knowing it will be admitted.
+   */
+  recordContainmentReceipt(key: ProviderOperationKey, jointContainmentReceipt: string): void;
   renew(key: ProviderOperationKey, reservationId: string, nowMs: number): OperationLedgerEntry;
   activate(key: ProviderOperationKey, reservationId: string, activationNonce: string, nowMs: number): void;
   transition(key: ProviderOperationKey, next: ProviderOperationState): void;
@@ -113,6 +132,8 @@ type MutableEntry = {
   reservationId: string;
   activationNonce: string;
   leaseExpiresAtMs: number;
+  prepared: unknown;
+  jointContainmentReceipt: string | null;
   committedThroughProviderSeq: number;
   buffered: ReplayEvent[];
   bufferedBytes: number;
@@ -130,10 +151,26 @@ function snapshot(entry: MutableEntry): OperationLedgerEntry {
     reservationId: entry.reservationId,
     activationNonce: entry.activationNonce,
     leaseExpiresAtMs: entry.leaseExpiresAtMs,
+    prepared: entry.prepared,
+    jointContainmentReceipt: entry.jointContainmentReceipt,
     committedThroughProviderSeq: entry.committedThroughProviderSeq,
     bufferedEvents: Object.freeze([...entry.buffered]),
     bufferedBytes: entry.bufferedBytes,
   });
+}
+
+/**
+ * The lease's one expiry rule, shared verbatim by every path that may act on a reservation still pending
+ * activation. Duplicating this check per call site is exactly how one of them could drift — e.g. keep
+ * honouring a lease the other has already deemed expired — so both `renew` and `activate` route through it.
+ */
+function requireLeaseCurrent(entry: MutableEntry, nowMs: number): void {
+  if (entry.state === 'pending-recovery' || nowMs >= entry.leaseExpiresAtMs) {
+    // An expired reservation forbids the action but stays queryable, so control can still cancel exactly
+    // this reservation rather than losing track of what it authorized.
+    entry.state = 'pending-recovery';
+    throw new LedgerError('reservation_expired', 'The activation lease expired.');
+  }
 }
 
 export function createOperationLedger(): OperationLedger {
@@ -149,7 +186,7 @@ export function createOperationLedger(): OperationLedger {
   };
 
   return {
-    prepare({ key, reservationId, activationNonce, nowMs }): PrepareResult {
+    prepare({ key, reservationId, activationNonce, prepared, nowMs }): PrepareResult {
       const existing = entries.get(keyOf(key));
       if (existing !== undefined) {
         // A repeat of the same prepare is the same request arriving twice — a dropped reply, a retry. It
@@ -171,6 +208,8 @@ export function createOperationLedger(): OperationLedger {
         reservationId,
         activationNonce,
         leaseExpiresAtMs: nowMs + PROXY_PENDING_ACTIVATION_LEASE_MS,
+        prepared,
+        jointContainmentReceipt: null,
         committedThroughProviderSeq: 0,
         buffered: [],
         bufferedBytes: 0,
@@ -180,14 +219,20 @@ export function createOperationLedger(): OperationLedger {
       return { kind: 'reserved', entry: snapshot(entry) };
     },
 
+    recordContainmentReceipt(key, jointContainmentReceipt): void {
+      const entry = require(key);
+      entry.jointContainmentReceipt = jointContainmentReceipt;
+    },
+
     renew(key, reservationId, nowMs): OperationLedgerEntry {
       const entry = require(key);
       if (entry.reservationId !== reservationId) {
         throw new LedgerError('reservation_mismatch', 'Renewal presented a different reservation.');
       }
-      if (entry.state !== 'pending-activation') {
+      if (entry.state !== 'pending-activation' && entry.state !== 'pending-recovery') {
         throw new LedgerError('operation_invalid_transition', `Cannot renew from ${entry.state}.`);
       }
+      requireLeaseCurrent(entry, nowMs);
       entry.leaseExpiresAtMs = nowMs + PROXY_PENDING_ACTIVATION_LEASE_MS;
       return snapshot(entry);
     },
@@ -201,12 +246,7 @@ export function createOperationLedger(): OperationLedger {
       // lease governs whether a reservation may *start*, so applying it here would let a late duplicate
       // demote a running kernel to pending-recovery and from there to released.
       if (entry.state === 'executing') return;
-      if (entry.state === 'pending-recovery' || nowMs >= entry.leaseExpiresAtMs) {
-        // An expired reservation forbids execution but stays queryable, so control can still cancel exactly
-        // this reservation rather than losing track of what it authorized.
-        entry.state = 'pending-recovery';
-        throw new LedgerError('reservation_expired', 'The activation lease expired before activation.');
-      }
+      requireLeaseCurrent(entry, nowMs);
       if (entry.state !== 'pending-activation') {
         throw new LedgerError('operation_invalid_transition', `Cannot activate from ${entry.state}.`);
       }

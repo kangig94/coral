@@ -2,9 +2,11 @@ import { createConnection, type Socket } from 'node:net';
 
 import {
   MAX_PROXY_CONTROL_FRAME_BYTES,
+  PROXY_CONTROL_PROTOCOL_ERROR_CODES,
   ProxyControlProtocolError,
   decodeProxyControlFrame,
   encodeProxyControlFrame,
+  type ProxyControlProtocolErrorCode,
 } from './protocol.js';
 
 /** The elapsed-time surface one request budget draws from. */
@@ -17,13 +19,33 @@ export type ControlClientErrorCode = 'control_client_connect_failed' | 'control_
 
 export class ControlClientError extends Error {
   readonly code: ControlClientErrorCode;
+  /**
+   * The server's own closed-set code, when the failure came from a JSON-RPC error response. Absent for a
+   * connect failure, a per-call timeout, or a channel close — those never reach the wire's `error.data`, so
+   * there is no protocol code to carry.
+   */
+  readonly protocolCode?: ProxyControlProtocolErrorCode;
 
-  constructor(code: ControlClientErrorCode, message: string) {
+  constructor(code: ControlClientErrorCode, message: string, protocolCode?: ProxyControlProtocolErrorCode) {
     super(message);
     this.name = 'ControlClientError';
     this.code = code;
+    this.protocolCode = protocolCode;
     Object.setPrototypeOf(this, ControlClientError.prototype);
   }
+}
+
+/**
+ * Reads the server's own protocol code out of a JSON-RPC error's `data`, if it is one this endpoint's
+ * closed set actually recognizes. `data` arrives as `unknown` off the wire, so an unrecognized shape — or a
+ * peer that is not this endpoint at all — must canonicalize to "no code" rather than be trusted as one.
+ */
+function protocolCodeFrom(data: unknown): ProxyControlProtocolErrorCode | undefined {
+  if (typeof data !== 'object' || data === null) return undefined;
+  const code = (data as { code?: unknown }).code;
+  return typeof code === 'string' && (PROXY_CONTROL_PROTOCOL_ERROR_CODES as readonly string[]).includes(code)
+    ? (code as ProxyControlProtocolErrorCode)
+    : undefined;
 }
 
 export interface ControlClient {
@@ -111,7 +133,9 @@ export async function connectControlClient(
       pending.delete(Number(message.id));
       timer.clearTimeout(waiter.budget);
       if ('error' in message) {
-        waiter.reject(new ControlClientError('control_call_failed', message.error.message));
+        waiter.reject(
+          new ControlClientError('control_call_failed', message.error.message, protocolCodeFrom(message.error.data)),
+        );
       } else {
         waiter.resolve(message.result);
       }

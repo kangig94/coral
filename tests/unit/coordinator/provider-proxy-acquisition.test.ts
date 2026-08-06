@@ -103,6 +103,30 @@ describe('provider proxy set acquisition', () => {
     expect(recorded.log).toEqual([]);
   });
 
+  it('does not let a hung cleanup action hold the acquisition open past its deadline', async () => {
+    const recorded = steps({ failAt: 'control' });
+    const originalSpawn = recorded.steps.spawnGuardian;
+    recorded.steps.spawnGuardian = async () => {
+      const undo = await originalSpawn();
+      // Simulates a control-close RPC that never returns — exactly what would otherwise hold the caller's
+      // single-flight slot open forever.
+      return { label: undo.label, run: () => new Promise<void>(() => {}) };
+    };
+    const cleanupFailures: string[] = [];
+
+    const result = await acquireProviderProxySet({
+      steps: recorded.steps,
+      deadlineSignal: AbortSignal.timeout(50),
+      onCleanupFailure: (label) => cleanupFailures.push(label),
+    });
+
+    // The hung undo is reported as stranded instead of awaited forever; the attempt still resolves reporting
+    // the original failure, and the capsules undo — which does not hang — still runs to completion.
+    expect(result).toMatchObject({ kind: 'provider_proxy_acquisition_failed', cut: 'control establishment' });
+    expect(cleanupFailures).toEqual(['guardian']);
+    expect(recorded.log).toContain('undo:capsules');
+  });
+
   it('refuses to publish a set whose deadline elapsed while the last handshake was in flight', async () => {
     const recorded = steps();
     const deadline = new AbortController();

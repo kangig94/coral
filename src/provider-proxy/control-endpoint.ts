@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type Server as NetServer, type Socket } from 'node:net';
 
+import { truncate } from '../infra/text.js';
 import {
   MAX_PROXY_CONTROL_FRAME_BYTES,
   ProxyControlProtocolError,
@@ -55,6 +56,23 @@ class UnknownControlMethodError extends Error {
     super(`Unknown control method ${method}.`);
     this.name = 'UnknownControlMethodError';
     Object.setPrototypeOf(this, UnknownControlMethodError.prototype);
+  }
+}
+
+/**
+ * Wraps an admission refusal with the deadline machine's own reason. `ProxyControlProtocolError` alone
+ * carries only the closed-set code, and `invalid_state` is shared by two refusals a caller must not treat
+ * alike: "retry, the incumbent is still live" and "give up, this set is being reaped". The reason has to
+ * travel as its own field for a caller to branch on it, not sit only inside the human-readable message.
+ */
+class ControlAdmissionRefusedError extends ProxyControlProtocolError {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super('invalid_state', `Control admission was refused (${reason}).`);
+    this.name = 'ControlAdmissionRefusedError';
+    this.reason = reason;
+    Object.setPrototypeOf(this, ControlAdmissionRefusedError.prototype);
   }
 }
 
@@ -169,17 +187,34 @@ function failure(id: string | number | null, code: number, message: string): Pro
 }
 
 /**
- * Maps a thrown handler error onto the wire. The protocol's own code travels in `data` because the caller
- * has to act on it differently: `grant_replayed` means give up, while a refusal from a still-live incumbent
- * means retry. Collapsing both into one JSON-RPC number would leave a successor parsing prose to decide.
+ * Maps a thrown handler error onto the wire. The protocol's own code travels in `data` because a caller has
+ * to act on it differently by code — `grant_replayed` means give up — and `ControlAdmissionRefusedError`
+ * carries its `reason` alongside `data.code` for the same reason: `invalid_state` alone cannot tell "retry"
+ * from "give up" apart. Anything that is not this endpoint's own vocabulary — a role's domain error, or a
+ * raw `ZodError` from a handler's `.parse()` — still has to report a code from the closed set rather than
+ * escape it, because a caller only ever branches on `data.code`, never on prose.
  */
 function handlerFailure(id: string | number, error: unknown): ProxyControlJsonRpcMessage {
   const message = error instanceof Error ? error.message : 'Control request failed.';
   if (error instanceof UnknownControlMethodError) return failure(id, JSON_RPC_METHOD_NOT_FOUND, message);
+  if (error instanceof ControlAdmissionRefusedError) {
+    return {
+      jsonrpc: '2.0',
+      id,
+      error: { code: JSON_RPC_INVALID_REQUEST, message, data: { code: error.code, reason: error.reason } },
+    };
+  }
   if (error instanceof ProxyControlProtocolError) {
     return { jsonrpc: '2.0', id, error: { code: JSON_RPC_INVALID_REQUEST, message, data: { code: error.code } } };
   }
-  return failure(id, JSON_RPC_INVALID_REQUEST, message);
+  // Not one of this endpoint's own errors, so it carries no domain code to relay — only `protocol_violation`,
+  // the closed set's catch-all. The message is truncated rather than passed through verbatim: a ZodError's
+  // `.message` is a JSON dump of every issue, unbounded and shaped like data rather than wire prose.
+  return {
+    jsonrpc: '2.0',
+    id,
+    error: { code: JSON_RPC_INVALID_REQUEST, message: truncate(message, 200), data: { code: 'protocol_violation' } },
+  };
 }
 
 function success(id: string | number, result: unknown): ProxyControlJsonRpcMessage {
@@ -219,6 +254,12 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   let nextEpoch: ControlEpoch = 1;
   let pairedSocket: Socket | null = null;
   let closed = false;
+  // Every accepted connection, not only the two that go on to hold an authority. A connection is admitted
+  // whenever a slot is open — before the peer has ever paired, or while an incumbent's lease has merely
+  // lapsed — and one that never claims control or pairing, or never sends anything at all, is still a
+  // connection close() has to reach: server.close() fires its callback only once every existing connection
+  // has ended.
+  const sockets = new Set<Socket>();
 
   const write = (socket: Socket, message: ProxyControlJsonRpcMessage): void => {
     if (socket.destroyed) return;
@@ -240,6 +281,12 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     if (tenancy?.socket === socket) {
       throw new ProxyControlProtocolError('invalid_state', 'This connection already holds a control tenancy.');
     }
+    if (pairedSocket === socket) {
+      // The mirror of the pairing branch's own refusal below: control and pairing are different authorities,
+      // and admitting one from the socket that already holds the other would collapse the distinction the
+      // two-ACK staging rule depends on.
+      throw new ProxyControlProtocolError('unauthorized_control', 'The paired connection may not also open control.');
+    }
     const heartbeatChallenge = mintChallenge();
     // The first tenancy this endpoint ever opens is the bootstrap one; every later one is by construction a
     // successor. Deriving it leaves no way for a role to declare itself first twice.
@@ -248,10 +295,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
         ? challenges.issueFirstChallenge(heartbeatChallenge)
         : challenges.admitSuccessor(heartbeatChallenge);
     if (!admitted.accepted) {
-      throw new ProxyControlProtocolError(
-        'invalid_state',
-        `Control admission was refused (${admitted.reason ?? 'rejected'}).`,
-      );
+      throw new ControlAdmissionRefusedError(admitted.reason ?? 'rejected');
     }
     const displaced = tenancy;
     const epoch = nextEpoch;
@@ -372,15 +416,18 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   };
 
   const acceptConnection = (socket: Socket): void => {
-    // One connection holds control and, when the role has a peer, one more may hold pairing. Anything
-    // beyond that is refused rather than queued, so two coordinators can never both believe they own this
-    // set and no third party can sit on the endpoint waiting for a slot.
+    // One connection holds control and, when the role has a peer, one more may hold pairing. A third
+    // connection is refused only once both slots are already filled — before the peer has ever paired, or
+    // while an incumbent's lease has merely lapsed, a connection is admitted holding neither authority yet.
+    // It is tracked in `sockets` below regardless, so it is not a party sitting unaccounted-for on the
+    // endpoint: close() still reaches it even if it never claims a slot.
     const controlTaken = tenancy !== null && !tenancy.socket.destroyed && challenges.controlIsLive();
     const pairingTaken = pairedSocket !== null && !pairedSocket.destroyed;
     if (controlTaken && (role.pairing === undefined || pairingTaken)) {
       socket.destroy();
       return;
     }
+    sockets.add(socket);
     const read = createFrameReader(
       (frame) => {
         let message: ProxyControlJsonRpcMessage;
@@ -401,6 +448,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     socket.on('data', read);
     socket.on('error', () => socket.destroy());
     socket.on('close', () => {
+      sockets.delete(socket);
       if (pairedSocket === socket) {
         pairedSocket = null;
         observer.onPairingLost?.();
@@ -444,11 +492,13 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     },
     async close(): Promise<void> {
       closed = true;
-      const live = tenancy;
       tenancy = null;
-      live?.socket.destroy();
-      pairedSocket?.destroy();
       pairedSocket = null;
+      // Destroys every accepted connection, not only the tenancy and pairing sockets: `sockets` is the
+      // superset those two are drawn from, so this is what keeps server.close() below from waiting forever
+      // on a connection that never claimed either authority.
+      for (const socket of sockets) socket.destroy();
+      sockets.clear();
       const running = server;
       server = null;
       if (running === null) return;

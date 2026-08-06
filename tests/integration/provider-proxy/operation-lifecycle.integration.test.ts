@@ -25,7 +25,7 @@ const timer = {
 
 type Started = { jobId: string; operationId: string };
 
-async function startProxy(options: { failStage?: boolean } = {}) {
+async function startProxy(options: { failStage?: boolean; failConfirmActivation?: boolean } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'coral-proxy-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const endpoint = join(directory, 'p.sock');
@@ -64,11 +64,13 @@ async function startProxy(options: { failStage?: boolean } = {}) {
 
   let elapsed = 0n;
   const clock = createMonotonicClock(Symbol('proxy-lifecycle'), { readMilliseconds: () => elapsed });
-  const started: Started[] = [];
+  const started: Array<Started & { prepared: unknown }> = [];
   const stopped: Array<Started & { cause: string }> = [];
   const host: SemanticOperationHost = {
-    start: ({ key }) => {
-      started.push({ ...key });
+    // Recording `prepared` (not just `key`) is what exposes a host that starts with the wrong payload: the
+    // proxy must hand over the envelope prepare validated, not activate's own request params.
+    start: ({ key, prepared }) => {
+      started.push({ ...key, prepared });
     },
     stop: ({ key, cause }) => {
       stopped.push({ ...key, cause });
@@ -99,6 +101,12 @@ async function startProxy(options: { failStage?: boolean } = {}) {
       stageProviderRoot: () => {
         if (options.failStage === true) throw new Error('the guardian refused to stage this root');
         return Promise.resolve({ providerRoot: { pid: 7_001, processStartedAtSeconds: 800 }, receipt: 'joint-1' });
+      },
+      confirmActivation: () => {
+        if (options.failConfirmActivation === true) {
+          throw new Error('the guardian did not recognise this activation pair');
+        }
+        return Promise.resolve();
       },
     },
   });
@@ -207,7 +215,10 @@ describe('provider-proxy operation lifecycle', () => {
     expect(set.started).toEqual([]);
 
     expect(await activate(set, operation, reserved)).toEqual({ state: 'executing', committedThroughProviderSeq: 0 });
-    expect(set.started).toEqual([{ jobId: operation.jobId, operationId: operation.operationId }]);
+    // The host must receive the envelope prepare validated, not activate's own request params.
+    expect(set.started).toEqual([
+      { jobId: operation.jobId, operationId: operation.operationId, prepared: { kind: 'app-server', turns: [] } },
+    ]);
   });
 
   it('treats a repeated activation as the same request, not a second kernel', async () => {
@@ -219,6 +230,24 @@ describe('provider-proxy operation lifecycle', () => {
 
     // Starting a second kernel would fork the carrier this proxy exists to own.
     expect(set.started).toHaveLength(1);
+  });
+
+  it('refuses activation that presents a containment receipt nobody staged, and starts no kernel', async () => {
+    const set = await startProxy();
+    const { operation, reserved } = await prepare(set);
+
+    await expect(activate(set, operation, { ...reserved, jointContainmentReceipt: 'forged-receipt' })).rejects.toThrow(
+      /different containment receipt/u,
+    );
+    expect(set.started).toEqual([]);
+  });
+
+  it('refuses activation the guardian does not confirm, and starts no kernel', async () => {
+    const set = await startProxy({ failConfirmActivation: true });
+    const { operation, reserved } = await prepare(set);
+
+    await expect(activate(set, operation, reserved)).rejects.toThrow(/did not recognise/u);
+    expect(set.started).toEqual([]);
   });
 
   it('refuses a prepare naming a different host fingerprint', async () => {
@@ -307,6 +336,27 @@ describe('provider-proxy operation lifecycle', () => {
     // would write an interruption the user never suffered.
     expect(stopped.state).toBe(expected);
     expect(set.stopped).toEqual([{ jobId: operation.jobId, operationId: operation.operationId, cause }]);
+  });
+
+  it('releases a pending-activation entry on stop without calling a kernel that never started', async () => {
+    const set = await startProxy();
+    const { operation, reserved } = await prepare(set);
+
+    const stopped = (await set.control.call('operation.stop.v1', { operation, cause: 'user_abort' }, 5_000)) as {
+      state: string;
+    };
+
+    // `SemanticOperationHost.stop`'s contract is "stops a running kernel" — this one was never started.
+    expect(stopped.state).toBe('released');
+    expect(set.stopped).toEqual([]);
+    // Released, not stuck: a cancel for the same reservation now reports it as already gone.
+    expect(
+      await set.control.call(
+        'operation.cancel-pending.v1',
+        { operation, reservationId: reserved.reservationId, activationNonce: reserved.activationNonce },
+        5_000,
+      ),
+    ).toEqual({ state: 'released' });
   });
 
   it('refuses adoption before any grant has been redeemed on this proxy', async () => {

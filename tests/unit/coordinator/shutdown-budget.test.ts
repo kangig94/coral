@@ -592,6 +592,75 @@ describe('required provider-proxy shutdown steps', () => {
     expect(released).toEqual(['heartbeats:p1', 'heartbeats:p2', 'control:p1', 'control:p2', 'closeIpcServerFn:start']);
   });
 
+  it('keeps releasing every other trigger when a heartbeat stop throws synchronously', async () => {
+    const callLog: CallLog = [];
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: registryOf([
+        fakeSet('p-throws', callLog, {
+          stopHeartbeats: () => {
+            throw new Error('heartbeat scheduler already disposed');
+          },
+        }),
+        fakeSet('p2', callLog),
+      ]),
+    });
+    harness.ctx.closeIpcServerFn = async () => {
+      callLog.push('closeIpcServerFn:start');
+    };
+
+    // A synchronous throw from the first trigger must not suppress any trigger queued after it: the healthy
+    // set's heartbeats still stop, both control closes are still initiated, and the socket release still
+    // fires — only the throwing set's own failure is reported.
+    expect(await shutdownFailureDetail(harness.ctx)).toMatch(
+      /heartbeats p-throws: .*heartbeat scheduler already disposed/u,
+    );
+    expect(callLog).toContain('heartbeats:p2');
+    expect(callLog).toContain('control:p-throws');
+    expect(callLog).toContain('control:p2');
+    expect(callLog).toContain('closeIpcServerFn:start');
+  });
+
+  it('excludes a set already reaped during handoff from the release boundary', async () => {
+    const callLog: CallLog = [];
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: registryOf([
+        fakeSet('p-empty', callLog, { snapshotOperations: async () => [] }),
+        fakeSet('p-live', callLog),
+      ]),
+    });
+    harness.ctx.closeIpcServerFn = async () => {
+      callLog.push('closeIpcServerFn:start');
+    };
+
+    await runShutdownSequence(harness.ctx);
+
+    // p-empty was already stopped and reaped as a handoff-reap candidate; re-offering it to the release
+    // boundary would retry a close against containment that no longer exists.
+    expect(callLog).toContain('reap:p-empty');
+    expect(callLog).not.toContain('control:p-empty');
+    expect(callLog).toContain('control:p-live');
+  });
+
+  it('skips the required provider-proxy steps entirely when there are no live sets', async () => {
+    const callLog: CallLog = [];
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: registryOf([]),
+    });
+    harness.ctx.closeIpcServerFn = async () => {
+      callLog.push('closeIpcServerFn:start');
+    };
+
+    await runShutdownSequence(harness.ctx);
+
+    // No live set means the required proxy steps (reap, grant, release boundary) have nothing to do; the
+    // plain (non-required) IPC close path runs instead.
+    expect(callLog.some((entry) => /^(heartbeats|control|reap|install):/u.test(entry))).toBe(false);
+    expect(callLog).toContain('closeIpcServerFn:start');
+  });
+
   it('remains fatal when the controls close but the IPC release fails', async () => {
     const callLog: CallLog = [];
     const harness = buildHarness({

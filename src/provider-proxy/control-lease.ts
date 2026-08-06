@@ -1,7 +1,7 @@
 import type { MonotonicClock, MonotonicInstant } from '../infra/monotonic-clock.js';
 
 /** How many recently issued challenges are remembered for reuse rejection. */
-const RECENT_CHALLENGE_HISTORY = 64;
+export const RECENT_CHALLENGE_HISTORY = 64;
 
 export type ControlLeaseEchoResult =
   | Readonly<{ accepted: true }>

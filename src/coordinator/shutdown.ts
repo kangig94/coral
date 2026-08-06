@@ -260,30 +260,46 @@ async function releaseIpcSocket(
 /**
  * The ordered release boundary at the end of a handoff.
  *
- * Its whole purpose is that no single failure can suppress a later trigger. Heartbeats stop first, then every
- * control close is initiated, then the IPC socket release is initiated — all before anything is awaited. A
- * control whose close rejects must not keep the socket bound, because the socket is what the successor is
- * waiting on, and a successor that cannot bind waits out the full adoption window for no reason.
+ * Its whole purpose is that no single failure — synchronous or asynchronous — can suppress a later trigger.
+ * Every heartbeat stop, then every control close, then the IPC socket release, is invoked synchronously and
+ * in that order before any of them is awaited; a synchronous throw from one is caught and folded into the
+ * same outcome as an asynchronous rejection, so it cannot skip the triggers queued after it. A control whose
+ * close rejects — or a heartbeat stop that throws — must not keep the socket bound, because the socket is
+ * what the successor is waiting on, and a successor that cannot bind waits out the full adoption window for
+ * no reason.
  */
 async function releaseHandoffAuthority(
   sets: readonly ProviderProxySetAuthority[],
   releaseIpcSocket: () => Promise<void>,
   signal: AbortSignal,
 ): Promise<ShutdownStepConfirmation> {
-  for (const set of sets) set.stopHeartbeats();
+  // A synchronous throw becomes a rejected promise here instead of escaping: escaping would abort this
+  // function before the triggers queued after it ever ran, which is exactly the failure this boundary rules
+  // out. Calling `fn()` inside the try — not deferring it to a microtask — is also what makes every trigger
+  // below run synchronously, in the order written, before any of them is awaited.
+  const trigger = (fn: () => void | Promise<void>): Promise<void> => {
+    try {
+      return Promise.resolve(fn());
+    } catch (error: unknown) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
 
-  const controlCloses = sets.map((set) => ({
-    proxy: set.proxyInstanceId,
-    settled: Promise.resolve().then(() => set.initiateControlClose()),
-  }));
-  // Unconditional and un-awaited-upon-yet: the trigger happens even if every control close above already
-  // rejected synchronously, which is exactly the row of the fault matrix this ordering exists for.
-  const socketReleased = Promise.resolve().then(releaseIpcSocket);
+  const releases = [
+    ...sets.map((set) => ({
+      label: `heartbeats ${set.proxyInstanceId}`,
+      settled: trigger(() => set.stopHeartbeats()),
+    })),
+    ...sets.map((set) => ({
+      label: `control ${set.proxyInstanceId}`,
+      settled: trigger(() => set.initiateControlClose()),
+    })),
+    { label: 'IPC socket release', settled: trigger(releaseIpcSocket) },
+  ];
 
-  const outcomes = await Promise.allSettled([...controlCloses.map((entry) => entry.settled), socketReleased]);
-  const labels = [...controlCloses.map((entry) => `control ${entry.proxy}`), 'IPC socket release'];
+  const outcomes = await Promise.allSettled(releases.map((entry) => entry.settled));
   const failures = outcomes.flatMap((outcome, index) =>
-    outcome.status === 'rejected' ? [`${labels[index]}: ${formatError(outcome.reason)}`] : [],
+    outcome.status === 'rejected' ? [`${releases[index].label}: ${formatError(outcome.reason)}`] : [],
   );
   if (signal.aborted) failures.push('release boundary was aborted before every confirmation arrived');
   return failures.length === 0 ? { confirmed: true } : { confirmed: false, detail: failures.join('; ') };
@@ -349,7 +365,11 @@ export async function runShutdownSequence({
     label: string,
     task: (signal: AbortSignal) => Promise<ShutdownStepConfirmation>,
   ): Promise<void> => runStep(label, () => withRequiredBudget(label, task, remainingDrain, runtime.time));
-  const liveProxySets = (): readonly ProviderProxySetAuthority[] => providerProxyAuthority?.liveSets() ?? [];
+  // `liveSets()` is a call-time snapshot, not a live cursor (see its doc): reading it again after this
+  // shutdown has itself reaped some of what it returned is not guaranteed to exclude those sets, which would
+  // let an already-torn-down set re-enter a later required step and fail it a second time for the same
+  // underlying reap. One snapshot, taken once, is what every step below reads.
+  const liveProxySets: readonly ProviderProxySetAuthority[] = providerProxyAuthority?.liveSets() ?? [];
 
   // Stop accepting HTTP/user-facing work first; the IPC socket stays bound
   // until all handoff finalizers complete or consume the budget, so the
@@ -388,9 +408,9 @@ export async function runShutdownSequence({
     // Before the caught per-handle child termination, because that path terminates handles this coordinator
     // still owns; the detached sets outlive it and have to be reaped by identity, not by handle. Skipped
     // outright when there is nothing to reap: a required step with no work must not fail for want of budget.
-    if (liveProxySets().length > 0) {
+    if (liveProxySets.length > 0) {
       await runRequiredBudgetedStep('provider proxy stop and reap', async (signal) =>
-        reapProviderProxySets(liveProxySets(), signal),
+        reapProviderProxySets(liveProxySets, signal),
       );
     }
     await runStep('child termination', terminateAllFn);
@@ -408,7 +428,7 @@ export async function runShutdownSequence({
     await runBudgetedStep('provider host drain for handoff', async (signal) =>
       providerHostManager.drainForHandoff(signal),
     );
-    for (const set of liveProxySets()) {
+    for (const set of liveProxySets) {
       // Snapshot and install per proxy, each in its own step: a grant that fails for one carrier must
       // hard-transition that carrier alone rather than stranding every other operation behind one EOF.
       await runBudgetedStep(`provider proxy handoff grant '${set.proxyInstanceId}'`, async (signal) => {
@@ -447,7 +467,13 @@ export async function runShutdownSequence({
   // No async work may run between this resolution and `onStopped()`; that
   // structural invariant is what makes "socket bound = old daemon authority"
   // hold across the handoff window.
-  if (mode === 'handoff' && liveProxySets().length > 0) {
+  // Sets already reaped above (nothing to hand off, or a failed grant install) are gone from the guardian/
+  // reaper/proxy trio; re-offering them to the release boundary would retry a close against containment that
+  // no longer exists and fail the required step a second time for the same underlying reap.
+  const alreadyReaped = new Set(handoffReapCandidates);
+  const handoffReleaseCandidates = liveProxySets.filter((set) => !alreadyReaped.has(set));
+
+  if (mode === 'handoff' && handoffReleaseCandidates.length > 0) {
     // One ordered boundary rather than a socket close beside a separate control close. Control loss makes
     // the installed grants redeemable without moving either enforcer's challenge-derived deadline, and the
     // socket release that immediately follows lets the successor bind instead of waiting out the adoption
@@ -457,7 +483,7 @@ export async function runShutdownSequence({
     // a shutdown that ran no provider work would turn a slow-but-harmless drain into a non-zero exit for a
     // property nothing was relying on.
     await runRequiredBudgetedStep('provider proxy handoff authority release', async (signal) =>
-      releaseHandoffAuthority(liveProxySets(), () => releaseIpcSocket(ipcServer, closeIpcServerFn), signal),
+      releaseHandoffAuthority(handoffReleaseCandidates, () => releaseIpcSocket(ipcServer, closeIpcServerFn), signal),
     );
   } else if (ipcServer && closeIpcServerFn) {
     const ipcServerClosed = observeTask(
