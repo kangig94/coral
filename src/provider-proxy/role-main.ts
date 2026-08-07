@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import { BUILD_FLAVOR_ENV_KEY, resolveBuildFlavor } from '../infra/build-flavor.js';
 import { backendLog } from '../infra/backend-log.js';
 import type { StrictBundleIdentityResult } from '../infra/bundle-manifest.js';
@@ -26,8 +28,9 @@ import {
 } from './orphan-deadline.js';
 import type { ControlClient } from './control-client.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS, type ProxyIdentity } from './protocol.js';
-import { createProxy, type Proxy, type SemanticOperationHost } from './proxy.js';
+import { createProxy, type Proxy } from './proxy.js';
 import { createReaper, type Reaper } from './reaper.js';
+import { createProxyAppServerHostAuthority, createSemanticOperationRuntime } from './semantic-operation.js';
 import {
   connectRoleControlWithRetry,
   runtimeControlTimer,
@@ -555,10 +558,34 @@ export async function startProviderReaperRole(
   };
 }
 
+/** `guardian.register-provider-root.v1`'s reply, validated at the one place this role parses it. Mirrors the
+ *  `reaperAckSchema`/explicit-`state`-check style `guardian.ts` itself uses for the RPCs it issues. */
+const registerProviderRootResultSchema = z
+  .object({
+    state: z.literal('staged-contained'),
+    providerRoot: z
+      .object({ pid: z.number().int().nonnegative(), processStartedAtSeconds: z.number().int().nonnegative() })
+      .strict(),
+    jointContainmentReceipt: z.string().min(1),
+  })
+  .strict();
+
+/** A stable string key for the containment closures' own bookkeeping — the same composite `(jobId,
+ *  operationId)` shape `semantic-operation.ts`'s own internal key uses, reimplemented here as the trivial
+ *  one-liner it is rather than exported and shared: the two modules track this key for genuinely different
+ *  reasons (kernel execution state vs. containment-receipt recognition), matching this codebase's existing
+ *  precedent of `proxy.ts`'s `pumpToken` and `ledger.ts`'s `keyOf` each independently restating the same shape. */
+function containmentKeyString(key: { jobId: string; operationId: string }): string {
+  return `${key.jobId} ${key.operationId}`;
+}
+
 /**
- * Runs the proxy: consumes its capsule and starts listening. The semantic carrier — the Claude/Codex
- * app-server child, bound session, and operation ledger execution — is wired by the operation ledger work
- * (plan item W2.3); this role main provides the process topology, endpoint, and authentication surface only.
+ * Runs the proxy: consumes its capsule, pairs with the guardian over the channel `guardian.register-provider-
+ * root.v1` requires, and starts listening. The semantic carrier itself — reconstructing the bound provider,
+ * running its kernel, and pumping `ProviderEventBody`s into `proxy.emitProviderEvent` — is
+ * `semantic-operation.ts`'s `SemanticOperationHost`; this role main owns the process topology, endpoint and
+ * guardian-authentication surface, and the two containment closures that talk to the guardian on the kernel's
+ * behalf (`Proxy`'s own `containment.stageProviderRoot`/`confirmActivation`).
  */
 export async function startProviderProxyRole(
   capsulePath: string,
@@ -567,6 +594,7 @@ export async function startProviderProxyRole(
   const capsule = consumeProviderBootstrapCapsule(capsulePath, 'proxy', buildCapsuleEnv(ports));
   const clock = createMonotonicClock(Symbol('coral.provider-proxy.proxy'));
   const self = readSelfIdentity(ports);
+  const timer = runtimeControlTimer(ports.runtime);
 
   const identity: ProxyIdentity = {
     proxyInstanceId: capsule.proxyInstanceId,
@@ -582,32 +610,117 @@ export async function startProviderProxyRole(
     canonicalEndpoint: capsule.canonicalEndpoint,
   };
 
-  const semanticCarrierNotWired = (what: string) => (): never => {
-    throw new Error(`${what} is wired by the operation ledger work (plan item W2.3), not this role main.`);
-  };
-  const host: SemanticOperationHost = {
-    start: semanticCarrierNotWired('Starting the semantic kernel'),
-    stop: semanticCarrierNotWired('Stopping the semantic kernel'),
-  };
+  // The guardian must already be listening by the time this process exists — it spawns the proxy only after
+  // its own `listen()` resolves — so this is an ordinary connect, retried only for the residual scheduling
+  // window between the OS reporting this process spawned and its socket file becoming dialable.
+  const guardianChannel = await connectRoleControlWithRetry(capsule.guardianControlEndpoint, timer, {
+    connectTimeoutMs: ROLE_CONNECT_TIMEOUT_MS,
+    retryIntervalMs: ROLE_SPAWN_READY_RETRY_INTERVAL_MS,
+    overallDeadlineMs: ROLE_SPAWN_READY_DEADLINE_MS,
+    now: () => ports.runtime.time.now(),
+    sleep: (ms) => ports.runtime.time.sleep(ms),
+  });
+  await guardianChannel.call(
+    'guardian.pair.v1',
+    { pairingSecret: capsule.proxyGuardianAuthSecret },
+    PROXY_CONTROL_RPC_TIMEOUT_MS,
+  );
+
+  // The joint containment receipt this proxy itself observed at stage time, per operation — what
+  // `confirmActivation` below recognises an activation against. Keyed independently of the ledger's own copy
+  // (`proxy.ts` already refuses a mismatch there before ever calling `confirmActivation`): this is this
+  // containment wiring's own record of what it staged, not a second read of the ledger's.
+  const recognisedReceipts = new Map<string, string>();
+
+  const hostAuthority = createProxyAppServerHostAuthority(ports.runtime);
+  // Forward-referenced: `createSemanticOperationRuntime`'s host needs the `Proxy` this call is itself building
+  // (to pump events and read ledger state), and `createProxy` needs that host before the `Proxy` it returns
+  // can exist — the same shape `guardianRef`/`reaperRef` already use above for their own peer/self references.
+  // eslint-disable-next-line prefer-const
+  let proxyRef!: Proxy;
+  const semantic = createSemanticOperationRuntime({
+    runtime: ports.runtime,
+    hostAuthority,
+    getProxy: () => proxyRef,
+  });
 
   const proxy = createProxy({
     capsule,
     clock,
     identity,
-    host,
-    timer: runtimeControlTimer(ports.runtime),
+    host: semantic.host,
+    timer,
     mintChallenge: () => ports.runtime.ids.uuid(),
     mintReceipt: () => ports.runtime.ids.uuid(),
     mintReservationId: () => ports.runtime.ids.uuid(),
     mintActivationNonce: () => ports.runtime.ids.uuid(),
     containment: {
-      stageProviderRoot: semanticCarrierNotWired('Provider-root staging'),
-      confirmActivation: semanticCarrierNotWired('Activation confirmation'),
+      stageProviderRoot: async (key) => {
+        const entry = proxyRef.ledger().get(key);
+        if (entry === null) {
+          // Unreachable in production: `proxy.ts` calls this only immediately after `ledger.prepare()` stored
+          // this exact entry. A thrown error here leaves the ledger entry untouched, matching `prepare`'s own
+          // contract for a staging failure.
+          throw new Error(`No ledger entry for ${key.jobId}/${key.operationId} at stage time.`);
+        }
+        const root = await semantic.ensureProviderRoot(key, entry.prepared);
+        const response = await guardianChannel.call(
+          'guardian.register-provider-root.v1',
+          {
+            proxy: identity,
+            operation: {
+              jobId: key.jobId,
+              operationId: key.operationId,
+              proxyInstanceId: identity.proxyInstanceId,
+              buildSetId: identity.buildSetId,
+            },
+            reservationId: ports.runtime.ids.uuid(),
+            activationNonce: ports.runtime.ids.uuid(),
+            providerPid: root.pid,
+            providerProcessStartedAtSeconds: root.processStartedAtSeconds,
+          },
+          PROXY_CONTROL_RPC_TIMEOUT_MS,
+        );
+        const parsed = registerProviderRootResultSchema.parse(response);
+        recognisedReceipts.set(containmentKeyString(key), parsed.jointContainmentReceipt);
+        return { providerRoot: parsed.providerRoot, receipt: parsed.jointContainmentReceipt };
+      },
+      confirmActivation: async ({ key, jointContainmentReceipt, jointActivationReceipt }) => {
+        // `jointContainmentReceipt`: recognised against what this containment wiring itself staged, not a
+        // second read of `proxy.ts`'s own ledger-side check (which already ran before this was called).
+        const recognised = recognisedReceipts.get(containmentKeyString(key));
+        if (recognised === undefined || recognised !== jointContainmentReceipt) {
+          throw new Error(
+            `Activation named a containment receipt this proxy never staged for ${key.jobId}/${key.operationId}.`,
+          );
+        }
+        // `jointActivationReceipt`: `guardian.operation-activate.v1` — the RPC that mints it — requires
+        // *active* guardian control, which only the coordinator's own connection to the guardian ever holds;
+        // this proxy's own connection is the *pairing* channel `guardian.register-provider-root.v1` requires,
+        // a distinct, narrower authority with no reachable method to re-ask the guardian about an activation
+        // receipt. There is therefore no live corroboration this proxy can perform for this specific field —
+        // see the task report's "confirmActivation" judgement — so it is accepted here as presented by a
+        // coordinator that could only have obtained it by already proving active control over both this proxy
+        // (to reach `operation.activate.v1` at all) and the guardian that minted it. Non-emptiness is the one
+        // well-formedness fact left to check; the wire schema (`activateParamsSchema`) already guarantees it,
+        // so this is a defensive restatement of that guarantee, not new coverage.
+        if (jointActivationReceipt.length === 0) {
+          throw new Error('Activation presented an empty activation receipt.');
+        }
+      },
     },
   });
+  proxyRef = proxy;
   await proxy.listen();
 
-  return { role: 'proxy', proxy, close: () => proxy.close() };
+  return {
+    role: 'proxy',
+    proxy,
+    close: async () => {
+      guardianChannel.close();
+      await proxy.close();
+    },
+  };
 }
 
 export type ProviderRoleMainOptions = Readonly<{ pluginRoot: string }>;

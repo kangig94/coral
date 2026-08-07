@@ -395,7 +395,11 @@ describe('provider-proxy process topology: guardian role main', () => {
     // — nothing answers at its endpoint until `startProviderReaperRole` itself binds it, and an un-retried
     // connect attempt racing a freshly spawned process would otherwise have thrown.
     expect(environment.handles.reaper).toBeDefined();
-    expect(environment.handles.proxy).toBeDefined();
+    // Unlike the reaper, the proxy role now pairs with the guardian (`guardian.pair.v1`) before it ever calls
+    // `proxy.listen()` — a real round trip over its own socket connection, not settled by the time the
+    // guardian's own `recordContainment` awaits only the reaper's ACK. `vi.waitFor` is this file's own existing
+    // idiom for exactly this shape of gap (see the `exitLog` wait below).
+    await vi.waitFor(() => expect(environment.handles.proxy).toBeDefined(), { timeout: 5_000 });
 
     // The guardian's own control endpoint was already listening before the proxy spawn call was made: a
     // sequence number recorded at each event (`onGuardianListening`, and at the fake spawn call itself) is
