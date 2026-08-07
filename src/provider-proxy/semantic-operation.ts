@@ -102,27 +102,65 @@ async function closeSpawnedHandle(
   await handle.close();
 }
 
-function canonicalEnv(env: Readonly<Record<string, string>> | undefined): Readonly<Record<string, string>> {
-  return Object.freeze({ ...(env ?? {}) });
+/** Recursively re-keys every plain object in `value` (at every nesting depth) into ascending key order,
+ *  leaving arrays and scalars untouched. Byte-for-byte copy of `canonicalValue`
+ *  (`src/coordinator/live/provider-hosts/state.ts`) — required because `JSON.stringify`'s own second
+ *  argument is a replacer *allowlist* applied at every nesting level, not a top-level key sorter: passing
+ *  `Object.keys(canonical).sort()` there (the bug this replaces) silently drops every field one level below
+ *  the top instead of sorting it. Sorting the value graph first and calling plain `JSON.stringify` on the
+ *  result is the only way to get a deep-stable key order without that trap. */
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalValue(entry)]),
+    );
+  }
+  return value;
 }
 
-/** Stable identity for one executable configuration, independent of lease mode — mirrors
- *  `hostKeyFromSpec` (`src/coordinator/live/provider-hosts/state.ts`), reimplemented locally because that
- *  module lives under the forbidden `src/coordinator/live/` tree (see this file's top-of-file doc comment). */
-function specIdentityKey(spec: ProviderServerSpec): string {
-  const canonical = {
-    provider: spec.provider,
-    command: spec.command,
-    args: [...spec.args],
-    cwd: spec.cwd,
-    env: canonicalEnv(spec.env),
-    initializeRequest: spec.initializeRequest ?? null,
-  };
-  return JSON.stringify(canonical, Object.keys(canonical).sort());
+/** Stable identity for one executable configuration, independent of lease mode — a faithful reimplementation
+ *  of `hostKeyFromSpec` (`src/coordinator/live/provider-hosts/state.ts`), copied rather than imported because
+ *  that module lives under the forbidden `src/coordinator/live/` tree (see this file's top-of-file doc
+ *  comment). Same field set, same `canonicalValue` sorter, same `JSON.stringify` call with no replacer — a
+ *  divergence here silently mints a `HostRef.fingerprint` (below) that can never match the coordinator's own
+ *  for an identical spec, which is exactly the defect this shape once had. The correspondence is not just
+ *  asserted in prose: `tests/unit/provider-proxy/semantic-operation.test.ts`'s "agrees with the coordinator's
+ *  own key/fingerprint functions" case imports both copies directly and proves they produce identical output
+ *  for the same spec. Exported so that test can drive it directly rather than only indirectly through
+ *  `createProxyAppServerHostAuthority`'s pooling behavior. */
+export function specIdentityKey(spec: ProviderServerSpec): string {
+  return JSON.stringify(
+    canonicalValue({
+      provider: spec.provider,
+      command: spec.command,
+      args: [...spec.args],
+      cwd: spec.cwd,
+      env: spec.env ?? {},
+      initializeRequest: spec.initializeRequest ?? null,
+      initializeTimeoutMs: spec.initializeTimeoutMs ?? null,
+      shutdownCapability: spec.shutdownCapability ?? null,
+    }),
+  );
 }
 
-function specFingerprint(runtime: Runtime, spec: ProviderServerSpec): string {
-  return runtime.ids.sha256(`${specIdentityKey(spec)} ${spec.leaseMode}`);
+/** Mirrors `hostFingerprintFromSpec` (`src/coordinator/live/provider-hosts/state.ts`) the same way
+ *  `specIdentityKey` mirrors `hostKeyFromSpec`: same three fields, same key order (a plain object literal's
+ *  string keys serialize in insertion order, so this does not need `canonicalValue`), same digest. Only the
+ *  hashing call differs in *spelling* — `runtime.ids.sha256` here vs. `node:crypto`'s `createHash('sha256')`
+ *  there — not in behavior: `src/runtime/real.ts` implements `ids.sha256` as
+ *  `createHash('sha256').update(input).digest('hex')`, the identical primitive. Exported for the same
+ *  direct-test reason as `specIdentityKey`. */
+export function specFingerprint(runtime: Runtime, spec: ProviderServerSpec): string {
+  return runtime.ids.sha256(
+    JSON.stringify({
+      identity: specIdentityKey(spec),
+      leaseMode: spec.leaseMode,
+      idleRetirement: spec.leaseMode === 'shared' ? spec.idleRetirement : null,
+    }),
+  );
 }
 
 type HostPoolEntry = {

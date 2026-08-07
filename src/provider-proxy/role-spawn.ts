@@ -2,7 +2,7 @@ import { basename, join } from 'node:path';
 
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
-import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
+import { gracefulKill } from '../infra/process-supervision.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
   connectControlClient,
@@ -45,12 +45,11 @@ export class RoleSpawnError extends Error {
 
 export type RoleSpawnPorts = Readonly<{
   process: Pick<Runtime['process'], 'spawn'>;
-  /** Used only to escalate a spawn that must be killed before it ever became a role this module tracks
-   *  (`role_spawn_no_pid` / `role_spawn_start_time_unavailable`) from SIGTERM to SIGKILL after a grace
-   *  period, the same shape `infra/process-supervision.ts`'s `gracefulKill` uses — reimplemented
-   *  locally because the provider proxy may import nothing under `src/coordinator/`
-   *  (`architecture-layering.test.ts`, `provider-proxy-no-store.test.ts`). */
-  time: Pick<Runtime['time'], 'setTimeout' | 'clearTimeout'>;
+  /** Passed whole, not narrowed to `time`, because `gracefulKill` (`infra/process-supervision.ts`) takes a
+   *  full `Runtime` — used only to escalate a spawn that must be killed before it ever became a role this
+   *  module tracks (`role_spawn_no_pid` / `role_spawn_start_time_unavailable`) from SIGTERM to SIGKILL after
+   *  a grace period. */
+  runtime: Runtime;
   platform: NodeJS.Platform;
   /** Injected so a test can fake a spawned pid's start time without a real process existing. Defaults to
    *  the real cross-platform `/proc` or `ps` probe. */
@@ -90,32 +89,6 @@ function resolveBackendArtifact(pluginRoot: string, currentEntrypoint: string | 
     return currentEntrypoint;
   }
   return join(pluginRoot, 'bridge', 'coral-backend.cjs');
-}
-
-/**
- * SIGTERM, escalating to SIGKILL after the standard grace period if the child has not exited by then. Kills
- * only the exact spawned handle — never a bare pid — so there is no window in which a recycled pid could be
- * signalled. This is `gracefulKill`'s own shape (`infra/process-supervision.ts`), reimplemented
- * here rather than imported: the provider proxy may reach nothing under `src/coordinator/`.
- */
-function killSpawnedRoleProcess(
-  child: ChildProcessLike,
-  time: Pick<Runtime['time'], 'setTimeout' | 'clearTimeout'>,
-): void {
-  try {
-    child.kill('SIGTERM');
-  } catch {
-    return; // Already gone; nothing left to escalate.
-  }
-  const escalation = time.setTimeout(() => {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      // Already gone.
-    }
-  }, SIGTERM_GRACE_MS);
-  escalation.unref?.();
-  child.on('close', () => time.clearTimeout(escalation));
 }
 
 /**
@@ -164,7 +137,7 @@ export function spawnRoleProcess(
   // loop alive.
   child.unref?.();
 
-  const killFailedSpawn = (): void => killSpawnedRoleProcess(child, ports.time);
+  const killFailedSpawn = (): void => gracefulKill(child, ports.runtime);
 
   if (typeof child.pid !== 'number') {
     killFailedSpawn();

@@ -46,7 +46,7 @@ export type CarrierClass =
  * may well still be running. Locally that is `unknown`, never `absent`, because the only thing proven is
  * that *this* process has no entry.
  */
-export type LocalOperationRegistryState = 'activated' | 'adopted' | 'released' | 'inherited';
+export type LocalOperationRegistryState = 'activated' | 'adopted' | 'inherited';
 
 /**
  * The durable CLI's recorded process identity, or why it is missing.
@@ -102,16 +102,15 @@ type Verdict = Readonly<{ liveness: CarrierLiveness; source: CarrierObservationS
 
 /**
  * A registry entry this coordinator made is the strongest local evidence there is; its absence is the
- * weakest. `released` is the only local state that proves the operation ended, because it is the only one
- * this coordinator wrote *after* the fact.
+ * weakest. There is no state in between: the registry deletes an entry the instant its operation settles
+ * (`LocalOperationRegistry.settled`) rather than marking it ended, so an operation this coordinator watched
+ * all the way through is locally indistinguishable from one it never had — both read as `inherited`.
  */
 function acquiredVerdict(registryState: LocalOperationRegistryState): Verdict {
   switch (registryState) {
     case 'activated':
     case 'adopted':
       return { liveness: 'live', source: 'local-operation-registry' };
-    case 'released':
-      return { liveness: 'absent', source: 'local-operation-registry' };
     case 'inherited':
       return { liveness: 'unknown', source: 'no-local-evidence' };
   }

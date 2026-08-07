@@ -1132,7 +1132,7 @@ export function resumeAutomaticBackendStoreResetIncident(
 }
 
 export function acquireBackendStoreResetLock(
-  runtime: Pick<Runtime, 'storage'>,
+  runtime: Pick<Runtime, 'storage' | 'time'>,
   files: BackendStoreFileSet,
   adoption: GenerationAdoptionLockLease,
 ): BackendStoreResetLockLease {
@@ -1141,7 +1141,9 @@ export function acquireBackendStoreResetLock(
   const lockPath = join(files.dbDir, 'store.db.reset.lock');
   let releaseDirectoryLock: () => void;
   try {
-    releaseDirectoryLock = acquireDirectoryLockSync(lockPath, 250);
+    // Threaded deps, not the ambient-fs default overload: the composed Runtime is already the caller's only
+    // I/O authority (Single Runtime World), and both call sites already hold `time` alongside `storage`.
+    releaseDirectoryLock = acquireDirectoryLockSync(lockPath, { storage: runtime.storage, time: runtime.time }, 250);
   } catch (error: unknown) {
     if (isDirectoryLockTimeoutError(error)) {
       throw documentedCoralSetupError({

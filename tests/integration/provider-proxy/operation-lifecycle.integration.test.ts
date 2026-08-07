@@ -629,8 +629,8 @@ describe('provider-proxy operation lifecycle', () => {
 
     observedBudgetsMs.length = 0;
     await set.control.call('operation.status.v1', { operations: [operation] }, 5_000);
-    // `operation.status.v1` declares its own, tighter budget — matching the client's own
-    // `OBSERVATION_REQUEST_TIMEOUT_MS` (`coordinator/live/carrier-observer.ts`) rather than the mutation default.
+    // `operation.status.v1` declares its own, tighter budget: an observation call, not a mutation the caller
+    // is blocked on, so it is bounded well below the ordinary control budget rather than inheriting it.
     expect(observedBudgetsMs).toEqual([PROXY_STATUS_RPC_TIMEOUT_MS]);
   });
 });

@@ -649,9 +649,15 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         // and transitions nothing, so answering it can never change what this proxy would otherwise do.
         authority: 'observation',
         // A background health check, not a mutation the caller is blocked on — bounded well below the
-        // ordinary control budget so a wedged reply costs an asker no more than it costs the client side,
-        // which already budgets the same `PROXY_STATUS_RPC_TIMEOUT_MS` for this exact call
-        // (`OBSERVATION_REQUEST_TIMEOUT_MS` in `coordinator/live/carrier-observer.ts`).
+        // ordinary control budget so a wedged reply costs an asker no more than the asker itself budgets
+        // for the call.
+        //
+        // No requester lives in this repo today: the coordinator-side network observer that once paired with
+        // this handler (`coordinator/live/carrier-observer.ts`) had no importer anywhere in `src/` and was
+        // deleted. The handler stays regardless, because this is a cross-version wire surface — a *successor*
+        // coordinator build must be able to observe *this* build's already-running proxy, and a responder
+        // cannot be retrofitted into a process that has already shipped. The requester can be added later;
+        // the responder cannot, so it ships now, ahead of the build that will call it.
         budgetMs: PROXY_STATUS_RPC_TIMEOUT_MS,
         handle: (params) => {
           const request = operationStatusParamsSchema.parse(params);

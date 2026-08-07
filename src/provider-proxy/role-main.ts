@@ -6,8 +6,13 @@ import type { StrictBundleIdentityResult } from '../infra/bundle-manifest.js';
 import { createMonotonicClock, type MonotonicClock } from '../infra/monotonic-clock.js';
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
 import { providerProxyBootstrapCapsulePath, providerReaperBootstrapCapsulePath } from '../infra/path/index.js';
-import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
-import { ABSENCE_POLL_MS, type ProcessContainmentEnvironment } from '../infra/process-containment.js';
+import { PROXY_DISAPPEARANCE_CONFIRM_MS, SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
+import {
+  ABSENCE_POLL_MS,
+  type ProcessContainmentEnvironment,
+  type RecordedContainmentIdentity,
+  type RecordedProcessIdentity,
+} from '../infra/process-containment.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
@@ -117,7 +122,7 @@ function buildDeadlines<Scope extends symbol>(
 function buildSpawnPorts(ports: ProviderRoleMainPorts): RoleSpawnPorts {
   return {
     process: ports.runtime.process,
-    time: ports.runtime.time,
+    runtime: ports.runtime,
     platform: ports.runtime.env.platform() as NodeJS.Platform,
     ...(ports.readProcessStartedAtSeconds === undefined
       ? {}
@@ -206,43 +211,111 @@ export type ProxyRoleHandle = Readonly<{
 
 export type ProviderRoleHandle = GuardianRoleHandle | ReaperRoleHandle | ProxyRoleHandle;
 
-/**
- * Best-effort cleanup for a role process this attempt itself spawned but can no longer hold, because a later
- * cut in the same construction failed. Verifies the recorded pid is still the exact process that was spawned
- * before signalling it — a bare pid is recycled, so signalling on trust alone risks hitting an unrelated
- * later process — then SIGTERMs, escalating to SIGKILL if it has not disappeared after the standard grace
- * period. `signalGroup` reaches a detached proxy by its whole process group (`-pid`), since the group leader
- * alone is not the containment; an ordinary child (the reaper) is signalled by its own pid.
- */
-async function reapUnheldRoleProcess(
-  identity: Readonly<{ pid: number; processStartedAtSeconds: number }>,
-  signalGroup: boolean,
-  ports: ProviderRoleMainPorts,
-): Promise<void> {
-  const platform = ports.runtime.env.platform() as NodeJS.Platform;
-  const read = ports.readProcessStartedAtSeconds ?? probeProcessStartedAtSeconds;
-  let observedStartedAt: number | null;
+/** Whether `identity` still names the exact process it was recorded from. A readable-but-different start
+ *  time means a different process now holds this pid; an unreadable one means it is already gone, or was
+ *  never reachable. Either way, a mismatch means there is nothing this identity still names — signalling the
+ *  bare pid would risk hitting whatever now holds it. */
+function isStillTheRecordedProcess<Scope extends symbol>(
+  identity: RecordedProcessIdentity,
+  environment: ProcessContainmentEnvironment<Scope>,
+): boolean {
+  const read = environment.readProcessStartedAtSeconds ?? probeProcessStartedAtSeconds;
   try {
-    observedStartedAt = read(identity.pid, platform);
+    return read(identity.pid, environment.platform) === identity.processStartedAtSeconds;
   } catch {
-    observedStartedAt = null;
+    return false;
   }
-  if (observedStartedAt !== identity.processStartedAtSeconds) {
-    // A readable-but-different start time means a different process now holds this pid; an unreadable one
-    // means it is already gone, or was never reachable. Either way there is nothing this identity still
-    // names — signalling the bare pid would risk hitting whatever now holds it.
-    return;
-  }
+}
 
-  const target = signalGroup ? -identity.pid : identity.pid;
-  ports.runtime.process.kill(target, 'SIGTERM');
-  const graceDeadline = ports.runtime.time.now() + SIGTERM_GRACE_MS;
-  while (ports.runtime.process.isAlive(target) && ports.runtime.time.now() < graceDeadline) {
-    await ports.runtime.time.sleep(ABSENCE_POLL_MS);
+/**
+ * Signals `target`, then confirms it gone rather than assuming so: waits up to `graceMs` for it to
+ * disappear, then holds a further confirmation window before declaring success — the same
+ * disappear-then-confirm discipline `reapRecordedContainment` (`infra/process-containment.ts`) itself uses,
+ * so a target that flickers dead-then-alive across one lucky poll is not mistaken for reaped.
+ */
+async function signalAndConfirmAbsence<Scope extends symbol>(
+  target: number,
+  signal: NodeJS.Signals,
+  graceMs: number,
+  clock: MonotonicClock<Scope>,
+  environment: ProcessContainmentEnvironment<Scope>,
+): Promise<boolean> {
+  environment.process.kill(target, signal);
+  const waitDeadline = clock.shiftMilliseconds(clock.now(), graceMs);
+  while (environment.process.isAlive(target) && clock.compare(clock.now(), waitDeadline) < 0) {
+    await clock.sleep(ABSENCE_POLL_MS);
   }
-  if (ports.runtime.process.isAlive(target)) {
-    ports.runtime.process.kill(target, 'SIGKILL');
+  if (environment.process.isAlive(target)) return false;
+
+  const confirmDeadline = clock.shiftMilliseconds(clock.now(), PROXY_DISAPPEARANCE_CONFIRM_MS);
+  while (clock.compare(clock.now(), confirmDeadline) < 0) {
+    if (environment.process.isAlive(target)) return false;
+    const remainingMs = clock.millisecondsBetween(clock.now(), confirmDeadline);
+    await clock.sleep(Math.max(0, Math.min(ABSENCE_POLL_MS, remainingMs)));
   }
+  return !environment.process.isAlive(target);
+}
+
+/** Reaps one signal target — SIGTERM, escalating to SIGKILL after the standard grace period, absence
+ *  confirmed after each — throwing only once both have failed to produce a confirmed exit. */
+async function reapUnheldTarget<Scope extends symbol>(
+  target: number,
+  targetLabel: string,
+  clock: MonotonicClock<Scope>,
+  environment: ProcessContainmentEnvironment<Scope>,
+): Promise<void> {
+  if (await signalAndConfirmAbsence(target, 'SIGTERM', SIGTERM_GRACE_MS, clock, environment)) return;
+  if (await signalAndConfirmAbsence(target, 'SIGKILL', SIGKILL_GRACE_MS, clock, environment)) return;
+  throw new Error(`Could not confirm ${targetLabel} exited after SIGTERM and SIGKILL.`);
+}
+
+/**
+ * Best-effort cleanup for a detached role process (the proxy: spawned with `detached: true`) this attempt
+ * itself spawned but can no longer hold, because a later cut in the same construction failed. A detached
+ * spawn is its own process-group leader by that OS guarantee — the identical fact
+ * `guardian.recordContainment`'s own `processGroupId: proxySpawn.pid` call already relies on — so this takes
+ * a full `RecordedContainmentIdentity` and asserts that shape rather than trusting a bare pid plus an
+ * easily-mistyped "signal the group" flag.
+ *
+ * Not a call to `reapRecordedContainment` itself: that function observes whether its target is already
+ * absent *before* ever signalling it — correct for a containment that may be reaped long after it was
+ * recorded, but wrong here, where the target is a process this very construction attempt spawned moments ago
+ * and is expected to still be alive. Skipping straight to "already absent" on an unrelated liveness-probe gap
+ * (this module's `environment.process.isAlive` has no reason to know about a role process before it is ever
+ * recorded as a live containment) would silently abandon a real cleanup. This reuses that function's
+ * monotonic-clock, confirm-after-signal discipline directly instead of its observe-first entry point.
+ */
+async function reapUnheldProcessGroup<Scope extends symbol>(
+  containment: RecordedContainmentIdentity,
+  clock: MonotonicClock<Scope>,
+  environment: ProcessContainmentEnvironment<Scope>,
+): Promise<void> {
+  if (containment.processGroupId !== containment.pid) {
+    throw new Error(
+      `Recorded containment pid=${containment.pid} is not its own process-group leader (processGroupId=${containment.processGroupId}).`,
+    );
+  }
+  if (!isStillTheRecordedProcess(containment, environment)) return;
+  await reapUnheldTarget(
+    -containment.processGroupId,
+    `process group ${containment.processGroupId}`,
+    clock,
+    environment,
+  );
+}
+
+/**
+ * Best-effort cleanup for an ordinary (non-detached) role process (the reaper) this attempt itself spawned
+ * but can no longer hold. Signalled by its own pid, never a group: an undetached child shares its parent's
+ * process group rather than establishing one of its own, so it never had a group to target.
+ */
+async function reapUnheldOrdinaryProcess<Scope extends symbol>(
+  identity: RecordedProcessIdentity,
+  clock: MonotonicClock<Scope>,
+  environment: ProcessContainmentEnvironment<Scope>,
+): Promise<void> {
+  if (!isStillTheRecordedProcess(identity, environment)) return;
+  await reapUnheldTarget(identity.pid, `pid=${identity.pid}`, clock, environment);
 }
 
 /** A wake later than the model's enforcement bound, or a reap that failed outright — exit code for the
@@ -343,14 +416,28 @@ async function unwindGuardianConstruction(
     await attempt('close the reaper control channel', () => reaperChannel.close());
   }
 
-  // Phase 2: identity-check and reap every process this attempt started, newest first.
+  // Phase 2: identity-check and reap every process this attempt started, newest first. Its own scoped clock,
+  // matching the pattern every role's own construction (`startProviderGuardianRole`, `startProviderReaperRole`,
+  // `startProviderProxyRole`) already uses to mint one on demand rather than share another subsystem's.
+  const clock = createMonotonicClock(Symbol('coral.provider-proxy.guardian-unwind'));
+  const environment = buildContainmentEnvironment(clock, ports);
   if (partial.proxySpawn !== null) {
     const proxySpawn = partial.proxySpawn;
-    await attempt('reap the proxy process group', () => reapUnheldRoleProcess(proxySpawn, true, ports));
+    await attempt('reap the proxy process group', () =>
+      reapUnheldProcessGroup(
+        {
+          pid: proxySpawn.pid,
+          processStartedAtSeconds: proxySpawn.processStartedAtSeconds,
+          processGroupId: proxySpawn.pid,
+        },
+        clock,
+        environment,
+      ),
+    );
   }
   if (partial.reaperSpawn !== null) {
     const reaperSpawn = partial.reaperSpawn;
-    await attempt('reap the reaper process', () => reapUnheldRoleProcess(reaperSpawn, false, ports));
+    await attempt('reap the reaper process', () => reapUnheldOrdinaryProcess(reaperSpawn, clock, environment));
   }
 
   // Phase 3: capsules and endpoints are removed by the coordinator's own acquisition steps once it observes

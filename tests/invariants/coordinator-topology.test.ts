@@ -42,7 +42,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/runtime-components/recovery-component.ts',
   'src/coordinator/live/kb-daemon-supervisor.ts',
   'src/coordinator/live/admission.ts',
-  'src/coordinator/live/carrier-observer.ts',
   'src/coordinator/live/durable-transport.ts',
   'src/coordinator/live/idle.ts',
   'src/coordinator/live/provider-proxy-acquisition.ts',
@@ -131,7 +130,6 @@ const TRANSPORT_TARGETS = new Set([
   'src/transport/ipc/handoff.ts',
   'src/transport/ipc/client.ts',
 ]);
-const HANDOFF_RUNNER_CLI_TARGET = 'src/cli/errors.ts';
 const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/index.ts',
   'src/coordinator/bootstrap.ts',
@@ -218,10 +216,6 @@ describe('coordinator topology invariants', () => {
       }
 
       if (TRANSPORT_TARGETS.has(target)) {
-        return false;
-      }
-
-      if (source === 'src/coordinator/handoff-runner.ts' && target === HANDOFF_RUNNER_CLI_TARGET) {
         return false;
       }
 

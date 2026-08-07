@@ -1303,6 +1303,25 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toThrow(/different reaper than this one/u);
   });
 
+  it('replies containment-absent when reaper.stop-and-reap.v1 succeeds directly on its own control', async () => {
+    // Every other direct call to this method above asserts a refusal; `guardian.stop-and-reap.v1`'s own
+    // success path (`armed.stopAndReap` on the guardian's own enforcer) never reaches this reaper's handler
+    // at all — the two roles hold separate enforcers over the same containment — so this is the only place
+    // the reaper's own success reply is exercised.
+    const set = await startSet();
+    const reaperControl = await openReaperControl(set);
+
+    const reaped = (await reaperControl.call(
+      'reaper.stop-and-reap.v1',
+      { reaper: set.reaperIdentity, proxy: set.proxyIdentity, providerRoots: [] },
+      5_000,
+    )) as { state: string; disappearanceReceipt: string };
+
+    expect(reaped.state).toBe('containment-absent');
+    expect(reaped.disappearanceReceipt).toContain(`group:${CONTAINMENT.processGroupId}`);
+    expect(set.alive.has(CONTAINMENT.pid)).toBe(false);
+  });
+
   it('installs a dormant grant and lets exactly one successor redeem it into control', async () => {
     const set = await startSet();
     const { operation } = await stage(set);
@@ -1357,6 +1376,9 @@ describe('provider-proxy guardian and reaper', () => {
 
     const other = { ...set.coordinatorIdentity, instanceId: randomUUID() };
     await expect(redeemOn({ ...request, successor: other })).rejects.toThrow(/already redeemed by another successor/u);
+    // `control-endpoint.ts` documents `grant_replayed` as the code a caller branches on to give up rather
+    // than retry — the message alone does not tell that apart from a retryable `grant_invalid`.
+    await expect(redeemOn({ ...request, successor: other })).rejects.toMatchObject({ protocolCode: 'grant_replayed' });
   });
 
   it('refuses a redemption request that still names an operation set — the field no longer exists on the wire', async () => {
@@ -1563,6 +1585,38 @@ describe('provider-proxy guardian and reaper', () => {
     expect(beat.state).toBe('active');
   });
 
+  it('refuses reaper.record-redemption.v1 when a second push disagrees with the one already recorded', async () => {
+    const set = await startSet();
+    const first = {
+      grantId: randomUUID(),
+      successor: set.coordinatorIdentity,
+      operations: [],
+      redemptionReceipt: 'redemption-receipt-one',
+    };
+
+    // The guardian's own pairing channel is the only authority that ever pushes this fact — reused here
+    // rather than opened fresh, since the reaper accepts exactly one paired peer.
+    const recorded = (await set.reaperChannel.call('reaper.record-redemption.v1', first, 5_000)) as {
+      state: string;
+    };
+    expect(recorded.state).toBe('redemption-recorded');
+
+    // An identical repeat is idempotent (a retried guardian forward whose own reply was lost), so the
+    // mismatch below has to change a field, not merely resend the same fact.
+    const repeat = (await set.reaperChannel.call('reaper.record-redemption.v1', first, 5_000)) as {
+      state: string;
+    };
+    expect(repeat.state).toBe('redemption-recorded');
+
+    await expect(
+      set.reaperChannel.call(
+        'reaper.record-redemption.v1',
+        { ...first, redemptionReceipt: 'redemption-receipt-two' },
+        5_000,
+      ),
+    ).rejects.toThrow(/already recorded a different redemption/u);
+  });
+
   it('refuses reaper.handoff-rotate.v1 before the guardian has ever redeemed the grant', async () => {
     const set = await startSet();
     const { operation } = await stage(set);
@@ -1751,6 +1805,29 @@ describe('provider-proxy guardian and reaper', () => {
         5_000,
       ),
     ).rejects.toThrow(/different containment than the guardian recorded/u);
+  });
+
+  it('refuses reaper.open.v1 naming a guardian that does not match this reaper’s own capsule', async () => {
+    const set = await startSet();
+    const control = await connectControlClient(set.reaperIdentity.canonicalControlEndpoint, timer, 5_000);
+    cleanups.push(() => control.close());
+
+    // `assertNamedGuardianCapsuleIdentity` checks the caller's claimed guardian against this reaper's own
+    // bootstrap capsule — pid/start time are deliberately excluded (see its doc), so the mismatch has to land
+    // on a capsule-stable field such as `guardianInstanceId`.
+    await expect(
+      control.call(
+        'reaper.open.v1',
+        {
+          bootstrapNonce: NONCE,
+          coordinator: set.coordinatorIdentity,
+          guardian: { ...set.guardianIdentity, guardianInstanceId: randomUUID() },
+          proxy: set.proxyIdentity,
+          containment: CONTAINMENT,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/does not match this reaper/u);
   });
 
   it('keeps the coordinator’s earned control evidence intact when its pairing peer disconnects', async () => {

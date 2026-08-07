@@ -214,6 +214,13 @@ describe('provider-proxy handoff capsule', () => {
     expect(() => registry.redeem({ ...request, successorInstanceId: OTHER_SUCCESSOR })).toThrow(
       /already redeemed by another successor/u,
     );
+    // A caller branches on the discriminated code, never on message text — `control-endpoint.ts` documents
+    // `grant_replayed` as the code that means "give up", distinct from a retryable `grant_invalid`.
+    try {
+      registry.redeem({ ...request, successorInstanceId: OTHER_SUCCESSOR });
+    } catch (error: unknown) {
+      expect(error).toMatchObject({ code: 'grant_replayed' });
+    }
     expect(registry.redemption()?.successorInstanceId).toBe(SUCCESSOR);
   });
 

@@ -180,6 +180,14 @@ npm run verify:store-reset-build
 npm run test:e2e:store-reset:build
 ```
 
+Backend lifecycle end-to-end coverage is a separate suite again, unrelated to store-reset but also a CI step — it spawns long-lived backend subprocesses and waits through startup, the IPC handshake, and process death across namespace-isolation and child/no-handoff cold-start cases:
+
+```bash
+npm run test:e2e:lifecycle
+```
+
+`npm run test:network` is not part of the PR gate — it runs `kiwi-runtime-download.integration.test.ts` against the real network to verify the pinned Kiwi WASM artifact still downloads and hashes clean, on CI's weekly schedule and on manual dispatch only.
+
 ## Release Notes
 
 The **Release** workflow creates the GitHub release with `gh release create --generate-notes`, which builds the release body automatically from every PR merged since the previous release. GitHub's generator is **PR- and label-based** — it uses PR titles for the entries and groups them by label; it does **not** parse commit-message prefixes. Categories are defined in [`.github/release.yml`](../.github/release.yml), and the "one type label per PR" rule plus the label↔prefix mapping live in [`.claude/rules/conventions.md` § PR Labels](../.claude/rules/conventions.md). An unlabeled PR falls under "Other Changes"; the `ignore-for-release` label omits a PR entirely.

@@ -368,6 +368,30 @@ afterEach(() => {
   }
 });
 
+/**
+ * Finding 3: `acquireBackendStoreResetLock` used to call `acquireDirectoryLockSync(lockPath, 250)` — the
+ * ambient-fs default overload, which reaches around the `runtime` parameter it already receives instead of
+ * threading it through (a Single Runtime World violation, `.claude/rules/design-philosophy.md` §4). The
+ * ambient-default overload never touches an injected time port; its deadline loop reads `Date.now()` directly
+ * (`resolveDirectoryLockDeps` in `src/infra/fs-lock.ts`). A call on `runtime.time.now` during acquisition is
+ * therefore proof the lock went through the runtime ports, not the ambient fallback.
+ */
+describe('acquireBackendStoreResetLock', () => {
+  it('acquires the lock through the runtime storage/time ports rather than the ambient-fs default', () => {
+    const runtime = createRealRuntime('prod');
+    const dbPath = join(makeTempRoot('coral-reset-lock-'), 'store.db');
+    const files = resolveBackendStoreFileSet(runtime, { path: dbPath, storeFormat: STORE_FORMAT });
+    const nowSpy = vi.spyOn(runtime.time, 'now');
+
+    const lease = acquireBackendStoreResetLock(runtime, files, adoptionLease());
+    try {
+      expect(nowSpy).toHaveBeenCalled();
+    } finally {
+      lease.release();
+    }
+  });
+});
+
 describe('openOrResetBackendStoreDb', () => {
   it('initializes a missing store with the bundled schema marker', () => {
     const runtime = createRuntime();

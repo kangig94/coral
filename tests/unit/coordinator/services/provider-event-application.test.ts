@@ -204,6 +204,40 @@ afterEach(() => {
 });
 
 describe('createStoreProviderEventEffectPort', () => {
+  it('serializes across separate ports sharing one connection, not just within one port', async () => {
+    // `buildProviderEventHandler` is called once per proxy set, and each call builds its own port — while
+    // every one of them closes over the same store connection. Two sets is the ordinary case, since Claude
+    // and Codex are distinct executable identities. A chain scoped to a port would leave each set serialized
+    // against itself and against nothing else, so set B's `BEGIN IMMEDIATE` would land inside set A's open
+    // transaction and SQLite would refuse it. The exclusivity belongs to the connection, so the chain must.
+    const first = createStoreProviderEventEffectPort(testDeps());
+    const second = createStoreProviderEventEffectPort(testDeps());
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    const firstMayFinish = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    const a = first.runInTransaction(async () => {
+      order.push('a:enter');
+      await firstMayFinish;
+      order.push('a:exit');
+      return 'a';
+    });
+    const b = second.runInTransaction(async () => {
+      order.push('b:enter');
+      return 'b';
+    });
+
+    await Promise.resolve();
+    expect(order).toEqual(['a:enter']);
+
+    releaseFirst();
+    expect(await a).toBe('a');
+    expect(await b).toBe('b');
+    expect(order).toEqual(['a:enter', 'a:exit', 'b:enter']);
+  });
+
   it('serializes overlapping transactions instead of nesting BEGIN IMMEDIATE', async () => {
     // Two events genuinely arrive interleaved: the proxy runs a separate pump per operation over one socket,
     // and `control-client.ts` dispatches each inbound frame with `void serveInboundRequest(...)` rather than
@@ -248,6 +282,32 @@ describe('createStoreProviderEventEffectPort', () => {
 
     // A rejected link must not poison the chain: the queue is what every later event waits on.
     await expect(port.runInTransaction(async () => 'after')).resolves.toBe('after');
+  });
+
+  it('propagates the original failure, not a secondary error from a ROLLBACK that itself throws', async () => {
+    const port = createStoreProviderEventEffectPort(testDeps());
+    const originalFailure = new Error('effect failed');
+    const rollbackFailure = new Error('rollback boom');
+    const db = progressStore.getDb();
+    const realExec = db.exec.bind(db);
+    const execSpy = vi.spyOn(db, 'exec').mockImplementation((sql: string) => {
+      if (sql === 'ROLLBACK') throw rollbackFailure;
+      return realExec(sql);
+    });
+
+    try {
+      // Strict identity, not just message: the operator must see the effect failure that actually caused the
+      // rollback, not a distinct error object minted for the rollback itself. (A real ROLLBACK failure leaves
+      // the underlying connection genuinely mid-transaction — unlike an ordinary effect failure, there is no
+      // expectation the chain keeps serving afterward; only which error surfaces is this fix's contract.)
+      await expect(
+        port.runInTransaction(async () => {
+          throw originalFailure;
+        }),
+      ).rejects.toBe(originalFailure);
+    } finally {
+      execSpy.mockRestore();
+    }
   });
 
   it('applies a progress event, advances the watermark, and appends it to the job journal', async () => {

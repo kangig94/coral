@@ -20,7 +20,10 @@ function observe(evidence: CarrierEvidence, overrides: Partial<CarrierObservatio
 describe('classifyCarrier', () => {
   it('carries stored phase and journal position through untouched', () => {
     const observation = observe(
-      { carrierClass: 'app-server-acquired', registryState: 'released' },
+      {
+        carrierClass: 'durable-cli',
+        process: { kind: 'recorded', alive: false, matchesRecordedStart: false, transportEvidence: true },
+      },
       { storedPhase: 'launching', observedMaxJournalSeq: 41 },
     );
 
@@ -124,8 +127,13 @@ describe('carrierCountsActive', () => {
   it('holds a job open for everything except a positive absence', () => {
     expect(carrierCountsActive(observe({ carrierClass: 'workflow', ownedByThisCoordinator: true }))).toBe(true);
     expect(carrierCountsActive(observe({ carrierClass: 'workflow', ownedByThisCoordinator: false }))).toBe(true);
-    expect(carrierCountsActive(observe({ carrierClass: 'app-server-acquired', registryState: 'released' }))).toBe(
-      false,
-    );
+    expect(
+      carrierCountsActive(
+        observe({
+          carrierClass: 'durable-cli',
+          process: { kind: 'recorded', alive: false, matchesRecordedStart: false, transportEvidence: true },
+        }),
+      ),
+    ).toBe(false);
   });
 });

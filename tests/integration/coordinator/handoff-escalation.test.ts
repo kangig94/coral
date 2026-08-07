@@ -129,6 +129,11 @@ describe('handoff escalation (AC7)', () => {
     expect(sigterms.length).toBeGreaterThanOrEqual(1);
     expect(sigterms[0].pid).toBe(identity.pid);
     expect(sigterms[0].at).toBeGreaterThanOrEqual(totalBudgetMs);
+
+    const sigkills = harness.killCalls.filter((c) => c.signal === 'SIGKILL');
+    expect(sigkills.length).toBeGreaterThanOrEqual(1);
+    expect(sigkills[0].pid).toBe(identity.pid);
+    expect(sigkills[0].at).toBeGreaterThanOrEqual(totalBudgetMs + SIGTERM_GRACE_MS);
   }, 15_000);
 
   it('hard bound: HandoffEscalationError fires within budget+SIGTERM+SIGKILL graces when no verified pid', async () => {

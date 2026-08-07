@@ -162,24 +162,31 @@ function derivedInterruptionContinuity(
  * `applyProviderEventAtSeq` was built against, with no production caller until this module and its RPC
  * adapter below are wired into a live proxy control connection.
  */
+/**
+ * Serializes provider-event transactions **per database connection**, keyed by the connection itself.
+ *
+ * The connection is what `BEGIN IMMEDIATE` is exclusive on, so the connection is what the chain has to be
+ * scoped to. Holding this transaction open across an `await` — unlike the synchronous `withImmediate` it is
+ * modelled on — means a second `BEGIN IMMEDIATE` issued while the first is open is refused by SQLite.
+ *
+ * Events arrive interleaved by design and by delivery, at two levels. Within one proxy, each operation's pump
+ * runs concurrently over one socket and `control-client.ts` dispatches each inbound frame with
+ * `void serveInboundRequest(...)` rather than awaiting it. Across proxies, `buildProviderEventHandler` is
+ * called once per set — and two sets is the ordinary case, since Claude and Codex are distinct executable
+ * identities — so a per-handler chain would leave each set serialized against itself and against nothing
+ * else, on one shared connection. That is the shape this used to have.
+ *
+ * The failure it prevents is worse than a lost event: the refusal is neither an ack nor a replay, so the
+ * proxy's drain loop stops on a reply it cannot read, and that operation's events sit buffered until
+ * something else restarts its pump.
+ *
+ * A `WeakMap` so a closed connection's chain is collectable with it.
+ */
+const transactionChains = new WeakMap<Database, Promise<unknown>>();
+
 export function createStoreProviderEventEffectPort(
   deps: ProviderEventApplicationDeps,
 ): ProviderEventEffectPort<PortTx> {
-  /**
-   * Serializes transactions on this connection, because this one is held open across an `await` and
-   * `withImmediate`'s synchronous version is not.
-   *
-   * The events that reach here are concurrent by design and by delivery. The proxy drains each operation
-   * sequentially but runs different operations' pumps at the same time over one socket, and
-   * `control-client.ts` dispatches each inbound frame with `void serveInboundRequest(...)` rather than
-   * awaiting it — so two events genuinely arrive interleaved. Without this chain the second would issue
-   * `BEGIN IMMEDIATE` while the first still held one, and SQLite refuses a transaction inside a transaction.
-   * That failure is worse than it first looks: the event gets no ACK, and the proxy's drain loop stops on a
-   * reply it cannot read as ack-or-replay, leaving that operation's events buffered until something else
-   * happens to restart its pump.
-   */
-  let transactions: Promise<unknown> = Promise.resolve();
-
   return {
     runInTransaction: async (execute) => {
       const run = async (): Promise<unknown> => {
@@ -190,13 +197,21 @@ export function createStoreProviderEventEffectPort(
           deps.db.exec('COMMIT');
           return result;
         } catch (error) {
-          deps.db.exec('ROLLBACK');
+          try {
+            deps.db.exec('ROLLBACK');
+          } catch {
+            // Preserve the original failure that triggered the rollback.
+          }
           throw error;
         }
       };
       // The chain must survive a rejection, or one failed event would wedge every later one behind it.
-      const settled = transactions.then(run, run);
-      transactions = settled.catch(() => undefined);
+      const pending = transactionChains.get(deps.db) ?? Promise.resolve();
+      const settled = pending.then(run, run);
+      transactionChains.set(
+        deps.db,
+        settled.catch(() => undefined),
+      );
       return (await settled) as Awaited<ReturnType<typeof execute>>;
     },
 

@@ -9,6 +9,7 @@ import {
   type RoleSpawnOptions,
   type RoleSpawnPorts,
 } from '#src/provider-proxy/role-spawn.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import type { RuntimeSpawnOptions } from '#src/runtime/ports.js';
 
 /**
@@ -47,12 +48,14 @@ type FakePortsOptions = Readonly<{
   readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
 }>;
 
+// A real runtime, not a fake: `gracefulKill`'s own escalation timer needs a genuine `Runtime`, and its
+// SIGKILL timer is unref'd and never awaited here, so it never actually fires within a test's lifetime.
+const realRuntime = createRealRuntime('prod');
+
 function fakePorts(options: FakePortsOptions): RoleSpawnPorts {
   return {
     process: { spawn: options.spawn },
-    // Never actually fires: the escalation this feeds only matters for a *live* child a failed spawn's
-    // cleanup is signalling, which none of these tests need to wait out.
-    time: { setTimeout: () => ({ unref: () => undefined }), clearTimeout: () => undefined },
+    runtime: realRuntime,
     platform: 'linux',
     ...(options.readProcessStartedAtSeconds === undefined
       ? {}

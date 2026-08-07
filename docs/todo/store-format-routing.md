@@ -4,8 +4,9 @@
 Split out of the containment-boundary preplan on 2026-08-02.
 
 **Why it is not part of containment**: routing shares coordinator election, cold start, and
-high-water identity with `cross-version-coordinator-continuity.md`, not with containment.
-Designing it apart from that plan would recreate the conflict recorded below, which a
+high-water identity with the cross-version continuity work — since landed, and described by
+`architecture.md`'s "Generation boundary and operator recovery" section — not with containment.
+Designing it apart from that work would recreate the conflict recorded below, which a
 pioneer pass caught only because both were considered together.
 
 > **What this is NOT needed for.** Zero-step replacement of older or corrupt/unsupported
@@ -94,7 +95,8 @@ The claim "no build ever meets an incompatible store" is false in four ways:
    newer state.
 3. **Same-fingerprint semantic incompatibility remains possible.** The fingerprint hashes
    DDL, Zod contracts, declared materializer contracts, and append-validator identities
-   (`store/current-format.ts:80`, `store/format-fingerprint.ts:508`) — not arbitrary reducer
+   (`store/current-format.ts`'s `createCurrentStoreFormat`, `store/format-fingerprint.ts`'s
+   `describeStoreFormat`) — not arbitrary reducer
    implementation. The structural rule must be that every persisted semantic expectation
    participates in the fingerprint; violating it is a format-contract bug that path
    partitioning cannot prevent.
@@ -104,12 +106,15 @@ The claim "no build ever meets an incompatible store" is false in four ways:
    fork. A durable flat-path tombstone is required so a pre-keying build cannot see "absent"
    and start a second flat history. **That protocol was not designed.**
 
-## Blocking conflict with `cross-version-coordinator-continuity.md`
+## Blocking conflict with cross-version coordinator continuity
 
-**Open and unimplemented.** This section records the blocking conflict for the proposed
-fingerprint-keyed paths. The shipped selection pointer externalizes the selected build
-identity while retaining one store path per flavor; it neither implements `active-format.json`
-nor resolves the keyed-path and tombstone protocol described here.
+**Open and unimplemented.** This section records the blocking conflict between the proposed
+fingerprint-keyed paths and the wider cross-version coordinator continuity work — a plan that
+lives outside this repo. The slice of it already shipped, the active-store selection pointer,
+is covered by `architecture.md`'s "Generation boundary and operator recovery" section. That
+shipped pointer externalizes the selected build identity while retaining one store path per
+flavor; it neither implements `active-format.json` nor resolves the keyed-path and tombstone
+protocol described here.
 
 The earlier **Part E / AC20 proposal stored the high-water build inside the singleton
 database** so an older cold-start build could discover the newer build and re-exec. With
@@ -126,10 +131,6 @@ Part C is compatible as-is: builds sharing a fingerprint share a store, removing
 tenancy lets the successor recover stored work, and `pluginRootNamespace` stays provenance
 rather than ownership. `pluginRootNamespace()` must **not** enter the store path — it hashes
 installation provenance, not storage compatibility.
-
-Note also that routing does **not** fix the coordinator ping-pong: `isCompatibleHealth`
-(`transport/ipc/ensure.ts:274`) still compares version, bundle hash, flavor, and namespace,
-so foreign builds keep evicting one another until Parts A+B change election.
 
 ## Decisions already made
 
@@ -175,7 +176,7 @@ incident role. Continuing to write it without consulting it is the least elegant
 
 - The tombstone/catalog serialization and locking protocol — not designed.
 - Whether every corpus consumer is idempotent under a `consumer_cursors` reset.
-  `runCorpusApply` (`projection-consumers/authority-apply.ts:235`) reapplies the current
+  `runCorpusApply` (`projection-consumers/authority-apply.ts`) reapplies the current
   corpus snapshot to shared runtime/index state, so "cursor reset is correct" is unproven.
 - The historical frequency of fingerprint changes, which decides how many stores actually
   accumulate.

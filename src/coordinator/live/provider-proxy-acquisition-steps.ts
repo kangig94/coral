@@ -693,7 +693,7 @@ export function createProviderProxyAcquisitionSteps(
       const readProcessStartedAtSeconds = options.readProcessStartedAtSeconds ?? probeProcessStartedAtSeconds;
       const spawnPorts: RoleSpawnPorts = {
         process: runtime.process,
-        time: runtime.time,
+        runtime,
         platform,
         readProcessStartedAtSeconds,
       };

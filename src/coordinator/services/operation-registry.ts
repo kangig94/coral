@@ -13,7 +13,7 @@ import type { ProviderStopCause } from '../../providers/contract.js';
  * same reason `provider-proxy-operation-activation.ts`'s `OperationControlClient` restates a shape instead of
  * importing a class. `jobs/carrier-observation.ts` remains the one place documenting what each value means.
  */
-type LocalOperationRegistryState = 'activated' | 'adopted' | 'released' | 'inherited';
+type LocalOperationRegistryState = 'activated' | 'adopted' | 'inherited';
 
 /**
  * The write half of `jobs/carrier-observation.ts`'s `LocalOperationRegistryState` (W2.3): the object nothing

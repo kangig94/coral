@@ -25,6 +25,39 @@ const UUID_C = '33333333-3333-4333-8333-333333333333';
 const UUID_D = '44444444-4444-4444-8444-444444444444';
 const HOST_FINGERPRINT = 'a'.repeat(64);
 
+const coordinatorIdentity = {
+  instanceId: UUID_A,
+  pid: 99,
+  processStartedAtSeconds: 199,
+  generation: 'gen2' as const,
+  flavor: 'prod' as const,
+  buildSetId: UUID_D,
+};
+
+const guardianIdentity = {
+  guardianInstanceId: UUID_B,
+  pid: 101,
+  processStartedAtSeconds: 201,
+  generation: 'gen2' as const,
+  flavor: 'prod' as const,
+  buildSetId: UUID_D,
+  hostFingerprint: HOST_FINGERPRINT,
+  canonicalControlEndpoint: '/tmp/guardian.sock',
+};
+
+const reaperIdentity = {
+  reaperInstanceId: UUID_C,
+  pid: 102,
+  processStartedAtSeconds: 202,
+  guardianInstanceId: UUID_B,
+  generation: 'gen2' as const,
+  flavor: 'prod' as const,
+  buildSetId: UUID_D,
+  hostFingerprint: HOST_FINGERPRINT,
+  canonicalControlEndpoint: '/tmp/reaper.sock',
+  containmentKind: 'posix-process-group',
+};
+
 const proxyIdentity = {
   proxyInstanceId: UUID_A,
   pid: 100,
@@ -39,6 +72,13 @@ const proxyIdentity = {
   canonicalEndpoint: '/tmp/provider.sock',
 };
 
+const operationIdentity = {
+  jobId: UUID_A,
+  operationId: UUID_B,
+  proxyInstanceId: UUID_C,
+  buildSetId: UUID_D,
+};
+
 describe('provider proxy protocol vocabulary', () => {
   it('publishes the normative frame and timeout constants', () => {
     expect(MAX_PROXY_CONTROL_FRAME_BYTES).toBe(17 * 1024 * 1024);
@@ -48,55 +88,19 @@ describe('provider proxy protocol vocabulary', () => {
   });
 
   it('validates every identity field set strictly', () => {
-    expect(
-      coordinatorIdentitySchema.parse({
-        instanceId: UUID_A,
-        pid: 99,
-        processStartedAtSeconds: 199,
-        generation: 'gen2',
-        flavor: 'prod',
-        buildSetId: UUID_D,
-      }),
-    ).toBeDefined();
-    expect(
-      guardianIdentitySchema.parse({
-        guardianInstanceId: UUID_B,
-        pid: 101,
-        processStartedAtSeconds: 201,
-        generation: 'gen2',
-        flavor: 'prod',
-        buildSetId: UUID_D,
-        hostFingerprint: HOST_FINGERPRINT,
-        canonicalControlEndpoint: '/tmp/guardian.sock',
-      }),
-    ).toBeDefined();
-    expect(
-      reaperIdentitySchema.parse({
-        reaperInstanceId: UUID_C,
-        pid: 102,
-        processStartedAtSeconds: 202,
-        guardianInstanceId: UUID_B,
-        generation: 'gen2',
-        flavor: 'prod',
-        buildSetId: UUID_D,
-        hostFingerprint: HOST_FINGERPRINT,
-        canonicalControlEndpoint: '/tmp/reaper.sock',
-        containmentKind: 'posix-process-group',
-      }),
-    ).toBeDefined();
+    expect(coordinatorIdentitySchema.parse(coordinatorIdentity)).toEqual(coordinatorIdentity);
+    expect(guardianIdentitySchema.parse(guardianIdentity)).toEqual(guardianIdentity);
+    expect(reaperIdentitySchema.parse(reaperIdentity)).toEqual(reaperIdentity);
     expect(proxyIdentitySchema.parse(proxyIdentity)).toEqual(proxyIdentity);
-    expect(
-      operationIdentitySchema.parse({
-        jobId: UUID_A,
-        operationId: UUID_B,
-        proxyInstanceId: UUID_C,
-        buildSetId: UUID_D,
-      }),
-    ).toBeDefined();
+    expect(operationIdentitySchema.parse(operationIdentity)).toEqual(operationIdentity);
   });
 
   it('rejects unknown identity fields', () => {
+    expect(coordinatorIdentitySchema.safeParse({ ...coordinatorIdentity, unexpected: true }).success).toBe(false);
+    expect(guardianIdentitySchema.safeParse({ ...guardianIdentity, unexpected: true }).success).toBe(false);
+    expect(reaperIdentitySchema.safeParse({ ...reaperIdentity, unexpected: true }).success).toBe(false);
     expect(proxyIdentitySchema.safeParse({ ...proxyIdentity, unexpected: true }).success).toBe(false);
+    expect(operationIdentitySchema.safeParse({ ...operationIdentity, unexpected: true }).success).toBe(false);
   });
 
   it('rejects non-canonical scalars and open-ended enum values', () => {
@@ -111,6 +115,45 @@ describe('provider proxy protocol vocabulary', () => {
       proxyIdentitySchema.safeParse({ ...proxyIdentity, processGroupId: Number.MAX_SAFE_INTEGER + 1 }).success,
     ).toBe(false);
     expect(proxyIdentitySchema.safeParse({ ...proxyIdentity, generation: 'gen3' }).success).toBe(false);
+
+    expect(
+      coordinatorIdentitySchema.safeParse({
+        ...coordinatorIdentity,
+        instanceId: 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA',
+      }).success,
+    ).toBe(false);
+    expect(coordinatorIdentitySchema.safeParse({ ...coordinatorIdentity, generation: 'gen3' }).success).toBe(false);
+    expect(coordinatorIdentitySchema.safeParse({ ...coordinatorIdentity, flavor: 'staging' }).success).toBe(false);
+
+    expect(
+      guardianIdentitySchema.safeParse({
+        ...guardianIdentity,
+        guardianInstanceId: 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA',
+      }).success,
+    ).toBe(false);
+    expect(guardianIdentitySchema.safeParse({ ...guardianIdentity, hostFingerprint: 'a'.repeat(63) }).success).toBe(
+      false,
+    );
+    expect(guardianIdentitySchema.safeParse({ ...guardianIdentity, flavor: 'staging' }).success).toBe(false);
+
+    expect(
+      reaperIdentitySchema.safeParse({
+        ...reaperIdentity,
+        reaperInstanceId: 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA',
+      }).success,
+    ).toBe(false);
+    expect(reaperIdentitySchema.safeParse({ ...reaperIdentity, containmentKind: '' }).success).toBe(false);
+    expect(reaperIdentitySchema.safeParse({ ...reaperIdentity, generation: 'gen3' }).success).toBe(false);
+
+    expect(
+      operationIdentitySchema.safeParse({
+        ...operationIdentity,
+        jobId: 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA',
+      }).success,
+    ).toBe(false);
+    expect(
+      operationIdentitySchema.safeParse({ ...operationIdentity, operationId: 'not-a-canonical-uuid' }).success,
+    ).toBe(false);
   });
 
   it('accepts a newline-delimited frame at the byte cap and rejects one byte over it', () => {

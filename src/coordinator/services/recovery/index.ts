@@ -4,6 +4,7 @@ import { ProcessContainmentError } from '../../../infra/process-containment.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
 import { readProviderOperationRuntimeMetaForJob } from '../../../jobs/runtime-meta-store.js';
+import type { ProviderOperationRuntimeMeta } from '../../../jobs/runtime-meta.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { JobStore } from '../../../jobs/store.js';
@@ -659,7 +660,20 @@ export function createRecoveryCoordinator(
       const attemptedAddresses = new Set<string>();
       for (const job of runningJobs) {
         if (!isAppServerRuntime(job.runtimeRecord)) continue;
-        const locator = readProviderOperationRuntimeMetaForJob(progressStore.getDb(), job.jobId);
+        let locator: ProviderOperationRuntimeMeta | null;
+        try {
+          locator = readProviderOperationRuntimeMetaForJob(progressStore.getDb(), job.jobId);
+        } catch (error: unknown) {
+          // `readProviderOperationRuntimeMetaForJob` fails loud on a corrupt row by design (its own doc: a
+          // silent null here would misroute back through the probe/openReplacement path adoption exists to
+          // close off) — but that "loud" is scoped to this one job's inheritance attempt, not to the whole
+          // boot pre-pass. Skip it and let it fall through to the ordinary settle path below, whose
+          // containment quarantines per-job faults instead of aborting recovery for every other job.
+          backendLog.warn(
+            `Provider operation locator is unreadable for job ${job.jobId}; skipping proxy-set inheritance for it: ${errorMessage(error)}`,
+          );
+          continue;
+        }
         if (locator === null) continue;
         const address = `${locator.buildSetId}:${locator.hostFingerprint}:${locator.proxyInstanceId}`;
         if (attemptedAddresses.has(address)) continue;

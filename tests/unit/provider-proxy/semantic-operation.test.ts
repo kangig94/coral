@@ -53,8 +53,15 @@ import type { ProxyPreparedAppServerOperation } from '#src/provider-proxy/protoc
 import {
   createProxyAppServerHostAuthority,
   createSemanticOperationRuntime,
+  specFingerprint,
+  specIdentityKey,
   type ProxyAppServerHostAuthority,
 } from '#src/provider-proxy/semantic-operation.js';
+// Only a test is allowed to see both copies at once (`src/provider-proxy/` may not import
+// `src/coordinator/`, enforced by `tests/invariants/architecture-layering.test.ts`, which scans `src/` only —
+// see the "agrees byte-for-byte" case below for why importing the forbidden-to-production original here is
+// exactly the point).
+import { hostFingerprintFromSpec, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
 
 const runtime: Runtime = createRealRuntime('prod');
 
@@ -665,5 +672,78 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
 
     opened.close();
     expect(authority.rootIdentity(opened.hostRef)).toBeNull();
+  });
+});
+
+// --- specIdentityKey / specFingerprint: the host-pool key function --------------------------------------
+//
+// Regression coverage for the defect where `specIdentityKey` passed `Object.keys(canonical).sort()` as
+// `JSON.stringify`'s *replacer* argument. A replacer allowlist applies at every nesting level, not just the
+// top, so both `env` and `initializeRequest` — themselves objects one level down — serialized as `{}` no
+// matter what they held. Two specs differing only in credentials then produced an identical pool key, and
+// `openSession` (`createProxyAppServerHostAuthority`, above) would hand back an already-running host spawned
+// under different credentials.
+
+describe('semantic-operation: specIdentityKey / specFingerprint', () => {
+  it('produces different keys and fingerprints for specs that differ only in env', () => {
+    const withAccountA = sharedSpec({ env: { CORAL_ACCOUNT: 'account-a' } });
+    const withAccountB = sharedSpec({ env: { CORAL_ACCOUNT: 'account-b' } });
+
+    expect(specIdentityKey(withAccountA)).not.toBe(specIdentityKey(withAccountB));
+    expect(specFingerprint(runtime, withAccountA)).not.toBe(specFingerprint(runtime, withAccountB));
+  });
+
+  it('produces different keys and fingerprints for specs that differ only in initializeRequest', () => {
+    const withFoo = sharedSpec({
+      initializeRequest: { method: 'initialize', params: { clientInfo: { name: 'foo' } } },
+    });
+    const withBar = sharedSpec({
+      initializeRequest: { method: 'initialize', params: { clientInfo: { name: 'bar' } } },
+    });
+
+    expect(specIdentityKey(withFoo)).not.toBe(specIdentityKey(withBar));
+    expect(specFingerprint(runtime, withFoo)).not.toBe(specFingerprint(runtime, withBar));
+  });
+
+  it('produces the same key for two specs whose fields were populated in a different order', () => {
+    const inDeclaredOrder = sharedSpec({ env: { A_VAR: '1', B_VAR: '2' } });
+    // Same content as `inDeclaredOrder`, but every object literal below (the spec itself and its nested
+    // `env`) lists its keys in the opposite order — proving the key is order-independent, not merely
+    // insensitive to `env`'s own ordering.
+    const reversedInsertionOrder: ProviderServerSpec = {
+      idleRetirement: 'host-reported',
+      leaseMode: 'shared',
+      env: { B_VAR: '2', A_VAR: '1' },
+      cwd: '/workspace',
+      args: ['app-server'],
+      command: 'claude',
+      provider: 'claude',
+    };
+
+    expect(specIdentityKey(reversedInsertionOrder)).toBe(specIdentityKey(inDeclaredOrder));
+    expect(specFingerprint(runtime, reversedInsertionOrder)).toBe(specFingerprint(runtime, inDeclaredOrder));
+  });
+
+  // The whole risk this module's doc comments call out is silent drift between this file's copy and the
+  // coordinator's original (`hostKeyFromSpec`/`hostFingerprintFromSpec`,
+  // `src/coordinator/live/provider-hosts/state.ts`) — a `HostRef.fingerprint` minted by one build that a
+  // proxy from a different build can never recognize as the same host. Only a test can see both copies at
+  // once (the layering ban applies to `src/`, not `tests/`), so this is the one thing that makes the
+  // "mirrors" claim in both modules' doc comments self-enforcing rather than merely asserted.
+  it('agrees byte-for-byte with the coordinator-side hostKeyFromSpec / hostFingerprintFromSpec', () => {
+    const specs: ProviderServerSpec[] = [
+      sharedSpec({
+        env: { CORAL_ACCOUNT: 'account-a' },
+        initializeRequest: { method: 'initialize', params: { clientInfo: { name: 'proxy' } } },
+        initializeTimeoutMs: 5_000,
+        shutdownCapability: { method: 'shutdown', timeoutMs: 1_000 },
+      }),
+      exclusiveSpec({ initializeTimeoutMs: 2_500 }),
+    ];
+
+    for (const spec of specs) {
+      expect(specIdentityKey(spec)).toBe(hostKeyFromSpec(spec));
+      expect(specFingerprint(runtime, spec)).toBe(hostFingerprintFromSpec(spec));
+    }
   });
 });

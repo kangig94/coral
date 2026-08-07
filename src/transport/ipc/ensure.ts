@@ -6,13 +6,8 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { isAbsolute, join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { z } from 'zod';
-import {
-  createUseCurrentBackendRouting,
-  routeLiveIncumbent,
-  type BackendRoutingResult,
-} from '../../infra/backend-routing.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import type { CoordinatorPaths } from '../../infra/path/index.js';
@@ -20,14 +15,7 @@ import { HEALTH_TIMEOUT_MS } from '../http/sse.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
-import {
-  readBuildFlavor,
-  readBundleHash,
-  resolveStrictBundleIdentity,
-  strictBundleManifestSchema,
-  type StrictBundleManifest,
-} from '../../infra/bundle-manifest.js';
-import type { ForeignTargetValidator, TargetCandidateEvidence } from '../../infra/handoff-target.js';
+import { readBuildFlavor, readBundleHash, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { createIpcClient, type IpcClient } from './client.js';
 import { bindSocket } from './server.js';
 import type { TransportRuntimeComponentStatus } from '../server-ports.js';
@@ -53,7 +41,6 @@ export type DesiredCoordinator = {
   bundleHash: string;
   flavor: 'prod' | 'dev';
   namespace: string;
-  manifest: StrictBundleManifest | null;
 };
 
 export type RawCoordinatorHealth = {
@@ -66,8 +53,6 @@ export type RawCoordinatorHealth = {
   pid?: number;
   processStartedAt?: number;
   components?: TransportRuntimeComponentStatus[];
-  manifest?: StrictBundleManifest;
-  bundleDir?: string;
 };
 
 export type VerifiedBackendInfo = {
@@ -95,12 +80,7 @@ export type EnsuredIpcClient = IpcClient & {
   readonly host: string;
   readonly port: number;
   readonly version: string;
-  readonly routing: BackendRoutingResult;
 };
-
-type EnsureRoutingCapabilities = Readonly<{
-  validateForeignTarget: ForeignTargetValidator;
-}>;
 
 type EnsuredClientAuthMode = 'boot' | 'none';
 
@@ -150,7 +130,6 @@ function summarizeBackend(
   info: VerifiedBackendInfo,
   timePort: TimePort,
   authMode: EnsuredClientAuthMode,
-  routing: BackendRoutingResult,
 ): EnsuredIpcClient {
   const auth = authMode === 'boot' ? { kind: 'boot' as const, token: info.bootToken } : undefined;
   return Object.assign(createIpcClient(info.socketPath, timePort, auth), {
@@ -161,7 +140,6 @@ function summarizeBackend(
     host: info.host,
     port: info.port,
     version: info.version,
-    routing,
   });
 }
 
@@ -230,31 +208,8 @@ const rawCoordinatorHealthSchema = z
     pid: z.number().int().positive().optional(),
     processStartedAt: z.number().int().positive().optional(),
     components: z.array(runtimeComponentStatusSchema).optional(),
-    manifest: strictBundleManifestSchema.optional(),
-    bundleDir: z
-      .string()
-      .min(1)
-      .max(4096)
-      .refine((value) => isAbsolute(value) && resolve(value) === value, 'bundleDir must be canonical')
-      .optional(),
   })
-  .passthrough()
-  .superRefine((health, context) => {
-    const hasManifest = health.manifest !== undefined;
-    const hasBundleDir = health.bundleDir !== undefined;
-    if (hasManifest !== hasBundleDir) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'manifest and bundleDir must appear together' });
-      return;
-    }
-    if (
-      health.manifest !== undefined &&
-      (health.manifest.version !== health.version ||
-        health.manifest.bundleHash !== health.bundleHash ||
-        health.manifest.flavor !== health.flavor)
-    ) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'manifest does not match health identity' });
-    }
-  });
+  .passthrough();
 
 const nonEmptyStringSchema = z.string().min(1);
 const verifiedBackendInfoSchema = z
@@ -367,33 +322,6 @@ export function mayInvocationBeServedByIncumbent(health: RawCoordinatorHealth | 
 
 export function mayProcessReplaceIncumbent(health: RawCoordinatorHealth | null): boolean {
   return health === null || health.status === 'draining';
-}
-
-function targetCandidateFromHealth(health: RawCoordinatorHealth): TargetCandidateEvidence | null {
-  if (health.manifest === undefined || health.bundleDir === undefined) {
-    return null;
-  }
-  return Object.freeze({ bundleDir: health.bundleDir, expectedManifest: health.manifest });
-}
-
-function resolveLiveIncumbentRouting(
-  desired: DesiredCoordinator,
-  health: RawCoordinatorHealth,
-  capabilities: EnsureRoutingCapabilities | null,
-): BackendRoutingResult {
-  const candidate = targetCandidateFromHealth(health);
-  if (desired.manifest === null || candidate === null || capabilities === null) {
-    return createUseCurrentBackendRouting({ source: 'live-incumbent' });
-  }
-  return routeLiveIncumbent({
-    invokingManifest: desired.manifest,
-    incumbent: candidate,
-    validateForeignTarget: capabilities.validateForeignTarget,
-  });
-}
-
-function currentBuildRouting(): BackendRoutingResult {
-  return createUseCurrentBackendRouting({ source: 'current-build' });
 }
 
 function existingIncumbentIdentity(health: RawCoordinatorHealth): ExistingIncumbentIdentity {
@@ -760,7 +688,7 @@ async function ensureChildIncumbent(
     throw childCoordinatorUnavailable('its parent coordinator is unreachable');
   }
   const info = await waitForExistingIncumbentReady(paths, health, KERNEL_READY_DEADLINE_MS, timePort);
-  return summarizeBackend(info, timePort, 'none', createUseCurrentBackendRouting({ source: 'live-incumbent' }));
+  return summarizeBackend(info, timePort, 'none');
 }
 
 async function reuseServingIncumbent(
@@ -768,7 +696,6 @@ async function reuseServingIncumbent(
   desired: DesiredCoordinator,
   health: RawCoordinatorHealth,
   timePort: TimePort,
-  capabilities: EnsureRoutingCapabilities | null,
 ): Promise<EnsuredIpcClient | null> {
   const info = readDiscoverySnapshot(paths);
   if (info !== null) {
@@ -777,24 +704,14 @@ async function reuseServingIncumbent(
       return null;
     }
     if (isReadyStatus(authenticatedHealth.status)) {
-      return summarizeBackend(
-        mergeDiscoveryWithHealth(info, authenticatedHealth),
-        timePort,
-        'boot',
-        resolveLiveIncumbentRouting(desired, authenticatedHealth, capabilities),
-      );
+      return summarizeBackend(mergeDiscoveryWithHealth(info, authenticatedHealth), timePort, 'boot');
     }
   }
 
   const ready = await waitForBackendReady(paths, desired, KERNEL_READY_DEADLINE_MS, timePort, {
     kind: 'existing-starting',
   });
-  return summarizeBackend(
-    ready.info,
-    timePort,
-    'boot',
-    resolveLiveIncumbentRouting(desired, ready.health, capabilities),
-  );
+  return summarizeBackend(ready.info, timePort, 'boot');
 }
 
 async function prepareTopLevelSpawn(
@@ -819,7 +736,7 @@ async function spawnTopLevelCoordinator(
     attemptId: spawned.attemptId,
     spawnedAt: spawned.spawnedAt,
   });
-  return summarizeBackend(ready.info, timePort, 'boot', currentBuildRouting());
+  return summarizeBackend(ready.info, timePort, 'boot');
 }
 
 async function ensureTopLevelCoordinator(
@@ -828,7 +745,6 @@ async function ensureTopLevelCoordinator(
   paths: CoordinatorPaths,
   health: RawCoordinatorHealth | null,
   timePort: TimePort,
-  capabilities: EnsureRoutingCapabilities | null,
 ): Promise<EnsuredIpcClient> {
   const strictIdentity = resolveStrictBundleIdentity();
   const manifest = strictIdentity.ok ? strictIdentity.manifest : null;
@@ -839,11 +755,10 @@ async function ensureTopLevelCoordinator(
     bundleHash,
     flavor,
     namespace,
-    manifest,
   };
   let replacementEvidence = health;
   if (mayInvocationBeServedByIncumbent(health)) {
-    const incumbent = await reuseServingIncumbent(paths, desired, health, timePort, capabilities);
+    const incumbent = await reuseServingIncumbent(paths, desired, health, timePort);
     if (incumbent !== null) {
       return incumbent;
     }
@@ -857,7 +772,7 @@ async function ensureTopLevelCoordinator(
     // it is the explicit gate for "is spawning even on the table here".
     replacementEvidence = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort));
     if (mayInvocationBeServedByIncumbent(replacementEvidence)) {
-      const retried = await reuseServingIncumbent(paths, desired, replacementEvidence, timePort, capabilities);
+      const retried = await reuseServingIncumbent(paths, desired, replacementEvidence, timePort);
       if (retried !== null) {
         return retried;
       }
@@ -889,11 +804,7 @@ async function ensureTopLevelCoordinator(
  *      - Unreachable or identity-invalid → spawn.
  *   2. Spawn the coordinator and wait for it to bind + write discovery.
  */
-export async function ensure(
-  pluginRoot?: string,
-  timePort?: TimePort,
-  capabilities: EnsureRoutingCapabilities | null = null,
-): Promise<EnsuredIpcClient> {
+export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<EnsuredIpcClient> {
   const root = resolvePluginRoot(pluginRoot);
   const flavor = readBuildFlavor(root);
   const runtime = createRealRuntime(flavor);
@@ -904,5 +815,5 @@ export async function ensure(
   if (isCoralChildEnvironment(runtime.env.fullSnapshot())) {
     return ensureChildIncumbent(paths, health, ipcTime);
   }
-  return ensureTopLevelCoordinator(root, flavor, paths, health, ipcTime, capabilities);
+  return ensureTopLevelCoordinator(root, flavor, paths, health, ipcTime);
 }

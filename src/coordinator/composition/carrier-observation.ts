@@ -90,11 +90,12 @@ function durableCliEvidence(
 
 /**
  * `app-server-acquired` reads `LocalOperationRegistry.stateForJob` (W2.3): `activated` or `adopted` when this
- * coordinator generation holds a live entry for the job, `released` for one it wrote after the operation
- * ended, and `inherited` — the registry's own `null` — for meta this coordinator never activated or adopted,
- * which is locally `unknown`, never `absent`. `jobId` is enough to look it up: a job carries at most one live
- * operation at a time, and the registry's own `stop()`/`stateForJob()` already key on job id for the same
- * reason.
+ * coordinator generation holds a live entry for the job, and `inherited` — the registry's own `null` — for
+ * meta this coordinator never activated or adopted, or for one whose operation already settled: the registry
+ * deletes on settlement rather than marking it ended, so an ended operation reads the same as one this
+ * coordinator never had. Either way that is locally `unknown`, never `absent`. `jobId` is enough to look it
+ * up: a job carries at most one live operation at a time, and the registry's own `stop()`/`stateForJob()`
+ * already key on job id for the same reason.
  */
 function evidenceFor(jobId: string, detail: JobProjectionDetail, registries: LocalCarrierRegistries): CarrierEvidence {
   const { runtime } = detail;

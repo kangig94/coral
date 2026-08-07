@@ -33,7 +33,8 @@ import type { OperationStopControl } from './operation-registry.js';
 
 /** The minimal wire capability this file needs from a role's control connection: `ControlClient.call` from
  *  `provider-proxy/control-client.ts`, restated here rather than imported so this module depends on a shape,
- *  not that module's class identity — the same reason `carrier-observer.ts`'s `CarrierProbeTransport` exists. */
+ *  not that module's class identity — decoupling the connection this file is handed from the concrete
+ *  transport class that produces it. */
 export interface OperationControlClient {
   call(method: string, params: unknown, timeoutMs: number): Promise<unknown>;
 }

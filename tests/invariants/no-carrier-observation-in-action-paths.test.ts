@@ -15,13 +15,15 @@ const IMPORT_EDGES: ParsedImportEdge[] = parseProductionImportEdges(REPO_ROOT, P
 const CANONICAL_FILES = new Set(PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath)));
 
 /**
- * The two halves of carrier observation, and who may hold each.
+ * Carrier observation's authority, and who may hold it.
  *
- * They are separated because the questions differ. The classifier is pure and local, so asking it costs
- * nothing and health/idle may ask it freely — what they may not do is let the answer authorize a mutation.
- * The network observer goes and asks a foreign process, which is why even reading it is confined to the
- * read-model and the composition that assembles it: a coordinator that probed the network to decide whether
- * hard retirement is safe would have made a remote process the authority over local durable state.
+ * The classifier is pure and local, so asking it costs nothing and health/idle may ask it freely — what they
+ * may not do is let the answer authorize a mutation. There is deliberately no network-observer authority
+ * alongside it: the bounded network observer that once paired with this classifier
+ * (`src/coordinator/live/carrier-observer.ts`) was deleted for having no importer anywhere in `src/` — both
+ * of its intended callers never wired it in. A coordinator that probed the network to decide whether hard
+ * retirement is safe would have made a remote process the authority over local durable state, which is why,
+ * if a network observer returns, it belongs on this list from the moment it gains its first importer.
  */
 type ObservationAuthority = {
   readonly module: string;
@@ -35,29 +37,11 @@ const OBSERVATION_AUTHORITIES: readonly ObservationAuthority[] = [
     module: 'src/jobs/carrier-observation.ts',
     what: 'the pure carrier classifier',
     permittedImporters: [
-      // Read surfaces and the wait/follow path, which report observation beside stored phase.
-      'src/read-model/',
+      // The wait stream's local classification path, which reports observation beside stored phase.
       'src/jobs/shell/',
-      'src/cli/',
-      'src/transport/http/',
-      // Health and idle: permitted the classifier precisely so they never need the network observer.
-      // Health snapshots are assembled in composition, which is why that root — not a `health.ts` — is
-      // what appears here.
-      'src/coordinator/live/idle.ts',
-      'src/coordinator/composition/',
-      // The observer shares the verdict vocabulary it produces; the two halves must agree on what
-      // `live | absent | unknown` means or the tri-state has no single owner.
-      'src/coordinator/live/carrier-observer.ts',
-    ],
-  },
-  {
-    module: 'src/coordinator/live/carrier-observer.ts',
-    what: 'the bounded network observer',
-    permittedImporters: [
-      // Strictly narrower than the classifier's. Going and asking a foreign process is only ever done to
-      // render a read; letting it reach anywhere else is how a remote answer would end up deciding the
-      // fate of local durable state.
-      'src/read-model/',
+      // Health snapshots are assembled in composition, which is why that root — not a `health.ts` or
+      // `coordinator/live/idle.ts` — is what appears here: composition is what may ask the classifier so
+      // health/idle never need a network observer to do it.
       'src/coordinator/composition/',
     ],
   },
@@ -143,6 +127,25 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
       // A permitted importer naming nothing is the opposite failure: it silently widens the ban instead of
       // narrowing it, and it hides that the module it was written for has moved or gone.
       expect(unmatchedRoots(authority.permittedImporters)).toEqual([]);
+    },
+  );
+
+  it.each(OBSERVATION_AUTHORITIES.map((authority) => [authority.module, authority] as const))(
+    '%s is actually imported, so this invariant is not vacuously green over an empty set',
+    (module, authority) => {
+      const importers = IMPORT_EDGES.filter((edge) => edge.target === module).map((edge) => edge.source);
+      // An authority nobody imports is not being guarded by any check in this file — reachability,
+      // permission, and re-export all pass trivially over an empty edge set. That is exactly how a module
+      // with no importer anywhere in `src/` (the deleted `coordinator/live/carrier-observer.ts`) stayed
+      // declared here with every check green: the checks below all ran, and all passed, over nothing.
+      expect(importers.length).toBeGreaterThan(0);
+
+      // The same failure at finer grain: a permitted-importer entry nothing imports through is a permission
+      // nobody exercises, and an unexercised permission is indistinguishable from one that no longer applies.
+      const unexercised = authority.permittedImporters.filter(
+        (entry) => !importers.some((source) => matches(source, [entry])),
+      );
+      expect(unexercised).toEqual([]);
     },
   );
 
