@@ -38,6 +38,9 @@ function fakeProxySet(proxyInstanceId: string): ProviderProxySetAuthority {
 const proxySetAcquisition = {
   pluginRoot: '/plugin',
   identity: { instanceId: 'i', buildSetId: 'b', flavor: 'prod' as const },
+  // This suite fakes `ensureProxySet` itself (`mockedEnsureProxySet`), so nothing here ever reads the
+  // registry; empty is the honest answer regardless.
+  operationRegistry: { operationsFor: () => [] },
 };
 
 function expectedHost(spec: ProviderServerSpec, jobId = 'shared-attachment') {

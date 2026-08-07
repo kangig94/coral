@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
-  ProviderProxyHandoffGrantUnavailableError,
   buildGuardianSpawnUndo,
   createProviderProxySetAuthority,
   type ProviderProxySetAuthorityDependencies,
@@ -10,10 +13,16 @@ import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import { PROXY_DISAPPEARANCE_CONFIRM_MS, SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import { PROXY_TEARDOWN_RESERVE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS } from '#src/provider-proxy/protocol.js';
-import type { GuardianIdentity, ProxyIdentity, ReaperIdentity } from '#src/provider-proxy/protocol.js';
+import type {
+  CoordinatorIdentity,
+  GuardianIdentity,
+  ProxyIdentity,
+  ReaperIdentity,
+} from '#src/provider-proxy/protocol.js';
 import type { SpawnedRoleProcess } from '#src/provider-proxy/role-spawn.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 const GUARDIAN_IDENTITY: GuardianIdentity = {
@@ -54,11 +63,33 @@ const PROXY_IDENTITY: ProxyIdentity = {
   canonicalEndpoint: '/tmp/proxy.sock',
 };
 
-/** A client that must never be called — `installHandoffGrant`'s refusal must not touch any wire. */
+const COORDINATOR_IDENTITY: CoordinatorIdentity = {
+  instanceId: '55555555-5555-4555-8555-555555555555',
+  pid: 1,
+  processStartedAtSeconds: 900,
+  generation: 'gen2',
+  flavor: 'prod',
+  buildSetId: GUARDIAN_IDENTITY.buildSetId,
+};
+
+/** A client that must never be called — a test that reaches it is exercising a path it did not mean to. */
 function unreachableClient(): ControlClient {
   return {
     call: () => Promise.reject(new Error('unreachable: this client was not expected to be called')),
     close: () => {},
+  };
+}
+
+/** `runtime.ids`/`env`/`storage` for the `stopAndReap`-only describe blocks below: none of them ever reach
+ *  `installHandoffGrant`, so touching any of these ports is itself the defect a test here would be catching. */
+function unusedRuntimePorts(): Pick<Runtime, 'ids' | 'env' | 'storage'> {
+  const fail = (member: string) => (): never => {
+    throw new Error(`unexpected use of runtime.${member} outside installHandoffGrant`);
+  };
+  return {
+    ids: { uuid: fail('ids.uuid'), randomBytes: fail('ids.randomBytes') } as unknown as Runtime['ids'],
+    env: { get: fail('env.get') } as unknown as Runtime['env'],
+    storage: new Proxy({}, { get: fail('storage') }) as unknown as Runtime['storage'],
   };
 }
 
@@ -102,6 +133,10 @@ function authorityWithGuardianClient(
     reaperIdentity: REAPER_IDENTITY,
     proxyIdentityFields: PROXY_IDENTITY,
     heartbeats: [],
+    coordinatorIdentity: COORDINATOR_IDENTITY,
+    handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
+    runtime: unusedRuntimePorts(),
+    operationRegistry: { operationsFor: () => [] },
   };
   return createProviderProxySetAuthority(deps);
 }
@@ -165,20 +200,224 @@ describe('createProviderProxySetAuthority: RPC response validation', () => {
 });
 
 describe('createProviderProxySetAuthority: installHandoffGrant', () => {
-  it('refuses with its named error instead of half-installing a grant no successor could find', async () => {
-    const authority = authorityWithGuardianClient(unreachableClient());
+  const OPERATION_KEY = {
+    jobId: '88888888-8888-4888-8888-888888888888',
+    operationId: '66666666-6666-4666-8666-666666666666',
+  };
+  const OPERATION_STATUS_RESULT = {
+    proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+    operations: [
+      {
+        operation: {
+          jobId: OPERATION_KEY.jobId,
+          operationId: OPERATION_KEY.operationId,
+          proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+          buildSetId: GUARDIAN_IDENTITY.buildSetId,
+        },
+        held: true,
+        state: 'executing',
+        committedThroughProviderSeq: 3,
+      },
+    ],
+  };
+  const INSTALL_ACK = { state: 'installed-dormant' as const, grantId: '77777777-7777-4777-8777-777777777777' };
 
-    await expect(authority.installHandoffGrant([], new AbortController().signal)).rejects.toBeInstanceOf(
-      ProviderProxyHandoffGrantUnavailableError,
+  const tempRoots: string[] = [];
+  afterEach(() => {
+    for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Records every call made to a role's client and answers `operation.status.v1`/the named install method
+   *  with the fixtures above, or the configured failure for that one role. */
+  function recordingClient(
+    role: 'guardian' | 'reaper' | 'proxy',
+    calls: Array<{ role: string; method: string }>,
+    fail?: string,
+  ): ControlClient {
+    return {
+      call: (method: string) => {
+        calls.push({ role, method });
+        if (fail !== undefined && method === fail) {
+          return Promise.reject(new Error(`${role} refused ${method}`));
+        }
+        if (method === 'operation.status.v1') return Promise.resolve(OPERATION_STATUS_RESULT);
+        return Promise.resolve(INSTALL_ACK);
+      },
+      close: () => {},
+    };
+  }
+
+  function authorityForInstall(options: {
+    calls: Array<{ role: string; method: string }>;
+    fail?: 'guardian' | 'reaper' | 'proxy';
+    failMethod?: string;
+  }): { authority: ReturnType<typeof createProviderProxySetAuthority>; handoffCapsulePath: string } {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'coral-install-handoff-grant-'));
+    tempRoots.push(tempRoot);
+    const handoffCapsulePath = join(tempRoot, 'proxy.handoff.json');
+    const runtime = createRealRuntime('dev', { baseDir: tempRoot });
+    const deps: ProviderProxySetAuthorityDependencies = {
+      proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+      guardianClient: recordingClient(
+        'guardian',
+        options.calls,
+        options.fail === 'guardian' ? (options.failMethod ?? 'guardian.handoff-install.v1') : undefined,
+      ),
+      reaperClient: recordingClient(
+        'reaper',
+        options.calls,
+        options.fail === 'reaper' ? (options.failMethod ?? 'reaper.handoff-install.v1') : undefined,
+      ),
+      proxyClient: recordingClient(
+        'proxy',
+        options.calls,
+        options.fail === 'proxy' ? (options.failMethod ?? 'handoff.install.v1') : undefined,
+      ),
+      guardianIdentity: GUARDIAN_IDENTITY,
+      reaperIdentity: REAPER_IDENTITY,
+      proxyIdentityFields: PROXY_IDENTITY,
+      heartbeats: [],
+      coordinatorIdentity: COORDINATOR_IDENTITY,
+      handoffCapsulePath,
+      runtime,
+      operationRegistry: { operationsFor: () => [] },
+    };
+    return { authority: createProviderProxySetAuthority(deps), handoffCapsulePath };
+  }
+
+  it('refuses an empty operation set instead of installing a grant over nothing', async () => {
+    const { authority } = authorityForInstall({ calls: [] });
+
+    await expect(authority.installHandoffGrant([], new AbortController().signal)).rejects.toThrow(
+      /at least one operation/u,
     );
   });
 
-  it('names what is missing: no reaper install RPC, no successor capsule', async () => {
-    const authority = authorityWithGuardianClient(unreachableClient());
+  it('installs the identical grant on guardian, reaper and proxy, then writes a durable mode-0600 capsule', async () => {
+    const calls: Array<{ role: string; method: string }> = [];
+    const { authority, handoffCapsulePath } = authorityForInstall({ calls });
 
-    await expect(authority.installHandoffGrant([], new AbortController().signal)).rejects.toThrow(
-      /reaper\.handoff-install\.v1/u,
+    await authority.installHandoffGrant([OPERATION_KEY], new AbortController().signal);
+
+    expect(calls.map((call) => call.method)).toEqual(
+      expect.arrayContaining([
+        'operation.status.v1',
+        'guardian.handoff-install.v1',
+        'reaper.handoff-install.v1',
+        'handoff.install.v1',
+      ]),
     );
+
+    const written = JSON.parse(readFileSync(handoffCapsulePath, 'utf-8')) as {
+      version: number;
+      buildSetId: string;
+      operations: readonly unknown[];
+    };
+    expect(written.version).toBe(1);
+    expect(written.buildSetId).toBe(GUARDIAN_IDENTITY.buildSetId);
+    expect(written.operations).toHaveLength(1);
+    expect((statSync(handoffCapsulePath).mode & 0o777).toString(8)).toBe('600');
+  });
+
+  it('writes no capsule when one authority refuses its install call', async () => {
+    const calls: Array<{ role: string; method: string }> = [];
+    const { authority, handoffCapsulePath } = authorityForInstall({ calls, fail: 'reaper' });
+
+    await expect(authority.installHandoffGrant([OPERATION_KEY], new AbortController().signal)).rejects.toThrow(
+      /reaper refused/u,
+    );
+    expect(() => statSync(handoffCapsulePath)).toThrow();
+  });
+
+  it('refuses without installing anything when the proxy no longer holds the snapshotted operation', async () => {
+    const calls: Array<{ role: string; method: string }> = [];
+    const tempRoot = mkdtempSync(join(tmpdir(), 'coral-install-handoff-grant-absent-'));
+    tempRoots.push(tempRoot);
+    const handoffCapsulePath = join(tempRoot, 'proxy.handoff.json');
+    const proxyClient: ControlClient = {
+      call: (method: string) => {
+        calls.push({ role: 'proxy', method });
+        return Promise.resolve({
+          proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+          operations: [
+            {
+              operation: {
+                jobId: OPERATION_KEY.jobId,
+                operationId: OPERATION_KEY.operationId,
+                proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+                buildSetId: GUARDIAN_IDENTITY.buildSetId,
+              },
+              held: false,
+            },
+          ],
+        });
+      },
+      close: () => {},
+    };
+    const deps: ProviderProxySetAuthorityDependencies = {
+      proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+      guardianClient: recordingClient('guardian', calls),
+      reaperClient: recordingClient('reaper', calls),
+      proxyClient,
+      guardianIdentity: GUARDIAN_IDENTITY,
+      reaperIdentity: REAPER_IDENTITY,
+      proxyIdentityFields: PROXY_IDENTITY,
+      heartbeats: [],
+      coordinatorIdentity: COORDINATOR_IDENTITY,
+      handoffCapsulePath,
+      runtime: createRealRuntime('dev', { baseDir: tempRoot }),
+      operationRegistry: { operationsFor: () => [] },
+    };
+    const authority = createProviderProxySetAuthority(deps);
+
+    await expect(authority.installHandoffGrant([OPERATION_KEY], new AbortController().signal)).rejects.toThrow(
+      /no longer holds operation/u,
+    );
+    expect(calls.map((call) => call.method)).toEqual(['operation.status.v1']);
+  });
+});
+
+describe('createProviderProxySetAuthority: snapshotOperations', () => {
+  it('reports this proxy’s own operations from the registry, byte-sorted, excluding another proxy’s', async () => {
+    const otherProxyId = '99999999-9999-4999-8999-999999999999';
+    const laterOperation = { jobId: '11111111-1111-4111-8111-111111111112', operationId: 'b'.repeat(36 - 4) + '1111' };
+    const earlierOperation = {
+      jobId: '11111111-1111-4111-8111-111111111113',
+      operationId: 'a'.repeat(36 - 4) + '1111',
+    };
+    const deps: ProviderProxySetAuthorityDependencies = {
+      proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+      guardianClient: unreachableClient(),
+      proxyClient: unreachableClient(),
+      reaperClient: unreachableClient(),
+      guardianIdentity: GUARDIAN_IDENTITY,
+      reaperIdentity: REAPER_IDENTITY,
+      proxyIdentityFields: PROXY_IDENTITY,
+      heartbeats: [],
+      coordinatorIdentity: COORDINATOR_IDENTITY,
+      handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
+      runtime: unusedRuntimePorts(),
+      operationRegistry: {
+        operationsFor: (proxyInstanceId) => {
+          if (proxyInstanceId === otherProxyId) {
+            return [{ ...laterOperation, proxyInstanceId: otherProxyId, buildSetId: GUARDIAN_IDENTITY.buildSetId }];
+          }
+          // Registered out of byte order, mirroring a `Map` iteration order this method must not rely on.
+          return [
+            { ...laterOperation, proxyInstanceId, buildSetId: GUARDIAN_IDENTITY.buildSetId },
+            { ...earlierOperation, proxyInstanceId, buildSetId: GUARDIAN_IDENTITY.buildSetId },
+          ];
+        },
+      },
+    };
+    const authority = createProviderProxySetAuthority(deps);
+
+    const snapshot = await authority.snapshotOperations(new AbortController().signal);
+
+    expect(snapshot).toEqual([
+      { jobId: earlierOperation.jobId, operationId: earlierOperation.operationId },
+      { jobId: laterOperation.jobId, operationId: laterOperation.operationId },
+    ]);
   });
 });
 

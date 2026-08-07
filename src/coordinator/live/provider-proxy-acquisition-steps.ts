@@ -6,6 +6,7 @@ import { ABSENCE_POLL_MS } from '../../infra/process-containment.js';
 import {
   providerGuardianBootstrapCapsulePath,
   providerGuardianEndpoint,
+  providerHandoffCapsulePath,
   providerProxyBootstrapCapsulePath,
   providerProxyEndpoint,
   providerReaperBootstrapCapsulePath,
@@ -21,6 +22,13 @@ import {
   type ReaperBootstrapCapsule,
 } from '../../provider-proxy/bootstrap-capsule.js';
 import {
+  handoffSecretDigest,
+  writeHandoffCapsuleFile,
+  type HandoffCapsule,
+} from '../../provider-proxy/handoff-capsule.js';
+import type { ProviderOperationKey } from '../../provider-proxy/ledger.js';
+import type { LocalOperationRegistry } from '../services/operation-registry.js';
+import {
   connectRoleControlWithRetry,
   runtimeControlTimer,
   spawnRoleProcess,
@@ -30,10 +38,18 @@ import {
 } from '../../provider-proxy/role-spawn.js';
 import { DETACHED_CONTAINMENT_KIND } from '../../provider-proxy/guardian.js';
 import type { ControlClient, ProviderEventHandler } from '../../provider-proxy/control-client.js';
-import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_TEARDOWN_RESERVE_MS } from '../../provider-proxy/orphan-deadline.js';
+import {
+  PROXY_CONTROL_HEARTBEAT_MS,
+  PROXY_TEARDOWN_RESERVE_MS,
+  resolveProviderProxyDeadlineConfiguration,
+} from '../../provider-proxy/orphan-deadline.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
+  PROXY_STATUS_RPC_TIMEOUT_MS,
+  canonicalUuidSchema,
   guardianIdentitySchema,
+  operationIdentitySchema,
+  proxyHandoffOperationSchema,
   proxyIdentitySchema,
   reaperIdentitySchema,
   type CoordinatorIdentity,
@@ -80,6 +96,9 @@ export type ProviderProxyAcquisitionStepsOptions = Readonly<{
   /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe. This file only spawns the
    *  guardian — it never consumes a capsule itself, so it has no strict-identity check to inject. */
   readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
+  /** This coordinator's own live operations — `installHandoffGrant`'s snapshot source
+   *  (`createProviderProxySetAuthority`'s `snapshotOperations`). */
+  operationRegistry: Pick<LocalOperationRegistry, 'operationsFor'>;
   /** Builds the durable-effect handler for `provider.event.v1`, called once `establishControl` is about to
    *  open the proxy role's connection — see `ProviderProxySetAcquisitionConfig.onProviderEvent`'s own doc for
    *  why this is a factory rather than an already-built handler. Absent wires no handler at all onto that
@@ -103,16 +122,6 @@ type MintedSet = Readonly<{
   guardianReaperAuthSecret: string;
   proxyGuardianAuthSecret: string;
 }>;
-
-/** Refused not-yet-implemented calls carry this so a caller can distinguish "this operation is not wired
- *  yet" from an ordinary RPC or identity failure. */
-export class ProviderProxyHandoffGrantUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ProviderProxyHandoffGrantUnavailableError';
-    Object.setPrototypeOf(this, ProviderProxyHandoffGrantUnavailableError.prototype);
-  }
-}
 
 const heartbeatChallengeSchema = z.string().min(1);
 const controlEpochSchema = z.number().int().nonnegative().safe();
@@ -149,6 +158,37 @@ const heartbeatResultSchema = z
 const stopAndReapResultSchema = z
   .object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) })
   .strict();
+
+/** `operation.status.v1`'s reply: one entry per requested operation, `held` discriminating whether this
+ *  proxy still carries it. Parsed loosely on `state` (any non-empty string, not the narrower carrier-eligible
+ *  enum) so an ineligible state fails with `installHandoffGrant`'s own clear message below rather than an
+ *  opaque schema error. */
+const operationStatusResultSchema = z
+  .object({
+    proxyInstanceId: canonicalUuidSchema,
+    operations: z.array(
+      z.union([
+        z.object({ operation: operationIdentitySchema, held: z.literal(false) }).strict(),
+        z
+          .object({
+            operation: operationIdentitySchema,
+            held: z.literal(true),
+            state: z.string().min(1),
+            committedThroughProviderSeq: z.number().int().nonnegative().safe(),
+          })
+          .strict(),
+      ]),
+    ),
+  })
+  .strict();
+
+const handoffInstallAckSchema = z
+  .object({ state: z.literal('installed-dormant'), grantId: canonicalUuidSchema })
+  .strict();
+
+/** The subset of `ProviderOperationState` a handoff capsule may carry an operation in (`protocol.ts` owns the
+ *  enum itself); read back off the wire schema rather than duplicated, so the two can never drift apart. */
+const HANDOFF_ELIGIBLE_CARRIER_STATES = new Set<string>(proxyHandoffOperationSchema.shape.carrierState.options);
 
 async function heartbeatOnce(
   client: ControlClient,
@@ -282,6 +322,17 @@ export type ProviderProxySetAuthorityDependencies = Readonly<{
   reaperIdentity: ReaperIdentity;
   proxyIdentityFields: ProxyIdentity;
   heartbeats: readonly HeartbeatLoop[];
+  /** This coordinator's own identity — named on every install call so a peer that checks it (build match
+   *  only; see `assertNamedCoordinatorBuild`) can report a disagreement instead of installing blind. */
+  coordinatorIdentity: CoordinatorIdentity;
+  /** Where `installHandoffGrant` writes this set's one successor capsule. Precomputed by the caller
+   *  (`establishControl`), which already resolves `baseDir`/generation/flavor the same way every other
+   *  proxy-role path in this file does. */
+  handoffCapsulePath: string;
+  /** `ids`/`env`/`storage` for minting the grant and writing its capsule durably. */
+  runtime: Pick<Runtime, 'ids' | 'env' | 'storage'>;
+  /** `snapshotOperations`' source: this coordinator's own live operations, filtered to this proxy. */
+  operationRegistry: Pick<LocalOperationRegistry, 'operationsFor'>;
 }>;
 
 /**
@@ -302,25 +353,147 @@ export function createProviderProxySetAuthority(
     reaperIdentity,
     proxyIdentityFields,
     heartbeats,
+    coordinatorIdentity,
+    handoffCapsulePath,
+    runtime,
+    operationRegistry,
   } = deps;
 
   return {
     proxyInstanceId,
-    // The proxy wire protocol has no operation-listing RPC yet — that lands with the operation ledger's
-    // replay protocol (plan item W2.3). A set this acquisition just built has never had an operation
-    // prepared on it, so empty is the accurate answer, not a placeholder.
-    snapshotOperations: async () => [],
-    installHandoffGrant: async () => {
-      // The contract this implements promises a grant installed on guardian, reaper AND proxy, then a
-      // written and fsynced successor capsule — a grant with no capsule is unredeemable, so half of that is
-      // worse than none. Today this can only reach guardian and proxy (`reaper.handoff-install.v1` does not
-      // exist) and writes no capsule at all, so it refuses outright rather than install a grant no successor
-      // could ever find. Wiring both is the coordinated-shutdown / operation-ledger work (plan item W2.3).
-      throw new ProviderProxyHandoffGrantUnavailableError(
-        'installHandoffGrant refuses: the reaper has no install RPC (reaper.handoff-install.v1 does not ' +
-          'exist) and no successor capsule is written, so a grant installed here would be unredeemable. ' +
-          'Wiring both is the coordinated-shutdown / operation-ledger work (plan item W2.3).',
+    // Taken once per proxy (shutdown.ts calls this exactly once, then hands the fixed result to
+    // `installHandoffGrant`) from this coordinator's own live-operation bookkeeping — the same registry
+    // `provider-proxy-operation-activation.ts` writes at `operation.activate.v1` ACK. Byte-sorted here so the
+    // contract this method documents holds independent of what `installHandoffGrant` does with it.
+    snapshotOperations: async () =>
+      [...operationRegistry.operationsFor(proxyInstanceId)]
+        .map((identity) => ({ jobId: identity.jobId, operationId: identity.operationId }))
+        .sort((left, right) =>
+          left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
+        ),
+    installHandoffGrant: async (operations: readonly ProviderOperationKey[], signal: AbortSignal) => {
+      if (operations.length === 0) {
+        throw new Error('installHandoffGrant requires at least one operation to install a grant over.');
+      }
+      signal.throwIfAborted();
+
+      // Byte-sorted by operationId: the wire schema (`handoffOperationSetSchema`) requires it and this is
+      // the one place that assembles the set, so sorting happens here rather than being asked of every caller.
+      const sortedKeys = [...operations].sort((left, right) =>
+        left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
       );
+      const requestedIdentities = sortedKeys.map((key) => ({
+        jobId: key.jobId,
+        operationId: key.operationId,
+        proxyInstanceId,
+        buildSetId: guardianIdentity.buildSetId,
+      }));
+      // Confirmed live state, not the caller's possibly-stale belief: a grant built from what the proxy no
+      // longer holds would promise a successor an operation set that was never true at redemption time.
+      const rawStatus = await proxyClient.call(
+        'operation.status.v1',
+        { operations: requestedIdentities },
+        PROXY_STATUS_RPC_TIMEOUT_MS,
+      );
+      const status = operationStatusResultSchema.parse(rawStatus);
+      signal.throwIfAborted();
+
+      const handoffOperations = status.operations.map((entry) => {
+        if (!entry.held) {
+          throw new Error(
+            `installHandoffGrant: proxy ${proxyInstanceId} no longer holds operation ${entry.operation.operationId}.`,
+          );
+        }
+        if (!HANDOFF_ELIGIBLE_CARRIER_STATES.has(entry.state)) {
+          throw new Error(
+            `installHandoffGrant: operation ${entry.operation.operationId} is in state '${entry.state}', which cannot be handed off.`,
+          );
+        }
+        return {
+          operation: entry.operation,
+          carrierState: entry.state as 'pending-activation' | 'executing' | 'released',
+          committedThroughProviderSeq: entry.committedThroughProviderSeq,
+        };
+      });
+
+      const deadlineConfig = resolveProviderProxyDeadlineConfiguration(runtime.env);
+      const grantId = runtime.ids.uuid();
+      const secret = runtime.ids.randomBytes(32).toString('hex');
+      const secretSha256 = handoffSecretDigest(secret);
+
+      // All three authorities install the identical value or none of them do: a caller that reaps this set
+      // after any one install fails leaves nothing to unwind, since `GrantRegistry.install` is idempotent for
+      // the exact same value and the containment is about to be torn down regardless of how far this got.
+      await Promise.all([
+        guardianClient.call(
+          'guardian.handoff-install.v1',
+          {
+            grantId,
+            secretSha256,
+            successor: coordinatorIdentity,
+            operations: handoffOperations,
+            orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
+            teardownReserveMs: deadlineConfig.teardownReserveMs,
+          },
+          PROXY_CONTROL_RPC_TIMEOUT_MS,
+        ),
+        reaperClient.call(
+          'reaper.handoff-install.v1',
+          {
+            grantId,
+            secretSha256,
+            successor: coordinatorIdentity,
+            operations: handoffOperations,
+            orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
+            teardownReserveMs: deadlineConfig.teardownReserveMs,
+          },
+          PROXY_CONTROL_RPC_TIMEOUT_MS,
+        ),
+        proxyClient.call(
+          'handoff.install.v1',
+          {
+            grantId,
+            secretSha256,
+            generation: proxyIdentityFields.generation,
+            hostFingerprint: proxyIdentityFields.hostFingerprint,
+            buildSetId: proxyIdentityFields.buildSetId,
+            proxyInstanceId: proxyIdentityFields.proxyInstanceId,
+            operations: handoffOperations,
+            orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
+          },
+          PROXY_CONTROL_RPC_TIMEOUT_MS,
+        ),
+      ]).then(([guardianAck, reaperAck, proxyAck]) => {
+        handoffInstallAckSchema.parse(guardianAck);
+        handoffInstallAckSchema.parse(reaperAck);
+        handoffInstallAckSchema.parse(proxyAck);
+      });
+      signal.throwIfAborted();
+
+      // The durable half. A grant installed with no capsule is a secret nobody could ever present, so this
+      // is not reachable unless every install above already acknowledged the identical value.
+      const capsule: HandoffCapsule = {
+        version: 1,
+        grantId,
+        secret,
+        generation: guardianIdentity.generation,
+        flavor: guardianIdentity.flavor,
+        buildSetId: guardianIdentity.buildSetId,
+        hostFingerprint: guardianIdentity.hostFingerprint,
+        guardianInstanceId: guardianIdentity.guardianInstanceId,
+        reaperInstanceId: reaperIdentity.reaperInstanceId,
+        proxyInstanceId: proxyIdentityFields.proxyInstanceId,
+        guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
+        reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
+        proxyEndpoint: proxyIdentityFields.canonicalEndpoint,
+        operations: handoffOperations,
+        orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
+        teardownReserveMs: deadlineConfig.teardownReserveMs,
+      };
+      writeHandoffCapsuleFile(handoffCapsulePath, capsule, {
+        storage: runtime.storage,
+        uid: process.getuid?.() ?? 0,
+      });
     },
     stopAndReap: async (signal) => {
       try {
@@ -675,6 +848,10 @@ export function createProviderProxyAcquisitionSteps(
           ),
         ];
 
+        const handoffCapsulePath = providerHandoffCapsulePath(
+          { generation, flavor, buildSetId, hostFingerprint, proxyInstanceId: setMinted.proxyInstanceId },
+          options.baseDir === undefined ? undefined : { baseDir: options.baseDir },
+        );
         const base = createProviderProxySetAuthority({
           proxyInstanceId: setMinted.proxyInstanceId,
           guardianClient: guardianSession.client,
@@ -684,6 +861,10 @@ export function createProviderProxyAcquisitionSteps(
           reaperIdentity: reaperSession.opened.reaper,
           proxyIdentityFields: proxySession.opened.proxy,
           heartbeats,
+          coordinatorIdentity,
+          handoffCapsulePath,
+          runtime,
+          operationRegistry: options.operationRegistry,
         });
         // The set-level identity `operation.prepare.v1`'s coordinator meta commit needs (W2.3): fixed for
         // this set's whole lifetime, built from the exact same verified fields `base`'s identity checks just

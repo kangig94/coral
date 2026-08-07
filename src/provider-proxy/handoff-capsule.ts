@@ -1,6 +1,9 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { isAbsolute, normalize } from 'node:path';
+
 import { z } from 'zod';
 
+import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import {
   ProxyControlProtocolError,
   canonicalEndpointSchema,
@@ -102,7 +105,13 @@ export type InstalledGrant = Readonly<{
  * a second successor — refuses with the protocol's own `grant_invalid`/`grant_replayed`, so no layer has to
  * translate one vocabulary into the other on the way out.
  */
-export type HandoffCapsuleErrorCode = 'handoff_capsule_too_large' | 'handoff_capsule_invalid';
+export type HandoffCapsuleErrorCode =
+  | 'handoff_capsule_too_large'
+  | 'handoff_capsule_invalid'
+  | 'handoff_capsule_non_canonical_path'
+  | 'handoff_capsule_not_private'
+  | 'handoff_capsule_write_failed'
+  | 'handoff_capsule_unreadable';
 
 export class HandoffCapsuleError extends Error {
   readonly code: HandoffCapsuleErrorCode;
@@ -138,6 +147,150 @@ export function decodeHandoffCapsule(bytes: Uint8Array): HandoffCapsule {
     throw new HandoffCapsuleError('handoff_capsule_invalid', 'Handoff capsule failed strict validation.');
   }
   return result.data;
+}
+
+const PRIVATE_HANDOFF_CAPSULE_MODE = 0o600;
+const PERMISSION_BITS = 0o777n;
+
+type HandoffCapsuleFileStorage = Pick<
+  StoragePort,
+  'closeSync' | 'fstatSync' | 'lstatSync' | 'openSync' | 'readSync' | 'statSync' | 'writeAtomicDurableSync'
+>;
+
+export type HandoffCapsuleFileEnvironment = Readonly<{
+  storage: HandoffCapsuleFileStorage;
+  uid: number;
+}>;
+
+function assertCanonicalHandoffCapsulePath(path: string): void {
+  if (!isAbsolute(path) || normalize(path) !== path || path.includes('\0')) {
+    throw new HandoffCapsuleError(
+      'handoff_capsule_non_canonical_path',
+      'Handoff capsule path must be absolute and normalized.',
+    );
+  }
+}
+
+function assertPrivateHandoffCapsuleFile(path: string, env: HandoffCapsuleFileEnvironment): StorageBigIntStat {
+  if (!Number.isSafeInteger(env.uid) || env.uid < 0) {
+    throw new HandoffCapsuleError('handoff_capsule_not_private', 'Handoff capsule owner uid is unavailable.');
+  }
+  const link = env.storage.lstatSync(path);
+  if (!link.isFile() || link.isSymbolicLink()) {
+    throw new HandoffCapsuleError(
+      'handoff_capsule_non_canonical_path',
+      'Handoff capsule must be a regular file, not a symlink.',
+    );
+  }
+  const stat = env.storage.statSync(path, { bigint: true });
+  if (
+    !stat.isFile() ||
+    stat.uid === undefined ||
+    stat.uid !== BigInt(env.uid) ||
+    (stat.mode & PERMISSION_BITS) !== BigInt(PRIVATE_HANDOFF_CAPSULE_MODE)
+  ) {
+    throw new HandoffCapsuleError(
+      'handoff_capsule_not_private',
+      'Handoff capsule must be a current-uid mode-0600 regular file.',
+    );
+  }
+  return stat;
+}
+
+/**
+ * Writes the successor half of a grant durably: one strict mode-0600, at-most-64-KiB capsule per proxy,
+ * atomically renamed into place and fsynced (`StoragePort.writeAtomicDurableSync`) — the same durable-publish
+ * primitive `kb/ops/promote-marker.ts` uses. A grant with no durable capsule is unredeemable no matter how
+ * many authorities acknowledge it, so this is the one write in the install sequence that must survive a
+ * `SIGKILL` landing the instant after it returns.
+ */
+export function writeHandoffCapsuleFile(
+  path: string,
+  capsule: HandoffCapsule,
+  env: HandoffCapsuleFileEnvironment,
+): void {
+  assertCanonicalHandoffCapsulePath(path);
+  const parsed = handoffCapsuleSchema.parse(capsule);
+  const encoded = JSON.stringify(parsed);
+  const encodedBytes = Buffer.byteLength(encoded, 'utf8');
+  if (encodedBytes > MAX_HANDOFF_CAPSULE_BYTES) {
+    throw new HandoffCapsuleError(
+      'handoff_capsule_too_large',
+      `Handoff capsule exceeded ${MAX_HANDOFF_CAPSULE_BYTES} bytes (encoded ${encodedBytes}).`,
+    );
+  }
+  const durable = env.storage.writeAtomicDurableSync(path, encoded, {
+    encoding: 'utf-8',
+    mode: PRIVATE_HANDOFF_CAPSULE_MODE,
+  });
+  if (!durable) {
+    throw new HandoffCapsuleError(
+      'handoff_capsule_write_failed',
+      'Handoff capsule could not be written durably (its parent directory disappeared).',
+    );
+  }
+  // Written, not merely believed written: a mode or ownership drift here means a later reader would trust
+  // bytes this process cannot itself verify came from this write, so it is caught at the write site instead.
+  assertPrivateHandoffCapsuleFile(path, env);
+}
+
+/**
+ * Reads one capsule file, verifying it is a private, size-bounded regular file before any byte crosses into
+ * `decodeHandoffCapsule`. Returns `null` for an absent path — the ordinary case once the recorded set's own
+ * enforcers have unlinked it after confirmed absence — rather than forcing every caller to special-case
+ * `ENOENT`.
+ */
+export function readHandoffCapsuleFile(path: string, env: HandoffCapsuleFileEnvironment): HandoffCapsule | null {
+  assertCanonicalHandoffCapsulePath(path);
+  let stat: StorageBigIntStat;
+  try {
+    stat = assertPrivateHandoffCapsuleFile(path, env);
+  } catch (error: unknown) {
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+  if (stat.size < 0n || stat.size > BigInt(MAX_HANDOFF_CAPSULE_BYTES)) {
+    throw new HandoffCapsuleError(
+      'handoff_capsule_too_large',
+      `Handoff capsule exceeded ${MAX_HANDOFF_CAPSULE_BYTES} bytes (observed ${stat.size}).`,
+    );
+  }
+
+  let descriptor: number | null = null;
+  try {
+    descriptor = env.storage.openSync(path, 'r');
+    const opened = env.storage.fstatSync(descriptor, { bigint: true });
+    if (!opened.isFile() || opened.size !== stat.size) {
+      throw new HandoffCapsuleError('handoff_capsule_unreadable', 'Handoff capsule changed while it was opened.');
+    }
+    const bytes = Buffer.allocUnsafe(MAX_HANDOFF_CAPSULE_BYTES + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const read = env.storage.readSync(descriptor, bytes, offset, bytes.length - offset, null);
+      if (read === 0) break;
+      offset += read;
+    }
+    if (offset > MAX_HANDOFF_CAPSULE_BYTES) {
+      throw new HandoffCapsuleError(
+        'handoff_capsule_too_large',
+        `Handoff capsule exceeded ${MAX_HANDOFF_CAPSULE_BYTES} bytes (observed ${offset}).`,
+      );
+    }
+    return decodeHandoffCapsule(bytes.subarray(0, offset));
+  } catch (error: unknown) {
+    if (error instanceof HandoffCapsuleError) throw error;
+    throw new HandoffCapsuleError('handoff_capsule_unreadable', 'Handoff capsule could not be read safely.');
+  } finally {
+    if (descriptor !== null) {
+      try {
+        env.storage.closeSync(descriptor);
+      } catch {
+        // Best effort: the read result above already determined success or failure.
+      }
+    }
+  }
 }
 
 /** The installed half, derived so an installer never has to hold the secret to record the grant. */

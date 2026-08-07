@@ -535,6 +535,7 @@ export async function startProviderReaperRole(
     containmentEnvironment: buildContainmentEnvironment(clock, ports),
     scheduler: buildScheduler(ports.runtime),
     timer: runtimeControlTimer(ports.runtime),
+    mintReceipt: () => ports.runtime.ids.uuid(),
     self: readSelfIdentity(ports),
     onOutcome,
     onProgressViolation,

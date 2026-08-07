@@ -2,6 +2,7 @@ import { probeProcessStartedAtSeconds } from '../../../infra/node-process.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { CoordinatorIdentity as ProviderProxyCoordinatorIdentity } from '../../../provider-proxy/protocol.js';
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
+import type { LocalOperationRegistry } from '../../services/operation-registry.js';
 import { acquireProviderProxySet } from '../provider-proxy-acquisition.js';
 import { createProviderProxyAcquisitionSteps } from '../provider-proxy-acquisition-steps.js';
 import type { ProviderProxyOperationAuthority } from '../provider-proxy-operation-route.js';
@@ -35,6 +36,10 @@ export type ProviderProxySetAcquisitionIdentity = Readonly<{
 export type ProviderProxySetAcquisitionConfig = Readonly<{
   pluginRoot: string;
   identity: ProviderProxySetAcquisitionIdentity;
+  /** This coordinator's own live operations, by proxy set — `installHandoffGrant`'s snapshot source
+   *  (`ProviderProxySetAuthority.snapshotOperations`). Already constructed at `composition/world.ts` time,
+   *  unlike `onProviderEvent`, so it is threaded through directly rather than behind a factory. */
+  operationRegistry: Pick<LocalOperationRegistry, 'operationsFor'>;
   /**
    * Builds the durable-effect handler for `provider.event.v1` fresh, once per acquisition, rather than
    * accepting an already-built handler: this config is composed once, before the store exists
@@ -92,6 +97,7 @@ export function ensureProviderProxySet(
     pluginRoot: env.pluginRoot,
     coordinatorIdentity,
     hostFingerprint: hostFingerprintFromSpec(entry.spec),
+    operationRegistry: env.operationRegistry,
     ...(env.onProviderEvent === undefined ? {} : { onProviderEvent: env.onProviderEvent }),
   });
   void acquireProviderProxySet({

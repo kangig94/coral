@@ -323,7 +323,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         // endpoint only learns that a tenancy was earned. Admission can still refuse: an incumbent holding
         // live control is not displaced by a successor that merely presents a valid grant.
         authority: 'establishes-control',
-        handle: (params) => {
+        handle: async (params) => {
           const request = handoffRedeemParamsSchema.parse(params);
           assertNamedCoordinatorBuild(request.successor, capsule);
           const redemption = grants.redeem({
@@ -333,6 +333,28 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             operationIds: request.operations.map((entry) => entry.operation.operationId),
             binding: setIdentity,
           });
+          // The guardian is the sole linearization point: it is the only party that ever sees the plaintext
+          // secret, so it is the only party that can tell a genuine redemption from a replay. Pushing the
+          // receipt over the paired channel — the same shape `register-provider-root.v1`/`record-containment.v1`
+          // already use for guardian→reaper facts — is what lets the reaper trust "a successor was admitted"
+          // without ever checking the secret itself. Without this forward, a second successor holding the
+          // same plaintext secret from the same capsule could rotate the reaper directly after this one is
+          // refused by the (already-spent) grant here, splitting one set between two coordinators.
+          const reaperResult = reaperAckSchema.parse(
+            await options.reaperChannel.call(
+              'reaper.record-redemption.v1',
+              {
+                grantId: request.grantId,
+                successor: request.successor,
+                operations: request.operations,
+                redemptionReceipt: redemption.redemptionReceipt,
+              },
+              PROXY_CONTROL_RPC_TIMEOUT_MS,
+            ),
+          );
+          if (reaperResult.state !== 'redemption-recorded') {
+            throw new ProxyControlProtocolError('invalid_state', 'The reaper did not record the redemption.');
+          }
           return {
             holder: request.successor.instanceId,
             fields: {

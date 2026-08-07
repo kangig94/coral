@@ -262,6 +262,7 @@ export function createCoordinatorWorld(
       proxySetAcquisition: {
         pluginRoot,
         identity: { instanceId, buildSetId, flavor },
+        operationRegistry,
         ...(options.buildProviderEventHandler === undefined
           ? {}
           : { onProviderEvent: options.buildProviderEventHandler }),

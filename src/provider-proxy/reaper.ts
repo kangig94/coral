@@ -17,17 +17,25 @@ import {
   type EnforcementScheduler,
 } from './enforcement.js';
 import {
+  createGrantRegistry,
+  grantSecretDigestSchema,
+  handoffOperationSetSchema,
+  type GrantBinding,
+} from './handoff-capsule.js';
+import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
+  assertNamedCoordinatorBuild,
   assertNamedProxyIdentity,
   assertNamedReaperIdentity,
   assertRecordedSetAgreement,
+  canonicalUuidSchema,
   coordinatorIdentitySchema,
   guardianIdentitySchema,
   proxyIdentitySchema,
   reaperIdentitySchema,
 } from './protocol.js';
-import type { EnforcerDeadlineStateMachine } from './orphan-deadline.js';
+import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 
 /**
@@ -62,6 +70,46 @@ const stopAndReapParamsSchema = z
     reaper: reaperIdentitySchema,
     proxy: proxyIdentitySchema,
     providerRoots: z.array(recordedRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
+  })
+  .strict();
+
+const reaperHandoffInstallParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    secretSha256: grantSecretDigestSchema,
+    successor: coordinatorIdentitySchema,
+    operations: handoffOperationSetSchema,
+    orphanTimeoutMs: z.number().int().positive(),
+    teardownReserveMs: z.number().int().positive(),
+  })
+  .strict();
+
+/**
+ * The guardian's own pairing-channel push, the instant `guardian.handoff-redeem.v1` consumes the grant: proof
+ * that a genuine redemption happened, since only the guardian ever sees the plaintext secret and only the
+ * guardian holds this reaper's paired channel. This reaper never independently checks the secret — the
+ * guardian is the sole linearization point, so a second successor holding the same plaintext secret from the
+ * same capsule is refused here for lacking a receipt, even though the grant it presents is genuine.
+ */
+const reaperRecordRedemptionParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    successor: coordinatorIdentitySchema,
+    operations: handoffOperationSetSchema,
+    redemptionReceipt: z.string().min(1),
+  })
+  .strict();
+
+/**
+ * `reaper.handoff-rotate.v1`'s request, exactly as the plan states: no secret, because this reaper trusts the
+ * receipt `reaper.record-redemption.v1` already recorded rather than re-deriving trust from the grant itself.
+ */
+const reaperHandoffRotateParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    successor: coordinatorIdentitySchema,
+    operations: handoffOperationSetSchema,
+    guardianRedemptionReceipt: z.string().min(1),
   })
   .strict();
 
@@ -105,6 +153,7 @@ export type ReaperOptions<Scope extends symbol> = Readonly<{
   containmentEnvironment: ProcessContainmentEnvironment<Scope>;
   scheduler: EnforcementScheduler;
   timer: ControlEndpointTimer;
+  mintReceipt(): string;
   /** The reaper's own pid/start identity, reported in `ReaperIdentity`. */
   self: Readonly<{ pid: number; processStartedAtSeconds: number }>;
   onOutcome(outcome: EnforcementOutcome): void;
@@ -132,9 +181,35 @@ export interface Reaper<Scope extends symbol> {
  * group being created, so it is the one party that may name it.
  */
 export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>): Reaper<Scope> {
-  const { capsule, clock, deadlines, scheduler, timer, self } = options;
+  const { capsule, clock, deadlines, scheduler, timer, mintReceipt, self } = options;
   let recorded: (RecordedContainmentIdentity & { readonly containmentKind: string }) | null = null;
   let enforcer: ArmedEnforcer<Scope> | null = null;
+
+  /** Every field a grant is bound to except the orphan timeout, mirroring `guardian.ts`'s own `setIdentity`:
+   *  built from this reaper's own capsule so a coordinator can never install a grant for a set it does not
+   *  belong to. */
+  const setIdentity: GrantBinding = Object.freeze({
+    generation: capsule.generation,
+    flavor: capsule.flavor,
+    buildSetId: capsule.buildSetId,
+    hostFingerprint: capsule.hostFingerprint,
+    guardianInstanceId: capsule.guardianInstanceId,
+    reaperInstanceId: capsule.reaperInstanceId,
+    proxyInstanceId: capsule.proxyInstanceId,
+  });
+  const grants = createGrantRegistry(mintReceipt);
+  // What `reaper.record-redemption.v1` records and `reaper.handoff-rotate.v1` checks: the guardian is the
+  // only party that can ever produce this, so its presence alone is what authorizes rotation here — this
+  // reaper never independently verifies the grant's secret.
+  let recordedRedemption: Readonly<{
+    grantId: string;
+    successorInstanceId: string;
+    operationIds: readonly string[];
+    redemptionReceipt: string;
+  }> | null = null;
+
+  const sameOperationIds = (left: readonly string[], right: readonly string[]): boolean =>
+    left.length === right.length && left.every((value, index) => value === right[index]);
 
   const requireEnforcer = (): ArmedEnforcer<Scope> => {
     if (enforcer === null) {
@@ -279,6 +354,107 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             throw new ProxyControlProtocolError('invalid_state', 'This reaper never recorded the named provider root.');
           }
           return { state: 'root-recorded' };
+        },
+      },
+    ],
+    [
+      'reaper.handoff-install.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = reaperHandoffInstallParamsSchema.parse(params);
+          assertNamedCoordinatorBuild(request.successor, capsule);
+          // The reserve is derived from this build's own process constants, not chosen per grant — the same
+          // check `guardian.handoff-install.v1` performs on its own copy of the same request shape.
+          if (request.teardownReserveMs !== PROXY_TEARDOWN_RESERVE_MS) {
+            throw new ProxyControlProtocolError(
+              'identity_mismatch',
+              `The named teardown reserve is not this build's ${PROXY_TEARDOWN_RESERVE_MS}ms.`,
+            );
+          }
+          return grants.install({
+            grantId: request.grantId,
+            secretSha256: request.secretSha256,
+            ...setIdentity,
+            operationIds: request.operations.map((entry) => entry.operation.operationId),
+            orphanTimeoutMs: request.orphanTimeoutMs,
+          });
+        },
+      },
+    ],
+    [
+      'reaper.record-redemption.v1',
+      {
+        // The guardian's own channel, the instant `guardian.handoff-redeem.v1` consumes the grant — the same
+        // shape `reaper.record-containment.v1`/`reaper.register-provider-root.v1` already use for guardian→
+        // reaper facts.
+        authority: 'pairing',
+        handle: (params) => {
+          const request = reaperRecordRedemptionParamsSchema.parse(params);
+          const operationIds = request.operations.map((entry) => entry.operation.operationId);
+          if (recordedRedemption !== null) {
+            // Idempotent for the identical redemption — a retried `guardian.handoff-redeem.v1` (the successor's
+            // reply was lost) forwards the same fact again; a different one here means two redemptions were
+            // attempted, which `grants.redeem()` on the guardian itself already refuses before this is ever
+            // reached, so reaching a mismatch here would mean the two authorities disagree about the same grant.
+            if (
+              recordedRedemption.grantId !== request.grantId ||
+              recordedRedemption.successorInstanceId !== request.successor.instanceId ||
+              recordedRedemption.redemptionReceipt !== request.redemptionReceipt ||
+              !sameOperationIds(recordedRedemption.operationIds, operationIds)
+            ) {
+              throw new ProxyControlProtocolError(
+                'identity_mismatch',
+                'This reaper already recorded a different redemption.',
+              );
+            }
+            return { state: 'redemption-recorded' };
+          }
+          recordedRedemption = {
+            grantId: request.grantId,
+            successorInstanceId: request.successor.instanceId,
+            operationIds,
+            redemptionReceipt: request.redemptionReceipt,
+          };
+          return { state: 'redemption-recorded' };
+        },
+      },
+    ],
+    [
+      'reaper.handoff-rotate.v1',
+      {
+        // Authorized by the redemption `reaper.record-redemption.v1` recorded, not by an independent secret
+        // check: admission can still refuse an incumbent holding live control the same way
+        // `guardian.handoff-redeem.v1` and `handoff.redeem.v1` do — a matching receipt does not by itself
+        // displace a coordinator this reaper's own deadline machine still considers live.
+        authority: 'establishes-control',
+        handle: (params) => {
+          const request = reaperHandoffRotateParamsSchema.parse(params);
+          assertNamedCoordinatorBuild(request.successor, capsule);
+          const operationIds = request.operations.map((entry) => entry.operation.operationId);
+          if (
+            recordedRedemption === null ||
+            recordedRedemption.grantId !== request.grantId ||
+            recordedRedemption.successorInstanceId !== request.successor.instanceId ||
+            recordedRedemption.redemptionReceipt !== request.guardianRedemptionReceipt ||
+            !sameOperationIds(recordedRedemption.operationIds, operationIds)
+          ) {
+            throw new ProxyControlProtocolError(
+              'grant_invalid',
+              'Rotation did not present a redemption this reaper recorded.',
+            );
+          }
+          return {
+            holder: request.successor.instanceId,
+            fields: {
+              // A wire result describing what this call did, not a deadline-model state — the deadline
+              // machine this endpoint shares with the guardian has exactly one enum, and this is not a
+              // member of it (see `orphan-deadline.ts`'s own "one enforcer state machine, not two").
+              state: 'successor-rotated',
+              reaperRotationReceipt: mintReceipt(),
+              operations: recordedRedemption.operationIds,
+            },
+          };
         },
       },
     ],

@@ -149,4 +149,45 @@ describe('LocalOperationRegistry', () => {
     // depend on the RPC's outcome.
     expect(registry.recordedStopCauseFor(identityFor(m))).toBe('signal_abort');
   });
+
+  describe('operationsFor()', () => {
+    it('reports only the entries activated against the named proxy set', () => {
+      const registry = new LocalOperationRegistry();
+      const proxyInstanceId = randomUUID();
+      const onSet = meta({ proxyInstanceId });
+      const offSet = meta();
+      registry.activate(onSet, fakeControl().control, () => {});
+      registry.activate(offSet, fakeControl().control, () => {});
+
+      expect(registry.operationsFor(proxyInstanceId)).toEqual([identityFor(onSet)]);
+    });
+
+    it('answers empty for a proxy set with no activated operations', () => {
+      const registry = new LocalOperationRegistry();
+      expect(registry.operationsFor('never-activated')).toEqual([]);
+    });
+
+    it('drops a settled entry — a fixed snapshot never reports an operation this coordinator already let go', () => {
+      const registry = new LocalOperationRegistry();
+      const proxyInstanceId = randomUUID();
+      const m = meta({ proxyInstanceId });
+      registry.activate(m, fakeControl().control, () => {});
+      registry.settled(identityFor(m));
+
+      expect(registry.operationsFor(proxyInstanceId)).toEqual([]);
+    });
+
+    it('reports every operation this coordinator holds against a proxy carrying more than one', () => {
+      const registry = new LocalOperationRegistry();
+      const proxyInstanceId = randomUUID();
+      const first = meta({ proxyInstanceId });
+      const second = meta({ proxyInstanceId });
+      registry.activate(first, fakeControl().control, () => {});
+      registry.activate(second, fakeControl().control, () => {});
+
+      const found = registry.operationsFor(proxyInstanceId);
+      expect(found).toHaveLength(2);
+      expect(found).toEqual(expect.arrayContaining([identityFor(first), identityFor(second)]));
+    });
+  });
 });

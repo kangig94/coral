@@ -155,4 +155,19 @@ export class LocalOperationRegistry {
     const key = this.liveJobIndex.get(jobId);
     return key === undefined ? null : (this.entries.get(key)?.state ?? null);
   }
+
+  /**
+   * Every operation this coordinator currently tracks against one proxy set — `installHandoffGrant`'s
+   * snapshot (W2.7): a grant installed over a set neither authority agreed to would strand it, so shutdown
+   * takes this exactly once per proxy and installs the grant over that fixed list, never a later re-read.
+   * A settled entry is already gone from `entries` (see `settled()`), so this can never report one that no
+   * longer exists.
+   */
+  operationsFor(proxyInstanceId: string): readonly ProviderOperationEventIdentity[] {
+    const found: ProviderOperationEventIdentity[] = [];
+    for (const entry of this.entries.values()) {
+      if (entry.identity.proxyInstanceId === proxyInstanceId) found.push(entry.identity);
+    }
+    return found;
+  }
 }

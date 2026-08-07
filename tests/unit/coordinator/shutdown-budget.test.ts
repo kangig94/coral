@@ -434,7 +434,7 @@ function fakeSet(
 ): ProviderProxySetAuthority {
   return {
     proxyInstanceId,
-    snapshotOperations: async () => ['op-1'],
+    snapshotOperations: async () => [{ jobId: 'job-1', operationId: 'op-1' }],
     installHandoffGrant: async () => {
       callLog.push(`install:${proxyInstanceId}`);
     },

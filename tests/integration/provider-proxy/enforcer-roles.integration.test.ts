@@ -188,6 +188,7 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     containmentEnvironment,
     scheduler: idleScheduler,
     timer,
+    mintReceipt,
     self: { pid: reaperIdentity.pid, processStartedAtSeconds: reaperIdentity.processStartedAtSeconds },
     onOutcome: (outcome) => reaperOutcomes.push(outcome),
     onProgressViolation: () => {},
@@ -303,6 +304,9 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     // The guardian's own pairing channel to the reaper: the reaper accepts exactly one paired peer, and the
     // guardian already holds it, so a test driving `reaper.*` pairing methods directly must reuse this one.
     reaperChannel,
+    // The reaper's own control socket, for a test that opens direct coordinator control on it (its bootstrap
+    // nonce is otherwise unspent by this helper — only the guardian's is used above).
+    reaperEndpoint,
     /** Ends the incumbent's control the way a lapsed lease does, leaving its socket alone. */
     lapseControl: () => {
       controlLive = false;
@@ -337,6 +341,30 @@ async function installGrant(
   expect(installed).toEqual({ state: 'installed-dormant', grantId });
 
   return { grantId, secret: GRANT_SECRET, successor: set.coordinatorIdentity, operations: handoffOperations };
+}
+
+/** Opens direct coordinator control on the reaper's own socket — a separate tenancy from the guardian's
+ *  `set.control`, exactly as production's `establishControl` opens all three roles independently. */
+async function openReaperControl(set: SetUnderTest): Promise<ControlClient> {
+  const control = await connectControlClient(set.reaperEndpoint, timer, 5_000);
+  cleanups.push(() => control.close());
+  const opened = (await control.call(
+    'reaper.open.v1',
+    {
+      bootstrapNonce: NONCE,
+      coordinator: set.coordinatorIdentity,
+      guardian: set.guardianIdentity,
+      proxy: set.proxyIdentity,
+      containment: CONTAINMENT,
+    },
+    5_000,
+  )) as { heartbeatChallenge: string; controlEpoch: number };
+  await control.call(
+    'reaper.heartbeat.v1',
+    { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
+    5_000,
+  );
+  return control;
 }
 
 async function stage(set: SetUnderTest): Promise<{
@@ -487,6 +515,7 @@ async function startBareReaper<Scope extends symbol>(
     },
     scheduler: idleScheduler,
     timer,
+    mintReceipt: () => randomUUID(),
     self: { pid: 5_101, processStartedAtSeconds: 901 },
     onOutcome: () => {},
     onProgressViolation: () => {},
@@ -1391,6 +1420,148 @@ describe('provider-proxy guardian and reaper', () => {
     await expect(install([entry(first), entry(first)])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
   });
 
+  it("installs the same grant on the reaper's own active control, independent of the guardian's tenancy", async () => {
+    const set = await startSet();
+    const { operation } = await stage(set);
+    const reaperControl = await openReaperControl(set);
+    const grantId = randomUUID();
+    const handoffOperations = [{ operation, carrierState: 'executing' as const, committedThroughProviderSeq: 7 }];
+
+    const installed = (await reaperControl.call(
+      'reaper.handoff-install.v1',
+      {
+        grantId,
+        secretSha256: createHash('sha256').update(GRANT_SECRET, 'utf8').digest('hex'),
+        successor: set.coordinatorIdentity,
+        operations: handoffOperations,
+        orphanTimeoutMs: 30_000,
+        teardownReserveMs: 14_000,
+      },
+      5_000,
+    )) as { state: string; grantId: string };
+
+    expect(installed).toEqual({ state: 'installed-dormant', grantId });
+  });
+
+  it('refuses reaper.handoff-install.v1 for a coordinator of another build, like the guardian does', async () => {
+    const set = await startSet();
+    const reaperControl = await openReaperControl(set);
+
+    await expect(
+      reaperControl.call(
+        'reaper.handoff-install.v1',
+        {
+          grantId: randomUUID(),
+          secretSha256: createHash('sha256').update(GRANT_SECRET, 'utf8').digest('hex'),
+          successor: { ...set.coordinatorIdentity, buildSetId: randomUUID() },
+          operations: [],
+          orphanTimeoutMs: 30_000,
+          teardownReserveMs: 14_000,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/different build/u);
+  });
+
+  it('rotates reaper control once the guardian forwards the redemption receipt over the paired channel', async () => {
+    const set = await startSet();
+    const { operation } = await stage(set);
+    const request = await installGrant(set, [operation]);
+    const reaperControl = await openReaperControl(set);
+    // The grant is dormant while the incumbent holds control; loss is what makes it redeemable.
+    set.lapseControl();
+    set.control.close();
+    reaperControl.close();
+
+    const successorGuardian = await connectControlClient(set.guardianEndpoint, timer, 5_000);
+    cleanups.push(() => successorGuardian.close());
+    const redeemed = (await successorGuardian.call('guardian.handoff-redeem.v1', request, 5_000)) as {
+      redemptionReceipt: string;
+    };
+
+    // Only the guardian ever forwarded this reaper the fact that a redemption happened — the receipt below
+    // is that push's evidence, not a value this successor derives from the grant itself.
+    const successorReaper = await connectControlClient(set.reaperEndpoint, timer, 5_000);
+    cleanups.push(() => successorReaper.close());
+    const rotated = (await successorReaper.call(
+      'reaper.handoff-rotate.v1',
+      {
+        grantId: request.grantId,
+        successor: set.coordinatorIdentity,
+        operations: request.operations,
+        guardianRedemptionReceipt: redeemed.redemptionReceipt,
+      },
+      5_000,
+    )) as { state: string; reaperRotationReceipt: string; controlEpoch: number; heartbeatChallenge: string };
+
+    expect(rotated.state).toBe('successor-rotated');
+    expect(rotated.controlEpoch).toBe(2);
+    const beat = (await successorReaper.call(
+      'reaper.heartbeat.v1',
+      { controlEpoch: rotated.controlEpoch, heartbeatChallenge: rotated.heartbeatChallenge },
+      5_000,
+    )) as { state: string };
+    expect(beat.state).toBe('active');
+  });
+
+  it('refuses reaper.handoff-rotate.v1 before the guardian has ever redeemed the grant', async () => {
+    const set = await startSet();
+    const { operation } = await stage(set);
+    const request = await installGrant(set, [operation]);
+    const reaperControl = await openReaperControl(set);
+    set.lapseControl();
+    reaperControl.close();
+
+    const successorReaper = await connectControlClient(set.reaperEndpoint, timer, 5_000);
+    cleanups.push(() => successorReaper.close());
+
+    // This successor holds the plaintext secret from the same capsule the guardian would check, but never
+    // presented it there — closing exactly the gap a secret-checking reaper would leave open: two
+    // successors, one still-unspent capsule, and no guardian involved yet.
+    await expect(
+      successorReaper.call(
+        'reaper.handoff-rotate.v1',
+        {
+          grantId: request.grantId,
+          successor: set.coordinatorIdentity,
+          operations: request.operations,
+          guardianRedemptionReceipt: 'never-forwarded',
+        },
+        5_000,
+      ),
+    ).rejects.toMatchObject({ protocolCode: 'grant_invalid' });
+  });
+
+  it('refuses reaper.handoff-rotate.v1 presenting a receipt this reaper never recorded', async () => {
+    const set = await startSet();
+    const { operation } = await stage(set);
+    const request = await installGrant(set, [operation]);
+    const reaperControl = await openReaperControl(set);
+    set.lapseControl();
+    set.control.close();
+    reaperControl.close();
+
+    const successorGuardian = await connectControlClient(set.guardianEndpoint, timer, 5_000);
+    cleanups.push(() => successorGuardian.close());
+    await successorGuardian.call('guardian.handoff-redeem.v1', request, 5_000);
+
+    const successorReaper = await connectControlClient(set.reaperEndpoint, timer, 5_000);
+    cleanups.push(() => successorReaper.close());
+
+    await expect(
+      successorReaper.call(
+        'reaper.handoff-rotate.v1',
+        {
+          grantId: request.grantId,
+          successor: set.coordinatorIdentity,
+          operations: request.operations,
+          guardianRedemptionReceipt: 'a-forged-receipt-nobody-issued',
+        },
+        5_000,
+      ),
+    ).rejects.toMatchObject({ protocolCode: 'grant_invalid' });
+  });
+
   it('holds nothing until the guardian names the containment it watched being created', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'coral-unrecorded-'));
     cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
@@ -1447,6 +1618,7 @@ describe('provider-proxy guardian and reaper', () => {
       },
       scheduler: idleScheduler,
       timer,
+      mintReceipt: () => randomUUID(),
       self: { pid: 5_101, processStartedAtSeconds: 901 },
       onOutcome: () => {},
       onProgressViolation: () => {},

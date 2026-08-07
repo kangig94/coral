@@ -1,3 +1,5 @@
+import type { ProviderOperationKey } from '../../provider-proxy/ledger.js';
+
 /**
  * What coordinated shutdown needs from the live guardian/reaper/proxy sets.
  *
@@ -14,21 +16,19 @@ export interface ProviderProxySetAuthority {
   /**
    * The operations this proxy still carries, byte-sorted. Taken once per proxy so the whole sequence reasons
    * about a fixed set: a grant installed over one snapshot and a capsule written from another would hand the
-   * successor a set neither authority agreed to.
+   * successor a set neither authority agreed to. `jobId` travels alongside `operationId` because a grant's
+   * wire `OperationIdentity` needs both — an operation id alone is not a key `installHandoffGrant` could turn
+   * back into one.
    */
-  snapshotOperations(signal: AbortSignal): Promise<readonly string[]>;
+  snapshotOperations(signal: AbortSignal): Promise<readonly ProviderOperationKey[]>;
   /**
    * Installs one grant across guardian, reaper and proxy over the exact snapshot, then writes and fsyncs the
-   * successor capsule. Both halves are meant to be one step, because a grant with no capsule is unredeemable
-   * and a capsule with no grant is a secret nobody honours — either alone strands the set.
-   *
-   * Not implemented yet: today's only implementation refuses unconditionally, with
-   * `ProviderProxyHandoffGrantUnavailableError`. The reaper has no install RPC and no successor capsule is
-   * ever written, so there is no way to honour the contract above without half-installing a grant nothing
-   * could redeem. Wiring both is the coordinated-shutdown / operation-ledger work (plan item W2.3); until
-   * then, refusing is what this method guarantees.
+   * successor capsule. Both halves are one step: a grant with no capsule is unredeemable and a capsule with
+   * no grant is a secret nobody honours, so either alone strands the set. Every install RPC this issues is
+   * idempotent for the identical value, so a caller that reaps the set after this throws leaves nothing to
+   * unwind — the still-running containment is about to be torn down regardless of how far the install got.
    */
-  installHandoffGrant(operationIds: readonly string[], signal: AbortSignal): Promise<void>;
+  installHandoffGrant(operations: readonly ProviderOperationKey[], signal: AbortSignal): Promise<void>;
   /**
    * Stops and reaps this set, returning only once the recorded containment and every recorded provider root
    * are confirmed absent. Observing the proxy leader's exit is not that confirmation.
