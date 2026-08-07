@@ -121,7 +121,7 @@ Two hooks run after compaction:
 - terminal jobs without inline artifacts: `coral-cli wait jobs <job> --embed`
 - missing or unreadable job state: do not rerun `wait` unless a verified artifact path exists
 
-`wait jobs` exits `0` when every job completed successfully, `1` for a failed, aborted, or faulted job, and with the normalized child code for `provider_exit`. Exit `75` is not a job failure: work is still running, and recovery should resume with the printed cursor.
+`wait jobs` exits `0` when every job completed successfully, `1` for a failed, aborted, or faulted job, and with the normalized child code for `provider_exit`. Exit `75` is not a job failure: work is still running, and recovery should resume with the printed cursor. A nonterminal `interrupted` line may also appear, reporting that a job's carrier was observed absent while the job is still nonterminal: the subscription stays open and the exit code stays pending, so it is informational only, never one of the exit-code outcomes above. Only the journal ends a job. It is emitted today only for durable-CLI jobs, the one carrier class whose absence local evidence can establish.
 
 Implementation notes:
 

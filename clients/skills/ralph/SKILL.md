@@ -198,7 +198,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
        ⛔ AC text must be identical to the plan. No rewording, no scope-reduction annotations.
        ⛔ Do not promote KB notes. Implementation only.
        1. `coral-cli <other-host> -b -i "<above structure + file paths + constraints>" --work-dir "<project root>" -d`
-          → `coral-cli wait jobs <job> --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience.
+          → `coral-cli wait jobs <job> --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience. Exit `0` means the job completed successfully; `1` means a failed, aborted, or faulted job; `75` means work is still running — resume with `coral-cli wait jobs <job> --cursor <cursor> --embed` using the printed cursor, and keep looping until the job returns a non-`75` result. Do not proceed to step 2 while the job is still `75`. A `provider_exit` outcome is separate: it exits with the provider's own normalized code (0–255, including `0`), not necessarily `1`.
        2. Verify changes yourself: read changed files, compare against AC.
        3. If AC not met → re-run delegation. If met → report completion.
        ```

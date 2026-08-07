@@ -49,7 +49,7 @@ Rules:
 2. Capture `jobId` and `sessionId` from the launch line: `Provider job <jobId> <launchState> (provider session <sessionId>)`.
 3. Monitor with `coral-cli wait`; terminal lines include usage diagnostics when provider data is available.
 4. For `--embed`, use inline preview text when it helps, but read the printed `Result path: <path>` for the full artifact.
-5. Interpret `wait jobs` exit codes as a monitoring contract: `0` means every job completed successfully; `1` means a failed, aborted, or faulted job, while `provider_exit` returns its normalized child code; `75` means work is still running, so resume with the printed cursor.
+5. Interpret `wait jobs` exit codes as a monitoring contract: `0` means every job completed successfully; `1` means a failed, aborted, or faulted job, while `provider_exit` returns its normalized child code; `75` means work is still running, so resume with the printed cursor. A nonterminal `interrupted` line may also appear mid-stream, reporting a job's carrier observed absent while the job is still nonterminal; it leaves the subscription open and the exit code pending, so it is informational only and not one of the outcomes above. Only durable-CLI jobs produce it today — the one carrier class whose absence local evidence can establish.
 
 ## `--red` Flag
 
