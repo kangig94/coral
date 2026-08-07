@@ -49,6 +49,10 @@ beforeEach(() => {
 
 const runtime = createRealRuntime('prod');
 const unusedDb = {} as Database;
+// Every test in this file drives one redemption attempt to completion synchronously (fake clients settle
+// immediately), so a signal that never aborts exercises exactly the same path the never-aborted case in
+// production takes; the abort/deadline-checkpoint behavior itself is covered separately.
+const neverAborts = new AbortController().signal;
 
 const GUARDIAN_INSTANCE_ID = randomUUID();
 const REAPER_INSTANCE_ID = randomUUID();
@@ -214,11 +218,16 @@ describe('attemptProviderProxySetInheritance', () => {
     mockedReadCapsule.mockReturnValueOnce(null);
     const loc = locator();
 
-    const outcome = await attemptProviderProxySetInheritance(loc, unusedDb, {
-      runtime,
-      coordinatorIdentity: COORDINATOR_IDENTITY,
-      operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
-    });
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+      },
+      neverAborts,
+    );
 
     expect(outcome).toEqual({ kind: 'not-bequeathed', reason: 'no capsule at this address' });
     expect(mockedConnect).not.toHaveBeenCalled();
@@ -228,11 +237,16 @@ describe('attemptProviderProxySetInheritance', () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc, { proxyInstanceId: randomUUID() }));
 
-    const outcome = await attemptProviderProxySetInheritance(loc, unusedDb, {
-      runtime,
-      coordinatorIdentity: COORDINATOR_IDENTITY,
-      operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
-    });
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+      },
+      neverAborts,
+    );
 
     expect(outcome).toEqual({
       kind: 'not-bequeathed',
@@ -267,15 +281,20 @@ describe('attemptProviderProxySetInheritance', () => {
     );
 
     const registered: { jobId: string; committedThroughProviderSeq: number }[] = [];
-    const outcome = await attemptProviderProxySetInheritance(loc, unusedDb, {
-      runtime,
-      coordinatorIdentity: COORDINATOR_IDENTITY,
-      operationRegistry: {
-        adopt: (meta) =>
-          registered.push({ jobId: meta.jobId, committedThroughProviderSeq: meta.committedThroughProviderSeq }),
-        operationsFor: () => [],
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: {
+          adopt: (meta) =>
+            registered.push({ jobId: meta.jobId, committedThroughProviderSeq: meta.committedThroughProviderSeq }),
+          operationsFor: () => [],
+        },
       },
-    });
+      neverAborts,
+    );
 
     expect(sawGuardianReceiptOnRotate).toBe(true);
     expect(outcome.kind).toBe('inherited');
@@ -316,11 +335,16 @@ describe('attemptProviderProxySetInheritance', () => {
       locator({ jobId, operationId }),
     );
 
-    const outcome = await attemptProviderProxySetInheritance(loc, unusedDb, {
-      runtime,
-      coordinatorIdentity: COORDINATOR_IDENTITY,
-      operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
-    });
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+      },
+      neverAborts,
+    );
 
     expect(outcome.kind).toBe('inherited');
     if (outcome.kind !== 'inherited') throw new Error('unreachable');
@@ -339,11 +363,16 @@ describe('attemptProviderProxySetInheritance', () => {
     mockedReadMeta.mockReturnValueOnce(null);
     const adopt = vi.fn();
 
-    const outcome = await attemptProviderProxySetInheritance(loc, unusedDb, {
-      runtime,
-      coordinatorIdentity: COORDINATOR_IDENTITY,
-      operationRegistry: { adopt, operationsFor: () => [] },
-    });
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { adopt, operationsFor: () => [] },
+      },
+      neverAborts,
+    );
 
     expect(outcome.kind).toBe('inherited');
     if (outcome.kind !== 'inherited') throw new Error('unreachable');
@@ -368,15 +397,116 @@ describe('attemptProviderProxySetInheritance', () => {
       close: () => closed.push(socketPath),
     }));
 
-    const outcome = await attemptProviderProxySetInheritance(loc, unusedDb, {
-      runtime,
-      coordinatorIdentity: COORDINATOR_IDENTITY,
-      operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
-    });
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+      },
+      neverAborts,
+    );
 
     expect(outcome).toEqual({ kind: 'not-bequeathed', reason: expect.stringContaining('grant_invalid') });
     // The guardian connection opened before the reaper refusal must be closed rather than leaked.
     expect(closed).toContain(loc.guardianControlEndpoint);
+  });
+
+  it('stops every heartbeat loop before closing clients when a later step fails after they start', async () => {
+    // Reproduces the exact shape of the leak: all three roles redeem successfully (heartbeats start), then
+    // adoption itself throws (a database failure, not a per-operation refusal `adoptRedeemedOperations`
+    // already tolerates) — the only way to reach `redeem`'s `catch` with `heartbeats` non-empty.
+    const loc = locator();
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const op = operationFor(loc);
+    const client = fakeClient(redemptionResponses(loc, [op]), []);
+    stubConnect(client);
+    mockedReadMeta.mockImplementation(() => {
+      throw new Error('meta store unavailable');
+    });
+    const clearIntervalSpy = vi.spyOn(runtime.time, 'clearInterval');
+    const closeSpy = vi.spyOn(client, 'close');
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+      },
+      neverAborts,
+    );
+
+    expect(outcome).toEqual({ kind: 'not-bequeathed', reason: expect.stringContaining('meta store unavailable') });
+    // One `clearInterval` per heartbeat loop (guardian, reaper, proxy) — a leaked loop would leave this at 0.
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(3);
+    // Every `clearInterval` call landed before every `close` call, mirroring `establishControl`'s own undo
+    // ordering (`provider-proxy-acquisition-steps.ts`): a loop still running against an already-closed client
+    // would call into an `onError` that only logs, forever.
+    const clearIntervalCallOrders = clearIntervalSpy.mock.invocationCallOrder;
+    const closeCallOrders = closeSpy.mock.invocationCallOrder;
+    expect(closeCallOrders.length).toBeGreaterThan(0);
+    expect(Math.max(...clearIntervalCallOrders)).toBeLessThan(Math.min(...closeCallOrders));
+    clearIntervalSpy.mockRestore();
+    closeSpy.mockRestore();
+  });
+
+  it('refuses to open any connection when the caller signal is already aborted', async () => {
+    const loc = locator();
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const controller = new AbortController();
+    controller.abort();
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+      },
+      controller.signal,
+    );
+
+    expect(outcome.kind).toBe('not-bequeathed');
+    expect(mockedConnect).not.toHaveBeenCalled();
+  });
+
+  it('stops redeeming the next role once the caller signal aborts between roles', async () => {
+    const loc = locator();
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const controller = new AbortController();
+    const calls: { method: string; params: unknown }[] = [];
+    const client = fakeClient(
+      {
+        ...redemptionResponses(loc, []),
+        'guardian.handoff-redeem.v1': () => {
+          // Fires the caller's own cancellation (a coordinator shutdown, in production) the instant guardian
+          // redemption completes — before reaper is ever dialed.
+          controller.abort();
+          return { ...OPENING, state: 'redeemed-provisional', redemptionReceipt: 'guardian-receipt', operations: [] };
+        },
+      },
+      calls,
+    );
+    stubConnect(client);
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+      },
+      controller.signal,
+    );
+
+    expect(outcome.kind).toBe('not-bequeathed');
+    expect(calls.some((c) => c.method === 'reaper.handoff-rotate.v1')).toBe(false);
+    expect(calls.some((c) => c.method === 'handoff.redeem.v1')).toBe(false);
   });
 });
 
@@ -393,7 +523,7 @@ describe('createProviderProxySetInheritance', () => {
       operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
       registerInheritedSet,
     });
-    const outcome = await inheritance.inheritProviderProxySet(locator(), unusedDb);
+    const outcome = await inheritance.inheritProviderProxySet(locator(), unusedDb, neverAborts);
 
     expect(outcome).toEqual({ kind: 'not-bequeathed', reason: expect.stringContaining('start time') });
     expect(mockedReadCapsule).not.toHaveBeenCalled();
@@ -410,7 +540,7 @@ describe('createProviderProxySetInheritance', () => {
       operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
       registerInheritedSet,
     });
-    const outcome = await inheritance.inheritProviderProxySet(locator(), unusedDb);
+    const outcome = await inheritance.inheritProviderProxySet(locator(), unusedDb, neverAborts);
 
     expect(outcome.kind).toBe('not-bequeathed');
     expect(registerInheritedSet).not.toHaveBeenCalled();
@@ -429,7 +559,7 @@ describe('createProviderProxySetInheritance', () => {
       operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
       registerInheritedSet,
     });
-    const outcome = await inheritance.inheritProviderProxySet(loc, unusedDb);
+    const outcome = await inheritance.inheritProviderProxySet(loc, unusedDb, neverAborts);
 
     expect(outcome.kind).toBe('inherited');
     expect(registerInheritedSet).toHaveBeenCalledTimes(1);

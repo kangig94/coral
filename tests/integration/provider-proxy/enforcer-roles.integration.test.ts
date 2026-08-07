@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createMonotonicClock, type MonotonicClock } from '#src/infra/monotonic-clock.js';
+import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy-acquisition-steps.js';
+import type { Runtime } from '#src/runtime/ports.js';
 import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
 import { createReaper, type Reaper } from '#src/provider-proxy/reaper.js';
@@ -1870,5 +1872,50 @@ describe('provider-proxy guardian and reaper', () => {
     await expect(
       pairing.call('reaper.record-containment.v1', { ...CONTAINMENT, processGroupId: 9_999 }, 5_000),
     ).rejects.toThrow(/already holds a containment/u);
+  });
+});
+
+describe('provider-proxy-acquisition-steps: stopAndReap against a real guardian', () => {
+  /** `stopAndReap`'s own `proxyClient`/`reaperClient` are never touched by it — only `guardianClient` is. */
+  function unreachableClient(): ControlClient {
+    return {
+      call: () => Promise.reject(new Error('unreachable: this client was not expected to be called')),
+      close: () => {},
+    };
+  }
+
+  it('supplies the coordinator’s own recorded provider roots, not the empty claim the guardian refuses', async () => {
+    const set = await startSet();
+    // Stages ROOT with the real guardian's own enforcer (`guardian.register-provider-root.v1`), exactly as
+    // `operation.prepare.v1` does in production — this is the fact `providerRoots: []` disagreed with.
+    await stage(set);
+
+    const authority = createProviderProxySetAuthority({
+      proxyInstanceId: set.proxyIdentity.proxyInstanceId,
+      guardianClient: set.control,
+      proxyClient: unreachableClient(),
+      reaperClient: unreachableClient(),
+      guardianIdentity: set.guardianIdentity,
+      reaperIdentity: set.reaperIdentity,
+      proxyIdentityFields: set.proxyIdentity,
+      heartbeats: [],
+      coordinatorIdentity: set.coordinatorIdentity,
+      handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
+      runtime: { ids: undefined, env: undefined, storage: undefined } as unknown as Pick<
+        Runtime,
+        'ids' | 'env' | 'storage'
+      >,
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [ROOT] },
+    });
+
+    const result = await authority.stopAndReap(new AbortController().signal);
+
+    // The real, driving proof: `guardian.stop-and-reap.v1`'s own `assertRecordedSetAgreement` accepted this
+    // call and reaped for real — a hardcoded `providerRoots: []` would instead have come back `unconfirmed`
+    // with "different provider-root set" (see the raw-wire coverage above proving that refusal directly).
+    expect(result).toEqual({
+      disappearanceReceipt: expect.stringContaining(`root:${ROOT.pid}@${ROOT.processStartedAtSeconds}`),
+    });
+    expect(set.alive.has(CONTAINMENT.pid)).toBe(false);
   });
 });

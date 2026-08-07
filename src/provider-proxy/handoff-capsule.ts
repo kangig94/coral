@@ -403,14 +403,26 @@ export function createGrantRegistry(mintReceipt: () => string): GrantRegistry {
   return {
     install(grant): { state: 'installed-dormant'; grantId: string } {
       if (installed !== null) {
-        if (
-          !sameBinding(installed, grant) ||
-          !digestsMatch(installed.secretSha256, grant.secretSha256) ||
-          !sameOperations(installed.operations, grant.operations)
-        ) {
+        const identical =
+          sameBinding(installed, grant) &&
+          digestsMatch(installed.secretSha256, grant.secretSha256) &&
+          sameOperations(installed.operations, grant.operations);
+        if (identical) {
+          return { state: 'installed-dormant', grantId: installed.grantId };
+        }
+        if (redemption === null) {
           throw new ProxyControlProtocolError('grant_invalid', 'A different grant is already installed for this set.');
         }
-        return { state: 'installed-dormant', grantId: installed.grantId };
+        // The installed grant was already consumed by the one successor `redeem` ever admits (single-use,
+        // see its own doc), and `install` is reachable only under `authority: 'active'` at the endpoint — so
+        // the only caller who can ever present a *different* grant here is that same successor's own
+        // coordinator, now the set's legitimate active holder (no other party can hold active control: the
+        // bootstrap nonce is spent and this grant is spent). A spent grant secures nothing further once
+        // redeemed, so replacing it is what lets that coordinator bequeath the set again for its own future
+        // handoff, instead of being permanently refused by a credential nobody needs any more. The stale
+        // redemption record is cleared with it: it named the old grant's successor, and must not answer for
+        // a grant that successor never redeemed.
+        redemption = null;
       }
       installed = grant;
       return { state: 'installed-dormant', grantId: grant.grantId };

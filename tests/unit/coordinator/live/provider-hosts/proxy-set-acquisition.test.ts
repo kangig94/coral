@@ -20,6 +20,7 @@ import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy-acquisition-steps.js';
 import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy-acquisition.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
+import { hostFingerprintFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
 import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy-authority.js';
 import { createEntry, createSharedSpec, runtime } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
@@ -87,8 +88,15 @@ describe('ensureProviderProxySet', () => {
       flavor: 'prod',
       processStartedAtSeconds: 1_700_000_000,
     });
-    expect(typeof stepsCall.hostFingerprint).toBe('string');
-    expect(stepsCall.hostFingerprint.length).toBeGreaterThan(0);
+    // Derived, not merely non-empty: compared against the real production function's output for this entry.
+    expect(stepsCall.hostFingerprint).toBe(hostFingerprintFromSpec(entry.spec));
+
+    // The steps this call built, and a deadline, actually reached `acquireProviderProxySet` — not just that
+    // it was called.
+    expect(mockedAcquire).toHaveBeenCalledTimes(1);
+    const acquireCall = mockedAcquire.mock.calls[0][0];
+    expect(acquireCall.steps).toBe(mockedCreateSteps.mock.results[0]?.value);
+    expect(acquireCall.deadlineSignal).toBeInstanceOf(AbortSignal);
   });
 
   it('reports a failed outcome — never a rejection — when acquisition itself fails', async () => {

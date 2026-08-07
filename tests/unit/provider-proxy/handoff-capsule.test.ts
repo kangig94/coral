@@ -162,6 +162,41 @@ describe('provider-proxy handoff capsule', () => {
     expect(registry.redemption()).toEqual(redeemed);
   });
 
+  it('lets the coordinator that redeemed a grant install a fresh one for its own later handoff', () => {
+    // Generation 1 bequeaths the set; generation 2 redeems it and starts running the set. Role processes
+    // outlive the coordinator, so this same registry is still the one generation 2's *own* future handoff
+    // has to install a grant into — proving the set really can be bequeathed a second time, not just once.
+    const registry = createGrantRegistry(mintReceipt());
+    const first = installedGrantFor(ORDERED);
+    registry.install(first);
+    registry.redeem({
+      grantId: first.grantId,
+      secret: SECRET,
+      successorInstanceId: SUCCESSOR,
+      binding: bindingOf(first),
+    });
+
+    const nextSecret = 'a'.repeat(64);
+    const next: InstalledGrant = {
+      ...installedGrantFor(ORDERED),
+      grantId: randomUUID(),
+      secretSha256: handoffSecretDigest(nextSecret),
+    };
+
+    expect(registry.install(next)).toEqual({ state: 'installed-dormant', grantId: next.grantId });
+    // The stale redemption record named the *first* grant's successor; it must not still answer for the
+    // fresh grant now installed, or a probe against the new grant would wrongly read as already redeemed.
+    expect(registry.redemption()).toBeNull();
+
+    const redeemedAgain = registry.redeem({
+      grantId: next.grantId,
+      secret: nextSecret,
+      successorInstanceId: OTHER_SUCCESSOR,
+      binding: bindingOf(next),
+    });
+    expect(redeemedAgain.grant.grantId).toBe(next.grantId);
+  });
+
   it('refuses a second, different successor presenting the same valid grant', () => {
     const registry = createGrantRegistry(mintReceipt());
     const grant = installedGrantFor(ORDERED);

@@ -98,10 +98,12 @@ export function formatWaitTerminal(
  * still the only thing that will end the stream.
  */
 export function formatWaitCarrierInterrupted(event: WaitCarrierInterruptedEvent): string {
-  return joinLines([
-    `Job ${event.jobId} carrier is no longer present (stored phase: ${event.storedPhase}); still waiting for a durable result.`,
-    formatWaitContinuation(event.remainingJobIds),
-  ]);
+  // No continuation line, unlike every other event that renders one. Those are printed where this process is
+  // about to hand control back, so "run this to continue waiting" names a real next step. This event returns
+  // control to nobody — the subscription stays open and the exit code stays pending — so the same line would
+  // instruct an action that is not needed, and a caller following it literally would open a second
+  // subscription to a stream it is already reading.
+  return `Job ${event.jobId} carrier is no longer present (stored phase: ${event.storedPhase}); still waiting for a durable result — this wait is still open, no action needed.`;
 }
 
 export function formatWaitWaiting(

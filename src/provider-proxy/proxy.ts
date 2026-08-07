@@ -150,6 +150,15 @@ export interface SemanticOperationHost {
   ): Promise<void> | void;
   /** Stops a running kernel. Called for every recorded stop cause, including a clean handoff. */
   stop(input: Readonly<{ key: ProviderOperationKey; cause: ProviderStopCause }>): Promise<void> | void;
+  /**
+   * Releases a staged provider root that never reached `executing` — a cancelled reservation, or a stop
+   * that arrived before activation. `stop()`'s contract is "stops a running kernel", so a ledger entry that
+   * never started one has nothing for it to interrupt; this is the only other way `operation.prepare.v1`'s
+   * own staged app-server session ever gets released. Idempotent: a key never staged, or already released
+   * through `start`/`stop`'s own cleanup, is a safe no-op. Optional so a test double exercising only the
+   * executing path is not required to implement it.
+   */
+  releaseStaged?(key: ProviderOperationKey): void;
 }
 
 export type ProxyOptions<Scope extends symbol> = Readonly<{
@@ -414,6 +423,15 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       'operation.prepare.v1',
       {
         authority: 'active',
+        // `containment.stageProviderRoot` (`role-main.ts`) can legitimately spend a full app-server cold
+        // start (`PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS`, `providers/app-server-transport.ts`) plus the
+        // guardian round trip it chains through — longer than `PROXY_CONTROL_RPC_TIMEOUT_MS`, the ordinary
+        // mutation-RPC budget this endpoint otherwise defaults every method to. Declaring `budgetMs` here,
+        // mirroring `guardian.stop-and-reap.v1`'s own precedent, is what stops this endpoint's own timer from
+        // writing a "budget exceeded" failure while the handler is still legitimately running: the
+        // alternative left the handler completing in the background with nothing coordinating it, orphaning
+        // the staged app-server child and a guardian root registration nobody would ever release.
+        budgetMs: 'caller-deadline',
         handle: async (params) => {
           const request = prepareParamsSchema.parse(params);
           if (request.hostFingerprint !== capsule.hostFingerprint) {
@@ -536,6 +554,12 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           } catch (error: unknown) {
             asProtocolError(error);
           }
+          // The ledger entry never reached `executing`, so no kernel was ever started for it — but
+          // `operation.prepare.v1` may already have staged its provider root. `host.stop` is the only other
+          // thing that releases that staging, and it is reachable only from the `executing` path below, so
+          // a cancelled reservation needs its own release here or the staged app-server child runs for the
+          // rest of this proxy's life with nothing left referencing it.
+          host.releaseStaged?.(key);
           return { state: 'released' };
         },
       },
@@ -572,6 +596,9 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             } catch (error: unknown) {
               asProtocolError(error);
             }
+            // Same staged-but-never-started release `operation.cancel-pending.v1` performs: nothing else
+            // drops the app-server child `operation.prepare.v1` may have staged for this key.
+            host.releaseStaged?.(key);
           }
           const after = ledger.get(key);
           return {

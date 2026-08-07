@@ -887,7 +887,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     // event; with no listener Node re-throws it as an uncaughtException and
     // crashes the coordinator. Swallow it here — the 'close' handler below owns
     // real teardown (rejectPendingRequests / phase transition). Mirrors the
-    // sibling live transports (provider-server-transport, durable-transport).
+    // sibling live transports (app-server-transport, durable-transport).
     stdin.on('error', (error: unknown) => {
       log(`[kb-daemon] stdin error: ${formatError(error)}`);
     });

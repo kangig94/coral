@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { BUILD_FLAVOR_ENV_KEY } from '../../infra/build-flavor.js';
 import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import { ABSENCE_POLL_MS } from '../../infra/process-containment.js';
+import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '../../providers/app-server-transport.js';
 import {
   providerGuardianBootstrapCapsulePath,
   providerGuardianEndpoint,
@@ -27,7 +28,7 @@ import {
   type HandoffCapsule,
 } from '../../provider-proxy/handoff-capsule.js';
 import type { ProviderOperationKey } from '../../provider-proxy/ledger.js';
-import type { LocalOperationRegistry } from '../services/operation-registry.js';
+import type { ProviderProxyOperationSnapshot } from '../services/operation-registry.js';
 import {
   connectRoleControlWithRetry,
   runtimeControlTimer,
@@ -75,12 +76,29 @@ import type { ProviderProxySetIdentity } from '../services/provider-proxy-operat
  * (see `createProviderProxySetAuthority`'s `stopAndReap`).
  */
 
-// Exported for `provider-hosts/proxy-set-inheritance.ts`: redemption dials the same three role endpoints this
+// Exported for `services/provider-proxy-set-inheritance.ts`: redemption dials the same three role endpoints this
 // file's own `establishControl` does, on the identical connect-retry budget, so a redeemed tenancy and a
 // freshly spawned one time out the same way rather than silently drifting apart.
 export const ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS = 2_000;
 export const ESTABLISH_CONTROL_RETRY_INTERVAL_MS = 20;
 export const ESTABLISH_CONTROL_READY_DEADLINE_MS = 10_000;
+
+/**
+ * The one mutation-RPC timeout `activateProviderOperation` (`coordinator/services/provider-proxy-operation-
+ * activation.ts`) uses for its whole closed publication order: `operation.prepare.v1`, both activation calls,
+ * and their compensation. `operation.prepare.v1` alone can legitimately spend a full app-server cold start
+ * (`PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS`) plus the guardian round trip `stageProviderRoot` chains through it
+ * (`PROXY_CONTROL_RPC_TIMEOUT_MS`) — the proxy's own `operation.prepare.v1` is declared `budgetMs:
+ * 'caller-deadline'` for exactly this reason (`proxy.ts`), so it is this caller-side timeout, not the
+ * endpoint's, that now bounds it. A flat `PROXY_CONTROL_RPC_TIMEOUT_MS` ceiling here — the value every other,
+ * genuinely-short call in that sequence also used — abandoned a legitimate cold start client-side before the
+ * proxy could ever finish it, leaving the untracked app-server child and guardian root registration nothing
+ * ever released. The four calls share one timeout rather than four because `activateProviderOperation`'s own
+ * body applies one value to all of them; the other three settle in milliseconds in the ordinary case, so
+ * sizing the shared ceiling for the one call that can legitimately run long costs them nothing.
+ */
+export const PROXY_OPERATION_ACTIVATION_RPC_TIMEOUT_MS =
+  PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS + PROXY_CONTROL_RPC_TIMEOUT_MS;
 
 export type ProviderProxyAcquisitionStepsOptions = Readonly<{
   runtime: Runtime;
@@ -97,8 +115,10 @@ export type ProviderProxyAcquisitionStepsOptions = Readonly<{
    *  guardian — it never consumes a capsule itself, so it has no strict-identity check to inject. */
   readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
   /** This coordinator's own live operations — `installHandoffGrant`'s snapshot source
-   *  (`createProviderProxySetAuthority`'s `snapshotOperations`). */
-  operationRegistry: Pick<LocalOperationRegistry, 'operationsFor'>;
+   *  (`createProviderProxySetAuthority`'s `snapshotOperations`), and the provider roots recorded against
+   *  them — `stopAndReap`'s own half of the set-agreement both enforcers require
+   *  (`ProviderProxySetAuthorityDependencies`'s own doc). */
+  operationRegistry: ProviderProxyOperationSnapshot;
   /** Builds the durable-effect handler for `provider.event.v1`, called once `establishControl` is about to
    *  open the proxy role's connection — see `ProviderProxySetAcquisitionConfig.onProviderEvent`'s own doc for
    *  why this is a factory rather than an already-built handler. Absent wires no handler at all onto that
@@ -178,7 +198,7 @@ export type HeartbeatLoop = Readonly<{ stop(): void }>;
 /** Keeps one established tenancy alive past its lease by echoing the challenge on the endpoint's own
  *  heartbeat interval. A failed echo is reported but not retried early — the enforcer's own deadline, not
  *  this loop, is what bounds the fallout of a tenancy that cannot be refreshed. Exported so
- *  `provider-hosts/proxy-set-inheritance.ts` keeps a redeemed tenancy alive the identical way a freshly
+ *  `services/provider-proxy-set-inheritance.ts` keeps a redeemed tenancy alive the identical way a freshly
  *  established one is kept alive here — one heartbeat mechanism, not two. */
 export function startHeartbeatLoop(
   client: ControlClient,
@@ -233,7 +253,7 @@ export type ControlTimer = ReturnType<typeof runtimeControlTimer>;
 /** One role's connect→open→verify→heartbeat plan. `identity` pulls the role's own identity field out of the
  *  already-schema-validated open result — a selector rather than a `result[role]` lookup, so the compiler
  *  checks it against the concrete open-result type instead of trusting a string key at runtime. Exported so
- *  `provider-hosts/proxy-set-inheritance.ts` can describe its own redeem/rotate opens the same shape
+ *  `services/provider-proxy-set-inheritance.ts` can describe its own redeem/rotate opens the same shape
  *  `establishRoleControl` already consumes, rather than a second, parallel plan type. */
 export type RoleControlPlan<TOpened extends { controlEpoch: number; heartbeatChallenge: string }> = Readonly<{
   role: string;
@@ -259,7 +279,7 @@ export type RoleControlPlan<TOpened extends { controlEpoch: number; heartbeatCha
  * failure — the same close-everything-opened behavior a single inline try/catch gave when this was one block
  * per role instead of one shared function.
  *
- * Exported: `provider-hosts/proxy-set-inheritance.ts` drives the identical connect→open→verify→heartbeat
+ * Exported: `services/provider-proxy-set-inheritance.ts` drives the identical connect→open→verify→heartbeat
  * sequence for a redeemed tenancy (`guardian.handoff-redeem.v1`, `reaper.handoff-rotate.v1`,
  * `handoff.redeem.v1`) that this file drives for a freshly minted one — the opening credential differs, the
  * mechanics do not, so there is exactly one function that dials a role and keeps its first challenge alive.
@@ -313,8 +333,11 @@ export type ProviderProxySetAuthorityDependencies = Readonly<{
   handoffCapsulePath: string;
   /** `ids`/`env`/`storage` for minting the grant and writing its capsule durably. */
   runtime: Pick<Runtime, 'ids' | 'env' | 'storage'>;
-  /** `snapshotOperations`' source: this coordinator's own live operations, filtered to this proxy. */
-  operationRegistry: Pick<LocalOperationRegistry, 'operationsFor'>;
+  /** `snapshotOperations`' source: this coordinator's own live operations, filtered to this proxy. Also
+   *  `stopAndReap`'s source for the provider roots it must name in agreement with what each enforcer
+   *  actually recorded (`assertRecordedSetAgreement`) — see `ProviderProxyOperationSnapshot`'s own doc for
+   *  why `providerRootsFor` is optional and what `stopAndReap` does when it is absent. */
+  operationRegistry: ProviderProxyOperationSnapshot;
 }>;
 
 /**
@@ -460,10 +483,18 @@ export function createProviderProxySetAuthority(
     },
     stopAndReap: async (signal) => {
       try {
+        // The coordinator's own half of the set-agreement both enforcers require exactly
+        // (`assertRecordedSetAgreement`): every provider root this coordinator's own live operations still
+        // hold against this proxy, from the same registry `snapshotOperations` above reads. An empty claim
+        // disagrees with any enforcer that has actually staged a root — every activated operation stages one
+        // before it is ever reported as executing — so this must name every one still live, not an empty set.
+        // `?? []` only ever triggers for `provider-proxy-set-inheritance.ts`'s narrower registry pick (see
+        // this dependency's own doc) — every other caller supplies the method.
+        const providerRoots = operationRegistry.providerRootsFor?.(proxyInstanceId) ?? [];
         const raw = await raceAgainstAbort(
           guardianClient.call(
             'guardian.stop-and-reap.v1',
-            { guardian: guardianIdentity, reaper: reaperIdentity, proxy: proxyIdentityFields, providerRoots: [] },
+            { guardian: guardianIdentity, reaper: reaperIdentity, proxy: proxyIdentityFields, providerRoots },
             // `guardian.stop-and-reap.v1` is declared `budgetMs: 'caller-deadline'` on the server precisely
             // so it is not cut off there: a legitimate reap can spend the SIGTERM grace, the SIGKILL grace,
             // and the disappearance confirmation — an 11s floor inside `PROXY_TEARDOWN_RESERVE_MS`'s 14s,
@@ -855,7 +886,7 @@ export function createProviderProxyAcquisitionSteps(
           setIdentity,
           proxyClient: proxySession.client,
           guardianClient: guardianSession.client,
-          mutationRpcTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
+          mutationRpcTimeoutMs: PROXY_OPERATION_ACTIVATION_RPC_TIMEOUT_MS,
         });
 
         return {

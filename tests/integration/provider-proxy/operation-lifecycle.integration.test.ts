@@ -308,6 +308,28 @@ describe('provider-proxy operation lifecycle', () => {
     ).rejects.toThrow(/different host fingerprint/u);
   });
 
+  it('leaves an orphaned pending-activation entry in the ledger when staging the provider root fails', async () => {
+    const set = await startProxy({ failStage: true });
+    const operation = set.operationFor();
+
+    await expect(
+      set.control.call('operation.prepare.v1', { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED }, 5_000),
+    ).rejects.toThrow(/the guardian refused to stage this root/u);
+
+    // `ledger.prepare()` already inserted the entry before `stageProviderRoot` ran. The failed RPC never told
+    // the coordinator a reservationId or activationNonce exists, but the ledger still holds one — stuck
+    // `pending-activation` with no containment receipt, since `recordContainmentReceipt` never ran.
+    const key = { jobId: operation.jobId, operationId: operation.operationId };
+    expect(set.proxy.ledger().get(key)).toMatchObject({ state: 'pending-activation', jointContainmentReceipt: null });
+
+    // Nobody outside this proxy ever learned the orphaned reservation's id, so a retried prepare for the same
+    // operation identity cannot be mistaken for the same request arriving twice — it is refused as a
+    // duplicate, and the orphaned entry occupies this operation's ledger slot until its lease expires.
+    await expect(
+      set.control.call('operation.prepare.v1', { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED }, 5_000),
+    ).rejects.toThrow(/already reserved/u);
+  });
+
   it('answers capacity exhaustion as a typed retryable state rather than an error', async () => {
     const set = await startProxy();
     for (let index = 0; index < MAX_PROXY_OPERATION_LEDGERS; index += 1) {

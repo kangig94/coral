@@ -123,6 +123,7 @@ function fakeControlClient(time: VirtualTime, resolveAtMs: number, result: unkno
 
 function authorityWithGuardianClient(
   guardianClient: ControlClient,
+  providerRoots: ReadonlyArray<{ pid: number; processStartedAtSeconds: number }> = [],
 ): ReturnType<typeof createProviderProxySetAuthority> {
   const deps: ProviderProxySetAuthorityDependencies = {
     proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
@@ -136,7 +137,7 @@ function authorityWithGuardianClient(
     coordinatorIdentity: COORDINATOR_IDENTITY,
     handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
     runtime: unusedRuntimePorts(),
-    operationRegistry: { operationsFor: () => [] },
+    operationRegistry: { operationsFor: () => [], providerRootsFor: () => providerRoots },
   };
   return createProviderProxySetAuthority(deps);
 }
@@ -196,6 +197,45 @@ describe('createProviderProxySetAuthority: RPC response validation', () => {
 
     expect(result).not.toHaveProperty('disappearanceReceipt');
     expect(result).toHaveProperty('unconfirmed');
+  });
+});
+
+describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
+  it('names this coordinator’s own recorded provider roots, not an empty claim the guardian would refuse', async () => {
+    const calls: unknown[] = [];
+    const client: ControlClient = {
+      call: (_method, params) => {
+        calls.push(params);
+        return Promise.resolve({ state: 'containment-absent', disappearanceReceipt: 'gone' });
+      },
+      close: () => {},
+    };
+    const root = { pid: 9_001, processStartedAtSeconds: 700 };
+    const authority = authorityWithGuardianClient(client, [root]);
+
+    const result = await authority.stopAndReap(new AbortController().signal);
+
+    // Hardcoding `providerRoots: []` here is exactly the defect: both enforcers refuse a teardown that
+    // disagrees with what they actually recorded, so an empty claim against a set with a real staged root
+    // always fails — this asserts the actual wire params carried the registry's own roots instead.
+    expect(calls).toEqual([expect.objectContaining({ providerRoots: [root] })]);
+    expect(result).toEqual({ disappearanceReceipt: 'gone' });
+  });
+
+  it('names an empty set when this coordinator holds no live operations against the proxy', async () => {
+    const calls: unknown[] = [];
+    const client: ControlClient = {
+      call: (_method, params) => {
+        calls.push(params);
+        return Promise.resolve({ state: 'containment-absent', disappearanceReceipt: 'gone' });
+      },
+      close: () => {},
+    };
+    const authority = authorityWithGuardianClient(client, []);
+
+    await authority.stopAndReap(new AbortController().signal);
+
+    expect(calls).toEqual([expect.objectContaining({ providerRoots: [] })]);
   });
 });
 
@@ -265,7 +305,7 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
       coordinatorIdentity: COORDINATOR_IDENTITY,
       handoffCapsulePath,
       runtime,
-      operationRegistry: { operationsFor: () => [] },
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
     };
     return { authority: createProviderProxySetAuthority(deps), handoffCapsulePath };
   }
@@ -345,6 +385,7 @@ describe('createProviderProxySetAuthority: snapshotOperations', () => {
             { ...earlierOperation, proxyInstanceId, buildSetId: GUARDIAN_IDENTITY.buildSetId },
           ];
         },
+        providerRootsFor: () => [],
       },
     };
     const authority = createProviderProxySetAuthority(deps);

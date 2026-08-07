@@ -12,7 +12,11 @@ import {
   type ProviderEventEffectPort,
   type ProviderOperationEventIdentity,
 } from '../../jobs/provider-event.js';
-import { readProviderOperationRuntimeMeta, writeProviderOperationRuntimeMeta } from '../../jobs/runtime-meta-store.js';
+import {
+  deleteProviderOperationRuntimeMeta,
+  readProviderOperationRuntimeMeta,
+  writeProviderOperationRuntimeMeta,
+} from '../../jobs/runtime-meta-store.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { ProviderInterruptionCause, ProviderStopCause } from '../../providers/contract.js';
 import { isRecord } from '../../infra/json.js';
@@ -351,6 +355,15 @@ export function createStoreProviderEventEffectPort(
         deps.appendContext,
       );
       tx.pendingInterruption = undefined;
+    },
+
+    // Finding 5: the durable half of ending an operation, in the same transaction `advanceWatermark` just
+    // committed in but never before it — `advanceWatermark` reads and rewrites this exact row, so deleting it
+    // any earlier in the same transaction would make that read fail. `applyProviderEventAtSeq` is the only
+    // caller, and only for `terminal`/`suspended`; a crash before this transaction's `COMMIT` leaves the row
+    // (and the terminal) exactly as if neither had run.
+    releaseOperationLocator: async (tx, identity) => {
+      deleteProviderOperationRuntimeMeta(tx.db, identity.jobId, identity.operationId);
     },
 
     appendSessionInterrupted: async (tx, _identity, _seq, trigger) => {

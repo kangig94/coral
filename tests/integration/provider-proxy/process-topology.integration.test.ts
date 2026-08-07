@@ -1,9 +1,34 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
-import { createServer } from 'node:net';
+import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// `runProviderRoleMain` (unlike `startProviderGuardianRole`/`startProviderReaperRole`/`startProviderProxyRole`
+// below, which take injectable ports) has no seam to supply a strict-identity resolver through — it always
+// resolves the real, embedded-vs-adjacent-manifest identity, unavailable in this dev/test environment. Mocked
+// only for the one describe block at the end of this file that drives `runProviderRoleMain` itself (BLOCKING
+// B6's SIGTERM wiring); every other describe block here calls the role-start functions directly and injects
+// `resolveStrictIdentity` through the normal port, unaffected by this mock.
+vi.mock('#src/infra/bundle-manifest.js', async (importOriginal) => {
+  const actual = await importOriginal<object>();
+  return {
+    ...actual,
+    resolveStrictBundleIdentity: () => ({
+      ok: true,
+      manifest: {
+        version: '1.0.0',
+        buildSetId: '99999999-9999-4999-8999-999999999999',
+        flavor: 'prod',
+        storeFormatFingerprint: `sha256:${'e'.repeat(64)}`,
+        bundleHash: '1'.repeat(16),
+        cliBundleHash: '2'.repeat(16),
+        claudeAppserverBundleHash: '3'.repeat(16),
+      },
+    }),
+  };
+});
 
 import type { StrictBundleIdentityResult } from '#src/infra/bundle-manifest.js';
 import {
@@ -24,9 +49,11 @@ import {
   type ProxyBootstrapCapsule,
   type ReaperBootstrapCapsule,
 } from '#src/provider-proxy/bootstrap-capsule.js';
+import { createFrameReader, decodeProxyControlFrame, encodeProxyControlFrame } from '#src/provider-proxy/protocol.js';
 import type { CoordinatorIdentity } from '#src/provider-proxy/protocol.js';
 import { PROVIDER_ROLE_FLAGS, type ProviderRole } from '#src/provider-proxy/role-argv.js';
 import {
+  runProviderRoleMain,
   startProviderGuardianRole,
   startProviderProxyRole,
   startProviderReaperRole,
@@ -660,5 +687,86 @@ describe('provider-proxy process topology: acquisition', () => {
       const remaining = readdirSync(runDir).filter((name) => name.endsWith('.bootstrap.json'));
       expect(remaining).toEqual([]);
     }
+  });
+});
+
+describe('provider-proxy process topology: proxy role SIGTERM (BLOCKING B6)', () => {
+  /** Just enough of a guardian to answer `guardian.pair.v1` — the one RPC `startProviderProxyRole` sends
+   *  before it can stand up its own control endpoint. No real guardian/reaper is needed for this: the defect
+   *  and its fix live entirely in the proxy role's own shutdown path (`role-main.ts`). */
+  function startFakeGuardian(endpoint: string): Promise<{ close: () => void }> {
+    return new Promise((resolve) => {
+      const server = createServer((socket: Socket) => {
+        socket.on(
+          'data',
+          createFrameReader(
+            (frame) => {
+              const message = decodeProxyControlFrame(frame);
+              if ('method' in message) {
+                socket.write(encodeProxyControlFrame({ jsonrpc: '2.0', id: message.id, result: { state: 'paired' } }));
+              }
+            },
+            () => {},
+          ),
+        );
+      });
+      server.listen(endpoint, () => resolve({ close: () => server.close() }));
+    });
+  }
+
+  it('drains kernels and exits the process on SIGTERM — the same close-and-exit guarantee guardian/reaper already have', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coral-role-proxy-sigterm-'));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const capsulePath = join(dir, 'proxy.bootstrap.json');
+    const runtime = createRealRuntime('prod');
+    const capsuleEnv = { storage: runtime.storage, uid: process.getuid?.() ?? 0 };
+    const guardianEndpoint = join(dir, 'g.sock');
+    const proxyEndpoint = join(dir, 'p.sock');
+    const capsule: ProxyBootstrapCapsule = {
+      role: 'proxy',
+      generation: 'gen2',
+      flavor: 'prod',
+      // Must match the mocked `resolveStrictBundleIdentity` at the top of this file — this is the one test
+      // in it that actually reaches `assertConsumingBuild` through `runProviderRoleMain`'s own dispatch.
+      buildSetId: '99999999-9999-4999-8999-999999999999',
+      hostFingerprint: randomBytes(32).toString('hex'),
+      guardianInstanceId: randomUUID(),
+      reaperInstanceId: randomUUID(),
+      proxyInstanceId: randomUUID(),
+      bootstrapNonce: randomBytes(32).toString('hex'),
+      canonicalEndpoint: proxyEndpoint,
+      guardianControlEndpoint: guardianEndpoint,
+      proxyGuardianAuthSecret: randomBytes(32).toString('hex'),
+    };
+    createProviderBootstrapCapsule(capsulePath, capsule, capsuleEnv);
+
+    const fakeGuardian = await startFakeGuardian(guardianEndpoint);
+    cleanups.push(() => fakeGuardian.close());
+
+    // Real `process.exit` would tear down the test worker itself — intercepted the same way this file's own
+    // `exitLog` fake stands in for it elsewhere.
+    const exitCodes: Array<number | undefined> = [];
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number): never => {
+      exitCodes.push(code);
+      return undefined as never;
+    }) as typeof process.exit);
+    cleanups.push(() => exitSpy.mockRestore());
+
+    const listenersBefore = new Set(process.listeners('SIGTERM'));
+
+    await runProviderRoleMain({ role: 'proxy', capsulePath }, { pluginRoot: dir });
+
+    // `runProviderRoleMain` installs its own `process.on('SIGTERM', shutdown)`; invoked directly (not via
+    // `process.emit`) so this test cannot also trigger whatever else vitest's own process may have listening
+    // for the same signal.
+    const installed = process.listeners('SIGTERM').filter((listener) => !listenersBefore.has(listener));
+    expect(installed).toHaveLength(1);
+    const shutdown = installed[0] as () => void;
+    cleanups.push(() => {
+      process.removeListener('SIGTERM', shutdown as NodeJS.SignalsListener);
+    });
+
+    shutdown();
+    await vi.waitFor(() => expect(exitCodes).toEqual([0]));
   });
 });

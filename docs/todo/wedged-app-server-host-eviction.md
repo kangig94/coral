@@ -94,7 +94,7 @@ carry the `HostRef` — a plumbing change through the terminal path.
 **C. Bound the transport instead** — give codex's `rpc` a timeout the way Claude's
 control requests have one, and let an expired request close the host through the
 existing failure path (`detachProviderServer` → `rejectPendingProviderRequests`,
-`src/coordinator/live/provider-server-transport.ts`).
+`src/providers/app-server-transport.ts`).
 *For*: removes the asymmetry with Claude, fixes the cause rather than the symptom,
 and reuses a path that already works — killing the host process was verified to
 terminalize its jobs correctly.
@@ -119,7 +119,7 @@ make.
 
 - Killing the host process **does** terminalize its jobs correctly:
   `child.on('close')` → `detachProviderServer` → `rejectPendingProviderRequests`
-  rejects every pending RPC (`provider-server-transport.ts`). Verified by reading;
+  rejects every pending RPC (`app-server-transport.ts`). Verified by reading;
   also the manual remedy used on 2026-08-02.
 - App-server jobs are **preserved, not terminalized**, when a host dies mid-turn —
   they stay live for the next boot's recovery to finalize. That is why killing the

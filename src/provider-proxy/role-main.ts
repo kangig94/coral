@@ -718,6 +718,13 @@ export async function startProviderProxyRole(
     role: 'proxy',
     proxy,
     close: async () => {
+      // Give every provider its own chance at a graceful stop, and release every staged-but-never-started
+      // one, before this role's own control goes away: this role's control "bounds nothing" of its own
+      // (`proxy.ts`'s own doc), so nothing else here ever drains what `ensureProviderRoot`/`host.start`
+      // accumulated. Without this, closing only the control endpoint left every kernel running and every
+      // app-server child alive until the enforcers escalated to a hard kill, and no provider ever received
+      // its own graceful-shutdown RPC.
+      await semantic.shutdown('signal_abort');
       guardianChannel.close();
       await proxy.close();
     },
@@ -755,6 +762,8 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
         ? await startProviderReaperRole(mode.capsulePath, ports)
         : await startProviderProxyRole(mode.capsulePath, ports);
 
+  const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
+
   const shutdown = (): void => {
     // SIGTERM/SIGINT here means give up entirely — `buildGuardianSpawnUndo`'s acquisition-cleanup path is
     // the production sender — never a negotiated handoff (that goes through `*.stop-and-reap.v1` over
@@ -762,8 +771,23 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
     // enforcer was armed on; `close()` alone only disarms it, and the proxy is a separate detached
     // process-group leader outside this signal's own reach, so leaving it merely disarmed strands it
     // forever. `giveUp()` reaps it first, through the same close-and-exit path a cooperative RPC teardown
-    // takes. The proxy holds no containment of its own — its control "bounds nothing" — so it just closes.
-    void (handle.role === 'proxy' ? handle.close() : handle.giveUp());
+    // takes, and its own outcome handler is what exits this process afterwards.
+    //
+    // The proxy holds no containment of its own, so it has no enforcement outcome to exit on — `close()` now
+    // drains every kernel it runs, but nothing else ever calls `exitProcess` for this role. Installing this
+    // handler overrides SIGTERM's own default terminate, so without an explicit exit here this process would
+    // sit alive with no way to end itself once `close()` resolves.
+    if (handle.role === 'proxy') {
+      void handle.close().then(
+        () => exitProcess(0),
+        (error: unknown) => {
+          backendLog.error('proxy: close on shutdown failed', error);
+          exitProcess(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
+        },
+      );
+      return;
+    }
+    void handle.giveUp();
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);

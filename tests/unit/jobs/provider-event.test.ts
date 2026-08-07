@@ -96,6 +96,9 @@ function createFakePort(options: FakePortOptions = {}): FakePort {
     releaseSessionClaim: async () => {
       record('releaseSessionClaim');
     },
+    releaseOperationLocator: async () => {
+      record('releaseOperationLocator');
+    },
   };
 
   return { port, calls, watermark: () => watermark };
@@ -209,11 +212,14 @@ describe('applyProviderEventAtSeq', () => {
       'appendJobTerminal:direct',
       'releaseSessionClaim',
       'advanceWatermark',
+      'releaseOperationLocator',
     ]);
     const releaseIndex = calls.indexOf('releaseSessionClaim');
     const advanceIndex = calls.indexOf('advanceWatermark');
     expect(releaseIndex).toBeGreaterThanOrEqual(0);
     expect(releaseIndex).toBeLessThan(advanceIndex);
+    // The locator release comes last: `advanceWatermark` still needs the row it deletes.
+    expect(advanceIndex).toBeLessThan(calls.indexOf('releaseOperationLocator'));
     expect(watermark()).toBe(1);
   });
 
@@ -298,6 +304,7 @@ describe('applyProviderEventAtSeq', () => {
         'appendJobTerminal:interrupted',
         'releaseSessionClaim',
         'advanceWatermark',
+        'releaseOperationLocator',
       ]);
     },
   );
@@ -320,8 +327,17 @@ describe('applyProviderEventAtSeq', () => {
         `appendJobTerminal:abort:${cause}`,
         'releaseSessionClaim',
         'advanceWatermark',
+        'releaseOperationLocator',
       ]);
       expect(calls.some((call) => call.startsWith('appendSessionInterrupted'))).toBe(false);
     },
   );
+
+  it('does not release the operation locator for a progress event that does not end the operation', async () => {
+    const { port, calls } = createFakePort({ initialWatermark: 0 });
+
+    await applyProviderEventAtSeq(port, { identity: IDENTITY, seq: 1, event: PROGRESS_EVENT });
+
+    expect(calls).not.toContain('releaseOperationLocator');
+  });
 });

@@ -1,4 +1,5 @@
 import { errorMessage, formatError } from '../../../infra/error-format.js';
+import { backendLog } from '../../../infra/backend-log.js';
 import { ProcessContainmentError } from '../../../infra/process-containment.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
@@ -6,7 +7,7 @@ import { readProviderOperationRuntimeMetaForJob } from '../../../jobs/runtime-me
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { JobStore } from '../../../jobs/store.js';
-import type { ProviderProxySetInheritance } from '../provider-proxy-set-inheritance.js';
+import { NOTHING_TO_INHERIT_REASON, type ProviderProxySetInheritance } from '../provider-proxy-set-inheritance.js';
 import { planRecovery } from '../../../jobs/reconcile/plan.js';
 import { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
 import type { TimerHandle } from '../../../infra/port-types.js';
@@ -645,6 +646,16 @@ export function createRecoveryCoordinator(
     // needs — and never gets — a second redemption attempt.
     const inheritedJobIds = new Set<string>();
     if (providerProxyInheritance !== undefined) {
+      // `RecoveryRegistry`'s own app-server abort handler (`registerRunningRecovery`, `actions.ts`) calls
+      // `interruptAppServerJob`, which refuses on purpose once a job's `provider_operation.v1` locator is
+      // committed — adoption is exactly the moment that refusal stops being "not yet this coordinator's to
+      // interrupt" and becomes permanent, since nothing else was ever going to make `coral-cli abort` reach
+      // this operation. Wiring the real, operation-registry-backed `onAbort` onto this project's ordinary
+      // abort registry — and retiring the now-stale `recoveryRegistry` entry — synchronously with the adoption
+      // that makes it correct closes the false-"aborted" window to the width of this one `await` instead of
+      // leaving it open for the rest of `runningJobs` (built before any settle loop runs) or, worse, for the
+      // remainder of this coordinator generation once the settle loop's own cleanup releases the entry.
+      const projectRootByJobId = new Map(runningJobs.map((job) => [job.jobId, job.authority.launchRecord.projectRoot]));
       const attemptedAddresses = new Set<string>();
       for (const job of runningJobs) {
         if (!isAppServerRuntime(job.runtimeRecord)) continue;
@@ -653,9 +664,27 @@ export function createRecoveryCoordinator(
         const address = `${locator.buildSetId}:${locator.hostFingerprint}:${locator.proxyInstanceId}`;
         if (attemptedAddresses.has(address)) continue;
         attemptedAddresses.add(address);
-        const outcome = await providerProxyInheritance.inheritProviderProxySet(locator, progressStore.getDb());
+        // Every other step in this walk checks `signal` after its own await; this pre-pass is no exception —
+        // a shutdown requested while a prior address's attempt was still bounded-but-slow must stop this one
+        // from starting rather than spending its own deadline too.
+        signal.throwIfAborted();
+        const outcome = await providerProxyInheritance.inheritProviderProxySet(locator, progressStore.getDb(), signal);
         if (outcome.kind === 'inherited') {
-          for (const inheritedJobId of outcome.adoptedJobIds) inheritedJobIds.add(inheritedJobId);
+          for (const inheritedJobId of outcome.adoptedJobIds) {
+            inheritedJobIds.add(inheritedJobId);
+            const inheritedProjectRoot = projectRootByJobId.get(inheritedJobId);
+            if (inheritedProjectRoot === undefined) continue;
+            getRecoveryService(createInvocationContext(inheritedProjectRoot)).registerInheritedAppServerAbort(
+              inheritedJobId,
+            );
+            state.recoveryRegistry?.remove(inheritedJobId);
+          }
+        } else if (outcome.reason !== NOTHING_TO_INHERIT_REASON) {
+          // A capsule was actually found at this address — this is not the ordinary "nothing bequeathed"
+          // case — so redemption failing mid-flight is worth a look even though it is not fatal to boot: the
+          // job(s) at this address fall through to ordinary carrier-detached handling below, same as any other
+          // not-bequeathed outcome, but silently doing so would hide a real bug behind "nothing to inherit."
+          backendLog.warn(`Provider proxy set inheritance failed for address ${address}: ${outcome.reason}`);
         }
       }
     }

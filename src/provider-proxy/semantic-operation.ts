@@ -1,3 +1,4 @@
+import { backendLog } from '../infra/backend-log.js';
 import { errorMessage } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
@@ -393,6 +394,7 @@ function operationKeyString(key: ProviderOperationKey): string {
 }
 
 type StagedOperation = {
+  readonly key: ProviderOperationKey;
   readonly bound: BoundProvider;
   readonly staged: Readonly<{ hostRef: HostRef; close(): void }>;
   readonly root: Readonly<{ pid: number; processStartedAtSeconds: number }>;
@@ -432,6 +434,17 @@ export interface SemanticOperationRuntime {
     key: ProviderOperationKey,
     prepared: ProxyPreparedAppServerOperation,
   ): Promise<Readonly<{ pid: number; processStartedAtSeconds: number }>>;
+  /**
+   * Stops every kernel this runtime is running and releases every staged-but-never-started provider root —
+   * this runtime's own half of a graceful proxy shutdown (`role-main.ts`'s SIGTERM handler). Nothing else
+   * drains what `ensureProviderRoot`/`host.start` accumulated in this runtime's own staging table: without
+   * it, closing only the control endpoint leaves every kernel running and every app-server child alive until
+   * the enforcers escalate to a hard kill, and no provider ever receives its own graceful-shutdown RPC.
+   * Best-effort per operation — one kernel's stop failing must not stop this from still stopping every other
+   * one — via the identical `host.stop`/`host.releaseStaged` paths `proxy.ts`'s own RPC handlers use, so a
+   * shutdown behaves exactly like every operation in it having been individually stopped or cancelled.
+   */
+  shutdown(cause: ProviderStopCause): Promise<void>;
 }
 
 export function createSemanticOperationRuntime(options: SemanticOperationRuntimeOptions): SemanticOperationRuntime {
@@ -554,6 +567,44 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     }
   };
 
+  const host: SemanticOperationHost = {
+    start: ({ key, prepared }) => {
+      const entry = requireStaged(key);
+      const bound = entry.bound;
+      const preparedExecution = bound.prepareExecution(executionInput(runtime, prepared));
+      if (preparedExecution.kind !== 'app-server') {
+        throw new Error(
+          `Provider '${bound.name}' prepared a standalone execution; this proxy runs app-server operations only.`,
+        );
+      }
+      const executionRuntime = buildExecutionRuntime(runtime, key, prepared, entry.abortController.signal);
+      const iterable = preparedExecution.execute(executionRuntime);
+      // Fire-and-forget by design: `operation.activate.v1` must return once the kernel has *started*, not
+      // once the whole turn has finished (`PROXY_CONTROL_RPC_TIMEOUT_MS` is 5s; a turn can run for minutes).
+      // Mutated in place (not a map replace) so `stop()`'s later `requireStaged` reads the same object.
+      entry.done = runPump(key, entry, iterable);
+    },
+
+    stop: async ({ key, cause }) => {
+      const entry = requireStaged(key);
+      entry.pendingStopCause = cause;
+      entry.abortController.abort(cause);
+      await (entry.done ?? Promise.resolve());
+      staged.delete(operationKeyString(key));
+    },
+
+    releaseStaged: (key) => {
+      const keyStr = operationKeyString(key);
+      const entry = staged.get(keyStr);
+      // No entry: never staged, or already released. A started-but-not-yet-settled entry (`done !== null`)
+      // is left alone — it belongs to `stop()`'s own release, not this one, so a caller racing the two paths
+      // for the same key can never double-close the same staged session.
+      if (entry === undefined || entry.done !== null) return;
+      staged.delete(keyStr);
+      entry.staged.close();
+    },
+  };
+
   return {
     async ensureProviderRoot(key, prepared) {
       const keyStr = operationKeyString(key);
@@ -580,6 +631,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       }
 
       const entry: StagedOperation = {
+        key,
         bound,
         staged: openedStaging,
         root,
@@ -591,31 +643,32 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       return root;
     },
 
-    host: {
-      start: ({ key, prepared }) => {
-        const entry = requireStaged(key);
-        const bound = entry.bound;
-        const preparedExecution = bound.prepareExecution(executionInput(runtime, prepared));
-        if (preparedExecution.kind !== 'app-server') {
-          throw new Error(
-            `Provider '${bound.name}' prepared a standalone execution; this proxy runs app-server operations only.`,
-          );
-        }
-        const executionRuntime = buildExecutionRuntime(runtime, key, prepared, entry.abortController.signal);
-        const iterable = preparedExecution.execute(executionRuntime);
-        // Fire-and-forget by design: `operation.activate.v1` must return once the kernel has *started*, not
-        // once the whole turn has finished (`PROXY_CONTROL_RPC_TIMEOUT_MS` is 5s; a turn can run for minutes).
-        // Mutated in place (not a map replace) so `stop()`'s later `requireStaged` reads the same object.
-        entry.done = runPump(key, entry, iterable);
-      },
+    host,
 
-      stop: async ({ key, cause }) => {
-        const entry = requireStaged(key);
-        entry.pendingStopCause = cause;
-        entry.abortController.abort(cause);
-        await (entry.done ?? Promise.resolve());
-        staged.delete(operationKeyString(key));
-      },
+    async shutdown(cause) {
+      // Snapshot first: `host.stop`/`host.releaseStaged` both delete from `staged` as they settle, and
+      // iterating a `Map` while deleting from it under concurrent `Promise.all` settlement is exactly the
+      // kind of thing this snapshot exists to rule out.
+      const entries = [...staged.values()];
+      await Promise.all(
+        entries.map(async (entry) => {
+          try {
+            if (entry.done !== null) {
+              // Executing: the same stop `operation.stop.v1`'s own `executing` branch performs — abort,
+              // await the kernel's own unwind, and let the pump loop's `finally` release the staged session.
+              await host.stop({ key: entry.key, cause });
+            } else {
+              // Staged but never started: nothing to abort, so release its session directly.
+              host.releaseStaged?.(entry.key);
+            }
+          } catch (error: unknown) {
+            backendLog.error(
+              `semantic operation runtime: shutdown could not stop ${operationKeyString(entry.key)}`,
+              error,
+            );
+          }
+        }),
+      );
     },
   };
 }

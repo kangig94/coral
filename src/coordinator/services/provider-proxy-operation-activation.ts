@@ -262,18 +262,17 @@ export async function activateProviderOperation(
 
   // Step 4: operation.activate.v1 — verifies both receipts against the committed tuple, starts the
   // proxy-local kernel, and returns the executing ACK.
+  //
+  // No `committedThroughProviderSeq` in the request, though the plan's method table lists one. A freshly
+  // activated operation has emitted nothing, so the only value it could ever carry is 0 — and the proxy's
+  // `activateParamsSchema` is `.strict()`, so sending it made every activation fail `unrecognized_keys`,
+  // compensate, and fall back to in-process execution. The watermark matters for the one case where it can
+  // be non-zero, and `operation.adopt.v1` already owns that.
   try {
     const activateResult = await callStrict(
       deps.proxyClient,
       'operation.activate.v1',
-      {
-        operation,
-        reservationId,
-        activationNonce,
-        jointContainmentReceipt,
-        jointActivationReceipt,
-        committedThroughProviderSeq: 0,
-      },
+      { operation, reservationId, activationNonce, jointContainmentReceipt, jointActivationReceipt },
       timeoutMs,
       proxyActivateResultSchema,
     );

@@ -55,7 +55,6 @@ import { createKbCurateAssistantHandler, createKbCurateUsageBudgetHandler } from
 import { createProviderEventHandler } from './services/provider-event-application.js';
 import type { ProviderEventHandler } from '../provider-proxy/control-client.js';
 import { LocalOperationRegistry } from './services/operation-registry.js';
-import { deleteProviderOperationRuntimeMeta } from '../jobs/runtime-meta-store.js';
 import { errorMessage } from '../infra/error-format.js';
 
 export type CoordinatorServerOptions = Omit<
@@ -402,23 +401,14 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       recordedStopCauseFor: (identity) => operationRegistry.recordedStopCauseFor(identity),
       operations: {
         settled: (identity) => {
-          // `deleteProviderOperationRuntimeMeta` was, before this, only ever called from
-          // `compensateAfterActivationFailure` — so an operation that ran to a real terminal instead of
-          // failing activation left its `provider_operation.v1` row behind forever. This is the happy path's
-          // matching cleanup: durable meta first, then the in-process release, mirroring compensation's own
-          // "meta row before anything else" order. Never allowed to fail the RPC reply this runs inside of —
-          // `applyProviderEventAtSeq` already durably committed the terminal this settlement follows, so a
-          // problem here is a bookkeeping fault, not a reason to tell the proxy its terminal was refused.
-          try {
-            deleteProviderOperationRuntimeMeta(getStoreDb(), identity.jobId, identity.operationId);
-          } catch (error: unknown) {
-            backendLog.warn(
-              `Failed to delete provider operation runtime meta for job '${identity.jobId}'/operation '${identity.operationId}': ${errorMessage(error)}`,
-            );
-          }
-          // Runs regardless of whether the delete above succeeded: this is what frees the admission slot
-          // (root cause of the pool-fill bug this whole change exists to close), and a bookkeeping problem
-          // must not be allowed to compound into "the daemon stops launching anything" on top of it.
+          // The durable `provider_operation.v1` delete for this identity now happens inside the same
+          // transaction that commits the terminal (`appendJobTerminal`, `provider-event-application.ts`) —
+          // a crash between commit and cleanup can no longer strand the row, and a composition root has no
+          // business opening a second, separate write against a transaction that already closed. This
+          // callback is left with only the in-process release: the admission slot, abort registration, and
+          // job pool entry this coordinator generation itself holds for the job — never durable, and never
+          // owned by anything but this process — freed here because it is what frees the admission slot
+          // (root cause of the pool-fill bug this whole change exists to close).
           try {
             operationRegistry.settled(identity);
           } catch (error: unknown) {

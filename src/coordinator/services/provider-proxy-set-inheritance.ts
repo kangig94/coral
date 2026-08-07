@@ -58,6 +58,18 @@ import type { LocalOperationRegistry, OperationStopControl } from './operation-r
  * backs.
  */
 
+/**
+ * The one absolute budget one address's whole redemption attempt — guardian, then reaper, then proxy, then
+ * adoption — may run before `createProviderProxySetInheritance` gives up on it, combined with the recovery
+ * walk's own cancellation via `AbortSignal.any` so either one ends the attempt. Three sequential
+ * `establishRoleControl` calls each retry up to their own `ESTABLISH_CONTROL_READY_DEADLINE_MS` (10s), so a
+ * legitimate attempt against three live-but-slow peers can spend close to three times that — the same
+ * reasoning `proxy-set-acquisition.ts`'s `PROVIDER_PROXY_SET_ACQUISITION_DEADLINE_MS` states for ordinary
+ * acquisition's own three-role handshake, restated here rather than imported: the two budgets bound distinct
+ * attempts (redemption vs. a fresh spawn) that happen to share this shape, not one shared concept.
+ */
+const INHERITANCE_REDEMPTION_DEADLINE_MS = 45_000;
+
 const controlEpochSchema = z.number().int().nonnegative().safe();
 const heartbeatChallengeSchema = z.string().min(1);
 const adoptResultSchema = z
@@ -113,6 +125,13 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
 export type ProviderProxySetInheritanceOutcome =
   | Readonly<{ kind: 'inherited'; set: ProviderProxyOperationAuthority; adoptedJobIds: ReadonlySet<string> }>
   | Readonly<{ kind: 'not-bequeathed'; reason: string }>;
+
+/** The one `not-bequeathed` reason that is the ordinary, expected outcome on a coordinator generation that
+ *  inherited nothing — most boots reach this without a predecessor having left anything behind. Every other
+ *  reason means a capsule was actually found at this exact address before something failed, which a caller
+ *  may want to know about. Exported so `recovery/index.ts` can tell the two apart without restating this
+ *  literal. */
+export const NOTHING_TO_INHERIT_REASON = 'no capsule at this address';
 
 /** Every field a capsule read back from disk must agree with the locator that named its address, plus this
  *  successor's own build — a disagreement on any of them means the bytes at that path (if any) were never
@@ -183,11 +202,18 @@ async function adoptRedeemedOperations(
 /**
  * The real redemption sequence, throwing freely — `attemptProviderProxySetInheritance` below is the one
  * boundary that converts every failure here into `not-bequeathed`.
+ *
+ * `signal` is checked between roles and before adoption, not inside `establishRoleControl` itself: the
+ * connect-retry loop it drives (`connectRoleControlWithRetry`) has no signal awareness of its own, the same
+ * granularity `acquireProviderProxySet` already accepts for ordinary acquisition (its own `deadlineSignal` is
+ * only ever checked between cuts, never inside one). A dead peer still costs up to one role's own connect
+ * budget; what this closes is starting the *next* role, or adopting, once the caller has already given up.
  */
 async function redeem(
   locator: ProviderOperationRuntimeMeta,
   db: Database,
   deps: ProviderProxySetInheritanceDeps,
+  signal: AbortSignal,
 ): Promise<ProviderProxySetInheritanceOutcome> {
   const { runtime, coordinatorIdentity } = deps;
   const capsulePath = providerHandoffCapsulePath({
@@ -199,10 +225,14 @@ async function redeem(
   });
   const uid = process.getuid?.() ?? 0;
   const capsule = readHandoffCapsuleFile(capsulePath, { storage: runtime.storage, uid });
-  if (capsule === null) return { kind: 'not-bequeathed', reason: 'no capsule at this address' };
+  if (capsule === null) return { kind: 'not-bequeathed', reason: NOTHING_TO_INHERIT_REASON };
   if (!capsuleMatchesLocator(capsule, locator, coordinatorIdentity)) {
     return { kind: 'not-bequeathed', reason: 'capsule identity disagrees with the committed locator' };
   }
+  // A capsule matched, so the socket work below is about to start — refuse to open the first connection at
+  // all if the caller has already given up, rather than spending one role's connect budget on an attempt
+  // nobody is waiting for.
+  signal.throwIfAborted();
 
   const timer = runtimeControlTimer(runtime);
   const retry: RoleConnectRetryOptions = {
@@ -213,6 +243,9 @@ async function redeem(
     sleep: (ms: number) => runtime.time.sleep(ms),
   };
   const opened: ControlClient[] = [];
+  // Declared outside the `try` so the `catch` below can stop whatever this attempt already started, however
+  // far it got — an empty array is the correct, safe value for a failure before any heartbeat loop exists.
+  let heartbeats: HeartbeatLoop[] = [];
 
   try {
     // Plan order: guardian first — it is the sole linearization point for the plaintext secret and the party
@@ -230,6 +263,7 @@ async function redeem(
       heartbeatMethod: 'guardian.heartbeat.v1',
       expectedIdentity: {},
     });
+    signal.throwIfAborted();
 
     // Reaper next, presenting the guardian's own receipt — the proof only the guardian could have produced,
     // since only it ever sees the plaintext secret.
@@ -247,6 +281,7 @@ async function redeem(
       heartbeatMethod: 'reaper.heartbeat.v1',
       expectedIdentity: {},
     });
+    signal.throwIfAborted();
 
     // Proxy last: the one role whose control this successor actually needs to adopt operations and receive
     // `provider.event.v1` on. `onProviderEvent` is wired at connect time here, exactly as ordinary acquisition
@@ -286,7 +321,7 @@ async function redeem(
     // Keepalive is already established the moment `establishRoleControl` returns for each role — every one of
     // the three opens above already echoed its own first challenge before this line runs. What starts here is
     // the ongoing renewal past that first echo, exactly mirroring ordinary acquisition's own three loops.
-    const heartbeats: HeartbeatLoop[] = [
+    heartbeats = [
       startHeartbeatLoop(
         guardianSession.client,
         'guardian.heartbeat.v1',
@@ -312,6 +347,7 @@ async function redeem(
         () => {},
       ),
     ];
+    signal.throwIfAborted();
 
     const adoptedJobIds = await adoptRedeemedOperations(
       proxySession.client,
@@ -392,6 +428,12 @@ async function redeem(
 
     return { kind: 'inherited', set, adoptedJobIds };
   } catch (error: unknown) {
+    // Stop every heartbeat loop this attempt started before closing its clients — the mirror image of
+    // `createProviderProxySetAuthority`'s own `initiateControlClose` ordering, and the same order ordinary
+    // acquisition's undo already uses (`provider-proxy-acquisition-steps.ts`'s `establishControl` undo). A
+    // loop left running against a closed client would call `client.call` into an `onError` that only logs,
+    // forever, on every future heartbeat interval — this attempt failed, so nothing is left to keep alive.
+    for (const heartbeat of heartbeats) heartbeat.stop();
     for (const client of opened) client.close();
     throw error;
   }
@@ -408,9 +450,10 @@ export async function attemptProviderProxySetInheritance(
   locator: ProviderOperationRuntimeMeta,
   db: Database,
   deps: ProviderProxySetInheritanceDeps,
+  signal: AbortSignal,
 ): Promise<ProviderProxySetInheritanceOutcome> {
   try {
-    return await redeem(locator, db, deps);
+    return await redeem(locator, db, deps, signal);
   } catch (error: unknown) {
     return { kind: 'not-bequeathed', reason: error instanceof Error ? error.message : String(error) };
   }
@@ -418,15 +461,18 @@ export async function attemptProviderProxySetInheritance(
 
 /**
  * The narrow capability `coordinator/services/recovery/index.ts` drives: attempt inheritance for one locator,
- * given only what it already has in hand (the locator and the store). Everything `attemptProviderProxySetInheritance`
- * itself needs beyond that — this coordinator's own wire identity, the operation registry, `onProviderEvent`,
- * and where a successfully redeemed set is registered — is closed over by `createProviderProxySetInheritance`
- * at composition time, mirroring `ProviderProxySetAcquisitionConfig`'s own composed-once shape.
+ * given only what it already has in hand (the locator, the store, and its own recovery-walk signal — the same
+ * signal every other `runRecoveryAdoption` step already honours, so this attempt gives up the instant that
+ * walk does rather than running past it). Everything `attemptProviderProxySetInheritance` itself needs beyond
+ * that — this coordinator's own wire identity, the operation registry, `onProviderEvent`, and where a
+ * successfully redeemed set is registered — is closed over by `createProviderProxySetInheritance` at
+ * composition time, mirroring `ProviderProxySetAcquisitionConfig`'s own composed-once shape.
  */
 export interface ProviderProxySetInheritance {
   inheritProviderProxySet(
     locator: ProviderOperationRuntimeMeta,
     db: Database,
+    signal: AbortSignal,
   ): Promise<ProviderProxySetInheritanceOutcome>;
 }
 
@@ -449,26 +495,37 @@ export function createProviderProxySetInheritance(
   options: CreateProviderProxySetInheritanceOptions,
 ): ProviderProxySetInheritance {
   return {
-    async inheritProviderProxySet(locator, db) {
+    async inheritProviderProxySet(locator, db, signal) {
       const pid = options.runtime.env.pid();
       const platform = options.runtime.env.platform() as NodeJS.Platform;
       const processStartedAtSeconds = probeProcessStartedAtSeconds(pid, platform);
       if (processStartedAtSeconds === null) {
         return { kind: 'not-bequeathed', reason: 'could not read this coordinator process’s own start time' };
       }
-      const outcome = await attemptProviderProxySetInheritance(locator, db, {
-        runtime: options.runtime,
-        coordinatorIdentity: {
-          instanceId: options.identity.instanceId,
-          pid,
-          processStartedAtSeconds,
-          generation: 'gen2',
-          flavor: options.identity.flavor,
-          buildSetId: options.identity.buildSetId,
+      // Bounded and interruptible: either this address's own deadline or the caller's recovery-walk signal
+      // ends the attempt, whichever comes first — mirroring `ensureProviderProxySet`'s own `deadlineSignal`
+      // for ordinary acquisition, plus the caller cancellation ordinary acquisition never needed (it is
+      // fire-and-forget; this is not — `runRecoveryAdoption` awaits it before any running job can be decided
+      // carrier-detached).
+      const bounded = AbortSignal.any([signal, AbortSignal.timeout(INHERITANCE_REDEMPTION_DEADLINE_MS)]);
+      const outcome = await attemptProviderProxySetInheritance(
+        locator,
+        db,
+        {
+          runtime: options.runtime,
+          coordinatorIdentity: {
+            instanceId: options.identity.instanceId,
+            pid,
+            processStartedAtSeconds,
+            generation: 'gen2',
+            flavor: options.identity.flavor,
+            buildSetId: options.identity.buildSetId,
+          },
+          operationRegistry: options.operationRegistry,
+          ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
         },
-        operationRegistry: options.operationRegistry,
-        ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
-      });
+        bounded,
+      );
       if (outcome.kind === 'inherited') {
         options.registerInheritedSet(outcome.set);
       }

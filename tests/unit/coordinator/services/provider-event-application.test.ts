@@ -291,6 +291,75 @@ describe('createStoreProviderEventEffectPort', () => {
     expect(readSession(sessionId)?.activeJobId).toBeUndefined();
   });
 
+  it('deletes the operation runtime-meta locator in the same transaction as the terminal it commits', async () => {
+    const { identity } = seedOperation();
+    const port = createStoreProviderEventEffectPort(testDeps());
+    const readMetaRow = () =>
+      progressStore
+        .getDb()
+        .prepare('SELECT value FROM meta WHERE key = ?')
+        .get(providerOperationRuntimeMetaKey(identity.jobId, identity.operationId));
+
+    expect(readMetaRow()).not.toBeUndefined();
+
+    await port.runInTransaction(async (tx) => {
+      await port.appendJobTerminal(tx, identity, 1, {
+        kind: 'direct',
+        body: {
+          kind: 'terminal',
+          terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
+          diagnostics: {},
+        },
+      });
+      await port.releaseSessionClaim(tx, identity);
+      // `advanceWatermark` before the release: it still reads and rewrites this exact row, so releasing any
+      // earlier in the same transaction would make that read fail (`applyProviderEventAtSeq` enforces this
+      // same order for every real terminal/suspended event).
+      await port.advanceWatermark(tx, identity, 1);
+      await port.releaseOperationLocator(tx, identity);
+      return undefined;
+    });
+
+    // Finding 5: this delete used to run only from the in-process `settled` callback (`coordinator/index.ts`),
+    // strictly after this whole transaction had already committed — a crash in that gap stranded the row
+    // permanently. It is proven gone here, immediately after the transaction that committed the terminal,
+    // with no separate `settled()` call in between.
+    expect(readMetaRow()).toBeUndefined();
+  });
+
+  it('rolls back the operation runtime-meta delete together with the terminal when a later step fails', async () => {
+    const { identity } = seedOperation();
+    const port = createStoreProviderEventEffectPort(testDeps());
+    const readMetaRow = () =>
+      progressStore
+        .getDb()
+        .prepare('SELECT value FROM meta WHERE key = ?')
+        .get(providerOperationRuntimeMetaKey(identity.jobId, identity.operationId));
+
+    await expect(
+      port.runInTransaction(async (tx) => {
+        await port.appendJobTerminal(tx, identity, 1, {
+          kind: 'direct',
+          body: {
+            kind: 'terminal',
+            terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
+            diagnostics: {},
+          },
+        });
+        await port.releaseSessionClaim(tx, identity);
+        await port.advanceWatermark(tx, identity, 1);
+        await port.releaseOperationLocator(tx, identity);
+        throw new Error('boom after locator release');
+      }),
+    ).rejects.toThrow('boom after locator release');
+
+    // The delete is plain SQL against the same `BEGIN IMMEDIATE` transaction, not a second, independent write
+    // — a `ROLLBACK` after it undoes it exactly as it undoes the terminal event and watermark advance it ran
+    // alongside.
+    expect(readMetaRow()).not.toBeUndefined();
+    expect(progressStore.readTerminalProjection(identity.jobId)).toBeNull();
+  });
+
   it('threads the recorded interruption trigger into a truthful session.interrupted, linked to its terminal', async () => {
     const { identity, sessionId } = seedOperation();
     const port = createStoreProviderEventEffectPort(testDeps());

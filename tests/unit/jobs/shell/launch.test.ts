@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '#src/jobs/agent-resolution.js';
+import type * as ContinuityConsumerMod from '#src/jobs/shell/continuity-consumer.js';
 import type { JobPhase } from '#src/jobs/phase.js';
 import type { JobEvent, JobStatus } from '#src/jobs/records.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
@@ -16,8 +17,10 @@ import {
   streamProviderEvents,
   type ProviderTerminalInput,
 } from '#src/providers/stream.js';
-import type { ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
+import type { AppServerTransport, HostRef, ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
+import type { AppServerHostAuthority } from '#src/providers/internal/app-server-host.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
+import type { AppServerProxyRoute } from '#src/jobs/contracts/app-server-proxy-route.js';
 
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
@@ -38,10 +41,16 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
+import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { CommitEventsFn } from '#src/store/append.js';
-import { toProviderDefinition, type Provider, type StandaloneTestProvider } from '#tests/helpers/scripted-provider.js';
+import {
+  toProviderDefinition,
+  type AppServerTestProvider,
+  type Provider,
+  type StandaloneTestProvider,
+} from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
@@ -72,6 +81,10 @@ const mockState = vi.hoisted(() => ({
   tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-launch-test-tmp-${process.pid}`,
   getNewProvider: vi.fn(),
   resolveAgent: vi.fn(),
+  // A passthrough spy, not a behavior override: every existing test in this file relies on the real
+  // `consumeJobStream` running for its local-path assertions. Wrapping it (default implementation set below,
+  // once, at module init) is what lets the 'proxied' branch test prove it was never reached at all.
+  consumeJobStream: vi.fn(),
 }));
 const TEST_BACKEND_NAMESPACE = 'test-namespace';
 
@@ -94,6 +107,15 @@ vi.mock('#src/jobs/agent-resolution.js', async () => {
   return {
     ...actual,
     resolveAgent: mockState.resolveAgent,
+  };
+});
+
+vi.mock('#src/jobs/shell/continuity-consumer.js', async () => {
+  const actual = await vi.importActual<typeof ContinuityConsumerMod>('#src/jobs/shell/continuity-consumer.js');
+  mockState.consumeJobStream.mockImplementation(actual.consumeJobStream);
+  return {
+    ...actual,
+    consumeJobStream: mockState.consumeJobStream,
   };
 });
 
@@ -145,10 +167,21 @@ function createService(
     providerHostManager?: ProviderHostManager;
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
     coordinatorCommit?: CommitEventsFn;
+    /** The W2.3 proxy-routing seam. Configuring it is what makes `executeJob` take the `'proxied'` branch;
+     *  every other existing test in this file omits it, exactly as `LaunchOrchestrator` treats an absent
+     *  route — falling straight through to local execution. */
+    appServerProxyRoute?: AppServerProxyRoute;
+    /** Only needed for an app-server provider whose local path actually runs (`prepared.execute()` opens a
+     *  session): omitted for every standalone-provider test, and unnecessary even for an app-server test
+     *  that stays on the proxied branch, since that branch never opens a session locally. */
+    appServerHostAuthority?: AppServerHostAuthority;
   } = {},
 ): ExecutionService {
   const resolveProvider = (name: string) => toProviderDefinition(mockState.getNewProvider(name));
   const providerRegistry = new ProviderRegistry();
+  if (options.appServerHostAuthority !== undefined) {
+    providerRegistry.connectAppServerHost(options.appServerHostAuthority);
+  }
   const provider = resolveProvider('codex');
   if (provider !== undefined) providerRegistry.register(provider);
   const progressStore = options.progressStore ?? createProgressStore();
@@ -210,6 +243,7 @@ function createService(
     subscribeJobEvents,
     getCurrentJournalSeq,
     coordinatorCommit: options.coordinatorCommit ?? createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
+    ...(options.appServerProxyRoute === undefined ? {} : { appServerProxyRoute: options.appServerProxyRoute }),
   });
 }
 
@@ -318,6 +352,58 @@ function makeProvider(options?: {
     ...(preflight ? { preflight } : {}),
   };
   return { provider: toProviderDefinition(provider)!, execute, preflight };
+}
+
+/** An app-server-transport provider — the only shape that can ever reach `executePreparedProvider`'s
+ *  `route`-fallback branch, since only `prepared.kind === 'app-server'` even consults `appServerProxyRoute`.
+ *  The raw kernel ignores `runtime.appServerSession` entirely (matching the same pattern other unused
+ *  app-server test fixtures in this suite already use), so this fixture never needs a real or fake process —
+ *  only a real or fake `AppServerHostAuthority` needs to exist, and only for a run that takes the *local* path. */
+function makeAppServerProvider(): {
+  provider: NonNullable<ReturnType<typeof toProviderDefinition>>;
+  execute: ReturnType<typeof vi.fn>;
+} {
+  const execute = vi.fn(() => streamCompletedResult(Promise.resolve({ content: 'ok', durationMs: 0 })));
+  const provider: Provider = {
+    name: 'codex',
+    execute: execute as unknown as AppServerTestProvider['execute'],
+    appServerLifecycle: {
+      host: {
+        provider: 'codex',
+        command: 'codex',
+        args: ['app-server'],
+        cwd: '/workspace',
+        leaseMode: 'job-exclusive',
+      },
+      interrupt: async () => {},
+      finalizeInterrupted: () => ({ kind: 'preserve' as const }),
+    },
+  };
+  return { provider: toProviderDefinition(provider)!, execute };
+}
+
+/** The minimal `AppServerHostAuthority` an app-server provider's *local* path needs to open a session at
+ *  all — only `openSession` is ever reached (this fixture's provider never recovers/attaches), so
+ *  `attachSession` stays a stub. */
+function fakeAppServerHostAuthority(): AppServerHostAuthority {
+  let counter = 0;
+  return {
+    openSession: async (spec, sessionOptions) => {
+      counter += 1;
+      const base = { provider: spec.provider, fingerprint: 'f'.repeat(64), instanceId: `inst-${counter}` };
+      const hostRef: HostRef =
+        spec.leaseMode === 'shared'
+          ? { ...base, leaseMode: 'shared' }
+          : { ...base, leaseMode: 'job-exclusive', ownerJobId: sessionOptions?.jobId ?? '' };
+      const session: AppServerTransport = {
+        rpc: async () => ({}) as never,
+        subscribe: () => () => {},
+        closed: new Promise<Error | void>(() => {}),
+      };
+      return { session, hostRef, close: () => {} };
+    },
+    attachSession: async () => null,
+  };
 }
 
 function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
@@ -1341,5 +1427,58 @@ describe('ExecutionService launch', () => {
       expect.objectContaining({ namespace: 'coral', name: 'architect' }),
       expect.anything(),
     );
+  });
+
+  describe("executeJob's 'proxied' branch", () => {
+    it('takes the proxied branch exclusively: consumeJobStream and completeConsumedJob are never reached for an operation the proxy already owns', async () => {
+      const { provider, execute } = makeAppServerProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const activate = vi.fn(async () => 'executing' as const);
+      const service = createService(ctx, { appServerProxyRoute: { activate } });
+      // Spies on the class's own prototype method, not a mocked module: `completeConsumedJob` is private and
+      // has no separate module seam, so this is the direct way to prove it specifically was never invoked —
+      // not merely that *some* terminal-writing side effect didn't happen to fire.
+      const completeConsumedJobSpy = vi.spyOn(
+        LaunchOrchestrator.prototype as unknown as { completeConsumedJob: (...args: never[]) => Promise<boolean> },
+        'completeConsumedJob',
+      );
+      const consumeJobStreamCallsBefore = mockState.consumeJobStream.mock.calls.length;
+
+      const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') throw new Error('expected running launch');
+      trackJob(decision.jobId);
+
+      await vi.waitFor(() => expect(activate).toHaveBeenCalled());
+      // Give `executeJob`'s post-activation synchronous continuation room to run to completion. If the
+      // exclusivity guard were ever removed, `consumeJobStream` would be reachable within this same window —
+      // it is the very next thing `executeJob` would call.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(mockState.consumeJobStream.mock.calls.length).toBe(consumeJobStreamCallsBefore);
+      expect(completeConsumedJobSpy).not.toHaveBeenCalled();
+      // The strongest corroboration of all: no terminal was recorded locally. A double-applied terminal is
+      // exactly what this exclusivity exists to prevent — this is what its absence would fail to show if the
+      // branch above had accidentally also run the local finalization path.
+      expect(getInternals(service).progressStore.readTerminalProjection(decision.jobId)).toBeNull();
+    });
+
+    it('with no appServerProxyRoute configured, an app-server job runs the exact local path it always did', async () => {
+      const { provider, execute } = makeAppServerProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const service = createService(ctx, { appServerHostAuthority: fakeAppServerHostAuthority() });
+
+      const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') throw new Error('expected running launch');
+      trackJob(decision.jobId);
+      await waitForTerminalEvent(service, decision.jobId);
+
+      expect(execute).toHaveBeenCalledOnce();
+      expect(getInternals(service).progressStore.readTerminalProjection(decision.jobId)?.outcome).toEqual({
+        kind: 'completed',
+      });
+    });
   });
 });

@@ -127,7 +127,7 @@ function activeStoreCoordinationRemediation(context?: CoralSetupErrorContext): s
     return `${stop} Restore ${recordPath} as a regular non-link file owned by the current user with mode 0600, then retry the command. Preserve the existing entry and store files for diagnosis if its origin is unknown.`;
   }
   if (failureCode === 'record_changed' || failureCode === 'record_unavailable') {
-    return `${stop} Verify that ${recordPath} is stable and readable by the current user, then retry the command. If it still fails, preserve the record and store files and report failureCode=${failureCode}.`;
+    return `${stop} Verify that ${recordPath} is stable and both readable and writable by the current user, then retry the command. If it still fails, preserve the record and store files and report failureCode=${failureCode}.`;
   }
   return `${stop} Preserve ${recordPath} and the store files, then report this error with failureCode=${failureCode}; do not edit or delete the evidence.`;
 }

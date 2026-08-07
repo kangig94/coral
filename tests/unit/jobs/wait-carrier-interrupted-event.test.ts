@@ -45,6 +45,11 @@ describe('carrier interrupted wait event', () => {
     expect(line).toContain('carrier is no longer present');
     expect(line).toContain('still waiting for a durable result');
     expect(line).not.toMatch(/failed|aborted|completed/u);
+    // No continuation line. Every other event that prints one does so where this process is about to hand
+    // control back, so "run this to continue waiting" names a real next step. This event hands control to
+    // nobody — the subscription stays open — so the same line would tell a caller to open a second
+    // subscription to the stream it is already reading.
+    expect(line).not.toContain('coral-cli wait jobs');
   });
 });
 

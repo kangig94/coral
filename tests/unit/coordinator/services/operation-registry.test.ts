@@ -125,9 +125,19 @@ describe('LocalOperationRegistry', () => {
 
   it('settled() on an identity this registry never activated is a silent no-op', () => {
     const registry = new LocalOperationRegistry();
+    // A real, unrelated entry in the registry — proves the unknown identity is genuinely ignored rather than
+    // merely confirming an empty registry does nothing.
+    const activated = meta();
+    const release = vi.fn();
+    registry.activate(activated, fakeControl().control, release);
+
     expect(() =>
       registry.settled({ jobId: 'unknown', operationId: 'unknown', proxyInstanceId: 'p', buildSetId: 'b' }),
     ).not.toThrow();
+
+    expect(release).not.toHaveBeenCalled();
+    expect(registry.stateForJob(activated.jobId)).toBe('activated');
+    expect(registry.stateForJob('unknown')).toBeNull();
   });
 
   it("stop() records the cause and sends it through the entry's control capability", async () => {
@@ -145,9 +155,21 @@ describe('LocalOperationRegistry', () => {
     expect(registry.recordedStopCauseFor(identityFor(m))).toBe('signal_abort');
   });
 
-  it('stop() on a job with no live entry is a safe no-op', () => {
+  it('stop() on a job with no live entry is a safe no-op', async () => {
     const registry = new LocalOperationRegistry();
+    // A real, unrelated entry — proves the no-op does not reach some other live operation's control
+    // capability rather than merely confirming an empty registry does nothing.
+    const activated = meta();
+    const { control, stopCalls } = fakeControl();
+    registry.activate(activated, control, () => {});
+
     expect(() => registry.stop('never-registered', 'signal_abort')).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(stopCalls).toEqual([]);
+    expect(registry.recordedStopCauseFor(identityFor(activated))).toBeNull();
+    expect(registry.stateForJob('never-registered')).toBeNull();
   });
 
   it('stop() only sends the first recorded cause — a second abort of an already-stopping operation changes nothing', async () => {

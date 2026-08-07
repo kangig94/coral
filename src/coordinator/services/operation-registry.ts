@@ -40,6 +40,7 @@ export interface OperationStopControl {
 
 interface RegistryEntry {
   readonly identity: ProviderOperationEventIdentity;
+  readonly providerRoot: Readonly<{ pid: number; processStartedAtSeconds: number }>;
   readonly control: OperationStopControl;
   readonly release: () => void;
   readonly state: LocalOperationRegistryState;
@@ -82,7 +83,11 @@ export class LocalOperationRegistry {
       buildSetId: meta.buildSetId,
     };
     const key = registryKey(identity.jobId, identity.operationId);
-    this.entries.set(key, { identity, control, release, state, stopCause: null });
+    const providerRoot = {
+      pid: meta.providerRootPid,
+      processStartedAtSeconds: meta.providerRootProcessStartedAtSeconds,
+    };
+    this.entries.set(key, { identity, providerRoot, control, release, state, stopCause: null });
     this.liveJobIndex.set(identity.jobId, key);
   }
 
@@ -100,7 +105,7 @@ export class LocalOperationRegistry {
    * W2.5's second thin entry point onto the same private builder: registers an operation this coordinator
    * generation never activated but adopted from a predecessor's bequeathed proxy set, via
    * `guardian.handoff-redeem.v1` → `reaper.handoff-rotate.v1` → `handoff.redeem.v1` → `operation.adopt.v1`
-   * (`provider-hosts/proxy-set-inheritance.ts`, the only production caller). `meta` is the exact row that
+   * (`provider-proxy-set-inheritance.ts`, the only production caller). `meta` is the exact row that
    * caller already read back from the store — the same "meta row is what both a live activation and a later
    * adoption equally have in hand" contract this class's own header doc promises.
    *
@@ -187,4 +192,36 @@ export class LocalOperationRegistry {
     }
     return found;
   }
+
+  /**
+   * Every distinct provider root this coordinator's own live operations hold against one proxy set —
+   * `guardian.stop-and-reap.v1`/`reaper.stop-and-reap.v1`'s own `providerRoots` argument
+   * (`provider-proxy-acquisition-steps.ts`'s `stopAndReap`): both enforcers refuse a teardown that disagrees
+   * with what they actually recorded (`assertRecordedSetAgreement`), so this is the coordinator's own half of
+   * that agreement — an empty claim against a set that has actually staged a root always disagrees. Deduped
+   * by process identity, mirroring `ArmedEnforcer.recordedRoots()`: a shared host serving more than one
+   * activated operation is one teardown target, not one per operation.
+   */
+  providerRootsFor(proxyInstanceId: string): readonly Readonly<{ pid: number; processStartedAtSeconds: number }>[] {
+    const seen = new Map<string, Readonly<{ pid: number; processStartedAtSeconds: number }>>();
+    for (const entry of this.entries.values()) {
+      if (entry.identity.proxyInstanceId !== proxyInstanceId) continue;
+      const key = `${entry.providerRoot.pid}@${entry.providerRoot.processStartedAtSeconds}`;
+      if (!seen.has(key)) seen.set(key, entry.providerRoot);
+    }
+    return [...seen.values()];
+  }
 }
+
+/**
+ * What a `stopAndReap`-adjacent caller (`provider-proxy-acquisition-steps.ts`'s `ProviderProxyAcquisitionSteps
+ * Options`/`ProviderProxySetAuthorityDependencies`, `provider-hosts/proxy-set-acquisition.ts`'s
+ * `ProviderProxySetAcquisitionConfig`) needs from this registry: `operationsFor` always, `providerRootsFor`
+ * only where every production caller can supply it. Named once here so the three call sites stay the
+ * identical type rather than three independently-drifting `Pick`s — `providerRootsFor` is `Partial` (not
+ * required) because `provider-proxy-set-inheritance.ts` builds one of those dependencies from a narrower
+ * `Pick<LocalOperationRegistry, 'adopt' | 'operationsFor'>` it does not own the shape of here; the one caller
+ * that reads `providerRootsFor` falls back to an empty claim when it is absent.
+ */
+export type ProviderProxyOperationSnapshot = Pick<LocalOperationRegistry, 'operationsFor'> &
+  Partial<Pick<LocalOperationRegistry, 'providerRootsFor'>>;

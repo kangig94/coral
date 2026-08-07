@@ -881,6 +881,30 @@ describe('provider host pool proxy set registry', () => {
     await manager.shutdown();
   });
 
+  it('routes to the exact live authority for a matching spec once acquisition settles', async () => {
+    // `routeAppServerOperation` is the entry point of the W2.3 publication path — the only assertion touching
+    // it elsewhere in this file checks the negative case (no live set yet). Replacing its body with
+    // `return null;` would fail nothing else here.
+    const server = createFakeProviderServerHandle();
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+    });
+    const set = fakeInheritedProxySet('proxy-routed');
+    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
+      onSettled({ kind: 'acquired', set });
+    });
+    const spec = createSharedSpec();
+
+    const lease = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
+
+    expect(manager.routeAppServerOperation(spec)).toBe(set);
+
+    lease.close();
+    await manager.shutdown();
+  });
+
   it('shares one set across job-exclusive entries of the same executable identity', async () => {
     // A set is three real processes and one proxy carries many operations — its ledger is keyed by
     // `(jobId, operationId)`, a handoff grant covers the whole operation set, and release refuses to reap a
@@ -920,6 +944,13 @@ describe('provider host pool proxy set registration', () => {
   // (`provider-proxy-set-inheritance.test.ts`) — it needs jobs-domain vocabulary this `coordinator/live/`
   // manager may not reach directly. `registerInheritedSet` is the narrow, domain-free seam that mechanism
   // calls back into once it already holds a live, connected set; that hand-off is what this suite exercises.
+
+  // The module-level `ensureProviderProxySet` mock is shared with every other describe block in this file —
+  // its call history must not leak from one `it` into the next (mirrors the sibling `beforeEach` above).
+  beforeEach(() => {
+    mockedEnsureProxySet.mockReset();
+  });
+
   it('folds an inherited set into liveSets() alongside acquired sets, without routing new sessions onto it', async () => {
     const manager = new DefaultProviderHostManager({
       runtime,

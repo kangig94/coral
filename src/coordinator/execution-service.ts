@@ -134,6 +134,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       launchOrchestrator: this.launchOrchestrator,
       childPrincipalRegistry: deps.childPrincipalRegistry,
       parentPrincipal: ctx.principal,
+      ...(deps.operations === undefined ? {} : { operations: deps.operations }),
     });
     this.launchService = new JobLaunchService({
       runtime: this.runtime,
@@ -306,6 +307,10 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
 
   async interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void> {
     return this.recoveryService.interruptAppServerJob(authority, runtimeRecord);
+  }
+
+  registerInheritedAppServerAbort(jobId: string): void {
+    this.recoveryService.registerInheritedAppServerAbort(jobId);
   }
 
   private finishQueuedAbort(jobId: string, sessionId: string, reason: AbortReason): void {
