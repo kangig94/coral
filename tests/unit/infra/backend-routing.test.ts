@@ -131,7 +131,6 @@ describe('backend-routing', () => {
       evidence: { source: 'live-incumbent' },
     });
   });
-
 });
 
 // `reset-newer-invalid` is deliberately absent from this file. `routeLiveIncumbent` cannot produce it — the

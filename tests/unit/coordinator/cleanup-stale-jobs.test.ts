@@ -111,7 +111,7 @@ async function runCleanup(
     );
   } finally {
     survivingIdentities = db
-      .prepare<[string], { key: string }>("SELECT key FROM meta WHERE key LIKE ? ORDER BY key")
+      .prepare<[string], { key: string }>('SELECT key FROM meta WHERE key LIKE ? ORDER BY key')
       .all('durable_cli_process.v1:%')
       .map((row) => row.key.replace('durable_cli_process.v1:', ''));
     db.close();
