@@ -9,6 +9,7 @@ import {
   providerArtifactHandleEventBodySchema,
   providerContinuityEventBodySchema,
   providerRequestSchema,
+  providerStopCauseSchema,
   providerSuspendedEventBodySchema,
   providerTerminalEventBodySchema,
 } from '../providers/contract.js';
@@ -453,15 +454,74 @@ export const guardianStopAndReapResultSchema = z
   .object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) })
   .strict();
 
-// The proxy's own `operation.*.v1`/`handoff.install.v1` request schemas (`operation.prepare.v1`,
-// `operation.activate.v1`, `operation.cancel-pending.v1`, `operation.stop.v1`) deliberately do not get the
-// same treatment here: `proxy.ts` is under active concurrent development on this branch (a parallel agent is
-// mid-edit on its `containment.stageProviderRoot` seam), and it is outside this refactor's file ownership.
-// Defining a second, independent copy of those schemas in this file — rather than moving `proxy.ts`'s own —
-// would recreate the exact two-homes drift risk this section exists to close, just with both sides now
-// schema-shaped instead of one hand-assembled. `provider-proxy-operation-activation.ts`'s sends to the proxy
-// remain a real, reported gap for this same defect class (bug 1 was exactly `operation.activate.v1`'s extra
-// field) until `proxy.ts`'s schemas can be moved here the same way this section moved `guardian.ts`'s.
+/** `operation.prepare.v1`'s request. The envelope is validated field by field at this ingress rather than
+ *  deeper in: the proxy does not interpret it — the semantic host does — but this is the boundary the bytes
+ *  arrive at, and a reservation committed against a malformed envelope is one nothing could ever activate. */
+export const proxyOperationPrepareParamsSchema = z
+  .object({
+    operation: operationIdentitySchema,
+    hostFingerprint: hostFingerprintSchema,
+    prepared: proxyPreparedAppServerOperationSchema,
+  })
+  .strict();
+
+/**
+ * The reservation-bearing request shape, named for what it carries rather than for one method, because it is
+ * the only schema here serving more than one: `operation.renew-activation.v1` and `operation.cancel-pending.v1`
+ * both parse it directly, and `operation.activate.v1` extends it. Naming it after any single one of the three
+ * would make the other two read as accidents; declaring it three times would restate a derivation, which is
+ * the drift this section exists to remove.
+ */
+export const proxyOperationReservationParamsSchema = z
+  .object({
+    operation: operationIdentitySchema,
+    reservationId: canonicalUuidSchema,
+    activationNonce: canonicalUuidSchema,
+  })
+  .strict();
+
+/** `operation.activate.v1`'s request — the reservation plus the two receipts the guardian minted. Distinct
+ *  from `guardianOperationActivateParamsSchema` above: two different messages that share a verb, which is
+ *  what the role prefix on both names is for. */
+export const proxyOperationActivateParamsSchema = proxyOperationReservationParamsSchema
+  .extend({
+    jointContainmentReceipt: z.string().min(1),
+    jointActivationReceipt: z.string().min(1),
+  })
+  .strict();
+
+/** `operation.stop.v1`'s request. Two senders: the activation service's stop control and the inheritance
+ *  path's adopted stop control. */
+export const proxyOperationStopParamsSchema = z
+  .object({ operation: operationIdentitySchema, cause: providerStopCauseSchema })
+  .strict();
+
+/** `operation.adopt.v1`'s request. */
+export const proxyOperationAdoptParamsSchema = z
+  .object({ operation: operationIdentitySchema, committedThroughProviderSeq: nonNegativeSafeIntegerSchema })
+  .strict();
+
+/**
+ * `operation.status.v1`'s request. Bounded by the ledger's own capacity rather than a second 128: a request
+ * asking about more operations than this proxy could ever hold is asking about operations that are not here,
+ * and one cap is one fact.
+ *
+ * Shared here despite having no sender in this repository. `proxy.ts` documents why the responder ships
+ * first — a requester can be added later, a responder cannot be retrofitted into a process already running —
+ * and leaving its schema private would make whoever adds that requester do this move before they could start.
+ */
+export const proxyOperationStatusParamsSchema = z
+  .object({ operations: z.array(operationIdentitySchema).min(1).max(MAX_PROXY_OPERATION_LEDGERS) })
+  .strict();
+
+// Two request schemas stay private to `proxy.ts`: `handoff.install.v1` and `handoff.redeem.v1`. Both need
+// `grantSecretSchema`/`grantSecretDigestSchema`/`handoffOperationSetSchema`, which live in
+// `handoff-capsule.ts` — and that module imports this one, so moving them here would close a cycle that
+// `tests/invariants/production-import-graph.test.ts` fails on outright (it runs Tarjan over runtime edges).
+// Nor should the proxy's `handoff.install.v1` merge with the guardian/reaper schema it resembles: it carries
+// no `successor` or `teardownReserveMs` and identifies the set through the grant-set shape instead of a full
+// coordinator identity, because the proxy learns of a handoff only through the two authorities that already
+// hold one. That is a different message, not a drifted copy — see `handoff-capsule.ts`'s own note.
 
 const jsonRpcIdSchema = z.union([z.string().min(1), z.number().safe()]);
 

@@ -5,13 +5,17 @@ import {
   deleteProviderOperationRuntimeMeta,
   writeProviderOperationRuntimeMeta,
 } from '../../jobs/runtime-meta-store.js';
-import type { ProviderOperationRuntimeMeta } from '../../jobs/runtime-meta.js';
+import { providerOperationRuntimeMetaSchema, type ProviderOperationRuntimeMeta } from '../../jobs/runtime-meta.js';
 import {
   guardianOperationActivateParamsSchema,
   guardianOperationActivateResultSchema,
   guardianOperationReleaseParamsSchema,
   guardianOperationReleaseResultSchema,
   providerRootSchema,
+  proxyOperationActivateParamsSchema,
+  proxyOperationPrepareParamsSchema,
+  proxyOperationReservationParamsSchema,
+  proxyOperationStopParamsSchema,
   type OperationIdentity,
   type ProxyPreparedAppServerOperation,
 } from '../../provider-proxy/protocol.js';
@@ -80,14 +84,22 @@ export interface ProviderProxyOperationActivationDeps {
 
 const MUTATION_RPC_TIMEOUT_DEFAULT_MS = 5_000;
 
+/**
+ * The three correlation fields are taken from the row this same function is about to write, not restated:
+ * `z.string().min(1)` accepted values the durable schema refuses, so a non-canonical reservation passed this
+ * ingress and then threw at `writeProviderOperationRuntimeMeta` — after `operation.prepare.v1` had already
+ * staged a provider root. Two files independently choosing the same shape agree by coincidence; deriving one
+ * from the other agrees by construction. `coordinator/services/` may reach for it because it imports both,
+ * and `jobs/runtime-meta.ts` deliberately cannot import the wire schemas (see its own note on why).
+ */
 const preparePendingSchema = z
   .object({
     state: z.literal('pending-activation'),
-    reservationId: z.string().min(1),
-    activationNonce: z.string().min(1),
+    reservationId: providerOperationRuntimeMetaSchema.shape.reservationId,
+    activationNonce: providerOperationRuntimeMetaSchema.shape.activationNonce,
     leaseExpiresInMs: z.number(),
     providerRoot: providerRootSchema,
-    jointContainmentReceipt: z.string().min(1),
+    jointContainmentReceipt: providerOperationRuntimeMetaSchema.shape.jointContainmentReceipt,
   })
   .strict();
 const prepareCapacitySchema = z
@@ -133,19 +145,19 @@ export type ActivateProviderOperationResult =
  * compile time regardless of how the literal is written; a caller that instead forwarded a variable would
  * defeat a literal-only check anyway. Parsing at runtime is what actually catches an omitted or misspelled
  * field, at the sender, with a clear error, instead of letting it travel to a strict receiver that refuses it.
- * `paramsSchema` is `undefined` for the four methods `proxy.ts` still validates privately on receipt
- * (`operation.prepare.v1`, `operation.activate.v1`, `operation.cancel-pending.v1`, `operation.stop.v1`) — see
- * `protocol.ts`'s own note, beside its guardian request schemas, on why those four are not shared here yet.
+ * `paramsSchema` is required, and that is the point: every method this module sends now has a shared schema,
+ * so an unvalidated send from here is no longer expressible rather than merely discouraged. It was optional
+ * only while the proxy's own request schemas were private to `proxy.ts` and therefore unreachable.
  */
 async function callStrict<TParams, TResult>(
   client: OperationControlClient,
   method: string,
   params: TParams,
   timeoutMs: number,
-  paramsSchema: z.ZodType<TParams> | undefined,
+  paramsSchema: z.ZodType<TParams>,
   resultSchema: z.ZodType<TResult>,
 ): Promise<TResult> {
-  if (paramsSchema !== undefined) paramsSchema.parse(params);
+  paramsSchema.parse(params);
   const raw = await client.call(method, params, timeoutMs);
   return resultSchema.parse(raw);
 }
@@ -163,13 +175,12 @@ function buildStopControl(
 ): OperationStopControl {
   return {
     async stop(cause: ProviderStopCause): Promise<void> {
-      // `paramsSchema: undefined` — `operation.stop.v1`'s request schema is still private to `proxy.ts`.
       await callStrict(
         deps.proxyClient,
         'operation.stop.v1',
         { operation, cause },
         timeoutMs,
-        undefined,
+        proxyOperationStopParamsSchema,
         stopResultSchema,
       );
     },
@@ -190,13 +201,12 @@ async function compensateAfterActivationFailure(
   jointContainmentReceipt: string,
 ): Promise<void> {
   deleteProviderOperationRuntimeMeta(deps.db, operation.jobId, operation.operationId);
-  // `paramsSchema: undefined` — `operation.cancel-pending.v1`'s request schema is still private to `proxy.ts`.
   await callStrict(
     deps.proxyClient,
     'operation.cancel-pending.v1',
     { operation, reservationId, activationNonce },
     deps.mutationRpcTimeoutMs,
-    undefined,
+    proxyOperationReservationParamsSchema,
     cancelPendingResultSchema,
   );
   // The receipt travels here for the same reason `guardian.operation-activate.v1` carries it: the guardian's
@@ -231,13 +241,13 @@ export async function activateProviderOperation(
   const timeoutMs = deps.mutationRpcTimeoutMs || MUTATION_RPC_TIMEOUT_DEFAULT_MS;
 
   // Step 1: operation.prepare.v1 — reservation, provider root, containment receipt; semantic execution stays
-  // forbidden until step 4. `paramsSchema: undefined` — this request schema is still private to `proxy.ts`.
+  // forbidden until step 4.
   const prepareResult = await callStrict(
     deps.proxyClient,
     'operation.prepare.v1',
     { operation, hostFingerprint: deps.setIdentity.hostFingerprint, prepared },
     timeoutMs,
-    undefined,
+    proxyOperationPrepareParamsSchema,
     prepareResultSchema,
   );
   if (prepareResult.state === 'capacity') {
@@ -302,15 +312,15 @@ export async function activateProviderOperation(
   // compensate, and fall back to in-process execution. The watermark matters for the one case where it can
   // be non-zero, and `operation.adopt.v1` already owns that.
   //
-  // `paramsSchema: undefined` — `activateParamsSchema` above is still private to `proxy.ts`, so this specific
-  // request is not yet parsed at this sender; see `protocol.ts`'s own note on why.
+  // That extra field is now unstateable from here: `proxyOperationActivateParamsSchema` is `.strict()` and is
+  // parsed at this sender before the frame is written, so the same mistake fails here rather than on arrival.
   try {
     const activateResult = await callStrict(
       deps.proxyClient,
       'operation.activate.v1',
       { operation, reservationId, activationNonce, jointContainmentReceipt, jointActivationReceipt },
       timeoutMs,
-      undefined,
+      proxyOperationActivateParamsSchema,
       proxyActivateResultSchema,
     );
     return {

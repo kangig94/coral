@@ -12,6 +12,8 @@ import {
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   proxyIdentitySchema,
+  proxyOperationAdoptParamsSchema,
+  proxyOperationStopParamsSchema,
   type CoordinatorIdentity,
   type GuardianIdentity,
   type OperationIdentity,
@@ -163,7 +165,10 @@ function capsuleMatchesLocator(
 function buildAdoptedStopControl(proxyClient: ControlClient, operation: OperationIdentity): OperationStopControl {
   return {
     async stop(cause) {
-      await proxyClient.call('operation.stop.v1', { operation, cause }, PROXY_CONTROL_RPC_TIMEOUT_MS);
+      // Parsed here rather than through a shared helper: `callStrict` parses a reply unconditionally, and
+      // this send deliberately reads none. One line at the send site is the whole obligation.
+      const params = proxyOperationStopParamsSchema.parse({ operation, cause });
+      await proxyClient.call('operation.stop.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS);
     },
   };
 }
@@ -187,7 +192,10 @@ async function adoptRedeemedOperations(
     try {
       const raw = await proxyClient.call(
         'operation.adopt.v1',
-        { operation, committedThroughProviderSeq: meta.committedThroughProviderSeq },
+        proxyOperationAdoptParamsSchema.parse({
+          operation,
+          committedThroughProviderSeq: meta.committedThroughProviderSeq,
+        }),
         PROXY_CONTROL_RPC_TIMEOUT_MS,
       );
       adoptResultSchema.parse(raw);

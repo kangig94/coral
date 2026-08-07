@@ -255,6 +255,54 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 
+  it('parses an adopted stop payload at the sender, so a malformed one never reaches the wire', async () => {
+    const loc = locator();
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const operations = [operationFor(loc)];
+    const calls: { method: string; params: unknown }[] = [];
+    const client = fakeClient(
+      redemptionResponses(loc, operations, {
+        'operation.adopt.v1': { state: 'executing', replayFromProviderSeq: 1 },
+        'operation.stop.v1': { state: 'stopping', committedThroughProviderSeq: 5 },
+      }),
+      calls,
+    );
+    stubConnect(client);
+    mockedReadMeta.mockImplementation((_db: Database, jobId: string, operationId: string) =>
+      locator({ jobId, operationId, committedThroughProviderSeq: 5 }),
+    );
+
+    // The adopted stop control is handed to the registry and nowhere else, so capturing it here is the only
+    // way to drive the send this file makes. Before this test the send had no coverage at all — which is why
+    // its payload could have gone unvalidated indefinitely without any mutation being observable.
+    let adoptedStop: { stop(cause: string): Promise<void> } | undefined;
+    await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: {
+          adopt: (_meta, control) => {
+            adoptedStop = control as { stop(cause: string): Promise<void> };
+          },
+          operationsFor: () => [],
+          providerRootsFor: () => [],
+        },
+      },
+      neverAborts,
+    );
+
+    if (adoptedStop === undefined) throw new Error('adoption did not register a stop control');
+    await adoptedStop.stop('signal_abort');
+    expect(calls.filter((c) => c.method === 'operation.stop.v1')).toHaveLength(1);
+
+    // A cause the shared schema has no place for is refused here, at the sender, and the frame is never
+    // written — the proxy's own receipt-side `.strict()` parse never gets the chance to refuse it.
+    await expect(adoptedStop.stop('not-a-real-cause')).rejects.toThrow();
+    expect(calls.filter((c) => c.method === 'operation.stop.v1')).toHaveLength(1);
+  });
+
   it('redeems guardian, then reaper with the guardian’s own receipt, then proxy, adopting every named operation in order', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));

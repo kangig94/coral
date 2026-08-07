@@ -21,6 +21,11 @@ import {
   PROXY_STATUS_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
   proxyIdentitySchema,
+  proxyOperationActivateParamsSchema,
+  proxyOperationAdoptParamsSchema,
+  proxyOperationPrepareParamsSchema,
+  proxyOperationReservationParamsSchema,
+  proxyOperationStopParamsSchema,
   reaperIdentitySchema,
 } from '#src/provider-proxy/protocol.js';
 
@@ -365,5 +370,91 @@ describe('guardian control-method request schemas, shared with their one coordin
     expect(guardianRegisterProviderRootParamsSchema.safeParse(missingReservation).success).toBe(false);
 
     expect(guardianRegisterProviderRootParamsSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
+  });
+});
+
+describe('proxy control-method request schemas, shared with their coordinator senders', () => {
+  const operation = { jobId: UUID_A, operationId: UUID_B, proxyInstanceId: UUID_C, buildSetId: UUID_D };
+  const PREPARED_OPERATION = {
+    version: 1 as const,
+    provider: 'codex',
+    binding: { provider: 'codex', kind: 'account' as const, binding: { account: 'acct-1' } },
+    request: {
+      action: 'exec' as const,
+      sessionId: 'session-1',
+      prompt: 'do the thing',
+      cwd: '/project',
+      bypassPermissions: false,
+      coralEnv: {},
+    },
+    persistedContinuity: null,
+    baseEnv: { PATH: '/usr/bin' },
+    protectedEnv: {},
+    platform: 'linux',
+  };
+
+  it('operation.activate.v1: refuses the exact extra field that made every activation fail', () => {
+    const valid = {
+      operation,
+      reservationId: UUID_A,
+      activationNonce: UUID_B,
+      jointContainmentReceipt: 'joint-1',
+      jointActivationReceipt: 'joint-activation-1',
+    };
+    expect(proxyOperationActivateParamsSchema.safeParse(valid).success).toBe(true);
+
+    // `committedThroughProviderSeq` is not an arbitrary extra field: the coordinator really sent it, this
+    // `.strict()` schema really had no place for it, and every activation therefore failed
+    // `unrecognized_keys`, compensated, and fell back to in-process execution — the branch's headline feature
+    // never ran. Sharing the schema is what lets that be refused at the sender instead of on arrival.
+    const extra = proxyOperationActivateParamsSchema.safeParse({ ...valid, committedThroughProviderSeq: 0 });
+    expect(extra.success).toBe(false);
+    if (!extra.success) {
+      expect(extra.error.issues).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'unrecognized_keys' })]),
+      );
+    }
+
+    const { jointContainmentReceipt: _omitted, ...missingReceipt } = valid;
+    const missing = proxyOperationActivateParamsSchema.safeParse(missingReceipt);
+    expect(missing.success).toBe(false);
+    if (!missing.success) {
+      expect(missing.error.issues).toEqual(
+        expect.arrayContaining([expect.objectContaining({ path: ['jointContainmentReceipt'] })]),
+      );
+    }
+  });
+
+  it('operation.prepare.v1: rejects a missing hostFingerprint and an extra field', () => {
+    const valid = { operation, hostFingerprint: 'a'.repeat(64), prepared: PREPARED_OPERATION };
+    expect(proxyOperationPrepareParamsSchema.safeParse(valid).success).toBe(true);
+
+    const { hostFingerprint: _omitted, ...missing } = valid;
+    expect(proxyOperationPrepareParamsSchema.safeParse(missing).success).toBe(false);
+    expect(proxyOperationPrepareParamsSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
+  });
+
+  it('the reservation shape serves renew, cancel-pending, and activate alike', () => {
+    const valid = { operation, reservationId: UUID_A, activationNonce: UUID_B };
+    expect(proxyOperationReservationParamsSchema.safeParse(valid).success).toBe(true);
+
+    // Activate extends it rather than restating it, so a field the base refuses is refused there too — the
+    // property that keeps one schema serving three methods from drifting into three.
+    expect(proxyOperationReservationParamsSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
+    const { activationNonce: _omitted, ...missing } = valid;
+    expect(proxyOperationReservationParamsSchema.safeParse(missing).success).toBe(false);
+  });
+
+  it('operation.stop.v1 and operation.adopt.v1: reject an extra field', () => {
+    expect(proxyOperationStopParamsSchema.safeParse({ operation, cause: 'signal_abort' }).success).toBe(true);
+    expect(
+      proxyOperationStopParamsSchema.safeParse({ operation, cause: 'signal_abort', unexpected: true }).success,
+    ).toBe(false);
+
+    expect(proxyOperationAdoptParamsSchema.safeParse({ operation, committedThroughProviderSeq: 3 }).success).toBe(true);
+    expect(
+      proxyOperationAdoptParamsSchema.safeParse({ operation, committedThroughProviderSeq: 3, unexpected: true })
+        .success,
+    ).toBe(false);
   });
 });

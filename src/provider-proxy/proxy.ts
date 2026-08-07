@@ -4,12 +4,7 @@ import type { MonotonicClock } from '../infra/monotonic-clock.js';
 // The stop cause is shared with the coordinator's durable side. It lives in `providers/` because both sides
 // may reach it and neither may reach the other: this tree is barred from `jobs/`, and the reverse edge would
 // point the dependency the wrong way.
-import {
-  isInterruptionStopCause,
-  providerStopCauseSchema,
-  type ProviderEventBody,
-  type ProviderStopCause,
-} from '../providers/contract.js';
+import { isInterruptionStopCause, type ProviderEventBody, type ProviderStopCause } from '../providers/contract.js';
 import { createBootstrapNonceCredential, type ProxyBootstrapCapsule } from './bootstrap-capsule.js';
 import { ControlLeaseEvidence } from './control-lease.js';
 import {
@@ -28,7 +23,6 @@ import {
 } from './handoff-capsule.js';
 import {
   LedgerError,
-  MAX_PROXY_OPERATION_LEDGERS,
   createOperationLedger,
   type OperationLedger,
   type PrepareResult,
@@ -46,64 +40,25 @@ import {
   encodeProxyControlFrame,
   generationSchema,
   hostFingerprintSchema,
-  operationIdentitySchema,
   providerEventRequestSchema,
   providerEventResultSchema,
-  proxyPreparedAppServerOperationSchema,
+  // Aliased to the names the handlers below already use, so this move changes where these schemas live
+  // without touching a single `.parse(params)` call site.
+  proxyOperationActivateParamsSchema as activateParamsSchema,
+  proxyOperationAdoptParamsSchema as adoptParamsSchema,
+  proxyOperationPrepareParamsSchema as prepareParamsSchema,
+  proxyOperationReservationParamsSchema as reservationParamsSchema,
+  proxyOperationStatusParamsSchema as operationStatusParamsSchema,
+  proxyOperationStopParamsSchema as stopParamsSchema,
   type CoordinatorIdentity,
+  type OperationIdentity,
   type ProviderEventResult,
   type ProxyIdentity,
   type ProxyPreparedAppServerOperation,
 } from './protocol.js';
 
-const nonNegativeSeqSchema = z.number().int().nonnegative().safe();
-
 const openParamsSchema = z
   .object({ bootstrapNonce: z.string().min(1), coordinator: coordinatorIdentitySchema })
-  .strict();
-
-/**
- * The semantic operation envelope, validated field by field at this ingress rather than deeper in. The proxy
- * does not interpret it — the semantic host does — but it is the boundary the bytes arrive at, and a
- * reservation that committed against a malformed envelope would be one nothing could ever activate.
- */
-const preparedOperationSchema = proxyPreparedAppServerOperationSchema;
-
-const prepareParamsSchema = z
-  .object({
-    operation: operationIdentitySchema,
-    hostFingerprint: hostFingerprintSchema,
-    prepared: preparedOperationSchema,
-  })
-  .strict();
-
-const renewParamsSchema = z
-  .object({
-    operation: operationIdentitySchema,
-    reservationId: canonicalUuidSchema,
-    activationNonce: canonicalUuidSchema,
-  })
-  .strict();
-
-const activateParamsSchema = renewParamsSchema
-  .extend({
-    jointContainmentReceipt: z.string().min(1),
-    jointActivationReceipt: z.string().min(1),
-  })
-  .strict();
-
-const stopParamsSchema = z.object({ operation: operationIdentitySchema, cause: providerStopCauseSchema }).strict();
-
-const adoptParamsSchema = z
-  .object({ operation: operationIdentitySchema, committedThroughProviderSeq: nonNegativeSeqSchema })
-  .strict();
-
-/**
- * Bounded by the ledger's own capacity rather than a second 128: a request asking about more operations
- * than this proxy could ever hold is asking about operations that are not here, and one cap is one fact.
- */
-const operationStatusParamsSchema = z
-  .object({ operations: z.array(operationIdentitySchema).min(1).max(MAX_PROXY_OPERATION_LEDGERS) })
   .strict();
 
 /**
@@ -231,7 +186,7 @@ function asProtocolError(error: unknown): never {
   throw error;
 }
 
-function ledgerKey(operation: z.infer<typeof operationIdentitySchema>): ProviderOperationKey {
+function ledgerKey(operation: OperationIdentity): ProviderOperationKey {
   return { jobId: operation.jobId, operationId: operation.operationId };
 }
 
@@ -500,7 +455,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       {
         authority: 'active',
         handle: (params) => {
-          const request = renewParamsSchema.parse(params);
+          const request = reservationParamsSchema.parse(params);
           try {
             const entry = ledger.renew(ledgerKey(request.operation), request.reservationId, nowMs());
             return { state: 'pending-activation', leaseExpiresInMs: entry.leaseExpiresAtMs - nowMs() };
@@ -561,7 +516,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       {
         authority: 'active',
         handle: (params) => {
-          const request = renewParamsSchema.parse(params);
+          const request = reservationParamsSchema.parse(params);
           const key = ledgerKey(request.operation);
           const entry = ledger.get(key);
           // Idempotent: an entry already gone is a cancel that already landed, and reporting `released`

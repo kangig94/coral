@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { ZodError } from 'zod';
 
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
@@ -297,6 +298,25 @@ describe('activateProviderOperation', () => {
       activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED),
     ).rejects.toThrow();
 
+    expect(readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId)).toBeNull();
+  });
+
+  it('refuses a non-canonical reservation at the prepare reply, before a provider root is staged', async () => {
+    const db = testDb();
+    const proxy = scriptedClient({ 'operation.prepare.v1': [{ ...PREPARE_PENDING, reservationId: 'not-a-uuid' }] });
+    const guardian = scriptedClient({});
+
+    await expect(
+      activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED),
+    ).rejects.toThrow(ZodError);
+
+    // The shape of the bug this closes, not merely that something threw. `operation.prepare.v1` is the step
+    // that stages a provider root on the proxy, so a reservation refused *here* is refused before anything
+    // durable or remote exists. When this ingress accepted `z.string().min(1)`, the same reply travelled on
+    // and threw at `writeProviderOperationRuntimeMeta` instead — a `ProviderOperationRuntimeMetaCodecError`
+    // raised after the root was staged, leaving the proxy holding a reservation the coordinator had refused.
+    expect(proxy.calls).toEqual(['operation.prepare.v1']);
+    expect(guardian.calls).toEqual([]);
     expect(readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId)).toBeNull();
   });
 });
