@@ -76,6 +76,45 @@ export interface ProviderRequest {
   instruction?: ProviderInstruction;
 }
 
+/**
+ * `ProviderRequest` as wire bytes, for the one boundary that has to send it: a prepared operation crossing
+ * into the proxy process (W2.3). It lives beside the interface it validates rather than in the transport that
+ * carries it, so the request has one canonical home and a field added above cannot silently go unvalidated on
+ * the wire — the two assertions below fail to compile if the schema and the interface drift.
+ *
+ * Strict, so a field this build does not know is refused at ingress rather than carried into an execution
+ * that would ignore it.
+ */
+export const providerRequestSchema = z
+  .object({
+    action: z.enum(['exec', 'resume']),
+    sessionId: nonEmptyStringSchema,
+    name: z.string().optional(),
+    conversationRef: nonEmptyStringSchema.optional(),
+    prompt: z.string(),
+    model: z.string().optional(),
+    cwd: z.string(),
+    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
+    bypassPermissions: z.boolean(),
+    systemPrompt: z.string().optional(),
+    coralEnv: z.record(z.string()),
+    instruction: providerInstructionSchema.optional(),
+  })
+  .strict();
+
+// Compile-time only. Mutual assignability alone is not enough: two object types still assign to each other
+// when one simply omits an optional property, so dropping an optional field from the schema — the drift most
+// likely to happen, since adding an optional field to the interface is the common edit — would pass silently.
+// The key-set comparison is what closes that, and the assignability check is what catches a field whose type
+// or optionality changed rather than disappeared. Both are needed; neither subsumes the other.
+type ProviderRequestSchemaOutput = z.infer<typeof providerRequestSchema>;
+type MutuallyAssignable<A, B> = A extends B ? (B extends A ? true : never) : never;
+type SameKeys<A, B> = [keyof A] extends [keyof B] ? ([keyof B] extends [keyof A] ? true : never) : never;
+const providerRequestSchemaTypesMatch: MutuallyAssignable<ProviderRequest, ProviderRequestSchemaOutput> = true;
+const providerRequestSchemaFieldsMatch: SameKeys<ProviderRequest, ProviderRequestSchemaOutput> = true;
+void providerRequestSchemaTypesMatch;
+void providerRequestSchemaFieldsMatch;
+
 interface ProviderServerSpecBase {
   provider: string;
   command: string;

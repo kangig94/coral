@@ -49,9 +49,11 @@ import {
   operationIdentitySchema,
   providerEventRequestSchema,
   providerEventResultSchema,
+  proxyPreparedAppServerOperationSchema,
   type CoordinatorIdentity,
   type ProviderEventResult,
   type ProxyIdentity,
+  type ProxyPreparedAppServerOperation,
 } from './protocol.js';
 
 const nonNegativeSeqSchema = z.number().int().nonnegative().safe();
@@ -61,12 +63,11 @@ const openParamsSchema = z
   .strict();
 
 /**
- * The semantic operation envelope. Because the frame is JSON, functions, symbols and accessors cannot reach
- * here at all — what remains is field-level validation, and that belongs to the envelope's own owner, the
- * semantic host. The proxy requires only that one arrived: a prepare that reserved capacity without carrying
- * the work would leave a reservation nothing could ever activate.
+ * The semantic operation envelope, validated field by field at this ingress rather than deeper in. The proxy
+ * does not interpret it — the semantic host does — but it is the boundary the bytes arrive at, and a
+ * reservation that committed against a malformed envelope would be one nothing could ever activate.
  */
-const preparedOperationSchema = z.record(z.unknown());
+const preparedOperationSchema = proxyPreparedAppServerOperationSchema;
 
 const prepareParamsSchema = z
   .object({
@@ -143,7 +144,9 @@ const handoffRedeemParamsSchema = z
  */
 export interface SemanticOperationHost {
   /** Starts the kernel for an activated operation. Throwing leaves the ledger entry untouched. */
-  start(input: Readonly<{ key: ProviderOperationKey; prepared: unknown }>): Promise<void> | void;
+  start(
+    input: Readonly<{ key: ProviderOperationKey; prepared: ProxyPreparedAppServerOperation }>,
+  ): Promise<void> | void;
   /** Stops a running kernel. Called for every recorded stop cause, including a clean handoff. */
   stop(input: Readonly<{ key: ProviderOperationKey; cause: ProviderStopCause }>): Promise<void> | void;
 }
@@ -175,7 +178,7 @@ export type ProxyOptions<Scope extends symbol> = Readonly<{
 export interface Proxy {
   listen(): Promise<void>;
   close(): Promise<void>;
-  ledger(): OperationLedger;
+  ledger(): OperationLedger<ProxyPreparedAppServerOperation>;
   /**
    * The one seam a semantic operation host uses to hand this proxy one provider event for one operation. A
    * plain, narrow, synchronous buffering call, not a round trip: the caller is a live async generator pulling
@@ -216,7 +219,7 @@ function ledgerKey(operation: z.infer<typeof operationIdentitySchema>): Provider
  */
 export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>): Proxy {
   const { capsule, clock, identity, host, timer, mintChallenge, mintReceipt } = options;
-  const ledger = createOperationLedger();
+  const ledger = createOperationLedger<ProxyPreparedAppServerOperation>();
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
   const grants = createGrantRegistry(mintReceipt);
   // Ledger leases are plain milliseconds on the proxy's own clock, measured from its start. The branded
@@ -497,12 +500,19 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             asProtocolError(error);
           }
           const entry = ledger.get(key);
+          if (entry === null) {
+            // `activate` above throws `operation_not_found` for an absent entry, so reaching here means the
+            // ledger answered two different ways about the same key in one turn. Refusing is the only honest
+            // answer left: the alternative this replaced was `entry?.prepared`, which would have started a
+            // kernel with `undefined` as its work — a carrier running nothing, reported as executing.
+            throw new ProxyControlProtocolError('invalid_state', 'Activation succeeded but its entry vanished.');
+          }
           // Only a transition into `executing` starts a kernel. A repeat activation is the same request
           // arriving twice; starting a second kernel for it would fork the carrier this proxy exists to own.
           if (before?.state !== 'executing') {
-            await host.start({ key, prepared: entry?.prepared });
+            await host.start({ key, prepared: entry.prepared });
           }
-          return { state: 'executing', committedThroughProviderSeq: entry?.committedThroughProviderSeq ?? 0 };
+          return { state: 'executing', committedThroughProviderSeq: entry.committedThroughProviderSeq };
         },
       },
     ],

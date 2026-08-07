@@ -2,9 +2,13 @@ import { isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
 
+import { nonEmptyStringSchema } from '../infra/identifiers.js';
+import { jsonValueSchema } from '../infra/json-value.js';
+import { providerBindingEnvelopeSchema } from '../infra/provider-binding-envelope.js';
 import {
   providerArtifactHandleEventBodySchema,
   providerContinuityEventBodySchema,
+  providerRequestSchema,
   providerSuspendedEventBodySchema,
   providerTerminalEventBodySchema,
 } from '../providers/contract.js';
@@ -175,6 +179,37 @@ export const providerEventBodySchema = z.union([
 ]);
 
 const providerEventSeqSchema = z.number().int().positive().safe();
+
+/**
+ * The prepared operation, exactly as it crosses into the proxy process.
+ *
+ * Data only, and strictly so. The plan's rule is that "executable closures, sessions, signals, and coordinator
+ * callbacks do not" cross — and none of them can, because every field here is a value the proxy re-derives
+ * execution from rather than a handle it borrows. The proxy rebuilds the bound provider from `binding`, opens
+ * its own app-server host, and runs the kernel itself; nothing in this envelope reaches back into the
+ * coordinator.
+ *
+ * `protectedEnv` carries minted child-principal secrets. It travels no further than the same authenticated
+ * unix-domain control socket every other method uses, to a role process this coordinator spawned, and it is
+ * exactly the environment that process would otherwise receive at spawn — so this widens no trust boundary.
+ * It is kept separate from `baseEnv` so a future audit surface can redact one without the other.
+ */
+export const proxyPreparedAppServerOperationSchema = z
+  .object({
+    version: z.literal(1),
+    provider: nonEmptyStringSchema,
+    binding: providerBindingEnvelopeSchema,
+    request: providerRequestSchema,
+    /** Provider-opaque continuity, `null` when the session has none rather than absent, so "no snapshot" is
+     *  a value the proxy can act on rather than a field it has to guess the meaning of. */
+    persistedContinuity: jsonValueSchema.nullable(),
+    baseEnv: z.record(z.string()),
+    protectedEnv: z.record(z.string()),
+    platform: nonEmptyStringSchema,
+  })
+  .strict();
+
+export type ProxyPreparedAppServerOperation = z.infer<typeof proxyPreparedAppServerOperationSchema>;
 
 /**
  * `provider.event.v1`'s request: the proxy, over the live control connection it otherwise only answers on,

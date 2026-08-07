@@ -67,7 +67,7 @@ function frameBytes(event: ReplayEvent): number {
   return Buffer.byteLength(event.frame, 'utf8');
 }
 
-export type OperationLedgerEntry = Readonly<{
+export type OperationLedgerEntry<Prepared = unknown> = Readonly<{
   key: ProviderOperationKey;
   state: ProviderOperationState;
   reservationId: string;
@@ -79,7 +79,7 @@ export type OperationLedgerEntry = Readonly<{
    * actually reserved rather than with activate's own request payload — a second map keyed the same way
    * would drift the first time one side is updated without the other.
    */
-  prepared: unknown;
+  prepared: Prepared;
   /**
    * The guardian's receipt for the staged provider root. Null until prepare's staging completes, since
    * capacity is checked — and the entry created — before that root is ever staged. Activate compares a
@@ -95,25 +95,25 @@ export type OperationLedgerEntry = Readonly<{
  * A typed capacity refusal. It is retryable and deliberately writes nothing: admission stays with the
  * coordinator, so the proxy reports that it cannot take the work rather than queueing it.
  */
-export type PrepareResult =
-  | Readonly<{ kind: 'reserved'; entry: OperationLedgerEntry }>
+export type PrepareResult<Prepared = unknown> =
+  | Readonly<{ kind: 'reserved'; entry: OperationLedgerEntry<Prepared> }>
   | Readonly<{ kind: 'capacity'; retryable: true; reason: 'operation-ledgers' | 'replay-bytes' }>;
 
-export interface OperationLedger {
+export interface OperationLedger<Prepared = unknown> {
   prepare(input: {
     key: ProviderOperationKey;
     reservationId: string;
     activationNonce: string;
-    prepared: unknown;
+    prepared: Prepared;
     nowMs: number;
-  }): PrepareResult;
+  }): PrepareResult<Prepared>;
   /**
    * Attaches the guardian's staging receipt once prepare's async staging completes. A separate step because
    * capacity must be checked — and the entry created — before an operation is ever staged; folding the
    * receipt into `prepare`'s input would mean staging every reservation before knowing it will be admitted.
    */
   recordContainmentReceipt(key: ProviderOperationKey, jointContainmentReceipt: string): void;
-  renew(key: ProviderOperationKey, reservationId: string, nowMs: number): OperationLedgerEntry;
+  renew(key: ProviderOperationKey, reservationId: string, nowMs: number): OperationLedgerEntry<Prepared>;
   activate(key: ProviderOperationKey, reservationId: string, activationNonce: string, nowMs: number): void;
   transition(key: ProviderOperationKey, next: ProviderOperationState): void;
   /** Buffers one provider event, returning whether the producer must pause before sending more. */
@@ -129,7 +129,7 @@ export interface OperationLedger {
    * risks drifting from the exact floor `recordEvent` enforces.
    */
   nextProviderSeq(key: ProviderOperationKey): number;
-  get(key: ProviderOperationKey): OperationLedgerEntry | null;
+  get(key: ProviderOperationKey): OperationLedgerEntry<Prepared> | null;
   size(): number;
   /**
    * Every operation this ledger currently holds, in no particular order. Used to resume draining every
@@ -138,13 +138,13 @@ export interface OperationLedger {
   keys(): readonly ProviderOperationKey[];
 }
 
-type MutableEntry = {
+type MutableEntry<Prepared> = {
   key: ProviderOperationKey;
   state: ProviderOperationState;
   reservationId: string;
   activationNonce: string;
   leaseExpiresAtMs: number;
-  prepared: unknown;
+  prepared: Prepared;
   jointContainmentReceipt: string | null;
   committedThroughProviderSeq: number;
   buffered: ReplayEvent[];
@@ -156,7 +156,7 @@ function keyOf(key: ProviderOperationKey): string {
   return `${key.jobId}\u0000${key.operationId}`;
 }
 
-function snapshot(entry: MutableEntry): OperationLedgerEntry {
+function snapshot<Prepared>(entry: MutableEntry<Prepared>): OperationLedgerEntry<Prepared> {
   return Object.freeze({
     key: entry.key,
     state: entry.state,
@@ -176,7 +176,7 @@ function snapshot(entry: MutableEntry): OperationLedgerEntry {
  * activation. Duplicating this check per call site is exactly how one of them could drift — e.g. keep
  * honouring a lease the other has already deemed expired — so both `renew` and `activate` route through it.
  */
-function requireLeaseCurrent(entry: MutableEntry, nowMs: number): void {
+function requireLeaseCurrent(entry: MutableEntry<unknown>, nowMs: number): void {
   if (entry.state === 'pending-recovery' || nowMs >= entry.leaseExpiresAtMs) {
     // An expired reservation forbids the action but stays queryable, so control can still cancel exactly
     // this reservation rather than losing track of what it authorized.
@@ -185,11 +185,11 @@ function requireLeaseCurrent(entry: MutableEntry, nowMs: number): void {
   }
 }
 
-export function createOperationLedger(): OperationLedger {
-  const entries = new Map<string, MutableEntry>();
+export function createOperationLedger<Prepared = unknown>(): OperationLedger<Prepared> {
+  const entries = new Map<string, MutableEntry<Prepared>>();
   let proxyBufferedBytes = 0;
 
-  const require = (key: ProviderOperationKey): MutableEntry => {
+  const require = (key: ProviderOperationKey): MutableEntry<Prepared> => {
     const entry = entries.get(keyOf(key));
     if (entry === undefined) {
       throw new LedgerError('operation_not_found', `No ledger entry for ${key.jobId}/${key.operationId}.`);
@@ -200,13 +200,13 @@ export function createOperationLedger(): OperationLedger {
   // Both the per-operation ceilings and the proxy-wide one can trip a pause; recomputed identically wherever
   // the buffer changes, since `recordEvent` and `acknowledge` are the two places it can cross a bound in
   // either direction.
-  const bufferAtCapacity = (entry: MutableEntry): boolean =>
+  const bufferAtCapacity = (entry: MutableEntry<Prepared>): boolean =>
     entry.buffered.length >= MAX_PROVIDER_REPLAY_EVENTS ||
     entry.bufferedBytes >= MAX_PROVIDER_REPLAY_BYTES ||
     proxyBufferedBytes >= MAX_PROXY_REPLAY_BYTES;
 
   return {
-    prepare({ key, reservationId, activationNonce, prepared, nowMs }): PrepareResult {
+    prepare({ key, reservationId, activationNonce, prepared, nowMs }): PrepareResult<Prepared> {
       const existing = entries.get(keyOf(key));
       if (existing !== undefined) {
         // A repeat of the same prepare is the same request arriving twice — a dropped reply, a retry. It
@@ -222,7 +222,7 @@ export function createOperationLedger(): OperationLedger {
       if (proxyBufferedBytes >= MAX_PROXY_REPLAY_BYTES) {
         return { kind: 'capacity', retryable: true, reason: 'replay-bytes' };
       }
-      const entry: MutableEntry = {
+      const entry: MutableEntry<Prepared> = {
         key,
         state: 'pending-activation',
         reservationId,
@@ -244,7 +244,7 @@ export function createOperationLedger(): OperationLedger {
       entry.jointContainmentReceipt = jointContainmentReceipt;
     },
 
-    renew(key, reservationId, nowMs): OperationLedgerEntry {
+    renew(key, reservationId, nowMs): OperationLedgerEntry<Prepared> {
       const entry = require(key);
       if (entry.reservationId !== reservationId) {
         throw new LedgerError('reservation_mismatch', 'Renewal presented a different reservation.');
@@ -341,7 +341,7 @@ export function createOperationLedger(): OperationLedger {
       return (last?.providerSeq ?? entry.committedThroughProviderSeq) + 1;
     },
 
-    get(key): OperationLedgerEntry | null {
+    get(key): OperationLedgerEntry<Prepared> | null {
       const entry = entries.get(keyOf(key));
       return entry === undefined ? null : snapshot(entry);
     },

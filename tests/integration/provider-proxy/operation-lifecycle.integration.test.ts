@@ -13,7 +13,11 @@ import {
   MAX_PROVIDER_REPLAY_EVENTS,
 } from '#src/provider-proxy/ledger.js';
 import { PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
-import { PROXY_CONTROL_RPC_TIMEOUT_MS, PROXY_STATUS_RPC_TIMEOUT_MS } from '#src/provider-proxy/protocol.js';
+import {
+  PROXY_CONTROL_RPC_TIMEOUT_MS,
+  PROXY_STATUS_RPC_TIMEOUT_MS,
+  type ProxyPreparedAppServerOperation,
+} from '#src/provider-proxy/protocol.js';
 import { createProxy, type SemanticOperationHost } from '#src/provider-proxy/proxy.js';
 
 const NONCE = 'a'.repeat(64);
@@ -90,7 +94,7 @@ async function startProxy(
 
   let elapsed = 0n;
   const clock = createMonotonicClock(Symbol('proxy-lifecycle'), { readMilliseconds: () => elapsed });
-  const started: Array<Started & { prepared: unknown }> = [];
+  const started: Array<Started & { prepared: ProxyPreparedAppServerOperation }> = [];
   const stopped: Array<Started & { cause: string }> = [];
   const host: SemanticOperationHost = {
     // Recording `prepared` (not just `key`) is what exposes a host that starts with the wrong payload: the
@@ -167,13 +171,36 @@ async function startProxy(
 
 type ProxyUnderTest = Awaited<ReturnType<typeof startProxy>>;
 
+/**
+ * One valid prepared-operation envelope. Every field is required and strictly typed, so a shape that merely
+ * "looks like" an operation no longer reaches the ledger — which is the point: a reservation committed
+ * against a malformed envelope is one nothing could ever activate.
+ */
+const PREPARED: ProxyPreparedAppServerOperation = {
+  version: 1,
+  provider: 'codex',
+  binding: { provider: 'codex', kind: 'account', binding: { account: 'acct-1' } },
+  request: {
+    action: 'exec',
+    sessionId: 'session-1',
+    prompt: 'do the thing',
+    cwd: '/project',
+    bypassPermissions: false,
+    coralEnv: {},
+  },
+  persistedContinuity: null,
+  baseEnv: { PATH: '/usr/bin' },
+  protectedEnv: {},
+  platform: 'linux',
+};
+
 async function prepare(
   set: ProxyUnderTest,
   operation = set.operationFor(),
 ): Promise<{ operation: ReturnType<ProxyUnderTest['operationFor']>; reserved: Record<string, string> }> {
   const reserved = (await set.control.call(
     'operation.prepare.v1',
-    { operation, hostFingerprint: FINGERPRINT, prepared: { kind: 'app-server', turns: [] } },
+    { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED },
     5_000,
   )) as Record<string, string>;
   return { operation, reserved };
@@ -241,9 +268,7 @@ describe('provider-proxy operation lifecycle', () => {
 
     expect(await activate(set, operation, reserved)).toEqual({ state: 'executing', committedThroughProviderSeq: 0 });
     // The host must receive the envelope prepare validated, not activate's own request params.
-    expect(set.started).toEqual([
-      { jobId: operation.jobId, operationId: operation.operationId, prepared: { kind: 'app-server', turns: [] } },
-    ]);
+    expect(set.started).toEqual([{ jobId: operation.jobId, operationId: operation.operationId, prepared: PREPARED }]);
   });
 
   it('treats a repeated activation as the same request, not a second kernel', async () => {
@@ -281,7 +306,7 @@ describe('provider-proxy operation lifecycle', () => {
     await expect(
       set.control.call(
         'operation.prepare.v1',
-        { operation: set.operationFor(), hostFingerprint: 'c'.repeat(64), prepared: {} },
+        { operation: set.operationFor(), hostFingerprint: 'c'.repeat(64), prepared: PREPARED },
         5_000,
       ),
     ).rejects.toThrow(/different host fingerprint/u);
