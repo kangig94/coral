@@ -256,7 +256,15 @@ describe('active-store-selection locking', () => {
             openStore,
           },
         }),
-      ).rejects.toThrow(/published durably/u);
+      ).rejects.toMatchObject({
+        code: 'active_store_coordination_invalid',
+        remediation: expect.stringContaining('Verify that'),
+        context: expect.objectContaining({
+          record: failedRecord === 'transitionFile' ? 'transition' : 'selection',
+          failureCode: 'record_unavailable',
+          cause: expect.stringContaining('published durably'),
+        }),
+      });
 
       expect(classifyStore).not.toHaveBeenCalled();
       expect(openStore).not.toHaveBeenCalled();
@@ -584,6 +592,62 @@ describe('active-store-selection locking', () => {
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
   });
 
+  it('should surface record_changed when the transition file changes identity before durable clear', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    publish(runtime, 'transitionFile', encodeActiveStoreTransition(supersededTransition(currentSelection)));
+    const renameSync = runtime.storage.renameSync.bind(runtime.storage);
+    const retainedRoot = retainedTransitionRoot(runtime);
+    let retentionCommitted = false;
+    runtime.storage.renameSync = (oldPath, newPath) => {
+      renameSync(oldPath, newPath);
+      // `acquireGenerationAdoptionLock` also renames as part of its own directory-lock protocol, so the gate
+      // must be the retained-evidence commit specifically, not "any rename has happened yet".
+      if (newPath.startsWith(retainedRoot)) {
+        retentionCommitted = true;
+      }
+    };
+    const stat = runtime.storage.statSync.bind(runtime.storage);
+    vi.spyOn(runtime.storage, 'statSync').mockImplementation((target, options) => {
+      const result = stat(target, options);
+      // Retention captures the transition file's identity through an open descriptor before this point, so
+      // poisoning only starts once its evidence copy is committed — leaving `clearActiveStoreTransition`'s
+      // own recheck as the sole remaining bigint stat on this path, simulating the file changing identity
+      // between retention and durable clear.
+      if (retentionCommitted && target === paths.transitionFile && options?.bigint === true) {
+        return {
+          ...result,
+          mtimeNs: (result as { mtimeNs: bigint }).mtimeNs + 1n,
+          isDirectory: () => result.isDirectory(),
+          isFile: () => result.isFile(),
+        };
+      }
+      return result;
+    });
+
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat: currentCoralStoreFormat(),
+        currentSelection,
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'active_store_coordination_invalid',
+      context: expect.objectContaining({
+        record: 'transition',
+        failureCode: 'record_changed',
+        cause: 'Active-store transition changed before durable clear.',
+      }),
+    });
+    expect(readdirSync(retainedTransitionRoot(runtime))).toHaveLength(1);
+  });
+
   it('should await the operator recovery lease before opening the prepared store', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
@@ -685,5 +749,109 @@ describe('active-store-selection locking', () => {
     ).rejects.toThrow('requires a real filesystem store path');
 
     expect(mkdirSync).not.toHaveBeenCalled();
+  });
+
+  it('should refuse via the documented code when a freshly created coordination directory is unsafe', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    const lstatSync = runtime.storage.lstatSync.bind(runtime.storage);
+    let coordinationRootLstatCalls = 0;
+    runtime.storage.lstatSync = (path) => {
+      if (path === paths.coordinationRoot) {
+        coordinationRootLstatCalls += 1;
+        // Calls 1-2 are the read-side checks against the not-yet-created directory (both ENOENT). Call 3 is
+        // `ensureActiveStoreCoordinationDirectory`'s post-mkdir safety check, which this poisons.
+        if (coordinationRootLstatCalls === 3) {
+          const real = lstatSync(path);
+          return { ...real, isDirectory: () => true, isSymbolicLink: () => true };
+        }
+      }
+      return lstatSync(path);
+    };
+
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat: currentCoralStoreFormat(),
+        currentSelection,
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'active_store_coordination_invalid',
+      remediation: expect.stringContaining('as an ordinary canonical directory'),
+      context: expect.objectContaining({ record: 'transition', failureCode: 'coordination_directory_link' }),
+    });
+  });
+
+  it('should refuse via the documented code when the coordination directory fails its durable-write recheck', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    mkdirSync(paths.coordinationRoot, { recursive: true, mode: 0o700 });
+    chmodSync(paths.coordinationRoot, 0o700);
+    const realpathSync = runtime.storage.realpathSync.bind(runtime.storage);
+    let coordinationRootRealpathCalls = 0;
+    runtime.storage.realpathSync = (path) => {
+      if (path === paths.coordinationRoot) {
+        coordinationRootRealpathCalls += 1;
+        // Calls 1-2 are the read-side checks, which see the genuinely canonical directory. Call 3 is
+        // `ensureActiveStoreCoordinationDirectory`'s own recheck, which this poisons.
+        if (coordinationRootRealpathCalls === 3) {
+          return `${path}-mismatch`;
+        }
+      }
+      return realpathSync(path);
+    };
+
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat: currentCoralStoreFormat(),
+        currentSelection,
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'active_store_coordination_invalid',
+      remediation: expect.stringContaining('as an ordinary canonical directory'),
+      context: expect.objectContaining({ record: 'transition', failureCode: 'coordination_directory_not_canonical' }),
+    });
+  });
+
+  it('should refuse via the documented code when the coordination directory mode cannot be restored', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    mkdirSync(paths.coordinationRoot, { recursive: true, mode: 0o755 });
+    chmodSync(paths.coordinationRoot, 0o755);
+    const chmodSyncPort = runtime.storage.chmodSync.bind(runtime.storage);
+    runtime.storage.chmodSync = (path, mode) => {
+      // Simulate a chmod that reports success but never takes effect (e.g. a filesystem that ignores
+      // permission bits): `ensureActiveStoreCoordinationDirectory` must catch the drift rather than trust it.
+      if (path === paths.coordinationRoot) return;
+      chmodSyncPort(path, mode);
+    };
+
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat: currentCoralStoreFormat(),
+        currentSelection,
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'active_store_coordination_invalid',
+      remediation: expect.stringContaining('as an ordinary canonical directory'),
+      context: expect.objectContaining({ record: 'transition', failureCode: 'coordination_directory_not_canonical' }),
+    });
   });
 });

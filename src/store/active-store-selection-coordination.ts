@@ -7,6 +7,7 @@ import type { StorageBigIntStat } from '../infra/port-types.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
+  ActiveStoreCoordinationWriteError,
   classifyActiveStoreSelection,
   clearActiveStoreTransition,
   encodeActiveStoreSelection,
@@ -371,7 +372,7 @@ function recoverActiveStoreTransition(
               newerStoreEvidence: evidence,
             })
           : transitionWithNewerStoreEvidence(transition, evidence);
-      publishActiveStoreTransition(runtime, transition);
+      publishTransitionOrRefuse(runtime, transition);
     }
 
     if (transition?.evidence.kind === 'valid-target-invalid' && options.dependencies.kind === 'startup') {
@@ -449,10 +450,40 @@ function refuseActiveStoreCoordination(
   });
 }
 
-function transitionClearFailureCode(error: unknown): ActiveStoreCoordinationFailureCode {
-  return error instanceof Error && error.message === 'Active-store transition changed before durable clear.'
-    ? 'record_changed'
-    : 'record_unavailable';
+// Single source of truth for turning a thrown coordination-directory/record write failure into its documented
+// failure code: read the typed `.code` off `ActiveStoreCoordinationWriteError` rather than matching on
+// `error.message`, so a wording change to a thrown message can never silently change which code is reported.
+function coordinationWriteFailureCode(error: unknown): ActiveStoreCoordinationFailureCode {
+  return error instanceof ActiveStoreCoordinationWriteError ? error.code : 'record_unavailable';
+}
+
+// Coordination-directory creation and durable-write failures originate deep in active-store-selection.ts
+// (`ensureActiveStoreCoordinationDirectory` / `publishActiveStoreRecord`); without this translation they would
+// bubble up as unremediated `internal` errors instead of the documented `active_store_coordination_invalid` code.
+function publishSelectionOrRefuse(runtime: Runtime, selection: ActiveStoreSelection): void {
+  try {
+    publishActiveStoreSelection(runtime, selection);
+  } catch (error: unknown) {
+    refuseActiveStoreCoordination(
+      runtime,
+      'selection',
+      coordinationWriteFailureCode(error),
+      error instanceof Error ? error.message : 'Active-store selection publish failed with a non-Error value.',
+    );
+  }
+}
+
+function publishTransitionOrRefuse(runtime: Runtime, transition: ActiveStoreTransition): void {
+  try {
+    publishActiveStoreTransition(runtime, transition);
+  } catch (error: unknown) {
+    refuseActiveStoreCoordination(
+      runtime,
+      'transition',
+      coordinationWriteFailureCode(error),
+      error instanceof Error ? error.message : 'Active-store transition publish failed with a non-Error value.',
+    );
+  }
 }
 
 function supersedeActiveStoreTransition(
@@ -473,7 +504,7 @@ function supersedeActiveStoreTransition(
       refuseActiveStoreCoordination(
         runtime,
         'transition',
-        transitionClearFailureCode(error),
+        coordinationWriteFailureCode(error),
         error instanceof Error ? error.message : 'Active-store transition clear failed with a non-Error value.',
       );
     }
@@ -541,7 +572,7 @@ export async function coordinateActiveStoreSelection(
     const transitionRead = readActiveStoreTransition(runtime);
     if (transitionRead.kind === 'valid') {
       if (transitionMatchesCurrent(transitionRead.transition, options.currentSelection)) {
-        publishActiveStoreSelection(runtime, options.currentSelection);
+        publishSelectionOrRefuse(runtime, options.currentSelection);
         return {
           kind: 'opened',
           db: await recoverActiveStoreSelection(runtime, authority, options, transitionRead.transition, adoption),
@@ -564,8 +595,8 @@ export async function coordinateActiveStoreSelection(
     }
     if (selection.kind === 'absent' || selection.kind === 'malformed') {
       const transition = transitionForSelectionEvidence(runtime, options.currentSelection, selection);
-      publishActiveStoreTransition(runtime, transition);
-      publishActiveStoreSelection(runtime, options.currentSelection);
+      publishTransitionOrRefuse(runtime, transition);
+      publishSelectionOrRefuse(runtime, options.currentSelection);
       return {
         kind: 'opened',
         db: await recoverActiveStoreSelection(runtime, authority, options, transition, adoption),
@@ -588,8 +619,8 @@ export async function coordinateActiveStoreSelection(
         selection,
         validation.evidence,
       );
-      publishActiveStoreTransition(runtime, transition);
-      publishActiveStoreSelection(runtime, options.currentSelection);
+      publishTransitionOrRefuse(runtime, transition);
+      publishSelectionOrRefuse(runtime, options.currentSelection);
       return {
         kind: 'opened',
         db: await recoverActiveStoreSelection(runtime, authority, options, transition, adoption),
@@ -597,7 +628,7 @@ export async function coordinateActiveStoreSelection(
     }
 
     if (relation !== 'exact') {
-      publishActiveStoreSelection(runtime, options.currentSelection);
+      publishSelectionOrRefuse(runtime, options.currentSelection);
     }
     return { kind: 'opened', db: await recoverActiveStoreSelection(runtime, authority, options, null, adoption) };
   } finally {

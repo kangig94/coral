@@ -366,13 +366,19 @@ describe('active-store-selection crash cuts', () => {
     }));
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      // A publish that cannot complete is refused under the documented coordination code, not raised as a
+      // bare internal error — and the write failure that caused it stays attached, so the refusal names
+      // which cut fired rather than only that one did.
       await expect(
         coordinateActiveStoreSelection(runtime, authority, {
           storeFormat: currentCoralStoreFormat(),
           currentSelection,
           dependencies: successfulDependencies({ classifyStore, openStore: vi.fn() }),
         }),
-      ).rejects.toThrow('crash:pre-intent-publication');
+      ).rejects.toMatchObject({
+        code: 'active_store_coordination_invalid',
+        context: { record: 'transition', failureCode: 'record_unavailable', cause: 'crash:pre-intent-publication' },
+      });
       expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
     }
     expect(classifyStore).toHaveBeenCalledTimes(2);
@@ -404,7 +410,10 @@ describe('active-store-selection crash cuts', () => {
           openStore: vi.fn(),
         }),
       }),
-    ).rejects.toThrow('crash:transitionFile:rename');
+    ).rejects.toMatchObject({
+      code: 'active_store_coordination_invalid',
+      context: { record: 'transition', failureCode: 'record_unavailable', cause: 'crash:transitionFile:rename' },
+    });
     restore();
 
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'valid', transition });

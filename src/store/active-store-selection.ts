@@ -4,7 +4,8 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 
 import { strictBundleManifestSchema, type StrictBundleManifest } from '../infra/bundle-manifest.js';
-import type { InvalidTargetEvidence, InvalidTargetFailure } from '../infra/handoff-target.js';
+import { isNoEntryError } from '../infra/fs-errors.js';
+import { manifestsMatch, type InvalidTargetEvidence, type InvalidTargetFailure } from '../infra/handoff-target.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import { compareProductVersions } from '../infra/product-version.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -255,14 +256,6 @@ const activeStoreTransitionEvidenceSchema = z.union([
   currentSelectionNewerStoreEvidenceSchema,
 ]);
 
-const STRICT_MANIFEST_FIELDS = Object.keys(strictBundleManifestSchema.shape) as ReadonlyArray<
-  keyof StrictBundleManifest
->;
-
-function manifestsMatch(left: StrictBundleManifest, right: StrictBundleManifest): boolean {
-  return STRICT_MANIFEST_FIELDS.every((field) => left[field] === right[field]);
-}
-
 export function classifyActiveStoreSelection(
   selected: ActiveStoreSelection,
   current: ActiveStoreSelection,
@@ -331,6 +324,21 @@ export class ActiveStoreTransitionDecodeError extends Error {
   constructor(code: ActiveStoreTransitionFailureCode) {
     super(code);
     this.name = 'ActiveStoreTransitionDecodeError';
+    this.code = code;
+  }
+}
+
+/**
+ * Carries the specific coordination-directory or record-publish failure across the module boundary so
+ * `active-store-selection-coordination.ts` can route it through `refuseActiveStoreCoordination` with the
+ * documented `active_store_coordination_invalid` code instead of an unremediated `internal` error.
+ */
+export class ActiveStoreCoordinationWriteError extends Error {
+  readonly code: ActiveStoreRecordReadFailureCode;
+
+  constructor(code: ActiveStoreRecordReadFailureCode, message: string) {
+    super(message);
+    this.name = 'ActiveStoreCoordinationWriteError';
     this.code = code;
   }
 }
@@ -424,10 +432,6 @@ export function encodeActiveStoreTransition(transition: ActiveStoreTransition): 
   return bytes;
 }
 
-function isMissingError(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT';
-}
-
 function sameIdentity(left: StorageBigIntStat, right: StorageBigIntStat): boolean {
   return (
     left.dev === right.dev &&
@@ -443,30 +447,62 @@ function ensureActiveStoreCoordinationDirectory(runtime: Runtime): void {
   if (!runtime.storage.existsSync(coordinationRoot)) {
     runtime.storage.mkdirSync(coordinationRoot, { recursive: true });
     const created = runtime.storage.lstatSync(coordinationRoot);
-    if (!created.isDirectory() || created.isSymbolicLink()) {
-      throw new Error('Active-store coordination directory could not be created safely.');
+    if (created.isSymbolicLink()) {
+      throw new ActiveStoreCoordinationWriteError(
+        'coordination_directory_link',
+        'Active-store coordination directory could not be created safely: path is a symbolic link.',
+      );
+    }
+    if (!created.isDirectory()) {
+      throw new ActiveStoreCoordinationWriteError(
+        'coordination_directory_not_regular',
+        'Active-store coordination directory could not be created safely: path is not a directory.',
+      );
     }
     runtime.storage.chmodSync(coordinationRoot, 0o700);
   }
   const link = runtime.storage.lstatSync(coordinationRoot);
-  if (
-    !link.isDirectory() ||
-    link.isSymbolicLink() ||
-    runtime.storage.realpathSync(coordinationRoot) !== coordinationRoot
-  ) {
-    throw new Error('Active-store coordination directory is not private and canonical.');
+  if (link.isSymbolicLink()) {
+    throw new ActiveStoreCoordinationWriteError(
+      'coordination_directory_link',
+      'Active-store coordination directory is a symbolic link.',
+    );
+  }
+  if (!link.isDirectory()) {
+    throw new ActiveStoreCoordinationWriteError(
+      'coordination_directory_not_regular',
+      'Active-store coordination directory is not a directory.',
+    );
+  }
+  if (runtime.storage.realpathSync(coordinationRoot) !== coordinationRoot) {
+    throw new ActiveStoreCoordinationWriteError(
+      'coordination_directory_not_canonical',
+      'Active-store coordination directory is not canonical.',
+    );
   }
   runtime.storage.chmodSync(coordinationRoot, 0o700);
   const stat = runtime.storage.statSync(coordinationRoot, { bigint: true });
-  if (!stat.isDirectory() || (stat.mode & PERMISSION_BITS) !== 0o700n) {
-    throw new Error('Active-store coordination directory is not private and canonical.');
+  if (!stat.isDirectory()) {
+    throw new ActiveStoreCoordinationWriteError(
+      'coordination_directory_not_regular',
+      'Active-store coordination directory is not a directory.',
+    );
+  }
+  // Unix permission bits are not meaningful on win32 (chmod there only toggles the read-only attribute), so the
+  // private-mode assertion is platform-gated, mirroring `assertPrivateDirectory` in backend-store-reset.ts.
+  // Windows is not a supported Coral platform; this guard is defensive only.
+  if (runtime.env.platform() !== 'win32' && (stat.mode & PERMISSION_BITS) !== 0o700n) {
+    throw new ActiveStoreCoordinationWriteError(
+      'coordination_directory_not_canonical',
+      'Active-store coordination directory is not private (mode 0700).',
+    );
   }
 }
 
 function publishActiveStoreRecord(runtime: Runtime, path: string, bytes: Uint8Array, record: string): void {
   ensureActiveStoreCoordinationDirectory(runtime);
   if (!runtime.storage.writeAtomicDurableSync(path, bytes, { mode: 0o600 })) {
-    throw new Error(`${record} could not be published durably.`);
+    throw new ActiveStoreCoordinationWriteError('record_unavailable', `${record} could not be published durably.`);
   }
 }
 
@@ -501,11 +537,17 @@ export function clearActiveStoreTransition(runtime: Runtime, expectedIdentity?: 
     !stat.isFile() ||
     (expectedIdentity !== undefined && !sameIdentity(stat, expectedIdentity))
   ) {
-    throw new Error('Active-store transition changed before durable clear.');
+    throw new ActiveStoreCoordinationWriteError(
+      'record_changed',
+      'Active-store transition changed before durable clear.',
+    );
   }
   runtime.storage.unlinkSync(paths.transitionFile);
   if (!runtime.storage.syncDirectoryDurableSync(paths.coordinationRoot)) {
-    throw new Error('Active-store transition clear could not be synchronized durably.');
+    throw new ActiveStoreCoordinationWriteError(
+      'record_unavailable',
+      'Active-store transition clear could not be synchronized durably.',
+    );
   }
 }
 
@@ -531,7 +573,7 @@ function inspectCoordinationDirectory(
   try {
     pathStat = storage.lstatSync(coordinationRoot);
   } catch (error: unknown) {
-    return isMissingError(error)
+    return isNoEntryError(error)
       ? { kind: 'absent' }
       : { kind: 'rejected', failureCode: 'coordination_directory_unavailable' };
   }
@@ -637,7 +679,7 @@ function readBoundedRecord(
   try {
     pathKind = storage.lstatSync(path);
   } catch (error: unknown) {
-    return isMissingError(error) ? { kind: 'absent' } : { kind: 'rejected', failureCode: 'record_unavailable' };
+    return isNoEntryError(error) ? { kind: 'absent' } : { kind: 'rejected', failureCode: 'record_unavailable' };
   }
   if (pathKind.isSymbolicLink()) return { kind: 'rejected', failureCode: 'record_link' };
   if (!pathKind.isFile()) return { kind: 'rejected', failureCode: 'record_not_regular' };
