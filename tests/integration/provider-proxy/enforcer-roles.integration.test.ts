@@ -1066,6 +1066,23 @@ describe('provider-proxy guardian and reaper', () => {
         5_000,
       ),
     ).rejects.toThrow(/did not record the reported provider root/u);
+
+    // And no receipt exists to be presented afterwards. The refusal above says the call failed; this says the
+    // guardian did not first mint a containment receipt and then throw — which is the ordering the mint's own
+    // signature now enforces, since it cannot run without the acknowledgement this reply failed to produce.
+    const operation = bare.operationFor();
+    await expect(
+      bare.control.call(
+        'guardian.operation-activate.v1',
+        {
+          operation,
+          reservation: randomUUID(),
+          providerRoot: ROOT,
+          jointContainmentReceipt: 'receipt-1',
+        },
+        5_000,
+      ),
+    ).rejects.toThrow();
   });
 
   it('refuses guardian.operation-activate.v1 when the reaper does not confirm it still holds the root', async () => {

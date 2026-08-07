@@ -71,6 +71,54 @@ const openParamsSchema = z
 const reaperAckSchema = z.object({ state: z.string() }).passthrough();
 
 /**
+ * Evidence that the reaper recorded one exact provider root, carrying the root it is evidence about.
+ *
+ * The joint containment receipt may be minted only after both authorities have recorded the same identity —
+ * a rule that was true but positional, held by the order of statements in one handler and by a comment saying
+ * so. This makes it structural: the value below cannot be constructed except by `acknowledgeReaperRoot`,
+ * which is the only code that checks the reaper's reply, and `mintJointContainmentReceipt` will not mint
+ * without one. Reordering the two calls stops compiling rather than silently issuing a receipt for a root the
+ * reaper never confirmed.
+ *
+ * It carries `root` so that "the same identity" is structural too: everything downstream reads the root out
+ * of the acknowledgement rather than from a separately-held local that could drift from what was confirmed.
+ *
+ * Scope, stated plainly: this constrains the guardian's own mint, which is the only authority that issues
+ * this receipt. It cannot stop another module from calling the exported schema's `.parse()` — a brand is a
+ * compile-time fiction and parse-as-constructor is what creates one. What it does close is the ordering, in
+ * the one place the ordering is decided.
+ */
+declare const reaperAcknowledged: unique symbol;
+type ReaperRootAcknowledgement = Readonly<{
+  /** Phantom: type-space only, never present at runtime, so this token costs nothing on the wire or in
+   *  memory. It exists to make the type unconstructible outside `acknowledgeReaperRoot` below. */
+  readonly [reaperAcknowledged]: true;
+  readonly root: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+}>;
+
+/** The one producer of a `ReaperRootAcknowledgement`, and the only place the reaper's reply is judged. */
+function acknowledgeReaperRoot(
+  reply: unknown,
+  root: Readonly<{ pid: number; processStartedAtSeconds: number }>,
+): ReaperRootAcknowledgement {
+  const result = reaperAckSchema.parse(reply);
+  if (result.state !== 'root-recorded') {
+    throw new ProxyControlProtocolError('invalid_state', 'The reaper did not record the reported provider root.');
+  }
+  return { root } as unknown as ReaperRootAcknowledgement;
+}
+
+/** The one place a joint containment receipt comes into existence, and it needs the reaper's acknowledgement
+ *  to do it. */
+function mintJointContainmentReceipt(
+  acknowledgement: ReaperRootAcknowledgement,
+  mintReceipt: () => string,
+): JointContainmentReceipt {
+  void acknowledgement;
+  return jointContainmentReceiptSchema.parse(mintReceipt());
+}
+
+/**
  * The caller names the guardian it believes it is tearing down. A disagreement means it is reasoning about
  * a different instance, which teardown must surface rather than silently act against this one.
  */
@@ -356,21 +404,16 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           // Forward the exact root; the joint receipt is only minted once both authorities ACK the same
           // identity, so neither can be talked into containing something the other never recorded. The
           // reaper is asked to record a root, not an operation — it has no operation vocabulary to forward.
-          const reaperResult = reaperAckSchema.parse(
+          const acknowledgement = acknowledgeReaperRoot(
             await options.reaperChannel.call(
               'reaper.register-provider-root.v1',
               { providerRoot: root },
               PROXY_CONTROL_RPC_TIMEOUT_MS,
             ),
+            root,
           );
-          if (reaperResult.state !== 'root-recorded') {
-            throw new ProxyControlProtocolError(
-              'invalid_state',
-              'The reaper did not record the reported provider root.',
-            );
-          }
           try {
-            armed.registerProviderRoot(root);
+            armed.registerProviderRoot(acknowledgement.root);
           } catch (error: unknown) {
             // The cap was already checked above, so reaching this is a defect rather than an expected race —
             // but `EnforcementError` is this module's internal vocabulary, not a protocol code, and it must
@@ -380,16 +423,16 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             }
             throw error;
           }
-          // Minted here and nowhere else, and only now — after the reaper acknowledged this same root above.
-          // The brand is created by the parse, so this expression is the guardian's authority to issue one;
-          // every other party can only have received it.
-          const jointContainmentReceipt = jointContainmentReceiptSchema.parse(mintReceipt());
+          // Minted here and nowhere else, and only from the reaper's acknowledgement — which is what makes
+          // "after both authorities recorded the same root" a thing the compiler checks rather than a thing
+          // this handler's statement order happens to arrange.
+          const jointContainmentReceipt = mintJointContainmentReceipt(acknowledgement, mintReceipt);
           staged.set(request.operation.operationId, {
             jointContainmentReceipt,
             reservation: request.reservation,
-            root,
+            root: acknowledgement.root,
           });
-          return { state: 'staged-contained', providerRoot: root, jointContainmentReceipt };
+          return { state: 'staged-contained', providerRoot: acknowledgement.root, jointContainmentReceipt };
         },
       },
     ],
