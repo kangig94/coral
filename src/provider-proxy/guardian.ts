@@ -19,9 +19,9 @@ import {
 } from './enforcement.js';
 import {
   createGrantRegistry,
-  grantSecretDigestSchema,
+  grantBindingFromCapsule,
   grantSecretSchema,
-  handoffOperationSetSchema,
+  guardianReaperHandoffInstallParamsSchema,
   type GrantBinding,
 } from './handoff-capsule.js';
 import {
@@ -30,21 +30,20 @@ import {
   assertNamedCoordinatorBuild,
   assertNamedProxyIdentity,
   assertNamedReaperIdentity,
+  assertNamedTeardownReserve,
   assertRecordedSetAgreement,
   canonicalUuidSchema,
   coordinatorIdentitySchema,
   guardianIdentitySchema,
   operationIdentitySchema,
+  providerRootSchema,
   proxyIdentitySchema,
   reaperIdentitySchema,
+  sameRecordedContainment,
   type ReaperIdentity,
 } from './protocol.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
-
-const providerRootSchema = z
-  .object({ pid: z.number().int().nonnegative(), processStartedAtSeconds: z.number().int().nonnegative() })
-  .strict();
 
 const registerProviderRootParamsSchema = z
   .object({
@@ -122,17 +121,6 @@ function assertNamedGuardianIdentity(
     throw new ProxyControlProtocolError('identity_mismatch', 'Teardown named a different guardian than this one.');
   }
 }
-
-const handoffInstallParamsSchema = z
-  .object({
-    grantId: canonicalUuidSchema,
-    secretSha256: grantSecretDigestSchema,
-    successor: coordinatorIdentitySchema,
-    operations: handoffOperationSetSchema,
-    orphanTimeoutMs: z.number().int().positive(),
-    teardownReserveMs: z.number().int().positive(),
-  })
-  .strict();
 
 /** No `operations` field: the set is bound at install and returned by redemption, never presented by a
  *  redeemer to be checked against — see `GrantRegistry.redeem`'s own doc for why. */
@@ -255,15 +243,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
    * budget a successor plans its attach against; the guardian supplies the rest from its own capsule so a
    * coordinator can never install a grant for a set it does not belong to.
    */
-  const setIdentity: GrantBinding = Object.freeze({
-    generation: capsule.generation,
-    flavor: capsule.flavor,
-    buildSetId: capsule.buildSetId,
-    hostFingerprint: capsule.hostFingerprint,
-    guardianInstanceId: capsule.guardianInstanceId,
-    reaperInstanceId: capsule.reaperInstanceId,
-    proxyInstanceId: capsule.proxyInstanceId,
-  });
+  const setIdentity: GrantBinding = grantBindingFromCapsule(capsule);
 
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
   const grants = createGrantRegistry(mintReceipt);
@@ -296,17 +276,9 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       {
         authority: 'active',
         handle: (params) => {
-          const request = handoffInstallParamsSchema.parse(params);
+          const request = guardianReaperHandoffInstallParamsSchema.parse(params);
           assertNamedCoordinatorBuild(request.successor, capsule);
-          // The reserve is derived from this build's own process constants, not chosen per grant. A caller
-          // naming a different one disagrees about arithmetic both sides compute, which is a mismatch to
-          // report rather than a value to accept.
-          if (request.teardownReserveMs !== PROXY_TEARDOWN_RESERVE_MS) {
-            throw new ProxyControlProtocolError(
-              'identity_mismatch',
-              `The named teardown reserve is not this build's ${PROXY_TEARDOWN_RESERVE_MS}ms.`,
-            );
-          }
+          assertNamedTeardownReserve(request.teardownReserveMs, PROXY_TEARDOWN_RESERVE_MS);
           return grants.install({
             grantId: request.grantId,
             secretSha256: request.secretSha256,
@@ -593,12 +565,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       if (recordedContainment !== null) {
         // Idempotent for the identical containment, a mismatch otherwise: revising it would silently move
         // what this guardian is holding, and only one proxy group was ever created for this set.
-        if (
-          recordedContainment.pid !== containment.pid ||
-          recordedContainment.processStartedAtSeconds !== containment.processStartedAtSeconds ||
-          recordedContainment.processGroupId !== containment.processGroupId ||
-          recordedContainment.containmentKind !== containment.containmentKind
-        ) {
+        if (!sameRecordedContainment(recordedContainment, containment)) {
           throw new ProxyControlProtocolError('identity_mismatch', 'This guardian already holds a containment.');
         }
         return;

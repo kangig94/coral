@@ -15,8 +15,8 @@ import { cloneSpec, ensureProviderServerHandle } from './recovery.js';
 import { ensureProviderProxySet, type ProviderProxySetAcquisitionConfig } from './proxy-set-acquisition.js';
 import { hostFingerprintFromSpec, hostKeyFromSpec, hostRefFromEntry, type ProviderHostEntry } from './state.js';
 import { AbortError, throwIfAborted } from '../../../runtime/abort.js';
-import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from '../provider-proxy-authority.js';
-import type { ProviderProxyOperationAuthority } from '../provider-proxy-operation-route.js';
+import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from '../provider-proxy/authority.js';
+import type { ProviderProxyOperationAuthority } from '../provider-proxy/operation-route.js';
 export type { ProviderHostEntry } from './state.js';
 
 export interface ProviderHostManager {

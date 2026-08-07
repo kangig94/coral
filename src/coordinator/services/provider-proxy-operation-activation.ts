@@ -25,9 +25,9 @@ import type { OperationStopControl } from './operation-registry.js';
  *
  * This module owns the orchestration only. It is deliberately not wired to a live proxy set: doing so needs
  * a caller that can resolve this job's guardian/proxy `ControlClient`s from its executable identity, and the
- * only production registry for a live set (`ProviderProxySetAuthority`, `coordinator/live/provider-proxy-
+ * only production registry for a live set (`ProviderProxySetAuthority`, `coordinator/live/provider-proxy/
  * authority.ts`) is written from coordinated shutdown's side on purpose — it exposes no raw RPC capability.
- * Building that connector is `src/coordinator/live/provider-proxy-acquisition-steps.ts`'s territory (W2.2),
+ * Building that connector is `src/coordinator/live/provider-proxy/acquisition-steps.ts`'s territory (W2.2),
  * not this file's.
  */
 

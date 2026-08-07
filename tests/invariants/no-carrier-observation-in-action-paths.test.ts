@@ -74,6 +74,20 @@ function matches(module: string, allowed: readonly string[]): boolean {
 }
 
 /**
+ * Runtime edges into `authority.module` from a source `permittedImporters` does not name. Filtered to
+ * `edge.runtime` for the same reason the reachability walk above is: a `import type` is erased before
+ * anything runs, so it can hand no verdict to anyone, and this function is the one place both the real check
+ * and its own mutation test call, so they cannot drift apart on that filter.
+ */
+function permittedImportViolations(edges: readonly ParsedImportEdge[], authority: ObservationAuthority): string[] {
+  return edges
+    .filter(
+      (edge) => edge.runtime && edge.target === authority.module && !matches(edge.source, authority.permittedImporters),
+    )
+    .map((edge) => `${edge.source} imports ${edge.specifier} (${edge.via}) from ${authority.module}`);
+}
+
+/**
  * Runtime edges only. A `import type` is erased before anything runs, so it can hand no verdict to anyone —
  * and following it would report the module graph rather than the capability. Without this the walk reports
  * `recovery/index.ts -> handoff.ts -> lifecycle.ts -> …`, a chain whose middle two hops are type-only.
@@ -166,13 +180,28 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
   it.each(OBSERVATION_AUTHORITIES.map((authority) => [authority.what, authority] as const))(
     '%s is imported only where it is permitted',
     (_what, authority) => {
-      const violations = IMPORT_EDGES.filter(
-        (edge) => edge.target === authority.module && !matches(edge.source, authority.permittedImporters),
-      ).map((edge) => `${edge.source} imports ${edge.specifier} (${edge.via}) from ${authority.module}`);
-
-      expect(violations).toEqual([]);
+      expect(permittedImportViolations(IMPORT_EDGES, authority)).toEqual([]);
     },
   );
+
+  it('still bans a runtime edge from an unpermitted importer, even though a type-only edge from the same place passes', () => {
+    const authority = OBSERVATION_AUTHORITIES[0];
+    const unpermittedSource = 'src/coordinator/services/operation-registry.ts';
+    const runtimeEdge: ParsedImportEdge = {
+      source: unpermittedSource,
+      target: authority.module,
+      specifier: '../../jobs/carrier-observation.js',
+      via: 'ImportDeclaration',
+      runtime: true,
+      typeOnly: false,
+    };
+    const typeOnlyEdge: ParsedImportEdge = { ...runtimeEdge, runtime: false, typeOnly: true };
+
+    expect(permittedImportViolations([runtimeEdge], authority)).toEqual([
+      `${unpermittedSource} imports ${runtimeEdge.specifier} (ImportDeclaration) from ${authority.module}`,
+    ]);
+    expect(permittedImportViolations([typeOnlyEdge], authority)).toEqual([]);
+  });
 
   it.each(OBSERVATION_AUTHORITIES.map((authority) => [authority.what, authority] as const))(
     '%s is never re-exported, so no module can launder it past the import rules above',

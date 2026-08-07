@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createMonotonicClock, type MonotonicClock } from '#src/infra/monotonic-clock.js';
-import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy-acquisition-steps.js';
+import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -1418,6 +1418,25 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toThrow(/different build/u);
   });
 
+  it('refuses guardian.handoff-install.v1 naming a teardown reserve that is not this build’s own', async () => {
+    const set = await startSet();
+
+    await expect(
+      set.control.call(
+        'guardian.handoff-install.v1',
+        {
+          grantId: randomUUID(),
+          secretSha256: createHash('sha256').update(GRANT_SECRET, 'utf8').digest('hex'),
+          successor: set.coordinatorIdentity,
+          operations: [],
+          orphanTimeoutMs: 30_000,
+          teardownReserveMs: 15_000,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/teardown reserve/u);
+  });
+
   it('refuses an unsorted or duplicated operation set at guardian.handoff-install.v1 ingress', async () => {
     const set = await startSet();
     const a = set.operationFor();
@@ -1486,6 +1505,26 @@ describe('provider-proxy guardian and reaper', () => {
         5_000,
       ),
     ).rejects.toThrow(/different build/u);
+  });
+
+  it('refuses reaper.handoff-install.v1 naming a teardown reserve that is not this build’s own', async () => {
+    const set = await startSet();
+    const reaperControl = await openReaperControl(set);
+
+    await expect(
+      reaperControl.call(
+        'reaper.handoff-install.v1',
+        {
+          grantId: randomUUID(),
+          secretSha256: createHash('sha256').update(GRANT_SECRET, 'utf8').digest('hex'),
+          successor: set.coordinatorIdentity,
+          operations: [],
+          orphanTimeoutMs: 30_000,
+          teardownReserveMs: 15_000,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/teardown reserve/u);
   });
 
   it('rotates reaper control once the guardian forwards the redemption receipt over the paired channel', async () => {
@@ -1614,6 +1653,28 @@ describe('provider-proxy guardian and reaper', () => {
         { ...first, redemptionReceipt: 'redemption-receipt-two' },
         5_000,
       ),
+    ).rejects.toThrow(/already recorded a different redemption/u);
+  });
+
+  it('refuses reaper.record-redemption.v1 when a second push repeats the receipt but disagrees on operations', async () => {
+    const set = await startSet();
+    const { operation } = await stage(set);
+    const first = {
+      grantId: randomUUID(),
+      successor: set.coordinatorIdentity,
+      operations: [],
+      redemptionReceipt: 'redemption-receipt-shared',
+    };
+
+    const recorded = (await set.reaperChannel.call('reaper.record-redemption.v1', first, 5_000)) as {
+      state: string;
+    };
+    expect(recorded.state).toBe('redemption-recorded');
+
+    // Same receipt as `first`, but a different operation set — the receipt alone must not be read as
+    // "the same fact repeated" when the set it names has moved.
+    await expect(
+      set.reaperChannel.call('reaper.record-redemption.v1', { ...first, operations: [operation] }, 5_000),
     ).rejects.toThrow(/already recorded a different redemption/u);
   });
 
@@ -1954,7 +2015,7 @@ describe('provider-proxy guardian and reaper', () => {
   });
 });
 
-describe('provider-proxy-acquisition-steps: stopAndReap against a real guardian', () => {
+describe('provider-proxy/set-authority: stopAndReap against a real guardian', () => {
   /** `stopAndReap`'s own `proxyClient`/`reaperClient` are never touched by it — only `guardianClient` is. */
   function unreachableClient(): ControlClient {
     return {

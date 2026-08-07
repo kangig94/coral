@@ -4,11 +4,11 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { buildGuardianSpawnUndo } from '#src/coordinator/live/provider-proxy/spawn-undo.js';
 import {
-  buildGuardianSpawnUndo,
   createProviderProxySetAuthority,
   type ProviderProxySetAuthorityDependencies,
-} from '#src/coordinator/live/provider-proxy-acquisition-steps.js';
+} from '#src/coordinator/live/provider-proxy/set-authority.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import { PROXY_DISAPPEARANCE_CONFIRM_MS, SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import { PROXY_TEARDOWN_RESERVE_MS } from '#src/provider-proxy/orphan-deadline.js';

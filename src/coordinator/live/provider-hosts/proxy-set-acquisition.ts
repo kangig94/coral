@@ -3,9 +3,9 @@ import type { Runtime } from '../../../runtime/ports.js';
 import type { CoordinatorIdentity as ProviderProxyCoordinatorIdentity } from '../../../provider-proxy/protocol.js';
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
-import { acquireProviderProxySet } from '../provider-proxy-acquisition.js';
-import { createProviderProxyAcquisitionSteps } from '../provider-proxy-acquisition-steps.js';
-import type { ProviderProxyOperationAuthority } from '../provider-proxy-operation-route.js';
+import { acquireProviderProxySet } from '../provider-proxy/index.js';
+import { createProviderProxyAcquisitionSteps } from '../provider-proxy/acquisition-steps.js';
+import type { ProviderProxyOperationAuthority } from '../provider-proxy/operation-route.js';
 import { hostFingerprintFromSpec, type ProviderHostEntry } from './state.js';
 
 /**

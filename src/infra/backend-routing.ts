@@ -7,10 +7,8 @@ import type {
 } from './handoff-target.js';
 import { compareProductVersions } from './product-version.js';
 
-export type UseCurrentEvidence = { readonly source: 'current-build' } | { readonly source: 'live-incumbent' };
-
 export type BackendRoutingResult =
-  | { readonly kind: 'use-current'; readonly evidence: UseCurrentEvidence }
+  | { readonly kind: 'use-current' }
   | {
       readonly kind: 'handoff';
       readonly target: ValidatedHandoffTarget;
@@ -24,12 +22,12 @@ export type LiveIncumbentRoutingInput = Readonly<{
   validateForeignTarget: ForeignTargetValidator;
 }>;
 
-export function createUseCurrentBackendRouting(evidence: UseCurrentEvidence): BackendRoutingResult {
-  return { kind: 'use-current', evidence };
+export function createUseCurrentBackendRouting(): BackendRoutingResult {
+  return { kind: 'use-current' };
 }
 
 function useLiveIncumbent(): BackendRoutingResult {
-  return createUseCurrentBackendRouting({ source: 'live-incumbent' });
+  return createUseCurrentBackendRouting();
 }
 
 export function routeLiveIncumbent(input: LiveIncumbentRoutingInput): BackendRoutingResult {

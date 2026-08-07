@@ -4,8 +4,8 @@ import {
   acquireProviderProxySet,
   type AcquisitionUndo,
   type ProviderProxyAcquisitionSteps,
-} from '#src/coordinator/live/provider-proxy-acquisition.js';
-import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy-operation-route.js';
+} from '#src/coordinator/live/provider-proxy/index.js';
+import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 
 const SET: ProviderProxyOperationAuthority = {
   proxyInstanceId: 'p1',

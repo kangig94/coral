@@ -66,7 +66,6 @@ describe('backend-routing', () => {
       }),
     ).toEqual({
       kind: 'use-current',
-      evidence: { source: 'live-incumbent' },
     });
   });
 
@@ -128,7 +127,6 @@ describe('backend-routing', () => {
       }),
     ).toEqual({
       kind: 'use-current',
-      evidence: { source: 'live-incumbent' },
     });
   });
 });

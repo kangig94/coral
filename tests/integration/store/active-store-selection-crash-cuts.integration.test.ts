@@ -14,6 +14,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import * as auditLogModule from '#src/infra/audit-log.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { acquireDirectoryLockSync } from '#src/infra/fs-lock.js';
 import type { ForeignTargetValidator } from '#src/infra/handoff-target.js';
@@ -35,7 +36,9 @@ import {
   type ActiveStoreSelectionStartupDependencies,
 } from '#src/store/active-store-selection-coordination.js';
 import { createBackendStoreResetAuthority, type BackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
+import * as dbModule from '#src/store/db.js';
 import type { Database } from '#src/store/db.js';
+import type { StoreFormatClassification } from '#src/store/format-fingerprint.js';
 import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
 import {
   parseStoreResetIncidentManifest,
@@ -144,6 +147,23 @@ function fakeDatabase(): Database {
   return { exec: vi.fn(), close: vi.fn() } as unknown as Database;
 }
 
+// `classifyStoreFile`/`openStoreDatabase`/`writeAuditEvent` have no production-supplied override, so tests
+// reach them the same way production does — by spying on the real module — rather than widening the
+// operator dependency type with test-only injection seams.
+function stubStoreOpen(
+  classification: StoreFormatClassification = { kind: 'fresh' },
+  database: Database = fakeDatabase(),
+): { readonly classifyStore: ReturnType<typeof vi.spyOn>; readonly openStore: ReturnType<typeof vi.spyOn> } {
+  return {
+    classifyStore: vi.spyOn(dbModule, 'classifyStoreFile').mockReturnValue(classification),
+    openStore: vi.spyOn(dbModule, 'openStoreDatabase').mockImplementation(() => database),
+  };
+}
+
+function stubAudit(): ReturnType<typeof vi.spyOn> {
+  return vi.spyOn(auditLogModule, 'writeAuditEvent').mockImplementation(() => undefined);
+}
+
 function successfulDependencies(
   extra: Partial<Omit<ActiveStoreSelectionOperatorDependencies, 'kind'>> = {},
 ): ActiveStoreSelectionOperatorDependencies {
@@ -152,8 +172,6 @@ function successfulDependencies(
     validateSelectedTarget: () => {
       throw new Error('validator should not run');
     },
-    classifyStore: () => ({ kind: 'fresh' }),
-    openStore: () => fakeDatabase(),
     ...extra,
   };
 }
@@ -242,6 +260,7 @@ function newestIncidentManifest(runtime: Runtime) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -255,15 +274,14 @@ describe('active-store-selection crash cuts', () => {
   )('should leave the store untouched for %s at %s %s', async (arm, record, cut) => {
     const { runtime, currentSelection, authority } = harness();
     const evidenceDependencies = prepareEvidence(arm, runtime, currentSelection);
-    const classifyStore = vi.fn(() => ({ kind: 'fresh' as const }));
-    const openStore = vi.fn(() => fakeDatabase());
+    const { classifyStore, openStore } = stubStoreOpen();
     const restore = installPublicationCut(runtime, record, cut);
 
     await expect(
       coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
         currentSelection,
-        dependencies: successfulDependencies({ ...evidenceDependencies, classifyStore, openStore }),
+        dependencies: successfulDependencies(evidenceDependencies),
       }),
     ).rejects.toThrow();
     restore();
@@ -282,6 +300,7 @@ describe('active-store-selection crash cuts', () => {
     async (arm) => {
       const { runtime, currentSelection, authority } = harness();
       const evidenceDependencies = prepareEvidence(arm, runtime, currentSelection);
+      stubStoreOpen();
       const resetLock = join(runtime.paths.coral.store.dbDir, 'store.db.reset.lock');
       mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true });
       const releaseReset = acquireDirectoryLockSync(resetLock, 1_000);
@@ -314,8 +333,7 @@ describe('active-store-selection crash cuts', () => {
     const boundary = resolveGenerationBoundaryPaths(runtime);
     mkdirSync(boundary.generationRoot, { recursive: true });
     const releaseAdoption = acquireDirectoryLockSync(boundary.adoptionLock, 1_000);
-    const classifyStore = vi.fn(() => ({ kind: 'fresh' as const }));
-    const openStore = vi.fn(() => fakeDatabase());
+    const { classifyStore, openStore } = stubStoreOpen();
     const originalSleep = runtime.time.sleep.bind(runtime.time);
     let observeContention: () => void = () => undefined;
     const contentionObserved = new Promise<void>((resolve) => {
@@ -329,7 +347,7 @@ describe('active-store-selection crash cuts', () => {
     const coordinating = coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),
       currentSelection,
-      dependencies: successfulDependencies({ classifyStore, openStore }),
+      dependencies: successfulDependencies(),
     });
     await contentionObserved;
     try {
@@ -357,13 +375,13 @@ describe('active-store-selection crash cuts', () => {
       if (path === paths.transitionFile) throw new Error('crash:pre-intent-publication');
       return original(path, bytes, options);
     };
-    const classifyStore = vi.fn(() => ({
-      kind: 'newer-incompatible' as const,
+    const { classifyStore } = stubStoreOpen({
+      kind: 'newer-incompatible',
       currentFingerprint: currentCoralStoreFormat().fingerprint,
       currentProductVersion: currentSelection.manifest.version,
       storedFingerprint: currentCoralStoreFormat().fingerprint,
       storedProductVersion: '99.0.0',
-    }));
+    });
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
       // A publish that cannot complete is refused under the documented coordination code, not raised as a
@@ -373,7 +391,7 @@ describe('active-store-selection crash cuts', () => {
         coordinateActiveStoreSelection(runtime, authority, {
           storeFormat: currentCoralStoreFormat(),
           currentSelection,
-          dependencies: successfulDependencies({ classifyStore, openStore: vi.fn() }),
+          dependencies: successfulDependencies(),
         }),
       ).rejects.toMatchObject({
         code: 'active_store_coordination_invalid',
@@ -394,21 +412,19 @@ describe('active-store-selection crash cuts', () => {
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     publish(runtime, 'transitionFile', encodeActiveStoreTransition(transition));
     const restore = installPublicationCut(runtime, 'transitionFile', 'rename');
+    stubStoreOpen({
+      kind: 'newer-incompatible',
+      currentFingerprint: currentCoralStoreFormat().fingerprint,
+      currentProductVersion: currentSelection.manifest.version,
+      storedFingerprint: currentCoralStoreFormat().fingerprint,
+      storedProductVersion: '99.0.0',
+    });
 
     await expect(
       coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
         currentSelection,
-        dependencies: successfulDependencies({
-          classifyStore: () => ({
-            kind: 'newer-incompatible',
-            currentFingerprint: currentCoralStoreFormat().fingerprint,
-            currentProductVersion: currentSelection.manifest.version,
-            storedFingerprint: currentCoralStoreFormat().fingerprint,
-            storedProductVersion: '99.0.0',
-          }),
-          openStore: vi.fn(),
-        }),
+        dependencies: successfulDependencies(),
       }),
     ).rejects.toMatchObject({
       code: 'active_store_coordination_invalid',
@@ -508,17 +524,21 @@ describe('active-store-selection crash cuts', () => {
 
   it('should resume after initialization/open fails and after open succeeds before transition clear', async () => {
     for (const cut of ['open', 'transition-clear'] as const) {
+      // Each iteration reaches this test's shared `classifyStoreFile`/`openStoreDatabase` spies fresh: the
+      // 'transition-clear' iteration relies on real classification, so a prior iteration's mock must not
+      // survive into it.
+      vi.restoreAllMocks();
       const { runtime, currentSelection, authority } = harness();
       createVersionedStore(runtime, '99.0.0');
       const originalUnlink = runtime.storage.unlinkSync.bind(runtime.storage);
+      if (cut === 'open') {
+        stubStoreOpen();
+        vi.spyOn(dbModule, 'openStoreDatabase').mockImplementation(() => {
+          throw new Error('crash:open');
+        });
+      }
       const dependencies: ActiveStoreSelectionProtocolDependencies =
-        cut === 'open'
-          ? successfulDependencies({
-              openStore: () => {
-                throw new Error('crash:open');
-              },
-            })
-          : startupDependencies();
+        cut === 'open' ? successfulDependencies() : startupDependencies();
       if (cut === 'transition-clear') {
         runtime.storage.unlinkSync = (path) => {
           if (path === resolveActiveStoreRecordPaths(runtime).transitionFile) {
@@ -537,6 +557,9 @@ describe('active-store-selection crash cuts', () => {
       ).rejects.toThrow(`crash:${cut}`);
       expect(readActiveStoreTransition(runtime).kind).toBe('valid');
 
+      // Resume always goes through the real classify/open path, regardless of what the failing attempt above
+      // stubbed — `startupDependencies()` never had an injection seam for either.
+      vi.restoreAllMocks();
       runtime.storage.unlinkSync = originalUnlink;
       const resumed = await coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
@@ -553,18 +576,16 @@ describe('active-store-selection crash cuts', () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', new TextEncoder().encode('{malformed'));
     const db = fakeDatabase();
-    const dependencies = successfulDependencies({
-      openStore: () => db,
-      recordAudit: () => {
-        throw new Error('crash:audit');
-      },
+    stubStoreOpen(undefined, db);
+    stubAudit().mockImplementation(() => {
+      throw new Error('crash:audit');
     });
 
     await expect(
       coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
         currentSelection,
-        dependencies,
+        dependencies: successfulDependencies(),
       }),
     ).rejects.toThrow('crash:audit');
     expect(db.close).toHaveBeenCalledOnce();
@@ -580,11 +601,12 @@ describe('active-store-selection crash cuts', () => {
       expect.objectContaining({ evidence: expect.objectContaining({ kind: 'selection-malformed' }) }),
     );
 
-    const unavailableAudit = vi.fn();
+    stubStoreOpen();
+    const unavailableAudit = stubAudit();
     const resumed = await coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),
       currentSelection,
-      dependencies: successfulDependencies({ recordAudit: unavailableAudit }),
+      dependencies: successfulDependencies(),
     });
     expect(resumed.kind).toBe('opened');
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });

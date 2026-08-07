@@ -72,7 +72,16 @@ function spawnOptionsFor(spec: ProviderServerSpec, signal: AbortSignal | undefin
  *  (`rpc`/`subscribe`/`closed`) a bound provider's session actually needs. `subscribe` forwards straight to
  *  `onNotification` rather than wrapping it: the shared transport's own dispatch loop already logs a throwing
  *  handler through `backendLog` and treats it as fatal to the connection (kills the child, rejects every
- *  pending request) — a second try/catch here would only shadow that, not improve on it. */
+ *  pending request) — a second try/catch here would only shadow that, not improve on it.
+ *
+ *  Duplicates `createProviderServerAttachment` (`src/coordinator/live/provider-hosts/lease.ts`) verbatim.
+ *  `src/providers/` is not on `provider-proxy`'s forbidden-import list (only `src/coordinator/` and its
+ *  siblings are — `tests/invariants/architecture-layering.test.ts`'s `PROVIDER_PROXY_FORBIDDEN`), and
+ *  `src/providers/contract.ts` does not import `src/providers/app-server-transport.ts`, so relocating this
+ *  adapter to the latter — a module both this file and `lease.ts` already import `ProviderServerHandle`
+ *  from — is layering-legal and would remove the duplicate. Left in place because doing so also requires
+ *  editing `lease.ts` and `app-server-transport.ts`, both outside this pass's touch scope
+ *  (`src/provider-proxy/**` and `src/infra/bundle-manifest.ts`). */
 function transportFor(handle: ProviderServerHandle): AppServerTransport {
   return {
     rpc: (method, params) => handle.rpc.request(method, params),

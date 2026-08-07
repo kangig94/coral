@@ -1,4 +1,4 @@
-import type { ProviderProxyOperationAuthority } from './provider-proxy-operation-route.js';
+import type { ProviderProxyOperationAuthority } from './operation-route.js';
 
 /**
  * Acquiring one guardian/reaper/proxy set.

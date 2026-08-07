@@ -24,9 +24,7 @@ export const PROXY_CONTROL_PROTOCOL_ERROR_CODES = [
   'identity_mismatch',
   'invalid_state',
   'frame_too_large',
-  'deadline_exceeded',
   'grant_invalid',
-  'grant_expired',
   'grant_replayed',
   'reservation_expired',
   'operation_not_found',
@@ -136,6 +134,19 @@ export const operationIdentitySchema = z
   .strict();
 
 export type OperationIdentity = z.infer<typeof operationIdentitySchema>;
+
+/** One provider-root identity: the pid and start time the guardian/reaper stage, confirm, and enforce
+ *  containment against. Shared because both roles carry this exact 2-field shape wherever a request or
+ *  response names a provider root — a single staged/confirmed root or a member of the teardown-time
+ *  recorded set — rather than each role declaring its own copy of the same two fields. */
+export const providerRootSchema = z
+  .object({ pid: z.number().int().nonnegative(), processStartedAtSeconds: z.number().int().nonnegative() })
+  .strict();
+
+/** The permission bits of a `stat.mode`, isolated from the leading file-type bits so a mode can be compared
+ *  against an expected value like `0o600`. Shared by every capsule file this domain reads or writes under a
+ *  private mode, so the mask itself cannot drift between them. */
+export const PERMISSION_BITS_MASK = 0o777n;
 
 /**
  * `ProviderEventBody`'s one variant with no zod schema of its own in `providers/contract.ts` — every other
@@ -322,6 +333,35 @@ export function assertNamedReaperIdentity(claimed: ReaperIdentity, actual: Reape
     claimed.containmentKind !== actual.containmentKind
   ) {
     throw new ProxyControlProtocolError('identity_mismatch', 'Teardown named a different reaper than this one.');
+  }
+}
+
+/** The 4-field identity a recorded process-group containment carries: the leader's pid and start time, the
+ *  group id that names the containment itself, and the containment-kind vocabulary word. Both the guardian
+ *  (recording what it watched spawned) and the reaper (recording what the guardian forwarded, and later
+ *  checking what a coordinator's `reaper.open.v1` claims against it) compare an incoming containment against
+ *  one already held by this same shape, so a mismatch is always this same 4-field disagreement. */
+export function sameRecordedContainment(
+  left: Readonly<{ pid: number; processStartedAtSeconds: number; processGroupId: number; containmentKind: string }>,
+  right: Readonly<{ pid: number; processStartedAtSeconds: number; processGroupId: number; containmentKind: string }>,
+): boolean {
+  return (
+    left.pid === right.pid &&
+    left.processStartedAtSeconds === right.processStartedAtSeconds &&
+    left.processGroupId === right.processGroupId &&
+    left.containmentKind === right.containmentKind
+  );
+}
+
+/** The teardown reserve is derived from this build's own process constants, not chosen per grant — a caller
+ *  naming a different one disagrees about arithmetic both sides compute, which every `*.handoff-install.v1`
+ *  handler on this build reports the same way. */
+export function assertNamedTeardownReserve(claimedMs: number, expectedMs: number): void {
+  if (claimedMs !== expectedMs) {
+    throw new ProxyControlProtocolError(
+      'identity_mismatch',
+      `The named teardown reserve is not this build's ${expectedMs}ms.`,
+    );
   }
 }
 

@@ -8,7 +8,7 @@ import type { Database } from '#src/store/db.js';
 import type { HostRef } from '#src/providers/contract.js';
 import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
 import type { ActivateProviderOperationResult } from '#src/coordinator/services/provider-proxy-operation-activation.js';
-import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy-operation-route.js';
+import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
 

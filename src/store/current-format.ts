@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { zodPersistedContract, type CanonicalContractValue } from '../infra/persisted-contract.js';
+import { compareText, zodPersistedContract, type CanonicalContractValue } from '../infra/persisted-contract.js';
 import {
   describeStoreFormat,
   PersistedCodecRegistry,
@@ -53,7 +53,7 @@ const jsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
 
 function registerEventBodyCodec(codecs: PersistedCodecRegistry, reducers: ComposedReducers): void {
   const events = [...reducers.schemas.entries()]
-    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .sort(([left], [right]) => compareText(left, right))
     .map(([type, schema]) => ({
       type,
       streamKind: reducers.streamKinds.get(type),

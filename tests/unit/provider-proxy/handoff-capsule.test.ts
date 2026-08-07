@@ -1,5 +1,8 @@
+import { chmodSync, mkdtempSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   HandoffCapsuleError,
@@ -8,10 +11,14 @@ import {
   decodeHandoffCapsule,
   handoffOperationSetSchema,
   handoffSecretDigest,
+  readHandoffCapsuleFile,
+  writeHandoffCapsuleFile,
   type HandoffCapsule,
+  type HandoffCapsuleFileEnvironment,
   type InstalledGrant,
 } from '#src/provider-proxy/handoff-capsule.js';
 import type { OperationIdentity } from '#src/provider-proxy/protocol.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 
 const SECRET = 'c'.repeat(64);
 
@@ -276,5 +283,108 @@ describe('provider-proxy handoff capsule', () => {
         binding: bindingOf(installedGrantFor(ORDERED)),
       }),
     ).toThrow(/No grant is installed/u);
+  });
+});
+
+describe('provider-proxy handoff capsule file I/O', () => {
+  let tempRoot: string;
+  let capsulePath: string;
+  let env: HandoffCapsuleFileEnvironment;
+
+  beforeEach(() => {
+    tempRoot = mkdtempSync(join(tmpdir(), 'coral-handoff-capsule-'));
+    capsulePath = join(tempRoot, 'handoff.capsule.json');
+    const storage = createRealRuntime('dev', { baseDir: tempRoot }).storage;
+    const uid = Number(statSync(tempRoot, { bigint: true }).uid);
+    env = { storage, uid };
+  });
+
+  afterEach(() => {
+    rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  /** A single invocation, not two: several cases below mutate the filesystem as a side effect of the read
+   *  itself (a mid-read swap), so calling `readHandoffCapsuleFile` a second time to inspect the error would
+   *  be reading the *post*-mutation state rather than observing the race. */
+  function readCapsuleFailure(path: string, environment: HandoffCapsuleFileEnvironment): HandoffCapsuleError {
+    try {
+      readHandoffCapsuleFile(path, environment);
+    } catch (error: unknown) {
+      if (error instanceof HandoffCapsuleError) return error;
+      throw error;
+    }
+    throw new Error('expected readHandoffCapsuleFile to throw');
+  }
+
+  it('writes a private mode-0600 capsule and reads it back unchanged', () => {
+    writeHandoffCapsuleFile(capsulePath, capsuleFor(), env);
+
+    const stat = statSync(capsulePath, { bigint: true });
+    expect(stat.uid).toBe(BigInt(env.uid));
+    expect(stat.mode & 0o777n).toBe(0o600n);
+    expect(readHandoffCapsuleFile(capsulePath, env)).toEqual(capsuleFor());
+  });
+
+  it('returns null for an absent capsule', () => {
+    expect(readHandoffCapsuleFile(capsulePath, env)).toBeNull();
+  });
+
+  it('refuses a capsule whose mode is not 0600', () => {
+    writeHandoffCapsuleFile(capsulePath, capsuleFor(), env);
+    chmodSync(capsulePath, 0o644);
+
+    expect(readCapsuleFailure(capsulePath, env).code).toBe('handoff_capsule_not_private');
+  });
+
+  it('refuses a capsule whose filesystem owner is not the reading uid', () => {
+    writeHandoffCapsuleFile(capsulePath, capsuleFor(), env);
+
+    expect(readCapsuleFailure(capsulePath, { ...env, uid: env.uid + 1 }).code).toBe('handoff_capsule_not_private');
+  });
+
+  // A prior implementation compared only `opened.size !== stat.size` between the ownership check and the
+  // read, with no device/inode check and no re-verification after the read completed — a capsule swapped for
+  // a same-length twin between those two points would pass silently. `readBoundedFileAtIdentity`
+  // (`infra/bundle-manifest.ts`) closes that: swapping the underlying inode is caught even when the byte
+  // count never moves.
+  it('refuses a capsule swapped for a same-length twin between the ownership check and the open', () => {
+    const capsuleA = capsuleFor();
+    const capsuleB: HandoffCapsule = { ...capsuleA, grantId: '99999999-9999-4999-8999-999999999999' };
+    expect(JSON.stringify(capsuleA).length).toBe(JSON.stringify(capsuleB).length);
+    writeHandoffCapsuleFile(capsulePath, capsuleA, env);
+
+    const swappingStorage: HandoffCapsuleFileEnvironment['storage'] = {
+      ...env.storage,
+      openSync: (path, flags) => {
+        env.storage.writeAtomicDurableSync(capsulePath, JSON.stringify(capsuleB), { encoding: 'utf-8', mode: 0o600 });
+        return env.storage.openSync(path, flags);
+      },
+    };
+    const swappedEnv: HandoffCapsuleFileEnvironment = { ...env, storage: swappingStorage };
+
+    expect(readCapsuleFailure(capsulePath, swappedEnv).code).toBe('handoff_capsule_unreadable');
+  });
+
+  it('refuses a capsule swapped for a symlink while the read was still in flight', () => {
+    writeHandoffCapsuleFile(capsulePath, capsuleFor(), env);
+    const targetPath = join(tempRoot, 'elsewhere.json');
+
+    let readCount = 0;
+    const swappingStorage: HandoffCapsuleFileEnvironment['storage'] = {
+      ...env.storage,
+      readSync: (fd, buffer, offset, length, position) => {
+        const read = env.storage.readSync(fd, buffer, offset, length, position);
+        readCount += 1;
+        if (readCount === 1) {
+          writeFileSync(targetPath, JSON.stringify(capsuleFor()), { encoding: 'utf-8', mode: 0o600 });
+          unlinkSync(capsulePath);
+          symlinkSync(targetPath, capsulePath);
+        }
+        return read;
+      },
+    };
+    const swappedEnv: HandoffCapsuleFileEnvironment = { ...env, storage: swappingStorage };
+
+    expect(readCapsuleFailure(capsulePath, swappedEnv).code).toBe('handoff_capsule_unreadable');
   });
 });

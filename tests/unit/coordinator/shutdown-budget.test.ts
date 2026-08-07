@@ -7,7 +7,7 @@ import { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS, runShutdownSequenc
 import type {
   ProviderProxyAuthorityRegistry,
   ProviderProxySetAuthority,
-} from '#src/coordinator/live/provider-proxy-authority.js';
+} from '#src/coordinator/live/provider-proxy/authority.js';
 import type { IpcListener } from '#src/transport/ipc/server.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';

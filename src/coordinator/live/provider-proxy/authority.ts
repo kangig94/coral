@@ -1,4 +1,4 @@
-import type { ProviderOperationKey } from '../../provider-proxy/ledger.js';
+import type { ProviderOperationKey } from '../../../provider-proxy/ledger.js';
 
 /**
  * What coordinated shutdown needs from the live guardian/reaper/proxy sets.

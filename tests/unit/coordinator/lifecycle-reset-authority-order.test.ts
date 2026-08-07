@@ -12,7 +12,7 @@ import {
   type LifecycleDeps,
 } from '#src/coordinator/lifecycle.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
-import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy-authority.js';
+import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
 import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as HandoffMod from '#src/coordinator/handoff.js';

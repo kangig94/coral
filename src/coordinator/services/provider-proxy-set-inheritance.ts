@@ -22,25 +22,24 @@ import { runtimeControlTimer, type RoleConnectRetryOptions } from '../../provide
 import type { Runtime } from '../../runtime/ports.js';
 import type { Database } from '../../store/db.js';
 import {
-  createProviderProxySetAuthority,
-  establishRoleControl,
-  startHeartbeatLoop,
   ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
   ESTABLISH_CONTROL_READY_DEADLINE_MS,
   ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
-  type HeartbeatLoop,
-} from '../live/provider-proxy-acquisition-steps.js';
+} from '../live/provider-proxy/acquisition-steps.js';
+import { establishRoleControl } from '../live/provider-proxy/role-control.js';
+import { createProviderProxySetAuthority } from '../live/provider-proxy/set-authority.js';
+import { startHeartbeatLoop, type HeartbeatLoop } from '../live/provider-proxy/heartbeat.js';
 import {
   createProviderProxyOperationAuthority,
   type ProviderProxyOperationAuthority,
-} from '../live/provider-proxy-operation-route.js';
+} from '../live/provider-proxy/operation-route.js';
 import type { ProviderProxySetAcquisitionIdentity } from '../live/provider-hosts/proxy-set-acquisition.js';
 import type { ProviderProxySetIdentity } from './provider-proxy-operation-activation.js';
 import type { LocalOperationRegistry, OperationStopControl } from './operation-registry.js';
 
 /**
  * The branch of proxy-set acquisition that redeems a predecessor's bequeathed set instead of spawning a new
- * one. `installHandoffGrant` (`provider-proxy-acquisition-steps.ts`) is the write half — one grant across
+ * one. `installHandoffGrant` (`provider-proxy/set-authority.ts`) is the write half — one grant across
  * guardian, reaper and proxy, plus a durable successor capsule; this file is the read half nothing else in the
  * tree has read before now.
  *
@@ -432,7 +431,7 @@ async function redeem(
   } catch (error: unknown) {
     // Stop every heartbeat loop this attempt started before closing its clients — the mirror image of
     // `createProviderProxySetAuthority`'s own `initiateControlClose` ordering, and the same order ordinary
-    // acquisition's undo already uses (`provider-proxy-acquisition-steps.ts`'s `establishControl` undo). A
+    // acquisition's undo already uses (`provider-proxy/acquisition-steps.ts`'s `establishControl` undo). A
     // loop left running against a closed client would call `client.call` into an `onError` that only logs,
     // forever, on every future heartbeat interval — this attempt failed, so nothing is left to keep alive.
     for (const heartbeat of heartbeats) heartbeat.stop();

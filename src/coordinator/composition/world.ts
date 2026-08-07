@@ -16,7 +16,7 @@ import { createDiscussContextRegistry, type DiscussContextRegistry } from '../..
 
 import { LaunchCoordinator } from '../live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
-import type { ProviderProxyAuthorityRegistry } from '../live/provider-proxy-authority.js';
+import type { ProviderProxyAuthorityRegistry } from '../live/provider-proxy/authority.js';
 import { LocalOperationRegistry } from '../services/operation-registry.js';
 import {
   createProviderProxySetInheritance,

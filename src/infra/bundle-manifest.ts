@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
-import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from 'node:fs';
+import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
+import type { BigIntStats } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
 
 import type { BuildFlavor } from './build-flavor.js';
 import { isRecord } from './json.js';
+import type { StorageBigIntStat } from './port-types.js';
 
 declare const __BUNDLE_DIR__: string | undefined;
 declare const __VERSION__: string | undefined;
@@ -127,79 +129,125 @@ function embeddedBundleIdentity(): EmbeddedBundleIdentity | null {
   };
 }
 
-export function readBoundedAdjacentManifest(activeBundleDir: string): BoundedAdjacentManifestResult {
-  const path = join(activeBundleDir, 'manifest.json');
+/**
+ * The storage surface `readBoundedFileAtIdentity` needs to re-verify a file's identity across an open and a
+ * full read: a subset any `StoragePort`-shaped caller already has (`Pick<StoragePort, ...>` satisfies this
+ * structurally), plus the raw-`node:fs` bindings this module itself uses before any runtime is composed.
+ */
+export type BoundedFileReadStorage = Readonly<{
+  lstatSync(path: string): { isFile(): boolean; isSymbolicLink(): boolean };
+  statSync(path: string, options: { bigint: true }): StorageBigIntStat;
+  openSync(path: string, flags: string): number;
+  fstatSync(fd: number, options: { bigint: true }): StorageBigIntStat;
+  readSync(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number;
+  closeSync(fd: number): void;
+}>;
+
+const nodeFsBoundedReadStorage: BoundedFileReadStorage = {
+  lstatSync,
+  statSync,
+  openSync,
+  fstatSync,
+  readSync,
+  closeSync,
+};
+
+/**
+ * True when two stats describe the same on-disk file at the same instant: device + inode (so a rename-and-
+ * replace under the same name is refused), mode + owning uid (so an in-place chmod/chown between checkpoints
+ * is refused), and size + mtime (so an in-place rewrite is refused even when neither identity field moved).
+ */
+export function sameFileIdentity(left: StorageBigIntStat, right: StorageBigIntStat): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.uid === right.uid &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs
+  );
+}
+
+/**
+ * Reads a regular file already verified at `baseline` — the caller's own pre-open stat, carrying whatever
+ * ownership or path policy it enforced there — re-verifying that identity twice more: once against the
+ * freshly opened descriptor, and once more, against both the descriptor and the path, after the full bounded
+ * read completes. Those are the two checkpoints a bare size comparison skips past: a swap between the
+ * baseline stat and `open`, and a rewrite while the read was still in flight. Returns `null` for any
+ * mismatch, oversize, or non-regular-file condition — a caller distinguishes "changed under us" from a
+ * genuine decode failure on its own terms.
+ */
+export function readBoundedFileAtIdentity(
+  storage: BoundedFileReadStorage,
+  path: string,
+  baseline: StorageBigIntStat,
+  maxBytes: number,
+): Buffer | null {
+  if (!baseline.isFile() || baseline.size < 0n || baseline.size > BigInt(maxBytes)) {
+    return null;
+  }
   let descriptor: number | null = null;
-  let contents: Uint8Array;
-  let closeFailed = false;
   try {
-    const pathBefore = lstatSync(path, { bigint: true });
-    if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) {
-      return { ok: false, reason: 'unavailable' };
-    }
-    descriptor = openSync(path, 'r');
-    const opened = fstatSync(descriptor, { bigint: true });
-    if (
-      !opened.isFile() ||
-      opened.dev !== pathBefore.dev ||
-      opened.ino !== pathBefore.ino ||
-      opened.mode !== pathBefore.mode ||
-      opened.size !== pathBefore.size ||
-      opened.mtimeNs !== pathBefore.mtimeNs ||
-      opened.size < 0n ||
-      opened.size > BigInt(MAX_STRICT_BUNDLE_MANIFEST_BYTES)
-    ) {
-      return { ok: false, reason: 'unavailable' };
+    descriptor = storage.openSync(path, 'r');
+    const opened = storage.fstatSync(descriptor, { bigint: true });
+    if (!opened.isFile() || !sameFileIdentity(baseline, opened)) {
+      return null;
     }
 
-    const bytes = Buffer.allocUnsafe(MAX_STRICT_BUNDLE_MANIFEST_BYTES + 1);
+    const bytes = Buffer.allocUnsafe(maxBytes + 1);
     let offset = 0;
     while (offset < bytes.length) {
-      const read = readSync(descriptor, bytes, offset, bytes.length - offset, null);
-      if (read === 0) {
-        break;
-      }
+      const read = storage.readSync(descriptor, bytes, offset, bytes.length - offset, null);
+      if (read === 0) break;
       offset += read;
     }
-    if (offset > MAX_STRICT_BUNDLE_MANIFEST_BYTES) {
-      return { ok: false, reason: 'unavailable' };
+    if (offset > maxBytes) {
+      return null;
     }
-    const openedAfter = fstatSync(descriptor, { bigint: true });
-    const pathAfter = lstatSync(path, { bigint: true });
+
+    const openedAfter = storage.fstatSync(descriptor, { bigint: true });
+    const linkAfter = storage.lstatSync(path);
+    const pathAfter = storage.statSync(path, { bigint: true });
     if (
-      openedAfter.dev !== opened.dev ||
-      openedAfter.ino !== opened.ino ||
-      openedAfter.mode !== opened.mode ||
-      openedAfter.size !== opened.size ||
-      openedAfter.mtimeNs !== opened.mtimeNs ||
-      !pathAfter.isFile() ||
-      pathAfter.isSymbolicLink() ||
-      pathAfter.dev !== opened.dev ||
-      pathAfter.ino !== opened.ino ||
-      pathAfter.mode !== opened.mode ||
-      pathAfter.size !== opened.size ||
-      pathAfter.mtimeNs !== opened.mtimeNs
+      !sameFileIdentity(opened, openedAfter) ||
+      !linkAfter.isFile() ||
+      linkAfter.isSymbolicLink() ||
+      !sameFileIdentity(opened, pathAfter)
     ) {
-      return { ok: false, reason: 'unavailable' };
+      return null;
     }
-    contents = bytes.subarray(0, offset);
+
+    return bytes.subarray(0, offset);
   } catch {
-    return { ok: false, reason: 'unavailable' };
+    return null;
   } finally {
     if (descriptor !== null) {
       try {
-        closeSync(descriptor);
+        storage.closeSync(descriptor);
       } catch {
-        closeFailed = true;
+        // Best effort: the read result above already determined success or failure.
       }
     }
   }
+}
 
-  if (closeFailed) {
+export function readBoundedAdjacentManifest(activeBundleDir: string): BoundedAdjacentManifestResult {
+  const path = join(activeBundleDir, 'manifest.json');
+  let baseline: BigIntStats;
+  try {
+    baseline = lstatSync(path, { bigint: true });
+  } catch {
+    return { ok: false, reason: 'unavailable' };
+  }
+  if (!baseline.isFile() || baseline.isSymbolicLink()) {
+    return { ok: false, reason: 'unavailable' };
+  }
+  const bytes = readBoundedFileAtIdentity(nodeFsBoundedReadStorage, path, baseline, MAX_STRICT_BUNDLE_MANIFEST_BYTES);
+  if (bytes === null) {
     return { ok: false, reason: 'unavailable' };
   }
   try {
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(contents);
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     return { ok: true, value: JSON.parse(text) as unknown };
   } catch {
     return { ok: false, reason: 'invalid' };

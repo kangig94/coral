@@ -124,7 +124,7 @@ export type ActiveStoreTransitionReadResult =
   | { readonly kind: 'malformed'; readonly failureCode: ActiveStoreTransitionFailureCode }
   | { readonly kind: 'rejected'; readonly failureCode: ActiveStoreRecordReadFailureCode };
 
-export type ActiveStoreSelectionRelation = 'exact' | 'advance' | 'equal-refresh' | 'selected-newer';
+export type ActiveStoreSelectionRelation = 'exact' | 'advance' | 'selected-newer';
 
 const activeStoreSelectionStructuralSchema = z
   .object({
@@ -259,9 +259,11 @@ export function classifyActiveStoreSelection(
   }
 
   const precedence = compareProductVersions(selected.manifest.version, current.manifest.version);
-  if (precedence > 0) return 'selected-newer';
-  if (precedence < 0) return 'advance';
-  return 'equal-refresh';
+  // Every non-exact, non-newer precedence (behind or equal) is handled identically by the sole caller: it
+  // republishes the current build's own selection. Whether the recorded selection names an older version or
+  // the same version under a different build carries no separate consequence today, so both collapse here
+  // rather than certifying a distinction no caller observes.
+  return precedence > 0 ? 'selected-newer' : 'advance';
 }
 
 function classifiedStoreEvidence(evidence: ActiveStoreTransitionEvidence): NewerStoreEvidence | null {

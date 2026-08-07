@@ -217,7 +217,7 @@ function routeAuthenticatedHealth(health: LiveIncumbentHealth): BackendRoutingRe
       : Object.freeze({ bundleDir: health.bundleDir, expectedManifest: health.manifest });
   const invokingIdentity = resolveStrictBundleIdentity();
   if (!invokingIdentity.ok || candidate === null) {
-    return createUseCurrentBackendRouting({ source: 'live-incumbent' });
+    return createUseCurrentBackendRouting();
   }
   return routeLiveIncumbent({
     invokingManifest: invokingIdentity.manifest,
@@ -247,7 +247,7 @@ async function resolveHandoffRouting(pluginRoot?: string, timePort?: TimePort): 
   const time = timePort ?? runtime.time;
   const health = await readLiveCoordinatorHealth(runtime, time);
   if (health === null) {
-    return { routing: createUseCurrentBackendRouting({ source: 'current-build' }), runtime, time };
+    return { routing: createUseCurrentBackendRouting(), runtime, time };
   }
   return { routing: routeAuthenticatedHealth(health), runtime, time };
 }

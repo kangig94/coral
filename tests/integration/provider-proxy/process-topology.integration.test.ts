@@ -41,8 +41,8 @@ import {
 } from '#src/infra/path/index.js';
 import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
-import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy-acquisition-steps.js';
-import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy-acquisition.js';
+import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
+import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/index.js';
 import {
   createProviderBootstrapCapsule,
   type GuardianBootstrapCapsule,

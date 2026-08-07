@@ -18,8 +18,10 @@ import {
 } from './enforcement.js';
 import {
   createGrantRegistry,
-  grantSecretDigestSchema,
+  grantBindingFromCapsule,
+  guardianReaperHandoffInstallParamsSchema,
   handoffOperationSetSchema,
+  sameOperations,
   type GrantBinding,
 } from './handoff-capsule.js';
 import {
@@ -28,12 +30,15 @@ import {
   assertNamedCoordinatorBuild,
   assertNamedProxyIdentity,
   assertNamedReaperIdentity,
+  assertNamedTeardownReserve,
   assertRecordedSetAgreement,
   canonicalUuidSchema,
   coordinatorIdentitySchema,
   guardianIdentitySchema,
   proxyIdentitySchema,
+  providerRootSchema,
   reaperIdentitySchema,
+  sameRecordedContainment,
   type OperationIdentity,
 } from './protocol.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
@@ -56,32 +61,15 @@ const containmentSchema = z
 // reservation, or activation identity, so it never parses one.
 const providerRootParamsSchema = z
   .object({
-    providerRoot: z
-      .object({ pid: z.number().int().nonnegative(), processStartedAtSeconds: z.number().int().nonnegative() })
-      .strict(),
+    providerRoot: providerRootSchema,
   })
-  .strict();
-
-const recordedRootSchema = z
-  .object({ pid: z.number().int().nonnegative(), processStartedAtSeconds: z.number().int().nonnegative() })
   .strict();
 
 const stopAndReapParamsSchema = z
   .object({
     reaper: reaperIdentitySchema,
     proxy: proxyIdentitySchema,
-    providerRoots: z.array(recordedRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
-  })
-  .strict();
-
-const reaperHandoffInstallParamsSchema = z
-  .object({
-    grantId: canonicalUuidSchema,
-    secretSha256: grantSecretDigestSchema,
-    successor: coordinatorIdentitySchema,
-    operations: handoffOperationSetSchema,
-    orphanTimeoutMs: z.number().int().positive(),
-    teardownReserveMs: z.number().int().positive(),
+    providerRoots: z.array(providerRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
   })
   .strict();
 
@@ -191,15 +179,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
   /** Every field a grant is bound to except the orphan timeout, mirroring `guardian.ts`'s own `setIdentity`:
    *  built from this reaper's own capsule so a coordinator can never install a grant for a set it does not
    *  belong to. */
-  const setIdentity: GrantBinding = Object.freeze({
-    generation: capsule.generation,
-    flavor: capsule.flavor,
-    buildSetId: capsule.buildSetId,
-    hostFingerprint: capsule.hostFingerprint,
-    guardianInstanceId: capsule.guardianInstanceId,
-    reaperInstanceId: capsule.reaperInstanceId,
-    proxyInstanceId: capsule.proxyInstanceId,
-  });
+  const setIdentity: GrantBinding = grantBindingFromCapsule(capsule);
   const grants = createGrantRegistry(mintReceipt);
   // What `reaper.record-redemption.v1` records and `reaper.handoff-rotate.v1` checks: the guardian is the
   // only party that can ever produce this, so its presence alone is what authorizes rotation here — this
@@ -212,20 +192,6 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     operations: readonly OperationIdentity[];
     redemptionReceipt: string;
   }> | null = null;
-
-  /** Order-sensitive, mirroring `handoff-capsule.ts`'s own `sameOperations`: both sides were sorted the same
-   *  way at their own ingress, so position-by-position comparison is equality, not just membership. Guards
-   *  only `reaper.record-redemption.v1`'s own repeat-forward idempotency (see its handler below) — never a
-   *  redemption or rotation check, which no longer take an `operations` input to compare against. */
-  const sameOperations = (left: readonly OperationIdentity[], right: readonly OperationIdentity[]): boolean =>
-    left.length === right.length &&
-    left.every(
-      (value, index) =>
-        value.jobId === right[index].jobId &&
-        value.operationId === right[index].operationId &&
-        value.proxyInstanceId === right[index].proxyInstanceId &&
-        value.buildSetId === right[index].buildSetId,
-    );
 
   const requireEnforcer = (): ArmedEnforcer<Scope> => {
     if (enforcer === null) {
@@ -274,12 +240,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           bootstrapNonce.spend(request.bootstrapNonce);
           // The coordinator's `containment` is an agreement check, not the source: it learned the group from
           // the guardian's readiness, and a disagreement means the two are reasoning about different sets.
-          if (
-            request.containment.pid !== recorded.pid ||
-            request.containment.processStartedAtSeconds !== recorded.processStartedAtSeconds ||
-            request.containment.processGroupId !== recorded.processGroupId ||
-            request.containment.containmentKind !== recorded.containmentKind
-          ) {
+          if (!sameRecordedContainment(request.containment, recorded)) {
             throw new ProxyControlProtocolError(
               'identity_mismatch',
               'The coordinator named a different containment than the guardian recorded.',
@@ -301,12 +262,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           if (recorded !== null) {
             // Idempotent for the identical containment, a mismatch otherwise: revising it would silently
             // move what this reaper is holding, and only one group was ever created for this set.
-            if (
-              recorded.pid !== request.pid ||
-              recorded.processStartedAtSeconds !== request.processStartedAtSeconds ||
-              recorded.processGroupId !== request.processGroupId ||
-              recorded.containmentKind !== request.containmentKind
-            ) {
+            if (!sameRecordedContainment(recorded, request)) {
               throw new ProxyControlProtocolError('identity_mismatch', 'This reaper already holds a containment.');
             }
             return { state: 'containment-recorded', reaper: identityOf(recorded) };
@@ -378,16 +334,9 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       {
         authority: 'active',
         handle: (params) => {
-          const request = reaperHandoffInstallParamsSchema.parse(params);
+          const request = guardianReaperHandoffInstallParamsSchema.parse(params);
           assertNamedCoordinatorBuild(request.successor, capsule);
-          // The reserve is derived from this build's own process constants, not chosen per grant — the same
-          // check `guardian.handoff-install.v1` performs on its own copy of the same request shape.
-          if (request.teardownReserveMs !== PROXY_TEARDOWN_RESERVE_MS) {
-            throw new ProxyControlProtocolError(
-              'identity_mismatch',
-              `The named teardown reserve is not this build's ${PROXY_TEARDOWN_RESERVE_MS}ms.`,
-            );
-          }
+          assertNamedTeardownReserve(request.teardownReserveMs, PROXY_TEARDOWN_RESERVE_MS);
           return grants.install({
             grantId: request.grantId,
             secretSha256: request.secretSha256,

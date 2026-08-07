@@ -49,16 +49,12 @@ import {
   formatLegacyGenerationIgnoredNotice,
   inspectGenerationReadiness,
   type GenerationAdoptionLockLease,
+  type GenerationMaintenanceLease,
 } from './generation-mutation-coordination.js';
 
 export type ActiveStoreSelectionProtocolResult =
   | { readonly kind: 'opened'; readonly db: Database }
   | { readonly kind: 'handoff'; readonly target: ValidatedHandoffTarget };
-
-export type ActiveStoreSelectionRecoveryLease = Readonly<{
-  assertOwned(): void;
-  release(): void;
-}>;
 
 export type ActiveStoreSelectionRecoveryOutcome = Readonly<{
   incident: BackendStoreResetIncident | null;
@@ -74,10 +70,7 @@ export type ActiveStoreSelectionStartupDependencies = Readonly<{
 export type ActiveStoreSelectionOperatorDependencies = Readonly<{
   kind: 'operator';
   validateSelectedTarget: ForeignTargetValidator;
-  classifyStore?: typeof classifyStoreFile;
-  openStore?: typeof openStoreDatabase;
-  recordAudit?: typeof writeAuditEvent;
-  acquireStoreRecoveryLease?: () => Promise<ActiveStoreSelectionRecoveryLease>;
+  acquireStoreRecoveryLease?: () => Promise<GenerationMaintenanceLease>;
   openPreparedStore?: (adoption: GenerationAdoptionLockLease) => Database;
   recordRecoveryOutcome?: (outcome: ActiveStoreSelectionRecoveryOutcome) => void;
 }>;
@@ -127,9 +120,8 @@ function classifyStoreForProtocol(
   files: BackendStoreFileSet,
   options: ActiveStoreSelectionProtocolOptions,
 ): StoreFormatClassification {
-  const classify = options.dependencies.kind === 'operator' ? options.dependencies.classifyStore : undefined;
   try {
-    return (classify ?? classifyStoreFile)(files.dbFile, runtime.storage, options.storeFormat);
+    return classifyStoreFile(files.dbFile, runtime.storage, options.storeFormat);
   } catch (error: unknown) {
     const corruptClassification = corruptBackendStoreClassificationFromFailure(error, options.storeFormat);
     if (corruptClassification === null) throw documentedBackendStoreClassificationFailure(runtime, files, error);
@@ -206,12 +198,6 @@ function resetPolicyForTransition(transition: ActiveStoreTransition): NewerStore
   };
 }
 
-function recordAuditFor(options: ActiveStoreSelectionProtocolOptions): typeof writeAuditEvent {
-  return options.dependencies.kind === 'operator'
-    ? (options.dependencies.recordAudit ?? writeAuditEvent)
-    : writeAuditEvent;
-}
-
 function retainActiveStoreTransition(
   runtime: Runtime,
   options: ActiveStoreSelectionProtocolOptions,
@@ -249,7 +235,7 @@ function retainInvalidSelectionRecovery(
   }
   const retained = retainActiveStoreTransition(runtime, options, adoption);
   if (retained === null) return { kind: 'source-missing' };
-  recordAuditFor(options)(
+  writeAuditEvent(
     'invalid-selection-recovery',
     {
       transitionId: transition.transitionId,
@@ -333,8 +319,7 @@ function openProtocolStore(
   options: ActiveStoreSelectionProtocolOptions,
   files: BackendStoreFileSet,
 ): Database {
-  const open = options.dependencies.kind === 'operator' ? options.dependencies.openStore : undefined;
-  const db = (open ?? openStoreDatabase)({
+  const db = openStoreDatabase({
     path: files.dbFile,
     storage: runtime.storage,
     storeFormat: options.storeFormat,
@@ -509,7 +494,7 @@ function supersedeActiveStoreTransition(
       );
     }
   }
-  recordAuditFor(options)(
+  writeAuditEvent(
     'active-store-transition-superseded',
     {
       failureCode,

@@ -39,7 +39,6 @@ function toText(chunk: string | Uint8Array): string {
 function makeBackend(instanceId = 'backend-1') {
   const routing = {
     kind: 'use-current',
-    evidence: { source: 'current-build' },
   } satisfies BackendRoutingResult;
   return {
     socketPath: '/tmp/coordinator.sock',

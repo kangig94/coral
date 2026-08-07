@@ -12,18 +12,29 @@
     "scripts/**/*.mjs",
     "clients/hooks/**/*.mjs",
     "tools/**/*.ts",
+    // Declaring tests as entrypoints keeps genuine test-only seams out of the unused report,
+    // but it also means a module reached ONLY by its own test still counts as used. So a green
+    // knip run does not prove production-reachability, and must not be read as if it did — that
+    // blind spot is how a 240-line module with no production importer survived a whole branch.
+    // `tests/invariants/no-carrier-observation-in-action-paths.test.ts` covers what knip cannot.
     "tests/**/*.test.ts",
     "vitest/*.ts"
   ],
   "project": ["src/**/*.ts"],
+  // `.claude/coral` is a symlink to the local Coral project state (plans, memos, red-attacker
+  // staging). Git ignores it via `.claude/.gitignore`, but knip follows the symlink and reads
+  // whatever is parked there as if it were repo source — stale scratch fixtures then surface as
+  // unresolved imports. Nothing under `.claude/` is built or shipped.
+  "ignore": [".claude/**"],
   // Const-assertion arrays that back a type via `typeof X[number]` are referenced
   // only within their own file (in a type position), so their value export reads as
   // "unused" — keep them by not flagging exports used in their defining file.
   "ignoreExportsUsedInFile": true,
   // Test-only seams reached through Vitest dynamic imports or helper indirection.
   "tags": ["-knipignore"],
-  // Host system binaries invoked by name (not npm bins).
-  "ignoreBinaries": ["getconf", "ps", "wmic"],
+  // Host system binaries invoked by name (not npm bins). `codex` is the external Codex CLI
+  // Coral integrates with, resolved from PATH the same way.
+  "ignoreBinaries": ["getconf", "ps", "wmic", "flock", "codex"],
   // mammoth/turndown: loaded via dynamic require() in kb source conversion
   // (conversion-worker.ts), which knip's static import graph does not resolve;
   // @types/turndown backs turndown. vite: a type-only import (vitest/raw-sql-plugin.ts)

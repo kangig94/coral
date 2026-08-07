@@ -15,6 +15,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import * as auditLogModule from '#src/infra/audit-log.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { createForeignTargetValidator } from '#src/infra/handoff-target.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -28,16 +29,16 @@ import {
   type ActiveStoreSelection,
   type ActiveStoreTransition,
 } from '#src/store/active-store-selection.js';
-import {
-  coordinateActiveStoreSelection,
-  type ActiveStoreSelectionRecoveryLease,
-} from '#src/store/active-store-selection-coordination.js';
+import { coordinateActiveStoreSelection } from '#src/store/active-store-selection-coordination.js';
 import { createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
+import * as dbModule from '#src/store/db.js';
 import type { Database } from '#src/store/db.js';
 import {
   resolveGenerationBoundaryPaths,
   type GenerationAdoptionLockLease,
+  type GenerationMaintenanceLease,
 } from '#src/store/generation-mutation-coordination.js';
+import type { StoreFormatClassification } from '#src/store/format-fingerprint.js';
 import { STORE_RESET_QUARANTINE_DIRECTORY } from '#src/store/reset-incident.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 
@@ -118,6 +119,23 @@ function fakeDatabase(): Database {
   } as unknown as Database;
 }
 
+// `classifyStoreFile`/`openStoreDatabase` have no production-supplied override, so tests reach them the same
+// way production does — by spying on the real module — rather than widening the operator dependency type
+// with test-only injection seams.
+function stubStoreOpen(
+  classification: StoreFormatClassification = { kind: 'fresh' },
+  database: Database = fakeDatabase(),
+): { readonly classifyStore: ReturnType<typeof vi.spyOn>; readonly openStore: ReturnType<typeof vi.spyOn> } {
+  return {
+    classifyStore: vi.spyOn(dbModule, 'classifyStoreFile').mockReturnValue(classification),
+    openStore: vi.spyOn(dbModule, 'openStoreDatabase').mockImplementation(() => database),
+  };
+}
+
+function stubAudit(): ReturnType<typeof vi.spyOn> {
+  return vi.spyOn(auditLogModule, 'writeAuditEvent').mockImplementation(() => undefined);
+}
+
 function supersededTransition(currentSelection: ActiveStoreSelection): ActiveStoreTransition {
   return {
     version: 1,
@@ -137,6 +155,7 @@ function retainedTransitionRoot(runtime: Runtime): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -162,6 +181,7 @@ describe('active-store-selection locking', () => {
         if (path === paths.selectionFile) selectionWrites.push(path);
         return durableWrite(path, bytes, options);
       };
+      stubStoreOpen();
 
       const result = await coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
@@ -171,8 +191,6 @@ describe('active-store-selection locking', () => {
           validateSelectedTarget: () => {
             throw new Error('validator should not run');
           },
-          classifyStore: () => ({ kind: 'fresh' }),
-          openStore: () => fakeDatabase(),
         },
       });
 
@@ -198,6 +216,18 @@ describe('active-store-selection locking', () => {
       return durableWrite(path, bytes, options);
     });
     const db = fakeDatabase();
+    vi.spyOn(dbModule, 'classifyStoreFile').mockImplementation(() => {
+      expect(existsSync(boundary.adoptionLock)).toBe(true);
+      expect(existsSync(resetLock)).toBe(true);
+      events.push('classify');
+      return { kind: 'fresh' };
+    });
+    vi.spyOn(dbModule, 'openStoreDatabase').mockImplementation(() => {
+      expect(existsSync(boundary.adoptionLock)).toBe(true);
+      expect(existsSync(resetLock)).toBe(true);
+      events.push('open');
+      return db;
+    });
 
     const result = await coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),
@@ -206,18 +236,6 @@ describe('active-store-selection locking', () => {
         kind: 'operator',
         validateSelectedTarget: () => {
           throw new Error('validator should not run');
-        },
-        classifyStore: () => {
-          expect(existsSync(boundary.adoptionLock)).toBe(true);
-          expect(existsSync(resetLock)).toBe(true);
-          events.push('classify');
-          return { kind: 'fresh' };
-        },
-        openStore: () => {
-          expect(existsSync(boundary.adoptionLock)).toBe(true);
-          expect(existsSync(resetLock)).toBe(true);
-          events.push('open');
-          return db;
         },
       },
     });
@@ -235,8 +253,9 @@ describe('active-store-selection locking', () => {
     for (const failedRecord of ['transitionFile', 'selectionFile'] as const) {
       const { runtime, currentSelection, authority } = harness();
       const paths = resolveActiveStoreRecordPaths(runtime);
-      const classifyStore = vi.fn(() => ({ kind: 'fresh' as const }));
-      const openStore = vi.fn(() => fakeDatabase());
+      const { classifyStore, openStore } = stubStoreOpen();
+      classifyStore.mockClear();
+      openStore.mockClear();
       const durableWrite = runtime.storage.writeAtomicDurableSync.bind(runtime.storage);
       runtime.storage.writeAtomicDurableSync = vi.fn((path, bytes, options) => {
         if (path === paths[failedRecord]) return false;
@@ -252,8 +271,6 @@ describe('active-store-selection locking', () => {
             validateSelectedTarget: () => {
               throw new Error('validator should not run');
             },
-            classifyStore,
-            openStore,
           },
         }),
       ).rejects.toMatchObject({
@@ -282,8 +299,8 @@ describe('active-store-selection locking', () => {
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(selected));
     const boundary = resolveGenerationBoundaryPaths(runtime);
     const selectedBytes = readFileSync(resolveActiveStoreRecordPaths(runtime).selectionFile);
-    const classifyStore = vi.fn();
-    const openStore = vi.fn();
+    const classifyStore = vi.spyOn(dbModule, 'classifyStoreFile');
+    const openStore = vi.spyOn(dbModule, 'openStoreDatabase');
     const validate = createForeignTargetValidator();
 
     const result = await coordinateActiveStoreSelection(runtime, authority, {
@@ -295,8 +312,6 @@ describe('active-store-selection locking', () => {
           expect(existsSync(boundary.adoptionLock)).toBe(true);
           return validate(bundleDir, expectedManifest);
         },
-        classifyStore,
-        openStore,
       },
     });
 
@@ -326,9 +341,19 @@ describe('active-store-selection locking', () => {
     };
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     publish(runtime, 'transitionFile', encodeActiveStoreTransition(transition));
-    const recordAudit = vi.fn();
     const db = fakeDatabase();
     const storeFormat = currentCoralStoreFormat();
+    stubStoreOpen(
+      {
+        kind: 'compatible',
+        currentFingerprint: storeFormat.fingerprint,
+        currentProductVersion: currentSelection.manifest.version,
+        storedFingerprint: storeFormat.fingerprint,
+        storedProductVersion: currentSelection.manifest.version,
+      },
+      db,
+    );
+    const recordAudit = stubAudit();
 
     const result = await coordinateActiveStoreSelection(runtime, authority, {
       storeFormat,
@@ -338,15 +363,6 @@ describe('active-store-selection locking', () => {
         validateSelectedTarget: () => {
           throw new Error('validator should not run');
         },
-        classifyStore: () => ({
-          kind: 'compatible',
-          currentFingerprint: storeFormat.fingerprint,
-          currentProductVersion: currentSelection.manifest.version,
-          storedFingerprint: storeFormat.fingerprint,
-          storedProductVersion: currentSelection.manifest.version,
-        }),
-        openStore: () => db,
-        recordAudit,
       },
     });
 
@@ -387,8 +403,9 @@ describe('active-store-selection locking', () => {
           return lstatSync(path);
         };
       }
-      const recordAudit = vi.fn();
       const db = fakeDatabase();
+      stubStoreOpen({ kind: 'fresh' }, db);
+      const recordAudit = stubAudit();
 
       const result = await coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
@@ -398,9 +415,6 @@ describe('active-store-selection locking', () => {
           validateSelectedTarget: () => {
             throw new Error('validator should not run');
           },
-          classifyStore: () => ({ kind: 'fresh' }),
-          openStore: () => db,
-          recordAudit,
         },
       });
 
@@ -420,8 +434,8 @@ describe('active-store-selection locking', () => {
     const paths = resolveActiveStoreRecordPaths(runtime);
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     mkdirSync(paths.transitionFile, { mode: 0o700 });
-    const classifyStore = vi.fn();
-    const openStore = vi.fn();
+    const classifyStore = vi.spyOn(dbModule, 'classifyStoreFile');
+    const openStore = vi.spyOn(dbModule, 'openStoreDatabase');
 
     await expect(
       coordinateActiveStoreSelection(runtime, authority, {
@@ -432,8 +446,6 @@ describe('active-store-selection locking', () => {
           validateSelectedTarget: () => {
             throw new Error('validator should not run');
           },
-          classifyStore,
-          openStore,
         },
       }),
     ).rejects.toMatchObject({
@@ -460,8 +472,9 @@ describe('active-store-selection locking', () => {
       }
       return lstatSync(path);
     };
-    const recordAudit = vi.fn();
     const db = fakeDatabase();
+    stubStoreOpen({ kind: 'fresh' }, db);
+    const recordAudit = stubAudit();
 
     const result = await coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),
@@ -471,9 +484,6 @@ describe('active-store-selection locking', () => {
         validateSelectedTarget: () => {
           throw new Error('validator should not run');
         },
-        classifyStore: () => ({ kind: 'fresh' }),
-        openStore: () => db,
-        recordAudit,
       },
     });
 
@@ -534,7 +544,7 @@ describe('active-store-selection locking', () => {
       }
       unlinkSync(path);
     };
-    const recordAudit = vi.fn();
+    const recordAudit = stubAudit();
     const options = {
       storeFormat: currentCoralStoreFormat(),
       currentSelection,
@@ -543,7 +553,6 @@ describe('active-store-selection locking', () => {
         validateSelectedTarget: () => {
           throw new Error('validator should not run');
         },
-        recordAudit,
       },
     };
 
@@ -651,10 +660,10 @@ describe('active-store-selection locking', () => {
   it('should await the operator recovery lease before opening the prepared store', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
-    let grantLease: (lease: ActiveStoreSelectionRecoveryLease) => void = () => {
+    let grantLease: (lease: GenerationMaintenanceLease) => void = () => {
       throw new Error('recovery lease resolver was not initialized');
     };
-    const pendingLease = new Promise<ActiveStoreSelectionRecoveryLease>((resolve) => {
+    const pendingLease = new Promise<GenerationMaintenanceLease>((resolve) => {
       grantLease = resolve;
     });
     const acquireStoreRecoveryLease = vi.fn(() => pendingLease);
@@ -665,6 +674,7 @@ describe('active-store-selection locking', () => {
       adoption.assertOwned();
       return db;
     });
+    vi.spyOn(dbModule, 'classifyStoreFile').mockReturnValue({ kind: 'fresh' });
 
     const coordinating = coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),
@@ -674,7 +684,6 @@ describe('active-store-selection locking', () => {
         validateSelectedTarget: () => {
           throw new Error('validator should not run');
         },
-        classifyStore: () => ({ kind: 'fresh' }),
         acquireStoreRecoveryLease,
         openPreparedStore,
       },

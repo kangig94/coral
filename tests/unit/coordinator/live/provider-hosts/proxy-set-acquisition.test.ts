@@ -8,20 +8,20 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   };
 });
 
-vi.mock('#src/coordinator/live/provider-proxy-acquisition-steps.js', () => ({
+vi.mock('#src/coordinator/live/provider-proxy/acquisition-steps.js', () => ({
   createProviderProxyAcquisitionSteps: vi.fn(() => ({ steps: 'stub' })),
 }));
 
-vi.mock('#src/coordinator/live/provider-proxy-acquisition.js', () => ({
+vi.mock('#src/coordinator/live/provider-proxy/index.js', () => ({
   acquireProviderProxySet: vi.fn(),
 }));
 
 import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
-import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy-acquisition-steps.js';
-import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy-acquisition.js';
+import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
+import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/index.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
 import { hostFingerprintFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
-import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy-authority.js';
+import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
 import { createEntry, createSharedSpec, runtime } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 const mockedProbe = probeProcessStartedAtSeconds as unknown as ReturnType<typeof vi.fn>;

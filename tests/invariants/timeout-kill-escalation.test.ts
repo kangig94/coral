@@ -117,7 +117,7 @@ describe('process kills escalate SIGTERM→SIGKILL', () => {
 // reason, not silenced as a false positive. Migrating one to a sanctioned helper removes its entry.
 const HAND_ROLLED_ESCALATION_ALLOWLIST = new Map<string, string>([
   [
-    'src/coordinator/live/provider-proxy-acquisition-steps.ts',
+    'src/coordinator/live/provider-proxy/spawn-undo.ts',
     // `buildGuardianSpawnUndo`'s own comment: a shorter fixed grace (`gracefulKillByPid`'s, built for a plain
     // child with nothing of its own left to do) would force-kill the guardian mid-reap and strand the very
     // containment it was just asked to hold, so it spends the full teardown-reserve budget instead.

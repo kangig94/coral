@@ -33,7 +33,7 @@ import {
   attemptProviderProxySetInheritance,
   createProviderProxySetInheritance,
 } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
-import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy-operation-route.js';
+import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 
 const mockedReadCapsule = vi.mocked(readHandoffCapsuleFile);
 const mockedReadMeta = vi.mocked(readProviderOperationRuntimeMeta);
@@ -444,7 +444,7 @@ describe('attemptProviderProxySetInheritance', () => {
     // One `clearInterval` per heartbeat loop (guardian, reaper, proxy) — a leaked loop would leave this at 0.
     expect(clearIntervalSpy).toHaveBeenCalledTimes(3);
     // Every `clearInterval` call landed before every `close` call, mirroring `establishControl`'s own undo
-    // ordering (`provider-proxy-acquisition-steps.ts`): a loop still running against an already-closed client
+    // ordering (`provider-proxy/acquisition-steps.ts`): a loop still running against an already-closed client
     // would call into an `onError` that only logs, forever.
     const clearIntervalCallOrders = clearIntervalSpy.mock.invocationCallOrder;
     const closeCallOrders = closeSpy.mock.invocationCallOrder;

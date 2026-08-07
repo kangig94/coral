@@ -11,8 +11,8 @@ vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', () => (
 import { DefaultProviderHostManager, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/index.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
-import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy-authority.js';
-import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy-operation-route.js';
+import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
+import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
 import {
   createExclusiveSpec,

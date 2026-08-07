@@ -14,9 +14,10 @@ Work CANNOT be marked complete if any fail.
 | **Session** | Codex session writes use atomic pattern (`.tmp` + rename) | integration-guardian |
 | **Session** | Corrupt session files are skipped, not crash | integration-guardian |
 | **Session** | Discuss session writes use atomic pattern (`writeStateAtomic`) | integration-guardian |
-| **Process** | Child processes tracked in `activeChildren` set | integration-guardian |
-| **Process** | Timeout kills use SIGTERM then SIGKILL after delay (use `gracefulKill`; enforced by `tests/invariants/timeout-kill-escalation.test.ts`) | integration-guardian |
-| **Process** | `killAllChildren()` called on server shutdown (enforced by `tests/invariants/shutdown-teardown-containment.test.ts`) | integration-guardian |
+| **Process** | Every spawned child is reachable for teardown by recorded identity (`recordContainment`), never by walking descendants | integration-guardian |
+| **Process** | Timeout kills use SIGTERM then SIGKILL after delay — call `gracefulKill` or `reapRecordedContainment`; hand-rolling the escalation is a violation even when it never touches `safeKill` (enforced by `tests/invariants/timeout-kill-escalation.test.ts`) | integration-guardian |
+| **Process** | Reaping confirms absence after every signal, and times the grace on `createMonotonicClock` — never on wall-clock time | integration-guardian |
+| **Process** | Every awaited shutdown finalizer and child-cleanup call runs inside a budgeted step (enforced by `tests/invariants/shutdown-teardown-containment.test.ts`) | integration-guardian |
 | **Elegance** | Elegance Score >= 7 (code quality gate) | code-critic |
 | **Elegance** | Follows established codebase patterns | code-critic |
 

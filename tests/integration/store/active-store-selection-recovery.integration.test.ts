@@ -31,6 +31,7 @@ import {
 } from '#src/store/active-store-selection.js';
 import { coordinateActiveStoreSelection } from '#src/store/active-store-selection-coordination.js';
 import { createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
+import * as dbModule from '#src/store/db.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import {
   isCanonicalStoreResetIncidentId,
@@ -163,6 +164,7 @@ function retainedTransitionEvidencePaths(runtime: Runtime): string[] {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -395,6 +397,9 @@ describe('active-store selection recovery', () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     const failure = Object.assign(new Error('EACCES: permission denied while opening store.db'), { code: 'EACCES' });
+    vi.spyOn(dbModule, 'classifyStoreFile').mockImplementation(() => {
+      throw failure;
+    });
 
     await expect(
       coordinateActiveStoreSelection(runtime, authority, {
@@ -404,9 +409,6 @@ describe('active-store selection recovery', () => {
           kind: 'operator',
           validateSelectedTarget: () => {
             throw new Error('validator should not run');
-          },
-          classifyStore: () => {
-            throw failure;
           },
         },
       }),

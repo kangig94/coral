@@ -3,11 +3,14 @@ import { isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
 
+import { readBoundedFileAtIdentity } from '../infra/bundle-manifest.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import {
+  PERMISSION_BITS_MASK,
   ProxyControlProtocolError,
   canonicalEndpointSchema,
   canonicalUuidSchema,
+  coordinatorIdentitySchema,
   flavorSchema,
   generationSchema,
   hostFingerprintSchema,
@@ -52,6 +55,26 @@ export const handoffOperationSetSchema = z
       context.addIssue({ code: z.ZodIssueCode.custom, message: 'operations must be byte-sorted and unique' });
     }
   });
+
+/**
+ * `guardian.handoff-install.v1` and `reaper.handoff-install.v1`'s shared request: the guardian and reaper
+ * are paired peers of the same set, so a coordinator installs the identical grant on both by the identical
+ * message. Deliberately not `proxy.ts`'s own `handoff.install.v1` schema, which carries no `successor` or
+ * `teardownReserveMs` field and identifies the set through `grantSetShape` instead of a full
+ * `CoordinatorIdentity` — the proxy learns of a handoff only through the two authorities that already hold
+ * one, never directly, so its wire shape is a genuinely different message rather than a drifted copy of
+ * this one.
+ */
+export const guardianReaperHandoffInstallParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    secretSha256: grantSecretDigestSchema,
+    successor: coordinatorIdentitySchema,
+    operations: handoffOperationSetSchema,
+    orphanTimeoutMs: z.number().int().positive(),
+    teardownReserveMs: z.number().int().positive(),
+  })
+  .strict();
 
 /**
  * The successor half of one grant: exactly what a redeemer needs to reach and authenticate against the set,
@@ -169,7 +192,6 @@ export function decodeHandoffCapsule(bytes: Uint8Array): HandoffCapsule {
 }
 
 const PRIVATE_HANDOFF_CAPSULE_MODE = 0o600;
-const PERMISSION_BITS = 0o777n;
 
 type HandoffCapsuleFileStorage = Pick<
   StoragePort,
@@ -206,7 +228,7 @@ function assertPrivateHandoffCapsuleFile(path: string, env: HandoffCapsuleFileEn
     !stat.isFile() ||
     stat.uid === undefined ||
     stat.uid !== BigInt(env.uid) ||
-    (stat.mode & PERMISSION_BITS) !== BigInt(PRIVATE_HANDOFF_CAPSULE_MODE)
+    (stat.mode & PERMISSION_BITS_MASK) !== BigInt(PRIVATE_HANDOFF_CAPSULE_MODE)
   ) {
     throw new HandoffCapsuleError(
       'handoff_capsule_not_private',
@@ -255,61 +277,37 @@ export function writeHandoffCapsuleFile(
 
 /**
  * Reads one capsule file, verifying it is a private, size-bounded regular file before any byte crosses into
- * `decodeHandoffCapsule`. Returns `null` for an absent path — the ordinary case once the recorded set's own
- * enforcers have unlinked it after confirmed absence — rather than forcing every caller to special-case
- * `ENOENT`.
+ * `decodeHandoffCapsule`, and re-verifying that same identity — device, inode, mode, owning uid, size, and
+ * mtime — after the read completes: `readBoundedFileAtIdentity` (`infra/bundle-manifest.ts`) is the same
+ * lstat-open-fstat-bounded-read-restat sequence `bootstrap-capsule.ts`'s own capsule reader runs, reused here
+ * rather than re-implemented at a weaker check, because a capsule swapped for another mid-read would
+ * otherwise be decoded as if it were still the one just proven private. Returns `null` for an absent path —
+ * the ordinary case once the recorded set's own enforcers have unlinked it after confirmed absence — rather
+ * than forcing every caller to special-case `ENOENT`.
  */
 export function readHandoffCapsuleFile(path: string, env: HandoffCapsuleFileEnvironment): HandoffCapsule | null {
   assertCanonicalHandoffCapsulePath(path);
-  let stat: StorageBigIntStat;
+  let baseline: StorageBigIntStat;
   try {
-    stat = assertPrivateHandoffCapsuleFile(path, env);
+    baseline = assertPrivateHandoffCapsuleFile(path, env);
   } catch (error: unknown) {
     if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
     }
     throw error;
   }
-  if (stat.size < 0n || stat.size > BigInt(MAX_HANDOFF_CAPSULE_BYTES)) {
+  if (baseline.size < 0n || baseline.size > BigInt(MAX_HANDOFF_CAPSULE_BYTES)) {
     throw new HandoffCapsuleError(
       'handoff_capsule_too_large',
-      `Handoff capsule exceeded ${MAX_HANDOFF_CAPSULE_BYTES} bytes (observed ${stat.size}).`,
+      `Handoff capsule exceeded ${MAX_HANDOFF_CAPSULE_BYTES} bytes (observed ${baseline.size}).`,
     );
   }
 
-  let descriptor: number | null = null;
-  try {
-    descriptor = env.storage.openSync(path, 'r');
-    const opened = env.storage.fstatSync(descriptor, { bigint: true });
-    if (!opened.isFile() || opened.size !== stat.size) {
-      throw new HandoffCapsuleError('handoff_capsule_unreadable', 'Handoff capsule changed while it was opened.');
-    }
-    const bytes = Buffer.allocUnsafe(MAX_HANDOFF_CAPSULE_BYTES + 1);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const read = env.storage.readSync(descriptor, bytes, offset, bytes.length - offset, null);
-      if (read === 0) break;
-      offset += read;
-    }
-    if (offset > MAX_HANDOFF_CAPSULE_BYTES) {
-      throw new HandoffCapsuleError(
-        'handoff_capsule_too_large',
-        `Handoff capsule exceeded ${MAX_HANDOFF_CAPSULE_BYTES} bytes (observed ${offset}).`,
-      );
-    }
-    return decodeHandoffCapsule(bytes.subarray(0, offset));
-  } catch (error: unknown) {
-    if (error instanceof HandoffCapsuleError) throw error;
-    throw new HandoffCapsuleError('handoff_capsule_unreadable', 'Handoff capsule could not be read safely.');
-  } finally {
-    if (descriptor !== null) {
-      try {
-        env.storage.closeSync(descriptor);
-      } catch {
-        // Best effort: the read result above already determined success or failure.
-      }
-    }
+  const bytes = readBoundedFileAtIdentity(env.storage, path, baseline, MAX_HANDOFF_CAPSULE_BYTES);
+  if (bytes === null) {
+    throw new HandoffCapsuleError('handoff_capsule_unreadable', 'Handoff capsule changed while it was opened or read.');
   }
+  return decodeHandoffCapsule(bytes);
 }
 
 function digestsMatch(left: string, right: string): boolean {
@@ -340,6 +338,42 @@ export type GrantBinding = Pick<
   | 'reaperInstanceId'
   | 'proxyInstanceId'
 >;
+
+/**
+ * The set identity a grant is bound to, read from any role's own bootstrap capsule — every role's capsule
+ * shares this exact field shape (`bootstrap-capsule.ts`'s `commonBootstrapCapsuleShape`), so a coordinator
+ * can never install or redeem a grant for a set it does not belong to. Freezing a fresh 7-field object,
+ * rather than freezing the capsule itself, is what keeps a grant's binding from also freezing (or leaking
+ * into log output alongside) the capsule's own secrets and endpoints.
+ */
+export function grantBindingFromCapsule(capsule: GrantBinding): GrantBinding {
+  return Object.freeze({
+    generation: capsule.generation,
+    flavor: capsule.flavor,
+    buildSetId: capsule.buildSetId,
+    hostFingerprint: capsule.hostFingerprint,
+    guardianInstanceId: capsule.guardianInstanceId,
+    reaperInstanceId: capsule.reaperInstanceId,
+    proxyInstanceId: capsule.proxyInstanceId,
+  });
+}
+
+/** Order-sensitive on purpose: both sides of every comparison this guards were sorted the same way at their
+ *  own ingress (`handoffOperationSetSchema`), so a position-by-position walk is equality, not just
+ *  membership — used for `install`'s own idempotency and for a reaper's own `reaper.record-redemption.v1`
+ *  repeat-forward idempotency, never for redemption itself (see `GrantRegistry.redeem`'s own doc for why). */
+export function sameOperations(left: readonly OperationIdentity[], right: readonly OperationIdentity[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (value, index) =>
+        value.jobId === right[index].jobId &&
+        value.operationId === right[index].operationId &&
+        value.proxyInstanceId === right[index].proxyInstanceId &&
+        value.buildSetId === right[index].buildSetId,
+    )
+  );
+}
 
 /**
  * One set-wide grant, consumed by the first redemption that presents the matching secret and identity tuple.
@@ -374,19 +408,6 @@ export interface GrantRegistry {
 export function createGrantRegistry(mintReceipt: () => string): GrantRegistry {
   let installed: InstalledGrant | null = null;
   let redemption: GrantRedemption | null = null;
-
-  /** Order-sensitive on purpose: both sides of every comparison this guards were sorted the same way at
-   *  their own ingress (`handoffOperationSetSchema`), so a position-by-position walk is equality, not just
-   *  membership — used only for `install`'s own idempotency, never for redemption (see `redeem`'s own doc). */
-  const sameOperations = (left: readonly OperationIdentity[], right: readonly OperationIdentity[]): boolean =>
-    left.length === right.length &&
-    left.every(
-      (value, index) =>
-        value.jobId === right[index].jobId &&
-        value.operationId === right[index].operationId &&
-        value.proxyInstanceId === right[index].proxyInstanceId &&
-        value.buildSetId === right[index].buildSetId,
-    );
 
   /** Every field a grant is bound to, including the timeout only an installer names. */
   const sameBinding = (left: InstalledGrant, right: InstalledGrant): boolean =>

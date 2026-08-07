@@ -1,17 +1,17 @@
-import type { Database } from '../../store/db.js';
-import type { ControlClient } from '../../provider-proxy/control-client.js';
-import type { OperationIdentity, ProxyPreparedAppServerOperation } from '../../provider-proxy/protocol.js';
+import type { Database } from '../../../store/db.js';
+import type { ControlClient } from '../../../provider-proxy/control-client.js';
+import type { OperationIdentity, ProxyPreparedAppServerOperation } from '../../../provider-proxy/protocol.js';
 import {
   activateProviderOperation,
   type ActivateProviderOperationResult,
   type ProviderProxySetIdentity,
-} from '../services/provider-proxy-operation-activation.js';
-import type { ProviderProxySetAuthority } from './provider-proxy-authority.js';
+} from '../../services/provider-proxy-operation-activation.js';
+import type { ProviderProxySetAuthority } from './authority.js';
 
 /**
  * What launching an app-server operation through a live proxy set needs, beyond what coordinated shutdown
- * needs (`ProviderProxySetAuthority`, `provider-proxy-authority.ts`). A strict superset of the same concrete
- * set, built at the exact same `establishControl` construction site (`provider-proxy-acquisition-steps.ts`)
+ * needs (`ProviderProxySetAuthority`, `authority.ts`). A strict superset of the same concrete
+ * set, built at the exact same `establishControl` construction site (`acquisition-steps.ts`)
  * — not a second registry, and not a widening of `ProviderProxySetAuthority` itself, which stays exactly as
  * documented there: written from coordinated shutdown's side, on purpose.
  */

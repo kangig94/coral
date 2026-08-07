@@ -1,19 +1,9 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
+import type { LocalOperationRegistryState } from '../../jobs/carrier-observation.js';
 import type { ProviderOperationEventIdentity } from '../../jobs/provider-event.js';
 import type { ProviderOperationRuntimeMeta } from '../../jobs/runtime-meta.js';
 import type { ProviderStopCause } from '../../providers/contract.js';
-
-/**
- * Mirrors `jobs/carrier-observation.ts`'s `LocalOperationRegistryState` exactly, restated rather than
- * imported: `tests/invariants/no-carrier-observation-in-action-paths.test.ts` permits that module's read-side
- * vocabulary to reach `coordinator/composition/` and a narrow allowlist, not `coordinator/services/`, and this
- * class's `provider-proxy/`-touching neighbors are exactly why the boundary exists. The two stay structurally
- * identical by construction, so TypeScript accepts this type wherever the canonical one is expected — the
- * same reason `provider-proxy-operation-activation.ts`'s `OperationControlClient` restates a shape instead of
- * importing a class. `jobs/carrier-observation.ts` remains the one place documenting what each value means.
- */
-type LocalOperationRegistryState = 'activated' | 'adopted' | 'inherited';
 
 /**
  * The write half of `jobs/carrier-observation.ts`'s `LocalOperationRegistryState` (W2.3): the object nothing
@@ -196,7 +186,7 @@ export class LocalOperationRegistry {
   /**
    * Every distinct provider root this coordinator's own live operations hold against one proxy set —
    * `guardian.stop-and-reap.v1`/`reaper.stop-and-reap.v1`'s own `providerRoots` argument
-   * (`provider-proxy-acquisition-steps.ts`'s `stopAndReap`): both enforcers refuse a teardown that disagrees
+   * (`provider-proxy/set-authority.ts`'s `stopAndReap`): both enforcers refuse a teardown that disagrees
    * with what they actually recorded (`assertRecordedSetAgreement`), so this is the coordinator's own half of
    * that agreement — an empty claim against a set that has actually staged a root always disagrees. Deduped
    * by process identity, mirroring `ArmedEnforcer.recordedRoots()`: a shared host serving more than one
@@ -214,9 +204,10 @@ export class LocalOperationRegistry {
 }
 
 /**
- * What a `stopAndReap`-adjacent caller (`provider-proxy-acquisition-steps.ts`'s `ProviderProxyAcquisitionSteps
- * Options`/`ProviderProxySetAuthorityDependencies`, `provider-hosts/proxy-set-acquisition.ts`'s
- * `ProviderProxySetAcquisitionConfig`, `provider-proxy-set-inheritance.ts`'s `ProviderProxySetInheritanceDeps`)
+ * What a `stopAndReap`-adjacent caller (`provider-proxy/acquisition-steps.ts`'s `ProviderProxyAcquisitionSteps
+ * Options`, `provider-proxy/set-authority.ts`'s `ProviderProxySetAuthorityDependencies`,
+ * `provider-hosts/proxy-set-acquisition.ts`'s `ProviderProxySetAcquisitionConfig`,
+ * `provider-proxy-set-inheritance.ts`'s `ProviderProxySetInheritanceDeps`)
  * needs from this registry: `operationsFor` and `providerRootsFor`, always. Named once here so every call site
  * stays the identical type rather than independently-drifting `Pick`s. Both are required — an empty
  * `providerRootsFor` claim disagrees with any enforcer that has actually staged a root

@@ -10,7 +10,7 @@ import type { HandoffQuiescePort } from './execution-service.js';
 import type { StoreServicesRef } from './composition/store-services-ref.js';
 import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
-import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from './live/provider-proxy-authority.js';
+import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from './live/provider-proxy/authority.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
