@@ -19,6 +19,7 @@ import {
   type ProxyPreparedAppServerOperation,
 } from '#src/provider-proxy/protocol.js';
 import { createProxy, type SemanticOperationHost } from '#src/provider-proxy/proxy.js';
+import { asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 const NONCE = 'a'.repeat(64);
 const FINGERPRINT = 'b'.repeat(64);
@@ -125,7 +126,7 @@ async function startProxy(
       receipts += 1;
       return `receipt-${receipts}`;
     },
-    mintReservation: () => randomUUID(),
+    mintReservation: () => asReservation(randomUUID()),
     containment: {
       stageProviderRoot: () => {
         if (options.failStage === true) throw new Error('the guardian refused to stage this root');
@@ -382,7 +383,7 @@ describe('provider-proxy operation lifecycle', () => {
     const { operation, reserved } = await prepare(set);
 
     await expect(
-      set.control.call('operation.renew-activation.v1', { operation, reservation: randomUUID() }, 5_000),
+      set.control.call('operation.renew-activation.v1', { operation, reservation: asReservation(randomUUID()) }, 5_000),
     ).rejects.toThrow(/different reservation/u);
 
     // The same call with the reservation this operation actually holds still renews, so the refusal above is
@@ -411,7 +412,7 @@ describe('provider-proxy operation lifecycle', () => {
     const { operation } = await prepare(set);
 
     await expect(
-      set.control.call('operation.cancel-pending.v1', { operation, reservation: randomUUID() }, 5_000),
+      set.control.call('operation.cancel-pending.v1', { operation, reservation: asReservation(randomUUID()) }, 5_000),
     ).rejects.toThrow(/different reservation/u);
   });
 

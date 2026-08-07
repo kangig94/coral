@@ -10,11 +10,12 @@ import {
   type OperationLedger,
   type ProviderOperationKey,
 } from '#src/provider-proxy/ledger.js';
+import { asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 const KEY: ProviderOperationKey = { jobId: 'job-1', operationId: 'op-1' };
 
 function reserved(ledger: OperationLedger, key = KEY, nowMs = 0): void {
-  const result = ledger.prepare({ key, reservation: 'res-1', prepared: {}, nowMs });
+  const result = ledger.prepare({ key, reservation: asReservation('res-1'), prepared: {}, nowMs });
   if (result.kind !== 'reserved') throw new Error('expected a reservation');
 }
 
@@ -23,7 +24,7 @@ describe('provider-proxy operation ledger', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
 
-    ledger.activate(KEY, 'res-1', 0);
+    ledger.activate(KEY, asReservation('res-1'), 0);
     ledger.transition(KEY, 'terminal-awaiting-journal-ack');
     ledger.transition(KEY, 'released');
 
@@ -34,7 +35,7 @@ describe('provider-proxy operation ledger', () => {
   it('refuses a transition the state machine does not name', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
-    ledger.activate(KEY, 'res-1', 0);
+    ledger.activate(KEY, asReservation('res-1'), 0);
 
     // executing never reaches pending-recovery: only an unactivated reservation can.
     expect(() => ledger.transition(KEY, 'pending-recovery')).toThrow(LedgerError);
@@ -44,7 +45,9 @@ describe('provider-proxy operation ledger', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
 
-    expect(() => ledger.activate(KEY, 'res-1', PROXY_PENDING_ACTIVATION_LEASE_MS)).toThrow(/lease expired/u);
+    expect(() => ledger.activate(KEY, asReservation('res-1'), PROXY_PENDING_ACTIVATION_LEASE_MS)).toThrow(
+      /lease expired/u,
+    );
 
     // Execution is forbidden, but the exact reservation is still there to be cancelled.
     expect(ledger.get(KEY)?.state).toBe('pending-recovery');
@@ -56,11 +59,13 @@ describe('provider-proxy operation ledger', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
 
-    expect(ledger.renew(KEY, 'res-1', 10_000).leaseExpiresAtMs).toBe(10_000 + PROXY_PENDING_ACTIVATION_LEASE_MS);
-    expect(() => ledger.renew(KEY, 'other', 10_000)).toThrow(/different reservation/u);
+    expect(ledger.renew(KEY, asReservation('res-1'), 10_000).leaseExpiresAtMs).toBe(
+      10_000 + PROXY_PENDING_ACTIVATION_LEASE_MS,
+    );
+    expect(() => ledger.renew(KEY, asReservation('other'), 10_000)).toThrow(/different reservation/u);
 
-    ledger.activate(KEY, 'res-1', 10_000);
-    expect(() => ledger.renew(KEY, 'res-1', 10_000)).toThrow(/Cannot renew from executing/u);
+    ledger.activate(KEY, asReservation('res-1'), 10_000);
+    expect(() => ledger.renew(KEY, asReservation('res-1'), 10_000)).toThrow(/Cannot renew from executing/u);
   });
 
   it('refuses a renew after the lease has expired and moves the entry to pending-recovery', () => {
@@ -69,7 +74,7 @@ describe('provider-proxy operation ledger', () => {
 
     let caught: unknown;
     try {
-      ledger.renew(KEY, 'res-1', PROXY_PENDING_ACTIVATION_LEASE_MS);
+      ledger.renew(KEY, asReservation('res-1'), PROXY_PENDING_ACTIVATION_LEASE_MS);
     } catch (error: unknown) {
       caught = error;
     }
@@ -88,7 +93,7 @@ describe('provider-proxy operation ledger', () => {
     // Formerly two assertions — a wrong id and a wrong nonce — because the entry carried two values and
     // `activate` compared both while `renew` compared only the first. One value cannot half-match, so the
     // asymmetry that made that possible is gone along with the second field.
-    expect(() => ledger.activate(KEY, 'other-reservation', 0)).toThrow(/different reservation/u);
+    expect(() => ledger.activate(KEY, asReservation('other-reservation'), 0)).toThrow(/different reservation/u);
   });
 
   it('reports capacity as a retryable refusal that reserves nothing', () => {
@@ -99,7 +104,7 @@ describe('provider-proxy operation ledger', () => {
 
     const refused = ledger.prepare({
       key: { jobId: 'job-1', operationId: 'op-128' },
-      reservation: 'res-x',
+      reservation: asReservation('res-x'),
       prepared: {},
       nowMs: 0,
     });
@@ -175,7 +180,9 @@ describe('provider-proxy operation ledger', () => {
     reserved(ledger);
     expect(ledger.size()).toBe(1);
 
-    expect(() => ledger.prepare({ key: KEY, reservation: 'other', prepared: {}, nowMs: 0 })).toThrow(LedgerError);
+    expect(() => ledger.prepare({ key: KEY, reservation: asReservation('other'), prepared: {}, nowMs: 0 })).toThrow(
+      LedgerError,
+    );
   });
 
   it('pauses on the per-operation byte ceiling with far fewer than the event ceiling', () => {
@@ -214,7 +221,7 @@ describe('provider-proxy operation ledger', () => {
 
     const refused = ledger.prepare({
       key: { jobId: 'job-1', operationId: 'late' },
-      reservation: 'res-late',
+      reservation: asReservation('res-late'),
       prepared: {},
       nowMs: 0,
     });
@@ -225,7 +232,7 @@ describe('provider-proxy operation ledger', () => {
   it('reaches released only through the suspend arm once suspended', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
-    ledger.activate(KEY, 'res-1', 0);
+    ledger.activate(KEY, asReservation('res-1'), 0);
 
     ledger.transition(KEY, 'suspended-awaiting-durable-decision');
 
@@ -250,10 +257,10 @@ describe('provider-proxy operation ledger', () => {
   it('treats a repeated activation of a running operation as the same request', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
-    ledger.activate(KEY, 'res-1', 0);
+    ledger.activate(KEY, asReservation('res-1'), 0);
 
     // Arriving after the lease would otherwise demote a live kernel to pending-recovery.
-    ledger.activate(KEY, 'res-1', PROXY_PENDING_ACTIVATION_LEASE_MS * 2);
+    ledger.activate(KEY, asReservation('res-1'), PROXY_PENDING_ACTIVATION_LEASE_MS * 2);
 
     expect(ledger.get(KEY)?.state).toBe('executing');
   });

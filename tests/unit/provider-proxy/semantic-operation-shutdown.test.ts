@@ -43,6 +43,7 @@ import {
   createSemanticOperationRuntime,
   type ProxyAppServerHostAuthority,
 } from '#src/provider-proxy/semantic-operation.js';
+import { asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 const runtime: Runtime = createRealRuntime('prod');
 
@@ -125,9 +126,9 @@ function prepareAndActivate(
   key: ProviderOperationKey,
   prepared: ProxyPreparedAppServerOperation,
 ): void {
-  const reserved = ledger.prepare({ key, reservation: 'res', prepared, nowMs: 0 });
+  const reserved = ledger.prepare({ key, reservation: asReservation('res'), prepared, nowMs: 0 });
   if (reserved.kind !== 'reserved') throw new Error('expected a reservation');
-  ledger.activate(key, 'res', 0);
+  ledger.activate(key, asReservation('res'), 0);
 }
 
 /** A `BoundProvider` test double whose `execute` never yields until its own signal aborts — a kernel that is

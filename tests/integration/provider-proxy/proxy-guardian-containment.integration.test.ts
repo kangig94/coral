@@ -12,6 +12,11 @@ import { createOperationLedger } from '#src/provider-proxy/ledger.js';
 import type { ProxyIdentity, ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
 import { createReaper } from '#src/provider-proxy/reaper.js';
 import { createProxyGuardianContainment } from '#src/provider-proxy/role-main.js';
+import {
+  asJointActivationReceipt,
+  asJointContainmentReceipt,
+  asReservation,
+} from '#tests/helpers/provider-proxy-correlation.js';
 
 /**
  * Drives `createProxyGuardianContainment` — the containment closures `startProviderProxyRole` installs on a
@@ -259,7 +264,7 @@ describe('createProxyGuardianContainment against a real guardian', () => {
     // stand-in, and `reserved.entry` is exactly what `proxy.ts`'s own handler passes into `stageProviderRoot`.
     const ledger = createOperationLedger<ProxyPreparedAppServerOperation>();
     const key = { jobId: randomUUID(), operationId: randomUUID() };
-    const reservation = randomUUID();
+    const reservation = asReservation(randomUUID());
     const reserved = ledger.prepare({ key, reservation, prepared: PREPARED, nowMs: 0 });
     if (reserved.kind !== 'reserved') throw new Error('unexpected capacity refusal in a fresh ledger');
 
@@ -291,7 +296,7 @@ describe('createProxyGuardianContainment against a real guardian', () => {
         },
         reservation,
         providerRoot: ROOT,
-        jointContainmentReceipt: staged.receipt,
+        jointContainmentReceipt: asJointContainmentReceipt(staged.receipt),
       },
       5_000,
     )) as { state: string; jointActivationReceipt: string };
@@ -303,8 +308,8 @@ describe('createProxyGuardianContainment against a real guardian', () => {
     await expect(
       containment.confirmActivation({
         key,
-        jointContainmentReceipt: staged.receipt,
-        jointActivationReceipt: activated.jointActivationReceipt,
+        jointContainmentReceipt: asJointContainmentReceipt(staged.receipt),
+        jointActivationReceipt: asJointActivationReceipt(activated.jointActivationReceipt),
       }),
     ).resolves.toBeUndefined();
   });

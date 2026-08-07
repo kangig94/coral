@@ -1,3 +1,7 @@
+// Type-only, so no runtime edge and no cycle with `protocol.ts` (which imports this file's ledger bound).
+// `production-import-graph.test.ts` walks runtime edges alone, for exactly this reason.
+import type { Reservation } from './protocol.js';
+
 /**
  * How many operations one proxy may carry at once. It lives here because it is a ledger bound; the
  * containment primitive takes it as an injected limit rather than naming a provider-proxy concept.
@@ -70,7 +74,7 @@ function frameBytes(event: ReplayEvent): number {
 export type OperationLedgerEntry<Prepared = unknown> = Readonly<{
   key: ProviderOperationKey;
   state: ProviderOperationState;
-  reservation: string;
+  reservation: Reservation;
   /** Lease expiry on the proxy's own monotonic clock, in its milliseconds. */
   leaseExpiresAtMs: number;
   /**
@@ -101,7 +105,7 @@ export type PrepareResult<Prepared = unknown> =
 export interface OperationLedger<Prepared = unknown> {
   prepare(input: {
     key: ProviderOperationKey;
-    reservation: string;
+    reservation: Reservation;
     prepared: Prepared;
     nowMs: number;
   }): PrepareResult<Prepared>;
@@ -111,8 +115,8 @@ export interface OperationLedger<Prepared = unknown> {
    * receipt into `prepare`'s input would mean staging every reservation before knowing it will be admitted.
    */
   recordContainmentReceipt(key: ProviderOperationKey, jointContainmentReceipt: string): void;
-  renew(key: ProviderOperationKey, reservation: string, nowMs: number): OperationLedgerEntry<Prepared>;
-  activate(key: ProviderOperationKey, reservation: string, nowMs: number): void;
+  renew(key: ProviderOperationKey, reservation: Reservation, nowMs: number): OperationLedgerEntry<Prepared>;
+  activate(key: ProviderOperationKey, reservation: Reservation, nowMs: number): void;
   transition(key: ProviderOperationKey, next: ProviderOperationState): void;
   /** Buffers one provider event, returning whether the producer must pause before sending more. */
   recordEvent(key: ProviderOperationKey, event: ReplayEvent): { paused: boolean };
@@ -139,7 +143,7 @@ export interface OperationLedger<Prepared = unknown> {
 type MutableEntry<Prepared> = {
   key: ProviderOperationKey;
   state: ProviderOperationState;
-  reservation: string;
+  reservation: Reservation;
   leaseExpiresAtMs: number;
   prepared: Prepared;
   jointContainmentReceipt: string | null;

@@ -62,6 +62,7 @@ import {
 // see the "agrees byte-for-byte" case below for why importing the forbidden-to-production original here is
 // exactly the point).
 import { hostFingerprintFromSpec, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
+import { asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 const runtime: Runtime = createRealRuntime('prod');
 
@@ -204,9 +205,9 @@ function prepareAndActivate(
   key: ProviderOperationKey,
   prepared: ProxyPreparedAppServerOperation,
 ): void {
-  const reserved = ledger.prepare({ key, reservation: 'res', prepared, nowMs: 0 });
+  const reserved = ledger.prepare({ key, reservation: asReservation('res'), prepared, nowMs: 0 });
   if (reserved.kind !== 'reserved') throw new Error('expected a reservation');
-  ledger.activate(key, 'res', 0);
+  ledger.activate(key, asReservation('res'), 0);
 }
 
 /** Seeds the ledger to one event short of its per-operation ceiling, so the very next `recordEvent` call

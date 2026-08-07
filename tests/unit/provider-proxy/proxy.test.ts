@@ -15,6 +15,7 @@ import {
   type ProxyIdentity,
   type ProxyPreparedAppServerOperation,
 } from '#src/provider-proxy/protocol.js';
+import { asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 /**
  * `proxy.ts`'s own control endpoint, driven over a real Unix socket with a fake `SemanticOperationHost` and a
@@ -136,7 +137,7 @@ async function startProxy(
     timer: endpointTimer,
     mintChallenge: () => `challenge-${(counter += 1)}`,
     mintReceipt: () => `receipt-${(counter += 1)}`,
-    mintReservation: () => randomUUID(),
+    mintReservation: () => asReservation(randomUUID()),
     containment: {
       // No real guardian: a fixed root/receipt is all `operation.prepare.v1` needs to stage.
       stageProviderRoot: async () => ({

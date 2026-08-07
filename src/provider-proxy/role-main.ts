@@ -35,8 +35,11 @@ import {
 import type { ControlClient } from './control-client.js';
 import {
   guardianRegisterProviderRootParamsSchema,
+  jointContainmentReceiptSchema,
   providerRootSchema,
+  reservationSchema,
   PROXY_CONTROL_RPC_TIMEOUT_MS,
+  type JointContainmentReceipt,
   type ProxyIdentity,
   type ProxyPreparedAppServerOperation,
 } from './protocol.js';
@@ -659,7 +662,7 @@ const registerProviderRootResultSchema = z
   .object({
     state: z.literal('staged-contained'),
     providerRoot: providerRootSchema,
-    jointContainmentReceipt: z.string().min(1),
+    jointContainmentReceipt: jointContainmentReceiptSchema,
   })
   .strict();
 
@@ -705,7 +708,11 @@ export type ProxyGuardianContainmentDeps = Readonly<{
 export function createProxyGuardianContainment(
   deps: ProxyGuardianContainmentDeps,
 ): ProxyOptions<symbol>['containment'] {
-  const recognisedReceipts = new Map<string, string>();
+  // Key plain, value branded. The key is `containmentKeyString(key)` — a derived index, not a correlation
+  // token, and branding a lookup string would say nothing. The value is the receipt itself, so the comparison
+  // below can only ever be receipt against receipt: handing it a reservation or an activation receipt is now
+  // a type error rather than a silent mismatch, at the exact site the fabrication defect lived.
+  const recognisedReceipts = new Map<string, JointContainmentReceipt>();
 
   return {
     stageProviderRoot: async (key, reserved) => {
@@ -832,7 +839,10 @@ export async function startProviderProxyRole(
     timer,
     mintChallenge: () => ports.runtime.ids.uuid(),
     mintReceipt: () => ports.runtime.ids.uuid(),
-    mintReservation: () => ports.runtime.ids.uuid(),
+    // The one place a reservation is created. `.parse()` is what mints the brand, so this expression — the
+    // proxy's own authority to reserve — is the only expression in the tree that can produce one from raw
+    // randomness. Everywhere else a reservation can only have been received.
+    mintReservation: () => reservationSchema.parse(ports.runtime.ids.uuid()),
     containment: createProxyGuardianContainment({
       identity,
       guardianChannel,

@@ -64,7 +64,28 @@ export const canonicalUuidSchema = z
  * not a nonce: nothing spent it, and it was compared with `!==` where every real credential in this domain
  * uses `timingSafeEqual`. Two fields were two chances to fabricate one value, and one of them was taken.
  */
-const reservationSchema = canonicalUuidSchema;
+export const reservationSchema = canonicalUuidSchema.brand<'Reservation'>();
+export type Reservation = z.infer<typeof reservationSchema>;
+
+/**
+ * A correlation value is minted by exactly one authority and, everywhere else, only ever received. Branding
+ * says that in the type system: `runtime.ids.uuid()` returns `string`, which is not a `JointActivationReceipt`,
+ * so a party that is not the authority cannot type one into existence — it can only have been handed one, or
+ * have parsed one out of a message that carried it.
+ *
+ * `.brand()` and not `.transform()`: it is a pass-through at runtime, so the bytes on the wire are unchanged,
+ * which a protocol whose peers may be a build older or newer than this one requires absolutely. The cost is
+ * that a branded schema's input and output types diverge, so any helper holding one as `z.ZodType<T>` must
+ * widen to the three-parameter form.
+ */
+export const jointActivationReceiptSchema = z.string().min(1).brand<'JointActivationReceipt'>();
+export type JointActivationReceipt = z.infer<typeof jointActivationReceiptSchema>;
+
+/** The guardian mints this only after the reaper has acknowledged the same root, so it is evidence of a round
+ *  trip no single party can fabricate. Its own brand, distinct from the activation receipt: presenting one
+ *  where the other belongs is a different mistake, and the two travel together in the same message. */
+export const jointContainmentReceiptSchema = z.string().min(1).brand<'JointContainmentReceipt'>();
+export type JointContainmentReceipt = z.infer<typeof jointContainmentReceiptSchema>;
 
 export const hostFingerprintSchema = z
   .string()
@@ -411,7 +432,7 @@ export const guardianOperationActivateParamsSchema = z
     operation: operationIdentitySchema,
     reservation: reservationSchema,
     providerRoot: providerRootSchema,
-    jointContainmentReceipt: z.string().min(1),
+    jointContainmentReceipt: jointContainmentReceiptSchema,
   })
   .strict();
 
@@ -425,7 +446,7 @@ export const guardianOperationReleaseParamsSchema = z
   .object({
     operation: operationIdentitySchema,
     reservation: reservationSchema,
-    jointContainmentReceipt: z.string().min(1),
+    jointContainmentReceipt: jointContainmentReceiptSchema,
   })
   .strict();
 
@@ -449,7 +470,7 @@ export const guardianStopAndReapParamsSchema = z
 
 /** `guardian.operation-activate.v1`'s result. */
 export const guardianOperationActivateResultSchema = z
-  .object({ state: z.literal('activation-authorized'), jointActivationReceipt: z.string().min(1) })
+  .object({ state: z.literal('activation-authorized'), jointActivationReceipt: jointActivationReceiptSchema })
   .strict();
 
 /** `guardian.operation-release.v1`'s result. */
@@ -490,8 +511,8 @@ export const proxyOperationReservationParamsSchema = z
  *  what the role prefix on both names is for. */
 export const proxyOperationActivateParamsSchema = proxyOperationReservationParamsSchema
   .extend({
-    jointContainmentReceipt: z.string().min(1),
-    jointActivationReceipt: z.string().min(1),
+    jointContainmentReceipt: jointContainmentReceiptSchema,
+    jointActivationReceipt: jointActivationReceiptSchema,
   })
   .strict();
 

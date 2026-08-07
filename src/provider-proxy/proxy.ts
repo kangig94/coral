@@ -51,7 +51,10 @@ import {
   proxyOperationStatusParamsSchema as operationStatusParamsSchema,
   proxyOperationStopParamsSchema as stopParamsSchema,
   type CoordinatorIdentity,
+  type JointActivationReceipt,
+  type JointContainmentReceipt,
   type OperationIdentity,
+  type Reservation,
   type ProviderEventResult,
   type ProxyIdentity,
   type ProxyPreparedAppServerOperation,
@@ -124,7 +127,7 @@ export type ProxyOptions<Scope extends symbol> = Readonly<{
   timer: ControlEndpointTimer;
   mintChallenge(): string;
   mintReceipt(): string;
-  mintReservation(): string;
+  mintReservation(): Reservation;
   /**
    * The joint receipt the guardian issued for this operation's provider root, and the activation receipt it
    * later converts. The proxy verifies both before starting a kernel, so a root neither authority recorded
@@ -140,11 +143,15 @@ export type ProxyOptions<Scope extends symbol> = Readonly<{
      */
     stageProviderRoot(
       key: ProviderOperationKey,
-      reserved: Readonly<{ reservation: string; prepared: ProxyPreparedAppServerOperation }>,
+      reserved: Readonly<{ reservation: Reservation; prepared: ProxyPreparedAppServerOperation }>,
     ): Promise<Readonly<{ providerRoot: unknown; receipt: string }>>;
     /** Throws unless the guardian recognises both receipts for this exact operation. */
     confirmActivation(
-      input: Readonly<{ key: ProviderOperationKey; jointContainmentReceipt: string; jointActivationReceipt: string }>,
+      input: Readonly<{
+        key: ProviderOperationKey;
+        jointContainmentReceipt: JointContainmentReceipt;
+        jointActivationReceipt: JointActivationReceipt;
+      }>,
     ): Promise<void>;
   }>;
 }>;

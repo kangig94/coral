@@ -16,7 +16,10 @@ import {
   proxyOperationPrepareParamsSchema,
   proxyOperationReservationParamsSchema,
   proxyOperationStopParamsSchema,
+  type JointActivationReceipt,
+  type JointContainmentReceipt,
   type OperationIdentity,
+  type Reservation,
   type ProxyPreparedAppServerOperation,
 } from '../../provider-proxy/protocol.js';
 import type { ProviderStopCause } from '../../providers/contract.js';
@@ -91,14 +94,22 @@ const MUTATION_RPC_TIMEOUT_DEFAULT_MS = 5_000;
  * staged a provider root. Two files independently choosing the same shape agree by coincidence; deriving one
  * from the other agrees by construction. `coordinator/services/` may reach for it because it imports both,
  * and `jobs/runtime-meta.ts` deliberately cannot import the wire schemas (see its own note on why).
+ *
+ * The brand is applied on top of that derivation rather than instead of it. Validation still comes from the
+ * row — one shape, by construction — while the brand records that this value arrived in the proxy's reply and
+ * was not invented here. It cannot live on the durable schema: a `jobs/` module may not name a
+ * `provider-proxy/` type, and a value read back out of SQLite after a restart was minted by no live authority
+ * in this process, so branding it would need a `trustTheStore()` constructor — a mint with nothing behind it.
+ * Writing the branded value back is free, since a brand is assignable to the plain string the row holds.
  */
 const preparePendingSchema = z
   .object({
     state: z.literal('pending-activation'),
-    reservation: providerOperationRuntimeMetaSchema.shape.reservation,
+    reservation: providerOperationRuntimeMetaSchema.shape.reservation.brand<'Reservation'>(),
     leaseExpiresInMs: z.number(),
     providerRoot: providerRootSchema,
-    jointContainmentReceipt: providerOperationRuntimeMetaSchema.shape.jointContainmentReceipt,
+    jointContainmentReceipt:
+      providerOperationRuntimeMetaSchema.shape.jointContainmentReceipt.brand<'JointContainmentReceipt'>(),
   })
   .strict();
 const prepareCapacitySchema = z
@@ -136,25 +147,27 @@ export type ActivateProviderOperationResult =
   | Readonly<{ kind: 'activation-failed'; step: 'guardian-activate' | 'proxy-activate'; reason: string }>;
 
 /**
- * Calls one control method and parses its reply against `resultSchema` — unconditionally, exactly as before.
- * `paramsSchema`, when supplied, now parses `params` too, *before* the call is made: the sender-side half of
- * this domain's shared wire schemas. This is not TypeScript's own excess-property check doing the same job
- * twice — that check only ever fires on a fresh object literal assigned directly to a *typed* parameter, and
- * `params` here is typed `unknown` precisely because every method's shape differs, so nothing is checked at
- * compile time regardless of how the literal is written; a caller that instead forwarded a variable would
- * defeat a literal-only check anyway. Parsing at runtime is what actually catches an omitted or misspelled
- * field, at the sender, with a clear error, instead of letting it travel to a strict receiver that refuses it.
- * `paramsSchema` is required, and that is the point: every method this module sends now has a shared schema,
- * so an unvalidated send from here is no longer expressible rather than merely discouraged. It was optional
- * only while the proxy's own request schemas were private to `proxy.ts` and therefore unreachable.
+ * Calls one control method, checking the request against its own schema on the way out and the reply on the
+ * way back. `paramsSchema` is required: every method this module sends has a shared schema, so an unvalidated
+ * send from here is not expressible rather than merely discouraged.
+ *
+ * `TSchema` is inferred from `paramsSchema` alone and `params` is typed `z.output<TSchema>` — an indexed
+ * access, which is not an inference site — so the payload is checked against what the schema *produces*. The
+ * earlier shape, `params: TParams` with `paramsSchema: z.ZodType<TParams>`, inferred `TParams` from the
+ * payload instead and then accepted any schema contravariantly, which was fine while every field was a plain
+ * string and silently useless the moment one carried a brand: a `runtime.ids.uuid()` handed to a field that
+ * requires a received value compiled without complaint. Measured, not assumed.
+ *
+ * `resultSchema`'s input slot is `unknown` for the same reason: a branded schema's input and output types
+ * diverge, so the one-parameter `z.ZodType<TResult>` stops unifying with it.
  */
-async function callStrict<TParams, TResult>(
+async function callStrict<TSchema extends z.ZodTypeAny, TResult>(
   client: OperationControlClient,
   method: string,
-  params: TParams,
+  params: z.output<TSchema>,
   timeoutMs: number,
-  paramsSchema: z.ZodType<TParams>,
-  resultSchema: z.ZodType<TResult>,
+  paramsSchema: TSchema,
+  resultSchema: z.ZodType<TResult, z.ZodTypeDef, unknown>,
 ): Promise<TResult> {
   paramsSchema.parse(params);
   const raw = await client.call(method, params, timeoutMs);
@@ -195,8 +208,8 @@ function buildStopControl(
 async function compensateAfterActivationFailure(
   deps: ProviderProxyOperationActivationDeps,
   operation: OperationIdentity,
-  reservation: string,
-  jointContainmentReceipt: string,
+  reservation: Reservation,
+  jointContainmentReceipt: JointContainmentReceipt,
 ): Promise<void> {
   deleteProviderOperationRuntimeMeta(deps.db, operation.jobId, operation.operationId);
   await callStrict(
@@ -284,7 +297,9 @@ export async function activateProviderOperation(
   writeProviderOperationRuntimeMeta(deps.db, meta);
 
   // Step 3: guardian.operation-activate.v1, against the exact committed tuple.
-  let jointActivationReceipt: string;
+  // Branded: the only way to hold one is to have parsed the guardian's reply that carried it, which is what
+  // the next step must present. A plain `string` here would silently re-open the send site to any value.
+  let jointActivationReceipt: JointActivationReceipt;
   try {
     const guardianResult = await callStrict(
       deps.guardianClient,

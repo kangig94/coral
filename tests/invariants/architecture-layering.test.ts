@@ -250,6 +250,21 @@ describe('architecture layering invariants', () => {
     expect(violations).toEqual([]);
   });
 
+  it('the jobs domain does not reach into the provider proxy', () => {
+    // The reverse of the rule above, and until now stated only in prose: `jobs/contracts/app-server-proxy-route.ts`
+    // and `jobs/runtime-meta.ts` both say `src/jobs/` may not import `src/provider-proxy/**` and both cite this
+    // file — which did not say it. `runtime-meta.ts` re-derives three identifier regexes rather than importing
+    // them for exactly this reason: the jobs domain must stay meaningful without a live proxy process, and a
+    // correlation value read back out of the store after a restart was minted by no authority still running.
+    // With this assertion those comments are true, and the brand boundary they describe is enforced instead of
+    // merely intended.
+    const violations = IMPORT_EDGES.filter((edge) => edge.source.startsWith('src/jobs/'))
+      .filter((edge) => edge.target.startsWith(PROVIDER_PROXY_ROOT))
+      .map((edge) => `${edge.source} -> ${edge.target}`);
+
+    expect(violations).toEqual([]);
+  });
+
   it('domain roots do not contain generic filenames', () => {
     const banned = DOMAIN_ROOT_DIRS.flatMap((root) =>
       GENERIC_FILENAMES.map((name) => `${root}/${name}`).filter((filePath) => PRODUCTION_FILES.has(filePath)),

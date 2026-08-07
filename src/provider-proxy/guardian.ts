@@ -41,10 +41,12 @@ import {
   guardianRegisterProviderRootParamsSchema as registerProviderRootParamsSchema,
   guardianStopAndReapParamsSchema as stopAndReapParamsSchema,
   guardianStopAndReapResultSchema,
+  jointContainmentReceiptSchema,
   proxyIdentitySchema,
   sameRecordedContainment,
   type guardianIdentitySchema,
   type providerRootSchema,
+  type JointContainmentReceipt,
   type ReaperIdentity,
 } from './protocol.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
@@ -107,7 +109,7 @@ const handoffRedeemParamsSchema = z
  * operation is a disagreement this membership can detect rather than silently accept.
  */
 type StagedMembership = Readonly<{
-  jointContainmentReceipt: string;
+  jointContainmentReceipt: JointContainmentReceipt;
   reservation: string;
   root: z.infer<typeof providerRootSchema>;
 }>;
@@ -378,7 +380,10 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             }
             throw error;
           }
-          const jointContainmentReceipt = mintReceipt();
+          // Minted here and nowhere else, and only now — after the reaper acknowledged this same root above.
+          // The brand is created by the parse, so this expression is the guardian's authority to issue one;
+          // every other party can only have received it.
+          const jointContainmentReceipt = jointContainmentReceiptSchema.parse(mintReceipt());
           staged.set(request.operation.operationId, {
             jointContainmentReceipt,
             reservation: request.reservation,
