@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import {
+  guardianReaperHandoffInstallParamsSchema,
   handoffSecretDigest,
   writeHandoffCapsuleFile,
   type HandoffCapsule,
@@ -14,6 +15,8 @@ import {
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   canonicalUuidSchema,
+  guardianStopAndReapParamsSchema,
+  guardianStopAndReapResultSchema,
   type CoordinatorIdentity,
   type GuardianIdentity,
   type ProxyIdentity,
@@ -23,10 +26,6 @@ import type { ControlClient } from '../../../provider-proxy/control-client.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { HeartbeatLoop } from './heartbeat.js';
 import type { ProviderProxySetAuthority } from './authority.js';
-
-const stopAndReapResultSchema = z
-  .object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) })
-  .strict();
 
 const handoffInstallAckSchema = z
   .object({ state: z.literal('installed-dormant'), grantId: canonicalUuidSchema })
@@ -140,34 +139,27 @@ export function createProviderProxySetAuthority(
       const secret = runtime.ids.randomBytes(32).toString('hex');
       const secretSha256 = handoffSecretDigest(secret);
 
+      // The guardian and reaper are paired peers of the same set, so they get the identical message — parsed
+      // once, here, against the exact schema `guardian.ts`/`reaper.ts` parse it with on receipt, so a mistake
+      // in this payload fails at this sender instead of at one strict receiver and not the other.
+      const guardianReaperInstallPayload = guardianReaperHandoffInstallParamsSchema.parse({
+        grantId,
+        secretSha256,
+        successor: coordinatorIdentity,
+        operations: handoffOperations,
+        orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
+        teardownReserveMs: deadlineConfig.teardownReserveMs,
+      });
+
       // All three authorities install the identical value or none of them do: a caller that reaps this set
       // after any one install fails leaves nothing to unwind, since `GrantRegistry.install` is idempotent for
       // the exact same value and the containment is about to be torn down regardless of how far this got.
       await Promise.all([
-        guardianClient.call(
-          'guardian.handoff-install.v1',
-          {
-            grantId,
-            secretSha256,
-            successor: coordinatorIdentity,
-            operations: handoffOperations,
-            orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
-            teardownReserveMs: deadlineConfig.teardownReserveMs,
-          },
-          PROXY_CONTROL_RPC_TIMEOUT_MS,
-        ),
-        reaperClient.call(
-          'reaper.handoff-install.v1',
-          {
-            grantId,
-            secretSha256,
-            successor: coordinatorIdentity,
-            operations: handoffOperations,
-            orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
-            teardownReserveMs: deadlineConfig.teardownReserveMs,
-          },
-          PROXY_CONTROL_RPC_TIMEOUT_MS,
-        ),
+        guardianClient.call('guardian.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
+        reaperClient.call('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
+        // Not parsed against a shared schema before send: the proxy's own `handoff.install.v1` request shape
+        // is still private to `proxy.ts` (see `protocol.ts`'s own note, beside its guardian request schemas,
+        // on why it is not shared here yet). This call remains validated only on receipt.
         proxyClient.call(
           'handoff.install.v1',
           {
@@ -221,10 +213,19 @@ export function createProviderProxySetAuthority(
         // disagrees with any enforcer that has actually staged a root — every activated operation stages one
         // before it is ever reported as executing — so this must name every one still live, not an empty set.
         const providerRoots = operationRegistry.providerRootsFor(proxyInstanceId);
+        // Parsed against the exact schema `guardian.ts` parses this request with on receipt, so a mistake
+        // here — an empty `providerRoots` claim, say — fails at this sender rather than at the guardian's own
+        // `.strict()` refusal.
+        const stopAndReapPayload = guardianStopAndReapParamsSchema.parse({
+          guardian: guardianIdentity,
+          reaper: reaperIdentity,
+          proxy: proxyIdentityFields,
+          providerRoots,
+        });
         const raw = await raceAgainstAbort(
           guardianClient.call(
             'guardian.stop-and-reap.v1',
-            { guardian: guardianIdentity, reaper: reaperIdentity, proxy: proxyIdentityFields, providerRoots },
+            stopAndReapPayload,
             // `guardian.stop-and-reap.v1` is declared `budgetMs: 'caller-deadline'` on the server precisely
             // so it is not cut off there: a legitimate reap can spend the SIGTERM grace, the SIGKILL grace,
             // and the disappearance confirmation — an 11s floor inside `PROXY_TEARDOWN_RESERVE_MS`'s 14s,
@@ -238,7 +239,7 @@ export function createProviderProxySetAuthority(
           ),
           signal,
         );
-        return { disappearanceReceipt: stopAndReapResultSchema.parse(raw).disappearanceReceipt };
+        return { disappearanceReceipt: guardianStopAndReapResultSchema.parse(raw).disappearanceReceipt };
       } catch (error: unknown) {
         return { unconfirmed: error instanceof Error ? error.message : 'stop-and-reap did not confirm absence' };
       }

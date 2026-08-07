@@ -329,13 +329,18 @@ describe('provider-proxy control endpoint', () => {
     expect(active.result).toEqual({ state: 'worked' });
   });
 
-  it('reports an unknown method as method-not-found', async () => {
+  it('reports an unknown method as method-not-found, with a data.code a caller can branch on', async () => {
     const { socketPath } = await startEndpoint();
     const client = await connect(socketPath);
 
     const unknown = await client.call('role.absent.v1', {});
 
     expect(unknown.error?.code).toBe(-32_601);
+    // The cross-version fallback mechanism ("try the newer method, fall back when the peer does not have it")
+    // depends on a caller being able to tell "this peer's build lacks the method" apart from "this call
+    // failed" — every other refusal in this file attaches a `data.code` from the closed set for exactly this
+    // reason, and this branch previously did not.
+    expect(unknown.error?.data?.code).toBe('method_not_found');
   });
 
   it('refuses a successor whose credential arrives after the incumbent reasserts control', async () => {

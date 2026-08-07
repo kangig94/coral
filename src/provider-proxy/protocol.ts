@@ -12,6 +12,7 @@ import {
   providerSuspendedEventBodySchema,
   providerTerminalEventBodySchema,
 } from '../providers/contract.js';
+import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 
 export const MAX_PROXY_CONTROL_FRAME_BYTES = 17 * 1024 * 1024;
 export const PROXY_CONTROL_RPC_TIMEOUT_MS = 5_000;
@@ -29,6 +30,13 @@ export const PROXY_CONTROL_PROTOCOL_ERROR_CODES = [
   'reservation_expired',
   'operation_not_found',
   'protocol_violation',
+  // A peer does not implement this method at all — distinct from every other code above, all of which mean
+  // "the method exists and refused this call." The N±1 cross-version premise depends on a caller being able
+  // to tell "try an older method instead" apart from "this call failed": an older peer already degrades an
+  // unrecognized code to `undefined` (`control-client.ts`'s `protocolCodeFrom`), so adding this member is
+  // wire-safe in both directions, and a newer peer can only detect this build's capabilities once this build
+  // actually emits it.
+  'method_not_found',
 ] as const;
 
 export type ProxyControlProtocolErrorCode = (typeof PROXY_CONTROL_PROTOCOL_ERROR_CODES)[number];
@@ -364,6 +372,96 @@ export function assertNamedTeardownReserve(claimedMs: number, expectedMs: number
     );
   }
 }
+
+/**
+ * Guardian and proxy control-method request schemas, shared with every sender of that method rather than
+ * kept private to the role that receives it. `guardian.ts`/`proxy.ts` still parse every one of these on
+ * receipt — a sender that validates does not make a receiver that trusts safe — but a coordinator sender now
+ * parses the identical schema object before writing the frame, so an omitted or misspelled field fails at
+ * the sender with a clear error instead of travelling to a strict receiver that refuses it. Two of the four
+ * incidents this section closes were exactly this shape: `guardian.operation-release.v1` sent by
+ * `provider-proxy-operation-activation.ts`'s compensation without the receipt its own staging minted, and
+ * `operation.activate.v1` sent to the proxy with a field this `.strict()` schema has no place for.
+ */
+
+/** `guardian.register-provider-root.v1`'s request. The proxy (`role-main.ts`) is this method's one sender. */
+export const guardianRegisterProviderRootParamsSchema = z
+  .object({
+    proxy: proxyIdentitySchema,
+    operation: operationIdentitySchema,
+    reservationId: canonicalUuidSchema,
+    activationNonce: canonicalUuidSchema,
+    providerPid: z.number().int().nonnegative(),
+    providerProcessStartedAtSeconds: z.number().int().nonnegative(),
+  })
+  .strict();
+
+/** `guardian.operation-activate.v1`'s request. Sent by `provider-proxy-operation-activation.ts`. */
+export const guardianOperationActivateParamsSchema = z
+  .object({
+    operation: operationIdentitySchema,
+    reservationId: canonicalUuidSchema,
+    activationNonce: canonicalUuidSchema,
+    providerRoot: providerRootSchema,
+    jointContainmentReceipt: z.string().min(1),
+  })
+  .strict();
+
+/**
+ * `guardian.operation-release.v1`'s request — `provider-proxy-operation-activation.ts`'s compensation call
+ * after a failed activation. `jointContainmentReceipt` is required: the guardian's release handler refuses a
+ * caller that cannot present the receipt its own staging minted, and omitting it here previously made this
+ * compensation itself throw on the wire, replacing the activation failure it existed to report.
+ */
+export const guardianOperationReleaseParamsSchema = z
+  .object({
+    operation: operationIdentitySchema,
+    reservationId: canonicalUuidSchema,
+    activationNonce: canonicalUuidSchema,
+    jointContainmentReceipt: z.string().min(1),
+  })
+  .strict();
+
+/** `guardian.stop-and-reap.v1`'s request. Sent by `set-authority.ts`'s `stopAndReap`. */
+export const guardianStopAndReapParamsSchema = z
+  .object({
+    guardian: guardianIdentitySchema,
+    reaper: reaperIdentitySchema,
+    proxy: proxyIdentitySchema,
+    providerRoots: z.array(providerRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
+  })
+  .strict();
+
+/**
+ * The three request schemas above close one direction of this bug class; a hand-assembled *result* built by
+ * `guardian.ts`'s own handler and never checked against anything until its one coordinator caller parses a
+ * separately-maintained expectation is the same defect pointed the other way. `guardian.ts` now builds each
+ * of these results by parsing the identical schema its caller parses the reply with, so the two can no longer
+ * silently drift into two different beliefs about the same reply shape.
+ */
+
+/** `guardian.operation-activate.v1`'s result. */
+export const guardianOperationActivateResultSchema = z
+  .object({ state: z.literal('activation-authorized'), jointActivationReceipt: z.string().min(1) })
+  .strict();
+
+/** `guardian.operation-release.v1`'s result. */
+export const guardianOperationReleaseResultSchema = z.object({ state: z.literal('membership-released') }).strict();
+
+/** `guardian.stop-and-reap.v1`'s result. */
+export const guardianStopAndReapResultSchema = z
+  .object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) })
+  .strict();
+
+// The proxy's own `operation.*.v1`/`handoff.install.v1` request schemas (`operation.prepare.v1`,
+// `operation.activate.v1`, `operation.cancel-pending.v1`, `operation.stop.v1`) deliberately do not get the
+// same treatment here: `proxy.ts` is under active concurrent development on this branch (a parallel agent is
+// mid-edit on its `containment.stageProviderRoot` seam), and it is outside this refactor's file ownership.
+// Defining a second, independent copy of those schemas in this file — rather than moving `proxy.ts`'s own —
+// would recreate the exact two-homes drift risk this section exists to close, just with both sides now
+// schema-shaped instead of one hand-assembled. `provider-proxy-operation-activation.ts`'s sends to the proxy
+// remain a real, reported gap for this same defect class (bug 1 was exactly `operation.activate.v1`'s extra
+// field) until `proxy.ts`'s schemas can be moved here the same way this section moved `guardian.ts`'s.
 
 const jsonRpcIdSchema = z.union([z.string().min(1), z.number().safe()]);
 

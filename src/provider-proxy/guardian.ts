@@ -34,62 +34,30 @@ import {
   assertRecordedSetAgreement,
   canonicalUuidSchema,
   coordinatorIdentitySchema,
-  guardianIdentitySchema,
-  operationIdentitySchema,
-  providerRootSchema,
+  guardianOperationActivateParamsSchema as operationActivateParamsSchema,
+  guardianOperationActivateResultSchema,
+  guardianOperationReleaseParamsSchema as operationReleaseParamsSchema,
+  guardianOperationReleaseResultSchema,
+  guardianRegisterProviderRootParamsSchema as registerProviderRootParamsSchema,
+  guardianStopAndReapParamsSchema as stopAndReapParamsSchema,
+  guardianStopAndReapResultSchema,
   proxyIdentitySchema,
-  reaperIdentitySchema,
   sameRecordedContainment,
+  type guardianIdentitySchema,
+  type providerRootSchema,
   type ReaperIdentity,
 } from './protocol.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
 
-const registerProviderRootParamsSchema = z
-  .object({
-    proxy: proxyIdentitySchema,
-    operation: operationIdentitySchema,
-    reservationId: canonicalUuidSchema,
-    activationNonce: canonicalUuidSchema,
-    providerPid: z.number().int().nonnegative(),
-    providerProcessStartedAtSeconds: z.number().int().nonnegative(),
-  })
-  .strict();
-
-const operationActivateParamsSchema = z
-  .object({
-    operation: operationIdentitySchema,
-    reservationId: canonicalUuidSchema,
-    activationNonce: canonicalUuidSchema,
-    providerRoot: providerRootSchema,
-    jointContainmentReceipt: z.string().min(1),
-  })
-  .strict();
-
-const operationReleaseParamsSchema = z
-  .object({
-    operation: operationIdentitySchema,
-    reservationId: canonicalUuidSchema,
-    activationNonce: canonicalUuidSchema,
-    jointContainmentReceipt: z.string().min(1),
-  })
-  .strict();
-
-/** The plan's `guardian.open.v1` request. Parsing it is what makes identity disagreement reportable. */
+/** The plan's `guardian.open.v1` request. Parsing it is what makes identity disagreement reportable. Stays
+ *  private to this file: its one sender (`acquisition-steps.ts`) builds its `openParams` generically through
+ *  `role-control.ts`'s `RoleControlPlan`, well outside this refactor's four incidents and this file's owner. */
 const openParamsSchema = z
   .object({
     bootstrapNonce: z.string().min(1),
     coordinator: coordinatorIdentitySchema,
     proxy: proxyIdentitySchema,
-  })
-  .strict();
-
-const stopAndReapParamsSchema = z
-  .object({
-    guardian: guardianIdentitySchema,
-    reaper: reaperIdentitySchema,
-    proxy: proxyIdentitySchema,
-    providerRoots: z.array(providerRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
   })
   .strict();
 
@@ -465,7 +433,10 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           if (reaperResult.state !== 'root-recorded') {
             throw new ProxyControlProtocolError('invalid_state', 'The reaper did not confirm the provider root.');
           }
-          return { state: 'activation-authorized', jointActivationReceipt: mintReceipt() };
+          return guardianOperationActivateResultSchema.parse({
+            state: 'activation-authorized',
+            jointActivationReceipt: mintReceipt(),
+          });
         },
       },
     ],
@@ -496,7 +467,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           // The membership record is dropped, but the recorded root stays in the enforcer: a released
           // operation does not prove its process is gone, and only teardown may conclude absence.
           staged.delete(request.operation.operationId);
-          return { state: 'membership-released' };
+          return guardianOperationReleaseResultSchema.parse({ state: 'membership-released' });
         },
       },
     ],
@@ -523,7 +494,10 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               `Guardian teardown did not complete: ${outcome.kind}.`,
             );
           }
-          return { state: 'containment-absent', disappearanceReceipt: outcome.disappearanceReceipt };
+          return guardianStopAndReapResultSchema.parse({
+            state: 'containment-absent',
+            disappearanceReceipt: outcome.disappearanceReceipt,
+          });
         },
       },
     ],

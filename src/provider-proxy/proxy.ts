@@ -177,7 +177,21 @@ export type ProxyOptions<Scope extends symbol> = Readonly<{
    * can never execute.
    */
   containment: Readonly<{
-    stageProviderRoot(key: ProviderOperationKey): Promise<Readonly<{ providerRoot: unknown; receipt: string }>>;
+    /**
+     * `reservation` is exactly what `ledger.prepare()` just returned for `key` — the reservation this proxy's
+     * own operation-prepare handler passes straight through, not re-read from the ledger a second time. There
+     * is no ledger access in this seam at all, on purpose: an implementation that needed a reservation for
+     * `key` could once only mint a fresh one instead of presenting the one that was actually reserved, which
+     * is exactly the defect this shape closes off by construction rather than by convention.
+     */
+    stageProviderRoot(
+      key: ProviderOperationKey,
+      reservation: Readonly<{
+        reservationId: string;
+        activationNonce: string;
+        prepared: ProxyPreparedAppServerOperation;
+      }>,
+    ): Promise<Readonly<{ providerRoot: unknown; receipt: string }>>;
     /** Throws unless the guardian recognises both receipts for this exact operation. */
     confirmActivation(
       input: Readonly<{ key: ProviderOperationKey; jointContainmentReceipt: string; jointActivationReceipt: string }>,
@@ -440,7 +454,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const key = ledgerKey(request.operation);
           const reservationId = options.mintReservationId();
           const activationNonce = options.mintActivationNonce();
-          let reserved: PrepareResult;
+          let reserved: PrepareResult<ProxyPreparedAppServerOperation>;
           try {
             reserved = ledger.prepare({
               key,
@@ -458,8 +472,15 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             return { state: 'capacity', retryable: true, reason: reserved.reason };
           }
           // The root is staged with both enforcers before the reservation is reported, so a reservation the
-          // coordinator commits always names a root the containment can already reach.
-          const staged = await options.containment.stageProviderRoot(key);
+          // coordinator commits always names a root the containment can already reach. `reserved.entry` — not
+          // the freshly minted `reservationId`/`activationNonce` above — is what gets forwarded: on an
+          // idempotent repeat of an already-reserved operation, `ledger.prepare()` returns the *existing*
+          // entry, and that entry's own reservation is the one every later step must agree with.
+          const staged = await options.containment.stageProviderRoot(key, {
+            reservationId: reserved.entry.reservationId,
+            activationNonce: reserved.entry.activationNonce,
+            prepared: reserved.entry.prepared,
+          });
           // Retained on the ledger entry — the single owner of this operation's state — so activate can
           // refuse a caller presenting a receipt nobody staged.
           ledger.recordContainmentReceipt(key, staged.receipt);

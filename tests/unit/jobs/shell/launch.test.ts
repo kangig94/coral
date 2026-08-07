@@ -1480,5 +1480,35 @@ describe('ExecutionService launch', () => {
         kind: 'completed',
       });
     });
+
+    it('calls a configured route before falling back, when it declines activation and compensates', async () => {
+      const { provider, execute } = makeAppServerProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      // `null` is exactly what `AppServerProxyRoute.activate` returns for "no live set" or "activation failed
+      // and was cleanly compensated" — the fallback this file's own doc says is deliberate and correct. What
+      // distinguishes this from the no-route test above is that a route *is* configured, so the local path
+      // this run completes through must be reached by way of that decline, not by skipping the call outright.
+      const activate = vi.fn(async () => null);
+      const service = createService(ctx, {
+        appServerProxyRoute: { activate },
+        appServerHostAuthority: fakeAppServerHostAuthority(),
+      });
+
+      const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') throw new Error('expected running launch');
+      trackJob(decision.jobId);
+      await waitForTerminalEvent(service, decision.jobId);
+
+      // The proxy path was genuinely attempted, not silently skipped: a regression that stopped calling
+      // `activate` at all would still complete this job through the same local fallback and pass every other
+      // assertion here, which is exactly the observational gap an end-to-end run cannot close either (see
+      // `launch.ts`'s own fallback doc) — this is the one assertion that would catch it.
+      expect(activate).toHaveBeenCalledOnce();
+      expect(execute).toHaveBeenCalledOnce();
+      expect(getInternals(service).progressStore.readTerminalProjection(decision.jobId)?.outcome).toEqual({
+        kind: 'completed',
+      });
+    });
   });
 });

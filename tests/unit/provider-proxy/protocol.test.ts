@@ -5,6 +5,10 @@ import {
   decodeProxyControlFrame,
   encodeProxyControlFrame,
   guardianIdentitySchema,
+  guardianOperationActivateParamsSchema,
+  guardianOperationReleaseParamsSchema,
+  guardianRegisterProviderRootParamsSchema,
+  guardianStopAndReapParamsSchema,
   MAX_PROXY_CONTROL_FRAME_BYTES,
   operationIdentitySchema,
   providerRootSchema,
@@ -258,5 +262,108 @@ describe('provider.event.v1 vocabulary', () => {
       false,
     );
     expect(providerEventResultSchema.safeParse({ kind: 'nack', committedThroughProviderSeq: 0 }).success).toBe(false);
+  });
+});
+
+/**
+ * These four request schemas moved here from `guardian.ts` so their one coordinator sender
+ * (`provider-proxy-operation-activation.ts` for the first two, `set-authority.ts`'s `stopAndReap` for the
+ * third; the fourth's sender is `role-main.ts`) parses the identical schema the guardian itself parses on
+ * receipt, before the frame is ever written. Mutation, not assertion: each test below removes a field the
+ * real branch fix required (bug 3's missing `jointContainmentReceipt`) or adds one no `.strict()` schema has
+ * a place for (bug 1's shape, pointed at a guardian method instead of the proxy's), and observes the schema
+ * itself refuse it — proving the sender-side parse this domain now performs would catch the exact mistake
+ * that used to reach the wire unvalidated.
+ */
+describe('guardian control-method request schemas, shared with their one coordinator or proxy sender', () => {
+  const operation = { jobId: UUID_A, operationId: UUID_B, proxyInstanceId: UUID_C, buildSetId: UUID_D };
+  const providerRoot = { pid: 7_001, processStartedAtSeconds: 800 };
+
+  it('guardian.operation-activate.v1: rejects a payload missing providerRoot, and one carrying an extra field', () => {
+    const valid = {
+      operation,
+      reservationId: UUID_A,
+      activationNonce: UUID_B,
+      providerRoot,
+      jointContainmentReceipt: 'joint-1',
+    };
+    expect(guardianOperationActivateParamsSchema.safeParse(valid).success).toBe(true);
+
+    // Remove a required field.
+    const { providerRoot: _omitted, ...missingProviderRoot } = valid;
+    const missing = guardianOperationActivateParamsSchema.safeParse(missingProviderRoot);
+    expect(missing.success).toBe(false);
+    if (!missing.success) {
+      expect(missing.error.issues).toEqual(
+        expect.arrayContaining([expect.objectContaining({ path: ['providerRoot'] })]),
+      );
+    }
+
+    // Add a field this `.strict()` schema has no place for — bug (1)'s exact shape.
+    const extra = guardianOperationActivateParamsSchema.safeParse({ ...valid, committedThroughProviderSeq: 0 });
+    expect(extra.success).toBe(false);
+    if (!extra.success) {
+      expect(extra.error.issues).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'unrecognized_keys' })]),
+      );
+    }
+  });
+
+  it('guardian.operation-release.v1: rejects a payload missing the receipt bug (3) omitted, and one with an extra field', () => {
+    const valid = { operation, reservationId: UUID_A, activationNonce: UUID_B, jointContainmentReceipt: 'joint-1' };
+    expect(guardianOperationReleaseParamsSchema.safeParse(valid).success).toBe(true);
+
+    // Remove the exact field bug (3) omitted at this branch's compensation call site.
+    const { jointContainmentReceipt: _omitted, ...missingReceipt } = valid;
+    const missing = guardianOperationReleaseParamsSchema.safeParse(missingReceipt);
+    expect(missing.success).toBe(false);
+    if (!missing.success) {
+      expect(missing.error.issues).toEqual(
+        expect.arrayContaining([expect.objectContaining({ path: ['jointContainmentReceipt'] })]),
+      );
+    }
+
+    const extra = guardianOperationReleaseParamsSchema.safeParse({ ...valid, unexpected: true });
+    expect(extra.success).toBe(false);
+    if (!extra.success) {
+      expect(extra.error.issues).toEqual(
+        expect.arrayContaining([expect.objectContaining({ code: 'unrecognized_keys' })]),
+      );
+    }
+  });
+
+  it('guardian.stop-and-reap.v1: rejects a payload missing providerRoots, and one with an extra field', () => {
+    const guardianIdentityFixture = { ...guardianIdentity };
+    const reaperIdentityFixture = { ...reaperIdentity };
+    const proxyIdentityFixture = { ...proxyIdentity };
+    const valid = {
+      guardian: guardianIdentityFixture,
+      reaper: reaperIdentityFixture,
+      proxy: proxyIdentityFixture,
+      providerRoots: [providerRoot],
+    };
+    expect(guardianStopAndReapParamsSchema.safeParse(valid).success).toBe(true);
+
+    const { providerRoots: _omitted, ...missingRoots } = valid;
+    expect(guardianStopAndReapParamsSchema.safeParse(missingRoots).success).toBe(false);
+
+    expect(guardianStopAndReapParamsSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
+  });
+
+  it('guardian.register-provider-root.v1: rejects a payload missing the reservation, and one with an extra field', () => {
+    const valid = {
+      proxy: proxyIdentity,
+      operation,
+      reservationId: UUID_A,
+      activationNonce: UUID_B,
+      providerPid: providerRoot.pid,
+      providerProcessStartedAtSeconds: providerRoot.processStartedAtSeconds,
+    };
+    expect(guardianRegisterProviderRootParamsSchema.safeParse(valid).success).toBe(true);
+
+    const { reservationId: _omitted, ...missingReservation } = valid;
+    expect(guardianRegisterProviderRootParamsSchema.safeParse(missingReservation).success).toBe(false);
+
+    expect(guardianRegisterProviderRootParamsSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
   });
 });

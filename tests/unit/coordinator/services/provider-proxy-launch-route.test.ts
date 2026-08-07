@@ -10,6 +10,7 @@ import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
 import type { ActivateProviderOperationResult } from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
 
 // Opaque to `createAppServerProxyRoute`: it is forwarded verbatim into `authority.activateOperation`, which
@@ -250,6 +251,60 @@ describe('createAppServerProxyRoute', () => {
       expect(result).toBeNull();
       expect(registry.stateForJob(request.jobId)).toBeNull();
       expect(appendRuntimeStarted).not.toHaveBeenCalled();
+    });
+
+    // The fallback is identical for all three, and must stay identical — nothing durable happened, so running
+    // in-process is exactly as safe. What must NOT be identical is how loudly each one passes. A set that
+    // existed and refused activation is a different event from "no set" or "at capacity", and four separate
+    // wire-contract breaks shipped precisely because all three returned the same silent `null`: the job still
+    // completed in-process, so a dead proxy path looked exactly like a working one to tests and operators.
+    it('reports a refusal but stays quiet for the routine reasons', async () => {
+      const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+      try {
+        const refused = deps({
+          hostManager: {
+            routeAppServerOperation: () =>
+              fakeAuthority(
+                vi.fn(
+                  async (): Promise<ActivateProviderOperationResult> => ({
+                    kind: 'activation-failed',
+                    step: 'guardian-activate',
+                    reason: 'identity_mismatch',
+                  }),
+                ),
+              ),
+          },
+        });
+        await refused.route.activate(requestFixture(), vi.fn(), new AbortController().signal);
+        expect(warn).toHaveBeenCalledOnce();
+        expect(warn.mock.calls[0]?.[0]).toContain('guardian-activate');
+        expect(warn.mock.calls[0]?.[0]).toContain('identity_mismatch');
+
+        warn.mockClear();
+        const atCapacity = deps({
+          hostManager: {
+            routeAppServerOperation: () =>
+              fakeAuthority(
+                vi.fn(
+                  async (): Promise<ActivateProviderOperationResult> => ({
+                    kind: 'capacity',
+                    retryable: true,
+                    reason: 'ledger full',
+                  }),
+                ),
+              ),
+          },
+        });
+        await atCapacity.route.activate(requestFixture(), vi.fn(), new AbortController().signal);
+        expect(warn).not.toHaveBeenCalled();
+
+        warn.mockClear();
+        const noSet = deps({ hostManager: { routeAppServerOperation: () => null } });
+        await noSet.route.activate(requestFixture(), vi.fn(), new AbortController().signal);
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it('answers null when the operation.prepare.v1 RPC itself rejects', async () => {

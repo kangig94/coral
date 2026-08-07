@@ -107,7 +107,23 @@ export function createAppServerProxyRoute(deps: {
         );
         return null;
       }
-      if (result.kind !== 'executing') return null;
+      if (result.kind === 'capacity') return null;
+      if (result.kind === 'activation-failed') {
+        // Audible on purpose. The fallback below is correct and deliberate — nothing durable happened, so
+        // running in-process is exactly as safe — but a set that existed and then refused activation is not
+        // the same event as "no set exists" or "the proxy is at capacity", and collapsing all three into one
+        // silent `return null` is what let four separate wire-contract breaks ship: the job still completed
+        // in-process, so a dead proxy path was observationally identical to a working one.
+        //
+        // Not yet split by build: a refusal from a set carrying this coordinator's own `buildSetId` is
+        // provably a defect, while one from a foreign build is the ordinary cross-version case this design
+        // exists for. Making that distinction needs the coordinator's own identity threaded into this route,
+        // which it does not currently receive.
+        backendLog.warn(
+          `Provider proxy refused activation for job '${request.jobId}' at ${result.step} (${result.reason}); falling back to in-process execution.`,
+        );
+        return null;
+      }
 
       // From here the operation is durably executing on the proxy no matter what happens below — a failure
       // recording that fact locally must never be reported back as "not usable", or the caller would fall

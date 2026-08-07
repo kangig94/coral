@@ -26,14 +26,21 @@ import {
   type EnforcementScheduler,
 } from './enforcement.js';
 import { DETACHED_CONTAINMENT_KIND, createGuardian, type Guardian } from './guardian.js';
+import type { ProviderOperationKey } from './ledger.js';
 import {
   createEnforcerDeadlineStateMachine,
   resolveProviderProxyDeadlineConfiguration,
   type EnforcerDeadlineStateMachine,
 } from './orphan-deadline.js';
 import type { ControlClient } from './control-client.js';
-import { providerRootSchema, PROXY_CONTROL_RPC_TIMEOUT_MS, type ProxyIdentity } from './protocol.js';
-import { createProxy, type Proxy } from './proxy.js';
+import {
+  guardianRegisterProviderRootParamsSchema,
+  providerRootSchema,
+  PROXY_CONTROL_RPC_TIMEOUT_MS,
+  type ProxyIdentity,
+  type ProxyPreparedAppServerOperation,
+} from './protocol.js';
+import { createProxy, type Proxy, type ProxyOptions } from './proxy.js';
 import { createReaper, type Reaper } from './reaper.js';
 import { createProxyAppServerHostAuthority, createSemanticOperationRuntime } from './semantic-operation.js';
 import {
@@ -665,6 +672,100 @@ function containmentKeyString(key: { jobId: string; operationId: string }): stri
   return `${key.jobId} ${key.operationId}`;
 }
 
+/** What `createProxyGuardianContainment` needs to talk to the guardian on the kernel's behalf, with every
+ *  dependency that would otherwise force a real provider spawn or a real spawned guardian process taken as a
+ *  parameter: `ensureProviderRoot` in particular is captured from `semantic-operation.ts` in production, but a
+ *  test can supply a canned root instead. */
+export type ProxyGuardianContainmentDeps = Readonly<{
+  identity: ProxyIdentity;
+  guardianChannel: Pick<ControlClient, 'call'>;
+  ensureProviderRoot(
+    key: ProviderOperationKey,
+    prepared: ProxyPreparedAppServerOperation,
+  ): Promise<Readonly<{ pid: number; processStartedAtSeconds: number }>>;
+}>;
+
+/**
+ * Builds the two containment closures a proxy uses to talk to its guardian on the kernel's behalf:
+ * `stageProviderRoot` (called from `operation.prepare.v1`) and `confirmActivation` (called from
+ * `operation.activate.v1`). Extracted out of `startProviderProxyRole` so it can be exercised against a real
+ * `createGuardian` in a test without spawning a real provider — only `ensureProviderRoot` needs replacing for
+ * that, everything else here is the real wiring `startProviderProxyRole` itself installs.
+ *
+ * Takes no ledger access of any kind: `stageProviderRoot`'s `reservation` parameter is exactly what
+ * `ledger.prepare()` already returned to `proxy.ts`'s own caller, passed straight through rather than fetched
+ * here a second time. A seam that could independently ask the ledger for "the" reservation is a seam that can
+ * be asked before one exists — and minting a fresh one to answer anyway is exactly how this bug shipped; a
+ * seam with no such question to ask cannot make that mistake.
+ *
+ * Owns its own `recognisedReceipts` map rather than taking one as a dependency: it is this containment
+ * wiring's own record of what it staged, not a second read of the ledger's (`proxy.ts` already refuses a
+ * mismatch there before ever calling `confirmActivation`), so it has no reason to be shared or injected.
+ */
+export function createProxyGuardianContainment(
+  deps: ProxyGuardianContainmentDeps,
+): ProxyOptions<symbol>['containment'] {
+  const recognisedReceipts = new Map<string, string>();
+
+  return {
+    stageProviderRoot: async (key, reservation) => {
+      const root = await deps.ensureProviderRoot(key, reservation.prepared);
+      // Parsed against the guardian's own schema before the frame is written, not merely typed: the receiver
+      // is `.strict()`, so a field it has no place for — or one this call forgot — is refused on arrival,
+      // and a refusal here reads as an activation failure rather than as the malformed request it is.
+      const params = guardianRegisterProviderRootParamsSchema.parse({
+        proxy: deps.identity,
+        operation: {
+          jobId: key.jobId,
+          operationId: key.operationId,
+          proxyInstanceId: deps.identity.proxyInstanceId,
+          buildSetId: deps.identity.buildSetId,
+        },
+        // The exact reservation `operation.prepare.v1` was handed, not a fresh one: the guardian stores
+        // whatever this call presents and `guardian.operation-activate.v1` later compares it against the
+        // coordinator's own copy of the same reservation (returned to the coordinator by
+        // `operation.prepare.v1`'s reply). Presenting anything else here means that later comparison can
+        // never agree, and activation refuses with `identity_mismatch` on every attempt.
+        reservationId: reservation.reservationId,
+        activationNonce: reservation.activationNonce,
+        providerPid: root.pid,
+        providerProcessStartedAtSeconds: root.processStartedAtSeconds,
+      });
+      const response = await deps.guardianChannel.call(
+        'guardian.register-provider-root.v1',
+        params,
+        PROXY_CONTROL_RPC_TIMEOUT_MS,
+      );
+      const parsed = registerProviderRootResultSchema.parse(response);
+      recognisedReceipts.set(containmentKeyString(key), parsed.jointContainmentReceipt);
+      return { providerRoot: parsed.providerRoot, receipt: parsed.jointContainmentReceipt };
+    },
+    confirmActivation: async ({ key, jointContainmentReceipt, jointActivationReceipt }) => {
+      // `jointContainmentReceipt`: recognised against what this containment wiring itself staged, not a
+      // second read of `proxy.ts`'s own ledger-side check (which already ran before this was called).
+      const recognised = recognisedReceipts.get(containmentKeyString(key));
+      if (recognised === undefined || recognised !== jointContainmentReceipt) {
+        throw new Error(
+          `Activation named a containment receipt this proxy never staged for ${key.jobId}/${key.operationId}.`,
+        );
+      }
+      // `jointActivationReceipt`: `guardian.operation-activate.v1` — the RPC that mints it — requires
+      // *active* guardian control, which only the coordinator's own connection to the guardian ever holds;
+      // this proxy's own connection is the *pairing* channel `guardian.register-provider-root.v1` requires,
+      // a distinct, narrower authority with no reachable method to re-ask the guardian about an activation
+      // receipt. There is therefore no live corroboration this proxy can perform for this specific field —
+      // see the task report's "confirmActivation" judgement — so it is accepted here as presented by a
+      // coordinator that could only have obtained it by already proving active control over both this proxy
+      // (to reach `operation.activate.v1` at all) and the guardian that minted it. Non-emptiness is the one
+      // well-formedness fact left to check; the wire schema (`activateParamsSchema`) already guarantees it,
+      // so this is a defensive restatement of that guarantee, not new coverage.
+      if (jointActivationReceipt.length === 0) {
+        throw new Error('Activation presented an empty activation receipt.');
+      }
+    },
+  };
+}
+
 /**
  * Runs the proxy: consumes its capsule, pairs with the guardian over the channel `guardian.register-provider-
  * root.v1` requires, and starts listening. The semantic carrier itself — reconstructing the bound provider,
@@ -712,12 +813,6 @@ export async function startProviderProxyRole(
     PROXY_CONTROL_RPC_TIMEOUT_MS,
   );
 
-  // The joint containment receipt this proxy itself observed at stage time, per operation — what
-  // `confirmActivation` below recognises an activation against. Keyed independently of the ledger's own copy
-  // (`proxy.ts` already refuses a mismatch there before ever calling `confirmActivation`): this is this
-  // containment wiring's own record of what it staged, not a second read of the ledger's.
-  const recognisedReceipts = new Map<string, string>();
-
   const hostAuthority = createProxyAppServerHostAuthority(ports.runtime);
   // Forward-referenced: `createSemanticOperationRuntime`'s host needs the `Proxy` this call is itself building
   // (to pump events and read ledger state), and `createProxy` needs that host before the `Proxy` it returns
@@ -740,66 +835,11 @@ export async function startProviderProxyRole(
     mintReceipt: () => ports.runtime.ids.uuid(),
     mintReservationId: () => ports.runtime.ids.uuid(),
     mintActivationNonce: () => ports.runtime.ids.uuid(),
-    containment: {
-      stageProviderRoot: async (key) => {
-        const entry = proxyRef.ledger().get(key);
-        if (entry === null) {
-          // Unreachable in production: `proxy.ts` calls this only immediately after `ledger.prepare()` stored
-          // this exact entry. A thrown error here leaves the ledger entry untouched, matching `prepare`'s own
-          // contract for a staging failure.
-          throw new Error(`No ledger entry for ${key.jobId}/${key.operationId} at stage time.`);
-        }
-        const root = await semantic.ensureProviderRoot(key, entry.prepared);
-        const response = await guardianChannel.call(
-          'guardian.register-provider-root.v1',
-          {
-            proxy: identity,
-            operation: {
-              jobId: key.jobId,
-              operationId: key.operationId,
-              proxyInstanceId: identity.proxyInstanceId,
-              buildSetId: identity.buildSetId,
-            },
-            // The reservation `ledger.prepare()` already minted for this entry, not a fresh one: the guardian
-            // stores whatever this call presents and `guardian.operation-activate.v1` later compares it
-            // against the coordinator's own copy of the same reservation (returned to the coordinator by
-            // `operation.prepare.v1`'s reply). Presenting anything else here means that later comparison can
-            // never agree, and activation refuses with `identity_mismatch` on every attempt.
-            reservationId: entry.reservationId,
-            activationNonce: entry.activationNonce,
-            providerPid: root.pid,
-            providerProcessStartedAtSeconds: root.processStartedAtSeconds,
-          },
-          PROXY_CONTROL_RPC_TIMEOUT_MS,
-        );
-        const parsed = registerProviderRootResultSchema.parse(response);
-        recognisedReceipts.set(containmentKeyString(key), parsed.jointContainmentReceipt);
-        return { providerRoot: parsed.providerRoot, receipt: parsed.jointContainmentReceipt };
-      },
-      confirmActivation: async ({ key, jointContainmentReceipt, jointActivationReceipt }) => {
-        // `jointContainmentReceipt`: recognised against what this containment wiring itself staged, not a
-        // second read of `proxy.ts`'s own ledger-side check (which already ran before this was called).
-        const recognised = recognisedReceipts.get(containmentKeyString(key));
-        if (recognised === undefined || recognised !== jointContainmentReceipt) {
-          throw new Error(
-            `Activation named a containment receipt this proxy never staged for ${key.jobId}/${key.operationId}.`,
-          );
-        }
-        // `jointActivationReceipt`: `guardian.operation-activate.v1` — the RPC that mints it — requires
-        // *active* guardian control, which only the coordinator's own connection to the guardian ever holds;
-        // this proxy's own connection is the *pairing* channel `guardian.register-provider-root.v1` requires,
-        // a distinct, narrower authority with no reachable method to re-ask the guardian about an activation
-        // receipt. There is therefore no live corroboration this proxy can perform for this specific field —
-        // see the task report's "confirmActivation" judgement — so it is accepted here as presented by a
-        // coordinator that could only have obtained it by already proving active control over both this proxy
-        // (to reach `operation.activate.v1` at all) and the guardian that minted it. Non-emptiness is the one
-        // well-formedness fact left to check; the wire schema (`activateParamsSchema`) already guarantees it,
-        // so this is a defensive restatement of that guarantee, not new coverage.
-        if (jointActivationReceipt.length === 0) {
-          throw new Error('Activation presented an empty activation receipt.');
-        }
-      },
-    },
+    containment: createProxyGuardianContainment({
+      identity,
+      guardianChannel,
+      ensureProviderRoot: semantic.ensureProviderRoot,
+    }),
   });
   proxyRef = proxy;
   await proxy.listen();
