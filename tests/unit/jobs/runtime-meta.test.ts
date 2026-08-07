@@ -103,8 +103,13 @@ describe('providerOperationRuntimeMetaKey', () => {
     );
   });
 
-  it('refuses to build a key from a non-canonical id', () => {
-    expect(() => providerOperationRuntimeMetaKey('not-a-uuid', OPERATION_ID)).toThrow();
+  it('names a row for a non-canonical id rather than throwing where nothing can act on it', () => {
+    // The id is refused where refusing it means something — the write's strict schema. A key builder that
+    // threw would put that failure on the reader and the pruner instead, neither of which chose the id.
+    // The write's own refusal is covered by the encode suite below.
+    expect(providerOperationRuntimeMetaKey('not-a-uuid', OPERATION_ID)).toBe(
+      `provider_operation.v1:not-a-uuid:${OPERATION_ID}`,
+    );
   });
 });
 

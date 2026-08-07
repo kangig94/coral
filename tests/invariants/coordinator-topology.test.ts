@@ -22,6 +22,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/bootstrap-diagnostics.ts',
   'src/coordinator/bootstrap.ts',
   'src/coordinator/child-principal-registry.ts',
+  'src/coordinator/composition/carrier-observation.ts',
   'src/coordinator/composition/job-control.ts',
   'src/coordinator/composition/store-services-ref.ts',
   'src/coordinator/composition/types.ts',

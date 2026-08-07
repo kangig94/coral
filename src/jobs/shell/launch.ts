@@ -49,6 +49,7 @@ import { applyInjectBundle } from '../../providers/inject.js';
 import { ProviderBindingRuntimeError } from '../../providers/contracts/binding.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import { jobLaunchRequestedEvent } from '../store.js';
+import { writeDurableCliProcessRuntimeMeta } from '../runtime-meta-store.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 type LauncherJobEventBody = JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
@@ -1192,6 +1193,20 @@ export class LaunchOrchestrator {
       this.deps.progressStore.jobDir(jobId),
       (record) => {
         this.deps.progressStore.appendRuntimeStarted(jobId, record);
+      },
+      // Recorded once, at the only moment it can be captured honestly (see `durable-transport.ts`). Never a
+      // substitute for the `job.runtime.started` append above — this is `meta`, not journal truth.
+      //
+      // Which is why a failed write must not fail the launch. This callback runs between the child's spawn
+      // and its cleanup registration, so a throw here would fault the job over bookkeeping and strand the
+      // very process it was describing. Losing the record only costs a later carrier verdict its `absent`,
+      // leaving `unknown` — the conservative direction the tri-state exists to fall back to.
+      (identity) => {
+        try {
+          writeDurableCliProcessRuntimeMeta(this.deps.progressStore.getDb(), { version: 1, jobId, ...identity });
+        } catch (error: unknown) {
+          backendLog.warn(`Failed to record durable process identity for ${jobId}: ${errorMessage(error)}`);
+        }
       },
     );
     return prepared.execute({

@@ -6,6 +6,7 @@ import type { CoordinatorWorld } from './world.js';
 import { subscribeJobEvents } from '../../jobs/shell/event-subscription.js';
 import { prepareCached } from '../../store/db.js';
 import { aggregateWorkflowUsage } from '../../jobs/workflow-usage.js';
+import { admittedByThisCoordinator, createObserveCarriers } from './carrier-observation.js';
 
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
@@ -39,6 +40,11 @@ export function createExecutionServices({
     const existing = services.get(key);
     if (existing) return existing;
     const progressStore = getProgressStore();
+    const getCurrentJournalSeq = (): number =>
+      prepareCached<[], { seq: number }>(
+        getProgressStore().getDb(),
+        'SELECT COALESCE(MAX(seq), 0) AS seq FROM events',
+      ).get()?.seq ?? 0;
     const created = createExecutionService(ctx, {
       runtime,
       progressStore,
@@ -54,11 +60,16 @@ export function createExecutionServices({
       readJobEvents: (jobId) => getProgressStore().readJobEvents(jobId),
       aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(getProgressStore().getDb(), workflowJobId),
       subscribeJobEvents,
-      getCurrentJournalSeq: () =>
-        prepareCached<[], { seq: number }>(
-          getProgressStore().getDb(),
-          'SELECT COALESCE(MAX(seq), 0) AS seq FROM events',
-        ).get()?.seq ?? 0,
+      getCurrentJournalSeq,
+      observeCarriers: createObserveCarriers(
+        {
+          getDb: () => getProgressStore().getDb(),
+          loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
+          platform: runtime.env.platform() as NodeJS.Platform,
+          isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(world.launchCoordinator, jobId),
+        },
+        getCurrentJournalSeq,
+      ),
     });
     services.set(key, created);
     return created;

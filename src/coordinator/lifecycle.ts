@@ -21,6 +21,7 @@ import type { JobStatus } from '../jobs/records.js';
 import { jobLaunchRequestBodySchema } from '../jobs/launch.js';
 import { decodeProjectionJobExecutionOwner, decodeProjectionJobStoredRow } from '../jobs/projection-row.js';
 import { appendJobTerminalRecorded } from '../jobs/terminal/recording.js';
+import { deleteDurableCliProcessRuntimeMeta } from '../jobs/runtime-meta-store.js';
 import { elapsedDurationMs } from '../jobs/duration.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -397,6 +398,11 @@ function createStaleJobCleanupPolicy(
       const artifactPath = progressStore.jobDir(item.jobId);
       storage.rmSync(artifactPath, { recursive: true, force: true });
       progressStore.purgeFromCache(item.jobId);
+      // The carrier identity captured at launch describes a process, so nothing about the job ending makes it
+      // stale — this prune is the only thing that ever removes it. Deleting it here rather than on the
+      // terminal event is deliberate: the identity outlives the job for exactly as long as the artifact does,
+      // and the two are reclaimed together. Idempotent, and a job that never captured one is a no-op.
+      deleteDurableCliProcessRuntimeMeta(progressStore.getDb(), item.jobId);
       bestEffortLifecycleLog(log, `Cleaned up ${fromOldBundle ? 'stale' : 'aged'} job artifact: ${item.jobId}\n`);
       return {
         kind: 'advanced',

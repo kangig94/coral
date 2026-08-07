@@ -20,8 +20,12 @@ describe('durable CLI process runtime meta', () => {
     expect(durableCliProcessRuntimeMetaKey(JOB_ID)).toBe(`durable_cli_process.v1:${JOB_ID}`);
   });
 
-  it('refuses a non-canonical job id at the key boundary', () => {
-    expect(() => durableCliProcessRuntimeMetaKey('not-a-uuid')).toThrow();
+  it('names a row for a non-canonical job id instead of throwing at readers and pruners', () => {
+    // Building a key is naming a row, not validating one. Every write goes through the strict schema, so a
+    // non-canonical id can never have produced a row — the key it names is simply one that does not exist,
+    // which is exactly what a read and a delete need it to be.
+    expect(durableCliProcessRuntimeMetaKey('not-a-uuid')).toBe('durable_cli_process.v1:not-a-uuid');
+    expect(() => encodeDurableCliProcessRuntimeMeta({ ...META, jobId: 'not-a-uuid' })).toThrow();
   });
 
   it('round-trips the recorded identity', () => {

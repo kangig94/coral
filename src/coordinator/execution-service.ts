@@ -115,6 +115,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       getCurrentJournalSeq: deps.getCurrentJournalSeq,
       resultJobsRoot: this.runtime.paths.coral.exports.jobsRoot,
       ensureResultArtifact: (jobId) => this.progressStore.ensureResultArtifact(jobId),
+      observeCarriers: deps.observeCarriers,
     });
 
     this.recoveryService = new RecoveryService({

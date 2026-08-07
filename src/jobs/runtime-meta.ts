@@ -87,11 +87,16 @@ export class ProviderOperationRuntimeMetaCodecError extends Error {
   }
 }
 
-/** The meta table key for one operation's runtime locator. Only the coordinator writes this key. */
+/**
+ * The meta table key for one operation's runtime locator. Only the coordinator writes this key.
+ *
+ * Naming a row, not validating one. The identifiers are checked where checking them means something — the
+ * strict schema every write goes through — so a malformed id is refused at the write and simply names a row
+ * that cannot exist at a read or a delete. Validating here instead would make the *reader* and the *pruner*
+ * throw on an id neither of them chose and neither of them can correct.
+ */
 export function providerOperationRuntimeMetaKey(jobId: string, operationId: string): string {
-  const canonicalJobId = canonicalUuidSchema.parse(jobId);
-  const canonicalOperationId = canonicalUuidSchema.parse(operationId);
-  return `provider_operation.v1:${canonicalJobId}:${canonicalOperationId}`;
+  return `provider_operation.v1:${jobId}:${operationId}`;
 }
 
 /**
@@ -178,9 +183,10 @@ export const durableCliProcessRuntimeMetaSchema = z
 
 export type DurableCliProcessRuntimeMeta = z.infer<typeof durableCliProcessRuntimeMetaSchema>;
 
-/** The meta table key for one durable CLI child's recorded identity. Only the coordinator writes this key. */
+/** The meta table key for one durable CLI child's recorded identity. Only the coordinator writes this key.
+ *  Total for the same reason `providerOperationRuntimeMetaKey` is. */
 export function durableCliProcessRuntimeMetaKey(jobId: string): string {
-  return `durable_cli_process.v1:${canonicalUuidSchema.parse(jobId)}`;
+  return `durable_cli_process.v1:${jobId}`;
 }
 
 export function encodeDurableCliProcessRuntimeMeta(meta: DurableCliProcessRuntimeMeta): string {

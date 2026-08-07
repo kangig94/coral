@@ -10,6 +10,9 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
+import { admittedByThisCoordinator, createObserveCarriers } from '#src/coordinator/composition/carrier-observation.js';
+import { writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
+import type { CarrierInterruptedWaitEvent, WaitStreamEvent } from '#src/jobs/wait.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -167,7 +170,7 @@ describe('coordinator continuity lifecycle integration', () => {
     vi.restoreAllMocks();
   });
 
-  function createService(providers: readonly TestProvider[]) {
+  function createService(providers: readonly TestProvider[], options: { withObserveCarriers?: boolean } = {}) {
     const providerRegistry = new ProviderRegistry();
     for (const provider of providers) {
       providerRegistry.register(
@@ -196,6 +199,7 @@ describe('coordinator continuity lifecycle integration', () => {
       reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
       providers: permissiveProviderLookupPort,
     });
+    const journalDeps = createTestJobJournalDeps(progressStore, runtime);
     const service = new ExecutionService(ctx, {
       childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
       runtime,
@@ -206,7 +210,23 @@ describe('coordinator continuity lifecycle integration', () => {
       eventBus,
       providerRegistry,
       pluginRegistry: { discoverPluginRoot: () => null },
-      ...createTestJobJournalDeps(progressStore, runtime),
+      ...journalDeps,
+      ...(options.withObserveCarriers
+        ? {
+            // Exactly the composition function the real backend wires in
+            // (`coordinator/composition/execution-services.ts`), fed this test's own real
+            // LaunchCoordinator and store — proves the production construction site, not a test double.
+            observeCarriers: createObserveCarriers(
+              {
+                getDb: () => progressStore.getDb(),
+                loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
+                platform: runtime.env.platform() as NodeJS.Platform,
+                isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(launchCoordinator, jobId),
+              },
+              journalDeps.getCurrentJournalSeq,
+            ),
+          }
+        : {}),
     });
     return { service, progressStore };
   }
@@ -568,5 +588,75 @@ describe('coordinator continuity lifecycle integration', () => {
     } finally {
       store.dispose();
     }
+  });
+
+  it('emits a wait-stream interrupted event for a durable CLI job whose recorded process is gone', async () => {
+    // W3.1 production wiring: `observeCarriers` reaches `ExecutionService` through the same
+    // `createObserveCarriers` composition function the real backend wires in
+    // (`coordinator/composition/execution-services.ts`), not a test double.
+    const { service, progressStore } = createService([], { withObserveCarriers: true });
+    const { sessionManager } = getInternals(service);
+    // `durable_cli_process.v1` keys on a canonical UUID; the job id must be one to write it below.
+    const jobId = randomUUID();
+    // A pid this OS will never assign: `probeProcessStartedAtSeconds` and `isProcessAlive` both answer
+    // "nothing there" for it locally, with no network call involved.
+    const deadPid = 2_147_483_647;
+    const session = allocateTestSession(
+      sessionManager,
+      'codex',
+      `carrier-durable-${jobId}`,
+      undefined,
+      ctx.projectRoot,
+      ctx.projectRoot,
+      TEST_BACKEND_NAMESPACE,
+    );
+    const sessionId = session.sessionId;
+    sessionManager.claimForJobSync(sessionId, jobId);
+
+    progressStore.initJob({
+      jobId,
+      sessionId,
+      provider: 'codex',
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      initialPhase: 'queued',
+    });
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'durable-cli',
+      pid: deadPid,
+      stdoutPath: join(ctx.projectRoot, 'stdout.log'),
+      stderrPath: join(ctx.projectRoot, 'stderr.log'),
+      startTime: new Date(runtime.time.now()).toISOString(),
+    });
+    // The separately captured identity `spawnDurableJobTransport` would have written at launch — see
+    // `onDurableProcessIdentity` in `providers/cli-runner.ts` and `jobs/shell/launch.ts`.
+    writeDurableCliProcessRuntimeMeta(progressStore.getDb(), {
+      version: 1,
+      jobId,
+      pid: deadPid,
+      processStartedAtSeconds: 1,
+    });
+    const expectedStoredPhase = progressStore.readStatus(jobId)?.phase;
+
+    const events: WaitStreamEvent[] = [];
+    const iterator = service.waitStream({ jobIds: [jobId], timeoutSeconds: 2 })[Symbol.asyncIterator]();
+    for (let index = 0; index < 5; index += 1) {
+      const next = await iterator.next();
+      if (next.done) break;
+      events.push(next.value);
+      if (next.value.type === 'interrupted') break;
+    }
+    await iterator.return?.(undefined);
+
+    const interrupted = events.find((event): event is CarrierInterruptedWaitEvent => event.type === 'interrupted');
+    expect(interrupted).toMatchObject({
+      jobId,
+      storedPhase: expectedStoredPhase,
+      observation: { kind: 'carrier_interrupted', reason: 'carrier_absent' },
+      continuity: 'unavailable',
+      outcome: 'unknown',
+    });
+    // Absence never ends the job or the stream: only the journal does that.
+    expect(progressStore.readStatus(jobId)?.phase).toBe(expectedStoredPhase);
   });
 });
