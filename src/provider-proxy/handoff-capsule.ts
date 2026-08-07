@@ -3,7 +3,7 @@ import { isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
 
-import { readBoundedFileAtIdentity } from '../infra/bundle-manifest.js';
+import { readBoundedFileAtIdentity } from '../infra/bounded-file-read.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import {
   PERMISSION_BITS_MASK,
@@ -278,12 +278,12 @@ export function writeHandoffCapsuleFile(
 /**
  * Reads one capsule file, verifying it is a private, size-bounded regular file before any byte crosses into
  * `decodeHandoffCapsule`, and re-verifying that same identity — device, inode, mode, owning uid, size, and
- * mtime — after the read completes: `readBoundedFileAtIdentity` (`infra/bundle-manifest.ts`) is the same
- * lstat-open-fstat-bounded-read-restat sequence `bootstrap-capsule.ts`'s own capsule reader runs, reused here
- * rather than re-implemented at a weaker check, because a capsule swapped for another mid-read would
- * otherwise be decoded as if it were still the one just proven private. Returns `null` for an absent path —
- * the ordinary case once the recorded set's own enforcers have unlinked it after confirmed absence — rather
- * than forcing every caller to special-case `ENOENT`.
+ * mtime — after the read completes: `readBoundedFileAtIdentity` (`infra/bounded-file-read.ts`) is the one
+ * lstat-open-fstat-bounded-read-restat primitive `bootstrap-capsule.ts`'s own capsule reader calls too, not a
+ * parallel copy of it, because a capsule swapped for another mid-read would otherwise be decoded as if it
+ * were still the one just proven private. Returns `null` for an absent path — the ordinary case once the
+ * recorded set's own enforcers have unlinked it after confirmed absence — rather than forcing every caller to
+ * special-case `ENOENT`.
  */
 export function readHandoffCapsuleFile(path: string, env: HandoffCapsuleFileEnvironment): HandoffCapsule | null {
   assertCanonicalHandoffCapsulePath(path);

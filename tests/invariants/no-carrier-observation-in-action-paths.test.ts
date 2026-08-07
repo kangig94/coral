@@ -37,13 +37,15 @@ const OBSERVATION_AUTHORITIES: readonly ObservationAuthority[] = [
     module: 'src/jobs/carrier-observation.ts',
     what: 'the pure carrier classifier',
     permittedImporters: [
-      // The wait stream's local classification path, which reports observation beside stored phase.
-      'src/jobs/shell/',
       // Health snapshots are assembled in composition, which is why that root — not a `health.ts` or
       // `coordinator/live/idle.ts` — is what appears here: composition is what may ask the classifier so
       // health/idle never need a network observer to do it.
       'src/coordinator/composition/',
     ],
+    // Not listed: `src/jobs/shell/`. The wait stream reports observation beside stored phase, but it reaches
+    // the classifier only through composition — its own edge is `import type { CarrierLiveness }`, which is
+    // erased before anything runs and so needs no permission. Listing it granted a runtime capability nothing
+    // used, which would have silently pre-authorized a later value import of the classifier itself.
   },
 ];
 
@@ -147,7 +149,12 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
   it.each(OBSERVATION_AUTHORITIES.map((authority) => [authority.module, authority] as const))(
     '%s is actually imported, so this invariant is not vacuously green over an empty set',
     (module, authority) => {
-      const importers = IMPORT_EDGES.filter((edge) => edge.target === module).map((edge) => edge.source);
+      // `edge.runtime` for the same reason the ban itself filters on it: an `import type` is erased before
+      // anything runs, so it neither needs a permission nor proves one is exercised. Counting it here would
+      // let this check answer "exercised" about an edge the enforcement check does not even look at.
+      const importers = IMPORT_EDGES.filter((edge) => edge.runtime && edge.target === module).map(
+        (edge) => edge.source,
+      );
       // An authority nobody imports is not being guarded by any check in this file — reachability,
       // permission, and re-export all pass trivially over an empty edge set. That is exactly how a module
       // with no importer anywhere in `src/` (the deleted `coordinator/live/carrier-observer.ts`) stayed

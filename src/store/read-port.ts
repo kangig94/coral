@@ -3,10 +3,10 @@ import { openStoreDatabase, type Database } from './db.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 
 /**
- * Generic read-only SQLite primitives owned by the store layer. Domain-
- * specific read ports (e.g. `kb/read-port.ts:KbReadPort`) wrap these
- * primitives with their own semantics — domains do not redeclare the
- * underlying database/statement shapes.
+ * Generic read-only SQLite primitives owned by the store layer. A domain
+ * that needs a typed read surface wraps these primitives with its own
+ * semantics — domains do not redeclare the underlying database/statement
+ * shapes.
  */
 
 export interface ReadonlyStatement<BindParameters extends unknown[] = unknown[], Result = unknown> {

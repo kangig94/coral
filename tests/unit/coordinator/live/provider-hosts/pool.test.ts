@@ -936,6 +936,36 @@ describe('provider host pool proxy set registry', () => {
     second.close();
     await manager.shutdown();
   });
+
+  it('aborts a still-pending acquisition’s signal when the manager stops, without waiting for it to settle', async () => {
+    // The defect this guards against: a job acquires a lease, its proxy-set acquisition is still mid-
+    // handshake when shutdown begins, and nothing ever cuts it off — so it can go on to populate `liveSets()`
+    // after a caller (`runShutdownSequence`) has already read it. `stopAndClose` must sever it instead of
+    // merely outliving it.
+    const server = createFakeProviderServerHandle();
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+    });
+    let capturedSignal: AbortSignal | undefined;
+    mockedEnsureProxySet.mockImplementationOnce((_entry, env: { signal: AbortSignal }) => {
+      capturedSignal = env.signal;
+      // Deliberately never calls `onSettled` — this attempt is still running when shutdown begins.
+    });
+
+    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
+
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    expect(capturedSignal?.aborted).toBe(false);
+
+    lease.close();
+    // Must resolve even though the acquisition it started never calls `onSettled` — shutdown does not await
+    // acquisition completion, it cuts it off.
+    await manager.shutdown();
+
+    expect(capturedSignal?.aborted).toBe(true);
+  });
 });
 
 describe('provider host pool proxy set registration', () => {

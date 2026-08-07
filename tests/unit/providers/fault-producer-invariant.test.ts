@@ -2,7 +2,14 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const PROVIDERS_ROOT = join(process.cwd(), 'src/providers');
+import {
+  listProductionSourceFiles,
+  parseProductionImportEdges,
+  toCanonicalSrcPath,
+} from '#tests/helpers/ts-import-scanner.js';
+
+const REPO_ROOT = process.cwd();
+const PROVIDERS_ROOT = join(REPO_ROOT, 'src/providers');
 
 type FaultAuthorityRule = {
   builder: string;
@@ -10,10 +17,6 @@ type FaultAuthorityRule = {
 };
 
 const RULES: FaultAuthorityRule[] = [
-  {
-    builder: 'adapterOutputUnparseable',
-    allowed: new Set(['src/providers/middleware/adapter-parse-guard.ts']),
-  },
   {
     builder: 'providerSessionUnavailable',
     allowed: new Set(['src/providers/middleware/session-continuity.ts']),
@@ -23,6 +26,15 @@ const RULES: FaultAuthorityRule[] = [
     allowed: new Set(['src/providers/claude/provider.ts', 'src/providers/claude/session-kernel.ts']),
   },
 ];
+
+/** Every canonical `src/...` path that exists, and the runtime import edges between them — used by the
+ *  self-checks below. An `allowed` entry naming a builder call that a file merely *contains* is not the same
+ *  as that file being reachable from production: `adapterOutputUnparseable`'s sole allowed producer,
+ *  `src/providers/middleware/adapter-parse-guard.ts`, called the builder but was never wired into any
+ *  provider's middleware chain, so this file blessed a dead producer until both were deleted. */
+const PRODUCTION_FILE_PATHS = listProductionSourceFiles(join(REPO_ROOT, 'src'));
+const IMPORT_EDGES = parseProductionImportEdges(REPO_ROOT, PRODUCTION_FILE_PATHS);
+const CANONICAL_FILES = new Set(PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath)));
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -74,4 +86,27 @@ describe('provider fault producer authority invariants', () => {
       expect(matches, `Unexpected producers for ${rule.builder}`).toEqual([...rule.allowed].sort());
     }
   });
+
+  // An allowlist certifies who *may* call a builder, never that anyone does. The check above already confirms
+  // each allowed file's text calls the builder, but a file can do that and still be dead — `adapter-parse-guard.ts`
+  // called `adapterOutputUnparseable` on every line the check above wanted, while no provider ever wired it into
+  // a middleware chain. The two checks below catch that shape: an allowed entry naming nothing on disk, or
+  // naming a real file nothing in production ever imports.
+  it.each(RULES.map((rule) => [rule.builder, rule] as const))(
+    '%s: every allowed producer resolves to a real file',
+    (_builder, rule) => {
+      const missing = [...rule.allowed].filter((entry) => !CANONICAL_FILES.has(entry));
+      expect(missing).toEqual([]);
+    },
+  );
+
+  it.each(RULES.map((rule) => [rule.builder, rule] as const))(
+    '%s: every allowed producer is actually imported somewhere in production src/',
+    (_builder, rule) => {
+      const unexercised = [...rule.allowed].filter(
+        (entry) => !IMPORT_EDGES.some((edge) => edge.runtime && edge.target === entry),
+      );
+      expect(unexercised).toEqual([]);
+    },
+  );
 });

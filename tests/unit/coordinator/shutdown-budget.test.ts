@@ -488,6 +488,38 @@ describe('required provider-proxy shutdown steps', () => {
     expect(callLog).toEqual(['reap:p1', 'reap:p2', 'terminateAll']);
   });
 
+  it('reaps a set whose acquisition is still in flight when shutdown starts and only settles during host shutdown', async () => {
+    // The defect this reproduces: an acquisition started before shutdown, still mid-handshake when shutdown
+    // takes its `liveSets()` reading, and settling into `liveSets()` only once `providerHostManager.shutdown`
+    // itself returns. A snapshot read before that call is stale by construction — it can only ever see `[]`
+    // for a set that has not settled yet — so the required reap step must read `liveSets()` after that call,
+    // not before it.
+    const callLog: CallLog = [];
+    let live: readonly ProviderProxySetAuthority[] = [];
+    const harness = buildHarness({
+      reason: 'fatal',
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: { liveSets: () => live },
+    });
+    harness.ctx.providerHostManager = {
+      drainForHandoff: async () => {},
+      shutdown: async () => {
+        // The acquisition settles here — during `providerHostManager.shutdown()` itself, after whatever
+        // reading of `liveSets()` happened before this call started.
+        live = [fakeSet('late', callLog)];
+      },
+    } as never;
+    harness.ctx.terminateAllFn = () => {
+      callLog.push('terminateAll');
+    };
+
+    await runShutdownSequence(harness.ctx);
+
+    // The late-settling set must still go through the required reap step, not be silently skipped because an
+    // earlier, now-stale reading of `liveSets()` reported nothing live.
+    expect(callLog).toEqual(['reap:late', 'terminateAll']);
+  });
+
   it('fails the shutdown when a reap completes without confirming disappearance', async () => {
     const callLog: CallLog = [];
     const harness = buildHarness({

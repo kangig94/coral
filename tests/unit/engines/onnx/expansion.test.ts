@@ -4,7 +4,8 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { loadExpansions } from '#src/expansion/loader.js';
+import { loadBundledEngine } from '#src/expansion/bundled.js';
+import { createScope } from '#src/infra/disposable-scope.js';
 import { KB_EMBEDDING_CAPABILITY } from '#src/kb/capability/constants.js';
 import type { Backed, EmbeddingService, KbRuntime } from '#src/kb/contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -82,7 +83,9 @@ describe('onnx expansion', () => {
     });
 
     const { kb, makeHost } = createTestRuntime({ runtime });
-    const [scope] = await loadExpansions(makeHost, [ONNX_ENTRY]);
+    const scope = createScope();
+    const host = makeHost(ONNX_ENTRY, scope);
+    await loadBundledEngine(ONNX_ENTRY, host);
 
     try {
       const cachedModelPath = join(runtime.paths.coral.engine.dataDir('onnx'), 'nomic-embed-text.onnx');
@@ -101,7 +104,7 @@ describe('onnx expansion', () => {
         normalization: 'l2',
       });
     } finally {
-      scope?.[Symbol.dispose]();
+      scope[Symbol.dispose]();
     }
   });
 
@@ -117,14 +120,16 @@ describe('onnx expansion', () => {
     });
 
     const { makeHost } = createTestRuntime({ runtime });
-    const [firstScope] = await loadExpansions(makeHost, [ONNX_ENTRY]);
-    firstScope?.[Symbol.dispose]();
+    const firstScope = createScope();
+    await loadBundledEngine(ONNX_ENTRY, makeHost(ONNX_ENTRY, firstScope));
+    firstScope[Symbol.dispose]();
 
     expect(downloadFile).toHaveBeenCalledTimes(1);
     downloadFile.mockClear();
 
-    const [secondScope] = await loadExpansions(makeHost, [ONNX_ENTRY]);
-    secondScope?.[Symbol.dispose]();
+    const secondScope = createScope();
+    await loadBundledEngine(ONNX_ENTRY, makeHost(ONNX_ENTRY, secondScope));
+    secondScope[Symbol.dispose]();
 
     expect(downloadFile).not.toHaveBeenCalled();
   });

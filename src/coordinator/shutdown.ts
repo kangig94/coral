@@ -368,8 +368,13 @@ export async function runShutdownSequence({
   // `liveSets()` is a call-time snapshot, not a live cursor (see its doc): reading it again after this
   // shutdown has itself reaped some of what it returned is not guaranteed to exclude those sets, which would
   // let an already-torn-down set re-enter a later required step and fail it a second time for the same
-  // underlying reap. One snapshot, taken once, is what every step below reads.
-  const liveProxySets: readonly ProviderProxySetAuthority[] = providerProxyAuthority?.liveSets() ?? [];
+  // underlying reap. So this is still read exactly once per branch below — but not here, at the top of the
+  // sequence: acquisition is fire-and-forget (`ensureProxySetFor`), so a set can still be settling when this
+  // function starts, and a snapshot taken this early would read before `providerHostManager.shutdown()` /
+  // `drainForHandoff()` has even run. Its own `stopAndClose` aborts every acquisition still in flight before
+  // it awaits anything (see that abort's own doc), which is what makes a snapshot taken right after that call
+  // returns — not here — safe to treat as final: nothing still pending can add to it afterward.
+  let liveProxySets: readonly ProviderProxySetAuthority[] = [];
 
   // Stop accepting HTTP/user-facing work first; the IPC socket stays bound
   // until all handoff finalizers complete or consume the budget, so the
@@ -405,6 +410,10 @@ export async function runShutdownSequence({
       });
     }
     await runBudgetedStep('provider host shutdown', async (signal) => providerHostManager.shutdown(signal));
+    // Read only now, after `shutdown()` (and the `stopAndClose` abort inside it) has returned: see the
+    // declaration above for why reading this any earlier would miss a set that finishes acquiring during
+    // host shutdown.
+    liveProxySets = providerProxyAuthority?.liveSets() ?? [];
     // Before the caught per-handle child termination, because that path terminates handles this coordinator
     // still owns; the detached sets outlive it and have to be reaped by identity, not by handle. Skipped
     // outright when there is nothing to reap: a required step with no work must not fail for want of budget.
@@ -428,6 +437,9 @@ export async function runShutdownSequence({
     await runBudgetedStep('provider host drain for handoff', async (signal) =>
       providerHostManager.drainForHandoff(signal),
     );
+    // Same reasoning as the hard-mode read above: taken only after `drainForHandoff()` has aborted every
+    // acquisition still in flight, so nothing settling afterward can be missing from it.
+    liveProxySets = providerProxyAuthority?.liveSets() ?? [];
     for (const set of liveProxySets) {
       // Snapshot and install per proxy, each in its own step: a grant that fails for one carrier must
       // hard-transition that carrier alone rather than stranding every other operation behind one EOF.

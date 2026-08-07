@@ -5,7 +5,11 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { readProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
-import type { OperationIdentity, ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
+import {
+  providerRootSchema,
+  type OperationIdentity,
+  type ProxyPreparedAppServerOperation,
+} from '#src/provider-proxy/protocol.js';
 import {
   activateProviderOperation,
   type OperationControlClient,
@@ -198,13 +202,15 @@ describe('activateProviderOperation', () => {
     // distinguish "written then deleted" from "never written".
     let metaBeforeFailure: unknown;
     const guardianCalls: string[] = [];
+    let releaseParams: unknown;
     const guardian: OperationControlClient = {
-      call: async (method) => {
+      call: async (method, params) => {
         guardianCalls.push(method);
         if (method === 'guardian.operation-activate.v1') {
           metaBeforeFailure = readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId);
           throw new Error('reservation_expired');
         }
+        releaseParams = params;
         return { state: 'membership-released' };
       },
     };
@@ -215,6 +221,16 @@ describe('activateProviderOperation', () => {
     // The kernel is never started on this path: `operation.activate.v1` never appears in the proxy's calls.
     expect(proxy.calls).toEqual(['operation.prepare.v1', 'operation.cancel-pending.v1']);
     expect(guardianCalls).toEqual(['guardian.operation-activate.v1', 'guardian.operation-release.v1']);
+    // The payload, not just the method name. `guardian.operation-release.v1`'s params schema is `.strict()` and
+    // requires the receipt its own staging minted, so a release omitting it is refused on the wire — and that
+    // refusal replaces the activation failure that called this compensation. Asserting only the call order left
+    // it invisible, because a fake client accepts any payload.
+    expect(releaseParams).toEqual({
+      operation: OPERATION,
+      reservationId: PREPARE_PENDING.reservationId,
+      activationNonce: PREPARE_PENDING.activationNonce,
+      jointContainmentReceipt: PREPARE_PENDING.jointContainmentReceipt,
+    });
     expect(metaBeforeFailure).toMatchObject({ jobId: OPERATION.jobId, operationId: OPERATION.operationId });
     // The meta was committed by prepare's step 2, then deleted by compensation before either release call —
     // if it were still present, a locator would outlive its own reservation.
@@ -252,6 +268,24 @@ describe('activateProviderOperation', () => {
     expect(metaBeforeFailure).toMatchObject({ jobId: OPERATION.jobId, operationId: OPERATION.operationId });
     expect(readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId)).toBeNull();
     expect(guardian.calls).toEqual(['guardian.operation-activate.v1', 'guardian.operation-release.v1']);
+  });
+
+  it('refuses the same out-of-range provider root that protocol.ts’s own providerRootSchema refuses', async () => {
+    // Guards the single-schema fix directly: this coordinator step used to validate `providerRoot` against
+    // its own local copy of the shape; `protocol.ts`'s exported `providerRootSchema` is the one now parsing
+    // it here too, so the two can no longer independently decide whether the same value is well-formed.
+    expect(providerRootSchema.safeParse({ pid: 1e21, processStartedAtSeconds: 800 }).success).toBe(false);
+
+    const db = testDb();
+    const proxy = scriptedClient({
+      'operation.prepare.v1': [{ ...PREPARE_PENDING, providerRoot: { pid: 1e21, processStartedAtSeconds: 800 } }],
+    });
+    const guardian = scriptedClient({});
+
+    await expect(
+      activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED),
+    ).rejects.toThrow();
+    expect(readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId)).toBeNull();
   });
 
   it('refuses a malformed prepare reply rather than committing meta from an unvalidated shape', async () => {

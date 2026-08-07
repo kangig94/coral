@@ -134,7 +134,14 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
   if (code === 'invalid_usage') {
     return 2;
   }
-  if (code === 'transient' || code === 'backend_shutting_down' || httpStatus === 503) {
+  if (
+    code === 'transient' ||
+    code === 'backend_shutting_down' ||
+    code === 'kb_disabled' ||
+    code === 'kb_initializing' ||
+    code === 'kb_offline' ||
+    httpStatus === 503
+  ) {
     return 75;
   }
   if (code === 'backend_unreachable') {

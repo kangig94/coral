@@ -4,9 +4,10 @@
 // cycle with `kb` — invisible until the import scanner learned to see `#src/` specifiers.
 // Each `createScope()` call returns a fresh `Disposable` whose `[Symbol.dispose]`
 // is decorated by `RuntimeBinding.bind` and `host.registerConsumer` to chain
-// teardown work in registration order. Single home so the loader (`src/expansion/loader.ts`)
-// and the KB daemon lifecycle (`src/kb-daemon/expansion/lifecycle.ts`)
-// agree on the exact dispose semantic.
+// teardown work in registration order. Single home so the KB daemon lifecycle
+// (`src/kb-daemon/expansion/lifecycle.ts`), which creates scopes, and the
+// decorators that chain teardown onto them (`src/expansion/host.ts`,
+// `src/engines/kiwi/analyzer-manager.ts`) agree on the exact dispose semantic.
 
 import type { Disposable } from '../runtime/ports.js';
 

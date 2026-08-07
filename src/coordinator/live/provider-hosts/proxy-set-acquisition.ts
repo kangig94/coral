@@ -56,7 +56,19 @@ export type ProviderProxySetAcquisitionConfig = Readonly<{
   onProviderEvent?: () => ProviderEventHandler;
 }>;
 
-export type ProviderProxySetAcquisitionEnvironment = ProviderProxySetAcquisitionConfig & Readonly<{ runtime: Runtime }>;
+export type ProviderProxySetAcquisitionEnvironment = ProviderProxySetAcquisitionConfig &
+  Readonly<{
+    runtime: Runtime;
+    /**
+     * Aborted by the provider host manager's `stopAndClose` the instant it begins (see that field's own
+     * doc), independent of and in addition to this attempt's own `PROVIDER_PROXY_SET_ACQUISITION_DEADLINE_MS`
+     * budget. Combined with it below via `AbortSignal.any`, so a stop mid-handshake reaches
+     * `acquireProviderProxySet`'s own final gate the same way its internal timeout already does: unwound,
+     * reported failed, and never published to the caller's `liveSets()` — whether or not the in-flight
+     * handshake itself had a chance to notice the abort before finishing.
+     */
+    signal: AbortSignal;
+  }>;
 
 export type ProviderProxySetAcquisitionOutcome =
   | Readonly<{ kind: 'acquired'; set: ProviderProxyOperationAuthority }>
@@ -70,6 +82,10 @@ export type ProviderProxySetAcquisitionOutcome =
  * session opens — a slow or failed acquisition here must add neither latency nor failure to it. Single-
  * flighting one attempt per entry is the caller's responsibility (mirrors `ensureProviderServerHandle` in
  * `recovery.ts`); this function always starts a fresh attempt when called.
+ *
+ * `env.signal` lets a caller retract this attempt without waiting for it: aborting it never shortens an
+ * in-flight handshake, but it guarantees the eventual outcome is `failed`, never `acquired` — see
+ * `ProviderProxySetAcquisitionEnvironment.signal`'s own doc.
  */
 export function ensureProviderProxySet(
   entry: ProviderHostEntry,
@@ -104,7 +120,7 @@ export function ensureProviderProxySet(
   });
   void acquireProviderProxySet({
     steps,
-    deadlineSignal: AbortSignal.timeout(PROVIDER_PROXY_SET_ACQUISITION_DEADLINE_MS),
+    deadlineSignal: AbortSignal.any([AbortSignal.timeout(PROVIDER_PROXY_SET_ACQUISITION_DEADLINE_MS), env.signal]),
   }).then(
     (result) => {
       onSettled(

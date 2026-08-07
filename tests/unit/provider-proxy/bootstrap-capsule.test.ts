@@ -1,4 +1,14 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -265,6 +275,58 @@ describe('provider bootstrap capsules', () => {
       'bootstrap_capsule_scalar_too_long',
     );
     expect(resolveStrictIdentity).not.toHaveBeenCalled();
+  });
+
+  // `readClaimedCapsule` now reads through `readBoundedFileAtIdentity` (`infra/bundle-manifest.ts`), the same
+  // shared primitive `handoff-capsule.ts` reads through — these two mirror that file's own
+  // same-length-twin/symlink-mid-read tests, extended here now that this reader is on the shared primitive
+  // too rather than its own weaker hand-rolled sequence.
+  it('refuses a capsule swapped for a same-length twin between the claim and the open', () => {
+    createProviderBootstrapCapsule(capsulePath, capsule, env);
+    const claimedPath = `${capsulePath}${'.consuming'}`;
+    const twin: GuardianBootstrapCapsule = { ...capsule, bootstrapNonce: 'f'.repeat(64) };
+    expect(JSON.stringify(capsule).length).toBe(JSON.stringify(twin).length);
+    const swapPath = join(tempRoot, 'twin.json');
+
+    const swappingStorage: ProviderBootstrapCapsuleEnvironment['storage'] = {
+      ...env.storage,
+      openSync: (path, flags) => {
+        env.storage.writeFileSync(swapPath, JSON.stringify(twin), { encoding: 'utf8', mode: 0o600 });
+        env.storage.renameSync(swapPath, claimedPath);
+        return env.storage.openSync(path, flags);
+      },
+    };
+
+    expectCapsuleFailure(
+      () => consumeProviderBootstrapCapsule(capsulePath, 'guardian', { ...env, storage: swappingStorage }),
+      'bootstrap_capsule_unreadable',
+    );
+  });
+
+  it('refuses a capsule swapped for a symlink while the read was still in flight', () => {
+    createProviderBootstrapCapsule(capsulePath, capsule, env);
+    const claimedPath = `${capsulePath}${'.consuming'}`;
+    const targetPath = join(tempRoot, 'elsewhere.json');
+
+    let readCount = 0;
+    const swappingStorage: ProviderBootstrapCapsuleEnvironment['storage'] = {
+      ...env.storage,
+      readSync: (fd, buffer, offset, length, position) => {
+        const read = env.storage.readSync(fd, buffer, offset, length, position);
+        readCount += 1;
+        if (readCount === 1) {
+          writeFileSync(targetPath, JSON.stringify(capsule), { encoding: 'utf-8', mode: 0o600 });
+          unlinkSync(claimedPath);
+          symlinkSync(targetPath, claimedPath);
+        }
+        return read;
+      },
+    };
+
+    expectCapsuleFailure(
+      () => consumeProviderBootstrapCapsule(capsulePath, 'guardian', { ...env, storage: swappingStorage }),
+      'bootstrap_capsule_unreadable',
+    );
   });
 
   it('rejects a non-canonical embedded endpoint before resolving build authority', () => {

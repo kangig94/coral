@@ -32,7 +32,7 @@ import {
   type EnforcerDeadlineStateMachine,
 } from './orphan-deadline.js';
 import type { ControlClient } from './control-client.js';
-import { PROXY_CONTROL_RPC_TIMEOUT_MS, type ProxyIdentity } from './protocol.js';
+import { providerRootSchema, PROXY_CONTROL_RPC_TIMEOUT_MS, type ProxyIdentity } from './protocol.js';
 import { createProxy, type Proxy } from './proxy.js';
 import { createReaper, type Reaper } from './reaper.js';
 import { createProxyAppServerHostAuthority, createSemanticOperationRuntime } from './semantic-operation.js';
@@ -651,9 +651,7 @@ export async function startProviderReaperRole(
 const registerProviderRootResultSchema = z
   .object({
     state: z.literal('staged-contained'),
-    providerRoot: z
-      .object({ pid: z.number().int().nonnegative(), processStartedAtSeconds: z.number().int().nonnegative() })
-      .strict(),
+    providerRoot: providerRootSchema,
     jointContainmentReceipt: z.string().min(1),
   })
   .strict();
@@ -762,8 +760,13 @@ export async function startProviderProxyRole(
               proxyInstanceId: identity.proxyInstanceId,
               buildSetId: identity.buildSetId,
             },
-            reservationId: ports.runtime.ids.uuid(),
-            activationNonce: ports.runtime.ids.uuid(),
+            // The reservation `ledger.prepare()` already minted for this entry, not a fresh one: the guardian
+            // stores whatever this call presents and `guardian.operation-activate.v1` later compares it
+            // against the coordinator's own copy of the same reservation (returned to the coordinator by
+            // `operation.prepare.v1`'s reply). Presenting anything else here means that later comparison can
+            // never agree, and activation refuses with `identity_mismatch` on every attempt.
+            reservationId: entry.reservationId,
+            activationNonce: entry.activationNonce,
             providerPid: root.pid,
             providerProcessStartedAtSeconds: root.processStartedAtSeconds,
           },

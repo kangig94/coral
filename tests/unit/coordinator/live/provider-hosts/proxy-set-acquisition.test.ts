@@ -38,6 +38,9 @@ const environment = {
   },
   // `createProviderProxyAcquisitionSteps` itself is mocked in this file, so nothing reads the registry.
   operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+  // The ordinary case: nothing is stopping the provider host manager, so this attempt's only deadline is its
+  // own internal one.
+  signal: new AbortController().signal,
 };
 
 function fakeSet(): ProviderProxySetAuthority {
@@ -97,6 +100,28 @@ describe('ensureProviderProxySet', () => {
     const acquireCall = mockedAcquire.mock.calls[0][0];
     expect(acquireCall.steps).toBe(mockedCreateSteps.mock.results[0]?.value);
     expect(acquireCall.deadlineSignal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('folds the caller-supplied stop signal into the deadline so an external abort reaches it too', async () => {
+    // This is the seam `DefaultProviderHostManager.stopAndClose` relies on: aborting `env.signal` must reach
+    // `acquireProviderProxySet` the same way the attempt's own internal timeout would, even though nothing
+    // about the internal deadline itself was touched.
+    const stop = new AbortController();
+    // Never settles — only the deadline signal itself is under test here.
+    mockedAcquire.mockReturnValueOnce(new Promise(() => {}));
+
+    ensureProviderProxySet(
+      createEntry({ spec: createSharedSpec() }),
+      { ...environment, signal: stop.signal },
+      () => {},
+    );
+
+    // Not `.calls[0]`: an earlier test in this file already exercised a real (settling) acquisition, so this
+    // attempt's call is not necessarily the first one recorded on the shared mock.
+    const acquireCall = mockedAcquire.mock.calls.at(-1)![0];
+    expect(acquireCall.deadlineSignal.aborted).toBe(false);
+    stop.abort();
+    expect(acquireCall.deadlineSignal.aborted).toBe(true);
   });
 
   it('reports a failed outcome — never a rejection — when acquisition itself fails', async () => {

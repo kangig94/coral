@@ -6,7 +6,11 @@ import {
   writeProviderOperationRuntimeMeta,
 } from '../../jobs/runtime-meta-store.js';
 import type { ProviderOperationRuntimeMeta } from '../../jobs/runtime-meta.js';
-import type { OperationIdentity, ProxyPreparedAppServerOperation } from '../../provider-proxy/protocol.js';
+import {
+  providerRootSchema,
+  type OperationIdentity,
+  type ProxyPreparedAppServerOperation,
+} from '../../provider-proxy/protocol.js';
 import type { ProviderStopCause } from '../../providers/contract.js';
 import type { OperationStopControl } from './operation-registry.js';
 
@@ -23,12 +27,13 @@ import type { OperationStopControl } from './operation-registry.js';
  * (`architecture-layering.test.ts`'s coordinator-contract-entrypoint rule exempts `services/`, matching where
  * `terminal-materializer.ts` already sits for the same reason).
  *
- * This module owns the orchestration only. It is deliberately not wired to a live proxy set: doing so needs
- * a caller that can resolve this job's guardian/proxy `ControlClient`s from its executable identity, and the
- * only production registry for a live set (`ProviderProxySetAuthority`, `coordinator/live/provider-proxy/
- * authority.ts`) is written from coordinated shutdown's side on purpose — it exposes no raw RPC capability.
- * Building that connector is `src/coordinator/live/provider-proxy/acquisition-steps.ts`'s territory (W2.2),
- * not this file's.
+ * This module owns the orchestration only, not the connector to a live proxy set. That connector is
+ * `coordinator/live/provider-proxy/operation-route.ts`'s `createProviderProxyOperationAuthority`, which wraps
+ * an already-built `ProviderProxySetAuthority` (`coordinator/live/provider-proxy/authority.ts`, still written
+ * from coordinated shutdown's side on purpose) with the two control clients the steps below actually need and
+ * calls `activateProviderOperation` against them. `coordinator/live/provider-hosts/` acquires that set per
+ * executable identity and routes to it; `coordinator/services/provider-proxy-launch-route.ts` is the
+ * production caller that composes the prepared envelope and drives the route end to end.
  */
 
 /** The minimal wire capability this file needs from a role's control connection: `ControlClient.call` from
@@ -70,13 +75,6 @@ export interface ProviderProxyOperationActivationDeps {
 }
 
 const MUTATION_RPC_TIMEOUT_DEFAULT_MS = 5_000;
-
-const providerRootSchema = z
-  .object({
-    pid: z.number().int().nonnegative().safe(),
-    processStartedAtSeconds: z.number().int().nonnegative().safe(),
-  })
-  .strict();
 
 const preparePendingSchema = z
   .object({
@@ -167,6 +165,7 @@ async function compensateAfterActivationFailure(
   operation: OperationIdentity,
   reservationId: string,
   activationNonce: string,
+  jointContainmentReceipt: string,
 ): Promise<void> {
   deleteProviderOperationRuntimeMeta(deps.db, operation.jobId, operation.operationId);
   await callStrict(
@@ -176,10 +175,14 @@ async function compensateAfterActivationFailure(
     deps.mutationRpcTimeoutMs,
     cancelPendingResultSchema,
   );
+  // The receipt travels here for the same reason `guardian.operation-activate.v1` carries it: the guardian's
+  // release handler refuses a caller that cannot present the receipt its own staging minted, and its params
+  // schema is `.strict()` with the receipt required. Omitting it made this compensation throw on the wire,
+  // which replaced the activation failure that called it with a validation error about the compensation.
   await callStrict(
     deps.guardianClient,
     'guardian.operation-release.v1',
-    { operation, reservationId, activationNonce },
+    { operation, reservationId, activationNonce, jointContainmentReceipt },
     deps.mutationRpcTimeoutMs,
     guardianReleaseResultSchema,
   );
@@ -257,7 +260,7 @@ export async function activateProviderOperation(
     );
     jointActivationReceipt = guardianResult.jointActivationReceipt;
   } catch (error: unknown) {
-    await compensateAfterActivationFailure(deps, operation, reservationId, activationNonce);
+    await compensateAfterActivationFailure(deps, operation, reservationId, activationNonce, jointContainmentReceipt);
     return { kind: 'activation-failed', step: 'guardian-activate', reason: errorReason(error) };
   }
 
@@ -284,7 +287,7 @@ export async function activateProviderOperation(
       control: buildStopControl(deps, operation, timeoutMs),
     };
   } catch (error: unknown) {
-    await compensateAfterActivationFailure(deps, operation, reservationId, activationNonce);
+    await compensateAfterActivationFailure(deps, operation, reservationId, activationNonce, jointContainmentReceipt);
     return { kind: 'activation-failed', step: 'proxy-activate', reason: errorReason(error) };
   }
 }

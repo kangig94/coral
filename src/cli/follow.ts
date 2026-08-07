@@ -6,7 +6,7 @@ import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { JobTerminal } from '../jobs/records.js';
 import { parseSerializedWaitCursor, serializeWaitCursor, type WaitCursor, type WaitStreamEvent } from '../jobs/wait.js';
-import { advanceWaitRenderCursor } from '../jobs/wait-stream-event.js';
+import { advanceWaitRenderCursor, parseWaitStreamEventValue } from '../jobs/wait-stream-event.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/http/sse.js';
 import { isTransientStreamError } from '../infra/http-errors.js';
 import { assertNever } from '../infra/error-format.js';
@@ -48,7 +48,10 @@ type FollowStart =
   | Readonly<{ kind: 'launch'; launchResult: AcceptedLaunchResponse }>
   | Readonly<{ kind: 'jobs'; jobIds: readonly string[]; serializedCursor?: string }>;
 
-type WaitSubscription = AsyncIterable<WaitStreamEvent> & {
+// `unknown`, not `WaitStreamEvent`: the wire carries whatever the coordinator's build emits, which can be
+// a type this build predates. `followJobs` validates each item through `parseWaitStreamEventValue` before
+// it becomes a `WaitStreamEvent` — this type stays honest about what actually crosses the boundary.
+type WaitSubscription = AsyncIterable<unknown> & {
   close(): Promise<void>;
 };
 
@@ -128,6 +131,7 @@ function emitWaitEvent(
       line = formatWaitTerminal(event, cursor, renderOptions.embed, {
         describeCauseRef: renderCauseRef ? (ref) => renderCauseRef(ref, event.result.outcome) : undefined,
         verbose: renderOptions.verbose,
+        exitCode: toExitCode(event.result),
       });
       break;
     case 'interrupted':
@@ -341,7 +345,14 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
 
       let reconnect = false;
       try {
-        for await (const event of connection.subscription) {
+        for await (const raw of connection.subscription) {
+          const event = parseWaitStreamEventValue(raw);
+          if (event === null) {
+            // Unrecognized event type: a newer coordinator emitted something this build predates.
+            // Cross-version tolerance means skipping it, not crashing the wait — the stream stays open.
+            continue;
+          }
+
           const decision = advanceWaitRenderCursor(currentCursor, event);
           currentCursor.afterSeq = decision.cursor.afterSeq;
           sendCursor ||= currentCursor.afterSeq > 0;
@@ -462,7 +473,9 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
 
       return {
         kind: 'subscription',
-        subscription: await backend.subscribe<WaitStreamEvent>(
+        // Wire boundary: see `WaitSubscription`'s definition — validation happens once the item is pulled
+        // from the iterator, not here.
+        subscription: await backend.subscribe<unknown>(
           'jobs.wait',
           {
             jobIds: [...jobIds],

@@ -140,7 +140,7 @@ export type OperationIdentity = z.infer<typeof operationIdentitySchema>;
  *  response names a provider root — a single staged/confirmed root or a member of the teardown-time
  *  recorded set — rather than each role declaring its own copy of the same two fields. */
 export const providerRootSchema = z
-  .object({ pid: z.number().int().nonnegative(), processStartedAtSeconds: z.number().int().nonnegative() })
+  .object({ pid: nonNegativeSafeIntegerSchema, processStartedAtSeconds: nonNegativeSafeIntegerSchema })
   .strict();
 
 /** The permission bits of a `stat.mode`, isolated from the leading file-type bits so a mode can be compared

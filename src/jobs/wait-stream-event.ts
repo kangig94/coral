@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { isRecord } from '../infra/json.js';
 import { continuitySnapshotSchema } from '../sessions/continuity.js';
 import { jobPhaseSchema } from './phase.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
@@ -128,4 +129,17 @@ export function parseWaitStreamEvent(eventType: string | undefined, rawData: str
     throw new Error(`Invalid wait stream event payload for ${eventType}`);
   }
   return event;
+}
+
+/**
+ * Same forward-compatibility gate as `parseWaitStreamEvent`, for a value that has already been decoded —
+ * an IPC notification's `params`, rather than a raw SSE `data:` string. A build receiving a `type` it does
+ * not recognize (a newer coordinator's addition) returns `null` here instead of throwing, so the caller can
+ * skip that one event and keep the stream alive rather than crash on it.
+ */
+export function parseWaitStreamEventValue(value: unknown): WaitStreamEvent | null {
+  if (!isRecord(value) || typeof value.type !== 'string' || !KNOWN_WAIT_STREAM_EVENT_TYPES.has(value.type)) {
+    return null;
+  }
+  return waitStreamEventSchema.parse(value);
 }

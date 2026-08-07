@@ -107,6 +107,7 @@ function makeTerminalEvent(
     result: {
       content: 'done',
       outcome: { kind: 'completed' },
+      durationMs: 0,
       ...result,
     } as Extract<WaitStreamEvent, { type: 'terminal' }>['result'],
     ...overrides,
@@ -342,24 +343,8 @@ describe('cli follow', () => {
     const progressEvent = makeProgressEvent('Halfway there');
     const waitingEvent = makeRunningEvent();
     const terminalEvent = makeTerminalEvent(
-      {
-        content: 'secret result body',
-        warnings: ['be careful'],
-        usage: { inputTokens: 12, outputTokens: 34, costUsd: 0.01 },
-        workflow: {
-          steps: [
-            {
-              agent: 'architect',
-              step: 1,
-              atom: 1,
-              provider: 'codex',
-              start: 10,
-              end: 20,
-            },
-          ],
-        },
-      },
-      { seq: 2 },
+      { content: 'secret result body' },
+      { seq: 2, usage: { inputTokens: 12, outputTokens: 34, costUsd: 0.01 } },
     );
     const cursorAfterProgress = serializeWaitCursor({ afterSeq: 1 });
     const cursorAfterTerminal = serializeWaitCursor({ afterSeq: 2 });
@@ -393,6 +378,108 @@ describe('cli follow', () => {
     );
     expect(mockState.ensure).toHaveBeenCalledTimes(2);
     expect(stdout.match(/Halfway there/gu)).toHaveLength(1);
+  });
+
+  it('skips a wait stream event of an unrecognized type and keeps the stream alive', async () => {
+    // Reproduces an N-build CLI reading an N+1 coordinator's event: the wire delivers a `type` this build
+    // never registered. `followJobs` must not crash rendering it (no `undefined` in the output) and must
+    // not end the wait early — the following legitimate terminal event still has to arrive.
+    const { followJobs } = await loadFollowModule();
+    const terminalEvent = makeTerminalEvent();
+
+    const exitCode = await followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1'] },
+      reconnectPolicy: 'until-terminal',
+      projectRoot: '/project/root',
+      emitError: vi.fn(),
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs: vi.fn(),
+      connect: async () => ({
+        kind: 'subscription',
+        subscription: makeSubscription(async function* () {
+          yield { type: 'some-future-event' } as unknown as WaitStreamEvent;
+          yield terminalEvent;
+        }),
+      }),
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain('undefined');
+    expect(stdout).toContain('Job job-1 completed');
+  });
+
+  it('reconnects silently on a successful terminal event with jobs remaining, printing no continuation line', async () => {
+    const { followJobs } = await loadFollowModule();
+    // `seq` is a global journal cursor, not per-job — the second event must advance past the first or the
+    // render cursor treats it as already-seen and suppresses it.
+    const firstTerminal = makeTerminalEvent({}, { jobId: 'job-1', seq: 1, remainingJobIds: ['job-2'] });
+    const secondTerminal = makeTerminalEvent({}, { jobId: 'job-2', seq: 2, remainingJobIds: [] });
+
+    const connect = vi
+      .fn()
+      .mockImplementationOnce(async () => ({
+        kind: 'subscription' as const,
+        subscription: makeSubscription(async function* () {
+          yield firstTerminal;
+        }),
+      }))
+      .mockImplementationOnce(async ({ jobIds }: { jobIds: readonly string[] }) => {
+        expect(jobIds).toEqual(['job-2']);
+        return {
+          kind: 'subscription' as const,
+          subscription: makeSubscription(async function* () {
+            yield secondTerminal;
+          }),
+        };
+      });
+
+    const exitCode = await followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1', 'job-2'] },
+      reconnectPolicy: 'until-terminal',
+      projectRoot: '/project/root',
+      emitError: vi.fn(),
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs: vi.fn(),
+      connect,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(stdout).toContain('Job job-1 completed');
+    expect(stdout).toContain('Job job-2 completed');
+    expect(stdout).not.toContain('to continue waiting');
+  });
+
+  it('reports which jobs are still live on an early non-zero exit, in both embed and non-embed output', async () => {
+    const failingTerminal = makeTerminalEvent(
+      { outcome: { kind: 'aborted', reason: 'signal_abort' } },
+      { jobId: 'job-1', remainingJobIds: ['job-2'] },
+    );
+
+    for (const embed of [false, true]) {
+      const { followJobs } = await loadFollowModule();
+      stdout = '';
+      const connect = vi.fn().mockResolvedValueOnce({
+        kind: 'subscription' as const,
+        subscription: makeSubscription(async function* () {
+          yield failingTerminal;
+        }),
+      });
+
+      const exitCode = await followJobs({
+        start: { kind: 'jobs', jobIds: ['job-1', 'job-2'] },
+        reconnectPolicy: 'until-terminal',
+        projectRoot: '/project/root',
+        emitError: vi.fn(),
+        render: { isTTY: false, columns: 80, embed, verbose: false },
+        abortJobs: vi.fn(),
+        connect,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(connect).toHaveBeenCalledTimes(1);
+      expect(stdout).toContain('Run coral-cli wait jobs job-2 to continue waiting.');
+    }
   });
 
   it('retries transient stream failures with a 1s backoff and resumes from the current cursor', async () => {
@@ -553,9 +640,9 @@ describe('cli follow', () => {
   });
 
   it.each([
-    [{ exitCode: null }, 0],
-    [{ exitCode: 256 }, 0],
-    [{ exitCode: 1.5 }, 0],
+    [{}, 0],
+    [{}, 0],
+    [{}, 0],
     [{ outcome: { kind: 'provider_exit' as const, code: 256 } }, 1],
     [{ outcome: { kind: 'provider_exit' as const, code: 1.5 } }, 1],
     [{ outcome: { kind: 'aborted' as const, reason: 'signal_abort' as const } }, 1],

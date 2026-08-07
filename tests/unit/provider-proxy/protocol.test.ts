@@ -7,6 +7,7 @@ import {
   guardianIdentitySchema,
   MAX_PROXY_CONTROL_FRAME_BYTES,
   operationIdentitySchema,
+  providerRootSchema,
   PROVIDER_EVENT_METHOD,
   providerEventBodySchema,
   providerEventRequestSchema,
@@ -93,6 +94,17 @@ describe('provider proxy protocol vocabulary', () => {
     expect(reaperIdentitySchema.parse(reaperIdentity)).toEqual(reaperIdentity);
     expect(proxyIdentitySchema.parse(proxyIdentity)).toEqual(proxyIdentity);
     expect(operationIdentitySchema.parse(operationIdentity)).toEqual(operationIdentity);
+  });
+
+  it('refuses a provider root pid or start time outside the safe-integer range', () => {
+    // `providerRootSchema` is this domain's single canonical shape for a provider-root identity, shared by
+    // every request or response that names one. Every other pid/processStartedAtSeconds field in this file
+    // (`coordinatorIdentitySchema`, `guardianIdentitySchema`, `reaperIdentitySchema`, `proxyIdentitySchema`)
+    // rejects an integer outside `Number.isSafeInteger` range via `.safe()`; this schema must too, or a
+    // caller that merely names a provider root is held to a laxer bar than one that names any other role.
+    expect(providerRootSchema.safeParse({ pid: 1e21, processStartedAtSeconds: 800 }).success).toBe(false);
+    expect(providerRootSchema.safeParse({ pid: 7_001, processStartedAtSeconds: 1e21 }).success).toBe(false);
+    expect(providerRootSchema.safeParse({ pid: 7_001, processStartedAtSeconds: 800 }).success).toBe(true);
   });
 
   it('rejects unknown identity fields', () => {

@@ -1,4 +1,4 @@
-import { loadExpansions } from '#src/expansion/loader.js';
+import { loadBundledEngine } from '#src/expansion/bundled.js';
 import {
   createOramaBaseProjection,
   type OramaBaseProjection,
@@ -11,6 +11,7 @@ import { KB_EMBEDDING_CAPABILITY, KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from
 import type { VectorRetrieval, VectorRetrieval as BoundVectorRetrieval } from '#src/kb/search/contract.js';
 import type { ConsumerHandle, ConsumerHandleStatus, ConsumerRegistrationKind } from '#src/store/consumer-contract.js';
 import type { Disposable } from '#src/runtime/ports.js';
+import { createScope as createDisposableScope } from '#src/infra/disposable-scope.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 
 export type TaggedVectorRetrieval = VectorRetrieval;
@@ -124,17 +125,18 @@ export async function bindEmbedding(
   `;
   const specifier = `data:text/javascript;base64,${Buffer.from(source, 'utf8').toString('base64')}`;
   const { makeHost } = createTestRuntime({ kb: runtime });
-  const scopes = await loadExpansions(makeHost, [
-    {
-      id,
-      version: '0.0.0',
-      specifier,
-      tier: 'installed',
-      description: 'test embedder',
-      fills: [KB_EMBEDDING_CAPABILITY],
-    },
-  ]);
-  rebind(embedderScopes, runtime, scopes, disposeScopes);
+  const entry = {
+    id,
+    version: '0.0.0',
+    specifier,
+    tier: 'installed' as const,
+    description: 'test embedder',
+    fills: [KB_EMBEDDING_CAPABILITY],
+  };
+  const scope = createDisposableScope();
+  const host = makeHost(entry, scope);
+  await loadBundledEngine(entry, host);
+  rebind(embedderScopes, runtime, [scope], disposeScopes);
 }
 
 export type OramaFtsBinding = {

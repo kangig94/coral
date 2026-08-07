@@ -76,7 +76,7 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
        - Delegate (`--delegate`): dispatch one detached `coral-cli <other-host> -b -i ... -d` launch per file group.
          **Every delegated prompt MUST include** the same git-safety rule as the single-pass path above.
-         Collect all `job`s from the detached launch lines, then run `coral-cli wait jobs <job-id...> --embed`; when it exits `75`, resume with the printed cursor until all complete. Each terminal block always prints `Result path: <path>`, which is the durable artifact location.
+         Collect all `job`s from the detached launch lines, then run `coral-cli wait jobs <job-id...> --embed`; when it exits `75`, resume with the printed cursor until all complete. If a group's job fails (exit `1`) while others are still running, the terminal block names the still-running ones (`Run coral-cli wait jobs <ids> to continue waiting.`) — wait for those too before moving to step 5, since they are still writing to the same files. Each terminal block always prints `Result path: <path>`, which is the durable artifact location.
     5) Review each change for correctness AND justification.
        Use git diff as a before/after reference when the diff is manageable.
        Correctness:

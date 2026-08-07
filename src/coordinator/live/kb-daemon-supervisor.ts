@@ -201,6 +201,15 @@ export function createDisabledKbDaemonSupervisor(reason = 'disabled'): KbDaemonS
     readyAt: null,
     reason,
   };
+  // A nested/child caller is the normal way this failure is reached (skills and hooks run
+  // `coral-cli kb ...` from inside a job Coral itself launched), and it cannot shut down the
+  // coordinator its own parent job is running on. Phrase the remediation so it stays true and
+  // actionable no matter which caller reads it, instead of pointing everyone at a command that
+  // is refused from a child.
+  const remediation =
+    'Ask the operator to run `coral-cli backend shutdown` from the top-level Coral session once nothing else ' +
+    'is running, or wait for the automatic idle restart (CORAL_BACKEND_IDLE_MS, default ~6h). A nested/child ' +
+    'job cannot run that shutdown itself.';
 
   return {
     read: () => ({ ...snapshot }),
@@ -211,18 +220,21 @@ export function createDisabledKbDaemonSupervisor(reason = 'disabled'): KbDaemonS
       ok: false,
       code: 'kb_disabled',
       message: `KB daemon supervisor is disabled: ${reason}`,
+      remediation,
       detail: { reason: 'kb_daemon_disabled' },
     }),
     mutateKb: async () => ({
       ok: false,
       code: 'kb_disabled',
       message: `KB daemon supervisor is disabled: ${reason}`,
+      remediation,
       detail: { reason: 'kb_daemon_disabled' },
     }),
     expansionRpc: async () => ({
       ok: false,
       code: 'kb_disabled',
       message: `KB daemon supervisor is disabled: ${reason}`,
+      remediation,
       detail: { reason: 'kb_daemon_disabled' },
     }),
     onExit: () => () => {},

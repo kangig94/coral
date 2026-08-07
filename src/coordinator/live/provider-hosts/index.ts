@@ -171,6 +171,17 @@ export class DefaultProviderHostManager
   // and stable, so outliving entries costs a fixed amount rather than a growing one.
   private readonly pendingProxySetAcquisitions = new Set<string>();
   private readonly liveProxySets = new Map<string, ProviderProxyOperationAuthority>();
+  /**
+   * Aborted by `stopAndClose` the instant it runs, before anything in it is awaited. Threaded into every
+   * acquisition attempt (`ensureProxySetFor`) alongside that attempt's own internal deadline
+   * (`PROVIDER_PROXY_SET_ACQUISITION_DEADLINE_MS`) via `AbortSignal.any`. `acquireProviderProxySet`'s own
+   * final gate before publishing a set (see its doc) means an attempt still in flight when this fires can
+   * never settle `acquired` — it is unwound and reported failed instead, no matter how far into its own
+   * handshake it already was. That guarantee is what lets `runShutdownSequence` read `liveSets()` exactly
+   * once, right after `shutdown()` / `drainForHandoff()` returns, and trust nothing still-pending can add to
+   * it afterward — rather than awaiting each attempt's own up-to-45s budget just to find out.
+   */
+  private readonly proxySetAcquisitionStop = new AbortController();
   // Inherited sets are keyed by `proxyInstanceId`, never folded into `liveProxySets`: this manager has no
   // `ProviderServerSpec` to derive that map's `identityKey` from at inheritance time (only a committed
   // locator), and a bequeathed set's operations are the fixed set the grant named — routing a brand-new
@@ -221,16 +232,20 @@ export class DefaultProviderHostManager
     const identityKey = entry.identityKey;
     if (this.liveProxySets.has(identityKey) || this.pendingProxySetAcquisitions.has(identityKey)) return;
     this.pendingProxySetAcquisitions.add(identityKey);
-    ensureProviderProxySet(entry, { runtime: this.runtime, ...config }, (outcome) => {
-      this.pendingProxySetAcquisitions.delete(identityKey);
-      if (outcome.kind === 'acquired') {
-        this.liveProxySets.set(identityKey, outcome.set);
-        return;
-      }
-      backendLog.warn(
-        `Provider proxy set acquisition failed for ${entry.spec.provider} (${identityKey}): ${outcome.reason}`,
-      );
-    });
+    ensureProviderProxySet(
+      entry,
+      { runtime: this.runtime, signal: this.proxySetAcquisitionStop.signal, ...config },
+      (outcome) => {
+        this.pendingProxySetAcquisitions.delete(identityKey);
+        if (outcome.kind === 'acquired') {
+          this.liveProxySets.set(identityKey, outcome.set);
+          return;
+        }
+        backendLog.warn(
+          `Provider proxy set acquisition failed for ${entry.spec.provider} (${identityKey}): ${outcome.reason}`,
+        );
+      },
+    );
   }
 
   private async acquireHostLease(
@@ -368,6 +383,10 @@ export class DefaultProviderHostManager
 
   private async stopAndClose(detail: string, signal?: AbortSignal): Promise<void> {
     this.acceptingAcquisitions = false;
+    // Cuts off every proxy-set acquisition still running before anything below is awaited — see
+    // `proxySetAcquisitionStop`'s own doc for why this is what makes `liveSets()` safe for a caller to read
+    // once this method returns, with no risk of a straggler acquisition adding to it afterward.
+    this.proxySetAcquisitionStop.abort();
     await closeAllProviderServerEntries(
       this.entries,
       detail,

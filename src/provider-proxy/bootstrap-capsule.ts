@@ -3,10 +3,12 @@ import { dirname, isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
 
+import { readBoundedFileAtIdentity } from '../infra/bounded-file-read.js';
 import { resolveStrictBundleIdentity, type StrictBundleIdentityResult } from '../infra/bundle-manifest.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import {
+  PERMISSION_BITS_MASK,
   ProxyControlProtocolError,
   canonicalEndpointSchema,
   canonicalUuidSchema,
@@ -19,7 +21,6 @@ export const MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES = 4_096;
 
 const PRIVATE_CAPSULE_MODE = 0o600n;
 const PRIVATE_DIRECTORY_MODE = 0o700;
-const PERMISSION_BITS = 0o777n;
 const SECRET_HEX_BYTES = 32;
 const CLAIM_SUFFIX = '.consuming';
 
@@ -244,73 +245,37 @@ function assertPrivateFile(path: string, uid: number, storage: ProviderBootstrap
     !stat.isFile() ||
     stat.uid === undefined ||
     stat.uid !== BigInt(uid) ||
-    (stat.mode & PERMISSION_BITS) !== PRIVATE_CAPSULE_MODE
+    (stat.mode & PERMISSION_BITS_MASK) !== PRIVATE_CAPSULE_MODE
   ) {
     throw privateFileError(path, uid);
   }
   return stat;
 }
 
-function sameFile(left: StorageBigIntStat, right: StorageBigIntStat): boolean {
-  return (
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.mode === right.mode &&
-    left.uid === right.uid &&
-    left.size === right.size &&
-    left.mtimeNs === right.mtimeNs
-  );
-}
-
 function readClaimedCapsule(path: string, env: ProviderBootstrapCapsuleEnvironment): string {
-  let descriptor: number | null = null;
   try {
-    const pathBefore = assertPrivateFile(path, env.uid, env.storage);
-    if (pathBefore.size < 0n || pathBefore.size > BigInt(MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES)) {
+    const baseline = assertPrivateFile(path, env.uid, env.storage);
+    if (baseline.size < 0n || baseline.size > BigInt(MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES)) {
       throw new ProviderBootstrapCapsuleError(
         'bootstrap_capsule_too_large',
         `Provider bootstrap capsule exceeds ${MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES} bytes.`,
-        { observedBytes: pathBefore.size.toString(), limit: MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES },
+        { observedBytes: baseline.size.toString(), limit: MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES },
       );
     }
 
-    descriptor = env.storage.openSync(path, 'r');
-    const opened = env.storage.fstatSync(descriptor, { bigint: true });
-    if (!opened.isFile() || !sameFile(pathBefore, opened)) {
+    // The same lstat-open-fstat-bounded-read-restat primitive `handoff-capsule.ts`'s own capsule reader
+    // calls too, not a parallel copy of it, so a TOCTOU fix applied here always reaches both.
+    const bytes = readBoundedFileAtIdentity(env.storage, path, baseline, MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES);
+    if (bytes === null) {
       throw new ProviderBootstrapCapsuleError(
         'bootstrap_capsule_unreadable',
-        'Provider bootstrap capsule changed while it was being opened.',
-        { path },
-      );
-    }
-
-    const bytes = Buffer.allocUnsafe(MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES + 1);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const read = env.storage.readSync(descriptor, bytes, offset, bytes.length - offset, null);
-      if (read === 0) break;
-      offset += read;
-    }
-    if (offset > MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES) {
-      throw new ProviderBootstrapCapsuleError(
-        'bootstrap_capsule_too_large',
-        `Provider bootstrap capsule exceeds ${MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES} bytes.`,
-        { observedBytes: offset, limit: MAX_PROVIDER_BOOTSTRAP_CAPSULE_BYTES },
-      );
-    }
-
-    const openedAfter = env.storage.fstatSync(descriptor, { bigint: true });
-    const pathAfter = assertPrivateFile(path, env.uid, env.storage);
-    if (!sameFile(opened, openedAfter) || !sameFile(opened, pathAfter) || openedAfter.size !== BigInt(offset)) {
-      throw new ProviderBootstrapCapsuleError(
-        'bootstrap_capsule_unreadable',
-        'Provider bootstrap capsule changed while it was being read.',
+        'Provider bootstrap capsule changed while it was being opened or read.',
         { path },
       );
     }
 
     try {
-      return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, offset));
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     } catch {
       throw new ProviderBootstrapCapsuleError(
         'bootstrap_capsule_invalid',
@@ -324,14 +289,6 @@ function readClaimedCapsule(path: string, env: ProviderBootstrapCapsuleEnvironme
       'Provider bootstrap capsule could not be read safely.',
       { path },
     );
-  } finally {
-    if (descriptor !== null) {
-      try {
-        env.storage.closeSync(descriptor);
-      } catch {
-        // The claimed path remains unavailable to every later consumer even if descriptor cleanup fails.
-      }
-    }
   }
 }
 

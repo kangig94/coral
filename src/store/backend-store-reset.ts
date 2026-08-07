@@ -250,7 +250,16 @@ function storedFingerprint(classification: BackendStoreResetClassification): str
   return isStoreFormatFingerprint(classification.storedFingerprint) ? classification.storedFingerprint : null;
 }
 
-function sameFileIdentity(left: StorageBigIntStat, right: StorageBigIntStat): boolean {
+/**
+ * True when two stats of a store-reset evidence path (a file, or the containing directory checkpoints this
+ * module re-verifies the same way) describe the same on-disk entry: device, inode, mode, size, mtime, and
+ * file-vs-directory kind. Deliberately not `infra/bundle-manifest.ts`'s exported `sameFileIdentity` — that
+ * one also compares owning uid, a check this module's own evidence never needed since every path it verifies
+ * is one this same process already created or is about to remove, never a credential another uid could have
+ * swapped in. Keep the two functions distinct by name as well as signature: a caller reaching for "compare
+ * two file stats" here should find this one, not silently start comparing uid too.
+ */
+function sameEvidenceFileStat(left: StorageBigIntStat, right: StorageBigIntStat): boolean {
   return (
     left.dev === right.dev &&
     left.ino === right.ino &&
@@ -326,14 +335,14 @@ function describeCandidate<Name extends string>(
   let closeFailure: unknown = null;
   try {
     const opened = storage.fstatSync(descriptor, { bigint: true });
-    if (!opened.isFile() || !sameFileIdentity(pathBefore, opened)) {
+    if (!opened.isFile() || !sameEvidenceFileStat(pathBefore, opened)) {
       throw new Error('Store-reset evidence identity changed before hashing.');
     }
     const expectedSize = Number(opened.size);
     digest = hashExactDescriptor(storage, descriptor, expectedSize);
     const openedAfter = storage.fstatSync(descriptor, { bigint: true });
     const pathAfter = stablePathStat(storage, candidate.source);
-    if (!sameFileIdentity(opened, openedAfter) || !sameFileIdentity(opened, pathAfter)) {
+    if (!sameEvidenceFileStat(opened, openedAfter) || !sameEvidenceFileStat(opened, pathAfter)) {
       throw new Error('Store-reset evidence identity changed during hashing.');
     }
   } finally {
@@ -377,7 +386,7 @@ function copyCandidateForPublication<Name extends string>(
   try {
     sourceDescriptor = storage.openSync(candidate.source, 'r');
     const sourceOpened = storage.fstatSync(sourceDescriptor, { bigint: true });
-    if (!sourceOpened.isFile() || !sameFileIdentity(pathBefore, sourceOpened)) {
+    if (!sourceOpened.isFile() || !sameEvidenceFileStat(pathBefore, sourceOpened)) {
       throw new Error('Store-reset evidence identity changed before publication.');
     }
     const openedDestination = storage.openSync(destination, 'wx', 0o600);
@@ -389,7 +398,7 @@ function copyCandidateForPublication<Name extends string>(
     });
     const sourceAfter = storage.fstatSync(sourceDescriptor, { bigint: true });
     const sourcePathAfter = stablePathStat(storage, candidate.source);
-    if (!sameFileIdentity(sourceOpened, sourceAfter) || !sameFileIdentity(sourceOpened, sourcePathAfter)) {
+    if (!sameEvidenceFileStat(sourceOpened, sourceAfter) || !sameEvidenceFileStat(sourceOpened, sourcePathAfter)) {
       throw new Error('Store-reset evidence identity changed during publication.');
     }
 
@@ -448,7 +457,7 @@ function readManifestBounded(storage: StoragePort, path: string): Buffer {
   let closeFailure: unknown = null;
   try {
     const opened = storage.fstatSync(descriptor, { bigint: true });
-    if (!sameFileIdentity(pathBefore, opened)) {
+    if (!sameEvidenceFileStat(pathBefore, opened)) {
       throw new Error('Interrupted store-reset manifest identity changed.');
     }
     const expectedSize = Number(opened.size);
@@ -467,7 +476,7 @@ function readManifestBounded(storage: StoragePort, path: string): Buffer {
     }
     const openedAfter = storage.fstatSync(descriptor, { bigint: true });
     const pathAfter = stablePathStat(storage, path);
-    if (!sameFileIdentity(opened, openedAfter) || !sameFileIdentity(opened, pathAfter)) {
+    if (!sameEvidenceFileStat(opened, openedAfter) || !sameEvidenceFileStat(opened, pathAfter)) {
       throw new Error('Interrupted store-reset manifest identity changed.');
     }
     contents = bytes;
@@ -1045,7 +1054,7 @@ export function retainTransitionFileInStoreResetQuarantine(
       MAX_REPORT_HASH_BYTES,
     );
     const sourceAfter = stablePathStat(runtime.storage, sourcePath);
-    if (!sameFileIdentity(sourceIdentity, sourceAfter)) {
+    if (!sameEvidenceFileStat(sourceIdentity, sourceAfter)) {
       throw new Error('Retained active-store transition source changed identity during verification.');
     }
     if (evidenceMatches(runtime.storage, { source: evidencePath, name: evidenceName }, evidence)) {

@@ -2,7 +2,6 @@ import type { Command } from 'commander';
 import { z } from 'zod';
 
 import { isLivePhase, jobPhaseSchema } from '../../jobs/phase.js';
-import type { WaitStreamEvent } from '../../jobs/wait.js';
 import type { JobStatus } from '../../jobs/records.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import { getProviderNames, makeClient, type AbortOptions } from '../dispatch.js';
@@ -194,7 +193,9 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       },
       connect: async ({ jobIds: activeJobIds, cursor, timeoutSeconds, signal }) => ({
         kind: 'subscription',
-        subscription: await client.subscribe<WaitStreamEvent>(
+        // Wire boundary: the IPC transport hands back an unvalidated `unknown` per event. `followJobs`
+        // validates each one through `parseWaitStreamEventValue` before it becomes a `WaitStreamEvent`.
+        subscription: await client.subscribe<unknown>(
           'jobs.wait',
           {
             jobIds: [...activeJobIds],

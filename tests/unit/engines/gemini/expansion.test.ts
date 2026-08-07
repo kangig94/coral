@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { loadExpansions } from '#src/expansion/loader.js';
+import { loadBundledEngine } from '#src/expansion/bundled.js';
+import { createScope } from '#src/infra/disposable-scope.js';
 import { KB_EMBEDDING_CAPABILITY } from '#src/kb/capability/constants.js';
 import type { Backed, EmbeddingService, KbRuntime } from '#src/kb/contract.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
@@ -27,7 +28,9 @@ describe('gemini expansion', () => {
       },
     });
     const { kb, makeHost } = createTestRuntime({ runtime });
-    const [scope] = await loadExpansions(makeHost, [GEMINI_ENTRY]);
+    const scope = createScope();
+    const host = makeHost(GEMINI_ENTRY, scope);
+    await loadBundledEngine(GEMINI_ENTRY, host);
 
     try {
       expect(kb.capabilityRegistry.runtimeView().status(KB_EMBEDDING_CAPABILITY)?.heldBy).toBe('gemini');
@@ -43,14 +46,16 @@ describe('gemini expansion', () => {
         normalization: 'l2',
       });
     } finally {
-      scope?.[Symbol.dispose]();
+      scope[Symbol.dispose]();
     }
   });
 
   it('throws when GEMINI_API_KEY is missing', async () => {
     const { makeHost } = createTestRuntime({ runtime: new SimulationRuntime() });
+    const scope = createScope();
+    const host = makeHost(GEMINI_ENTRY, scope);
 
-    await expect(loadExpansions(makeHost, [GEMINI_ENTRY])).rejects.toMatchObject({
+    await expect(loadBundledEngine(GEMINI_ENTRY, host)).rejects.toMatchObject({
       code: 'gemini-api-key-missing',
       context: { env: 'GEMINI_API_KEY', expansion: 'gemini' },
     });
