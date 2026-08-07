@@ -1,6 +1,7 @@
 import type { AppServerTransport, HostRef, ProviderServerSpec } from '../../../providers/contract.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from '../provider-server-transport.js';
 import type { Runtime } from '../../../runtime/ports.js';
+import { backendLog } from '../../../infra/backend-log.js';
 import {
   acquireProviderHostPin,
   createProviderServerAttachment,
@@ -11,8 +12,10 @@ import {
 import { attachHostNotificationListener, clearIdleTimer, maybeArmIdleTimer, parseIdleTimeoutMs } from './idle.js';
 import { closeAllProviderServerEntries, closeProviderServerEntry as closeEntry, shutdownHandle } from './drain.js';
 import { cloneSpec, ensureProviderServerHandle } from './recovery.js';
+import { ensureProviderProxySet, type ProviderProxySetAcquisitionConfig } from './proxy-set-acquisition.js';
 import { hostFingerprintFromSpec, hostKeyFromSpec, hostRefFromEntry, type ProviderHostEntry } from './state.js';
 import { AbortError, throwIfAborted } from '../../../runtime/abort.js';
+import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from '../provider-proxy-authority.js';
 export type { ProviderHostEntry } from './state.js';
 
 export interface ProviderHostManager {
@@ -121,7 +124,7 @@ function waitForClose(operation: Promise<void>, signal: AbortSignal | undefined)
   });
 }
 
-export class DefaultProviderHostManager implements ProviderHostManager {
+export class DefaultProviderHostManager implements ProviderHostManager, ProviderProxyAuthorityRegistry {
   private readonly entries = new Map<string, ProviderHostEntry>();
   private readonly pendingCloses = new Set<Promise<void>>();
   private readonly lifecyclePolicies = new Map<string, string>();
@@ -129,16 +132,66 @@ export class DefaultProviderHostManager implements ProviderHostManager {
   private acceptingAcquisitions = true;
   private readonly idleTimeoutMs: number;
   private readonly spawnProviderServer: SpawnProviderServerFn;
-  private readonly runtime: Pick<Runtime, 'time' | 'env' | 'ids'>;
+  private readonly runtime: Runtime;
+  private readonly proxySetAcquisitionConfig?: ProviderProxySetAcquisitionConfig;
+  // Keyed by `entry.identityKey` — the executable identity — never by `entry.hostKey`. A set is one
+  // guardian/reaper/proxy triple of real processes, and one proxy carries many operations: the ledger is
+  // keyed by `(jobId, operationId)` up to `MAX_PROXY_OPERATION_LEDGERS`, a handoff grant covers a proxy's
+  // whole operation set rather than one operation, and release refuses to reap a provider root another
+  // operation in the same set still references. Keying by `hostKey` would contradict all of that and, because
+  // a job-exclusive `hostKey` carries a fresh sequence number per acquisition, would mint three processes per
+  // job and never retire them — unbounded growth in a daemon that outlives many jobs.
+  //
+  // Deliberately independent of `this.entries`: an entry is removed on ordinary close (idle timeout, pin
+  // release) but nothing here retires a set on that close — only coordinator shutdown reaps one — so the
+  // record must outlive its entry. Bounded by the number of distinct executable identities, which is small
+  // and stable, so outliving entries costs a fixed amount rather than a growing one.
+  private readonly pendingProxySetAcquisitions = new Set<string>();
+  private readonly liveProxySets = new Map<string, ProviderProxySetAuthority>();
 
   constructor(options: {
-    runtime: Pick<Runtime, 'time' | 'env' | 'ids'>;
+    runtime: Runtime;
     idleTimeoutMs?: number;
     spawnProviderServer: SpawnProviderServerFn;
+    proxySetAcquisition?: ProviderProxySetAcquisitionConfig;
   }) {
     this.runtime = options.runtime;
     this.idleTimeoutMs = options.idleTimeoutMs ?? parseIdleTimeoutMs(this.runtime.env.get('CORAL_BROKER_IDLE_MS'));
     this.spawnProviderServer = options.spawnProviderServer;
+    this.proxySetAcquisitionConfig = options.proxySetAcquisition;
+  }
+
+  /** Every set acquired so far and not yet reaped — see `ProviderProxyAuthorityRegistry.liveSets()`'s own
+   *  doc for what this snapshot does and does not promise. */
+  liveSets(): readonly ProviderProxySetAuthority[] {
+    return [...this.liveProxySets.values()];
+  }
+
+  /**
+   * Starts acquiring `entry`'s guardian/reaper/proxy set if one is not already live or in flight for it.
+   * Fire-and-forget by design (see `ensureProviderProxySet`'s own doc): the caller of `acquireHostLease` gets
+   * its real app-server session exactly as before, unaffected by whether this succeeds, fails, or is still
+   * running when that session opens. A coordinator constructed without `proxySetAcquisition` (every test that
+   * does not care about this feature) never attempts it at all.
+   */
+  private ensureProxySetFor(entry: ProviderHostEntry): void {
+    const config = this.proxySetAcquisitionConfig;
+    if (config === undefined) return;
+    // The executable identity, so every job-exclusive entry of the same spec shares one set. See the
+    // `liveProxySets` field comment for why a per-entry key would be both wrong and unbounded.
+    const identityKey = entry.identityKey;
+    if (this.liveProxySets.has(identityKey) || this.pendingProxySetAcquisitions.has(identityKey)) return;
+    this.pendingProxySetAcquisitions.add(identityKey);
+    ensureProviderProxySet(entry, { runtime: this.runtime, ...config }, (outcome) => {
+      this.pendingProxySetAcquisitions.delete(identityKey);
+      if (outcome.kind === 'acquired') {
+        this.liveProxySets.set(identityKey, outcome.set);
+        return;
+      }
+      backendLog.warn(
+        `Provider proxy set acquisition failed for ${entry.spec.provider} (${identityKey}): ${outcome.reason}`,
+      );
+    });
   }
 
   private async acquireHostLease(
@@ -159,6 +212,7 @@ export class DefaultProviderHostManager implements ProviderHostManager {
     const entry = this.getOrCreateProviderServerEntry(spec, exactEnv, options?.jobId);
     this.clearIdleTimer(entry);
     acquireProviderHostPin(entry);
+    this.ensureProxySetFor(entry);
 
     try {
       const handle = await ensureProviderServerHandle(entry, {
@@ -387,9 +441,10 @@ export class DefaultProviderHostManager implements ProviderHostManager {
 }
 
 export function createProviderHostManager(options: {
-  runtime: Pick<Runtime, 'time' | 'env' | 'ids'>;
+  runtime: Runtime;
   idleTimeoutMs?: number;
   spawnProviderServer: SpawnProviderServerFn;
-}): ProviderHostManager {
+  proxySetAcquisition?: ProviderProxySetAcquisitionConfig;
+}): ProviderHostManager & ProviderProxyAuthorityRegistry {
   return new DefaultProviderHostManager(options);
 }

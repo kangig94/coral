@@ -12,6 +12,7 @@ import {
   type LifecycleDeps,
 } from '#src/coordinator/lifecycle.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy-authority.js';
 import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as HandoffMod from '#src/coordinator/handoff.js';
@@ -557,6 +558,31 @@ describe('lifecycle reset authority and finalizer order', () => {
       mockState.events.indexOf('storeDb.close'),
     );
     expect(servicesRef.tryGet()).toBeNull();
+  });
+
+  it('passes the composed provider proxy authority into the shutdown sequence and reaps its live sets', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'r' }));
+    const fakeSet: ProviderProxySetAuthority = {
+      proxyInstanceId: 'proxy-under-test',
+      snapshotOperations: async () => [],
+      installHandoffGrant: async () => {},
+      stopAndReap,
+      stopHeartbeats: vi.fn(),
+      initiateControlClose: async () => {},
+    };
+    const deps: LifecycleDeps = {
+      ...baseDeps,
+      providerProxyAuthority: { liveSets: () => [fakeSet] },
+    };
+    const lifecycle = createLifecycle(deps, async () => []);
+
+    await lifecycle.start();
+    await lifecycle.shutdown('unit-hard-stop');
+
+    // Proves the whole seam: `LifecycleDeps.providerProxyAuthority` reached `runShutdownSequence`, which read
+    // `liveSets()` and actually reaped what it returned — not merely that the field was accepted.
+    expect(stopAndReap).toHaveBeenCalledOnce();
   });
 
   it('releases socket and discovery after provider-host shutdown rejects', async () => {

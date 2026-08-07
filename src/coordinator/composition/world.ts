@@ -16,6 +16,7 @@ import { createDiscussContextRegistry, type DiscussContextRegistry } from '../..
 
 import { LaunchCoordinator } from '../live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
+import type { ProviderProxyAuthorityRegistry } from '../live/provider-proxy-authority.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';
@@ -158,6 +159,9 @@ export interface CoordinatorWorld {
   readonly discussRegistry: DiscussContextRegistry;
   readonly storeServicesRef: StoreServicesRef;
   readonly providerHostManager: ProviderHostManager;
+  /** Absent whenever `options.providerHostManager` overrode the default (see the construction site's own
+   *  comment) — every test override, and only every test override. */
+  readonly providerProxyAuthority?: ProviderProxyAuthorityRegistry;
   readonly pluginRoot: string;
   readonly now: () => number;
   readonly log: (message: string) => void;
@@ -240,12 +244,22 @@ export function createCoordinatorWorld(
   });
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
   const storeServicesRef = createStoreServicesRef();
-  const providerHostManager =
-    options.providerHostManager ??
-    createProviderHostManager({
+  // A caller-supplied `providerHostManager` (every test that fakes provider hosts) never carries live
+  // guardian/reaper/proxy sets, so `providerProxyAuthority` stays absent rather than reporting on a
+  // substitute it played no part in creating — matching `runShutdownSequence`'s own `undefined` default.
+  let providerHostManager: ProviderHostManager;
+  let providerProxyAuthority: ProviderProxyAuthorityRegistry | undefined;
+  if (options.providerHostManager !== undefined) {
+    providerHostManager = options.providerHostManager;
+  } else {
+    const created = createProviderHostManager({
       runtime,
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
+      proxySetAcquisition: { pluginRoot, identity: { instanceId, buildSetId, flavor } },
     });
+    providerHostManager = created;
+    providerProxyAuthority = created;
+  }
   providerRegistry.connectAppServerHost(providerHostManager);
 
   const identity: CoordinatorIdentity = {
@@ -284,6 +298,7 @@ export function createCoordinatorWorld(
     discussRegistry,
     storeServicesRef,
     providerHostManager,
+    ...(providerProxyAuthority === undefined ? {} : { providerProxyAuthority }),
     pluginRoot,
     now,
     log,

@@ -1,0 +1,124 @@
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('#src/infra/node-process.js', async (importOriginal) => {
+  const original = await importOriginal<object>();
+  return {
+    ...original,
+    probeProcessStartedAtSeconds: vi.fn(() => 1_700_000_000),
+  };
+});
+
+vi.mock('#src/coordinator/live/provider-proxy-acquisition-steps.js', () => ({
+  createProviderProxyAcquisitionSteps: vi.fn(() => ({ steps: 'stub' })),
+}));
+
+vi.mock('#src/coordinator/live/provider-proxy-acquisition.js', () => ({
+  acquireProviderProxySet: vi.fn(),
+}));
+
+import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
+import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy-acquisition-steps.js';
+import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy-acquisition.js';
+import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
+import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy-authority.js';
+import { createEntry, createSharedSpec, runtime } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
+
+const mockedProbe = probeProcessStartedAtSeconds as unknown as ReturnType<typeof vi.fn>;
+const mockedCreateSteps = createProviderProxyAcquisitionSteps as unknown as ReturnType<typeof vi.fn>;
+const mockedAcquire = acquireProviderProxySet as unknown as ReturnType<typeof vi.fn>;
+
+const environment = {
+  runtime,
+  pluginRoot: '/plugin/root',
+  identity: {
+    instanceId: 'coordinator-instance',
+    buildSetId: '1'.repeat(8) + '-0000-4000-8000-000000000000',
+    flavor: 'prod' as const,
+  },
+};
+
+function fakeSet(): ProviderProxySetAuthority {
+  return {
+    proxyInstanceId: 'proxy-1',
+    snapshotOperations: async () => [],
+    installHandoffGrant: async () => {},
+    stopAndReap: async () => ({ disappearanceReceipt: 'r' }),
+    stopHeartbeats: () => {},
+    initiateControlClose: async () => {},
+  };
+}
+
+describe('ensureProviderProxySet', () => {
+  it('reports a failed outcome without attempting acquisition when the coordinator’s own start time cannot be read', () => {
+    mockedProbe.mockReturnValueOnce(null);
+    const outcomes: unknown[] = [];
+
+    ensureProviderProxySet(createEntry({ spec: createSharedSpec() }), environment, (outcome) => {
+      outcomes.push(outcome);
+    });
+
+    expect(outcomes).toEqual([{ kind: 'failed', reason: expect.stringContaining('start time') }]);
+    expect(mockedCreateSteps).not.toHaveBeenCalled();
+    expect(mockedAcquire).not.toHaveBeenCalled();
+  });
+
+  it('derives the host fingerprint from the entry spec and reports the acquired set on success', async () => {
+    const set = fakeSet();
+    mockedAcquire.mockResolvedValueOnce({ kind: 'acquired', set });
+    let outcome: unknown;
+
+    const entry = createEntry({ spec: createSharedSpec() });
+    await new Promise<void>((resolve) => {
+      ensureProviderProxySet(entry, environment, (result) => {
+        outcome = result;
+        resolve();
+      });
+    });
+
+    expect(outcome).toEqual({ kind: 'acquired', set });
+    expect(mockedCreateSteps).toHaveBeenCalledTimes(1);
+    const stepsCall = mockedCreateSteps.mock.calls[0][0];
+    expect(stepsCall.pluginRoot).toBe('/plugin/root');
+    expect(stepsCall.coordinatorIdentity).toMatchObject({
+      instanceId: 'coordinator-instance',
+      generation: 'gen2',
+      flavor: 'prod',
+      processStartedAtSeconds: 1_700_000_000,
+    });
+    expect(typeof stepsCall.hostFingerprint).toBe('string');
+    expect(stepsCall.hostFingerprint.length).toBeGreaterThan(0);
+  });
+
+  it('reports a failed outcome — never a rejection — when acquisition itself fails', async () => {
+    mockedAcquire.mockResolvedValueOnce({
+      kind: 'provider_proxy_acquisition_failed',
+      cut: 'guardian spawn',
+      reason: 'boom',
+      strandedArtifacts: [],
+    });
+    let outcome: unknown;
+
+    await new Promise<void>((resolve) => {
+      ensureProviderProxySet(createEntry({ spec: createSharedSpec() }), environment, (result) => {
+        outcome = result;
+        resolve();
+      });
+    });
+
+    expect(outcome).toEqual({ kind: 'failed', reason: 'boom' });
+  });
+
+  it('reports a failed outcome when the acquisition promise itself rejects', async () => {
+    mockedAcquire.mockRejectedValueOnce(new Error('spawn exploded'));
+    let outcome: unknown;
+
+    await new Promise<void>((resolve) => {
+      ensureProviderProxySet(createEntry({ spec: createSharedSpec() }), environment, (result) => {
+        outcome = result;
+        resolve();
+      });
+    });
+
+    expect(outcome).toEqual({ kind: 'failed', reason: 'spawn exploded' });
+  });
+});

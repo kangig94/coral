@@ -24,6 +24,7 @@ import { appendJobTerminalRecorded } from '../jobs/terminal/recording.js';
 import { deleteDurableCliProcessRuntimeMeta } from '../jobs/runtime-meta-store.js';
 import { elapsedDurationMs } from '../jobs/duration.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
+import type { ProviderProxyAuthorityRegistry } from './live/provider-proxy-authority.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { RuntimeComponent } from './runtime-components/contract.js';
 import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
@@ -677,6 +678,12 @@ export type LifecycleDeps = {
   readonly markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
   readonly terminateAllFn: () => void;
   readonly providerHostManager: Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
+  /**
+   * The live guardian/reaper/proxy sets, absent whenever the composition layer had no real acquisition path
+   * to report on (see `CoordinatorWorld.providerProxyAuthority`'s own doc). `runShutdownSequence` treats
+   * absence identically to an always-empty registry.
+   */
+  readonly providerProxyAuthority?: ProviderProxyAuthorityRegistry;
   readonly kbDaemonSupervisor?: KbDaemonSupervisor;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   readonly disposeLifecycleReactor?: () => void | Promise<void>;
@@ -1141,6 +1148,7 @@ export function createLifecycle(
     markJobsAsErrorFn,
     terminateAllFn,
     providerHostManager,
+    providerProxyAuthority,
     kbDaemonSupervisor,
     disposeLifecycleReactor = () => {},
     hooks,
@@ -1209,6 +1217,7 @@ export function createLifecycle(
         runtime,
         markJobsAsErrorFn,
         providerHostManager,
+        providerProxyAuthority,
         kbDaemonSupervisor,
         storeServicesRef,
         terminateAllFn,

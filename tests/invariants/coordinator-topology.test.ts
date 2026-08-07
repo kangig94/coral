@@ -54,6 +54,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/live/provider-hosts/idle.ts',
   'src/coordinator/live/provider-hosts/index.ts',
   'src/coordinator/live/provider-hosts/lease.ts',
+  'src/coordinator/live/provider-hosts/proxy-set-acquisition.ts',
   'src/coordinator/live/provider-hosts/recovery.ts',
   'src/coordinator/live/provider-hosts/state.ts',
   'src/coordinator/live/worker-limits.ts',
