@@ -48,6 +48,7 @@
     "verify:store-reset-build": "node scripts/verify-store-reset-build-contract.mjs clients/build",
     "verify:store-reset-release": "node scripts/verify-store-reset-build-contract.mjs clients/bridge clients/build",
     "verify:kiwi-runtime-build": "node scripts/verify-kiwi-runtime-build-contract.mjs clients/build",
+    "verify:plan-citations": "node tools/verify-plan-citations.mjs",
     "test:simulation": "vitest run --config vitest/simulation.ts",
     "simulate": "node scripts/run-simulation.mjs"
   },

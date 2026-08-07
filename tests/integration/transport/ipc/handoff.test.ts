@@ -112,6 +112,17 @@ describe('incumbentOutranksContender', () => {
     ).toBe(false);
   });
 
+  it('does not outrank when the incumbent reported no version at all', () => {
+    // The one guard the cases above leave open, and the only one that is not a comparison: an incumbent whose
+    // health reply carried no version cannot be ranked against anything. Deferring to it would hand the socket
+    // to a coordinator that never proved it was an upgrade, so the unrankable answer is "does not outrank" —
+    // and it must come from this guard, not from feeding `undefined` into the version comparison.
+    const desired: DesiredIncumbentIdentity = { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
+    const health: IncumbentHealth = { bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
+
+    expect(incumbentOutranksContender(health, desired)).toBe(false);
+  });
+
   it('is total: equal-version contenders racing for the same socket both defer, never both evict', () => {
     // The exact BLOCKING-1 shape, viewed from both sides at once: build A
     // contends against B's incumbent and build B contends against A's

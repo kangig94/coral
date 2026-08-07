@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { routeLiveIncumbent, type BackendRoutingResult } from '#src/infra/backend-routing.js';
+import { routeLiveIncumbent } from '#src/infra/backend-routing.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import {
   createForeignTargetValidator,
@@ -132,18 +132,8 @@ describe('backend-routing', () => {
     });
   });
 
-  it('should represent a cold invalid newer target with the sole reset arm', () => {
-    const invalid: InvalidTargetEvidence = {
-      bundleDir: '/canonical/foreign-bundle',
-      expectedManifest: manifest('2.0.0', '223e4567-e89b-42d3-a456-426614174000'),
-      failure: 'adjacent-manifest-unavailable',
-    };
-
-    const routing = {
-      kind: 'reset-newer-invalid',
-      evidence: invalid,
-    } satisfies BackendRoutingResult;
-
-    expect(routing).toEqual({ kind: 'reset-newer-invalid', evidence: invalid });
-  });
 });
+
+// `reset-newer-invalid` is deliberately absent from this file. `routeLiveIncumbent` cannot produce it — the
+// arm belongs to the cold path in `store/startup-store-routing.ts`, and it is covered there against the real
+// producer and the real evidence. A test here could only assert a hand-built literal equals itself.
