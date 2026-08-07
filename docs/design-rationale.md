@@ -257,8 +257,11 @@ A file's name must describe what it actually does, not what its history suggests
 - A "`client.ts`" that doesn't talk to a transport but routes a classified verb is named wrong (real fix: `cli/command-client.ts` → `cli/dispatch.ts`).
 - A "`main.ts`" that exports `buildProgram` and isn't the actual process entry is named wrong (`cli/main.ts` → `cli/program.ts`; `bootstrap.ts` IS the entry).
 - Redundant scope qualifiers within an already-scoped directory are noise (`cli/read-coral-store.ts` → `cli/read-store.ts`).
+- A directory name is a claim of ownership, and it goes false the moment a foreign domain imports the file (`expansion/scope.ts` → `infra/disposable-scope.ts`; `engines/kiwi` and `kb-daemon` were already importing it, so the name asserted an ownership that had not held for some time).
 
 When in doubt, ask: would a reader who never opened this file guess its role from the name alone?
+
+A rename is never only a rename. Every invariant, allowlist, and forbidden-list naming the old path has to move in the same change, because the two failure directions are not symmetric: an allowlist entry that goes stale turns its invariant **red** and gets fixed, while a forbidden-list entry that goes stale stays **green** and silently stops banning anything. The `disposable-scope` move left `architecture-boundary.test.ts` forbidding `expansion/scope.js` — a path that no longer existed — so the one composition helper a KB module is most likely to reach for was banned under a name nothing could match. Prefer matching on resolved import targets over specifier text, and assert that every name in such a list still resolves to a real module.
 
 ### 9.5 Re-export discipline
 

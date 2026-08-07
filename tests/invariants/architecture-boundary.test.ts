@@ -964,21 +964,25 @@ describe('architecture boundary guard', () => {
     // are coordinator/daemon concerns. The KB domain owns query
     // semantics and operations but never composes the runtime that runs
     // them.
-    const forbiddenSpecifiers = ['runtime/real.js', 'expansion/bundled.js', 'expansion/host.js', 'expansion/scope.js'];
-    const violations: string[] = [];
-    for (const filePath of PRODUCTION_SOURCE_FILES) {
-      if (!filePath.startsWith('src/kb/')) continue;
-      const source = readFileSync(resolve(REPO_ROOT, filePath), 'utf8');
-      for (const specifier of forbiddenSpecifiers) {
-        if (
-          source.includes(`from '${specifier.replace(/\.js$/, '')}`) ||
-          source.includes(`'../../${specifier}'`) ||
-          source.includes(`'../${specifier}'`)
-        ) {
-          violations.push(`${filePath} -> ${specifier}`);
-        }
-      }
-    }
+    //
+    // Matched on resolved targets, not on the literal specifier text. The previous form tested for `'../x'`
+    // and `'../../x'`, which covered `src/kb/*.ts` and `src/kb/*/*.ts` and silently exempted everything
+    // deeper — `src/kb/` is four levels deep today, so the ban had a hole for every file in it. It also went
+    // stale invisibly: `expansion/scope.ts` moved to `infra/disposable-scope.ts` and the entry kept naming a
+    // path that no longer exists, so the one composition helper a KB module is most likely to reach for was
+    // banned under a name nothing could match. A forbidden list that names nothing simply never fires.
+    const forbiddenTargets = new Set([
+      'src/runtime/real.ts',
+      'src/expansion/bundled.ts',
+      'src/expansion/host.ts',
+      'src/infra/disposable-scope.ts',
+    ]);
+    const violations = PARSED_IMPORT_EDGES.filter(
+      (edge) => edge.source.startsWith('src/kb/') && forbiddenTargets.has(edge.target),
+    ).map((edge) => `${edge.source} -> ${edge.target}`);
+
+    // A forbidden target that names nothing is the failure this rule exists to prevent, so it fails here too.
+    expect([...forbiddenTargets].filter((target) => !PRODUCTION_SOURCE_FILES.includes(target))).toEqual([]);
     expect(violations).toEqual([]);
   });
 
