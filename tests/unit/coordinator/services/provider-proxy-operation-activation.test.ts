@@ -70,8 +70,7 @@ const PREPARED: ProxyPreparedAppServerOperation = {
 
 const PREPARE_PENDING = {
   state: 'pending-activation' as const,
-  reservationId: randomUUID(),
-  activationNonce: randomUUID(),
+  reservation: randomUUID(),
   leaseExpiresInMs: 15_000,
   providerRoot: { pid: 7_001, processStartedAtSeconds: 800 },
   jointContainmentReceipt: 'joint-1',
@@ -143,8 +142,7 @@ describe('activateProviderOperation', () => {
       jobId: OPERATION.jobId,
       operationId: OPERATION.operationId,
       buildSetId: SET_IDENTITY.buildSetId,
-      reservationId: PREPARE_PENDING.reservationId,
-      activationNonce: PREPARE_PENDING.activationNonce,
+      reservation: PREPARE_PENDING.reservation,
       providerRootPid: 7_001,
       providerRootProcessStartedAtSeconds: 800,
       jointContainmentReceipt: 'joint-1',
@@ -228,8 +226,7 @@ describe('activateProviderOperation', () => {
     // it invisible, because a fake client accepts any payload.
     expect(releaseParams).toEqual({
       operation: OPERATION,
-      reservationId: PREPARE_PENDING.reservationId,
-      activationNonce: PREPARE_PENDING.activationNonce,
+      reservation: PREPARE_PENDING.reservation,
       jointContainmentReceipt: PREPARE_PENDING.jointContainmentReceipt,
     });
     expect(metaBeforeFailure).toMatchObject({ jobId: OPERATION.jobId, operationId: OPERATION.operationId });
@@ -303,7 +300,7 @@ describe('activateProviderOperation', () => {
 
   it('refuses a non-canonical reservation at the prepare reply, before a provider root is staged', async () => {
     const db = testDb();
-    const proxy = scriptedClient({ 'operation.prepare.v1': [{ ...PREPARE_PENDING, reservationId: 'not-a-uuid' }] });
+    const proxy = scriptedClient({ 'operation.prepare.v1': [{ ...PREPARE_PENDING, reservation: 'not-a-uuid' }] });
     const guardian = scriptedClient({});
 
     await expect(

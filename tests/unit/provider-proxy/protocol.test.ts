@@ -287,8 +287,7 @@ describe('guardian control-method request schemas, shared with their one coordin
   it('guardian.operation-activate.v1: rejects a payload missing providerRoot, and one carrying an extra field', () => {
     const valid = {
       operation,
-      reservationId: UUID_A,
-      activationNonce: UUID_B,
+      reservation: UUID_A,
       providerRoot,
       jointContainmentReceipt: 'joint-1',
     };
@@ -315,7 +314,7 @@ describe('guardian control-method request schemas, shared with their one coordin
   });
 
   it('guardian.operation-release.v1: rejects a payload missing the receipt bug (3) omitted, and one with an extra field', () => {
-    const valid = { operation, reservationId: UUID_A, activationNonce: UUID_B, jointContainmentReceipt: 'joint-1' };
+    const valid = { operation, reservation: UUID_A, jointContainmentReceipt: 'joint-1' };
     expect(guardianOperationReleaseParamsSchema.safeParse(valid).success).toBe(true);
 
     // Remove the exact field bug (3) omitted at this branch's compensation call site.
@@ -359,14 +358,13 @@ describe('guardian control-method request schemas, shared with their one coordin
     const valid = {
       proxy: proxyIdentity,
       operation,
-      reservationId: UUID_A,
-      activationNonce: UUID_B,
+      reservation: UUID_A,
       providerPid: providerRoot.pid,
       providerProcessStartedAtSeconds: providerRoot.processStartedAtSeconds,
     };
     expect(guardianRegisterProviderRootParamsSchema.safeParse(valid).success).toBe(true);
 
-    const { reservationId: _omitted, ...missingReservation } = valid;
+    const { reservation: _omitted, ...missingReservation } = valid;
     expect(guardianRegisterProviderRootParamsSchema.safeParse(missingReservation).success).toBe(false);
 
     expect(guardianRegisterProviderRootParamsSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
@@ -396,8 +394,7 @@ describe('proxy control-method request schemas, shared with their coordinator se
   it('operation.activate.v1: refuses the exact extra field that made every activation fail', () => {
     const valid = {
       operation,
-      reservationId: UUID_A,
-      activationNonce: UUID_B,
+      reservation: UUID_A,
       jointContainmentReceipt: 'joint-1',
       jointActivationReceipt: 'joint-activation-1',
     };
@@ -435,13 +432,13 @@ describe('proxy control-method request schemas, shared with their coordinator se
   });
 
   it('the reservation shape serves renew, cancel-pending, and activate alike', () => {
-    const valid = { operation, reservationId: UUID_A, activationNonce: UUID_B };
+    const valid = { operation, reservation: UUID_A };
     expect(proxyOperationReservationParamsSchema.safeParse(valid).success).toBe(true);
 
     // Activate extends it rather than restating it, so a field the base refuses is refused there too — the
     // property that keeps one schema serving three methods from drifting into three.
     expect(proxyOperationReservationParamsSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
-    const { activationNonce: _omitted, ...missing } = valid;
+    const { reservation: _omitted, ...missing } = valid;
     expect(proxyOperationReservationParamsSchema.safeParse(missing).success).toBe(false);
   });
 

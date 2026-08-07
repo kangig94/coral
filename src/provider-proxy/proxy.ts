@@ -124,8 +124,7 @@ export type ProxyOptions<Scope extends symbol> = Readonly<{
   timer: ControlEndpointTimer;
   mintChallenge(): string;
   mintReceipt(): string;
-  mintReservationId(): string;
-  mintActivationNonce(): string;
+  mintReservation(): string;
   /**
    * The joint receipt the guardian issued for this operation's provider root, and the activation receipt it
    * later converts. The proxy verifies both before starting a kernel, so a root neither authority recorded
@@ -141,11 +140,7 @@ export type ProxyOptions<Scope extends symbol> = Readonly<{
      */
     stageProviderRoot(
       key: ProviderOperationKey,
-      reservation: Readonly<{
-        reservationId: string;
-        activationNonce: string;
-        prepared: ProxyPreparedAppServerOperation;
-      }>,
+      reserved: Readonly<{ reservation: string; prepared: ProxyPreparedAppServerOperation }>,
     ): Promise<Readonly<{ providerRoot: unknown; receipt: string }>>;
     /** Throws unless the guardian recognises both receipts for this exact operation. */
     confirmActivation(
@@ -407,14 +402,12 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             throw new ProxyControlProtocolError('identity_mismatch', 'Prepare named a different host fingerprint.');
           }
           const key = ledgerKey(request.operation);
-          const reservationId = options.mintReservationId();
-          const activationNonce = options.mintActivationNonce();
+          const reservation = options.mintReservation();
           let reserved: PrepareResult<ProxyPreparedAppServerOperation>;
           try {
             reserved = ledger.prepare({
               key,
-              reservationId,
-              activationNonce,
+              reservation,
               prepared: request.prepared,
               nowMs: nowMs(),
             });
@@ -428,12 +421,11 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           }
           // The root is staged with both enforcers before the reservation is reported, so a reservation the
           // coordinator commits always names a root the containment can already reach. `reserved.entry` — not
-          // the freshly minted `reservationId`/`activationNonce` above — is what gets forwarded: on an
+          // the freshly minted `reservation` above — is what gets forwarded: on an
           // idempotent repeat of an already-reserved operation, `ledger.prepare()` returns the *existing*
           // entry, and that entry's own reservation is the one every later step must agree with.
           const staged = await options.containment.stageProviderRoot(key, {
-            reservationId: reserved.entry.reservationId,
-            activationNonce: reserved.entry.activationNonce,
+            reservation: reserved.entry.reservation,
             prepared: reserved.entry.prepared,
           });
           // Retained on the ledger entry — the single owner of this operation's state — so activate can
@@ -441,8 +433,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           ledger.recordContainmentReceipt(key, staged.receipt);
           return {
             state: 'pending-activation',
-            reservationId: reserved.entry.reservationId,
-            activationNonce: reserved.entry.activationNonce,
+            reservation: reserved.entry.reservation,
             leaseExpiresInMs: reserved.entry.leaseExpiresAtMs - nowMs(),
             providerRoot: staged.providerRoot,
             jointContainmentReceipt: staged.receipt,
@@ -451,13 +442,18 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       },
     ],
     [
+      // No requester in this repository, and kept deliberately — the same asymmetry `operation.status.v1`
+      // records below. A responder cannot be retrofitted into a process that is already running, so it has to
+      // ship before anything needs it; a requester can be added at any time. Until then this method is the
+      // only way a lease could ever be extended past `PROXY_PENDING_ACTIVATION_LEASE_MS`, which is a fixed
+      // expiry today.
       'operation.renew-activation.v1',
       {
         authority: 'active',
         handle: (params) => {
           const request = reservationParamsSchema.parse(params);
           try {
-            const entry = ledger.renew(ledgerKey(request.operation), request.reservationId, nowMs());
+            const entry = ledger.renew(ledgerKey(request.operation), request.reservation, nowMs());
             return { state: 'pending-activation', leaseExpiresInMs: entry.leaseExpiresAtMs - nowMs() };
           } catch (error: unknown) {
             asProtocolError(error);
@@ -490,7 +486,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             jointActivationReceipt: request.jointActivationReceipt,
           });
           try {
-            ledger.activate(key, request.reservationId, request.activationNonce, nowMs());
+            ledger.activate(key, request.reservation, nowMs());
           } catch (error: unknown) {
             asProtocolError(error);
           }
@@ -522,7 +518,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           // Idempotent: an entry already gone is a cancel that already landed, and reporting `released`
           // is the truthful answer rather than a not-found the caller would have to special-case.
           if (entry === null) return { state: 'released' };
-          if (entry.reservationId !== request.reservationId || entry.activationNonce !== request.activationNonce) {
+          if (entry.reservation !== request.reservation) {
             throw new ProxyControlProtocolError('invalid_request', 'Cancel presented a different reservation.');
           }
           try {

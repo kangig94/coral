@@ -125,8 +125,7 @@ async function startProxy(
       receipts += 1;
       return `receipt-${receipts}`;
     },
-    mintReservationId: () => randomUUID(),
-    mintActivationNonce: () => randomUUID(),
+    mintReservation: () => randomUUID(),
     containment: {
       stageProviderRoot: () => {
         if (options.failStage === true) throw new Error('the guardian refused to stage this root');
@@ -211,8 +210,7 @@ async function activate(set: ProxyUnderTest, operation: unknown, reserved: Recor
     'operation.activate.v1',
     {
       operation,
-      reservationId: reserved.reservationId,
-      activationNonce: reserved.activationNonce,
+      reservation: reserved.reservation,
       jointContainmentReceipt: reserved.jointContainmentReceipt,
       jointActivationReceipt: 'joint-activation-1',
     },
@@ -317,7 +315,7 @@ describe('provider-proxy operation lifecycle', () => {
     ).rejects.toThrow(/the guardian refused to stage this root/u);
 
     // `ledger.prepare()` already inserted the entry before `stageProviderRoot` ran. The failed RPC never told
-    // the coordinator a reservationId or activationNonce exists, but the ledger still holds one — stuck
+    // the coordinator a reservation exists, but the ledger still holds one — stuck
     // `pending-activation` with no containment receipt, since `recordContainmentReceipt` never ran.
     const key = { jobId: operation.jobId, operationId: operation.operationId };
     expect(set.proxy.ledger().get(key)).toMatchObject({ state: 'pending-activation', jointContainmentReceipt: null });
@@ -353,11 +351,7 @@ describe('provider-proxy operation lifecycle', () => {
     // The reservation is not silently gone: durable meta may already name it, so it stays cancellable by
     // exactly the reservation that was authorized.
     expect(
-      await set.control.call(
-        'operation.cancel-pending.v1',
-        { operation, reservationId: reserved.reservationId, activationNonce: reserved.activationNonce },
-        5_000,
-      ),
+      await set.control.call('operation.cancel-pending.v1', { operation, reservation: reserved.reservation }, 5_000),
     ).toEqual({ state: 'released' });
   });
 
@@ -368,7 +362,7 @@ describe('provider-proxy operation lifecycle', () => {
 
     const renewed = (await set.control.call(
       'operation.renew-activation.v1',
-      { operation, reservationId: reserved.reservationId, activationNonce: reserved.activationNonce },
+      { operation, reservation: reserved.reservation },
       5_000,
     )) as { state: string; leaseExpiresInMs: number };
 
@@ -388,12 +382,16 @@ describe('provider-proxy operation lifecycle', () => {
     const { operation, reserved } = await prepare(set);
 
     await expect(
-      set.control.call(
-        'operation.renew-activation.v1',
-        { operation, reservationId: randomUUID(), activationNonce: reserved.activationNonce },
-        5_000,
-      ),
+      set.control.call('operation.renew-activation.v1', { operation, reservation: randomUUID() }, 5_000),
     ).rejects.toThrow(/different reservation/u);
+
+    // The same call with the reservation this operation actually holds still renews, so the refusal above is
+    // about the value and not about the method. Renew once compared only half of a two-field reservation
+    // while its schema demanded both, so a wrong second half renewed successfully; with one value there is
+    // no half to get wrong.
+    expect(
+      await set.control.call('operation.renew-activation.v1', { operation, reservation: reserved.reservation }, 5_000),
+    ).toMatchObject({ state: 'pending-activation' });
   });
 
   it('reports a repeated cancel as released rather than not-found', async () => {
@@ -401,8 +399,7 @@ describe('provider-proxy operation lifecycle', () => {
     const { operation, reserved } = await prepare(set);
     const request = {
       operation,
-      reservationId: reserved.reservationId,
-      activationNonce: reserved.activationNonce,
+      reservation: reserved.reservation,
     };
     await set.control.call('operation.cancel-pending.v1', request, 5_000);
 
@@ -414,11 +411,7 @@ describe('provider-proxy operation lifecycle', () => {
     const { operation } = await prepare(set);
 
     await expect(
-      set.control.call(
-        'operation.cancel-pending.v1',
-        { operation, reservationId: randomUUID(), activationNonce: randomUUID() },
-        5_000,
-      ),
+      set.control.call('operation.cancel-pending.v1', { operation, reservation: randomUUID() }, 5_000),
     ).rejects.toThrow(/different reservation/u);
   });
 
@@ -454,11 +447,7 @@ describe('provider-proxy operation lifecycle', () => {
     expect(set.stopped).toEqual([]);
     // Released, not stuck: a cancel for the same reservation now reports it as already gone.
     expect(
-      await set.control.call(
-        'operation.cancel-pending.v1',
-        { operation, reservationId: reserved.reservationId, activationNonce: reserved.activationNonce },
-        5_000,
-      ),
+      await set.control.call('operation.cancel-pending.v1', { operation, reservation: reserved.reservation }, 5_000),
     ).toEqual({ state: 'released' });
   });
 
@@ -619,11 +608,7 @@ describe('provider-proxy operation lifecycle', () => {
     const { operation, reserved } = await prepare(set);
 
     observedBudgetsMs.length = 0;
-    await set.control.call(
-      'operation.renew-activation.v1',
-      { operation, reservationId: reserved.reservationId, activationNonce: reserved.activationNonce },
-      5_000,
-    );
+    await set.control.call('operation.renew-activation.v1', { operation, reservation: reserved.reservation }, 5_000);
     // An ordinary mutation method declares no `budgetMs` of its own, so it inherits the endpoint default.
     expect(observedBudgetsMs).toEqual([PROXY_CONTROL_RPC_TIMEOUT_MS]);
 

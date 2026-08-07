@@ -95,8 +95,7 @@ const MUTATION_RPC_TIMEOUT_DEFAULT_MS = 5_000;
 const preparePendingSchema = z
   .object({
     state: z.literal('pending-activation'),
-    reservationId: providerOperationRuntimeMetaSchema.shape.reservationId,
-    activationNonce: providerOperationRuntimeMetaSchema.shape.activationNonce,
+    reservation: providerOperationRuntimeMetaSchema.shape.reservation,
     leaseExpiresInMs: z.number(),
     providerRoot: providerRootSchema,
     jointContainmentReceipt: providerOperationRuntimeMetaSchema.shape.jointContainmentReceipt,
@@ -196,15 +195,14 @@ function buildStopControl(
 async function compensateAfterActivationFailure(
   deps: ProviderProxyOperationActivationDeps,
   operation: OperationIdentity,
-  reservationId: string,
-  activationNonce: string,
+  reservation: string,
   jointContainmentReceipt: string,
 ): Promise<void> {
   deleteProviderOperationRuntimeMeta(deps.db, operation.jobId, operation.operationId);
   await callStrict(
     deps.proxyClient,
     'operation.cancel-pending.v1',
-    { operation, reservationId, activationNonce },
+    { operation, reservation },
     deps.mutationRpcTimeoutMs,
     proxyOperationReservationParamsSchema,
     cancelPendingResultSchema,
@@ -218,7 +216,7 @@ async function compensateAfterActivationFailure(
   await callStrict(
     deps.guardianClient,
     'guardian.operation-release.v1',
-    { operation, reservationId, activationNonce, jointContainmentReceipt },
+    { operation, reservation, jointContainmentReceipt },
     deps.mutationRpcTimeoutMs,
     guardianOperationReleaseParamsSchema,
     guardianOperationReleaseResultSchema,
@@ -253,7 +251,7 @@ export async function activateProviderOperation(
   if (prepareResult.state === 'capacity') {
     return { kind: 'capacity', retryable: prepareResult.retryable, reason: prepareResult.reason };
   }
-  const { reservationId, activationNonce, providerRoot, jointContainmentReceipt } = prepareResult;
+  const { reservation, providerRoot, jointContainmentReceipt } = prepareResult;
 
   // Step 2: one coordinator transaction commits the exact locator every later step and every later recovery
   // reads back — never DDL, never an event-body codec, never registered in PersistedCodecRegistry.
@@ -277,8 +275,7 @@ export async function activateProviderOperation(
     proxyProcessStartedAtSeconds: deps.setIdentity.proxyProcessStartedAtSeconds,
     proxyProcessGroupId: deps.setIdentity.proxyProcessGroupId,
     canonicalEndpoint: deps.setIdentity.canonicalEndpoint,
-    reservationId,
-    activationNonce,
+    reservation,
     providerRootPid: providerRoot.pid,
     providerRootProcessStartedAtSeconds: providerRoot.processStartedAtSeconds,
     jointContainmentReceipt,
@@ -292,14 +289,14 @@ export async function activateProviderOperation(
     const guardianResult = await callStrict(
       deps.guardianClient,
       'guardian.operation-activate.v1',
-      { operation, reservationId, activationNonce, providerRoot, jointContainmentReceipt },
+      { operation, reservation, providerRoot, jointContainmentReceipt },
       timeoutMs,
       guardianOperationActivateParamsSchema,
       guardianOperationActivateResultSchema,
     );
     jointActivationReceipt = guardianResult.jointActivationReceipt;
   } catch (error: unknown) {
-    await compensateAfterActivationFailure(deps, operation, reservationId, activationNonce, jointContainmentReceipt);
+    await compensateAfterActivationFailure(deps, operation, reservation, jointContainmentReceipt);
     return { kind: 'activation-failed', step: 'guardian-activate', reason: errorReason(error) };
   }
 
@@ -318,7 +315,7 @@ export async function activateProviderOperation(
     const activateResult = await callStrict(
       deps.proxyClient,
       'operation.activate.v1',
-      { operation, reservationId, activationNonce, jointContainmentReceipt, jointActivationReceipt },
+      { operation, reservation, jointContainmentReceipt, jointActivationReceipt },
       timeoutMs,
       proxyOperationActivateParamsSchema,
       proxyActivateResultSchema,
@@ -330,7 +327,7 @@ export async function activateProviderOperation(
       control: buildStopControl(deps, operation, timeoutMs),
     };
   } catch (error: unknown) {
-    await compensateAfterActivationFailure(deps, operation, reservationId, activationNonce, jointContainmentReceipt);
+    await compensateAfterActivationFailure(deps, operation, reservation, jointContainmentReceipt);
     return { kind: 'activation-failed', step: 'proxy-activate', reason: errorReason(error) };
   }
 }

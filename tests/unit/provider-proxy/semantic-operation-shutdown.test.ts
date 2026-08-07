@@ -125,9 +125,9 @@ function prepareAndActivate(
   key: ProviderOperationKey,
   prepared: ProxyPreparedAppServerOperation,
 ): void {
-  const reserved = ledger.prepare({ key, reservationId: 'res', activationNonce: 'nonce', prepared, nowMs: 0 });
+  const reserved = ledger.prepare({ key, reservation: 'res', prepared, nowMs: 0 });
   if (reserved.kind !== 'reserved') throw new Error('expected a reservation');
-  ledger.activate(key, 'res', 'nonce', 0);
+  ledger.activate(key, 'res', 0);
 }
 
 /** A `BoundProvider` test double whose `execute` never yields until its own signal aborts — a kernel that is

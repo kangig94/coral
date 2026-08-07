@@ -259,9 +259,8 @@ describe('createProxyGuardianContainment against a real guardian', () => {
     // stand-in, and `reserved.entry` is exactly what `proxy.ts`'s own handler passes into `stageProviderRoot`.
     const ledger = createOperationLedger<ProxyPreparedAppServerOperation>();
     const key = { jobId: randomUUID(), operationId: randomUUID() };
-    const reservationId = randomUUID();
-    const activationNonce = randomUUID();
-    const reserved = ledger.prepare({ key, reservationId, activationNonce, prepared: PREPARED, nowMs: 0 });
+    const reservation = randomUUID();
+    const reserved = ledger.prepare({ key, reservation, prepared: PREPARED, nowMs: 0 });
     if (reserved.kind !== 'reserved') throw new Error('unexpected capacity refusal in a fresh ledger');
 
     const containment = createProxyGuardianContainment({
@@ -272,16 +271,15 @@ describe('createProxyGuardianContainment against a real guardian', () => {
     });
 
     const staged = await containment.stageProviderRoot(key, {
-      reservationId: reserved.entry.reservationId,
-      activationNonce: reserved.entry.activationNonce,
+      reservation: reserved.entry.reservation,
       prepared: reserved.entry.prepared,
     });
     expect(staged.providerRoot).toEqual(ROOT);
 
-    // The coordinator's own reservation: exactly the `reservationId`/`activationNonce` `operation.prepare.v1`
-    // would have echoed back from this same ledger entry — not a value this test invents separately. Before
-    // the fix, `stageProviderRoot` forwarded a freshly minted pair to the guardian instead of these, so the
-    // guardian's stored membership could never agree with what is presented here.
+    // The coordinator's own reservation: exactly the value `operation.prepare.v1` would have echoed back from
+    // this same ledger entry — not one this test invents separately. Before the fix, `stageProviderRoot`
+    // forwarded a freshly minted value to the guardian instead of this one, so the guardian's stored
+    // membership could never agree with what is presented here.
     const activated = (await control.call(
       'guardian.operation-activate.v1',
       {
@@ -291,8 +289,7 @@ describe('createProxyGuardianContainment against a real guardian', () => {
           proxyInstanceId: proxyIdentity.proxyInstanceId,
           buildSetId: proxyIdentity.buildSetId,
         },
-        reservationId,
-        activationNonce,
+        reservation,
         providerRoot: ROOT,
         jointContainmentReceipt: staged.receipt,
       },

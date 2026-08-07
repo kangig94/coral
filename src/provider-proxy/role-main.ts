@@ -708,8 +708,8 @@ export function createProxyGuardianContainment(
   const recognisedReceipts = new Map<string, string>();
 
   return {
-    stageProviderRoot: async (key, reservation) => {
-      const root = await deps.ensureProviderRoot(key, reservation.prepared);
+    stageProviderRoot: async (key, reserved) => {
+      const root = await deps.ensureProviderRoot(key, reserved.prepared);
       // Parsed against the guardian's own schema before the frame is written, not merely typed: the receiver
       // is `.strict()`, so a field it has no place for — or one this call forgot — is refused on arrival,
       // and a refusal here reads as an activation failure rather than as the malformed request it is.
@@ -726,8 +726,7 @@ export function createProxyGuardianContainment(
         // coordinator's own copy of the same reservation (returned to the coordinator by
         // `operation.prepare.v1`'s reply). Presenting anything else here means that later comparison can
         // never agree, and activation refuses with `identity_mismatch` on every attempt.
-        reservationId: reservation.reservationId,
-        activationNonce: reservation.activationNonce,
+        reservation: reserved.reservation,
         providerPid: root.pid,
         providerProcessStartedAtSeconds: root.processStartedAtSeconds,
       });
@@ -833,8 +832,7 @@ export async function startProviderProxyRole(
     timer,
     mintChallenge: () => ports.runtime.ids.uuid(),
     mintReceipt: () => ports.runtime.ids.uuid(),
-    mintReservationId: () => ports.runtime.ids.uuid(),
-    mintActivationNonce: () => ports.runtime.ids.uuid(),
+    mintReservation: () => ports.runtime.ids.uuid(),
     containment: createProxyGuardianContainment({
       identity,
       guardianChannel,

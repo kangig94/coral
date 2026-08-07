@@ -136,8 +136,7 @@ async function startProxy(
     timer: endpointTimer,
     mintChallenge: () => `challenge-${(counter += 1)}`,
     mintReceipt: () => `receipt-${(counter += 1)}`,
-    mintReservationId: () => randomUUID(),
-    mintActivationNonce: () => randomUUID(),
+    mintReservation: () => randomUUID(),
     containment: {
       // No real guardian: a fixed root/receipt is all `operation.prepare.v1` needs to stage.
       stageProviderRoot: async () => ({
@@ -190,12 +189,12 @@ describe('provider-proxy proxy: staged-but-never-executed release (BLOCKING B4)'
       'operation.prepare.v1',
       { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED },
       5_000,
-    )) as { state: string; reservationId: string; activationNonce: string };
+    )) as { state: string; reservation: string };
     expect(prepared.state).toBe('pending-activation');
 
     const cancelled = await control.call(
       'operation.cancel-pending.v1',
-      { operation, reservationId: prepared.reservationId, activationNonce: prepared.activationNonce },
+      { operation, reservation: prepared.reservation },
       5_000,
     );
 
@@ -236,16 +235,12 @@ describe('provider-proxy proxy: staged-but-never-executed release (BLOCKING B4)'
       'operation.prepare.v1',
       { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED },
       5_000,
-    )) as { reservationId: string; activationNonce: string };
+    )) as { reservation: string };
 
-    await control.call(
-      'operation.cancel-pending.v1',
-      { operation, reservationId: prepared.reservationId, activationNonce: prepared.activationNonce },
-      5_000,
-    );
+    await control.call('operation.cancel-pending.v1', { operation, reservation: prepared.reservation }, 5_000);
     const repeated = await control.call(
       'operation.cancel-pending.v1',
-      { operation, reservationId: prepared.reservationId, activationNonce: prepared.activationNonce },
+      { operation, reservation: prepared.reservation },
       5_000,
     );
 

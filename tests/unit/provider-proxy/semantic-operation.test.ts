@@ -204,9 +204,9 @@ function prepareAndActivate(
   key: ProviderOperationKey,
   prepared: ProxyPreparedAppServerOperation,
 ): void {
-  const reserved = ledger.prepare({ key, reservationId: 'res', activationNonce: 'nonce', prepared, nowMs: 0 });
+  const reserved = ledger.prepare({ key, reservation: 'res', prepared, nowMs: 0 });
   if (reserved.kind !== 'reserved') throw new Error('expected a reservation');
-  ledger.activate(key, 'res', 'nonce', 0);
+  ledger.activate(key, 'res', 0);
 }
 
 /** Seeds the ledger to one event short of its per-operation ceiling, so the very next `recordEvent` call

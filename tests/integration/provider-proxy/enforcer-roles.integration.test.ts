@@ -374,26 +374,23 @@ async function openReaperControl(set: SetUnderTest): Promise<ControlClient> {
 async function stage(set: SetUnderTest): Promise<{
   jointContainmentReceipt: string;
   operation: Record<string, string>;
-  reservationId: string;
-  activationNonce: string;
+  reservation: string;
 }> {
   const operation = set.operationFor();
-  const reservationId = randomUUID();
-  const activationNonce = randomUUID();
+  const reservation = randomUUID();
   const staged = (await set.proxyChannel.call(
     'guardian.register-provider-root.v1',
     {
       proxy: set.proxyIdentity,
       operation,
-      reservationId,
-      activationNonce,
+      reservation,
       providerPid: ROOT.pid,
       providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
     },
     5_000,
   )) as { state: string; jointContainmentReceipt: string };
   expect(staged.state).toBe('staged-contained');
-  return { jointContainmentReceipt: staged.jointContainmentReceipt, operation, reservationId, activationNonce };
+  return { jointContainmentReceipt: staged.jointContainmentReceipt, operation, reservation };
 }
 
 type BareSharedIdentity = Readonly<{
@@ -548,8 +545,7 @@ describe('provider-proxy guardian and reaper', () => {
         {
           proxy: { ...set.proxyIdentity, proxyInstanceId: randomUUID() },
           operation: set.operationFor(),
-          reservationId: randomUUID(),
-          activationNonce: randomUUID(),
+          reservation: randomUUID(),
           providerPid: ROOT.pid,
           providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
         },
@@ -569,8 +565,7 @@ describe('provider-proxy guardian and reaper', () => {
         {
           proxy: set.proxyIdentity,
           operation: set.operationFor(),
-          reservationId: randomUUID(),
-          activationNonce: randomUUID(),
+          reservation: randomUUID(),
           providerPid: ROOT.pid,
           providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
         },
@@ -601,8 +596,7 @@ describe('provider-proxy guardian and reaper', () => {
         'guardian.operation-activate.v1',
         {
           operation: set.operationFor(),
-          reservationId: randomUUID(),
-          activationNonce: randomUUID(),
+          reservation: randomUUID(),
           providerRoot: ROOT,
           jointContainmentReceipt: 'forged',
         },
@@ -631,8 +625,7 @@ describe('provider-proxy guardian and reaper', () => {
         {
           proxy: set.proxyIdentity,
           operation: set.operationFor(),
-          reservationId: randomUUID(),
-          activationNonce: randomUUID(),
+          reservation: randomUUID(),
           providerPid: ROOT.pid,
           providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
         },
@@ -749,10 +742,10 @@ describe('provider-proxy guardian and reaper', () => {
     // loop would have leaked one reaper slot per cycle and failed near iteration 128 under the old code.
     const cycles = MAX_PROXY_OPERATION_LEDGERS + 40;
     for (let cycle = 0; cycle < cycles; cycle += 1) {
-      const { operation, reservationId, activationNonce, jointContainmentReceipt } = await stage(set);
+      const { operation, reservation, jointContainmentReceipt } = await stage(set);
       const released = (await set.control.call(
         'guardian.operation-release.v1',
-        { operation, reservationId, activationNonce, jointContainmentReceipt },
+        { operation, reservation, jointContainmentReceipt },
         5_000,
       )) as { state: string };
       expect(released.state).toBe('membership-released');
@@ -765,11 +758,11 @@ describe('provider-proxy guardian and reaper', () => {
 
   it('lets a retried guardian.operation-activate.v1 succeed rather than being refused by the reaper', async () => {
     const set = await startSet();
-    const { jointContainmentReceipt, operation, reservationId, activationNonce } = await stage(set);
+    const { jointContainmentReceipt, operation, reservation } = await stage(set);
     const activate = () =>
       set.control.call(
         'guardian.operation-activate.v1',
-        { operation, reservationId, activationNonce, providerRoot: ROOT, jointContainmentReceipt },
+        { operation, reservation, providerRoot: ROOT, jointContainmentReceipt },
         5_000,
       ) as Promise<{ state: string }>;
 
@@ -791,8 +784,7 @@ describe('provider-proxy guardian and reaper', () => {
         'guardian.operation-activate.v1',
         {
           operation,
-          reservationId: randomUUID(),
-          activationNonce: randomUUID(),
+          reservation: randomUUID(),
           providerRoot: ROOT,
           jointContainmentReceipt,
         },
@@ -803,15 +795,14 @@ describe('provider-proxy guardian and reaper', () => {
 
   it('refuses guardian.operation-activate.v1 presenting a different provider root than the one staged', async () => {
     const set = await startSet();
-    const { jointContainmentReceipt, operation, reservationId, activationNonce } = await stage(set);
+    const { jointContainmentReceipt, operation, reservation } = await stage(set);
 
     await expect(
       set.control.call(
         'guardian.operation-activate.v1',
         {
           operation,
-          reservationId,
-          activationNonce,
+          reservation,
           providerRoot: { pid: ROOT.pid + 1, processStartedAtSeconds: ROOT.processStartedAtSeconds },
           jointContainmentReceipt,
         },
@@ -827,7 +818,7 @@ describe('provider-proxy guardian and reaper', () => {
     await expect(
       set.control.call(
         'guardian.operation-release.v1',
-        { operation, reservationId: randomUUID(), activationNonce: randomUUID(), jointContainmentReceipt },
+        { operation, reservation: randomUUID(), jointContainmentReceipt },
         5_000,
       ),
     ).rejects.toThrow(/different reservation/u);
@@ -886,8 +877,7 @@ describe('provider-proxy guardian and reaper', () => {
         {
           proxy: set.proxyIdentity,
           operation: set.operationFor(),
-          reservationId: randomUUID(),
-          activationNonce: randomUUID(),
+          reservation: randomUUID(),
           providerPid: ROOT.pid,
           providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
         },
@@ -902,8 +892,7 @@ describe('provider-proxy guardian and reaper', () => {
         {
           proxy: set.proxyIdentity,
           operation: set.operationFor(),
-          reservationId: randomUUID(),
-          activationNonce: randomUUID(),
+          reservation: randomUUID(),
           providerPid: ROOT.pid,
           providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
         },
@@ -920,15 +909,13 @@ describe('provider-proxy guardian and reaper', () => {
     // is what lets this reach the provider-root cap without ever also tripping the staged-operation cap.
     for (let index = 0; index < MAX_PROXY_RECORDED_PROVIDER_ROOTS; index += 1) {
       const operation = set.operationFor();
-      const reservationId = randomUUID();
-      const activationNonce = randomUUID();
+      const reservation = randomUUID();
       const staged = (await set.proxyChannel.call(
         'guardian.register-provider-root.v1',
         {
           proxy: set.proxyIdentity,
           operation,
-          reservationId,
-          activationNonce,
+          reservation,
           providerPid: 40_000 + index,
           providerProcessStartedAtSeconds: 1,
         },
@@ -937,7 +924,7 @@ describe('provider-proxy guardian and reaper', () => {
       expect(staged.state).toBe('staged-contained');
       const released = (await set.control.call(
         'guardian.operation-release.v1',
-        { operation, reservationId, activationNonce, jointContainmentReceipt: staged.jointContainmentReceipt },
+        { operation, reservation, jointContainmentReceipt: staged.jointContainmentReceipt },
         5_000,
       )) as { state: string };
       expect(released.state).toBe('membership-released');
@@ -949,8 +936,7 @@ describe('provider-proxy guardian and reaper', () => {
         {
           proxy: set.proxyIdentity,
           operation: set.operationFor(),
-          reservationId: randomUUID(),
-          activationNonce: randomUUID(),
+          reservation: randomUUID(),
           providerPid: 999_999,
           providerProcessStartedAtSeconds: 1,
         },
@@ -1073,8 +1059,7 @@ describe('provider-proxy guardian and reaper', () => {
         {
           proxy: bare.proxyIdentity,
           operation: bare.operationFor(),
-          reservationId: randomUUID(),
-          activationNonce: randomUUID(),
+          reservation: randomUUID(),
           providerPid: ROOT.pid,
           providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
         },
@@ -1090,15 +1075,13 @@ describe('provider-proxy guardian and reaper', () => {
       return { state: 'not-recorded' };
     });
     const operation = bare.operationFor();
-    const reservationId = randomUUID();
-    const activationNonce = randomUUID();
+    const reservation = randomUUID();
     const staged = (await bare.proxyChannel.call(
       'guardian.register-provider-root.v1',
       {
         proxy: bare.proxyIdentity,
         operation,
-        reservationId,
-        activationNonce,
+        reservation,
         providerPid: ROOT.pid,
         providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
       },
@@ -1110,8 +1093,7 @@ describe('provider-proxy guardian and reaper', () => {
         'guardian.operation-activate.v1',
         {
           operation,
-          reservationId,
-          activationNonce,
+          reservation,
           providerRoot: ROOT,
           jointContainmentReceipt: staged.jointContainmentReceipt,
         },
@@ -1122,11 +1104,11 @@ describe('provider-proxy guardian and reaper', () => {
 
   it('keeps a released membership recorded so only teardown may conclude absence', async () => {
     const set = await startSet();
-    const { jointContainmentReceipt, operation, reservationId, activationNonce } = await stage(set);
+    const { jointContainmentReceipt, operation, reservation } = await stage(set);
 
     const released = (await set.control.call(
       'guardian.operation-release.v1',
-      { operation, reservationId, activationNonce, jointContainmentReceipt },
+      { operation, reservation, jointContainmentReceipt },
       5_000,
     )) as { state: string };
     expect(released.state).toBe('membership-released');
@@ -2089,8 +2071,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
       proxyProcessStartedAtSeconds: set.proxyIdentity.processStartedAtSeconds,
       proxyProcessGroupId: set.proxyIdentity.processGroupId,
       canonicalEndpoint: set.proxyIdentity.canonicalEndpoint,
-      reservationId: randomUUID(),
-      activationNonce: randomUUID(),
+      reservation: randomUUID(),
       providerRootPid: ROOT.pid,
       providerRootProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
       jointContainmentReceipt: 'joint-1',

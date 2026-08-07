@@ -57,6 +57,15 @@ export const canonicalUuidSchema = z
   .string()
   .length(36)
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+/**
+ * One reservation, naming one prepared operation for the whole window between `operation.prepare.v1` and
+ * `operation.activate.v1`. Formerly two fields — a `reservationId` and an `activationNonce` — minted together,
+ * sent together, and destroyed together, with no path that ever rotated one without the other. The second was
+ * not a nonce: nothing spent it, and it was compared with `!==` where every real credential in this domain
+ * uses `timingSafeEqual`. Two fields were two chances to fabricate one value, and one of them was taken.
+ */
+const reservationSchema = canonicalUuidSchema;
+
 export const hostFingerprintSchema = z
   .string()
   .length(64)
@@ -390,8 +399,7 @@ export const guardianRegisterProviderRootParamsSchema = z
   .object({
     proxy: proxyIdentitySchema,
     operation: operationIdentitySchema,
-    reservationId: canonicalUuidSchema,
-    activationNonce: canonicalUuidSchema,
+    reservation: reservationSchema,
     providerPid: z.number().int().nonnegative(),
     providerProcessStartedAtSeconds: z.number().int().nonnegative(),
   })
@@ -401,8 +409,7 @@ export const guardianRegisterProviderRootParamsSchema = z
 export const guardianOperationActivateParamsSchema = z
   .object({
     operation: operationIdentitySchema,
-    reservationId: canonicalUuidSchema,
-    activationNonce: canonicalUuidSchema,
+    reservation: reservationSchema,
     providerRoot: providerRootSchema,
     jointContainmentReceipt: z.string().min(1),
   })
@@ -417,8 +424,7 @@ export const guardianOperationActivateParamsSchema = z
 export const guardianOperationReleaseParamsSchema = z
   .object({
     operation: operationIdentitySchema,
-    reservationId: canonicalUuidSchema,
-    activationNonce: canonicalUuidSchema,
+    reservation: reservationSchema,
     jointContainmentReceipt: z.string().min(1),
   })
   .strict();
@@ -475,8 +481,7 @@ export const proxyOperationPrepareParamsSchema = z
 export const proxyOperationReservationParamsSchema = z
   .object({
     operation: operationIdentitySchema,
-    reservationId: canonicalUuidSchema,
-    activationNonce: canonicalUuidSchema,
+    reservation: reservationSchema,
   })
   .strict();
 

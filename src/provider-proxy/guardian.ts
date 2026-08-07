@@ -108,8 +108,7 @@ const handoffRedeemParamsSchema = z
  */
 type StagedMembership = Readonly<{
   jointContainmentReceipt: string;
-  reservationId: string;
-  activationNonce: string;
+  reservation: string;
   root: z.infer<typeof providerRootSchema>;
 }>;
 
@@ -382,8 +381,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           const jointContainmentReceipt = mintReceipt();
           staged.set(request.operation.operationId, {
             jointContainmentReceipt,
-            reservationId: request.reservationId,
-            activationNonce: request.activationNonce,
+            reservation: request.reservation,
             root,
           });
           return { state: 'staged-contained', providerRoot: root, jointContainmentReceipt };
@@ -405,10 +403,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           }
           // A known operation staged under a specific reservation; a caller presenting a different one is
           // reasoning about a different prepare than the one this membership records, not a legitimate retry.
-          if (
-            membership.reservationId !== request.reservationId ||
-            membership.activationNonce !== request.activationNonce
-          ) {
+          if (membership.reservation !== request.reservation) {
             throw new ProxyControlProtocolError(
               'identity_mismatch',
               'Activation named a different reservation than this operation staged.',
@@ -455,10 +450,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           }
           // Same disagreement `guardian.operation-activate.v1` refuses: a different reservation for a known
           // operation is reasoning about a different prepare, not the one this membership records.
-          if (
-            membership.reservationId !== request.reservationId ||
-            membership.activationNonce !== request.activationNonce
-          ) {
+          if (membership.reservation !== request.reservation) {
             throw new ProxyControlProtocolError(
               'identity_mismatch',
               'Release named a different reservation than this operation staged.',
