@@ -6,6 +6,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import {
   deleteDurableCliProcessRuntimeMeta,
   deleteProviderOperationRuntimeMeta,
+  hasProviderOperationRuntimeMetaForJob,
   readDurableCliProcessRuntimeMeta,
   readProviderOperationRuntimeMeta,
   writeDurableCliProcessRuntimeMeta,
@@ -172,5 +173,35 @@ describe('provider operation runtime meta store (write and delete)', () => {
     // committed.
     expect(readProviderOperationRuntimeMeta(db, JOB_ID, OPERATION_ID)).toBeNull();
     expect(readProviderOperationRuntimeMeta(db, JOB_ID, otherOperationId)).toBeNull();
+  });
+});
+
+describe('hasProviderOperationRuntimeMetaForJob', () => {
+  it('is false for a job with no provider_operation.v1 row at all', () => {
+    const db = createDb();
+    expect(hasProviderOperationRuntimeMetaForJob(db, JOB_ID)).toBe(false);
+  });
+
+  it('is true once any operation for the job has committed meta, regardless of operation id', () => {
+    const db = createDb();
+    writeProviderOperationRuntimeMeta(db, providerOperationRuntimeMeta());
+
+    expect(hasProviderOperationRuntimeMetaForJob(db, JOB_ID)).toBe(true);
+  });
+
+  it('is false again once the one committed row for the job is deleted', () => {
+    const db = createDb();
+    writeProviderOperationRuntimeMeta(db, providerOperationRuntimeMeta());
+    deleteProviderOperationRuntimeMeta(db, JOB_ID, OPERATION_ID);
+
+    expect(hasProviderOperationRuntimeMetaForJob(db, JOB_ID)).toBe(false);
+  });
+
+  it('never answers true for an unrelated job sharing no prefix', () => {
+    const db = createDb();
+    const otherJobId = '00000000-0000-4000-8000-0000000000aa';
+    writeProviderOperationRuntimeMeta(db, providerOperationRuntimeMeta());
+
+    expect(hasProviderOperationRuntimeMetaForJob(db, otherJobId)).toBe(false);
   });
 });

@@ -162,6 +162,7 @@ function providerAppServerSession<Plan extends ProviderExecutionPlan>(
 
 type PreparedBoundAppServer<Plan extends ProviderExecutionPlan> = {
   readonly hostPlan: Plan['host'];
+  readonly hostSpec: ProviderServerSpec;
   execute(
     runtime: BoundProviderAppServerExecutionRuntime,
     operation: (session: AppServerSession) => AsyncIterable<ProviderEventBody>,
@@ -529,6 +530,11 @@ function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Acces
       const hostPlan = tools.planExecution(input);
       return Object.freeze({
         hostPlan,
+        // Computed eagerly, before any host is opened: `tools.compileHost` is a pure derivation of `hostPlan`
+        // (already `snapshotBoundaryData`-sanitized there), so calling it here as well as inside
+        // `executeBoundAppServer` costs one extra cheap synchronous call and gives a caller the executable
+        // identity before it ever decides whether to open a session at all.
+        hostSpec: tools.compileHost(hostPlan),
         execute: (runtime, operation) => executeBoundAppServer(tools, hostPlan, runtime, operation),
       });
     },
@@ -628,6 +634,7 @@ function sealPreparedAppServerExecution<Plan extends ProviderExecutionPlan>(
 ): BoundProviderPreparedExecution {
   return Object.freeze({
     kind: 'app-server' as const,
+    hostSpec: preparedAppServer.hostSpec,
     execute: (runtime: BoundProviderAppServerExecutionRuntime) =>
       preparedAppServer.execute(runtime, (appServerSession) =>
         implementation.run(request, snapshotAppServerExecutionRuntime(runtime, plan, appServerSession)),

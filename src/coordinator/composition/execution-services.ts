@@ -7,6 +7,7 @@ import { subscribeJobEvents } from '../../jobs/shell/event-subscription.js';
 import { prepareCached } from '../../store/db.js';
 import { aggregateWorkflowUsage } from '../../jobs/workflow-usage.js';
 import { admittedByThisCoordinator, createObserveCarriers } from './carrier-observation.js';
+import { createAppServerProxyRoute } from '../services/provider-proxy-launch-route.js';
 
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
@@ -61,12 +62,23 @@ export function createExecutionServices({
       aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(getProgressStore().getDb(), workflowJobId),
       subscribeJobEvents,
       getCurrentJournalSeq,
+      appServerProxyRoute: createAppServerProxyRoute({
+        hostManager: world.providerHostManager,
+        getDb: () => getProgressStore().getDb(),
+        progressStore: {
+          appendRuntimeStarted: (jobId, record) => getProgressStore().appendRuntimeStarted(jobId, record),
+        },
+        now: () => runtime.time.now(),
+        registry: world.operationRegistry,
+      }),
+      operations: { stop: (jobId, cause) => world.operationRegistry.stop(jobId, cause) },
       observeCarriers: createObserveCarriers(
         {
           getDb: () => getProgressStore().getDb(),
           loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
           platform: runtime.env.platform() as NodeJS.Platform,
           isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(world.launchCoordinator, jobId),
+          registryStateForJob: (jobId) => world.operationRegistry.stateForJob(jobId),
         },
         getCurrentJournalSeq,
       ),

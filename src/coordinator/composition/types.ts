@@ -18,6 +18,8 @@ import type { TypedEventBus } from '../event-bus.js';
 
 import type { LaunchCoordinator } from '../live/admission.js';
 import type { ProviderHostManager } from '../live/provider-hosts/index.js';
+import type { ProviderEventHandler } from '../../provider-proxy/control-client.js';
+import type { LocalOperationRegistry } from '../services/operation-registry.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
@@ -72,6 +74,23 @@ export type CoordinatorCoreOptions = {
   registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
   providerHostManager?: ProviderHostManager;
+  /**
+   * Builds the durable-effect handler for a proxy's `provider.event.v1` pushes (W2.3), fresh, once per proxy
+   * set acquisition — never an already-built handler, because this option is consumed while composing
+   * `providerHostManager` (`world.ts`), before the store exists; the handler itself needs the store, and by
+   * the time an acquisition actually runs (lazily, on first app-server session for that executable identity)
+   * the store is certainly open. Absent in every composition that does not wire proxy event application
+   * (every test, and any coordinator build with W2.3 disabled).
+   */
+  buildProviderEventHandler?: () => ProviderEventHandler;
+  /**
+   * This coordinator generation's live app-server operations (W2.3). Constructed unconditionally in
+   * `coordinator/index.ts`, alongside `buildProviderEventHandler`, and passed through here for the same
+   * reason: `world.ts` is where a live proxy set's routing capability (`ProviderHostManager`) and this
+   * registry both need to reach `execution-services.ts`. Defaults to a fresh, empty instance when absent —
+   * every test that does not construct a coordinator through `coordinator/index.ts`.
+   */
+  operationRegistry?: LocalOperationRegistry;
   launchCoordinator?: LaunchCoordinator;
   eventBus?: TypedEventBus;
   providerRegistry?: ProviderRegistry;

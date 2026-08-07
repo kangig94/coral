@@ -3,6 +3,7 @@ import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal, JobTerminalInput } from '../../../jobs/records.js';
 import { isTerminalPhase, type JobPhase } from '../../../jobs/phase.js';
+import { hasProviderOperationRuntimeMetaForJob } from '../../../jobs/runtime-meta-store.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../../runtime/durable-runtime.js';
@@ -176,6 +177,19 @@ export class RecoveryService {
     if (runtimeRecord.providerMeta.leaseState !== 'acquired') {
       backendLog.warn(
         `Cannot interrupt recovered app-server job ${launchRecord.jobId}: no acquired provider lease evidence.`,
+      );
+      return;
+    }
+    // W2.3 hazard: an `acquired` `hostRef` can now name a live provider proxy set rather than a local
+    // `ProviderHostManager` entry (see `provider-proxy-launch-route.ts`'s `proxiedHostRef`). This coordinator
+    // generation's `LocalOperationRegistry` starts empty at boot, so it cannot yet tell whether that set is
+    // still alive — attaching to it as if it were local would either silently fail (harmless here) or, worse,
+    // `attachSession` finding no local entry could read as "replace it" upstream. The durable
+    // `provider_operation.v1` row is the one fact this coordinator generation can check without a live
+    // connection: its presence alone means adopting this job is W2.5's job, not this one's.
+    if (hasProviderOperationRuntimeMetaForJob(this.deps.progressStore.getDb(), launchRecord.jobId)) {
+      backendLog.warn(
+        `Cannot interrupt recovered app-server job ${launchRecord.jobId}: its acquired host names a live provider proxy operation this coordinator generation has not adopted.`,
       );
       return;
     }

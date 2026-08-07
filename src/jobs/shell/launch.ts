@@ -1,5 +1,11 @@
 import { bindProviderRunner, type ProviderDurableSpawner } from '../../providers/cli-runner.js';
-import type { HostRef, ProviderEventBody, ProviderRequest, ProviderRuntime } from '../../providers/contract.js';
+import type {
+  HostRef,
+  ProviderEventBody,
+  ProviderRequest,
+  ProviderRuntime,
+  ProviderStopCause,
+} from '../../providers/contract.js';
 import type {
   BoundProvider,
   BoundProviderAppServerExecutionRuntime,
@@ -50,6 +56,7 @@ import { ProviderBindingRuntimeError } from '../../providers/contracts/binding.j
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import { jobLaunchRequestedEvent } from '../store.js';
 import { writeDurableCliProcessRuntimeMeta } from '../runtime-meta-store.js';
+import type { AppServerProxyRoute } from '../contracts/app-server-proxy-route.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 type LauncherJobEventBody = JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
@@ -76,6 +83,21 @@ export interface LaunchOrchestratorDeps {
   bundleHash: string;
   jobPools: Map<string, LaunchPool>;
   getEventMetadata?: () => Pick<CoralEventInput, 'correlationId' | 'namespace' | 'project'> | null;
+  /**
+   * Tries to hand an app-server operation to a live, detached provider proxy set before running it in this
+   * process (W2.3). Absent in every composition that does not wire proxy routing (every test, and any
+   * coordinator build with no live set) — `executeJob` treats that identically to the port returning `null`:
+   * always fall back to in-process execution.
+   */
+  appServerProxyRoute?: AppServerProxyRoute;
+  /**
+   * The registry's abort-side capability: sends `operation.stop.v1` for whichever live proxied operation, if
+   * any, `jobId` currently maps to. Optional for the same reason `appServerProxyRoute` is — every test, and
+   * any coordinator build with no live set. Registered unconditionally as the abort registry's `onAbort`
+   * action for every committed launch, before this job's fate as local or proxied is even known; a local job
+   * simply has no matching registry entry, so `stop()` is a safe no-op for it.
+   */
+  operations?: { stop(jobId: string, cause: ProviderStopCause): void };
   terminalMaterializer: {
     recordProviderTerminal(
       progressStore: JobProgressStore,
@@ -123,6 +145,33 @@ export class LaunchOrchestrator {
   private readonly deps: LaunchOrchestratorDeps;
   constructor(deps: LaunchOrchestratorDeps) {
     this.deps = deps;
+  }
+
+  /**
+   * Lets go of the in-process bookkeeping a proxied operation still holds, once its terminal has committed
+   * through the provider-event path.
+   *
+   * `executeJob` returns `'preserved'` for a proxied operation so it never double-applies effects, and
+   * `'preserved'` also suppresses the admission release in its own `finally` — correctly, for every other
+   * case, because there ownership genuinely moves to a successor daemon or to recovery. A proxied operation
+   * has no such successor: the applier runs on a control-socket call stack that knows nothing about
+   * admission. So this is the one thing that ever frees the slot, and without it the pool fills with finished
+   * work and the daemon quietly stops launching anything.
+   *
+   * Idempotent by construction — every call below tolerates an id it has already forgotten — because a replay
+   * can deliver the same terminal more than once.
+   *
+   * Private, and called by nothing in this class directly: `executePreparedProvider` wraps this in a closure
+   * at the exact moment it delegates to `appServerProxyRoute.activate(...)` — the only moment this launcher
+   * still has `jobId`/`pool` in scope — and hands that closure forward as `release`. Ownership of calling it
+   * travels with the operation from there; this method is not an external callback target.
+   */
+  private releaseProxiedOperation(jobId: string, pool: LaunchPool): void {
+    this.deps.abortRegistry.remove(jobId);
+    this.deps.jobPools.delete(jobId);
+    this.appServerJobs.delete(jobId);
+    this.appServerHandoffAborts.delete(jobId);
+    this.deps.launchAdmission.releaseLaunch(jobId, pool);
   }
 
   async quiesceAppServerJobsForHandoff(): Promise<void> {
@@ -612,7 +661,15 @@ export class LaunchOrchestrator {
       if (input.committedSession !== undefined) {
         this.deps.sessionManager.observeCommittedEntry(input.committedSession);
       }
-      this.deps.abortRegistry.register(input.jobId);
+      // Registered unconditionally, before this job's fate as local or proxied is even decided: for local
+      // execution the action is a no-op (nothing is registered under this job id yet), and local interrupt
+      // still happens the existing way, by observing the shared `AbortSignal` below directly. For a proxied
+      // entry the registry finds the live operation this job maps to and sends `operation.stop.v1` for it —
+      // the one wire that both makes `coral-cli abort` do anything to a proxied job and gives
+      // `recordedStopCauseFor` a cause to report back. `'signal_abort'` matches the reason every other path
+      // through this class already records for an `abortRegistry`-triggered stop (see `finishAbortedJob`'s
+      // caller below).
+      this.deps.abortRegistry.register(input.jobId, () => this.deps.operations?.stop(input.jobId, 'signal_abort'));
       if (this.deps.abortRegistry.getSignal(input.jobId) === null) {
         throw new Error(`Abort registration produced no signal for committed job ${input.jobId}.`);
       }
@@ -955,12 +1012,35 @@ export class LaunchOrchestrator {
     );
     const initialVersion = this.readClaimVersion(provider.name, sessionId, jobId);
     try {
+      const providerStream = await this.executePreparedProvider(
+        provider,
+        prepared,
+        runtime,
+        jobId,
+        signal,
+        pool,
+        requestWithInject,
+        continuity.value,
+        protectedEnv,
+      );
+      if (providerStream.kind === 'proxied') {
+        // Activation succeeded: `applyProviderEventAtSeq`, wired as the proxy's `onProviderEvent` handler on
+        // the live control connection this coordinator holds, is now the sole and exclusive applier of every
+        // durable effect this operation will ever produce — progress, continuity, artifacts, and its terminal.
+        // That handler runs independently of this call stack (it fires whenever a frame arrives on the
+        // control socket), so this function stops here rather than calling
+        // `consumeJobStream`/`completeConsumedJob`: doing both would apply every one of those effects a
+        // second time, and a double-applied terminal is strictly worse than not finishing this call.
+        // 'preserved' matches what every other "finalization belongs to someone else" path in this class
+        // already returns.
+        return 'preserved';
+      }
       const consumed = await consumeJobStream({
         jobId,
         sessionId,
         initialVersion,
         decodeContinuity: (rawContinuity) => provider.decodeContinuity(rawContinuity),
-        stream: this.executePreparedProvider(provider, prepared, runtime, jobId, signal, pool),
+        stream: providerStream.stream,
         sessionApi: {
           checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
             if (this.quiescedAppServerJobs.has(jobId)) {
@@ -1151,38 +1231,88 @@ export class LaunchOrchestrator {
     };
   }
 
-  private executePreparedProvider(
+  /**
+   * Either a local event stream to run through `consumeJobStream` exactly as before, or `proxied` — the
+   * operation is now durably owned by a live provider proxy set and the coordinator's `onProviderEvent`
+   * handler, and no stream exists here for this call to consume.
+   */
+  private async executePreparedProvider(
     provider: BoundProvider,
     prepared: BoundProviderPreparedExecution,
     runtime: BoundProviderExecutionRuntimeCommon,
     jobId: string,
     signal: AbortSignal,
     pool: LaunchPool,
-  ): AsyncIterable<ProviderEventBody> {
+    requestForRoute: ProviderRequest,
+    persistedContinuity: ProviderContinuityBlob | undefined,
+    protectedEnv: Record<string, string> | undefined,
+  ): Promise<Readonly<{ kind: 'local'; stream: AsyncIterable<ProviderEventBody> }> | Readonly<{ kind: 'proxied' }>> {
     if (prepared.kind === 'app-server') {
-      return prepared.execute({
-        ...runtime,
-        transport: 'app-server',
-        onAppServerWaiting: ({ provider: observedProvider }) => {
-          if (this.appServerHandoffQuiesced) {
-            this.quiescedAppServerJobs.add(jobId);
-            return;
-          }
-          this.deps.progressStore.appendRuntimeStarted(jobId, {
-            transport: 'app-server',
-            startTime: nowIsoString(this.deps.runtime.time.now()),
-            providerMeta: { provider: observedProvider, leaseState: 'waiting' },
-          });
-        },
-        onHostRef: (hostRef: HostRef) => {
-          if (this.appServerHandoffQuiesced || this.quiescedAppServerJobs.has(jobId)) return;
-          this.deps.progressStore.appendRuntimeStarted(jobId, {
-            transport: 'app-server',
-            startTime: nowIsoString(this.deps.runtime.time.now()),
-            providerMeta: { provider: hostRef.provider, leaseState: 'acquired', hostRef },
-          });
-        },
-      });
+      const route = this.deps.appServerProxyRoute;
+      if (route !== undefined && !signal.aborted) {
+        const activation = await route.activate(
+          {
+            jobId,
+            operationId: this.deps.runtime.ids.uuid(),
+            hostSpec: prepared.hostSpec,
+            provider: provider.name,
+            binding: provider.envelope,
+            request: requestForRoute,
+            persistedContinuity: persistedContinuity ?? null,
+            baseEnv: this.deps.runtime.env.fullSnapshot(),
+            protectedEnv: protectedEnv ?? {},
+            platform: this.deps.runtime.env.platform(),
+          },
+          // The only moment this launcher still has `jobId`/`pool` in scope for a proxied operation: passed
+          // forward here rather than left for something external to call back in later. See
+          // `releaseProxiedOperation`'s own doc.
+          () => this.releaseProxiedOperation(jobId, pool),
+          signal,
+        );
+        if (activation === 'executing') {
+          // `registerAppServerJob` enrolled this job before its placement was known, into tracking that only
+          // ever fences *local* write paths (`onAppServerWaiting`/`onHostRef`/`checkpointJobContinuityAtomic`
+          // above) — a proxied operation takes none of them; its durable effects come from the control
+          // socket's `provider.event.v1` applier instead, which does not consult either set. Leaving the
+          // entries in place would make a later `quiesceAppServerJobsForHandoff` believe this job's writes
+          // are fenced when nothing here ever fences them, so drop them the instant local admission ownership
+          // moves to the proxy rather than waiting for `releaseProxiedOperation` at settlement.
+          this.appServerJobs.delete(jobId);
+          this.appServerHandoffAborts.delete(jobId);
+          return { kind: 'proxied' };
+        }
+        // Explicit fallback: no live proxy set exists for this executable identity, or the proxy declined
+        // activation and cleanly compensated (`activateProviderOperation`'s own contract guarantees the
+        // meta row, reservation, and staged guardian membership are all released before it reports failure —
+        // the kernel was never started). Either way nothing durable happened yet, so running the job in this
+        // process below is exactly as safe as if `appServerProxyRoute` had never been configured.
+      }
+      return {
+        kind: 'local',
+        stream: prepared.execute({
+          ...runtime,
+          transport: 'app-server',
+          onAppServerWaiting: ({ provider: observedProvider }) => {
+            if (this.appServerHandoffQuiesced) {
+              this.quiescedAppServerJobs.add(jobId);
+              return;
+            }
+            this.deps.progressStore.appendRuntimeStarted(jobId, {
+              transport: 'app-server',
+              startTime: nowIsoString(this.deps.runtime.time.now()),
+              providerMeta: { provider: observedProvider, leaseState: 'waiting' },
+            });
+          },
+          onHostRef: (hostRef: HostRef) => {
+            if (this.appServerHandoffQuiesced || this.quiescedAppServerJobs.has(jobId)) return;
+            this.deps.progressStore.appendRuntimeStarted(jobId, {
+              transport: 'app-server',
+              startTime: nowIsoString(this.deps.runtime.time.now()),
+              providerMeta: { provider: hostRef.provider, leaseState: 'acquired', hostRef },
+            });
+          },
+        }),
+      };
     }
 
     const runCli = bindProviderRunner(
@@ -1209,11 +1339,14 @@ export class LaunchOrchestrator {
         }
       },
     );
-    return prepared.execute({
-      ...runtime,
-      transport: 'standalone',
-      runCli: (request) => runCli(prepared.prepareCliRequest(request)),
-    });
+    return {
+      kind: 'local',
+      stream: prepared.execute({
+        ...runtime,
+        transport: 'standalone',
+        runCli: (request) => runCli(prepared.prepareCliRequest(request)),
+      }),
+    };
   }
 
   private appendProviderTerminal(

@@ -74,6 +74,15 @@ export interface ProviderEventApplicationDeps {
    * through.
    */
   readonly recordedStopCauseFor: (identity: ProviderOperationEventIdentity) => ProviderStopCause | null;
+  /**
+   * Where a proxied operation's terminal (or interrupting suspension) reports back once it has durably
+   * committed, so whatever registered the operation can let go of the in-process bookkeeping it still holds
+   * for that job — its admission slot above all. `settled` receives the full identity, not just `jobId`,
+   * because the registry, the proxy ledger, and the `provider_operation.v1` meta row it releases are all
+   * keyed by the `(jobId, operationId)` pair. Composed in `coordinator/index.ts` beside where this whole
+   * handler is built, from the same `LocalOperationRegistry` that also answers `recordedStopCauseFor` above.
+   */
+  readonly operations: { settled(identity: ProviderOperationEventIdentity): void };
 }
 
 function commitEventsWithinTx(db: Database, ctx: AppendContext): CommitEventsFn {
@@ -399,6 +408,18 @@ export function createProviderEventHandler(deps: ProviderEventApplicationDeps): 
   return async (request: ProviderEventRequest): Promise<ProviderEventResult> => {
     const identity: ProviderOperationEventIdentity = request.operation;
     const event = toApplyProviderEventBody(deps, identity, request.event);
-    return applyProviderEventAtSeq(port, { identity, seq: request.providerSeq, event });
+    const result = await applyProviderEventAtSeq(port, { identity, seq: request.providerSeq, event });
+    // A proxied operation never returns through `executeJob`'s local finalization, so this is the only moment
+    // anything learns it is over. Without it the launcher holds that job's admission slot forever and the
+    // daemon stops accepting work once the pool fills — durable state perfectly correct, coordinator dead.
+    //
+    // The condition is on what durably happened, not on what arrived. `replay` returns before `applyEffect`
+    // runs, so a terminal that lands on a sequence gap has ended nothing and must not release a slot the
+    // operation is still using. And `suspended` ends a job exactly as `terminal` does — it appends the job
+    // terminal and releases the session claim — so keying on `terminal` alone leaks every aborted and every
+    // interrupted proxied operation.
+    const endedTheJob = event.kind === 'terminal' || event.kind === 'suspended';
+    if (result.kind === 'ack' && endedTheJob) deps.operations.settled(identity);
+    return result;
   };
 }

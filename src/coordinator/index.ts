@@ -52,10 +52,21 @@ import {
 } from './live/kb-daemon-supervisor.js';
 import type { KbDaemonEventMessage } from '../kb-daemon/protocol.js';
 import { createKbCurateAssistantHandler, createKbCurateUsageBudgetHandler } from './services/kb-curate-assistant.js';
+import { createProviderEventHandler } from './services/provider-event-application.js';
+import type { ProviderEventHandler } from '../provider-proxy/control-client.js';
+import { LocalOperationRegistry } from './services/operation-registry.js';
+import { deleteProviderOperationRuntimeMeta } from '../jobs/runtime-meta-store.js';
+import { errorMessage } from '../infra/error-format.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
-  'runtime' | 'storeFormat' | 'getConsumerStuck' | 'createStoreServicesFromDbFn' | 'kbDaemonSupervisor'
+  | 'runtime'
+  | 'storeFormat'
+  | 'getConsumerStuck'
+  | 'createStoreServicesFromDbFn'
+  | 'kbDaemonSupervisor'
+  | 'buildProviderEventHandler'
+  | 'operationRegistry'
 > & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
@@ -232,6 +243,10 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   }
 
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+  // This coordinator generation's live app-server operations (W2.3) — constructed here, unconditionally, so
+  // both `buildProviderEventHandler` below and `world.ts` (via `CoordinatorCoreOptions.operationRegistry`)
+  // share the exact same instance rather than each defaulting to a registry of its own.
+  const operationRegistry = new LocalOperationRegistry();
   const providerRegistry = coreOptions.providerRegistry ?? new ProviderRegistry();
   (registerBuiltInProvidersFn ?? registerBuiltInProviders)(providerRegistry);
   const storeFormat = sealCoralStoreFormat(providerRegistry);
@@ -361,6 +376,59 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     lifecycleReactor.observe(appended);
     return appended;
   };
+  // Built fresh on every call rather than once: composed and handed to `providerHostManager` (via `world.ts`)
+  // before the store exists, but only ever actually invoked once a proxy set acquisition establishes control
+  // on the proxy role — lazily, on the first app-server session for that executable identity, by which point
+  // the store is certainly open. Uses the exact same `reducers`/`bodyCodec`/`providerRegistry` `coordinatorCommit`
+  // composes against above, so a provider-applied effect and an ordinary coordinator-applied one validate
+  // identically.
+  const buildProviderEventHandler = (): ProviderEventHandler =>
+    createProviderEventHandler({
+      db: getStoreDb(),
+      progressStore: getStoreServices().progressStore,
+      appendContext: {
+        now: () => nowDate(runtime.time),
+        reducers,
+        bodyCodec,
+        providers: providerLookupPortFromCatalog(providerRegistry),
+      },
+      providerRegistry,
+      runtime,
+      emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
+      // The registry is the one party that knows which cause `activateCommittedProviderLaunch`'s abort action
+      // (`jobs/shell/launch.ts`) most recently sent as `operation.stop.v1` for this operation — see
+      // `LocalOperationRegistry.stop()`. `null` for an operation that was never stopped through it stays a
+      // protocol violation: nothing else in this process may cause a `suspended` event.
+      recordedStopCauseFor: (identity) => operationRegistry.recordedStopCauseFor(identity),
+      operations: {
+        settled: (identity) => {
+          // `deleteProviderOperationRuntimeMeta` was, before this, only ever called from
+          // `compensateAfterActivationFailure` — so an operation that ran to a real terminal instead of
+          // failing activation left its `provider_operation.v1` row behind forever. This is the happy path's
+          // matching cleanup: durable meta first, then the in-process release, mirroring compensation's own
+          // "meta row before anything else" order. Never allowed to fail the RPC reply this runs inside of —
+          // `applyProviderEventAtSeq` already durably committed the terminal this settlement follows, so a
+          // problem here is a bookkeeping fault, not a reason to tell the proxy its terminal was refused.
+          try {
+            deleteProviderOperationRuntimeMeta(getStoreDb(), identity.jobId, identity.operationId);
+          } catch (error: unknown) {
+            backendLog.warn(
+              `Failed to delete provider operation runtime meta for job '${identity.jobId}'/operation '${identity.operationId}': ${errorMessage(error)}`,
+            );
+          }
+          // Runs regardless of whether the delete above succeeded: this is what frees the admission slot
+          // (root cause of the pool-fill bug this whole change exists to close), and a bookkeeping problem
+          // must not be allowed to compound into "the daemon stops launching anything" on top of it.
+          try {
+            operationRegistry.settled(identity);
+          } catch (error: unknown) {
+            backendLog.warn(
+              `Failed to release local bookkeeping for job '${identity.jobId}'/operation '${identity.operationId}': ${errorMessage(error)}`,
+            );
+          }
+        },
+      },
+    });
   const lifecycleReactorLifetime = new AbortController();
   const lifecycleReactor = createLifecycleReactor({
     db: getQueryDb,
@@ -417,6 +485,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         void disposeLifecycleReactor();
       },
       createStoreServicesFromDbFn,
+      buildProviderEventHandler,
+      operationRegistry,
       getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
       getTextProjectionState: textProjectionHealth.read,
       kbDaemonSupervisor,

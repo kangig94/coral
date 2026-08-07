@@ -222,6 +222,7 @@ describe('coordinator continuity lifecycle integration', () => {
                 loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
                 platform: runtime.env.platform() as NodeJS.Platform,
                 isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(launchCoordinator, jobId),
+                registryStateForJob: () => null,
               },
               journalDeps.getCurrentJournalSeq,
             ),

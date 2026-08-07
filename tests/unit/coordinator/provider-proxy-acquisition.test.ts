@@ -5,15 +5,36 @@ import {
   type AcquisitionUndo,
   type ProviderProxyAcquisitionSteps,
 } from '#src/coordinator/live/provider-proxy-acquisition.js';
-import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy-authority.js';
+import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy-operation-route.js';
 
-const SET: ProviderProxySetAuthority = {
+const SET: ProviderProxyOperationAuthority = {
   proxyInstanceId: 'p1',
   snapshotOperations: async () => [],
   installHandoffGrant: async () => {},
   stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
   stopHeartbeats: () => {},
   initiateControlClose: async () => {},
+  setIdentity: {
+    buildSetId: 'build-1',
+    hostFingerprint: 'f'.repeat(64),
+    guardianInstanceId: 'g1',
+    guardianPid: 1,
+    guardianProcessStartedAtSeconds: 1,
+    guardianControlEndpoint: '/tmp/guardian.sock',
+    proxyInstanceId: 'p1',
+    proxyPid: 2,
+    reaperInstanceId: 'r1',
+    reaperPid: 3,
+    reaperProcessStartedAtSeconds: 1,
+    reaperControlEndpoint: '/tmp/reaper.sock',
+    containmentKind: 'detached',
+    proxyProcessStartedAtSeconds: 1,
+    proxyProcessGroupId: 2,
+    canonicalEndpoint: '/tmp/proxy.sock',
+  },
+  activateOperation: async () => {
+    throw new Error('not exercised by this test');
+  },
 };
 
 type Recorded = { readonly log: string[]; readonly steps: ProviderProxyAcquisitionSteps };

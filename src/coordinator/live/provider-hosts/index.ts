@@ -16,6 +16,7 @@ import { ensureProviderProxySet, type ProviderProxySetAcquisitionConfig } from '
 import { hostFingerprintFromSpec, hostKeyFromSpec, hostRefFromEntry, type ProviderHostEntry } from './state.js';
 import { AbortError, throwIfAborted } from '../../../runtime/abort.js';
 import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from '../provider-proxy-authority.js';
+import type { ProviderProxyOperationAuthority } from '../provider-proxy-operation-route.js';
 export type { ProviderHostEntry } from './state.js';
 
 export interface ProviderHostManager {
@@ -29,6 +30,12 @@ export interface ProviderHostManager {
   ): Promise<ManagedAppServerSession | null>;
   drainForHandoff(signal?: AbortSignal): Promise<void>;
   shutdown(signal?: AbortSignal): Promise<void>;
+  /**
+   * The live proxy set's operation-routing capability for `spec`'s executable identity, or `null` when no
+   * set is live for it yet. Never triggers or waits on an acquisition — that stays fire-and-forget, started
+   * the first time a session is actually acquired for this identity (see `ensureProxySetFor`).
+   */
+  routeAppServerOperation(spec: ProviderServerSpec): ProviderProxyOperationAuthority | null;
 }
 
 export type ProviderHostLifecycle = Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
@@ -147,7 +154,7 @@ export class DefaultProviderHostManager implements ProviderHostManager, Provider
   // record must outlive its entry. Bounded by the number of distinct executable identities, which is small
   // and stable, so outliving entries costs a fixed amount rather than a growing one.
   private readonly pendingProxySetAcquisitions = new Set<string>();
-  private readonly liveProxySets = new Map<string, ProviderProxySetAuthority>();
+  private readonly liveProxySets = new Map<string, ProviderProxyOperationAuthority>();
 
   constructor(options: {
     runtime: Runtime;
@@ -165,6 +172,11 @@ export class DefaultProviderHostManager implements ProviderHostManager, Provider
    *  doc for what this snapshot does and does not promise. */
   liveSets(): readonly ProviderProxySetAuthority[] {
     return [...this.liveProxySets.values()];
+  }
+
+  /** See the `ProviderHostManager.routeAppServerOperation()` interface doc for this seam's full contract. */
+  routeAppServerOperation(spec: ProviderServerSpec): ProviderProxyOperationAuthority | null {
+    return this.liveProxySets.get(hostKeyFromSpec(spec)) ?? null;
   }
 
   /**

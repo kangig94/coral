@@ -1,4 +1,4 @@
-import type { ProviderProxySetAuthority } from './provider-proxy-authority.js';
+import type { ProviderProxyOperationAuthority } from './provider-proxy-operation-route.js';
 
 /**
  * Acquiring one guardian/reaper/proxy set.
@@ -27,7 +27,7 @@ export type ProviderProxyAcquisitionFailure = Readonly<{
 }>;
 
 export type ProviderProxyAcquisitionResult =
-  | Readonly<{ kind: 'acquired'; set: ProviderProxySetAuthority }>
+  | Readonly<{ kind: 'acquired'; set: ProviderProxyOperationAuthority }>
   | ProviderProxyAcquisitionFailure;
 
 /**
@@ -43,7 +43,7 @@ export interface ProviderProxyAcquisitionSteps {
    * Opens and activates control on all three endpoints, checks the strict backend identities, and confirms
    * the containment the guardian recorded. Returns the authority only once every check has passed.
    */
-  establishControl(): Promise<Readonly<{ set: ProviderProxySetAuthority; undo: AcquisitionUndo }>>;
+  establishControl(): Promise<Readonly<{ set: ProviderProxyOperationAuthority; undo: AcquisitionUndo }>>;
 }
 
 export type ProviderProxyAcquisitionOptions = Readonly<{

@@ -1,9 +1,10 @@
 import { probeProcessStartedAtSeconds } from '../../../infra/node-process.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { CoordinatorIdentity as ProviderProxyCoordinatorIdentity } from '../../../provider-proxy/protocol.js';
+import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import { acquireProviderProxySet } from '../provider-proxy-acquisition.js';
 import { createProviderProxyAcquisitionSteps } from '../provider-proxy-acquisition-steps.js';
-import type { ProviderProxySetAuthority } from '../provider-proxy-authority.js';
+import type { ProviderProxyOperationAuthority } from '../provider-proxy-operation-route.js';
 import { hostFingerprintFromSpec, type ProviderHostEntry } from './state.js';
 
 /**
@@ -34,22 +35,34 @@ export type ProviderProxySetAcquisitionIdentity = Readonly<{
 export type ProviderProxySetAcquisitionConfig = Readonly<{
   pluginRoot: string;
   identity: ProviderProxySetAcquisitionIdentity;
+  /**
+   * Builds the durable-effect handler for `provider.event.v1` fresh, once per acquisition, rather than
+   * accepting an already-built handler: this config is composed once, before the store exists
+   * (`composition/world.ts` runs ahead of store open), while the handler itself needs the store. A factory
+   * lets construction stay eager while evaluation stays lazy — it is only ever called once control is
+   * actually established on the proxy role, by which point real provider work is already running and the
+   * store is certainly open. Absent in every composition that does not wire proxy event application (every
+   * test, and any coordinator build with W2.3 disabled) — the proxy connection is then opened with no
+   * `onProviderEvent` handler installed at all, so a peer sending `provider.event.v1` over it gets the
+   * protocol's own `protocol_violation` refusal instead of silence.
+   */
+  onProviderEvent?: () => ProviderEventHandler;
 }>;
 
 export type ProviderProxySetAcquisitionEnvironment = ProviderProxySetAcquisitionConfig & Readonly<{ runtime: Runtime }>;
 
 export type ProviderProxySetAcquisitionOutcome =
-  | Readonly<{ kind: 'acquired'; set: ProviderProxySetAuthority }>
+  | Readonly<{ kind: 'acquired'; set: ProviderProxyOperationAuthority }>
   | Readonly<{ kind: 'failed'; reason: string }>;
 
 /**
  * Starts one acquisition attempt for `entry`'s guardian/reaper/proxy set and reports how it settled.
  *
- * Never rejects and is never awaited by its caller: nothing in production yet routes real provider work
- * through an acquired set — that lands with the operation-ledger wiring (plan item W2.3, a separate change)
- * — so a slow or failed acquisition here must add neither latency nor failure to the app-server session this
- * entry exists to serve. Single-flighting one attempt per entry is the caller's responsibility (mirrors
- * `ensureProviderServerHandle` in `recovery.ts`); this function always starts a fresh attempt when called.
+ * Never rejects and is never awaited by its caller: the caller of `acquireHostLease` gets its real app-server
+ * session exactly as before, unaffected by whether this succeeds, fails, or is still running when that
+ * session opens — a slow or failed acquisition here must add neither latency nor failure to it. Single-
+ * flighting one attempt per entry is the caller's responsibility (mirrors `ensureProviderServerHandle` in
+ * `recovery.ts`); this function always starts a fresh attempt when called.
  */
 export function ensureProviderProxySet(
   entry: ProviderHostEntry,
@@ -79,6 +92,7 @@ export function ensureProviderProxySet(
     pluginRoot: env.pluginRoot,
     coordinatorIdentity,
     hostFingerprint: hostFingerprintFromSpec(entry.spec),
+    ...(env.onProviderEvent === undefined ? {} : { onProviderEvent: env.onProviderEvent }),
   });
   void acquireProviderProxySet({
     steps,

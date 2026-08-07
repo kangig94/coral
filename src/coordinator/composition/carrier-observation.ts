@@ -1,6 +1,11 @@
 import type { Database } from '../../store/db.js';
 import { isProcessAlive, probeProcessStartedAtSeconds } from '../../infra/node-process.js';
-import { classifyCarrier, type CarrierEvidence, type CarrierObservation } from '../../jobs/carrier-observation.js';
+import {
+  classifyCarrier,
+  type CarrierEvidence,
+  type CarrierObservation,
+  type LocalOperationRegistryState,
+} from '../../jobs/carrier-observation.js';
 import type { JobProjectionDetail } from '../../jobs/read-queries.js';
 import { readDurableCliProcessRuntimeMeta } from '../../jobs/runtime-meta-store.js';
 import { LAUNCH_POOLS, type LaunchPool } from '../../jobs/contracts/admission.js';
@@ -22,6 +27,9 @@ export type LocalCarrierRegistries = Readonly<{
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
   platform: NodeJS.Platform;
   isAdmittedByThisCoordinator: (jobId: string) => boolean;
+  /** `LocalOperationRegistry.stateForJob` (W2.3) — `null` when this coordinator has no live entry for the
+   *  job, which `evidenceFor` below maps to `'inherited'`, never to a guessed `'activated'`. */
+  registryStateForJob: (jobId: string) => LocalOperationRegistryState | null;
 }>;
 
 /** True once the job is admitted (active or queued) in this coordinator process's own in-memory admission
@@ -81,11 +89,12 @@ function durableCliEvidence(
 }
 
 /**
- * `app-server-acquired` always classifies `inherited` here, which is the plan's own answer and not a
- * placeholder: "inherited meta without a local activated/adopted registry entry is locally `unknown`, never
- * `absent`". No local activation/adoption registry exists yet — writing `provider_operation.v1` meta is
- * separate, unmerged W2.3/W2.5 work — so every acquired operation is honestly inherited. Do not turn this
- * into an `absent` without first building that registry; `unknown` is correct, not incomplete.
+ * `app-server-acquired` reads `LocalOperationRegistry.stateForJob` (W2.3): `activated` or `adopted` when this
+ * coordinator generation holds a live entry for the job, `released` for one it wrote after the operation
+ * ended, and `inherited` — the registry's own `null` — for meta this coordinator never activated or adopted,
+ * which is locally `unknown`, never `absent`. `jobId` is enough to look it up: a job carries at most one live
+ * operation at a time, and the registry's own `stop()`/`stateForJob()` already key on job id for the same
+ * reason.
  */
 function evidenceFor(jobId: string, detail: JobProjectionDetail, registries: LocalCarrierRegistries): CarrierEvidence {
   const { runtime } = detail;
@@ -103,7 +112,7 @@ function evidenceFor(jobId: string, detail: JobProjectionDetail, registries: Loc
             carrierClass: 'app-server-waiting',
             admittedByThisCoordinator: registries.isAdmittedByThisCoordinator(jobId),
           }
-        : { carrierClass: 'app-server-acquired', registryState: 'inherited' };
+        : { carrierClass: 'app-server-acquired', registryState: registries.registryStateForJob(jobId) ?? 'inherited' };
     case 'workflow':
       return { carrierClass: 'workflow', ownedByThisCoordinator: registries.isAdmittedByThisCoordinator(jobId) };
     case 'internal':

@@ -58,6 +58,7 @@ function registriesFor(
     loadJobProjectionDetail: (jobId) => details.get(jobId) ?? { status: null, launch: null, runtime: null, exit: null },
     platform: PLATFORM,
     isAdmittedByThisCoordinator: () => false,
+    registryStateForJob: () => null,
     ...overrides,
   };
 }

@@ -115,7 +115,8 @@ describe('activateProviderOperation', () => {
 
     const result = await activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED);
 
-    expect(result).toEqual({ kind: 'executing', committedThroughProviderSeq: 0 });
+    if (result.kind !== 'executing') throw new Error(`expected 'executing', got '${result.kind}'`);
+    expect(result.committedThroughProviderSeq).toBe(0);
     // Message-exact order: prepare, then the meta commit is durable (checked below) before either activation
     // call, then guardian activation, then proxy activation.
     expect(proxy.calls).toEqual(['operation.prepare.v1', 'operation.activate.v1']);
@@ -132,6 +133,30 @@ describe('activateProviderOperation', () => {
       providerRootProcessStartedAtSeconds: 800,
       jointContainmentReceipt: 'joint-1',
     });
+    // `result.meta` is the exact row `LocalOperationRegistry.activate()` gets handed — not a copy re-derived
+    // from anything, the same row this test just read back independently.
+    expect(result.meta).toEqual(meta);
+  });
+
+  it('returns a control capability that sends operation.stop.v1 for exactly this operation', async () => {
+    const db = testDb();
+    const proxy = scriptedClient({
+      'operation.prepare.v1': [PREPARE_PENDING],
+      'operation.activate.v1': [{ state: 'executing', committedThroughProviderSeq: 0 }],
+      'operation.stop.v1': [{ state: 'terminal-awaiting-journal-ack', committedThroughProviderSeq: 0 }],
+    });
+    const guardian = scriptedClient({
+      'guardian.operation-activate.v1': [
+        { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' },
+      ],
+    });
+
+    const result = await activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED);
+    if (result.kind !== 'executing') throw new Error(`expected 'executing', got '${result.kind}'`);
+
+    await result.control.stop('user_abort');
+
+    expect(proxy.calls).toEqual(['operation.prepare.v1', 'operation.activate.v1', 'operation.stop.v1']);
   });
 
   it('reports capacity and writes nothing when the proxy ledger is full', async () => {

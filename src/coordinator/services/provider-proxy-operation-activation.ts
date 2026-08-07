@@ -7,6 +7,8 @@ import {
 } from '../../jobs/runtime-meta-store.js';
 import type { ProviderOperationRuntimeMeta } from '../../jobs/runtime-meta.js';
 import type { OperationIdentity, ProxyPreparedAppServerOperation } from '../../provider-proxy/protocol.js';
+import type { ProviderStopCause } from '../../providers/contract.js';
+import type { OperationStopControl } from './operation-registry.js';
 
 /**
  * The coordinator half of W2.3's closed publication order: `operation.prepare.v1` → one coordinator
@@ -100,9 +102,22 @@ const proxyActivateResultSchema = z
 
 const cancelPendingResultSchema = z.object({ state: z.literal('released') }).strict();
 const guardianReleaseResultSchema = z.object({ state: z.literal('membership-released') }).strict();
+const stopResultSchema = z
+  .object({ state: z.string().min(1), committedThroughProviderSeq: z.number().int().nonnegative().safe() })
+  .strict();
 
 export type ActivateProviderOperationResult =
-  | Readonly<{ kind: 'executing'; committedThroughProviderSeq: number }>
+  | Readonly<{
+      kind: 'executing';
+      committedThroughProviderSeq: number;
+      /** The exact row this call committed to `provider_operation.v1:<jobId>:<operationId>` — handed back so
+       *  the caller (`createAppServerProxyRoute`) can register it with `LocalOperationRegistry.activate()`
+       *  without re-deriving it from anything. */
+      meta: ProviderOperationRuntimeMeta;
+      /** This operation's `operation.stop.v1` capability, bound to the exact `proxyClient` and identity this
+       *  activation used. */
+      control: OperationStopControl;
+    }>
   /** The proxy's own ledger is at `MAX_PROXY_OPERATION_LEDGERS` capacity. Admission stays with the caller —
    *  nothing was written, so a retry is exactly as safe as the first attempt. */
   | Readonly<{ kind: 'capacity'; retryable: boolean; reason: string }>
@@ -120,6 +135,24 @@ async function callStrict<T>(
 ): Promise<T> {
   const raw = await client.call(method, params, timeoutMs);
   return schema.parse(raw);
+}
+
+/**
+ * Binds `operation.stop.v1` to the exact `proxyClient` and `operation` this activation used, for
+ * `LocalOperationRegistry` (`operation-registry.ts`) to hold once activation succeeds. The RPC's own reply
+ * (`state`, a ledger transition this module has no reason to interpret) is validated and discarded — the
+ * caller only needs to know the send either completed or threw.
+ */
+function buildStopControl(
+  deps: ProviderProxyOperationActivationDeps,
+  operation: OperationIdentity,
+  timeoutMs: number,
+): OperationStopControl {
+  return {
+    async stop(cause: ProviderStopCause): Promise<void> {
+      await callStrict(deps.proxyClient, 'operation.stop.v1', { operation, cause }, timeoutMs, stopResultSchema);
+    },
+  };
 }
 
 /**
@@ -244,7 +277,12 @@ export async function activateProviderOperation(
       timeoutMs,
       proxyActivateResultSchema,
     );
-    return { kind: 'executing', committedThroughProviderSeq: activateResult.committedThroughProviderSeq };
+    return {
+      kind: 'executing',
+      committedThroughProviderSeq: activateResult.committedThroughProviderSeq,
+      meta,
+      control: buildStopControl(deps, operation, timeoutMs),
+    };
   } catch (error: unknown) {
     await compensateAfterActivationFailure(deps, operation, reservationId, activationNonce);
     return { kind: 'activation-failed', step: 'proxy-activate', reason: errorReason(error) };

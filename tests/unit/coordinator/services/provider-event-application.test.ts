@@ -93,6 +93,7 @@ function testDeps(overrides: Partial<ProviderEventApplicationDeps> = {}): Provid
     runtime,
     emitSessionReleased: () => {},
     recordedStopCauseFor: () => null,
+    operations: { settled: () => {} },
     ...overrides,
   };
 }

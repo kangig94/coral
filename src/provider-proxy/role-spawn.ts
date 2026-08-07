@@ -4,7 +4,12 @@ import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
 import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import type { Runtime } from '../runtime/ports.js';
-import { connectControlClient, type ControlClient, type ControlClientTimer } from './control-client.js';
+import {
+  connectControlClient,
+  type ControlClient,
+  type ControlClientTimer,
+  type ProviderEventHandler,
+} from './control-client.js';
 import type { ControlEndpointTimer } from './control-endpoint.js';
 import { PROVIDER_ROLE_FLAGS, type ProviderRole } from './role-argv.js';
 
@@ -203,16 +208,21 @@ export type RoleConnectRetryOptions = Readonly<{
  * budget elapses. A spawn call returns as soon as the OS has scheduled the process, not once it has bound
  * its socket — so the first connect attempt legitimately racing a not-yet-listening peer is the ordinary
  * case, not a failure.
+ *
+ * `onProviderEvent`, when supplied, answers the one inbound method this connection may ever receive:
+ * `provider.event.v1`. Only the proxy role ever pushes it (`protocol.ts`'s own doc), so only the caller
+ * connecting to a proxy endpoint has a reason to pass one.
  */
 export async function connectRoleControlWithRetry(
   socketPath: string,
   timer: ControlClientTimer,
   options: RoleConnectRetryOptions,
+  onProviderEvent?: ProviderEventHandler,
 ): Promise<ControlClient> {
   const deadline = options.now() + options.overallDeadlineMs;
   while (true) {
     try {
-      return await connectControlClient(socketPath, timer, options.connectTimeoutMs);
+      return await connectControlClient(socketPath, timer, options.connectTimeoutMs, onProviderEvent);
     } catch (error: unknown) {
       if (options.now() >= deadline) throw error;
       await options.sleep(options.retryIntervalMs);

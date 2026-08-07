@@ -17,6 +17,7 @@ import { createDiscussContextRegistry, type DiscussContextRegistry } from '../..
 import { LaunchCoordinator } from '../live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
 import type { ProviderProxyAuthorityRegistry } from '../live/provider-proxy-authority.js';
+import { LocalOperationRegistry } from '../services/operation-registry.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';
@@ -162,6 +163,8 @@ export interface CoordinatorWorld {
   /** Absent whenever `options.providerHostManager` overrode the default (see the construction site's own
    *  comment) — every test override, and only every test override. */
   readonly providerProxyAuthority?: ProviderProxyAuthorityRegistry;
+  /** This coordinator generation's live app-server operations (W2.3) — see `CoordinatorCoreOptions.operationRegistry`. */
+  readonly operationRegistry: LocalOperationRegistry;
   readonly pluginRoot: string;
   readonly now: () => number;
   readonly log: (message: string) => void;
@@ -244,6 +247,7 @@ export function createCoordinatorWorld(
   });
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
   const storeServicesRef = createStoreServicesRef();
+  const operationRegistry = options.operationRegistry ?? new LocalOperationRegistry();
   // A caller-supplied `providerHostManager` (every test that fakes provider hosts) never carries live
   // guardian/reaper/proxy sets, so `providerProxyAuthority` stays absent rather than reporting on a
   // substitute it played no part in creating — matching `runShutdownSequence`'s own `undefined` default.
@@ -255,7 +259,13 @@ export function createCoordinatorWorld(
     const created = createProviderHostManager({
       runtime,
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
-      proxySetAcquisition: { pluginRoot, identity: { instanceId, buildSetId, flavor } },
+      proxySetAcquisition: {
+        pluginRoot,
+        identity: { instanceId, buildSetId, flavor },
+        ...(options.buildProviderEventHandler === undefined
+          ? {}
+          : { onProviderEvent: options.buildProviderEventHandler }),
+      },
     });
     providerHostManager = created;
     providerProxyAuthority = created;
@@ -299,6 +309,7 @@ export function createCoordinatorWorld(
     storeServicesRef,
     providerHostManager,
     ...(providerProxyAuthority === undefined ? {} : { providerProxyAuthority }),
+    operationRegistry,
     pluginRoot,
     now,
     log,

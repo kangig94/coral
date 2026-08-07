@@ -99,6 +99,7 @@ function createHostManager(exactHostReachable: boolean): {
       openSession,
       drainForHandoff: async () => {},
       shutdown: async () => {},
+      routeAppServerOperation: () => null,
     },
     attachSession,
     openSession,

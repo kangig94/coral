@@ -29,7 +29,7 @@ import {
   type SpawnedRoleProcess,
 } from '../../provider-proxy/role-spawn.js';
 import { DETACHED_CONTAINMENT_KIND } from '../../provider-proxy/guardian.js';
-import type { ControlClient } from '../../provider-proxy/control-client.js';
+import type { ControlClient, ProviderEventHandler } from '../../provider-proxy/control-client.js';
 import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_TEARDOWN_RESERVE_MS } from '../../provider-proxy/orphan-deadline.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
@@ -43,6 +43,11 @@ import {
 } from '../../provider-proxy/protocol.js';
 import type { AcquisitionUndo, ProviderProxyAcquisitionSteps } from './provider-proxy-acquisition.js';
 import type { ProviderProxySetAuthority } from './provider-proxy-authority.js';
+import {
+  createProviderProxyOperationAuthority,
+  type ProviderProxyOperationAuthority,
+} from './provider-proxy-operation-route.js';
+import type { ProviderProxySetIdentity } from '../services/provider-proxy-operation-activation.js';
 
 /**
  * The production implementation of `ProviderProxyAcquisitionSteps`: mints one guardian/reaper/proxy set's
@@ -75,6 +80,11 @@ export type ProviderProxyAcquisitionStepsOptions = Readonly<{
   /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe. This file only spawns the
    *  guardian — it never consumes a capsule itself, so it has no strict-identity check to inject. */
   readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
+  /** Builds the durable-effect handler for `provider.event.v1`, called once `establishControl` is about to
+   *  open the proxy role's connection — see `ProviderProxySetAcquisitionConfig.onProviderEvent`'s own doc for
+   *  why this is a factory rather than an already-built handler. Absent wires no handler at all onto that
+   *  connection, matching every acquisition attempt that does not care about proxied event application. */
+  onProviderEvent?(): ProviderEventHandler;
 }>;
 
 type MintedSet = Readonly<{
@@ -217,6 +227,9 @@ type RoleControlPlan<TOpened extends { controlEpoch: number; heartbeatChallenge:
   identity: (opened: TOpened) => Record<string, unknown>;
   heartbeatMethod: string;
   expectedIdentity: Readonly<Record<string, string | number>>;
+  /** Only the proxy role ever pushes `provider.event.v1` back over this connection (`protocol.ts`'s own
+   *  doc), so only the proxy's plan supplies this. */
+  onProviderEvent?: ProviderEventHandler;
 }>;
 
 /**
@@ -235,7 +248,7 @@ async function establishRoleControl<TOpened extends { controlEpoch: number; hear
   retry: RoleConnectRetryOptions,
   plan: RoleControlPlan<TOpened>,
 ): Promise<Readonly<{ client: ControlClient; opened: TOpened; nextHeartbeatChallenge: string }>> {
-  const client = await connectRoleControlWithRetry(plan.endpoint, timer, retry);
+  const client = await connectRoleControlWithRetry(plan.endpoint, timer, retry, plan.onProviderEvent);
   opened.push(client);
   const raw = await client.call(plan.openMethod, plan.openParams, PROXY_CONTROL_RPC_TIMEOUT_MS);
   const result = plan.openResultSchema.parse(raw);
@@ -534,7 +547,7 @@ export function createProviderProxyAcquisitionSteps(
       };
     },
 
-    async establishControl(): Promise<Readonly<{ set: ProviderProxySetAuthority; undo: AcquisitionUndo }>> {
+    async establishControl(): Promise<Readonly<{ set: ProviderProxyOperationAuthority; undo: AcquisitionUndo }>> {
       if (minted === null || guardianSpawn === null) {
         throw new Error('createCapsules and spawnGuardian must run before establishControl.');
       }
@@ -571,6 +584,7 @@ export function createProviderProxyAcquisitionSteps(
             hostFingerprint,
             canonicalEndpoint: setMinted.proxyEndpoint,
           },
+          ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent() }),
         });
 
         // The one identity this acquisition can verify in full: it spawned the guardian itself and observed
@@ -661,7 +675,7 @@ export function createProviderProxyAcquisitionSteps(
           ),
         ];
 
-        const set = createProviderProxySetAuthority({
+        const base = createProviderProxySetAuthority({
           proxyInstanceId: setMinted.proxyInstanceId,
           guardianClient: guardianSession.client,
           proxyClient: proxySession.client,
@@ -670,6 +684,34 @@ export function createProviderProxyAcquisitionSteps(
           reaperIdentity: reaperSession.opened.reaper,
           proxyIdentityFields: proxySession.opened.proxy,
           heartbeats,
+        });
+        // The set-level identity `operation.prepare.v1`'s coordinator meta commit needs (W2.3): fixed for
+        // this set's whole lifetime, built from the exact same verified fields `base`'s identity checks just
+        // confirmed rather than re-derived, so the two can never disagree.
+        const setIdentity: ProviderProxySetIdentity = {
+          buildSetId,
+          hostFingerprint,
+          guardianInstanceId: setMinted.guardianInstanceId,
+          guardianPid: spawnedGuardian.pid,
+          guardianProcessStartedAtSeconds: spawnedGuardian.processStartedAtSeconds,
+          guardianControlEndpoint: setMinted.guardianEndpoint,
+          proxyInstanceId: setMinted.proxyInstanceId,
+          proxyPid: proxyIdentity.pid,
+          reaperInstanceId: setMinted.reaperInstanceId,
+          reaperPid: reaperSession.opened.reaper.pid,
+          reaperProcessStartedAtSeconds: reaperSession.opened.reaper.processStartedAtSeconds,
+          reaperControlEndpoint: setMinted.reaperEndpoint,
+          containmentKind: DETACHED_CONTAINMENT_KIND,
+          proxyProcessStartedAtSeconds: proxyIdentity.processStartedAtSeconds,
+          proxyProcessGroupId: proxyIdentity.processGroupId,
+          canonicalEndpoint: setMinted.proxyEndpoint,
+        };
+        const set = createProviderProxyOperationAuthority({
+          base,
+          setIdentity,
+          proxyClient: proxySession.client,
+          guardianClient: guardianSession.client,
+          mutationRpcTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
         });
 
         return {

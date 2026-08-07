@@ -6,6 +6,7 @@ import {
   encodeDurableCliProcessRuntimeMeta,
   encodeProviderOperationRuntimeMeta,
   providerOperationRuntimeMetaKey,
+  providerOperationRuntimeMetaKeyPrefix,
   type DurableCliProcessRuntimeMeta,
   type ProviderOperationRuntimeMeta,
 } from './runtime-meta.js';
@@ -90,4 +91,21 @@ export function writeProviderOperationRuntimeMeta(db: Database, meta: ProviderOp
  */
 export function deleteProviderOperationRuntimeMeta(db: Database, jobId: string, operationId: string): void {
   db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(providerOperationRuntimeMetaKey(jobId, operationId));
+}
+
+/**
+ * Whether any `provider_operation.v1` row is committed for `jobId`, regardless of which operation id — the
+ * durable signal that a job's `leaseState: 'acquired'` `hostRef` names a live provider proxy set rather than
+ * a local `ProviderHostManager` entry. Recovery (`interruptAppServerJob`) reads this before treating a
+ * recovered app-server job's `hostRef` as local: crash-recovery adoption of a still-live proxied operation is
+ * W2.5 territory, not something a fresh coordinator generation with an empty registry can do, so this is only
+ * ever used to *not* mistake one for a local host — never to adopt it.
+ */
+export function hasProviderOperationRuntimeMetaForJob(db: Database, jobId: string): boolean {
+  // `jobId` is a canonical UUID by construction (`providerOperationRuntimeMetaKeyPrefix`'s own doc) and so
+  // never contains a `LIKE` metacharacter; the trailing `%` is the only wildcard in this pattern.
+  const row = db
+    .prepare<[string], MetaRow>('SELECT value FROM meta WHERE key LIKE ? LIMIT 1')
+    .get(`${providerOperationRuntimeMetaKeyPrefix(jobId)}%`);
+  return row !== undefined;
 }

@@ -100,6 +100,15 @@ export function providerOperationRuntimeMetaKey(jobId: string, operationId: stri
 }
 
 /**
+ * The `LIKE` prefix naming every `provider_operation.v1` row for one job, regardless of operation id.
+ * `jobId` is always a canonical UUID by the time anything calls this (recovery reads it from a committed
+ * launch record), so it never contains a `LIKE` metacharacter for this to escape.
+ */
+export function providerOperationRuntimeMetaKeyPrefix(jobId: string): string {
+  return `provider_operation.v1:${jobId}:`;
+}
+
+/**
  * Validates `meta` against the strict schema, then serializes it compactly and enforces the 4096-byte cap on
  * the encoded bytes (not the object) — the cap is on what actually goes in the `meta` row. Schema failures
  * surface through the same typed `ProviderOperationRuntimeMetaCodecError` `decode` uses, rather than letting a

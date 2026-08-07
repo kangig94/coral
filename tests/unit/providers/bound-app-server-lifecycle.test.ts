@@ -101,19 +101,19 @@ function harness(
 }
 
 describe('bound app-server execution lifecycle', () => {
-  it('rejects a stable host labeled for another provider before acquisition', async () => {
-    const test = harness(
-      async function* () {
-        yield TERMINAL;
-      },
-      undefined,
-      'other-provider',
-    );
-
-    await expect(collectProviderEvents(test.prepared.execute(test.runtime))).rejects.toThrow(
-      "Provider 'fixture' compiled a stable host labeled for 'other-provider'",
-    );
-    expect(test.close).not.toHaveBeenCalled();
+  it('rejects a stable host labeled for another provider before acquisition', () => {
+    // `hostSpec` is compiled eagerly at `prepareExecution()` — before any host is acquired, and before
+    // `harness()` even returns a `prepared` to call `.execute()` on — so this provider-identity mismatch
+    // surfaces there now, synchronously, rather than only once the returned generator is iterated.
+    expect(() =>
+      harness(
+        async function* () {
+          yield TERMINAL;
+        },
+        undefined,
+        'other-provider',
+      ),
+    ).toThrow("Provider 'fixture' compiled a stable host labeled for 'other-provider'");
   });
 
   it('projects replacement authority to hostRef and close only', async () => {
