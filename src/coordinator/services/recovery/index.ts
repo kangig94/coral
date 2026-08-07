@@ -2,9 +2,11 @@ import { errorMessage, formatError } from '../../../infra/error-format.js';
 import { ProcessContainmentError } from '../../../infra/process-containment.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
+import { readProviderOperationRuntimeMetaForJob } from '../../../jobs/runtime-meta-store.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { JobStore } from '../../../jobs/store.js';
+import type { ProviderProxySetInheritance } from '../provider-proxy-set-inheritance.js';
 import { planRecovery } from '../../../jobs/reconcile/plan.js';
 import { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
 import type { TimerHandle } from '../../../infra/port-types.js';
@@ -83,6 +85,11 @@ type RecoveryCoordinatorContext = {
   eventBus: JobEventBus;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   createInvocationContext: (projectRoot: string) => InvocationContext;
+  /** The capsule-inheritance branch of proxy-set acquisition (W2.4/W2.5). Absent for every composition that
+   *  does not wire proxy-set acquisition at all (every test, and any coordinator build with it disabled) —
+   *  `runRecoveryAdoption` then skips the inheritance pre-pass entirely and every running app-server job is
+   *  decided exactly as it was before this capability existed. */
+  providerProxyInheritance?: ProviderProxySetInheritance;
   log: (message: string) => void;
 };
 
@@ -331,6 +338,7 @@ export function createRecoveryCoordinator(
     eventBus,
     getRecoveryService,
     createInvocationContext,
+    providerProxyInheritance,
     log,
   }: RecoveryCoordinatorContext,
   bound: BoundCoordinator | null,
@@ -625,6 +633,33 @@ export function createRecoveryCoordinator(
       progressStore.seedEnqueueSequence(maxRecoverableSeq);
     }
 
+    // W2.4/W2.5: before any running job below can be decided carrier-detached, give every distinct proxy set
+    // implied by these jobs' committed locators a chance to be inherited from a predecessor's clean handoff-
+    // mode shutdown. This ordering is forced, not chosen: `finalizeInterruptedAppServerJob`'s carrier-detached
+    // arm reaps the exact containment inheritance would otherwise adopt, and a reaped set can never be
+    // redeemed again, so every job whose operation could still be inherited must be given the chance before
+    // any job reaches that arm. `providerProxyInheritance` absent (every test, and any build with proxy-set
+    // acquisition disabled) makes this a no-op — every job is decided exactly as it was before this capability
+    // existed. Distinct addresses are attempted once each: every operation a redeemed grant names arrives with
+    // it (`ProviderProxySetInheritanceOutcome.adoptedJobIds`), so a second job sharing the same set never
+    // needs — and never gets — a second redemption attempt.
+    const inheritedJobIds = new Set<string>();
+    if (providerProxyInheritance !== undefined) {
+      const attemptedAddresses = new Set<string>();
+      for (const job of runningJobs) {
+        if (!isAppServerRuntime(job.runtimeRecord)) continue;
+        const locator = readProviderOperationRuntimeMetaForJob(progressStore.getDb(), job.jobId);
+        if (locator === null) continue;
+        const address = `${locator.buildSetId}:${locator.hostFingerprint}:${locator.proxyInstanceId}`;
+        if (attemptedAddresses.has(address)) continue;
+        attemptedAddresses.add(address);
+        const outcome = await providerProxyInheritance.inheritProviderProxySet(locator, progressStore.getDb());
+        if (outcome.kind === 'inherited') {
+          for (const inheritedJobId of outcome.adoptedJobIds) inheritedJobIds.add(inheritedJobId);
+        }
+      }
+    }
+
     for (const { jobId, authority, runtimeRecord } of runningJobs) {
       const { launchRecord, boundProvider } = authority;
       await runCoordinatorWalk({
@@ -636,6 +671,18 @@ export function createRecoveryCoordinator(
           controls.setProcessLocalCleanup(() => state.recoveryRegistry?.remove(jobId));
           const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
           if (isAppServerRuntime(runtimeRecord)) {
+            // Already adopted by the inheritance pre-pass above: its carrier is this coordinator's own live
+            // proxy connection now, not something to probe or reap — the same "alive, adopted, nothing to
+            // finalize" treatment `adoptRunningJob` below gives a durable CLI process still running its pid.
+            if (inheritedJobIds.has(jobId)) {
+              controls.report(`Inherited a live proxied operation for job: ${jobId}\n`);
+              return {
+                kind: 'advanced',
+                outcome: 'settled',
+                facts: COORDINATOR_NOT_APPLICABLE_FACTS,
+                detail: 'inherited operation adopted',
+              };
+            }
             signal.throwIfAborted();
             try {
               await startTrackedFinalization(jobId, signal, (fence) =>

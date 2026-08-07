@@ -97,6 +97,23 @@ export class LocalOperationRegistry {
   }
 
   /**
+   * W2.5's second thin entry point onto the same private builder: registers an operation this coordinator
+   * generation never activated but adopted from a predecessor's bequeathed proxy set, via
+   * `guardian.handoff-redeem.v1` → `reaper.handoff-rotate.v1` → `handoff.redeem.v1` → `operation.adopt.v1`
+   * (`provider-hosts/proxy-set-inheritance.ts`, the only production caller). `meta` is the exact row that
+   * caller already read back from the store — the same "meta row is what both a live activation and a later
+   * adoption equally have in hand" contract this class's own header doc promises.
+   *
+   * `release` is almost always a no-op: this coordinator never built any local admission/abort/pool
+   * bookkeeping for a job it did not launch, so there is nothing of its own to let go of when the operation
+   * later settles. It is still a parameter, not a hardcoded no-op, so a future caller with real local state to
+   * release is not blocked from supplying one.
+   */
+  adopt(meta: ProviderOperationRuntimeMeta, control: OperationStopControl, release: () => void): void {
+    this.register(meta, control, release, 'adopted');
+  }
+
+  /**
    * Ends this coordinator's tracking of one operation: runs its `release()` once, then forgets the entry.
    * `ProviderEventApplicationDeps.operations.settled` — the applier's only dependency on this registry.
    *

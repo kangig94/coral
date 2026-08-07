@@ -82,6 +82,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/provider-event-application.ts',
   'src/coordinator/services/provider-proxy-launch-route.ts',
   'src/coordinator/services/provider-proxy-operation-activation.ts',
+  'src/coordinator/services/provider-proxy-set-inheritance.ts',
   'src/coordinator/services/terminal-materializer.ts',
   'src/coordinator/services/workflow-execution.ts',
   'src/coordinator/services/workflow-finalization.ts',

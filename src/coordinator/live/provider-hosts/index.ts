@@ -40,6 +40,20 @@ export interface ProviderHostManager {
 
 export type ProviderHostLifecycle = Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
 
+/**
+ * The registration half of the inheritance branch of proxy-set acquisition (W2.4/W2.5). The redemption
+ * mechanism itself — reading a predecessor's bequeathed capsule and adopting its operations — needs jobs-
+ * domain vocabulary (`ProviderOperationRuntimeMeta`) that `coordinator/live/**` may not reach directly
+ * (`architecture-layering.test.ts`'s coordinator-contract-entrypoint rule), so it lives in
+ * `coordinator/services/provider-proxy-set-inheritance.ts` and calls back into this narrow, domain-free seam
+ * once it already holds a live, connected set.
+ */
+export interface ProviderProxySetRegistration {
+  /** Folds an already-redeemed set into this manager's own live sets (`liveSets()`), so it participates in
+   *  this coordinator's later shutdown — including a second handoff — exactly as an acquired set would. */
+  registerInheritedSet(set: ProviderProxyOperationAuthority): void;
+}
+
 export type ManagedAppServerSession = Readonly<{
   session: AppServerTransport;
   hostRef: HostRef;
@@ -131,7 +145,9 @@ function waitForClose(operation: Promise<void>, signal: AbortSignal | undefined)
   });
 }
 
-export class DefaultProviderHostManager implements ProviderHostManager, ProviderProxyAuthorityRegistry {
+export class DefaultProviderHostManager
+  implements ProviderHostManager, ProviderProxyAuthorityRegistry, ProviderProxySetRegistration
+{
   private readonly entries = new Map<string, ProviderHostEntry>();
   private readonly pendingCloses = new Set<Promise<void>>();
   private readonly lifecyclePolicies = new Map<string, string>();
@@ -155,6 +171,12 @@ export class DefaultProviderHostManager implements ProviderHostManager, Provider
   // and stable, so outliving entries costs a fixed amount rather than a growing one.
   private readonly pendingProxySetAcquisitions = new Set<string>();
   private readonly liveProxySets = new Map<string, ProviderProxyOperationAuthority>();
+  // Inherited sets are keyed by `proxyInstanceId`, never folded into `liveProxySets`: this manager has no
+  // `ProviderServerSpec` to derive that map's `identityKey` from at inheritance time (only a committed
+  // locator), and a bequeathed set's operations are the fixed set the grant named — routing a brand-new
+  // operation onto it is not this branch's concern. `liveSets()` still reports it, so it participates in this
+  // coordinator's own later shutdown (a second handoff included) exactly as an acquired set would.
+  private readonly inheritedProxySets = new Map<string, ProviderProxyOperationAuthority>();
 
   constructor(options: {
     runtime: Runtime;
@@ -168,10 +190,15 @@ export class DefaultProviderHostManager implements ProviderHostManager, Provider
     this.proxySetAcquisitionConfig = options.proxySetAcquisition;
   }
 
-  /** Every set acquired so far and not yet reaped — see `ProviderProxyAuthorityRegistry.liveSets()`'s own
-   *  doc for what this snapshot does and does not promise. */
+  /** Every set acquired so far and not yet reaped, acquired or inherited alike — see
+   *  `ProviderProxyAuthorityRegistry.liveSets()`'s own doc for what this snapshot does and does not promise. */
   liveSets(): readonly ProviderProxySetAuthority[] {
-    return [...this.liveProxySets.values()];
+    return [...this.liveProxySets.values(), ...this.inheritedProxySets.values()];
+  }
+
+  /** See `ProviderProxySetRegistration.registerInheritedSet()`'s interface doc for this seam's full contract. */
+  registerInheritedSet(set: ProviderProxyOperationAuthority): void {
+    this.inheritedProxySets.set(set.proxyInstanceId, set);
   }
 
   /** See the `ProviderHostManager.routeAppServerOperation()` interface doc for this seam's full contract. */
@@ -457,6 +484,6 @@ export function createProviderHostManager(options: {
   idleTimeoutMs?: number;
   spawnProviderServer: SpawnProviderServerFn;
   proxySetAcquisition?: ProviderProxySetAcquisitionConfig;
-}): ProviderHostManager & ProviderProxyAuthorityRegistry {
+}): ProviderHostManager & ProviderProxyAuthorityRegistry & ProviderProxySetRegistration {
   return new DefaultProviderHostManager(options);
 }

@@ -75,9 +75,12 @@ import type { ProviderProxySetIdentity } from '../services/provider-proxy-operat
  * (see `createProviderProxySetAuthority`'s `stopAndReap`).
  */
 
-const ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS = 2_000;
-const ESTABLISH_CONTROL_RETRY_INTERVAL_MS = 20;
-const ESTABLISH_CONTROL_READY_DEADLINE_MS = 10_000;
+// Exported for `provider-hosts/proxy-set-inheritance.ts`: redemption dials the same three role endpoints this
+// file's own `establishControl` does, on the identical connect-retry budget, so a redeemed tenancy and a
+// freshly spawned one time out the same way rather than silently drifting apart.
+export const ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS = 2_000;
+export const ESTABLISH_CONTROL_RETRY_INTERVAL_MS = 20;
+export const ESTABLISH_CONTROL_READY_DEADLINE_MS = 10_000;
 
 export type ProviderProxyAcquisitionStepsOptions = Readonly<{
   runtime: Runtime;
@@ -170,12 +173,14 @@ async function heartbeatOnce(
   return heartbeatResultSchema.parse(raw);
 }
 
-type HeartbeatLoop = Readonly<{ stop(): void }>;
+export type HeartbeatLoop = Readonly<{ stop(): void }>;
 
 /** Keeps one established tenancy alive past its lease by echoing the challenge on the endpoint's own
  *  heartbeat interval. A failed echo is reported but not retried early — the enforcer's own deadline, not
- *  this loop, is what bounds the fallout of a tenancy that cannot be refreshed. */
-function startHeartbeatLoop(
+ *  this loop, is what bounds the fallout of a tenancy that cannot be refreshed. Exported so
+ *  `provider-hosts/proxy-set-inheritance.ts` keeps a redeemed tenancy alive the identical way a freshly
+ *  established one is kept alive here — one heartbeat mechanism, not two. */
+export function startHeartbeatLoop(
   client: ControlClient,
   method: string,
   runtime: Runtime,
@@ -223,12 +228,14 @@ function assertIdentityFieldsAgree(
   }
 }
 
-type ControlTimer = ReturnType<typeof runtimeControlTimer>;
+export type ControlTimer = ReturnType<typeof runtimeControlTimer>;
 
 /** One role's connect→open→verify→heartbeat plan. `identity` pulls the role's own identity field out of the
  *  already-schema-validated open result — a selector rather than a `result[role]` lookup, so the compiler
- *  checks it against the concrete open-result type instead of trusting a string key at runtime. */
-type RoleControlPlan<TOpened extends { controlEpoch: number; heartbeatChallenge: string }> = Readonly<{
+ *  checks it against the concrete open-result type instead of trusting a string key at runtime. Exported so
+ *  `provider-hosts/proxy-set-inheritance.ts` can describe its own redeem/rotate opens the same shape
+ *  `establishRoleControl` already consumes, rather than a second, parallel plan type. */
+export type RoleControlPlan<TOpened extends { controlEpoch: number; heartbeatChallenge: string }> = Readonly<{
   role: string;
   endpoint: string;
   openMethod: string;
@@ -251,8 +258,13 @@ type RoleControlPlan<TOpened extends { controlEpoch: number; heartbeatChallenge:
  * caller's own try/catch can still close every role connected so far, including this one, on a later
  * failure — the same close-everything-opened behavior a single inline try/catch gave when this was one block
  * per role instead of one shared function.
+ *
+ * Exported: `provider-hosts/proxy-set-inheritance.ts` drives the identical connect→open→verify→heartbeat
+ * sequence for a redeemed tenancy (`guardian.handoff-redeem.v1`, `reaper.handoff-rotate.v1`,
+ * `handoff.redeem.v1`) that this file drives for a freshly minted one — the opening credential differs, the
+ * mechanics do not, so there is exactly one function that dials a role and keeps its first challenge alive.
  */
-async function establishRoleControl<TOpened extends { controlEpoch: number; heartbeatChallenge: string }>(
+export async function establishRoleControl<TOpened extends { controlEpoch: number; heartbeatChallenge: string }>(
   opened: ControlClient[],
   timer: ControlTimer,
   retry: RoleConnectRetryOptions,

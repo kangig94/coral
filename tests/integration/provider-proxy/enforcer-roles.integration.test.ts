@@ -1512,6 +1512,53 @@ describe('provider-proxy guardian and reaper', () => {
     expect(beat.state).toBe('active');
   });
 
+  it('carries a multi-operation grant through guardian redemption and reaper rotation byte-sorted and intact', async () => {
+    // W2.4/W2.5's real-socket coverage for a set inheritance would adopt more than one operation from: the
+    // guardian never re-derives the set (only the successor's grantId/secret), and the reaper never receives
+    // it directly either (only the guardian's own authoritative forward) — so this is the one place both
+    // hops of that forward can be checked against the exact same multi-operation set at once.
+    const set = await startSet();
+    const first = set.operationFor();
+    const second = set.operationFor();
+    const unsorted = first.operationId < second.operationId ? [second, first] : [first, second];
+    const sorted = [...unsorted].sort((left, right) => (left.operationId < right.operationId ? -1 : 1));
+    const request = await installGrant(set, unsorted);
+    const reaperControl = await openReaperControl(set);
+    set.lapseControl();
+    set.control.close();
+    reaperControl.close();
+
+    const successorGuardian = await connectControlClient(set.guardianEndpoint, timer, 5_000);
+    cleanups.push(() => successorGuardian.close());
+    const redeemed = (await successorGuardian.call('guardian.handoff-redeem.v1', request, 5_000)) as {
+      redemptionReceipt: string;
+      operations: Record<string, string>[];
+    };
+    expect(redeemed.operations).toEqual(sorted);
+
+    const successorReaper = await connectControlClient(set.reaperEndpoint, timer, 5_000);
+    cleanups.push(() => successorReaper.close());
+    const rotated = (await successorReaper.call(
+      'reaper.handoff-rotate.v1',
+      {
+        grantId: request.grantId,
+        successor: set.coordinatorIdentity,
+        guardianRedemptionReceipt: redeemed.redemptionReceipt,
+      },
+      5_000,
+    )) as { state: string; operations: Record<string, string>[]; controlEpoch: number; heartbeatChallenge: string };
+
+    // Both authorities report the identical byte-sorted set the guardian alone forwarded — the reaper never
+    // independently re-derives it, and the successor never presented one for either to check against.
+    expect(rotated.operations).toEqual(sorted);
+    const beat = (await successorReaper.call(
+      'reaper.heartbeat.v1',
+      { controlEpoch: rotated.controlEpoch, heartbeatChallenge: rotated.heartbeatChallenge },
+      5_000,
+    )) as { state: string };
+    expect(beat.state).toBe('active');
+  });
+
   it('refuses reaper.handoff-rotate.v1 before the guardian has ever redeemed the grant', async () => {
     const set = await startSet();
     const { operation } = await stage(set);

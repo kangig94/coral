@@ -12,6 +12,7 @@ import { DefaultProviderHostManager, hostKeyFromSpec } from '#src/coordinator/li
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
 import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy-authority.js';
+import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy-operation-route.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
 import {
   createExclusiveSpec,
@@ -32,6 +33,35 @@ function fakeProxySet(proxyInstanceId: string): ProviderProxySetAuthority {
     stopAndReap: async () => ({ disappearanceReceipt: 'r' }),
     stopHeartbeats: () => {},
     initiateControlClose: async () => {},
+  };
+}
+
+/** `registerInheritedSet` takes the full operation-routing authority, unlike `ensureProxySetFor`'s untyped
+ *  mock elsewhere in this file — a fresh fixture rather than widening `fakeProxySet` for every caller. */
+function fakeInheritedProxySet(proxyInstanceId: string): ProviderProxyOperationAuthority {
+  return {
+    ...fakeProxySet(proxyInstanceId),
+    setIdentity: {
+      buildSetId: 'b',
+      hostFingerprint: 'a'.repeat(64),
+      guardianInstanceId: 'g',
+      guardianPid: 100,
+      guardianProcessStartedAtSeconds: 1,
+      guardianControlEndpoint: '/tmp/guardian.sock',
+      proxyInstanceId,
+      proxyPid: 200,
+      reaperInstanceId: 'r',
+      reaperPid: 300,
+      reaperProcessStartedAtSeconds: 2,
+      reaperControlEndpoint: '/tmp/reaper.sock',
+      containmentKind: 'posix-group',
+      proxyProcessStartedAtSeconds: 3,
+      proxyProcessGroupId: 200,
+      canonicalEndpoint: '/tmp/proxy.sock',
+    },
+    activateOperation: () => {
+      throw new Error('unreachable: this fixture never activates a new operation');
+    },
   };
 }
 
@@ -880,6 +910,50 @@ describe('provider host pool proxy set registry', () => {
 
     first.close();
     second.close();
+    await manager.shutdown();
+  });
+});
+
+describe('provider host pool proxy set registration', () => {
+  // The redemption mechanism itself (reading a bequeathed capsule, adopting its operations) lives in
+  // `coordinator/services/provider-proxy-set-inheritance.ts` and is covered end to end there
+  // (`provider-proxy-set-inheritance.test.ts`) — it needs jobs-domain vocabulary this `coordinator/live/`
+  // manager may not reach directly. `registerInheritedSet` is the narrow, domain-free seam that mechanism
+  // calls back into once it already holds a live, connected set; that hand-off is what this suite exercises.
+  it('folds an inherited set into liveSets() alongside acquired sets, without routing new sessions onto it', async () => {
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(createFakeProviderServerHandle().handle),
+      proxySetAcquisition,
+    });
+    const set = fakeInheritedProxySet('proxy-inherited');
+
+    manager.registerInheritedSet(set);
+
+    expect(manager.liveSets()).toEqual([set]);
+    // Inheritance never registers routing for new work — only an `ensureProxySetFor` acquisition does.
+    expect(manager.routeAppServerOperation(createSharedSpec())).toBeNull();
+
+    await manager.shutdown();
+  });
+
+  it('coexists with an acquired set for a different proxy — liveSets() reports both', async () => {
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(createFakeProviderServerHandle().handle),
+      proxySetAcquisition,
+    });
+    const acquired = fakeProxySet('proxy-acquired');
+    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
+      onSettled({ kind: 'acquired', set: acquired });
+    });
+    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
+    const inherited = fakeInheritedProxySet('proxy-inherited');
+
+    manager.registerInheritedSet(inherited);
+
+    expect(new Set(manager.liveSets())).toEqual(new Set([acquired, inherited]));
+    lease.close();
     await manager.shutdown();
   });
 });
