@@ -5,7 +5,6 @@ import {
   decodeProxyControlFrame,
   encodeProxyControlFrame,
   guardianIdentitySchema,
-  identityAgreementSchema,
   MAX_PROXY_CONTROL_FRAME_BYTES,
   operationIdentitySchema,
   PROXY_CONTROL_RPC_TIMEOUT_MS,
@@ -133,13 +132,6 @@ describe('provider proxy protocol vocabulary', () => {
         committedThroughProviderSeq: 0,
       }).success,
     ).toBe(false);
-  });
-
-  it('rejects identity disagreement after strict validation', () => {
-    const agreementSchema = identityAgreementSchema(proxyIdentitySchema, proxyIdentity);
-
-    expect(agreementSchema.safeParse({ ...proxyIdentity, buildSetId: UUID_A }).success).toBe(false);
-    expect(agreementSchema.safeParse(proxyIdentity).success).toBe(true);
   });
 
   it('accepts a newline-delimited frame at the byte cap and rejects one byte over it', () => {

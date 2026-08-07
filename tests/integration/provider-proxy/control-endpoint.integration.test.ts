@@ -45,7 +45,12 @@ function realTimer() {
 }
 
 async function startEndpoint(
-  options: { echo?: (params: unknown) => void; pairing?: ControlEndpointRole['pairing'] } = {},
+  options: {
+    echo?: (params: unknown) => void;
+    pairing?: ControlEndpointRole['pairing'];
+    /** When present, the role serves `role.status.v1` under `authority: 'observation'`. */
+    observation?: (params: unknown) => unknown;
+  } = {},
 ): Promise<{
   endpoint: ControlEndpoint;
   socketPath: string;
@@ -115,72 +120,79 @@ async function startEndpoint(
     },
   };
 
+  const methodEntries: Array<[string, ControlMethod]> = [
+    [
+      'role.open.v1',
+      {
+        authority: 'establishes-control',
+        handle: (params) => {
+          bootstrapNonce.spend((params as { bootstrapNonce?: unknown } | null)?.bootstrapNonce);
+          return { holder: 'incumbent', fields: { role: 'guardian' } };
+        },
+      },
+    ],
+    ['role.work.v1', { authority: 'active', handle: () => ({ state: 'worked' }) }],
+    // A second opening method with its own credential — the successor's analogue of a handoff grant.
+    // `holder` is named by the caller, mirroring how a real grant derives it from `successor.instanceId`.
+    [
+      'role.redeem.v1',
+      {
+        authority: 'establishes-control',
+        handle: (params) => {
+          const named = (params as { successorId?: unknown } | null)?.successorId;
+          const holder = typeof named === 'string' ? named : 'successor';
+          const existing = redemptions.get(holder);
+          if (existing !== undefined) return { holder, fields: existing };
+          redemptionReceipts += 1;
+          const fields = { role: 'successor', redemptionReceipt: `receipt-${redemptionReceipts}` };
+          redemptions.set(holder, fields);
+          return { holder, fields };
+        },
+      },
+    ],
+    [
+      'role.echo.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          options.echo?.(params);
+          return { state: 'worked' };
+        },
+      },
+    ],
+    // Throws a raw ZodError, unwrapped — the shape a real role produces from its own `.parse()` calls,
+    // which control-endpoint.ts must map to the closed set without knowing anything about zod or roles.
+    [
+      'role.strict.v1',
+      {
+        authority: 'active',
+        handle: (params) =>
+          z
+            .object({
+              a: z.string(),
+              b: z.string(),
+              c: z.string(),
+              d: z.string(),
+              e: z.string(),
+              f: z.string(),
+              g: z.string(),
+              h: z.string(),
+            })
+            .parse(params),
+      },
+    ],
+  ];
+  if (options.observation !== undefined) {
+    // Present only when a test opts in, so the roles every other test builds stay exactly what they were —
+    // a role with no observation method, for which accept-time refusal is still the whole story.
+    methodEntries.push(['role.status.v1', { authority: 'observation', handle: options.observation }]);
+  }
+
   const endpoint = createControlEndpoint({
     socketPath,
     role: {
       heartbeatMethod: 'role.heartbeat.v1',
-      methods: new Map<string, ControlMethod>([
-        [
-          'role.open.v1',
-          {
-            authority: 'establishes-control',
-            handle: (params) => {
-              bootstrapNonce.spend((params as { bootstrapNonce?: unknown } | null)?.bootstrapNonce);
-              return { holder: 'incumbent', fields: { role: 'guardian' } };
-            },
-          },
-        ],
-        ['role.work.v1', { authority: 'active', handle: () => ({ state: 'worked' }) }],
-        // A second opening method with its own credential — the successor's analogue of a handoff grant.
-        // `holder` is named by the caller, mirroring how a real grant derives it from `successor.instanceId`.
-        [
-          'role.redeem.v1',
-          {
-            authority: 'establishes-control',
-            handle: (params) => {
-              const named = (params as { successorId?: unknown } | null)?.successorId;
-              const holder = typeof named === 'string' ? named : 'successor';
-              const existing = redemptions.get(holder);
-              if (existing !== undefined) return { holder, fields: existing };
-              redemptionReceipts += 1;
-              const fields = { role: 'successor', redemptionReceipt: `receipt-${redemptionReceipts}` };
-              redemptions.set(holder, fields);
-              return { holder, fields };
-            },
-          },
-        ],
-        [
-          'role.echo.v1',
-          {
-            authority: 'active',
-            handle: (params) => {
-              options.echo?.(params);
-              return { state: 'worked' };
-            },
-          },
-        ],
-        // Throws a raw ZodError, unwrapped — the shape a real role produces from its own `.parse()` calls,
-        // which control-endpoint.ts must map to the closed set without knowing anything about zod or roles.
-        [
-          'role.strict.v1',
-          {
-            authority: 'active',
-            handle: (params) =>
-              z
-                .object({
-                  a: z.string(),
-                  b: z.string(),
-                  c: z.string(),
-                  d: z.string(),
-                  e: z.string(),
-                  f: z.string(),
-                  g: z.string(),
-                  h: z.string(),
-                })
-                .parse(params),
-          },
-        ],
-      ]),
+      methods: new Map<string, ControlMethod>(methodEntries),
       pairing: options.pairing,
     },
     challenges: challengeAuthority,
@@ -496,6 +508,11 @@ describe('provider-proxy control endpoint', () => {
   });
 
   it('refuses a second concurrent connection instead of queueing it', async () => {
+    // Not a blanket invariant: it holds because this role's own `startEndpoint()` fixture serves no
+    // `observation` method. `establishControl` already refuses a second control tenancy on its own (see the
+    // `control-active` refusals above), so this accept-time refusal is what protects a role that has no
+    // tenancy-free method for a third connection to legitimately want — see the next test for the role that
+    // does, where the same accept-time refusal would make that method unreachable and is narrowed away.
     const { socketPath } = await startEndpoint();
     const first = await connect(socketPath);
     await first.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
@@ -507,6 +524,21 @@ describe('provider-proxy control endpoint', () => {
     });
 
     expect(closed).toBe(true);
+    expect(first.socket.destroyed).toBe(false);
+  });
+
+  it('admits a second connection to serve an observation method while control is held live', async () => {
+    const { socketPath } = await startEndpoint({ observation: () => ({ seen: true }) });
+    const first = await connect(socketPath);
+    await first.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+
+    // Unlike the role above, this one serves a method that claims no slot — so a second connection must not
+    // be destroyed at accept time just because control is already held; it must live long enough to ask.
+    const second = await connect(socketPath);
+    const status = await second.call('role.status.v1', {});
+
+    expect(status.result).toEqual({ seen: true });
+    expect(second.socket.destroyed).toBe(false);
     expect(first.socket.destroyed).toBe(false);
   });
 

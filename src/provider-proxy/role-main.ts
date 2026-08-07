@@ -5,7 +5,7 @@ import { createMonotonicClock, type MonotonicClock } from '../infra/monotonic-cl
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
 import { providerProxyBootstrapCapsulePath, providerReaperBootstrapCapsulePath } from '../infra/path/index.js';
 import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
-import type { ProcessContainmentEnvironment } from '../infra/process-containment.js';
+import { ABSENCE_POLL_MS, type ProcessContainmentEnvironment } from '../infra/process-containment.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
@@ -203,10 +203,6 @@ export type ProxyRoleHandle = Readonly<{
 
 export type ProviderRoleHandle = GuardianRoleHandle | ReaperRoleHandle | ProxyRoleHandle;
 
-/** How long `reapUnheldRoleProcess` polls for a signalled process to disappear before it gives up waiting
- *  and escalates. Matches `infra/process-containment.ts`'s own `ABSENCE_POLL_MS`. */
-const REAP_POLL_MS = 25;
-
 /**
  * Best-effort cleanup for a role process this attempt itself spawned but can no longer hold, because a later
  * cut in the same construction failed. Verifies the recorded pid is still the exact process that was spawned
@@ -239,7 +235,7 @@ async function reapUnheldRoleProcess(
   ports.runtime.process.kill(target, 'SIGTERM');
   const graceDeadline = ports.runtime.time.now() + SIGTERM_GRACE_MS;
   while (ports.runtime.process.isAlive(target) && ports.runtime.time.now() < graceDeadline) {
-    await ports.runtime.time.sleep(REAP_POLL_MS);
+    await ports.runtime.time.sleep(ABSENCE_POLL_MS);
   }
   if (ports.runtime.process.isAlive(target)) {
     ports.runtime.process.kill(target, 'SIGKILL');

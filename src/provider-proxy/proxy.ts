@@ -32,6 +32,7 @@ import {
 import { PROXY_CONTROL_LEASE_MS } from './orphan-deadline.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
+  PROXY_STATUS_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
   canonicalUuidSchema,
   coordinatorIdentitySchema,
@@ -476,6 +477,11 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         // running this set. It reads the ledger and returns; it moves no deadline, spends no credential,
         // and transitions nothing, so answering it can never change what this proxy would otherwise do.
         authority: 'observation',
+        // A background health check, not a mutation the caller is blocked on — bounded well below the
+        // ordinary control budget so a wedged reply costs an asker no more than it costs the client side,
+        // which already budgets the same `PROXY_STATUS_RPC_TIMEOUT_MS` for this exact call
+        // (`OBSERVATION_REQUEST_TIMEOUT_MS` in `coordinator/live/carrier-observer.ts`).
+        budgetMs: PROXY_STATUS_RPC_TIMEOUT_MS,
         handle: (params) => {
           const request = operationStatusParamsSchema.parse(params);
           // Every named operation must name *this* proxy. Refusing the whole request rather than the

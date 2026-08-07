@@ -113,13 +113,10 @@ export type HandoffContinuationResult =
   | Readonly<{ kind: 'run-current' }>
   | Readonly<{ kind: 'delegated'; version: string; outcome: HandoffOutcome }>;
 
-export type CanonicalSocketRelease = () => Promise<void>;
-
 export type RunHandoffOptions = Readonly<{
   pluginRoot?: string;
   time?: TimePort;
   signal?: AbortSignal;
-  releaseCanonicalSocket?: CanonicalSocketRelease;
   activeSelectionTarget?: ValidatedHandoffTarget;
 }>;
 
@@ -438,7 +435,6 @@ export async function runHandoff(
         ...(operation.kind === 'backend-startup' ? { detached: true } : {}),
       };
 
-      await options.releaseCanonicalSocket?.();
       execution.assertExecutable();
       // Runtime ports do not expose the executable for the current Node process.
       const child = spawn(process.execPath, childArguments, spawnOptions);

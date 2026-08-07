@@ -435,6 +435,16 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     }
   };
 
+  // Whether this role ever answers a connection that claims neither slot. `establishControl` already
+  // refuses a second control tenancy on its own (the challenge authority's `admitSuccessor` refusal), and
+  // the pairing branch in `dispatch` already refuses a second peer the same way — so accept-time refusal
+  // below protects nothing an RPC-level refusal does not already cover for a connection that goes on to
+  // request one of those slots. It does matter for a connection that never asks for either: an `observation`
+  // method promises exactly that, so a role that serves one must not have every connection destroyed the
+  // moment control is merely held, or its one tenancy-free method becomes unreachable in the case it exists
+  // for — a live tenancy is the *normal* state, not an edge case, for whoever wants to ask about it.
+  const hasObservationMethod = [...role.methods.values()].some((method) => method.authority === 'observation');
+
   const acceptConnection = (socket: Socket): void => {
     // One connection holds control and, when the role has a peer, one more may hold pairing. A third
     // connection is refused only once both slots are already filled — before the peer has ever paired, or
@@ -443,7 +453,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     // endpoint: close() still reaches it even if it never claims a slot.
     const controlTaken = tenancy !== null && !tenancy.socket.destroyed && challenges.controlIsLive();
     const pairingTaken = pairedSocket !== null && !pairedSocket.destroyed;
-    if (controlTaken && (role.pairing === undefined || pairingTaken)) {
+    if (!hasObservationMethod && controlTaken && (role.pairing === undefined || pairingTaken)) {
       socket.destroy();
       return;
     }

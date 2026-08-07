@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { advanceWaitRenderCursor, parseWaitStreamEvent } from '#src/jobs/wait-stream-event.js';
+import { advanceWaitRenderCursor, MAX_WAIT_JOB_IDS, parseWaitStreamEvent } from '#src/jobs/wait-stream-event.js';
 import { formatWaitCarrierInterrupted, formatWaitWaiting } from '#src/cli/format/wait.js';
 import type { CarrierInterruptedWaitEvent } from '#src/jobs/wait.js';
 
@@ -66,5 +66,59 @@ describe('waiting snapshot carrierUnknownJobIds', () => {
 
   it('says nothing about carriers when the field is absent', () => {
     expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: ['job-1'] }, null)).not.toContain('Carrier');
+  });
+});
+
+describe('MAX_WAIT_JOB_IDS bounds every response job-id array', () => {
+  // One past the cap: the request side already bounds a caller to at most `MAX_WAIT_JOB_IDS` jobs, so a
+  // response naming more than that names more jobs than any one wait request could have named.
+  const overCap = Array.from({ length: MAX_WAIT_JOB_IDS + 1 }, (_unused, index) => `job-${index}`);
+
+  it('rejects an over-cap runningJobIds on a queued event', () => {
+    const queued = {
+      type: 'queued',
+      jobId: 'job-1',
+      queuePosition: 1,
+      runningJobIds: overCap,
+      timing: { origin: 'queued', originAt: 't0', emittedAt: 't1', elapsedMs: 0 },
+      jobKind: 'provider',
+      sessionId: 'session-1',
+    };
+
+    expect(() => parseWaitStreamEvent('queued', JSON.stringify(queued))).toThrow();
+  });
+
+  it('rejects an over-cap remainingJobIds on a terminal event', () => {
+    const terminal = {
+      type: 'terminal',
+      jobId: 'job-1',
+      seq: 1,
+      remainingJobIds: overCap,
+      resultPath: '/tmp/result.md',
+      result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 12 },
+    };
+
+    expect(() => parseWaitStreamEvent('terminal', JSON.stringify(terminal))).toThrow();
+  });
+
+  it('rejects an over-cap remainingJobIds on an interrupted event', () => {
+    expect(() =>
+      parseWaitStreamEvent('interrupted', JSON.stringify({ ...INTERRUPTED, remainingJobIds: overCap })),
+    ).toThrow();
+  });
+
+  it('rejects an over-cap waitingJobIds on a waiting event', () => {
+    expect(() =>
+      parseWaitStreamEvent('waiting', JSON.stringify({ type: 'waiting', waitingJobIds: overCap })),
+    ).toThrow();
+  });
+
+  it('rejects an over-cap carrierUnknownJobIds on a waiting event', () => {
+    expect(() =>
+      parseWaitStreamEvent(
+        'waiting',
+        JSON.stringify({ type: 'waiting', waitingJobIds: ['job-1'], carrierUnknownJobIds: overCap }),
+      ),
+    ).toThrow();
   });
 });

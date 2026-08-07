@@ -188,10 +188,10 @@ export function createCarrierObserver(options: CarrierObserverOptions): CarrierO
     if (!parsed.success) return unknownFor(batch);
 
     const held = new Map(
-      parsed.data.operations.map((entry) => [`${entry.operation.jobId} ${entry.operation.operationId}`, entry]),
+      parsed.data.operations.map((entry) => [`${entry.operation.jobId}\u0000${entry.operation.operationId}`, entry]),
     );
     return batch.map((target) => {
-      const entry = held.get(`${target.operation.jobId} ${target.operation.operationId}`);
+      const entry = held.get(`${target.operation.jobId}\u0000${target.operation.operationId}`);
       // An operation the proxy did not answer for is not an operation it denied holding — the reply simply
       // did not cover it, which is exactly what `unknown` is for.
       if (entry === undefined) return { operation: target.operation, liveness: 'unknown' as const };

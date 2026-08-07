@@ -1,5 +1,4 @@
 import { isAbsolute, normalize } from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 
 import { z } from 'zod';
 
@@ -145,20 +144,6 @@ export const proxyHandoffOperationSchema = z
     committedThroughProviderSeq: nonNegativeSafeIntegerSchema,
   })
   .strict();
-
-export type ProxyHandoffOperation = z.infer<typeof proxyHandoffOperationSchema>;
-
-export function identityAgreementSchema<Identity>(
-  schema: z.ZodType<Identity>,
-  expected: Identity,
-): z.ZodType<Identity> {
-  const canonicalExpected = schema.parse(expected);
-  return schema.superRefine((received, context) => {
-    if (!isDeepStrictEqual(received, canonicalExpected)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'identity_mismatch' });
-    }
-  });
-}
 
 /** A grant or tenancy is build-bound: only a coordinator of the exact build a role's own capsule names may
  *  install, redeem, or open one. Shared by every role that holds a bootstrap capsule, so the same check and

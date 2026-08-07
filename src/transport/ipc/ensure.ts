@@ -98,7 +98,7 @@ export type EnsuredIpcClient = IpcClient & {
   readonly routing: BackendRoutingResult;
 };
 
-export type EnsureRoutingCapabilities = Readonly<{
+type EnsureRoutingCapabilities = Readonly<{
   validateForeignTarget: ForeignTargetValidator;
 }>;
 

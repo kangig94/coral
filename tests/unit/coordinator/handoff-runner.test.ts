@@ -382,23 +382,6 @@ describe('handoff-runner', () => {
     },
   );
 
-  it('should release a held canonical socket before the final byte check and spawn', async () => {
-    const order: string[] = [];
-    mockState.spawn.mockImplementationOnce(() => {
-      order.push('spawn');
-      return childThatExits(0, null);
-    });
-
-    await runHandoff(cliOperation('run'), {
-      pluginRoot: '/plugin/root',
-      releaseCanonicalSocket: async () => {
-        order.push('release');
-      },
-    });
-
-    expect(order).toEqual(['release', 'spawn']);
-  });
-
   it('should reject a byte mismatch at the final re-hash without spawning', async () => {
     const bundleDir = roots[0];
     vi.mocked(process.stdout.write).mockImplementationOnce(((

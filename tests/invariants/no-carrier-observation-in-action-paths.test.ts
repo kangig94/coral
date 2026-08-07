@@ -80,8 +80,49 @@ const ACTION_PATH_ROOTS = [
   'src/jobs/reconcile/',
 ] as const;
 
+/** Every production module under an action-path root — the entry points the walk starts from. */
+const ACTION_PATH_MODULES: readonly string[] = [...CANONICAL_FILES]
+  .filter((file) => ACTION_PATH_ROOTS.some((root) => (root.endsWith('/') ? file.startsWith(root) : file === root)))
+  .sort();
+
 function matches(module: string, allowed: readonly string[]): boolean {
   return allowed.some((entry) => (entry.endsWith('/') ? module.startsWith(entry) : module === entry));
+}
+
+/**
+ * Runtime edges only. A `import type` is erased before anything runs, so it can hand no verdict to anyone —
+ * and following it would report the module graph rather than the capability. Without this the walk reports
+ * `recovery/index.ts -> handoff.ts -> lifecycle.ts -> …`, a chain whose middle two hops are type-only.
+ */
+const ADJACENCY = new Map<string, string[]>();
+for (const edge of IMPORT_EDGES) {
+  if (!edge.runtime) continue;
+  const existing = ADJACENCY.get(edge.source);
+  if (existing === undefined) ADJACENCY.set(edge.source, [edge.target]);
+  else existing.push(edge.target);
+}
+
+/**
+ * Every module reachable from `entry` over runtime imports, with the shortest path that reached each one.
+ *
+ * Reachability, not direct edges. The property is "an action path must not obtain a carrier verdict", and a
+ * direct-edge rule protects that only if no permitted module can hand the verdict on — which any ordinary
+ * wrapper function does, without re-exporting anything, so banning re-export closes one hop and leaves the
+ * rest.
+ */
+function reachableFrom(entry: string): Map<string, readonly string[]> {
+  const paths = new Map<string, readonly string[]>([[entry, [entry]]]);
+  const queue = [entry];
+  while (queue.length > 0) {
+    const current = queue.shift() as string;
+    const path = paths.get(current) as readonly string[];
+    for (const next of ADJACENCY.get(current) ?? []) {
+      if (paths.has(next)) continue;
+      paths.set(next, [...path, next]);
+      queue.push(next);
+    }
+  }
+  return paths;
 }
 
 /** Roots naming nothing. A directory root matches by prefix, a file root by identity. */
@@ -106,11 +147,14 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
   );
 
   it.each(OBSERVATION_AUTHORITIES.map((authority) => [authority.what, authority] as const))(
-    '%s is imported by no action path',
+    '%s is reachable from no action path, at any import depth',
     (_what, authority) => {
-      const violations = IMPORT_EDGES.filter(
-        (edge) => edge.target === authority.module && matches(edge.source, ACTION_PATH_ROOTS),
-      ).map((edge) => `${edge.source} imports ${edge.specifier} (${edge.via}) from ${authority.module}`);
+      const violations = ACTION_PATH_MODULES.flatMap((entry) => {
+        const path = reachableFrom(entry).get(authority.module);
+        // The whole path, not just the endpoint: a transitive violation is only actionable if you can see
+        // which hop introduced it.
+        return path === undefined ? [] : [path.join(' -> ')];
+      });
 
       expect(violations).toEqual([]);
     },
@@ -130,9 +174,9 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
   it.each(OBSERVATION_AUTHORITIES.map((authority) => [authority.what, authority] as const))(
     '%s is never re-exported, so no module can launder it past the import rules above',
     (_what, authority) => {
-      // The rules above are stated over direct edges, which a single re-export hop would defeat: an action
-      // path importing a wrapper would name the wrapper, not the authority. Banning the re-export outright
-      // is what keeps the direct-edge check equivalent to a use check.
+      // Independent of the reachability walk above, and kept because it protects a different thing: a
+      // re-export makes the importing module a second canonical home for the symbol, which
+      // design-philosophy forbids outright regardless of who ends up reaching it.
       const reexports = IMPORT_EDGES.filter(
         (edge) => edge.target === authority.module && edge.via === 'ExportDeclaration',
       ).map((edge) => `${edge.source} re-exports ${edge.specifier} from ${authority.module}`);

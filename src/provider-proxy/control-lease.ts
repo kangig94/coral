@@ -64,10 +64,6 @@ export class ControlLeaseEvidence<Scope extends symbol> {
     return this.#eofAt;
   }
 
-  firstChallengeIssuedAt(): MonotonicInstant<Scope> | null {
-    return this.#firstChallengeIssuedAt;
-  }
-
   /** When control ends absent further evidence: the lease running out, or an observed EOF, whichever is first. */
   controlLossAt(): MonotonicInstant<Scope> {
     const leaseLossAt = this.#arithmetic.shiftMilliseconds(this.#lastRoundTripEvidenceAt, this.#leaseMs);

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { BUILD_FLAVOR_ENV_KEY } from '../../infra/build-flavor.js';
 import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
+import { ABSENCE_POLL_MS } from '../../infra/process-containment.js';
 import {
   providerGuardianBootstrapCapsulePath,
   providerGuardianEndpoint,
@@ -343,10 +344,6 @@ export function createProviderProxySetAuthority(
   };
 }
 
-/** How often `buildGuardianSpawnUndo` polls for the guardian's group to disappear before escalating.
- *  Matches `infra/process-containment.ts`'s own `ABSENCE_POLL_MS`. */
-const GUARDIAN_GROUP_ABSENCE_POLL_MS = 25;
-
 /**
  * The guardian's own acquisition-time undo: SIGTERM to the whole group, gated on the pid this acquisition
  * observed still being the process it spawned.
@@ -387,7 +384,7 @@ export function buildGuardianSpawnUndo(
     runtime.process.kill(group, 'SIGTERM');
     const graceDeadline = runtime.time.now() + PROXY_TEARDOWN_RESERVE_MS;
     while (runtime.process.isAlive(group) && runtime.time.now() < graceDeadline) {
-      await runtime.time.sleep(GUARDIAN_GROUP_ABSENCE_POLL_MS);
+      await runtime.time.sleep(ABSENCE_POLL_MS);
     }
     if (runtime.process.isAlive(group)) {
       runtime.process.kill(group, 'SIGKILL');

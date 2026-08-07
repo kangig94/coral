@@ -208,7 +208,6 @@ export interface GrantRegistry {
     operationIds: readonly string[];
     binding: GrantBinding;
   }): GrantRedemption;
-  installed(): InstalledGrant | null;
   redemption(): GrantRedemption | null;
 }
 
@@ -274,10 +273,6 @@ export function createGrantRegistry(mintReceipt: () => string): GrantRegistry {
       }
       redemption = Object.freeze({ grant: installed, redemptionReceipt: mintReceipt(), successorInstanceId });
       return redemption;
-    },
-
-    installed(): InstalledGrant | null {
-      return installed;
     },
 
     redemption(): GrantRedemption | null {

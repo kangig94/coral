@@ -110,11 +110,11 @@ function resolveCanonicalBundleDir(
 
 // Derived from the schema rather than hand-listed: "every manifest and hash field must equal the expected
 // foreign identity" has to keep holding when a field is added, and a hand-written list would weaken silently.
-const STRICT_MANIFEST_FIELDS = Object.keys(strictBundleManifestSchema.shape) as ReadonlyArray<
+export const STRICT_MANIFEST_FIELDS = Object.keys(strictBundleManifestSchema.shape) as ReadonlyArray<
   keyof StrictBundleManifest
 >;
 
-function manifestsMatch(left: StrictBundleManifest, right: StrictBundleManifest): boolean {
+export function manifestsMatch(left: StrictBundleManifest, right: StrictBundleManifest): boolean {
   return STRICT_MANIFEST_FIELDS.every((field) => left[field] === right[field]);
 }
 

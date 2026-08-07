@@ -7,7 +7,10 @@ import {
   SIGTERM_GRACE_MS,
 } from './process-constants.js';
 
-const ABSENCE_POLL_MS = 25;
+/** How often a disappearance wait re-observes its targets. Shared by every caller that polls for a signalled
+ *  process or process group to disappear, so the poll interval has exactly one owner rather than being
+ *  hand-retyped per caller and drifting the moment one of them changes without the others. */
+export const ABSENCE_POLL_MS = 25;
 
 /** A recorded process identity that is safe to target only while both fields match. */
 export type RecordedProcessIdentity = Readonly<{

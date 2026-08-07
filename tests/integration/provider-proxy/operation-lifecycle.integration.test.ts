@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { connectControlClient } from '#src/provider-proxy/control-client.js';
+import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from '#src/provider-proxy/ledger.js';
 import { PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
+import { PROXY_CONTROL_RPC_TIMEOUT_MS, PROXY_STATUS_RPC_TIMEOUT_MS } from '#src/provider-proxy/protocol.js';
 import { createProxy, type SemanticOperationHost } from '#src/provider-proxy/proxy.js';
 
 const NONCE = 'a'.repeat(64);
@@ -19,14 +21,28 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-const timer = {
+const timer: ControlEndpointTimer = {
   setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
   clearTimeout: (handle: { unref?: () => void }) => clearTimeout(handle as unknown as NodeJS.Timeout),
 };
 
+/** Wraps the real timer, recording every budget `serveRequest` actually schedules — the only way to observe
+ *  which `budgetMs` a method was dispatched under without reaching into the endpoint's own closure. */
+function recordingTimer(observedBudgetsMs: number[]): ControlEndpointTimer {
+  return {
+    setTimeout: (callback, ms) => {
+      observedBudgetsMs.push(ms);
+      return timer.setTimeout(callback, ms);
+    },
+    clearTimeout: (handle) => timer.clearTimeout(handle),
+  };
+}
+
 type Started = { jobId: string; operationId: string };
 
-async function startProxy(options: { failStage?: boolean; failConfirmActivation?: boolean } = {}) {
+async function startProxy(
+  options: { failStage?: boolean; failConfirmActivation?: boolean; timer?: ControlEndpointTimer } = {},
+) {
   const directory = mkdtempSync(join(tmpdir(), 'coral-proxy-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const endpoint = join(directory, 'p.sock');
@@ -90,7 +106,7 @@ async function startProxy(options: { failStage?: boolean; failConfirmActivation?
     clock,
     identity,
     host,
-    timer,
+    timer: options.timer ?? timer,
     mintChallenge: () => randomUUID(),
     mintReceipt: () => {
       receipts += 1;
@@ -523,5 +539,52 @@ describe('provider-proxy operation lifecycle', () => {
       5_000,
     )) as { state: string };
     expect(stillLive.state).toBe('active');
+  });
+
+  it('answers operation.status.v1 from a second connection while control stays with the incumbent', async () => {
+    const set = await startProxy();
+    const { operation, reserved } = await prepare(set);
+    await activate(set, operation, reserved);
+
+    // A third party — e.g. a coordinator checking whether this proxy still holds an operation it lost
+    // track of — connects without ever claiming control. Before the fix, `acceptConnection` destroyed this
+    // socket at accept time purely because a live control tenancy already existed, so the one method the
+    // observation authority exists for could never be reached while a tenancy was actually live: the normal
+    // case, not the edge case.
+    const observer = await connectControlClient(set.endpoint, timer, 5_000);
+    cleanups.push(() => observer.close());
+
+    const status = (await observer.call('operation.status.v1', { operations: [operation] }, 5_000)) as {
+      proxyInstanceId: string;
+      operations: unknown[];
+    };
+
+    expect(status.proxyInstanceId).toBe(set.shared.proxyInstanceId);
+    expect(status.operations).toEqual([{ operation, held: true, state: 'executing', committedThroughProviderSeq: 0 }]);
+
+    // The incumbent's own control tenancy is untouched by the observer's connection: it can still mutate.
+    const another = await prepare(set);
+    expect(another.reserved.state).toBe('pending-activation');
+  });
+
+  it('bounds operation.status.v1 to PROXY_STATUS_RPC_TIMEOUT_MS, unlike an ordinary mutation method', async () => {
+    const observedBudgetsMs: number[] = [];
+    const set = await startProxy({ timer: recordingTimer(observedBudgetsMs) });
+    const { operation, reserved } = await prepare(set);
+
+    observedBudgetsMs.length = 0;
+    await set.control.call(
+      'operation.renew-activation.v1',
+      { operation, reservationId: reserved.reservationId, activationNonce: reserved.activationNonce },
+      5_000,
+    );
+    // An ordinary mutation method declares no `budgetMs` of its own, so it inherits the endpoint default.
+    expect(observedBudgetsMs).toEqual([PROXY_CONTROL_RPC_TIMEOUT_MS]);
+
+    observedBudgetsMs.length = 0;
+    await set.control.call('operation.status.v1', { operations: [operation] }, 5_000);
+    // `operation.status.v1` declares its own, tighter budget — matching the client's own
+    // `OBSERVATION_REQUEST_TIMEOUT_MS` (`coordinator/live/carrier-observer.ts`) rather than the mutation default.
+    expect(observedBudgetsMs).toEqual([PROXY_STATUS_RPC_TIMEOUT_MS]);
   });
 });
