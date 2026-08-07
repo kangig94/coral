@@ -79,6 +79,8 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/recovery/service.ts',
   'src/coordinator/services/recovery/snapshot.ts',
   'src/coordinator/services/recovery/startup-recovery.ts',
+  'src/coordinator/services/provider-event-application.ts',
+  'src/coordinator/services/provider-proxy-operation-activation.ts',
   'src/coordinator/services/terminal-materializer.ts',
   'src/coordinator/services/workflow-execution.ts',
   'src/coordinator/services/workflow-finalization.ts',

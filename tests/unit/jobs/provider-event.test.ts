@@ -90,8 +90,8 @@ function createFakePort(options: FakePortOptions = {}): FakePort {
       const suffix = disposition.kind === 'abort' ? `:${disposition.reason}` : '';
       record(`appendJobTerminal:${disposition.kind}${suffix}`);
     },
-    appendSessionInterrupted: async () => {
-      record('appendSessionInterrupted');
+    appendSessionInterrupted: async (_tx, _identity, _seq, trigger) => {
+      record(`appendSessionInterrupted:${trigger}`);
     },
     releaseSessionClaim: async () => {
       record('releaseSessionClaim');
@@ -288,10 +288,13 @@ describe('applyProviderEventAtSeq', () => {
       });
 
       expect(result).toEqual<ApplyProviderEventResult>({ kind: 'ack', committedThroughProviderSeq: 1 });
+      // The exact recorded cause reaches the fault, not merely "some" interruption — otherwise a `handoff`
+      // could be journaled as a `restart` (or vice versa) and still pass a test that only checked the call
+      // happened.
       expect(calls).toEqual([
         'verifyIdentity',
         'readWatermark',
-        'appendSessionInterrupted',
+        `appendSessionInterrupted:${cause}`,
         'appendJobTerminal:interrupted',
         'releaseSessionClaim',
         'advanceWatermark',
@@ -318,7 +321,7 @@ describe('applyProviderEventAtSeq', () => {
         'releaseSessionClaim',
         'advanceWatermark',
       ]);
-      expect(calls).not.toContain('appendSessionInterrupted');
+      expect(calls.some((call) => call.startsWith('appendSessionInterrupted'))).toBe(false);
     },
   );
 });

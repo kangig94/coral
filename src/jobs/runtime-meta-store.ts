@@ -4,6 +4,7 @@ import {
   decodeProviderOperationRuntimeMeta,
   durableCliProcessRuntimeMetaKey,
   encodeDurableCliProcessRuntimeMeta,
+  encodeProviderOperationRuntimeMeta,
   providerOperationRuntimeMetaKey,
   type DurableCliProcessRuntimeMeta,
   type ProviderOperationRuntimeMeta,
@@ -45,10 +46,8 @@ export function deleteDurableCliProcessRuntimeMeta(db: Database, jobId: string):
 }
 
 /**
- * Read-only: the write side of `provider_operation.v1` belongs to the coordinator seam that commits it
- * alongside guardian/proxy activation, not to this module. A decode failure answers `null` rather than
- * throwing, for the same reason the durable-CLI reader does — the only caller that asks is observation, and
- * a corrupt record is exactly as usable to it as an absent one.
+ * A decode failure answers `null` rather than throwing, for the same reason the durable-CLI reader does — the
+ * only caller that asks is observation, and a corrupt record is exactly as usable to it as an absent one.
  */
 export function readProviderOperationRuntimeMeta(
   db: Database,
@@ -62,4 +61,33 @@ export function readProviderOperationRuntimeMeta(
   } catch {
     return null;
   }
+}
+
+/**
+ * W2.3 step 3 of the closed publication order: the coordinator's one committed locator, written after
+ * `operation.prepare.v1` returns the reservation/root/containment receipt and before
+ * `guardian.operation-activate.v1` is ever called. Plain `INSERT OR REPLACE`, not wrapped in its own
+ * `BEGIN IMMEDIATE`/`COMMIT` — the same shape `writeDurableCliProcessRuntimeMeta` already uses. Callers that
+ * need this write atomic with something else (W2.5's provider-event watermark advance, alongside whichever
+ * domain effect a given event applies) run it on a `Database` that already has a transaction open; a bare
+ * `INSERT` composes into that transaction for free, exactly as every other statement on the same connection
+ * does. A caller with nothing else to combine it with may call this directly — a single statement is its own
+ * atomic unit.
+ */
+export function writeProviderOperationRuntimeMeta(db: Database, meta: ProviderOperationRuntimeMeta): void {
+  db.prepare<[string, string]>('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(
+    providerOperationRuntimeMetaKey(meta.jobId, meta.operationId),
+    encodeProviderOperationRuntimeMeta(meta),
+  );
+}
+
+/**
+ * W2.3's activation-expiry compensation: delete the exact matching locator before
+ * `operation.cancel-pending.v1`/`guardian.operation-release.v1` — never the other order, and never a delete
+ * keyed on anything looser than the exact `(jobId, operationId)` this reservation named. A key nothing wrote
+ * is a no-op, matching `deleteDurableCliProcessRuntimeMeta`: compensation must be safe to run against a
+ * locator that a racing durable-effect commit already released past.
+ */
+export function deleteProviderOperationRuntimeMeta(db: Database, jobId: string, operationId: string): void {
+  db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(providerOperationRuntimeMetaKey(jobId, operationId));
 }

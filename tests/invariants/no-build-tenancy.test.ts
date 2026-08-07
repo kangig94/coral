@@ -72,6 +72,7 @@ const NAMESPACE_PROVENANCE_ALLOWLIST = new Map<string, number>([
   ['src/coordinator/execution-service.ts#ExecutionService.runWithInvocationScope', 1],
   ['src/coordinator/lifecycle.ts#createCrashedJobTerminalizationPolicy', 1],
   ['src/coordinator/services/job-launch.ts#JobLaunchService.mintChildPrincipalSecretEnv', 1],
+  ['src/coordinator/services/provider-event-application.ts#resolveJobContext', 1],
   ['src/coordinator/services/recovery/index.ts#settleCoordinatorRecoveryItem', 2],
   ['src/coordinator/services/recovery/interrupted-finalizer.ts#finalizeInterruptedAppServerRecovery', 1],
   ['src/coordinator/services/recovery/interrupted-finalizer.ts#directTerminalAppender', 1],

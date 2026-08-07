@@ -298,116 +298,133 @@ function prepareInput(
   return { input: parsedInput, parsedBody, bodyBytes };
 }
 
+/**
+ * `commit`'s body, run on the assumption that a `BEGIN IMMEDIATE` transaction is already open on `db`. Split
+ * out so a caller that must combine a validated journal append with other writes on the same connection —
+ * for example `applyProviderEventAtSeq` (`jobs/provider-event.ts`), whose contract commits a runtime `meta`
+ * watermark atomically with whichever domain effect it applies — can open one transaction of its own and
+ * drive both through it. `commit` cannot be nested for this: `withImmediate` issues a fresh `BEGIN`, and
+ * SQLite refuses a `BEGIN` while one is already open. This function issues no `BEGIN`/`COMMIT`/`ROLLBACK` at
+ * all, so it composes into whichever transaction its caller already holds; `commit` itself becomes a two-line
+ * composition of `withImmediate` and this, so every existing caller keeps its own single-call transaction
+ * unchanged.
+ */
+export function commitWithinOpenTransaction(
+  db: Database,
+  cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
+  ctx: AppendContext,
+): AppendedEvent[] {
+  const collectedInputs: Array<ResolvableCoralEventInput<unknown, unknown>> = [];
+  const c: CommitContext<unknown> = {
+    append(input) {
+      const slot = collectedInputs.length;
+      const token = makeCauseRefToken<unknown>(slot);
+      collectedInputs.push(input);
+      return token;
+    },
+  };
+
+  cb(c);
+  if (collectedInputs.length === 0) {
+    return [];
+  }
+
+  const baseSeq = readCurrentMaxSeq(db);
+  const reservedSeqs = collectedInputs.map((_, slot) => baseSeq + slot + 1);
+  const ts = toTimestamp(ctx.now());
+  const resolvedInputs = collectedInputs.map((input, slot) =>
+    resolveTokensInInput(input, slot, reservedSeqs, collectedInputs),
+  );
+  const prepared = resolvedInputs.map((input) => prepareInput(input, ctx));
+  const validationInputs: CoralEventInput[] = prepared.map(({ input, parsedBody }) => ({
+    ...input,
+    body: parsedBody,
+  }));
+  const validationCtx: DomainAppendValidationContext = {
+    db,
+    providers: ctx.providers,
+    readCtx: {
+      schemas: ctx.reducers.schemas,
+      streamKinds: ctx.reducers.streamKinds,
+      bodyCodec: ctx.bodyCodec,
+    },
+  };
+
+  for (const validateAppend of ctx.reducers.appendValidators) {
+    validateAppend(validationCtx, validationInputs);
+  }
+
+  const insertStmt = db.prepare<
+    [
+      number,
+      string,
+      string,
+      CoralEvent['stream']['kind'],
+      string,
+      string | null,
+      string | null,
+      string | null,
+      number | null,
+      string | null,
+      Buffer,
+    ],
+    { seq: number }
+  >(
+    `INSERT INTO events (seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     RETURNING seq`,
+  );
+
+  const assigned: AppendedEvent[] = [];
+  for (const [slot, item] of prepared.entries()) {
+    const { input, parsedBody, bodyBytes } = item;
+    const seq = reservedSeqs[slot];
+    if (seq === undefined) {
+      throw new Error(`commit: missing reserved seq for slot ${slot}`);
+    }
+    const eventTs = input.tsOverride ?? ts;
+    const row = insertStmt.get(
+      seq,
+      eventTs,
+      input.type,
+      input.stream.kind,
+      input.stream.id,
+      input.namespace ?? null,
+      input.project ?? null,
+      input.correlationId ?? null,
+      input.causationSeq ?? null,
+      input.refs ? JSON.stringify(input.refs) : null,
+      bodyBytes,
+    );
+
+    if (!row || row.seq !== seq) {
+      throw new Error(`commit: INSERT did not return reserved seq ${seq} for type '${input.type}'`);
+    }
+
+    const event: AppendedEvent = {
+      seq,
+      ts: eventTs,
+      type: input.type,
+      stream: input.stream,
+      namespace: input.namespace,
+      project: input.project,
+      correlationId: input.correlationId,
+      causationSeq: input.causationSeq,
+      refs: input.refs,
+      body: parsedBody,
+    };
+
+    applyReducer(db, event, ctx.reducers);
+    assigned.push(event);
+  }
+
+  return assigned;
+}
+
 export function commit(
   db: Database,
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
   ctx: AppendContext,
 ): AppendedEvent[] {
-  return withImmediate(db, (): AppendedEvent[] => {
-    const collectedInputs: Array<ResolvableCoralEventInput<unknown, unknown>> = [];
-    const c: CommitContext<unknown> = {
-      append(input) {
-        const slot = collectedInputs.length;
-        const token = makeCauseRefToken<unknown>(slot);
-        collectedInputs.push(input);
-        return token;
-      },
-    };
-
-    cb(c);
-    if (collectedInputs.length === 0) {
-      return [];
-    }
-
-    const baseSeq = readCurrentMaxSeq(db);
-    const reservedSeqs = collectedInputs.map((_, slot) => baseSeq + slot + 1);
-    const ts = toTimestamp(ctx.now());
-    const resolvedInputs = collectedInputs.map((input, slot) =>
-      resolveTokensInInput(input, slot, reservedSeqs, collectedInputs),
-    );
-    const prepared = resolvedInputs.map((input) => prepareInput(input, ctx));
-    const validationInputs: CoralEventInput[] = prepared.map(({ input, parsedBody }) => ({
-      ...input,
-      body: parsedBody,
-    }));
-    const validationCtx: DomainAppendValidationContext = {
-      db,
-      providers: ctx.providers,
-      readCtx: {
-        schemas: ctx.reducers.schemas,
-        streamKinds: ctx.reducers.streamKinds,
-        bodyCodec: ctx.bodyCodec,
-      },
-    };
-
-    for (const validateAppend of ctx.reducers.appendValidators) {
-      validateAppend(validationCtx, validationInputs);
-    }
-
-    const insertStmt = db.prepare<
-      [
-        number,
-        string,
-        string,
-        CoralEvent['stream']['kind'],
-        string,
-        string | null,
-        string | null,
-        string | null,
-        number | null,
-        string | null,
-        Buffer,
-      ],
-      { seq: number }
-    >(
-      `INSERT INTO events (seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       RETURNING seq`,
-    );
-
-    const assigned: AppendedEvent[] = [];
-    for (const [slot, item] of prepared.entries()) {
-      const { input, parsedBody, bodyBytes } = item;
-      const seq = reservedSeqs[slot];
-      if (seq === undefined) {
-        throw new Error(`commit: missing reserved seq for slot ${slot}`);
-      }
-      const eventTs = input.tsOverride ?? ts;
-      const row = insertStmt.get(
-        seq,
-        eventTs,
-        input.type,
-        input.stream.kind,
-        input.stream.id,
-        input.namespace ?? null,
-        input.project ?? null,
-        input.correlationId ?? null,
-        input.causationSeq ?? null,
-        input.refs ? JSON.stringify(input.refs) : null,
-        bodyBytes,
-      );
-
-      if (!row || row.seq !== seq) {
-        throw new Error(`commit: INSERT did not return reserved seq ${seq} for type '${input.type}'`);
-      }
-
-      const event: AppendedEvent = {
-        seq,
-        ts: eventTs,
-        type: input.type,
-        stream: input.stream,
-        namespace: input.namespace,
-        project: input.project,
-        correlationId: input.correlationId,
-        causationSeq: input.causationSeq,
-        refs: input.refs,
-        body: parsedBody,
-      };
-
-      applyReducer(db, event, ctx.reducers);
-      assigned.push(event);
-    }
-
-    return assigned;
-  });
+  return withImmediate(db, () => commitWithinOpenTransaction(db, cb, ctx));
 }

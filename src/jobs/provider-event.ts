@@ -5,6 +5,7 @@ import {
   type ProviderArtifactHandleEventBody,
   type ProviderContinuityEventBody,
   type ProviderEventBody,
+  type ProviderInterruptionCause,
   type ProviderProgressEventBody,
   type ProviderStopCause,
   type ProviderSuspendedEventBody,
@@ -110,7 +111,12 @@ export interface ProviderEventEffectPort<Tx> {
     seq: number,
     disposition: TerminalDisposition,
   ) => Promise<void>;
-  readonly appendSessionInterrupted: (tx: Tx, identity: ProviderOperationEventIdentity, seq: number) => Promise<void>;
+  readonly appendSessionInterrupted: (
+    tx: Tx,
+    identity: ProviderOperationEventIdentity,
+    seq: number,
+    trigger: ProviderInterruptionCause,
+  ) => Promise<void>;
   /** Releases the exact session claim this operation holds. Must run before `advanceWatermark` in the same transaction. */
   readonly releaseSessionClaim: (tx: Tx, identity: ProviderOperationEventIdentity) => Promise<void>;
 }
@@ -236,7 +242,7 @@ async function applySuspendedEffect<Tx>(
   recordedStopCause: ProviderStopCause,
 ): Promise<void> {
   if (isInterruptionStopCause(recordedStopCause)) {
-    await port.appendSessionInterrupted(tx, identity, seq);
+    await port.appendSessionInterrupted(tx, identity, seq, recordedStopCause);
     await port.appendJobTerminal(tx, identity, seq, { kind: 'interrupted' });
   } else if (isAbortStopCause(recordedStopCause)) {
     await port.appendJobTerminal(tx, identity, seq, { kind: 'abort', reason: recordedStopCause });
