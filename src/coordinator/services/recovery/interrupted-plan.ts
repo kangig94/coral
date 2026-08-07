@@ -10,6 +10,7 @@ import type { InterruptedAppServerReason } from '../../../jobs/reconcile/interru
 import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import { readContinuityRef } from '../../../sessions/continuity.js';
 import { toProviderRequest } from '../../../jobs/provider-request.js';
+import type { ProviderOperationRuntimeMeta } from '../../../jobs/runtime-meta.js';
 
 type InterruptedRecoveryPlanBase = Readonly<{
   launchRecord: ProviderRecoveryLaunch;
@@ -26,6 +27,16 @@ export type AppServerInterruptedRecoveryPlan =
   | (InterruptedRecoveryPlanBase & Readonly<{ kind: 'unsupported' }>)
   | (InterruptedRecoveryPlanBase & Readonly<{ kind: 'waiting' }>)
   | (InterruptedRecoveryPlanBase & Readonly<{ kind: 'artifacts' }>)
+  | (InterruptedRecoveryPlanBase &
+      Readonly<{
+        // W2.5: an `acquired` `hostRef` naming a committed `provider_operation.v1` locator points at a proxy
+        // set this coordinator generation cannot attach to (`ProviderHostManager` starts empty at boot) and
+        // must not probe — probing a stale attachment opens a replacement kernel while the original may still
+        // be live under the proxy. The performer must confirm the carrier is gone before finalizing.
+        kind: 'carrier-detached';
+        continuity: ProviderContinuityBlob;
+        locator: ProviderOperationRuntimeMeta;
+      }>)
   | (InterruptedRecoveryPlanBase &
       Readonly<{
         kind: 'probe';
@@ -47,12 +58,19 @@ export type DurableInterruptedRecoveryPlan =
   | (DurableInterruptedRecoveryPlanBase & Readonly<{ kind: 'durable-unsupported' }>)
   | (DurableInterruptedRecoveryPlanBase & Readonly<{ kind: 'durable-wrapper-lost' }>);
 
-/** Classifies an interrupted app-server snapshot without performing provider, host, filesystem, or Journal effects. */
+/**
+ * Classifies an interrupted app-server snapshot without performing provider, host, filesystem, or Journal
+ * effects. `providerOperationLocator` is the one fact this generation can check without a live connection:
+ * whether the job's `acquired` lease already committed a `provider_operation.v1` row, meaning its `hostRef`
+ * names a provider proxy set rather than a local host. That check sits ahead of `probe` — the only route that
+ * would otherwise attach to (or replace) that carrier — so a reader sees every carrier situation in one place.
+ */
 export function planInterruptedAppServerRecovery(
   authority: ProviderRecoveryAuthority,
   runtimeRecord: AppServerRuntime,
   reason: InterruptedAppServerReason,
   capabilities: Readonly<{ recovery: boolean; probe: boolean }>,
+  providerOperationLocator: ProviderOperationRuntimeMeta | null,
 ): AppServerInterruptedRecoveryPlan {
   const { launchRecord, session } = authority;
   const continuity = session.providerContinuity ?? undefined;
@@ -73,6 +91,9 @@ export function planInterruptedAppServerRecovery(
   }
   if (!capabilities.probe || continuity === undefined) {
     return Object.freeze({ ...common, kind: 'artifacts' });
+  }
+  if (providerOperationLocator !== null) {
+    return Object.freeze({ ...common, kind: 'carrier-detached', continuity, locator: providerOperationLocator });
   }
   return Object.freeze({
     ...common,

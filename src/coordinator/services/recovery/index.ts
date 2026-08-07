@@ -1,4 +1,5 @@
 import { errorMessage, formatError } from '../../../infra/error-format.js';
+import { ProcessContainmentError } from '../../../infra/process-containment.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
@@ -636,12 +637,27 @@ export function createRecoveryCoordinator(
           const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
           if (isAppServerRuntime(runtimeRecord)) {
             signal.throwIfAborted();
-            await startTrackedFinalization(jobId, signal, (fence) =>
-              service.finalizeInterruptedAppServerJob(authority, runtimeRecord, {
-                reason: interruptedAppServerReason,
-                ...fence,
-              }),
-            );
+            try {
+              await startTrackedFinalization(jobId, signal, (fence) =>
+                service.finalizeInterruptedAppServerJob(authority, runtimeRecord, {
+                  reason: interruptedAppServerReason,
+                  ...fence,
+                }),
+              );
+            } catch (error: unknown) {
+              // Carrier-detached recovery could not confirm its committed provider proxy set is gone within
+              // budget. That is honestly fatal for this job alone: finalizing anyway risks a second local
+              // kernel racing a carrier that may still be live, so this job is quarantined nonterminal rather
+              // than settled — unaffected jobs continue, and a later boot retries once the recorded
+              // `provider_operation.v1` row changes (see `coordinatorJobRecoverySubject`'s revision).
+              if (error instanceof ProcessContainmentError) {
+                controls.report(
+                  `Carrier reap unconfirmed for interrupted app-server job: ${jobId}: ${errorMessage(error)}\n`,
+                );
+                return { kind: 'quarantine', detail: error.message };
+              }
+              throw error;
+            }
             signal.throwIfAborted();
             controls.report(`Recovered interrupted app-server job: ${jobId}\n`);
             return {

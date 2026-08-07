@@ -7,9 +7,13 @@ import {
 import {
   performInterruptedAppServerRecovery,
   performInterruptedDurableRecovery,
+  reapProviderOperationCarrier,
 } from '#src/coordinator/services/recovery/interrupted-performer.js';
 import type { AppServerRuntime, JobLaunch } from '#src/jobs/records.js';
 import type { ProviderRecoveryAuthority } from '#src/jobs/reconcile/contracts.js';
+import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
+import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
+import { ProcessContainmentError } from '#src/infra/process-containment.js';
 import type {
   BoundProvider,
   BoundProviderAppServerCapability,
@@ -20,6 +24,7 @@ import type { ProviderSession } from '#src/sessions/entry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { bindingSuccess } from '#src/providers/contracts/binding.js';
 import { validatedTestContinuityBlob } from '#tests/helpers/session.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import {
   finalizeInterruptedAppServerRecovery,
   RecoveryOwnershipReleaseError,
@@ -75,6 +80,34 @@ const session = {
   version: 1,
 } as unknown as ProviderSession;
 
+const providerOperationLocator = {
+  version: 1,
+  jobId: '11111111-1111-4111-8111-111111111111',
+  operationId: '22222222-2222-4222-8222-222222222222',
+  buildSetId: '33333333-3333-4333-8333-333333333333',
+  hostFingerprint: '0'.repeat(64),
+  guardianInstanceId: '44444444-4444-4444-8444-444444444444',
+  guardianPid: 1001,
+  guardianProcessStartedAtSeconds: 100,
+  guardianControlEndpoint: '/tmp/guardian.sock',
+  proxyInstanceId: '55555555-5555-4555-8555-555555555555',
+  proxyPid: 1002,
+  reaperInstanceId: '66666666-6666-4666-8666-666666666666',
+  reaperPid: 1003,
+  reaperProcessStartedAtSeconds: 100,
+  reaperControlEndpoint: '/tmp/reaper.sock',
+  containmentKind: 'detached-process-group',
+  proxyProcessStartedAtSeconds: 100,
+  proxyProcessGroupId: 1002,
+  canonicalEndpoint: '/tmp/proxy.sock',
+  reservationId: '77777777-7777-4777-8777-777777777777',
+  activationNonce: '88888888-8888-4888-8888-888888888888',
+  providerRootPid: 1004,
+  providerRootProcessStartedAtSeconds: 101,
+  jointContainmentReceipt: 'receipt-v1',
+  committedThroughProviderSeq: 1,
+} as const satisfies ProviderOperationRuntimeMeta;
+
 function recovery(): BoundProviderRecovery {
   return {
     finalizeInterrupted: (result: { resumable: boolean }) =>
@@ -97,22 +130,35 @@ function serviceWithCapability(appServer: BoundProviderAppServerCapability, boun
     appServer,
     recovery: boundRecovery,
   } as unknown as BoundProvider;
+  const reapCarrier = vi.fn(async () => {});
   return {
-    decide: (runtimeRecord: AppServerRuntime, nextSession: ProviderSession = session) => {
+    reapCarrier,
+    decide: (
+      runtimeRecord: AppServerRuntime,
+      nextSession: ProviderSession = session,
+      providerOperationLocator: ProviderOperationRuntimeMeta | null = null,
+    ) => {
       const authority = {
         launchRecord,
         session: nextSession,
         boundProvider: bound,
       } as unknown as ProviderRecoveryAuthority;
-      const plan = planInterruptedAppServerRecovery(authority, runtimeRecord, 'restart', {
-        recovery: bound.recovery !== undefined,
-        probe: bound.appServer?.supportsProbe === true,
-      });
+      const plan = planInterruptedAppServerRecovery(
+        authority,
+        runtimeRecord,
+        'restart',
+        {
+          recovery: bound.recovery !== undefined,
+          probe: bound.appServer?.supportsProbe === true,
+        },
+        providerOperationLocator,
+      );
       return performInterruptedAppServerRecovery(plan, bound, {
         time: runtime.time,
         env: runtime.env,
         storage: runtime.storage,
         jobDir: () => '/jobs/job-recovery-contract',
+        reapCarrier,
       });
     },
   };
@@ -137,14 +183,20 @@ describe('interrupted recovery planning', () => {
   } as unknown as ProviderRecoveryAuthority;
 
   it('selects one deterministic effect route without consulting provider state', () => {
-    const first = planInterruptedAppServerRecovery(authority, acquiredRuntime, 'restart', {
-      recovery: true,
-      probe: false,
-    });
-    const second = planInterruptedAppServerRecovery(authority, acquiredRuntime, 'restart', {
-      recovery: true,
-      probe: false,
-    });
+    const first = planInterruptedAppServerRecovery(
+      authority,
+      acquiredRuntime,
+      'restart',
+      { recovery: true, probe: false },
+      null,
+    );
+    const second = planInterruptedAppServerRecovery(
+      authority,
+      acquiredRuntime,
+      'restart',
+      { recovery: true, probe: false },
+      null,
+    );
 
     expect(first).toEqual(second);
     expect(first).toMatchObject({
@@ -157,11 +209,66 @@ describe('interrupted recovery planning', () => {
 
   it('makes missing recovery capability an explicit unsupported plan', () => {
     expect(
-      planInterruptedAppServerRecovery(authority, acquiredRuntime, 'handoff', {
-        recovery: false,
-        probe: true,
-      }),
+      planInterruptedAppServerRecovery(authority, acquiredRuntime, 'handoff', { recovery: false, probe: true }, null),
     ).toMatchObject({ kind: 'unsupported', reason: 'handoff' });
+  });
+
+  it('never routes a committed provider-operation locator through the unsupported, waiting, or artifacts arms', () => {
+    expect(
+      planInterruptedAppServerRecovery(
+        authority,
+        acquiredRuntime,
+        'restart',
+        { recovery: false, probe: true },
+        providerOperationLocator,
+      ),
+    ).toMatchObject({ kind: 'unsupported' });
+    expect(
+      planInterruptedAppServerRecovery(
+        authority,
+        waitingRuntime,
+        'restart',
+        { recovery: true, probe: true },
+        providerOperationLocator,
+      ),
+    ).toMatchObject({ kind: 'waiting' });
+    expect(
+      planInterruptedAppServerRecovery(
+        authority,
+        acquiredRuntime,
+        'restart',
+        { recovery: true, probe: false },
+        providerOperationLocator,
+      ),
+    ).toMatchObject({ kind: 'artifacts' });
+  });
+
+  it('classifies a committed provider-operation locator as carrier-detached ahead of probe', () => {
+    const plan = planInterruptedAppServerRecovery(
+      authority,
+      acquiredRuntime,
+      'restart',
+      { recovery: true, probe: true },
+      providerOperationLocator,
+    );
+
+    expect(plan).toMatchObject({
+      kind: 'carrier-detached',
+      locator: providerOperationLocator,
+      continuity: { checkpoint: 'persisted' },
+    });
+  });
+
+  it('plans a probe when no provider-operation locator is committed, unchanged from before', () => {
+    const plan = planInterruptedAppServerRecovery(
+      authority,
+      acquiredRuntime,
+      'restart',
+      { recovery: true, probe: true },
+      null,
+    );
+
+    expect(plan).toMatchObject({ kind: 'probe', hostRef: persistedHostRef });
   });
 
   it.each([
@@ -390,6 +497,38 @@ describe('interrupted provider HostRef recovery', () => {
     });
     expect(openReplacement).not.toHaveBeenCalled();
   });
+
+  it('confirms the carrier and finalizes without probing or opening a replacement when a locator is committed', async () => {
+    const probe = vi.fn(async () => ({ kind: 'probed' as const, result: { resumable: true } }));
+    const openReplacement = vi.fn();
+    const fixture = serviceWithCapability(capability({ probe, openReplacement }));
+
+    await expect(fixture.decide(acquiredRuntime, session, providerOperationLocator)).resolves.toMatchObject({
+      probeOutcome: 'unavailable',
+    });
+
+    expect(fixture.reapCarrier).toHaveBeenCalledTimes(1);
+    expect(fixture.reapCarrier).toHaveBeenCalledWith(providerOperationLocator);
+    expect(probe).not.toHaveBeenCalled();
+    expect(openReplacement).not.toHaveBeenCalled();
+  });
+
+  it('leaves the session unfinalized when the carrier reap cannot confirm absence', async () => {
+    const finalizeInterrupted = vi.fn();
+    const boundRecovery = {
+      finalizeInterrupted,
+      finalizeFromArtifacts: vi.fn(),
+    } as unknown as BoundProviderRecovery;
+    const fixture = serviceWithCapability(capability(), boundRecovery);
+    fixture.reapCarrier.mockRejectedValueOnce(
+      new ProcessContainmentError('process_containment_reap_failed', 'absence not confirmed'),
+    );
+
+    await expect(fixture.decide(acquiredRuntime, session, providerOperationLocator)).rejects.toBeInstanceOf(
+      ProcessContainmentError,
+    );
+    expect(finalizeInterrupted).not.toHaveBeenCalled();
+  });
 });
 
 describe('interrupted recovery settlement ownership', () => {
@@ -431,6 +570,7 @@ describe('interrupted recovery settlement ownership', () => {
       waitingRuntime,
       'restart',
       { recovery: true, probe: false },
+      null,
     );
     const performed = {
       kind: 'resolved',
@@ -511,5 +651,99 @@ describe('interrupted recovery settlement ownership', () => {
       finalizeInterruptedAppServerRecovery(fixture.plan, fixture.performed, status, fixture.deps as never),
     ).rejects.toBeInstanceOf(RecoveryOwnershipReleaseError);
     expect(fixture.finalizeJobContinuityAtomic).toHaveBeenCalledOnce();
+  });
+});
+
+describe('provider-operation carrier reap', () => {
+  const carrierClockScope = Symbol('carrier-reap-test');
+  const metaKey = `provider_operation.v1:${providerOperationLocator.jobId}:${providerOperationLocator.operationId}`;
+
+  function fakeClock() {
+    let elapsedMs = 0;
+    return createMonotonicClock(carrierClockScope, {
+      readMilliseconds: () => BigInt(elapsedMs),
+      // Advances a virtual clock rather than waiting in real time, so the ~44s default budget costs nothing.
+      sleep: async (ms) => {
+        elapsedMs += ms;
+      },
+    });
+  }
+
+  function seededDb() {
+    const db = openTestStoreDb(new SimulationRuntime(), ':memory:');
+    db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(metaKey, JSON.stringify(providerOperationLocator));
+    return db;
+  }
+
+  it('reaps exactly the recorded proxy group and provider root — never the guardian or reaper — then deletes the committed locator', async () => {
+    const db = seededDb();
+    const state = { groupAlive: true, providerRootAlive: true };
+    const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
+    const process = {
+      isAlive: (pid: number): boolean => {
+        if (pid === -providerOperationLocator.proxyProcessGroupId) return state.groupAlive;
+        if (pid === providerOperationLocator.providerRootPid) return state.providerRootAlive;
+        return false;
+      },
+      kill: (pid: number, signal: NodeJS.Signals | 0): boolean => {
+        signals.push({ pid, signal });
+        if (signal === 'SIGKILL') {
+          if (pid === -providerOperationLocator.proxyProcessGroupId) state.groupAlive = false;
+          if (pid === providerOperationLocator.providerRootPid) state.providerRootAlive = false;
+        }
+        return true;
+      },
+    };
+
+    try {
+      await reapProviderOperationCarrier(providerOperationLocator, {
+        process,
+        platform: 'linux',
+        db,
+        clock: fakeClock(),
+        readProcessStartedAtSeconds: (pid) => {
+          if (pid === providerOperationLocator.proxyPid && state.groupAlive) {
+            return providerOperationLocator.proxyProcessStartedAtSeconds;
+          }
+          if (pid === providerOperationLocator.providerRootPid && state.providerRootAlive) {
+            return providerOperationLocator.providerRootProcessStartedAtSeconds;
+          }
+          return null;
+        },
+      });
+
+      const signalledPids = new Set(signals.map((entry) => entry.pid));
+      expect(signalledPids).toEqual(
+        new Set([-providerOperationLocator.proxyProcessGroupId, providerOperationLocator.providerRootPid]),
+      );
+      expect(signalledPids.has(providerOperationLocator.guardianPid)).toBe(false);
+      expect(signalledPids.has(providerOperationLocator.reaperPid)).toBe(false);
+      expect(db.prepare('SELECT value FROM meta WHERE key = ?').get(metaKey)).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('leaves the committed locator in place when absence cannot be confirmed', async () => {
+    const db = seededDb();
+    const process = { isAlive: () => true, kill: () => true };
+
+    try {
+      await expect(
+        reapProviderOperationCarrier(providerOperationLocator, {
+          process,
+          platform: 'linux',
+          db,
+          clock: fakeClock(),
+          // Alive with no verifiable start time is the ambiguous case `reapRecordedContainment` refuses to
+          // signal past — the recorded set can never be confirmed absent, so this must stay fatal.
+          readProcessStartedAtSeconds: () => null,
+        }),
+      ).rejects.toBeInstanceOf(ProcessContainmentError);
+
+      expect(db.prepare('SELECT value FROM meta WHERE key = ?').get(metaKey)).toBeDefined();
+    } finally {
+      db.close();
+    }
   });
 });

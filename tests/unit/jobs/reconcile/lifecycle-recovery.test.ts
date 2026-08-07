@@ -2995,6 +2995,93 @@ describe('lifecycle recovery', () => {
     }
   });
 
+  it('14c1. a carrier reap that cannot confirm absence leaves the job quarantined, not finalized', async () => {
+    const modules = await loadModules();
+    // `loadModules()` calls `vi.resetModules()`, so `index.ts` (loaded transitively below) sees a fresh
+    // `process-containment.js` instance distinct from this file's own top-level import. Constructing the
+    // thrown error through that same post-reset module keeps `instanceof` meaningful in `index.ts`'s catch.
+    const { ProcessContainmentError: PostResetProcessContainmentError } =
+      await import('#src/infra/process-containment.js');
+    const pluginRoot = createPluginRoot('plugin-app-server-carrier-detached');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-app-server-carrier-detached');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const db = openTestStoreDb(runtime, ':memory:');
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db,
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const fakeService = createFakeExecutionAndRecoveryService({
+      finalizeInterruptedAppServerJob: vi.fn(async () => {
+        throw new PostResetProcessContainmentError(
+          'process_containment_reap_failed',
+          'Recorded containment absence could not be confirmed before the exit deadline.',
+        );
+      }),
+    });
+    const jobId = 'app-server-carrier-detached-job';
+
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: 'app-server-carrier-detached-session',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'app-server',
+      startTime: '2026-03-31T00:00:00.000Z',
+      providerMeta: {
+        provider: 'codex',
+        leaseState: 'acquired',
+        hostRef: {
+          provider: 'test',
+          fingerprint: '0'.repeat(64),
+          instanceId: 'instance-1',
+          leaseMode: 'shared',
+        },
+      },
+    });
+
+    const { controller, runtimeState } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      runtime,
+    });
+
+    try {
+      await controller.start();
+      // The launch fence still lifts and the registry still releases this attempt: quarantine is a per-item
+      // outcome of the coordinator-job-recovery walk, not a boot-level failure.
+      expect(runtimeState.getLaunchFenceActive()).toBe(false);
+      expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
+
+      const terminalRow = db
+        .prepare<
+          [string],
+          { seq: number }
+        >("SELECT seq FROM events WHERE stream_id = ? AND type = 'job.terminal.recorded' ORDER BY seq DESC LIMIT 1")
+        .get(jobId);
+      expect(terminalRow).toBeUndefined();
+
+      expect(
+        db
+          .prepare(
+            `SELECT stage
+               FROM recovery_quarantine
+              WHERE boundary_id = 'coordinator-job-recovery'
+                AND subject_key = ?`,
+          )
+          .get(jobId),
+      ).toEqual({ stage: 'settle' });
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
   // This case covers isolation inside the adoption loop. Register-stage isolation is
   // exercised separately because it has a different exception boundary.
   it('14c2. one unresolvable job does not abandon the recovery of another', async () => {

@@ -109,3 +109,24 @@ export function hasProviderOperationRuntimeMetaForJob(db: Database, jobId: strin
     .get(`${providerOperationRuntimeMetaKeyPrefix(jobId)}%`);
   return row !== undefined;
 }
+
+/**
+ * W2.5's decoded counterpart to `hasProviderOperationRuntimeMetaForJob`: interrupted app-server recovery
+ * needs the locator's fields (which proxy and provider root to reap), not just its presence. Only one
+ * operation is ever committed for a non-terminal job, so the same unordered `LIKE` match that presence
+ * checking already accepts is exact here too.
+ *
+ * Unlike `readProviderOperationRuntimeMeta`, a decode failure here is not reported as absence: this caller
+ * classifies whether an `acquired` `hostRef` is safe to probe, and a corrupt row silently read as "no
+ * locator" would route straight back through the probe/`openReplacement` path this exists to close off.
+ * Corruption of a coordinator-only-written row is a genuine invariant violation and must fail loud.
+ */
+export function readProviderOperationRuntimeMetaForJob(
+  db: Database,
+  jobId: string,
+): ProviderOperationRuntimeMeta | null {
+  const row = db
+    .prepare<[string], MetaRow>('SELECT value FROM meta WHERE key LIKE ? LIMIT 1')
+    .get(`${providerOperationRuntimeMetaKeyPrefix(jobId)}%`);
+  return row === undefined ? null : decodeProviderOperationRuntimeMeta(row.value);
+}

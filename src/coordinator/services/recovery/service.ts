@@ -1,9 +1,13 @@
 import type { ProviderRequest } from '../../../providers/contract.js';
 import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import { backendLog } from '../../../infra/backend-log.js';
+import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal, JobTerminalInput } from '../../../jobs/records.js';
 import { isTerminalPhase, type JobPhase } from '../../../jobs/phase.js';
-import { hasProviderOperationRuntimeMetaForJob } from '../../../jobs/runtime-meta-store.js';
+import {
+  hasProviderOperationRuntimeMetaForJob,
+  readProviderOperationRuntimeMetaForJob,
+} from '../../../jobs/runtime-meta-store.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../../runtime/durable-runtime.js';
@@ -36,7 +40,11 @@ import type { Principal } from '../../../security/principal.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
 import { snapshotProviderRecoveryAuthority } from './authority-snapshot.js';
 import { planInterruptedAppServerRecovery, planInterruptedDurableRecovery } from './interrupted-plan.js';
-import { performInterruptedAppServerRecovery, performInterruptedDurableRecovery } from './interrupted-performer.js';
+import {
+  performInterruptedAppServerRecovery,
+  performInterruptedDurableRecovery,
+  reapProviderOperationCarrier,
+} from './interrupted-performer.js';
 import {
   finalizeInterruptedAppServerRecovery,
   finalizeInterruptedDurableRecovery,
@@ -232,10 +240,23 @@ export class RecoveryService {
       return;
     }
 
-    const plan = planInterruptedAppServerRecovery(authority, runtimeRecord, options.reason, {
-      recovery: boundProvider.recovery !== undefined,
-      probe: boundProvider.appServer?.supportsProbe === true,
-    });
+    // Same fact `interruptAppServerJob` above checks presence-only for, decoded here: a committed
+    // `provider_operation.v1` row means this `acquired` `hostRef` names a live provider proxy set, not a
+    // local host, so the classifier must never route it through `probe`/`openReplacement`.
+    const providerOperationLocator = readProviderOperationRuntimeMetaForJob(
+      this.deps.progressStore.getDb(),
+      launchRecord.jobId,
+    );
+    const plan = planInterruptedAppServerRecovery(
+      authority,
+      runtimeRecord,
+      options.reason,
+      {
+        recovery: boundProvider.recovery !== undefined,
+        probe: boundProvider.appServer?.supportsProbe === true,
+      },
+      providerOperationLocator,
+    );
     options.signal.throwIfAborted();
     const performed = await performInterruptedAppServerRecovery(plan, boundProvider, {
       time: this.deps.runtime.time,
@@ -243,6 +264,13 @@ export class RecoveryService {
       storage: this.deps.runtime.storage,
       jobDir: (jobId) => this.deps.progressStore.jobDir(jobId),
       signal: options.signal,
+      reapCarrier: (locator) =>
+        reapProviderOperationCarrier(locator, {
+          process: this.deps.runtime.process,
+          platform: this.deps.runtime.env.platform() as NodeJS.Platform,
+          db: this.deps.progressStore.getDb(),
+          clock: createMonotonicClock(Symbol('coral.recovery.carrier-detached')),
+        }),
     });
     options.signal.throwIfAborted();
     options.onCommitStart();

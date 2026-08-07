@@ -2,11 +2,25 @@ import { join } from 'node:path';
 
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage, formatError } from '../../../infra/error-format.js';
+import type { MonotonicClock } from '../../../infra/monotonic-clock.js';
+import {
+  reapRecordedContainment,
+  type RecordedContainmentIdentity,
+  type RecordedProcessIdentity,
+} from '../../../infra/process-containment.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
 import type { InterruptedProbeOutcome } from '../../../jobs/reconcile/interrupted-reason.js';
 import type { JobTerminalInput } from '../../../jobs/records.js';
+import type { ProviderOperationRuntimeMeta } from '../../../jobs/runtime-meta.js';
+import { deleteProviderOperationRuntimeMeta } from '../../../jobs/runtime-meta-store.js';
+import { MAX_PROXY_RECORDED_PROVIDER_ROOTS } from '../../../provider-proxy/enforcement.js';
+import {
+  DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+  PROXY_TEARDOWN_RESERVE_MS,
+} from '../../../provider-proxy/orphan-deadline.js';
 import type { ProviderArtifactHandleInput, ProviderTerminalEventBody } from '../../../providers/contract.js';
 import type { BoundProvider, BoundProviderHostPreparationInput } from '../../../providers/bound-provider-contract.js';
+import type { Database } from '../../../store/db.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { readContinuityRef } from '../../../sessions/continuity.js';
 import type { ContinuitySnapshot } from '../../../sessions/continuity.js';
@@ -40,7 +54,74 @@ type PerformerRuntime = Readonly<{
   storage: Pick<Runtime['storage'], 'readFileSync' | 'existsSync' | 'readdirSync' | 'statSync'>;
   jobDir(jobId: string): string;
   signal?: AbortSignal;
+  /**
+   * Confirms — reaping via SIGTERM/SIGKILL if the recorded proxy set is still alive — that a `carrier-
+   * detached` plan's carrier is gone, then best-effort deletes its committed `provider_operation.v1` row.
+   * Rejects when absence cannot be confirmed inside the reap budget; the caller must not finalize the job
+   * in that case.
+   */
+  reapCarrier(locator: ProviderOperationRuntimeMeta): Promise<void>;
 }>;
+
+/** What `reapCarrier` needs to build one recorded-containment reap: real ports at the composition root, or a
+ *  fake clock/process pair in tests — see `reapProviderOperationCarrier`. */
+export type CarrierReapDeps = Readonly<{
+  process: Pick<Runtime['process'], 'kill' | 'isAlive'>;
+  platform: NodeJS.Platform;
+  db: Database;
+  clock: MonotonicClock<symbol>;
+  /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe, matching every other
+   *  `ProcessContainmentEnvironment` composer (e.g. `provider-proxy/role-main.ts`). */
+  readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
+}>;
+
+/**
+ * Reaps exactly the recorded proxy process group (`proxyPid`/`proxyProcessStartedAtSeconds`/
+ * `proxyProcessGroupId`) and its recorded provider root (`providerRootPid`/
+ * `providerRootProcessStartedAtSeconds`) — never the guardian or reaper, which are not named by these fields
+ * and observe `containment-absent` on their own clocks to exit by themselves. The budget is the same total
+ * window the provider-proxy's own deadline model guarantees a set is gone by at defaults (orphan timeout plus
+ * teardown reserve, ~44s), so a set still inside its orphan window at boot still gets a fair reap.
+ *
+ * Deletion mirrors `coordinator/index.ts`'s `settled` cleanup: durable meta first, best-effort — a bookkeeping
+ * failure here is logged, not thrown, because the safety-critical step (confirming the carrier is gone) has
+ * already succeeded by this point, and a residual row is harmless once the job it named goes terminal.
+ */
+export async function reapProviderOperationCarrier(
+  locator: ProviderOperationRuntimeMeta,
+  deps: CarrierReapDeps,
+): Promise<void> {
+  const containment: RecordedContainmentIdentity = {
+    pid: locator.proxyPid,
+    processStartedAtSeconds: locator.proxyProcessStartedAtSeconds,
+    processGroupId: locator.proxyProcessGroupId,
+  };
+  const providerRoots: readonly RecordedProcessIdentity[] = [
+    { pid: locator.providerRootPid, processStartedAtSeconds: locator.providerRootProcessStartedAtSeconds },
+  ];
+  const exitDeadline = deps.clock.shiftMilliseconds(
+    deps.clock.now(),
+    DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS + PROXY_TEARDOWN_RESERVE_MS,
+  );
+
+  await reapRecordedContainment(containment, providerRoots, exitDeadline, {
+    maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
+    clock: deps.clock,
+    process: deps.process,
+    platform: deps.platform,
+    ...(deps.readProcessStartedAtSeconds === undefined
+      ? {}
+      : { readProcessStartedAtSeconds: deps.readProcessStartedAtSeconds }),
+  });
+
+  try {
+    deleteProviderOperationRuntimeMeta(deps.db, locator.jobId, locator.operationId);
+  } catch (error: unknown) {
+    backendLog.warn(
+      `Failed to delete provider operation runtime meta for job '${locator.jobId}'/operation '${locator.operationId}': ${errorMessage(error)}`,
+    );
+  }
+}
 
 function replacementInput(
   plan: AppServerInterruptedRecoveryPlan,
@@ -55,7 +136,11 @@ function replacementInput(
   };
 }
 
-/** Performs only bound-provider, host, and read-only artifact effects for an app-server recovery plan. */
+/**
+ * Performs bound-provider, host, and read-only artifact effects for an app-server recovery plan — plus, for a
+ * `carrier-detached` plan, the process-containment effect that confirms its carrier is gone before it may
+ * finalize like `waiting` below.
+ */
 export async function performInterruptedAppServerRecovery(
   plan: AppServerInterruptedRecoveryPlan,
   boundProvider: BoundProvider,
@@ -78,6 +163,26 @@ export async function performInterruptedAppServerRecovery(
         preservedConversationRef: plan.preservedConversationRef,
       }),
       probeOutcome: 'waiting',
+      recoveryConversationRef: plan.preservedConversationRef,
+      artifactHandles: Object.freeze([]),
+    });
+  }
+
+  if (plan.kind === 'carrier-detached') {
+    // Precondition before this may finalize like `waiting`: confirm the recorded carrier is gone. A rejection
+    // here (absence unconfirmed inside budget) propagates to the caller, which must leave the job nonterminal
+    // rather than treat an unconfirmed carrier as safely detached.
+    await runtime.reapCarrier(plan.locator);
+    const probeResult = {
+      resumable: plan.preservedConversationRef !== undefined || plan.continuity !== undefined,
+      updatedContinuity: plan.continuity,
+    };
+    return Object.freeze({
+      kind: 'resolved',
+      mutation: recovery.finalizeInterrupted(probeResult, plan.continuity, {
+        preservedConversationRef: plan.preservedConversationRef,
+      }),
+      probeOutcome: 'unavailable',
       recoveryConversationRef: plan.preservedConversationRef,
       artifactHandles: Object.freeze([]),
     });

@@ -567,6 +567,13 @@ describe('coordinator job recovery source revisions', () => {
       mutate: (db) =>
         db.prepare(`DELETE FROM projection_sessions WHERE session_id = 'revision-coordinator-session'`).run(),
     },
+    {
+      name: 'provider operation locator presence',
+      mutate: (db) =>
+        db
+          .prepare(`INSERT INTO meta (key, value) VALUES (?, ?)`)
+          .run('provider_operation.v1:revision-coordinator-job:revision-coordinator-operation', '{"locator":"v1"}'),
+    },
   ];
 
   for (const mutation of mutations) {
