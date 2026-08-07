@@ -1,12 +1,14 @@
 import { errorMessage } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
-import { MAX_BUFFER, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
-import { shouldUseWindowsCommandShell } from '../infra/windows-shell.js';
-import { AbortError } from '../runtime/abort.js';
 import type { Runtime } from '../runtime/ports.js';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import { providerRequestFailed } from '../providers/fault.js';
+import {
+  spawnProviderServerTransport,
+  type ProviderServerHandle,
+  type SpawnProviderServerOptions,
+} from '../providers/app-server-transport.js';
 import {
   isAbortStopCause,
   type AppServerTransport,
@@ -35,294 +37,69 @@ import type { ProxyPreparedAppServerOperation } from './protocol.js';
  * `src/jobs/shell/launch.ts` does in-process, minus everything that only makes sense with store/journal access.
  *
  * Judgement call (see the task report): a proxy-local `DefaultProviderHostManager`
- * (`src/coordinator/live/provider-hosts/index.ts`) is not legitimate here — every module that implements it
- * lives under `src/coordinator/live/`, which `tests/invariants/architecture-layering.test.ts`'s
- * `PROVIDER_PROXY_FORBIDDEN` list and `tests/invariants/provider-proxy-no-store.test.ts`'s transitive
- * reachability check both forbid `src/provider-proxy/**` from reaching, at any depth — reusing it would also
- * recurse into `ensureProxySetFor`, which spawns a *fresh* guardian/reaper/proxy set on demand. Those raw
- * primitives (`spawnProviderServerTransport`, `provider-hosts/{state,lease,idle,recovery,drain}.ts`) have no
- * coordinator or store dependency of their own — they import only `infra/`, `runtime/`, and
- * `providers/contract.ts` — so they are misplaced under `coordinator/live/` for this plan's purposes, not
- * actually coordinator-specific. Relocating them was out of this task's delegated scope (only
- * `semantic-operation.ts` and `role-main.ts`), so this file instead implements a narrower, proxy-owned host
- * authority below, built from the same `Runtime.process` primitive the coordinator's version uses. See the
- * task report for the fuller reasoning and the accepted duplication this leaves behind.
+ * (`src/coordinator/live/provider-hosts/index.ts`) is not legitimate here — it lives under `src/coordinator/live/`,
+ * which `tests/invariants/architecture-layering.test.ts`'s `PROVIDER_PROXY_FORBIDDEN` list and
+ * `tests/invariants/provider-proxy-no-store.test.ts`'s transitive reachability check both forbid
+ * `src/provider-proxy/**` from reaching, at any depth — reusing it would also recurse into `ensureProxySetFor`,
+ * which spawns a *fresh* guardian/reaper/proxy set on demand. Its multi-job idle-timer and drain/shutdown
+ * lifecycle is coordinator-daemon-shaped, not proxy-shaped, so this file still owns a narrower pool below —
+ * but the raw spawn-and-JSON-RPC-framing primitive underneath it, `spawnProviderServerTransport`, now lives at
+ * `src/providers/app-server-transport.ts`, legal for this domain to import, so this file builds its pool on
+ * that shared transport rather than a second implementation of it.
  */
 
-// --- proxy-owned raw app-server child transport --------------------------------------------------------
+// --- proxy-owned app-server host authority: pool over the shared transport -------------------------------
 
-const APP_SERVER_MAX_LINE_BYTES = MAX_BUFFER;
-const APP_SERVER_INITIALIZE_TIMEOUT_MS = 30_000;
-const APP_SERVER_SHUTDOWN_RPC_TIMEOUT_MS = 3_000;
-
-type PendingAppServerRequest = Readonly<{
-  method: string;
-  resolve(value: unknown): void;
-  reject(error: Error): void;
-}>;
-
-type SpawnedAppServer = Readonly<{
-  pid: number;
-  processStartedAtSeconds: number;
-  transport: AppServerTransport;
-  /** Best-effort graceful shutdown (the spec's own `shutdownCapability` RPC, if any) then SIGTERM/SIGKILL. */
-  close(spec: ProviderServerSpec): Promise<void>;
-}>;
-
-function appServerError(provider: string, detail: string): Error {
-  return new Error(`Provider server ${provider} ${detail}`);
-}
-
-/**
- * Spawns one raw app-server child and speaks newline-delimited JSON-RPC over its piped stdio. A trimmed,
- * independently-written mirror of `spawnProviderServerTransport`
- * (`src/providers/app-server-transport.ts`) restricted to what `AppServerTransport` needs —
- * `rpc`/`subscribe`/`closed` — because that module lives under the forbidden `src/coordinator/live/` tree.
- */
-async function spawnAppServerChild(
-  runtime: Runtime,
-  spec: ProviderServerSpec,
-  signal: AbortSignal,
-): Promise<SpawnedAppServer> {
-  if (signal.aborted) {
-    throw new AbortError({ stage: `provider ${spec.provider} spawn`, reason: signal.reason });
-  }
-
-  const child = runtime.process.spawn({
+/** This build's `ProviderServerSpec` as the shared transport's own spawn options. `spec.env` is always the
+ *  *complete* launch environment a provider's own `planHost` computed, never additions to the inherited one
+ *  — `exactEnv` is the shared transport's name for that same "exact replace" semantics
+ *  (`compileLaunchEnvironment`, `src/coordinator/live/provider-hosts/index.ts`, treats it identically). */
+function spawnOptionsFor(spec: ProviderServerSpec, signal: AbortSignal | undefined): SpawnProviderServerOptions {
+  return {
+    provider: spec.provider,
     command: spec.command,
     args: spec.args,
-    cwd: spec.cwd === '' ? undefined : spec.cwd,
-    shell: shouldUseWindowsCommandShell(spec.command, runtime.env.platform()),
-    ...(spec.env ? { env: spec.env } : {}),
-  });
-  const { stdin, stdout, stderr } = child;
-  if (stdin === null || stdout === null || stderr === null) {
-    throw appServerError(spec.provider, 'was spawned without piped stdio');
-  }
-  const pid = child.pid;
-  if (pid === undefined) {
-    throw appServerError(spec.provider, 'failed to spawn: child pid is unavailable');
-  }
-  const processStartedAtSeconds = probeProcessStartedAtSeconds(pid, runtime.env.platform() as NodeJS.Platform);
-  if (processStartedAtSeconds === null) {
-    child.kill('SIGKILL');
-    throw appServerError(spec.provider, 'could not have its own start time read after spawn');
-  }
-
-  stdout.setEncoding('utf8');
-  stderr.setEncoding('utf8');
-
-  const pending = new Map<number, PendingAppServerRequest>();
-  let nextRequestId = 1;
-  const notificationHandlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
-  let stderrTail = '';
-  let closed = false;
-  let closeError: Error | undefined;
-  let resolveClosed!: (outcome: Error | void) => void;
-  const closedPromise = new Promise<Error | void>((resolve) => {
-    resolveClosed = resolve;
-  });
-
-  const failAllPending = (error: Error): void => {
-    for (const waiter of pending.values()) waiter.reject(error);
-    pending.clear();
+    cwd: spec.cwd,
+    ...(spec.env ? { exactEnv: spec.env } : {}),
+    ...(signal === undefined ? {} : { signal }),
+    ...(spec.initializeRequest === undefined ? {} : { initializeRequest: spec.initializeRequest }),
+    ...(spec.initializeTimeoutMs === undefined ? {} : { initializeTimeoutMs: spec.initializeTimeoutMs }),
   };
+}
 
-  const detach = (error?: Error): void => {
-    if (closed) return;
-    closed = true;
-    closeError = error;
-    notificationHandlers.clear();
-    failAllPending(error ?? appServerError(spec.provider, 'closed'));
-  };
-
-  const killChild = (): void => {
-    child.kill('SIGTERM');
-    const deadline = runtime.time.now() + SIGTERM_GRACE_MS;
-    void (async () => {
-      while (runtime.process.isAlive(pid) && runtime.time.now() < deadline) {
-        await runtime.time.sleep(20);
-      }
-      if (runtime.process.isAlive(pid)) child.kill('SIGKILL');
-    })();
-  };
-
-  const sendMessage = (message: unknown): void => {
-    if (closed || stdin.destroyed) {
-      throw appServerError(spec.provider, 'stdin is not available');
-    }
-    stdin.write(`${JSON.stringify(message)}\n`);
-  };
-
-  let lineBuffer = '';
-  const handleLine = (line: string): void => {
-    if (!line.trim() || closed) return;
-    let message: {
-      id?: number;
-      method?: string;
-      result?: unknown;
-      error?: { code?: number; message?: string };
-      params?: Record<string, unknown>;
-    };
-    try {
-      message = JSON.parse(line) as typeof message;
-    } catch (error: unknown) {
-      const parseError = appServerError(spec.provider, `emitted invalid JSONL: ${errorMessage(error)}`);
-      detach(parseError);
-      killChild();
-      return;
-    }
-    if (typeof message.id === 'number' && typeof message.method === 'string') {
-      // This transport never accepts inbound requests from the child; refuse rather than hang the caller.
-      try {
-        sendMessage({ id: message.id, error: { code: -32601, message: `Unsupported request: ${message.method}` } });
-      } catch {
-        /* best effort */
-      }
-      return;
-    }
-    if (typeof message.id === 'number') {
-      const waiter = pending.get(message.id);
-      if (waiter === undefined) return;
-      pending.delete(message.id);
-      if (message.error) {
-        waiter.reject(appServerError(spec.provider, `${waiter.method} failed: ${message.error.message ?? 'error'}`));
-      } else {
-        waiter.resolve(message.result);
-      }
-      return;
-    }
-    if (typeof message.method !== 'string') {
-      const malformed = appServerError(spec.provider, 'emitted a malformed JSON-RPC message');
-      detach(malformed);
-      killChild();
-      return;
-    }
-    for (const handler of notificationHandlers) {
-      try {
-        handler({ method: message.method, params: message.params });
-      } catch (error: unknown) {
-        backendLogNotificationFailure(spec.provider, error);
-      }
-    }
-  };
-
-  stdout.on('data', (chunk: string | Buffer) => {
-    if (closed) return;
-    lineBuffer += chunk.toString();
-    if (Buffer.byteLength(lineBuffer, 'utf8') > APP_SERVER_MAX_LINE_BYTES) {
-      const oversize = appServerError(spec.provider, 'emitted an oversized JSONL line');
-      lineBuffer = '';
-      detach(oversize);
-      killChild();
-      return;
-    }
-    let newline = lineBuffer.indexOf('\n');
-    while (newline !== -1) {
-      const line = lineBuffer.slice(0, newline);
-      lineBuffer = lineBuffer.slice(newline + 1);
-      handleLine(line);
-      if (closed) return;
-      newline = lineBuffer.indexOf('\n');
-    }
-  });
-  stderr.on('data', (chunk: string | Buffer) => {
-    stderrTail = `${stderrTail}${chunk.toString()}`.slice(-4096);
-  });
-  stdin.on('error', () => {
-    if (closed) return;
-    detach(appServerError(spec.provider, `stdin error (recent stderr: ${stderrTail.trim()})`));
-    killChild();
-  });
-  child.on('error', (error: Error) => {
-    const failure = appServerError(spec.provider, `failed: ${error.message}`);
-    detach(failure);
-    resolveClosed(failure);
-  });
-  child.on('close', (code, signalName) => {
-    if (closed) {
-      resolveClosed(closeError);
-      return;
-    }
-    const detail = signalName ? `exited unexpectedly (signal ${signalName})` : `exited unexpectedly (exit ${code})`;
-    const failure = appServerError(spec.provider, `${detail} (recent stderr: ${stderrTail.trim()})`);
-    detach(failure);
-    resolveClosed(failure);
-  });
-
-  const transport: AppServerTransport = {
-    rpc: <R>(method: string, params: Record<string, unknown>): Promise<R> => {
-      if (closed) return Promise.reject(appServerError(spec.provider, 'is closed'));
-      const id = nextRequestId;
-      nextRequestId += 1;
-      return new Promise<R>((resolve, reject) => {
-        pending.set(id, { method, resolve: resolve as (value: unknown) => void, reject });
-        try {
-          sendMessage({ id, method, params });
-        } catch (error: unknown) {
-          pending.delete(id);
-          reject(error instanceof Error ? error : appServerError(spec.provider, `failed to send ${method}`));
-        }
-      });
-    },
-    subscribe: (handler) => {
-      notificationHandlers.add(handler);
-      return () => notificationHandlers.delete(handler);
-    },
-    closed: closedPromise,
-  };
-
-  if (spec.initializeRequest !== undefined) {
-    const timeoutMs = spec.initializeTimeoutMs ?? APP_SERVER_INITIALIZE_TIMEOUT_MS;
-    try {
-      await Promise.race([
-        transport.rpc(spec.initializeRequest.method, spec.initializeRequest.params),
-        runtime.time.sleep(timeoutMs).then(() => {
-          throw appServerError(spec.provider, `initialize timed out after ${timeoutMs}ms`);
-        }),
-      ]);
-    } catch (error: unknown) {
-      const initError = error instanceof Error ? error : appServerError(spec.provider, 'initialize failed');
-      detach(initError);
-      killChild();
-      throw initError;
-    }
-  }
-
+/** `ProviderServerHandle` (`rpc.request`/`onNotification`/`closePromise`) as the narrower `AppServerTransport`
+ *  (`rpc`/`subscribe`/`closed`) a bound provider's session actually needs. `subscribe` forwards straight to
+ *  `onNotification` rather than wrapping it: the shared transport's own dispatch loop already logs a throwing
+ *  handler through `backendLog` and treats it as fatal to the connection (kills the child, rejects every
+ *  pending request) — a second try/catch here would only shadow that, not improve on it. */
+function transportFor(handle: ProviderServerHandle): AppServerTransport {
   return {
-    pid,
-    processStartedAtSeconds,
-    transport,
-    close: async (closingSpec) => {
-      if (closed) {
-        await closedPromise;
-        return;
-      }
-      if (closingSpec.shutdownCapability !== undefined) {
-        try {
-          await Promise.race([
-            transport.rpc(closingSpec.shutdownCapability.method, {}),
-            runtime.time.sleep(closingSpec.shutdownCapability.timeoutMs ?? APP_SERVER_SHUTDOWN_RPC_TIMEOUT_MS),
-          ]);
-        } catch {
-          /* best effort; fall through to signal-based teardown below */
-        }
-      }
-      killChild();
-      await closedPromise;
-    },
+    rpc: (method, params) => handle.rpc.request(method, params),
+    subscribe: (handler) => handle.onNotification(handler),
+    closed: handle.closePromise,
   };
 }
 
-function backendLogNotificationFailure(provider: string, error: unknown): void {
-  // A notification handler throwing must not take down the child transport reading loop; this transport has
-  // no logger of its own (avoids yet another cross-cutting import), so the failure is swallowed defensively
-  // the same way `provider-server-transport.ts`'s own handler dispatch treats it as non-fatal to the socket.
-  void provider;
-  void error;
+/** Best-effort graceful shutdown through the spec's own `shutdownCapability` RPC, if any, then the shared
+ *  transport's own SIGTERM/SIGKILL escalation regardless of how the graceful attempt went. `handle.close()` is
+ *  idempotent (`entry.closed` is checked before signalling), so running it after an already-graceful exit
+ *  costs nothing but one no-op signal to a process that is already gone. */
+async function closeSpawnedHandle(
+  handle: ProviderServerHandle,
+  spec: ProviderServerSpec,
+  runtime: Runtime,
+): Promise<void> {
+  const capability = spec.shutdownCapability;
+  if (capability !== undefined) {
+    handle.markExpectedClose();
+    try {
+      await Promise.race([handle.rpc.request(capability.method, {}), runtime.time.sleep(capability.timeoutMs)]);
+    } catch {
+      /* best effort; the escalation below still runs */
+    }
+  }
+  await handle.close();
 }
-
-// --- proxy-owned app-server host authority --------------------------------------------------------------
 
 function canonicalEnv(env: Readonly<Record<string, string>> | undefined): Readonly<Record<string, string>> {
   return Object.freeze({ ...(env ?? {}) });
@@ -351,7 +128,9 @@ type HostPoolEntry = {
   readonly hostKey: string;
   readonly spec: ProviderServerSpec;
   readonly instanceId: string;
-  readonly spawned: SpawnedAppServer;
+  readonly handle: ProviderServerHandle;
+  readonly transport: AppServerTransport;
+  readonly processStartedAtSeconds: number;
   readonly jobId: string | undefined;
   refCount: number;
 };
@@ -403,12 +182,15 @@ export interface ProxyAppServerHostAuthority extends AppServerHostAuthority {
  */
 export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppServerHostAuthority {
   const entries = new Map<string, HostPoolEntry>();
+  // Purely informational (mirrors `DefaultProviderHostManager`'s own per-acquisition counter,
+  // `src/coordinator/live/admission.ts`); nothing in this pool reads it back.
+  let nextGeneration = 0;
 
   const managedSessionFor = (entry: HostPoolEntry): ManagedHostSession => {
     let released = false;
     entry.refCount += 1;
     return Object.freeze({
-      session: entry.spawned.transport,
+      session: entry.transport,
       hostRef: hostRefFor(entry, runtime),
       close: () => {
         if (released) return;
@@ -416,7 +198,7 @@ export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppSer
         entry.refCount -= 1;
         if (entry.refCount > 0) return;
         entries.delete(entry.hostKey);
-        void entry.spawned.close(entry.spec);
+        void closeSpawnedHandle(entry.handle, entry.spec, runtime);
       },
     });
   };
@@ -428,13 +210,26 @@ export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppSer
       const existing = entries.get(hostKey);
       if (existing !== undefined) return managedSessionFor(existing);
 
-      const signal = options?.signal ?? new AbortController().signal;
-      const spawned = await spawnAppServerChild(runtime, spec, signal);
+      const handle = await spawnProviderServerTransport({
+        runtime,
+        options: spawnOptionsFor(spec, options?.signal),
+        generation: nextGeneration++,
+      });
+      const processStartedAtSeconds = probeProcessStartedAtSeconds(
+        handle.pid,
+        runtime.env.platform() as NodeJS.Platform,
+      );
+      if (processStartedAtSeconds === null) {
+        await handle.close().catch(() => {});
+        throw new Error(`Provider server ${spec.provider} could not have its own start time read after spawn.`);
+      }
       const entry: HostPoolEntry = {
         hostKey,
         spec,
         instanceId: runtime.ids.uuid(),
-        spawned,
+        handle,
+        transport: transportFor(handle),
+        processStartedAtSeconds,
         jobId: options?.jobId,
         refCount: 0,
       };
@@ -452,7 +247,7 @@ export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppSer
     rootIdentity(hostRef) {
       for (const entry of entries.values()) {
         if (isMatchingHostRef(hostRef, entry, runtime)) {
-          return { pid: entry.spawned.pid, processStartedAtSeconds: entry.spawned.processStartedAtSeconds };
+          return { pid: entry.handle.pid, processStartedAtSeconds: entry.processStartedAtSeconds };
         }
       }
       return null;

@@ -203,6 +203,52 @@ afterEach(() => {
 });
 
 describe('createStoreProviderEventEffectPort', () => {
+  it('serializes overlapping transactions instead of nesting BEGIN IMMEDIATE', async () => {
+    // Two events genuinely arrive interleaved: the proxy runs a separate pump per operation over one socket,
+    // and `control-client.ts` dispatches each inbound frame with `void serveInboundRequest(...)` rather than
+    // awaiting it. This transaction is held open across an `await` — unlike the synchronous `withImmediate` —
+    // so without serialization the second `BEGIN IMMEDIATE` lands inside the first and SQLite refuses it.
+    const port = createStoreProviderEventEffectPort(testDeps());
+    const order: string[] = [];
+    let releaseFirst!: () => void;
+    const firstMayFinish = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    const first = port.runInTransaction(async () => {
+      order.push('first:enter');
+      await firstMayFinish;
+      order.push('first:exit');
+      return 'first';
+    });
+    const second = port.runInTransaction(async () => {
+      order.push('second:enter');
+      return 'second';
+    });
+
+    // The second must not have entered while the first was suspended mid-transaction.
+    await Promise.resolve();
+    expect(order).toEqual(['first:enter']);
+
+    releaseFirst();
+    expect(await first).toBe('first');
+    expect(await second).toBe('second');
+    expect(order).toEqual(['first:enter', 'first:exit', 'second:enter']);
+  });
+
+  it('keeps serving after a failed transaction rather than wedging every later one behind it', async () => {
+    const port = createStoreProviderEventEffectPort(testDeps());
+
+    await expect(
+      port.runInTransaction(async () => {
+        throw new Error('effect failed');
+      }),
+    ).rejects.toThrow('effect failed');
+
+    // A rejected link must not poison the chain: the queue is what every later event waits on.
+    await expect(port.runInTransaction(async () => 'after')).resolves.toBe('after');
+  });
+
   it('applies a progress event, advances the watermark, and appends it to the job journal', async () => {
     const { identity } = seedOperation();
     const port = createStoreProviderEventEffectPort(testDeps());
