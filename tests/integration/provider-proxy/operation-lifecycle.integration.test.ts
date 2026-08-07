@@ -223,14 +223,10 @@ async function activate(set: ProxyUnderTest, operation: unknown, reserved: Recor
 async function installGrant(set: ProxyUnderTest, operationIds: readonly string[]): Promise<Record<string, unknown>> {
   const grantId = randomUUID();
   const operations = [...operationIds].sort().map((operationId) => ({
-    operation: {
-      jobId: randomUUID(),
-      operationId,
-      proxyInstanceId: set.shared.proxyInstanceId,
-      buildSetId: set.shared.buildSetId,
-    },
-    carrierState: 'executing' as const,
-    committedThroughProviderSeq: 3,
+    jobId: randomUUID(),
+    operationId,
+    proxyInstanceId: set.shared.proxyInstanceId,
+    buildSetId: set.shared.buildSetId,
   }));
   const set_ = {
     grantId,
@@ -238,19 +234,19 @@ async function installGrant(set: ProxyUnderTest, operationIds: readonly string[]
     hostFingerprint: FINGERPRINT,
     buildSetId: set.shared.buildSetId,
     proxyInstanceId: set.shared.proxyInstanceId,
-    operations,
   };
   await set.control.call(
     'handoff.install.v1',
     {
       ...set_,
+      operations,
       secretSha256: createHash('sha256').update(GRANT_SECRET, 'utf8').digest('hex'),
       orphanTimeoutMs: 30_000,
     },
     5_000,
   );
-  // A redeemer never names the timeout: it is bound where it is installed, so the redeem request is the
-  // set tuple plus the credential and nothing else.
+  // A redeemer never names the timeout or the operation set: both are bound where the grant is installed, so
+  // the redeem request is the set tuple plus the credential and nothing else.
   return { ...set_, secret: GRANT_SECRET, successor: set.coordinator };
 }
 
@@ -468,7 +464,7 @@ describe('provider-proxy operation lifecycle', () => {
     cleanups.push(() => successor.close());
     const redeemed = (await successor.call('handoff.redeem.v1', redeem, 5_000)) as {
       state: string;
-      operations: string[];
+      operations: Record<string, string>[];
       controlEpoch: number;
       heartbeatChallenge: string;
     };
@@ -520,12 +516,7 @@ describe('provider-proxy operation lifecycle', () => {
     const opB = set.operationFor();
     // Deliberately descending: whichever of the two sorts later goes first.
     const [first, second] = opA.operationId < opB.operationId ? [opB, opA] : [opA, opB];
-    const entry = (operation: ReturnType<typeof set.operationFor>) => ({
-      operation,
-      carrierState: 'executing' as const,
-      committedThroughProviderSeq: 0,
-    });
-    const install = (operations: ReturnType<typeof entry>[]): Promise<unknown> =>
+    const install = (operations: ReturnType<typeof set.operationFor>[]): Promise<unknown> =>
       set.control.call(
         'handoff.install.v1',
         {
@@ -541,12 +532,11 @@ describe('provider-proxy operation lifecycle', () => {
         5_000,
       );
 
-    // Only the capsule's own copy of this schema used to carry the byte-sort refinement; the wire schema
-    // this method actually parses did not, so an unsorted set installed here and a sorted redemption later
-    // disagreed without either looking malformed.
-    await expect(install([entry(first), entry(second)])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+    // The wire schema this method parses carries the byte-sort refinement, so an unsorted or duplicated set
+    // is refused right here, at ingress.
+    await expect(install([first, second])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
     // Duplicated is refused for the same reason, not merely unsorted.
-    await expect(install([entry(first), entry(first)])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+    await expect(install([first, first])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
   });
 
   it("keeps a redeemed successor's first challenge answerable for the full lease, unclamped by any ceiling", async () => {

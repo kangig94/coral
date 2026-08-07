@@ -12,7 +12,6 @@ import {
   providerSuspendedEventBodySchema,
   providerTerminalEventBodySchema,
 } from '../providers/contract.js';
-import type { ProviderOperationState } from './ledger.js';
 
 export const MAX_PROXY_CONTROL_FRAME_BYTES = 17 * 1024 * 1024;
 export const PROXY_CONTROL_RPC_TIMEOUT_MS = 5_000;
@@ -63,15 +62,6 @@ export const canonicalEndpointSchema = z
   .min(1)
   .max(4096)
   .refine((value) => isAbsolute(value) && normalize(value) === value, 'endpoint must be an absolute canonical path');
-// The states a handoff capsule may carry an operation in — a subset of `ProviderOperationState`
-// (`ledger.ts` owns the full vocabulary). Typed against that union via `satisfies` rather than hand-copied,
-// so a rename or removal in the ledger fails this file's compilation instead of drifting silently.
-const HANDOFF_CARRIER_STATES = [
-  'pending-activation',
-  'executing',
-  'released',
-] as const satisfies readonly ProviderOperationState[];
-const carrierStateSchema = z.enum(HANDOFF_CARRIER_STATES);
 
 export const coordinatorIdentitySchema = z
   .object({
@@ -146,14 +136,6 @@ export const operationIdentitySchema = z
   .strict();
 
 export type OperationIdentity = z.infer<typeof operationIdentitySchema>;
-
-export const proxyHandoffOperationSchema = z
-  .object({
-    operation: operationIdentitySchema,
-    carrierState: carrierStateSchema,
-    committedThroughProviderSeq: nonNegativeSafeIntegerSchema,
-  })
-  .strict();
 
 /**
  * `ProviderEventBody`'s one variant with no zod schema of its own in `providers/contract.ts` — every other

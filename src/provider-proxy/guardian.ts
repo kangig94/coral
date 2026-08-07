@@ -134,12 +134,13 @@ const handoffInstallParamsSchema = z
   })
   .strict();
 
+/** No `operations` field: the set is bound at install and returned by redemption, never presented by a
+ *  redeemer to be checked against — see `GrantRegistry.redeem`'s own doc for why. */
 const handoffRedeemParamsSchema = z
   .object({
     grantId: canonicalUuidSchema,
     secret: grantSecretSchema,
     successor: coordinatorIdentitySchema,
-    operations: handoffOperationSetSchema,
   })
   .strict();
 
@@ -310,7 +311,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             grantId: request.grantId,
             secretSha256: request.secretSha256,
             ...setIdentity,
-            operationIds: request.operations.map((entry) => entry.operation.operationId),
+            operations: request.operations,
             orphanTimeoutMs: request.orphanTimeoutMs,
           });
         },
@@ -330,7 +331,6 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             grantId: request.grantId,
             secret: request.secret,
             successorInstanceId: request.successor.instanceId,
-            operationIds: request.operations.map((entry) => entry.operation.operationId),
             binding: setIdentity,
           });
           // The guardian is the sole linearization point: it is the only party that ever sees the plaintext
@@ -340,13 +340,17 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           // without ever checking the secret itself. Without this forward, a second successor holding the
           // same plaintext secret from the same capsule could rotate the reaper directly after this one is
           // refused by the (already-spent) grant here, splitting one set between two coordinators.
+          //
+          // `operations` here is this guardian's own installed record (`redemption.grant.operations`), not
+          // anything the request carried — the redeemer never presented one (see `handoffRedeemParamsSchema`),
+          // so this is the reaper's only source for the set, and it is an authoritative one.
           const reaperResult = reaperAckSchema.parse(
             await options.reaperChannel.call(
               'reaper.record-redemption.v1',
               {
                 grantId: request.grantId,
                 successor: request.successor,
-                operations: request.operations,
+                operations: redemption.grant.operations,
                 redemptionReceipt: redemption.redemptionReceipt,
               },
               PROXY_CONTROL_RPC_TIMEOUT_MS,
@@ -360,7 +364,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             fields: {
               state: 'redeemed-provisional',
               redemptionReceipt: redemption.redemptionReceipt,
-              operations: redemption.grant.operationIds,
+              operations: redemption.grant.operations,
             },
           };
         },

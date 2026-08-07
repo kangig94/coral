@@ -45,11 +45,8 @@ import {
 } from '../../provider-proxy/orphan-deadline.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
-  PROXY_STATUS_RPC_TIMEOUT_MS,
   canonicalUuidSchema,
   guardianIdentitySchema,
-  operationIdentitySchema,
-  proxyHandoffOperationSchema,
   proxyIdentitySchema,
   reaperIdentitySchema,
   type CoordinatorIdentity,
@@ -159,36 +156,9 @@ const stopAndReapResultSchema = z
   .object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) })
   .strict();
 
-/** `operation.status.v1`'s reply: one entry per requested operation, `held` discriminating whether this
- *  proxy still carries it. Parsed loosely on `state` (any non-empty string, not the narrower carrier-eligible
- *  enum) so an ineligible state fails with `installHandoffGrant`'s own clear message below rather than an
- *  opaque schema error. */
-const operationStatusResultSchema = z
-  .object({
-    proxyInstanceId: canonicalUuidSchema,
-    operations: z.array(
-      z.union([
-        z.object({ operation: operationIdentitySchema, held: z.literal(false) }).strict(),
-        z
-          .object({
-            operation: operationIdentitySchema,
-            held: z.literal(true),
-            state: z.string().min(1),
-            committedThroughProviderSeq: z.number().int().nonnegative().safe(),
-          })
-          .strict(),
-      ]),
-    ),
-  })
-  .strict();
-
 const handoffInstallAckSchema = z
   .object({ state: z.literal('installed-dormant'), grantId: canonicalUuidSchema })
   .strict();
-
-/** The subset of `ProviderOperationState` a handoff capsule may carry an operation in (`protocol.ts` owns the
- *  enum itself); read back off the wire schema rather than duplicated, so the two can never drift apart. */
-const HANDOFF_ELIGIBLE_CARRIER_STATES = new Set<string>(proxyHandoffOperationSchema.shape.carrierState.options);
 
 async function heartbeatOnce(
   client: ControlClient,
@@ -379,42 +349,24 @@ export function createProviderProxySetAuthority(
 
       // Byte-sorted by operationId: the wire schema (`handoffOperationSetSchema`) requires it and this is
       // the one place that assembles the set, so sorting happens here rather than being asked of every caller.
-      const sortedKeys = [...operations].sort((left, right) =>
-        left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
-      );
-      const requestedIdentities = sortedKeys.map((key) => ({
-        jobId: key.jobId,
-        operationId: key.operationId,
-        proxyInstanceId,
-        buildSetId: guardianIdentity.buildSetId,
-      }));
-      // Confirmed live state, not the caller's possibly-stale belief: a grant built from what the proxy no
-      // longer holds would promise a successor an operation set that was never true at redemption time.
-      const rawStatus = await proxyClient.call(
-        'operation.status.v1',
-        { operations: requestedIdentities },
-        PROXY_STATUS_RPC_TIMEOUT_MS,
-      );
-      const status = operationStatusResultSchema.parse(rawStatus);
-      signal.throwIfAborted();
-
-      const handoffOperations = status.operations.map((entry) => {
-        if (!entry.held) {
-          throw new Error(
-            `installHandoffGrant: proxy ${proxyInstanceId} no longer holds operation ${entry.operation.operationId}.`,
-          );
-        }
-        if (!HANDOFF_ELIGIBLE_CARRIER_STATES.has(entry.state)) {
-          throw new Error(
-            `installHandoffGrant: operation ${entry.operation.operationId} is in state '${entry.state}', which cannot be handed off.`,
-          );
-        }
-        return {
-          operation: entry.operation,
-          carrierState: entry.state as 'pending-activation' | 'executing' | 'released',
-          committedThroughProviderSeq: entry.committedThroughProviderSeq,
-        };
-      });
+      //
+      // Not re-confirmed against the proxy's own `operation.status.v1` first. That query used to gate the
+      // whole install on every named operation still being live and carrier-eligible, refusing the entire
+      // grant — for every operation on this proxy — the instant one had already gone stale. A successor
+      // learns the identical fact for free and per-operation the moment it tries to adopt: `operation.adopt.v1`
+      // answers `operation_not_found` for exactly this proxy no longer holding it, so the whole-set refusal
+      // bought nothing a narrower, later, isolated failure did not already cover — and cost every other
+      // operation in the set a handoff it would otherwise have gotten cleanly.
+      const handoffOperations = [...operations]
+        .sort((left, right) =>
+          left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
+        )
+        .map((key) => ({
+          jobId: key.jobId,
+          operationId: key.operationId,
+          proxyInstanceId,
+          buildSetId: guardianIdentity.buildSetId,
+        }));
 
       const deadlineConfig = resolveProviderProxyDeadlineConfiguration(runtime.env);
       const grantId = runtime.ids.uuid();
@@ -486,7 +438,6 @@ export function createProviderProxySetAuthority(
         guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
         reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
         proxyEndpoint: proxyIdentityFields.canonicalEndpoint,
-        operations: handoffOperations,
         orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
         teardownReserveMs: deadlineConfig.teardownReserveMs,
       };

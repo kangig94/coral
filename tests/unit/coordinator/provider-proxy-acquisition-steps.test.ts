@@ -204,22 +204,6 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
     jobId: '88888888-8888-4888-8888-888888888888',
     operationId: '66666666-6666-4666-8666-666666666666',
   };
-  const OPERATION_STATUS_RESULT = {
-    proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
-    operations: [
-      {
-        operation: {
-          jobId: OPERATION_KEY.jobId,
-          operationId: OPERATION_KEY.operationId,
-          proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
-          buildSetId: GUARDIAN_IDENTITY.buildSetId,
-        },
-        held: true,
-        state: 'executing',
-        committedThroughProviderSeq: 3,
-      },
-    ],
-  };
   const INSTALL_ACK = { state: 'installed-dormant' as const, grantId: '77777777-7777-4777-8777-777777777777' };
 
   const tempRoots: string[] = [];
@@ -227,8 +211,10 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
     for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
-  /** Records every call made to a role's client and answers `operation.status.v1`/the named install method
-   *  with the fixtures above, or the configured failure for that one role. */
+  /** Records every call made to a role's client and answers the named install method with the fixture above,
+   *  or the configured failure for that one role. `installHandoffGrant` no longer queries `operation.status.v1`
+   *  first — it trusts the snapshot the caller already fixed (see its own updated doc comment) — so a role
+   *  client here only ever sees the one `*.handoff-install.v1` call. */
   function recordingClient(
     role: 'guardian' | 'reaper' | 'proxy',
     calls: Array<{ role: string; method: string }>,
@@ -240,7 +226,6 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
         if (fail !== undefined && method === fail) {
           return Promise.reject(new Error(`${role} refused ${method}`));
         }
-        if (method === 'operation.status.v1') return Promise.resolve(OPERATION_STATUS_RESULT);
         return Promise.resolve(INSTALL_ACK);
       },
       close: () => {},
@@ -293,29 +278,28 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
     );
   });
 
-  it('installs the identical grant on guardian, reaper and proxy, then writes a durable mode-0600 capsule', async () => {
+  it('installs the identical grant on guardian, reaper and proxy, then writes a durable mode-0600 capsule with no operation set of its own', async () => {
     const calls: Array<{ role: string; method: string }> = [];
     const { authority, handoffCapsulePath } = authorityForInstall({ calls });
 
     await authority.installHandoffGrant([OPERATION_KEY], new AbortController().signal);
 
     expect(calls.map((call) => call.method)).toEqual(
-      expect.arrayContaining([
-        'operation.status.v1',
-        'guardian.handoff-install.v1',
-        'reaper.handoff-install.v1',
-        'handoff.install.v1',
-      ]),
+      expect.arrayContaining(['guardian.handoff-install.v1', 'reaper.handoff-install.v1', 'handoff.install.v1']),
     );
 
     const written = JSON.parse(readFileSync(handoffCapsulePath, 'utf-8')) as {
       version: number;
       buildSetId: string;
-      operations: readonly unknown[];
+      operations?: readonly unknown[];
+      committedThroughProviderSeq?: number;
     };
     expect(written.version).toBe(1);
     expect(written.buildSetId).toBe(GUARDIAN_IDENTITY.buildSetId);
-    expect(written.operations).toHaveLength(1);
+    // The two fields the design review found with a second, non-authoritative home: neither belongs in a
+    // durable artifact a successor might one day trust in place of the store or the proxy's live ledger.
+    expect(written.operations).toBeUndefined();
+    expect(written.committedThroughProviderSeq).toBeUndefined();
     expect((statSync(handoffCapsulePath).mode & 0o777).toString(8)).toBe('600');
   });
 
@@ -327,53 +311,6 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
       /reaper refused/u,
     );
     expect(() => statSync(handoffCapsulePath)).toThrow();
-  });
-
-  it('refuses without installing anything when the proxy no longer holds the snapshotted operation', async () => {
-    const calls: Array<{ role: string; method: string }> = [];
-    const tempRoot = mkdtempSync(join(tmpdir(), 'coral-install-handoff-grant-absent-'));
-    tempRoots.push(tempRoot);
-    const handoffCapsulePath = join(tempRoot, 'proxy.handoff.json');
-    const proxyClient: ControlClient = {
-      call: (method: string) => {
-        calls.push({ role: 'proxy', method });
-        return Promise.resolve({
-          proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
-          operations: [
-            {
-              operation: {
-                jobId: OPERATION_KEY.jobId,
-                operationId: OPERATION_KEY.operationId,
-                proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
-                buildSetId: GUARDIAN_IDENTITY.buildSetId,
-              },
-              held: false,
-            },
-          ],
-        });
-      },
-      close: () => {},
-    };
-    const deps: ProviderProxySetAuthorityDependencies = {
-      proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
-      guardianClient: recordingClient('guardian', calls),
-      reaperClient: recordingClient('reaper', calls),
-      proxyClient,
-      guardianIdentity: GUARDIAN_IDENTITY,
-      reaperIdentity: REAPER_IDENTITY,
-      proxyIdentityFields: PROXY_IDENTITY,
-      heartbeats: [],
-      coordinatorIdentity: COORDINATOR_IDENTITY,
-      handoffCapsulePath,
-      runtime: createRealRuntime('dev', { baseDir: tempRoot }),
-      operationRegistry: { operationsFor: () => [] },
-    };
-    const authority = createProviderProxySetAuthority(deps);
-
-    await expect(authority.installHandoffGrant([OPERATION_KEY], new AbortController().signal)).rejects.toThrow(
-      /no longer holds operation/u,
-    );
-    expect(calls.map((call) => call.method)).toEqual(['operation.status.v1']);
   });
 });
 

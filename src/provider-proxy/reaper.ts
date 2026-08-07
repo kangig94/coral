@@ -34,6 +34,7 @@ import {
   guardianIdentitySchema,
   proxyIdentitySchema,
   reaperIdentitySchema,
+  type OperationIdentity,
 } from './protocol.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
@@ -101,14 +102,16 @@ const reaperRecordRedemptionParamsSchema = z
   .strict();
 
 /**
- * `reaper.handoff-rotate.v1`'s request, exactly as the plan states: no secret, because this reaper trusts the
- * receipt `reaper.record-redemption.v1` already recorded rather than re-deriving trust from the grant itself.
+ * `reaper.handoff-rotate.v1`'s request: no secret, because this reaper trusts the receipt
+ * `reaper.record-redemption.v1` already recorded rather than re-deriving trust from the grant itself. No
+ * `operations` either, for the same reason `handoffRedeemParamsSchema` (`guardian.ts`) has none: the set was
+ * recorded by `reaper.record-redemption.v1`'s own guardian-authoritative push, and a rotation caller echoing
+ * it back here would only be checked against itself.
  */
 const reaperHandoffRotateParamsSchema = z
   .object({
     grantId: canonicalUuidSchema,
     successor: coordinatorIdentitySchema,
-    operations: handoffOperationSetSchema,
     guardianRedemptionReceipt: z.string().min(1),
   })
   .strict();
@@ -200,16 +203,29 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
   const grants = createGrantRegistry(mintReceipt);
   // What `reaper.record-redemption.v1` records and `reaper.handoff-rotate.v1` checks: the guardian is the
   // only party that can ever produce this, so its presence alone is what authorizes rotation here — this
-  // reaper never independently verifies the grant's secret.
+  // reaper never independently verifies the grant's secret. `operations` is the guardian's own
+  // `redemption.grant.operations` (`guardian.ts`), forwarded here — not a value `reaper.handoff-rotate.v1`'s
+  // own caller presents, which is why that method's own request carries none to check it against.
   let recordedRedemption: Readonly<{
     grantId: string;
     successorInstanceId: string;
-    operationIds: readonly string[];
+    operations: readonly OperationIdentity[];
     redemptionReceipt: string;
   }> | null = null;
 
-  const sameOperationIds = (left: readonly string[], right: readonly string[]): boolean =>
-    left.length === right.length && left.every((value, index) => value === right[index]);
+  /** Order-sensitive, mirroring `handoff-capsule.ts`'s own `sameOperations`: both sides were sorted the same
+   *  way at their own ingress, so position-by-position comparison is equality, not just membership. Guards
+   *  only `reaper.record-redemption.v1`'s own repeat-forward idempotency (see its handler below) — never a
+   *  redemption or rotation check, which no longer take an `operations` input to compare against. */
+  const sameOperations = (left: readonly OperationIdentity[], right: readonly OperationIdentity[]): boolean =>
+    left.length === right.length &&
+    left.every(
+      (value, index) =>
+        value.jobId === right[index].jobId &&
+        value.operationId === right[index].operationId &&
+        value.proxyInstanceId === right[index].proxyInstanceId &&
+        value.buildSetId === right[index].buildSetId,
+    );
 
   const requireEnforcer = (): ArmedEnforcer<Scope> => {
     if (enforcer === null) {
@@ -376,7 +392,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             grantId: request.grantId,
             secretSha256: request.secretSha256,
             ...setIdentity,
-            operationIds: request.operations.map((entry) => entry.operation.operationId),
+            operations: request.operations,
             orphanTimeoutMs: request.orphanTimeoutMs,
           });
         },
@@ -391,7 +407,6 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         authority: 'pairing',
         handle: (params) => {
           const request = reaperRecordRedemptionParamsSchema.parse(params);
-          const operationIds = request.operations.map((entry) => entry.operation.operationId);
           if (recordedRedemption !== null) {
             // Idempotent for the identical redemption — a retried `guardian.handoff-redeem.v1` (the successor's
             // reply was lost) forwards the same fact again; a different one here means two redemptions were
@@ -401,7 +416,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
               recordedRedemption.grantId !== request.grantId ||
               recordedRedemption.successorInstanceId !== request.successor.instanceId ||
               recordedRedemption.redemptionReceipt !== request.redemptionReceipt ||
-              !sameOperationIds(recordedRedemption.operationIds, operationIds)
+              !sameOperations(recordedRedemption.operations, request.operations)
             ) {
               throw new ProxyControlProtocolError(
                 'identity_mismatch',
@@ -413,7 +428,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           recordedRedemption = {
             grantId: request.grantId,
             successorInstanceId: request.successor.instanceId,
-            operationIds,
+            operations: request.operations,
             redemptionReceipt: request.redemptionReceipt,
           };
           return { state: 'redemption-recorded' };
@@ -431,13 +446,11 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         handle: (params) => {
           const request = reaperHandoffRotateParamsSchema.parse(params);
           assertNamedCoordinatorBuild(request.successor, capsule);
-          const operationIds = request.operations.map((entry) => entry.operation.operationId);
           if (
             recordedRedemption === null ||
             recordedRedemption.grantId !== request.grantId ||
             recordedRedemption.successorInstanceId !== request.successor.instanceId ||
-            recordedRedemption.redemptionReceipt !== request.guardianRedemptionReceipt ||
-            !sameOperationIds(recordedRedemption.operationIds, operationIds)
+            recordedRedemption.redemptionReceipt !== request.guardianRedemptionReceipt
           ) {
             throw new ProxyControlProtocolError(
               'grant_invalid',
@@ -452,7 +465,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
               // member of it (see `orphan-deadline.ts`'s own "one enforcer state machine, not two").
               state: 'successor-rotated',
               reaperRotationReceipt: mintReceipt(),
-              operations: recordedRedemption.operationIds,
+              operations: recordedRedemption.operations,
             },
           };
         },

@@ -15,7 +15,6 @@ import {
   PROXY_EVENT_COMMIT_TIMEOUT_MS,
   PROXY_STATUS_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
-  proxyHandoffOperationSchema,
   proxyIdentitySchema,
   reaperIdentitySchema,
 } from '#src/provider-proxy/protocol.js';
@@ -94,18 +93,6 @@ describe('provider proxy protocol vocabulary', () => {
         buildSetId: UUID_D,
       }),
     ).toBeDefined();
-    expect(
-      proxyHandoffOperationSchema.parse({
-        operation: {
-          jobId: UUID_A,
-          operationId: UUID_B,
-          proxyInstanceId: UUID_C,
-          buildSetId: UUID_D,
-        },
-        carrierState: 'executing',
-        committedThroughProviderSeq: 0,
-      }),
-    ).toBeDefined();
   });
 
   it('rejects unknown identity fields', () => {
@@ -124,18 +111,6 @@ describe('provider proxy protocol vocabulary', () => {
       proxyIdentitySchema.safeParse({ ...proxyIdentity, processGroupId: Number.MAX_SAFE_INTEGER + 1 }).success,
     ).toBe(false);
     expect(proxyIdentitySchema.safeParse({ ...proxyIdentity, generation: 'gen3' }).success).toBe(false);
-    expect(
-      proxyHandoffOperationSchema.safeParse({
-        operation: {
-          jobId: UUID_A,
-          operationId: UUID_B,
-          proxyInstanceId: UUID_C,
-          buildSetId: UUID_D,
-        },
-        carrierState: 'unknown',
-        committedThroughProviderSeq: 0,
-      }).success,
-    ).toBe(false);
   });
 
   it('accepts a newline-delimited frame at the byte cap and rejects one byte over it', () => {

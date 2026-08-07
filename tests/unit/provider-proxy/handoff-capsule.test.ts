@@ -6,14 +6,16 @@ import {
   MAX_HANDOFF_CAPSULE_BYTES,
   createGrantRegistry,
   decodeHandoffCapsule,
+  handoffOperationSetSchema,
   handoffSecretDigest,
-  installedGrantFromCapsule,
   type HandoffCapsule,
+  type InstalledGrant,
 } from '#src/provider-proxy/handoff-capsule.js';
+import type { OperationIdentity } from '#src/provider-proxy/protocol.js';
 
 const SECRET = 'c'.repeat(64);
 
-function capsuleFor(operationIds: readonly string[]): HandoffCapsule {
+function capsuleFor(): HandoffCapsule {
   return {
     version: 1,
     grantId: '11111111-1111-4111-8111-111111111111',
@@ -28,24 +30,45 @@ function capsuleFor(operationIds: readonly string[]): HandoffCapsule {
     guardianControlEndpoint: '/tmp/g.sock',
     reaperControlEndpoint: '/tmp/r.sock',
     proxyEndpoint: '/tmp/p.sock',
-    operations: operationIds.map((operationId) => ({
-      operation: {
-        jobId: '66666666-6666-4666-8666-666666666666',
-        operationId,
-        proxyInstanceId: '55555555-5555-4555-8555-555555555555',
-        buildSetId: '22222222-2222-4222-8222-222222222222',
-      },
-      carrierState: 'executing' as const,
-      committedThroughProviderSeq: 4,
-    })),
     orphanTimeoutMs: 30_000,
     teardownReserveMs: 14_000,
   };
 }
 
-const ORDERED = ['a1111111-1111-4111-8111-111111111111', 'b2222222-2222-4222-8222-222222222222'];
+const OPERATION_A: OperationIdentity = {
+  jobId: '66666666-6666-4666-8666-666666666666',
+  operationId: 'a1111111-1111-4111-8111-111111111111',
+  proxyInstanceId: '55555555-5555-4555-8555-555555555555',
+  buildSetId: '22222222-2222-4222-8222-222222222222',
+};
+const OPERATION_B: OperationIdentity = {
+  ...OPERATION_A,
+  operationId: 'b2222222-2222-4222-8222-222222222222',
+};
+const ORDERED: readonly OperationIdentity[] = [OPERATION_A, OPERATION_B];
 
-function bindingOf(grant: ReturnType<typeof installedGrantFromCapsule>) {
+/** The `InstalledGrant` a wire `*.handoff-install.v1` handler would build from `capsuleFor()`'s identity
+ *  tuple, mirroring `guardian.ts`/`reaper.ts`/`proxy.ts`'s own construction rather than going through a
+ *  capsule — the capsule carries no `operations` field for a grant to be derived from (`handoff-capsule.ts`'s
+ *  own doc explains why). */
+function installedGrantFor(operations: readonly OperationIdentity[]): InstalledGrant {
+  const capsule = capsuleFor();
+  return {
+    grantId: capsule.grantId,
+    secretSha256: handoffSecretDigest(capsule.secret),
+    generation: capsule.generation,
+    flavor: capsule.flavor,
+    buildSetId: capsule.buildSetId,
+    hostFingerprint: capsule.hostFingerprint,
+    guardianInstanceId: capsule.guardianInstanceId,
+    reaperInstanceId: capsule.reaperInstanceId,
+    proxyInstanceId: capsule.proxyInstanceId,
+    operations,
+    orphanTimeoutMs: capsule.orphanTimeoutMs,
+  };
+}
+
+function bindingOf(grant: InstalledGrant) {
   return {
     generation: grant.generation,
     flavor: grant.flavor,
@@ -75,10 +98,9 @@ function encode(capsule: unknown): Uint8Array {
 
 describe('provider-proxy handoff capsule', () => {
   it('decodes a well-formed capsule', () => {
-    const decoded = decodeHandoffCapsule(encode(capsuleFor(ORDERED)));
+    const decoded = decodeHandoffCapsule(encode(capsuleFor()));
 
     expect(decoded.grantId).toBe('11111111-1111-4111-8111-111111111111');
-    expect(decoded.operations).toHaveLength(2);
   });
 
   it('refuses an oversize capsule before parsing it', () => {
@@ -87,48 +109,51 @@ describe('provider-proxy handoff capsule', () => {
     expect(() => decodeHandoffCapsule(bytes)).toThrow(/exceeded/u);
   });
 
-  it('refuses an unsorted or duplicated operation set', () => {
-    expect(() => decodeHandoffCapsule(encode(capsuleFor([...ORDERED].reverse())))).toThrow(HandoffCapsuleError);
-    expect(() => decodeHandoffCapsule(encode(capsuleFor([ORDERED[0], ORDERED[0]])))).toThrow(HandoffCapsuleError);
-  });
-
   it('refuses an unknown field', () => {
-    expect(() => decodeHandoffCapsule(encode({ ...capsuleFor(ORDERED), extra: true }))).toThrow(HandoffCapsuleError);
+    expect(() => decodeHandoffCapsule(encode({ ...capsuleFor(), extra: true }))).toThrow(HandoffCapsuleError);
   });
 
-  it('derives an installable grant that carries the digest, never the secret', () => {
-    const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
+  it('refuses a capsule carrying an operation set — that fact has no home here', () => {
+    // The capsule's own schema is `.strict()`: an `operations` field, however shaped, is unknown to it.
+    expect(() => decodeHandoffCapsule(encode({ ...capsuleFor(), operations: [] }))).toThrow(HandoffCapsuleError);
+  });
 
-    expect(grant.secretSha256).toBe(handoffSecretDigest(SECRET));
-    expect(JSON.stringify(grant)).not.toContain(SECRET);
+  it('encodes and decodes round-trip well inside the read cap', () => {
+    // Fixed-size record now that the capsule carries no operation set: nothing here scales with how many
+    // operations the grant covers, so there is no "largest legal capsule" to budget for any more.
+    const encoded = encode(capsuleFor());
+
+    expect(encoded.byteLength).toBeLessThan(MAX_HANDOFF_CAPSULE_BYTES);
+    expect(decodeHandoffCapsule(encoded)).toEqual(capsuleFor());
   });
 
   it('installs idempotently for the identical value and refuses a different one', () => {
     const registry = createGrantRegistry(mintReceipt());
-    const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
+    const grant = installedGrantFor(ORDERED);
 
     expect(registry.install(grant)).toEqual({ state: 'installed-dormant', grantId: grant.grantId });
     expect(registry.install(grant).state).toBe('installed-dormant');
 
-    const other = installedGrantFromCapsule(capsuleFor([ORDERED[0]]));
+    const other = installedGrantFor([OPERATION_A]);
     expect(() => registry.install(other)).toThrow(/different grant/u);
   });
 
-  it('redeems once, and returns that same redemption to the same successor retrying', () => {
+  it('redeems once, and returns that same redemption — including the installed operation set — to the same successor retrying', () => {
     const registry = createGrantRegistry(mintReceipt());
-    const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
+    const grant = installedGrantFor(ORDERED);
     registry.install(grant);
     const request = {
       grantId: grant.grantId,
       secret: SECRET,
       successorInstanceId: SUCCESSOR,
-      operationIds: ORDERED,
       binding: bindingOf(grant),
     };
 
     const redeemed = registry.redeem(request);
 
     expect(redeemed.grant.grantId).toBe(grant.grantId);
+    // The set was never presented in `request` above — it comes back only because `install` recorded it.
+    expect(redeemed.grant.operations).toEqual(ORDERED);
     expect(redeemed.redemptionReceipt).toBe('receipt-1');
     // A successor whose reply was lost retries with the identical request. Refusing it would hand the set
     // to a teardown it had already earned the right to prevent, so it gets back exactly what it earned —
@@ -139,13 +164,12 @@ describe('provider-proxy handoff capsule', () => {
 
   it('refuses a second, different successor presenting the same valid grant', () => {
     const registry = createGrantRegistry(mintReceipt());
-    const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
+    const grant = installedGrantFor(ORDERED);
     registry.install(grant);
     const request = {
       grantId: grant.grantId,
       secret: SECRET,
       successorInstanceId: SUCCESSOR,
-      operationIds: ORDERED,
       binding: bindingOf(grant),
     };
     registry.redeem(request);
@@ -160,7 +184,7 @@ describe('provider-proxy handoff capsule', () => {
 
   it('refuses redemption presenting the wrong secret', () => {
     const registry = createGrantRegistry(mintReceipt());
-    const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
+    const grant = installedGrantFor(ORDERED);
     registry.install(grant);
 
     expect(() =>
@@ -168,16 +192,15 @@ describe('provider-proxy handoff capsule', () => {
         grantId: grant.grantId,
         secret: 'e'.repeat(64),
         successorInstanceId: SUCCESSOR,
-        operationIds: ORDERED,
         binding: bindingOf(grant),
       }),
     ).toThrow(/did not present the installed grant/u);
     expect(registry.redemption()).toBeNull();
   });
 
-  it('refuses redemption from another set even when the secret and operation list match', () => {
+  it('refuses redemption from another set even when the secret matches', () => {
     const registry = createGrantRegistry(mintReceipt());
-    const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
+    const grant = installedGrantFor(ORDERED);
     registry.install(grant);
 
     // A capsule replayed from a different build set is a grant that was never for this one.
@@ -186,43 +209,18 @@ describe('provider-proxy handoff capsule', () => {
         grantId: grant.grantId,
         secret: SECRET,
         successorInstanceId: SUCCESSOR,
-        operationIds: ORDERED,
         binding: { ...bindingOf(grant), buildSetId: '99999999-9999-4999-8999-999999999999' },
       }),
     ).toThrow(/different guardian\/reaper\/proxy set/u);
     expect(registry.redemption()).toBeNull();
   });
 
-  it('encodes the largest legal capsule well inside the read cap', () => {
-    // The plan budgets 384 bytes per operation and 4096 for the envelope, so the maximal capsule must fit
-    // 53,376 bytes and leave headroom under the 64 KiB pre-parse cap. If those budgets drift apart, a
-    // legitimate full-size capsule would be rejected as oversize in production.
-    const longest = Array.from(
-      { length: 128 },
-      (_, index) => `${index.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`,
-    ).sort();
-    const encoded = new TextEncoder().encode(JSON.stringify(capsuleFor(longest)));
-
-    expect(encoded.byteLength).toBeLessThanOrEqual(53_376);
-    expect(encoded.byteLength).toBeLessThan(MAX_HANDOFF_CAPSULE_BYTES);
-    expect(decodeHandoffCapsule(encoded).operations).toHaveLength(128);
-  });
-
-  it('refuses redemption naming a different operation set', () => {
-    const registry = createGrantRegistry(mintReceipt());
-    const grant = installedGrantFromCapsule(capsuleFor(ORDERED));
-    registry.install(grant);
-
-    expect(() =>
-      registry.redeem({
-        grantId: grant.grantId,
-        secret: SECRET,
-        successorInstanceId: SUCCESSOR,
-        operationIds: [ORDERED[0]],
-        binding: bindingOf(grant),
-      }),
-    ).toThrow(/different operation set/u);
-    expect(registry.redemption()).toBeNull();
+  it('refuses an unsorted or duplicated operation set at handoffOperationSetSchema itself', () => {
+    // No longer reachable through the capsule (it carries no operation set), but every `*.handoff-install.v1`
+    // ingress still parses through this schema — worth a direct, fast unit check independent of any socket.
+    expect(handoffOperationSetSchema.safeParse([OPERATION_B, OPERATION_A]).success).toBe(false);
+    expect(handoffOperationSetSchema.safeParse([OPERATION_A, OPERATION_A]).success).toBe(false);
+    expect(handoffOperationSetSchema.safeParse([OPERATION_A, OPERATION_B]).success).toBe(true);
   });
 
   it('refuses redemption when nothing is installed', () => {
@@ -233,8 +231,7 @@ describe('provider-proxy handoff capsule', () => {
         grantId: randomUUID(),
         secret: SECRET,
         successorInstanceId: SUCCESSOR,
-        operationIds: [],
-        binding: bindingOf(installedGrantFromCapsule(capsuleFor(ORDERED))),
+        binding: bindingOf(installedGrantFor(ORDERED)),
       }),
     ).toThrow(/No grant is installed/u);
   });

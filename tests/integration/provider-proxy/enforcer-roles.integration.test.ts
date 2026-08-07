@@ -316,15 +316,15 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
 
 const GRANT_SECRET = 'f'.repeat(64);
 
-/** Installs one grant over active control and returns the request a successor would redeem it with. */
+/** Installs one grant over active control and returns the request a successor would redeem it with — the
+ *  credential and identity alone: a redeemer never presents the operation set, so it is not part of what this
+ *  returns (see `handoff-capsule.ts`'s `GrantRegistry.redeem` doc for why). */
 async function installGrant(
   set: SetUnderTest,
   operations: ReadonlyArray<Record<string, string>>,
 ): Promise<Record<string, unknown>> {
   const grantId = randomUUID();
-  const handoffOperations = [...operations]
-    .sort((left, right) => (left.operationId < right.operationId ? -1 : 1))
-    .map((operation) => ({ operation, carrierState: 'executing' as const, committedThroughProviderSeq: 7 }));
+  const handoffOperations = [...operations].sort((left, right) => (left.operationId < right.operationId ? -1 : 1));
 
   const installed = (await set.control.call(
     'guardian.handoff-install.v1',
@@ -340,7 +340,7 @@ async function installGrant(
   )) as { state: string; grantId: string };
   expect(installed).toEqual({ state: 'installed-dormant', grantId });
 
-  return { grantId, secret: GRANT_SECRET, successor: set.coordinatorIdentity, operations: handoffOperations };
+  return { grantId, secret: GRANT_SECRET, successor: set.coordinatorIdentity };
 }
 
 /** Opens direct coordinator control on the reaper's own socket — a separate tenancy from the guardian's
@@ -1313,12 +1313,14 @@ describe('provider-proxy guardian and reaper', () => {
       state: string;
       redemptionReceipt: string;
       controlEpoch: number;
-      operations: string[];
+      operations: Record<string, string>[];
       heartbeatChallenge: string;
     };
 
     expect(redeemed.state).toBe('redeemed-provisional');
-    expect(redeemed.operations).toEqual([operation.operationId]);
+    // Nowhere in `request` above did this successor name an operation set — it was never asked to. This is
+    // the installed set coming back from the guardian's own authoritative record, not an echo.
+    expect(redeemed.operations).toEqual([operation]);
     // Redemption yields a tenancy that is provisional until echoed, exactly like a bootstrap open — the
     // endpoint adds the epoch and first challenge; the grant only proves the successor earned them.
     expect(redeemed.controlEpoch).toBe(2);
@@ -1353,7 +1355,7 @@ describe('provider-proxy guardian and reaper', () => {
     await expect(redeemOn({ ...request, successor: other })).rejects.toThrow(/already redeemed by another successor/u);
   });
 
-  it('refuses a grant redeemed against a different operation set', async () => {
+  it('refuses a redemption request that still names an operation set — the field no longer exists on the wire', async () => {
     const set = await startSet();
     const { operation } = await stage(set);
     const request = await installGrant(set, [operation]);
@@ -1363,9 +1365,12 @@ describe('provider-proxy guardian and reaper', () => {
     const successor = await connectControlClient(set.guardianEndpoint, timer, 5_000);
     cleanups.push(() => successor.close());
 
-    await expect(successor.call('guardian.handoff-redeem.v1', { ...request, operations: [] }, 5_000)).rejects.toThrow(
-      /different operation set/u,
-    );
+    // The old redeem contract took `operations` and checked it against what was installed — a check that
+    // could never fail in a legitimate flow, since a redeemer only ever echoed back what the capsule told it.
+    // The new contract takes none: a caller still sending one is refused by the strict schema itself.
+    await expect(
+      successor.call('guardian.handoff-redeem.v1', { ...request, operations: [] }, 5_000),
+    ).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
   });
 
   it('refuses installing a grant for a coordinator of another build', async () => {
@@ -1393,12 +1398,7 @@ describe('provider-proxy guardian and reaper', () => {
     const b = set.operationFor();
     // Deliberately descending: whichever of the two sorts later goes first.
     const [first, second] = a.operationId < b.operationId ? [b, a] : [a, b];
-    const entry = (operation: Record<string, string>) => ({
-      operation,
-      carrierState: 'executing' as const,
-      committedThroughProviderSeq: 0,
-    });
-    const install = (operations: ReturnType<typeof entry>[]): Promise<unknown> =>
+    const install = (operations: Record<string, string>[]): Promise<unknown> =>
       set.control.call(
         'guardian.handoff-install.v1',
         {
@@ -1412,12 +1412,11 @@ describe('provider-proxy guardian and reaper', () => {
         5_000,
       );
 
-    // Only the capsule's own copy of this schema used to carry the byte-sort refinement; the wire schema
-    // this method actually parses did not, so an unsorted install could disagree with a sorted redemption
-    // later — refused as `grant_replayed`, whose contract meaning is "give up", with nothing to diagnose.
-    await expect(install([entry(first), entry(second)])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+    // The wire schema this method parses carries the same byte-sort refinement the installed grant's own
+    // idempotency check depends on, so an unsorted or duplicated set is refused right here, at ingress.
+    await expect(install([first, second])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
     // Duplicated is refused for the same reason, not merely unsorted.
-    await expect(install([entry(first), entry(first)])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+    await expect(install([first, first])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
   });
 
   it("installs the same grant on the reaper's own active control, independent of the guardian's tenancy", async () => {
@@ -1425,7 +1424,7 @@ describe('provider-proxy guardian and reaper', () => {
     const { operation } = await stage(set);
     const reaperControl = await openReaperControl(set);
     const grantId = randomUUID();
-    const handoffOperations = [{ operation, carrierState: 'executing' as const, committedThroughProviderSeq: 7 }];
+    const handoffOperations = [operation];
 
     const installed = (await reaperControl.call(
       'reaper.handoff-install.v1',
@@ -1488,13 +1487,22 @@ describe('provider-proxy guardian and reaper', () => {
       {
         grantId: request.grantId,
         successor: set.coordinatorIdentity,
-        operations: request.operations,
         guardianRedemptionReceipt: redeemed.redemptionReceipt,
       },
       5_000,
-    )) as { state: string; reaperRotationReceipt: string; controlEpoch: number; heartbeatChallenge: string };
+    )) as {
+      state: string;
+      reaperRotationReceipt: string;
+      controlEpoch: number;
+      operations: Record<string, string>[];
+      heartbeatChallenge: string;
+    };
 
     expect(rotated.state).toBe('successor-rotated');
+    // This reaper never received the set from the rotation request (there is no `operations` field to send)
+    // — it comes back from the guardian's own authoritative forward, recorded earlier by
+    // `reaper.record-redemption.v1`.
+    expect(rotated.operations).toEqual([operation]);
     expect(rotated.controlEpoch).toBe(2);
     const beat = (await successorReaper.call(
       'reaper.heartbeat.v1',
@@ -1524,7 +1532,6 @@ describe('provider-proxy guardian and reaper', () => {
         {
           grantId: request.grantId,
           successor: set.coordinatorIdentity,
-          operations: request.operations,
           guardianRedemptionReceipt: 'never-forwarded',
         },
         5_000,
@@ -1554,7 +1561,6 @@ describe('provider-proxy guardian and reaper', () => {
         {
           grantId: request.grantId,
           successor: set.coordinatorIdentity,
-          operations: request.operations,
           guardianRedemptionReceipt: 'a-forged-receipt-nobody-issued',
         },
         5_000,

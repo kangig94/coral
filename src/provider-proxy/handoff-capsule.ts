@@ -11,7 +11,8 @@ import {
   flavorSchema,
   generationSchema,
   hostFingerprintSchema,
-  proxyHandoffOperationSchema,
+  operationIdentitySchema,
+  type OperationIdentity,
 } from './protocol.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 
@@ -28,20 +29,22 @@ export const grantSecretDigestSchema = z
   .regex(/^[0-9a-f]{64}$/u, 'a grant secret digest is SHA-256 as 64 lowercase hexadecimal characters');
 
 /**
- * One handoff operation set, on the wire everywhere it appears: the capsule, both guardian methods, and
- * both proxy methods. Byte order is what makes the set comparable across the three authorities — `sameSet`
- * in this file compares position by position — so the ordering invariant belongs here, next to that
- * comparison, rather than beside `proxyHandoffOperationSchema` in `protocol.ts`, which owns only the element.
- * An unsorted or duplicated set is refused at every ingress rather than made order-insensitive downstream:
- * canonical values are established at the boundary, not repaired past it.
+ * One handoff operation set, on the wire wherever an install or a redemption forward names it:
+ * `*.handoff-install.v1` on all three roles, and the guardian's own forward of a redemption to its paired
+ * reaper. Byte order is what makes the set comparable — an unsorted or duplicated set is refused at every
+ * ingress rather than made order-insensitive downstream: canonical values are established at the boundary,
+ * not repaired past it.
+ *
+ * Deliberately absent from a *redemption request*: the set is established once, at install, and a redeemer
+ * never presents it — see `InstalledGrant.operations` and `GrantRegistry.redeem`'s own doc for why checking
+ * a redeemer-echoed copy against the installed one added nothing a redeemer could not already control.
  */
 export const handoffOperationSetSchema = z
-  .array(proxyHandoffOperationSchema)
+  .array(operationIdentitySchema)
   .max(MAX_PROXY_OPERATION_LEDGERS)
   .superRefine((operations, context) => {
     const ordered = operations.every(
-      (operation, index) =>
-        index === 0 || operations[index - 1].operation.operationId < operation.operation.operationId,
+      (operation, index) => index === 0 || operations[index - 1].operationId < operation.operationId,
     );
     if (!ordered) {
       // Byte order is what makes the set comparable across the three authorities; an unsorted or duplicated
@@ -51,8 +54,19 @@ export const handoffOperationSetSchema = z
   });
 
 /**
- * The successor half of one grant. It names the exact set it may rotate and the complete byte-sorted
- * operation set, so a capsule cannot be redeemed against a set it was not issued for.
+ * The successor half of one grant: exactly what a redeemer needs to reach and authenticate against the set,
+ * and nothing a durable authority already tracks on its own terms. Two facts are deliberately absent:
+ *
+ * - The operation set. It is installed once, directly on all three roles, and a redeemer never needs to name
+ *   it in advance — `GrantRedemption` hands it back at redemption instead (`InstalledGrant.operations`).
+ *   Carrying it here too would make this file a second, staler copy of a fact the roles already hold.
+ * - `committedThroughProviderSeq`. The store's own copy of that watermark advances transactionally, inside
+ *   the same commit as the effect it accompanies (`coordinator/services/provider-event-application.ts`), and
+ *   is the only durable one. A capsule field of the same name would instead be the proxy ledger's *belief*
+ *   about that watermark, frozen at whatever instant this capsule happened to be written — which can lag or
+ *   lead the store's real commit by however long a `provider.event.v1` round trip was still in flight at that
+ *   instant. A successor resumes from the store's own watermark plus one; it must never resume from a number
+ *   this file could hand it instead.
  */
 export const handoffCapsuleSchema = z
   .object({
@@ -69,7 +83,6 @@ export const handoffCapsuleSchema = z
     guardianControlEndpoint: canonicalEndpointSchema,
     reaperControlEndpoint: canonicalEndpointSchema,
     proxyEndpoint: canonicalEndpointSchema,
-    operations: handoffOperationSetSchema,
     orphanTimeoutMs: z.number().int().positive(),
     teardownReserveMs: z.number().int().positive(),
   })
@@ -78,9 +91,15 @@ export const handoffCapsuleSchema = z
 export type HandoffCapsule = z.infer<typeof handoffCapsuleSchema>;
 
 /**
- * What the three authorities retain. The secret itself is never stored beside the digest, and the whole
- * identity tuple is kept: a grant is bound to one exact set, so a capsule replayed from another build set
- * or another proxy cannot be redeemed here just because its secret and operation list happen to match.
+ * What the three authorities retain. The secret itself is never stored beside the digest, and the identity
+ * tuple is what a grant is bound to: a capsule replayed from another build set or another proxy cannot be
+ * redeemed here just because its secret happens to match (`GrantBinding`, checked by `redeem` below).
+ *
+ * `operations` is retained but not bound: it is recorded once at `install` and handed back verbatim by
+ * `redeem` (see `GrantRedemption`), never re-checked against anything a caller later presents. Binding
+ * redemption to it added nothing a redeemer could not already control — a redeemer that only ever echoes
+ * back what it was told is being checked against itself, not against an independent fact — while the
+ * identity tuple, `secretSha256`, and each role's own instance id are facts the redeemer cannot forge.
  */
 export type InstalledGrant = Readonly<{
   grantId: string;
@@ -92,7 +111,7 @@ export type InstalledGrant = Readonly<{
   guardianInstanceId: string;
   reaperInstanceId: string;
   proxyInstanceId: string;
-  operationIds: readonly string[];
+  operations: readonly OperationIdentity[];
   /**
    * Part of what the grant is bound to, not decoration: a successor computes its attach budget from this,
    * so a grant installed under one orphan timeout must not be redeemable against a set running another.
@@ -293,23 +312,6 @@ export function readHandoffCapsuleFile(path: string, env: HandoffCapsuleFileEnvi
   }
 }
 
-/** The installed half, derived so an installer never has to hold the secret to record the grant. */
-export function installedGrantFromCapsule(capsule: HandoffCapsule): InstalledGrant {
-  return Object.freeze({
-    grantId: capsule.grantId,
-    secretSha256: handoffSecretDigest(capsule.secret),
-    generation: capsule.generation,
-    flavor: capsule.flavor,
-    buildSetId: capsule.buildSetId,
-    hostFingerprint: capsule.hostFingerprint,
-    guardianInstanceId: capsule.guardianInstanceId,
-    reaperInstanceId: capsule.reaperInstanceId,
-    proxyInstanceId: capsule.proxyInstanceId,
-    operationIds: Object.freeze(capsule.operations.map((entry) => entry.operation.operationId)),
-    orphanTimeoutMs: capsule.orphanTimeoutMs,
-  });
-}
-
 function digestsMatch(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left, 'hex');
   const rightBytes = Buffer.from(right, 'hex');
@@ -340,25 +342,30 @@ export type GrantBinding = Pick<
 >;
 
 /**
- * One set-wide grant, consumed by the first redemption that presents the matching secret and the identical
- * operation set. Install is idempotent only for the exact same value: re-installing a different digest or a
- * different set under the same id is a conflict, not an update.
+ * One set-wide grant, consumed by the first redemption that presents the matching secret and identity tuple.
+ * Install is idempotent only for the exact same value: re-installing a different digest or a different
+ * operation set under the same id is a conflict, not an update.
  */
 export interface GrantRegistry {
   install(grant: InstalledGrant): { state: 'installed-dormant'; grantId: string };
   /**
    * Consumes the grant for one successor. Single-use means one *successor*, not one call: a successor whose
-   * reply was lost in transit retries with the identical grant, secret, set and identity, and must get back
-   * what it already earned — refusing it would hand the set to a teardown it had already prevented. The
-   * recorded redemption is what tells "the same one, again" from "a different one", so retry-safety and
+   * reply was lost in transit retries with the identical grant and identity, and must get back what it
+   * already earned — refusing it would hand the set to a teardown it had already prevented. The recorded
+   * redemption is what tells "the same one, again" from "a different one", so retry-safety and
    * replay-refusal are the same comparison rather than two mechanisms.
+   *
+   * No `operations` parameter: the installed set is not part of what a redeemer proves it holds — a redeemer
+   * would only ever be echoing back the exact value it read out of the capsule this same install produced,
+   * which the installed copy already equals by construction. `GrantRedemption.grant.operations` hands the set
+   * back on success instead, so a caller who genuinely needs it gets it from the one place it was ever
+   * authoritative.
    */
   redeem(input: {
     grantId: string;
     secret: string;
     /** Who is redeeming. Recorded on the first success and required to match on every retry. */
     successorInstanceId: string;
-    operationIds: readonly string[];
     binding: GrantBinding;
   }): GrantRedemption;
   redemption(): GrantRedemption | null;
@@ -368,8 +375,18 @@ export function createGrantRegistry(mintReceipt: () => string): GrantRegistry {
   let installed: InstalledGrant | null = null;
   let redemption: GrantRedemption | null = null;
 
-  const sameSet = (left: readonly string[], right: readonly string[]): boolean =>
-    left.length === right.length && left.every((value, index) => value === right[index]);
+  /** Order-sensitive on purpose: both sides of every comparison this guards were sorted the same way at
+   *  their own ingress (`handoffOperationSetSchema`), so a position-by-position walk is equality, not just
+   *  membership — used only for `install`'s own idempotency, never for redemption (see `redeem`'s own doc). */
+  const sameOperations = (left: readonly OperationIdentity[], right: readonly OperationIdentity[]): boolean =>
+    left.length === right.length &&
+    left.every(
+      (value, index) =>
+        value.jobId === right[index].jobId &&
+        value.operationId === right[index].operationId &&
+        value.proxyInstanceId === right[index].proxyInstanceId &&
+        value.buildSetId === right[index].buildSetId,
+    );
 
   /** Every field a grant is bound to, including the timeout only an installer names. */
   const sameBinding = (left: InstalledGrant, right: InstalledGrant): boolean =>
@@ -389,7 +406,7 @@ export function createGrantRegistry(mintReceipt: () => string): GrantRegistry {
         if (
           !sameBinding(installed, grant) ||
           !digestsMatch(installed.secretSha256, grant.secretSha256) ||
-          !sameSet(installed.operationIds, grant.operationIds)
+          !sameOperations(installed.operations, grant.operations)
         ) {
           throw new ProxyControlProtocolError('grant_invalid', 'A different grant is already installed for this set.');
         }
@@ -399,7 +416,7 @@ export function createGrantRegistry(mintReceipt: () => string): GrantRegistry {
       return { state: 'installed-dormant', grantId: grant.grantId };
     },
 
-    redeem({ grantId, secret, successorInstanceId, operationIds, binding }): GrantRedemption {
+    redeem({ grantId, secret, successorInstanceId, binding }): GrantRedemption {
       if (installed === null)
         throw new ProxyControlProtocolError('grant_invalid', 'No grant is installed for this set.');
       if (installed.grantId !== grantId || !digestsMatch(installed.secretSha256, handoffSecretDigest(secret))) {
@@ -411,9 +428,6 @@ export function createGrantRegistry(mintReceipt: () => string): GrantRegistry {
           'grant_replayed',
           'Redemption named a different guardian/reaper/proxy set.',
         );
-      }
-      if (!sameSet(installed.operationIds, operationIds)) {
-        throw new ProxyControlProtocolError('grant_replayed', 'Redemption named a different operation set.');
       }
       if (redemption !== null) {
         if (redemption.successorInstanceId !== successorInstanceId) {

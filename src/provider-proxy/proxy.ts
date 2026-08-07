@@ -127,13 +127,14 @@ const handoffInstallParamsSchema = z
   })
   .strict();
 
+/** No `operations` field: the set is bound at install and returned by redemption, never presented by a
+ *  redeemer to be checked against — see `GrantRegistry.redeem`'s own doc for why. */
 const handoffRedeemParamsSchema = z
   .object({
     grantId: canonicalUuidSchema,
     secret: grantSecretSchema,
     successor: coordinatorIdentitySchema,
     ...grantSetShape,
-    operations: handoffOperationSetSchema,
   })
   .strict();
 
@@ -592,7 +593,9 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           }
           // Set-scoping, not a separate authority: an operation outside the redeemed set is one this
           // successor never earned, however valid its control tenancy is.
-          if (!redemption.grant.operationIds.includes(request.operation.operationId)) {
+          if (
+            !redemption.grant.operations.some((operation) => operation.operationId === request.operation.operationId)
+          ) {
             throw new ProxyControlProtocolError('operation_not_found', 'That operation is outside the redeemed set.');
           }
           const key = ledgerKey(request.operation);
@@ -665,7 +668,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             grantId: request.grantId,
             secretSha256: request.secretSha256,
             ...setIdentity,
-            operationIds: request.operations.map((entry) => entry.operation.operationId),
+            operations: request.operations,
             orphanTimeoutMs: request.orphanTimeoutMs,
           });
         },
@@ -683,7 +686,6 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             grantId: request.grantId,
             secret: request.secret,
             successorInstanceId: request.successor.instanceId,
-            operationIds: request.operations.map((entry) => entry.operation.operationId),
             binding: setIdentity,
           });
           return {
@@ -692,7 +694,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
               state: 'redeemed-provisional',
               redemptionReceipt: redemption.redemptionReceipt,
               proxy: identity,
-              operations: redemption.grant.operationIds,
+              operations: redemption.grant.operations,
             },
           };
         },
