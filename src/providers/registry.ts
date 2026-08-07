@@ -29,7 +29,7 @@ import {
   type ProviderProfileSet,
   type ProviderScope,
 } from '../infra/provider-scope.js';
-import { zodPersistedContract, type CanonicalContractValue } from '../store/format-fingerprint.js';
+import { zodPersistedContract, type CanonicalContractValue } from '../infra/persisted-contract.js';
 import { snapshotBoundaryData } from './internal/snapshot.js';
 import { snapshotArtifacts, snapshotImplementation } from './internal/definition-boundary.js';
 import { eraseBindingCodec, type ErasedProviderBindingBoundary } from './internal/binding-boundary.js';

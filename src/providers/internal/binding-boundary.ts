@@ -19,7 +19,7 @@ import type { ProviderExecutionPlan } from '../execution-plan.js';
 import { providerBindingEnvelopeSchema, type ProviderBindingEnvelope } from '../../infra/provider-binding-envelope.js';
 import { jsonValueSchema, type JsonValue } from '../../infra/json-value.js';
 import { providerProfileEnvelopeSchema, type ProviderProfileEnvelope } from '../../infra/provider-scope.js';
-import type { CanonicalContractValue } from '../../store/format-fingerprint.js';
+import type { CanonicalContractValue } from '../../infra/persisted-contract.js';
 import { rehydrateCodecBinding, type CapturedBoundCodec } from './bound-provider.js';
 import { snapshotBoundaryData, snapshotPlainReceiver, snapshotProviderResult } from './snapshot.js';
 import type { AppServerHostAuthority } from './app-server-host.js';

@@ -1,10 +1,9 @@
 import { z } from 'zod';
 
+import { zodPersistedContract, type CanonicalContractValue } from '../infra/persisted-contract.js';
 import {
   describeStoreFormat,
   PersistedCodecRegistry,
-  zodPersistedContract,
-  type CanonicalContractValue,
   type PersistedDdlFragment,
   type StoreFormatFingerprintDescription,
 } from './format-fingerprint.js';

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { zodPersistedContract } from '../store/format-fingerprint.js';
+import { zodPersistedContract } from '../infra/persisted-contract.js';
 import type { ProviderPersistedParser, ProviderValueParser } from './binding-parser-contract.js';
 
 function privateSchema<Value>(factory: () => z.ZodType<Value>): z.ZodType<Value> {
