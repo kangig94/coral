@@ -1,4 +1,4 @@
-import type { ProviderServerHandle } from '../provider-server-transport.js';
+import type { ProviderServerHandle } from '../../../providers/app-server-transport.js';
 import type { TimePort } from '../../../infra/port-types.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { activePinCount } from './lease.js';

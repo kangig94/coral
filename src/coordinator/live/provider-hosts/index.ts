@@ -1,5 +1,5 @@
 import type { AppServerTransport, HostRef, ProviderServerSpec } from '../../../providers/contract.js';
-import type { ProviderServerHandle, SpawnProviderServerFn } from '../provider-server-transport.js';
+import type { ProviderServerHandle, SpawnProviderServerFn } from '../../../providers/app-server-transport.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import {

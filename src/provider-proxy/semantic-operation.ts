@@ -76,7 +76,7 @@ function appServerError(provider: string, detail: string): Error {
 /**
  * Spawns one raw app-server child and speaks newline-delimited JSON-RPC over its piped stdio. A trimmed,
  * independently-written mirror of `spawnProviderServerTransport`
- * (`src/coordinator/live/provider-server-transport.ts`) restricted to what `AppServerTransport` needs —
+ * (`src/providers/app-server-transport.ts`) restricted to what `AppServerTransport` needs —
  * `rpc`/`subscribe`/`closed` — because that module lives under the forbidden `src/coordinator/live/` tree.
  */
 async function spawnAppServerChild(

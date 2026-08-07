@@ -42,7 +42,7 @@ export type RoleSpawnPorts = Readonly<{
   process: Pick<Runtime['process'], 'spawn'>;
   /** Used only to escalate a spawn that must be killed before it ever became a role this module tracks
    *  (`role_spawn_no_pid` / `role_spawn_start_time_unavailable`) from SIGTERM to SIGKILL after a grace
-   *  period, the same shape `coordinator/live/process-supervision.ts`'s `gracefulKill` uses — reimplemented
+   *  period, the same shape `infra/process-supervision.ts`'s `gracefulKill` uses — reimplemented
    *  locally because the provider proxy may import nothing under `src/coordinator/`
    *  (`architecture-layering.test.ts`, `provider-proxy-no-store.test.ts`). */
   time: Pick<Runtime['time'], 'setTimeout' | 'clearTimeout'>;
@@ -90,7 +90,7 @@ function resolveBackendArtifact(pluginRoot: string, currentEntrypoint: string | 
 /**
  * SIGTERM, escalating to SIGKILL after the standard grace period if the child has not exited by then. Kills
  * only the exact spawned handle — never a bare pid — so there is no window in which a recycled pid could be
- * signalled. This is `gracefulKill`'s own shape (`coordinator/live/process-supervision.ts`), reimplemented
+ * signalled. This is `gracefulKill`'s own shape (`infra/process-supervision.ts`), reimplemented
  * here rather than imported: the provider proxy may reach nothing under `src/coordinator/`.
  */
 function killSpawnedRoleProcess(

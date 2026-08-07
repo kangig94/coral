@@ -1,12 +1,12 @@
-import { backendLog } from '../../infra/backend-log.js';
-import { errorMessage } from '../../infra/error-format.js';
-import { buildJsonRpcError } from '../../infra/json-rpc.js';
-import { MAX_BUFFER } from '../../infra/process-constants.js';
-import { shouldUseWindowsCommandShell } from '../../infra/windows-shell.js';
-import type { ChildProcessLike } from '../../infra/port-types.js';
-import type { Runtime } from '../../runtime/ports.js';
-import { AbortError } from '../../runtime/abort.js';
-import { appendBuffer, gracefulKill, requirePipedHandles } from './process-supervision.js';
+import { backendLog } from '../infra/backend-log.js';
+import { errorMessage } from '../infra/error-format.js';
+import { buildJsonRpcError } from '../infra/json-rpc.js';
+import { MAX_BUFFER } from '../infra/process-constants.js';
+import { shouldUseWindowsCommandShell } from '../infra/windows-shell.js';
+import type { ChildProcessLike } from '../infra/port-types.js';
+import type { Runtime } from '../runtime/ports.js';
+import { AbortError } from '../runtime/abort.js';
+import { appendBuffer, gracefulKill, requirePipedHandles } from '../infra/process-supervision.js';
 
 export const PROVIDER_SERVER_MAX_JSONL_LINE_BYTES = MAX_BUFFER;
 export const PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS = 30_000;

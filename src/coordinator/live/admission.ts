@@ -1,6 +1,6 @@
 import type { Runtime } from '../../runtime/ports.js';
 import { type CliExecResult, type SpawnDurableJobOptions, spawnDurableJobTransport } from './durable-transport.js';
-import { type SpawnProviderServerOptions, spawnProviderServerTransport } from './provider-server-transport.js';
+import { type SpawnProviderServerOptions, spawnProviderServerTransport } from '../../providers/app-server-transport.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import { getActiveLimit, parsePositiveInt } from './worker-limits.js';
 import type { AdmissionResult, LaunchPool, QueuedHandle } from '../../jobs/contracts/admission.js';

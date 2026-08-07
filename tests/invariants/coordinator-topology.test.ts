@@ -45,11 +45,9 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/live/carrier-observer.ts',
   'src/coordinator/live/durable-transport.ts',
   'src/coordinator/live/idle.ts',
-  'src/coordinator/live/process-supervision.ts',
   'src/coordinator/live/provider-proxy-acquisition.ts',
   'src/coordinator/live/provider-proxy-acquisition-steps.ts',
   'src/coordinator/live/provider-proxy-authority.ts',
-  'src/coordinator/live/provider-server-transport.ts',
   'src/coordinator/live/provider-hosts/drain.ts',
   'src/coordinator/live/provider-hosts/idle.ts',
   'src/coordinator/live/provider-hosts/index.ts',
@@ -106,6 +104,10 @@ const CONTRACT_TARGETS = new Set([
   'src/kb/state/corpus-state.ts',
   'src/kb/search/contract.ts',
   'src/kb/projection-input-contract.ts',
+  // The app-server child transport the host pool spawns through. Long a coordinator edge; it used to sit
+  // inside `coordinator/live/`, so it crossed no seam to reach. Moving it to the domain that owns provider
+  // process adaptation made the edge visible — it did not create one.
+  'src/providers/app-server-transport.ts',
   'src/providers/contract.ts',
   'src/providers/protocol.ts',
   'src/providers/registry.ts',

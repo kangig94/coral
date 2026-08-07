@@ -1,6 +1,6 @@
 import { basename, join } from 'node:path';
 import { errorMessage, formatError } from '../../infra/error-format.js';
-import { appendBuffer, gracefulKill, requirePipedHandles, safeKill } from './process-supervision.js';
+import { appendBuffer, gracefulKill, requirePipedHandles, safeKill } from '../../infra/process-supervision.js';
 import type { Runtime } from '../../runtime/ports.js';
 import {
   KB_DAEMON_REQUEST_MESSAGE,

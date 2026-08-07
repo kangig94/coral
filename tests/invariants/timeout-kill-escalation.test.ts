@@ -25,7 +25,7 @@ const SRC_ROOT = 'src';
 
 // The primitive's own home — defines `safeKill` and the `gracefulKill`
 // escalation that callers are supposed to use.
-const PRIMITIVE_FILE = 'src/coordinator/live/process-supervision.ts';
+const PRIMITIVE_FILE = 'src/infra/process-supervision.ts';
 
 // File-level allowlist: call sites permitted to use the bare primitive, each
 // with the reason escalation does not apply. Adding a new entry is a conscious

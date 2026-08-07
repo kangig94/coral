@@ -56,7 +56,7 @@ const JOBS_TERMINAL_RECORDING = 'src/jobs/terminal/recording.ts';
 const KB_PATHS_MODULE = 'src/kb/paths.ts';
 const KB_JOB_RECORDER = 'src/jobs/kb/recorder.ts';
 const DURABLE_TRANSPORT_MODULE = 'src/coordinator/live/durable-transport.ts';
-const PROVIDER_SERVER_TRANSPORT_MODULE = 'src/coordinator/live/provider-server-transport.ts';
+const PROVIDER_SERVER_TRANSPORT_MODULE = 'src/providers/app-server-transport.ts';
 const CONSUMER_DRIVER_MODULE = 'src/projection-consumers/index.ts';
 
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(SRC_ROOT);

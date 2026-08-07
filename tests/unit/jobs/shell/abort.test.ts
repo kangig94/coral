@@ -31,7 +31,7 @@ import {
 } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
-import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
+import type { ProviderServerHandle } from '#src/providers/app-server-transport.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { JobStore } from '#src/jobs/store.js';

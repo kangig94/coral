@@ -99,6 +99,11 @@ const COORDINATOR_ALLOWED = new Set([
   'src/kb/projection-input-contract.ts',
   'src/kb/state/corpus-state.ts',
   'src/kb/search/contract.ts',
+  // The app-server child transport. The coordinator's host pool has always spawned children through it; it
+  // simply used to sit inside `coordinator/live/` and so crossed no boundary to reach. It is provider-domain
+  // by what it does — spawning a provider's app-server child and framing its JSON-RPC — and it now lives
+  // there, which makes this edge visible rather than new.
+  'src/providers/app-server-transport.ts',
   'src/providers/contract.ts',
   'src/providers/protocol.ts',
   'src/providers/registry.ts',
