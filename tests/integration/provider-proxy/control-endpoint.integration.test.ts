@@ -652,3 +652,129 @@ describe('provider-proxy control endpoint', () => {
     expect(failed.error?.message.length ?? 0).toBeLessThanOrEqual(203);
   });
 });
+
+/** A pre-encoded request frame `pushOnTenancy` can write — the shape any `provider.event.v1` push takes,
+ *  though `pushOnTenancy` itself is transport-only and does not inspect `method`. */
+function pushFrame(id: number): string {
+  return `${JSON.stringify({ jsonrpc: '2.0', id, method: 'provider.event.v1', params: { hello: 'world' } })}\n`;
+}
+
+/** Answers the next raw frame the far end of `socket` receives as if it were the peer replying to a push —
+ *  below `Client.call()`'s own abstraction, since a push is unsolicited from the peer's point of view and
+ *  `Client` only ever matches replies to ids it minted itself. */
+function respondToPush(socket: Socket, buildResult: (id: number | string) => unknown): void {
+  socket.once('data', (chunk: Buffer) => {
+    const message = JSON.parse(chunk.toString('utf8').split('\n')[0]) as { id: number | string };
+    socket.write(`${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: buildResult(message.id) })}\n`);
+  });
+}
+
+describe('provider-proxy control endpoint: pushOnTenancy', () => {
+  it('rejects a push when no tenancy has ever opened', async () => {
+    const { endpoint } = await startEndpoint();
+
+    await expect(endpoint.pushOnTenancy(pushFrame(1), 200)).rejects.toMatchObject({
+      code: 'control_endpoint_push_no_tenancy',
+    });
+  });
+
+  it('rejects a push before the tenancy’s first heartbeat echo', async () => {
+    const { socketPath, endpoint } = await startEndpoint();
+    const client = await connect(socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+
+    await expect(endpoint.pushOnTenancy(pushFrame(1), 200)).rejects.toMatchObject({
+      code: 'control_endpoint_push_no_tenancy',
+    });
+  });
+
+  it('writes the frame on the tenancy’s own socket and resolves with the peer’s result', async () => {
+    const { socketPath, endpoint } = await startEndpoint();
+    const client = await connect(socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    const pushed = endpoint.pushOnTenancy(pushFrame(42), 5_000);
+    respondToPush(client.socket, () => ({ committed: true }));
+
+    await expect(pushed).resolves.toEqual({ committed: true });
+  });
+
+  it('rejects a push the peer answers with an error', async () => {
+    const { socketPath, endpoint } = await startEndpoint();
+    const client = await connect(socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    const pushed = endpoint.pushOnTenancy(pushFrame(1), 5_000);
+    client.socket.once('data', (chunk: Buffer) => {
+      const message = JSON.parse(chunk.toString('utf8').split('\n')[0]) as { id: number };
+      client.socket.write(
+        `${JSON.stringify({ jsonrpc: '2.0', id: message.id, error: { code: -32_000, message: 'refused upstream' } })}\n`,
+      );
+    });
+
+    await expect(pushed).rejects.toMatchObject({ code: 'control_endpoint_push_refused', message: 'refused upstream' });
+  });
+
+  it('times out a push nobody answers', async () => {
+    const { socketPath, endpoint } = await startEndpoint();
+    const client = await connect(socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    await expect(endpoint.pushOnTenancy(pushFrame(1), 50)).rejects.toMatchObject({
+      code: 'control_endpoint_push_timeout',
+    });
+  });
+
+  it('rejects a still-outstanding push when its own socket closes before a reply lands', async () => {
+    const { socketPath, endpoint } = await startEndpoint();
+    const client = await connect(socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    const pushed = endpoint.pushOnTenancy(pushFrame(1), 5_000);
+    client.close();
+
+    await expect(pushed).rejects.toMatchObject({ code: 'control_endpoint_push_lost' });
+  });
+
+  it('rejects a push outstanding on a predecessor connection rather than letting the successor answer it', async () => {
+    const set = await startEndpoint();
+    const { socketPath, endpoint } = set;
+    const incumbent = await connect(socketPath);
+    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await incumbent.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    const pushed = endpoint.pushOnTenancy(pushFrame(1), 5_000);
+    // Attached in the same tick `pushed` is created: the rejection this test provokes below fires from a
+    // socket 'close' callback several ticks later, and Node flags a promise as unhandled by whether a handler
+    // was attached *before* that callback runs — not by whether one is attached eventually.
+    const rejected = expect(pushed).rejects.toMatchObject({ code: 'control_endpoint_push_lost' });
+    // The incumbent never answers; instead its lease lapses and a successor redeems while the push is still
+    // outstanding — the epoch rotates, but the pending push was bound to the *socket* it was written on.
+    set.lapseControl();
+    const successor = await connect(socketPath);
+    await successor.call('role.redeem.v1', {});
+
+    // The predecessor's connection is destroyed on redemption, which is what must reject this push — a reply
+    // arriving on the successor's own (different) socket could never satisfy it even without this cleanup,
+    // but nothing here should leave it hanging either.
+    await rejected;
+    expect(endpoint.currentEpoch()).toBe(2);
+  });
+
+  it('does not block an ordinary inbound request while a push is outstanding', async () => {
+    const { socketPath, endpoint } = await startEndpoint();
+    const client = await connect(socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    // Left outstanding for the rest of the test — settled only by `endpoint.close()` in the shared afterEach.
+    void endpoint.pushOnTenancy(pushFrame(1), 5_000).catch(() => {});
+
+    const worked = await client.call('role.work.v1', {});
+    expect(worked.result).toEqual({ state: 'worked' });
+  });
+});

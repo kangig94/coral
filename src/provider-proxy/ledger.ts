@@ -122,8 +122,20 @@ export interface OperationLedger {
   acknowledge(key: ProviderOperationKey, committedThroughProviderSeq: number): { resumed: boolean };
   /** Events after the acknowledged point, which a reconnecting consumer must be replayed. */
   replayFrom(key: ProviderOperationKey, afterProviderSeq: number): readonly ReplayEvent[];
+  /**
+   * The `providerSeq` the next `recordEvent` call for this operation must use: one past whatever is
+   * currently the newest buffered event, or one past the last acknowledged point once the buffer is empty.
+   * The one place this arithmetic lives, so a caller never re-derives it from `bufferedEvents` itself and
+   * risks drifting from the exact floor `recordEvent` enforces.
+   */
+  nextProviderSeq(key: ProviderOperationKey): number;
   get(key: ProviderOperationKey): OperationLedgerEntry | null;
   size(): number;
+  /**
+   * Every operation this ledger currently holds, in no particular order. Used to resume draining every
+   * operation's buffer after a control tenancy reattaches — not to look up any one operation's own state.
+   */
+  keys(): readonly ProviderOperationKey[];
 }
 
 type MutableEntry = {
@@ -281,6 +293,15 @@ export function createOperationLedger(): OperationLedger {
         throw new LedgerError('operation_invalid_transition', 'Provider sequence must increase monotonically.');
       }
       const cost = frameBytes(event);
+      // A frame that alone exceeds the per-operation budget could never be fully buffered no matter how much
+      // capacity later frees up elsewhere — pausing for room that can never open would wait forever. Refusing
+      // to buffer it at all is what lets the caller route it into its own failed-terminal path instead.
+      if (cost > MAX_PROVIDER_REPLAY_BYTES) {
+        throw new LedgerError(
+          'replay_capacity_exhausted',
+          `A single provider event was ${cost} bytes, over the ${MAX_PROVIDER_REPLAY_BYTES}-byte per-operation limit.`,
+        );
+      }
       entry.buffered.push(event);
       entry.bufferedBytes += cost;
       proxyBufferedBytes += cost;
@@ -314,6 +335,12 @@ export function createOperationLedger(): OperationLedger {
       return Object.freeze(entry.buffered.filter((event) => event.providerSeq > afterProviderSeq));
     },
 
+    nextProviderSeq(key): number {
+      const entry = require(key);
+      const last = entry.buffered.at(-1);
+      return (last?.providerSeq ?? entry.committedThroughProviderSeq) + 1;
+    },
+
     get(key): OperationLedgerEntry | null {
       const entry = entries.get(keyOf(key));
       return entry === undefined ? null : snapshot(entry);
@@ -321,6 +348,10 @@ export function createOperationLedger(): OperationLedger {
 
     size(): number {
       return entries.size;
+    },
+
+    keys(): readonly ProviderOperationKey[] {
+      return Object.freeze([...entries.values()].map((entry) => entry.key));
     },
   };
 }

@@ -1,13 +1,27 @@
 import { createConnection, type Socket } from 'node:net';
 
 import {
+  PROVIDER_EVENT_METHOD,
   PROXY_CONTROL_PROTOCOL_ERROR_CODES,
   ProxyControlProtocolError,
   createFrameReader,
   decodeProxyControlFrame,
   encodeProxyControlFrame,
+  providerEventRequestSchema,
+  providerEventResultSchema,
+  type ProviderEventRequest,
+  type ProviderEventResult,
+  type ProxyControlJsonRpcMessage,
   type ProxyControlProtocolErrorCode,
 } from './protocol.js';
+
+/**
+ * Answers the one inbound method this client ever serves: `provider.event.v1`, the proxy's own push of one
+ * buffered provider event back over the connection this client dialed out on.
+ */
+export type ProviderEventHandler = (
+  request: ProviderEventRequest,
+) => Promise<ProviderEventResult> | ProviderEventResult;
 
 /** The elapsed-time surface one request budget draws from. */
 export interface ControlClientTimer {
@@ -62,11 +76,17 @@ type Pending = Readonly<{
 /**
  * Connects one control channel. A single connection carries the whole channel lifetime because the server
  * side reserves exactly one live connection as control — reconnecting would be a new tenancy, not a retry.
+ *
+ * `onProviderEvent`, when supplied, answers the one method the peer may send back over this same connection.
+ * Every other inbound method — and `provider.event.v1` itself when no handler was installed — is refused
+ * with the protocol's own closed-set vocabulary rather than silently dropped, so a peer sending something out
+ * of protocol gets a diagnosable reply instead of a connection that mysteriously never answers.
  */
 export async function connectControlClient(
   socketPath: string,
   timer: ControlClientTimer,
   connectTimeoutMs: number,
+  onProviderEvent?: ProviderEventHandler,
 ): Promise<ControlClient> {
   const socket = await new Promise<Socket>((resolve, reject) => {
     const pendingSocket = createConnection(socketPath);
@@ -99,6 +119,65 @@ export async function connectControlClient(
     }
   };
 
+  // JSON-RPC's own reserved "invalid request"/"internal error" codes. `control-endpoint.ts` uses the same
+  // values for its equivalent refusals; redeclared here rather than imported because those constants are
+  // private to that module, and this client owns no reach into it.
+  const JSON_RPC_INVALID_REQUEST = -32_600;
+  const JSON_RPC_INTERNAL_ERROR = -32_603;
+
+  const refuseInboundRequest = (id: string | number, code: ProxyControlProtocolErrorCode, message: string): void => {
+    if (socket.destroyed) return;
+    socket.write(
+      encodeProxyControlFrame({
+        jsonrpc: '2.0',
+        id,
+        error: { code: JSON_RPC_INVALID_REQUEST, message, data: { code } },
+      }),
+    );
+  };
+
+  /**
+   * Serves the one inbound method this client ever answers. Every other inbound method — and
+   * `provider.event.v1` itself with no `onProviderEvent` installed — is refused with the protocol's own
+   * closed-set vocabulary instead of silently dropped, so a peer sending something out of protocol gets a
+   * diagnosable reply rather than a connection that mysteriously never answers.
+   */
+  const serveInboundRequest = async (
+    request: Extract<ProxyControlJsonRpcMessage, { method: string }>,
+  ): Promise<void> => {
+    if (request.method !== PROVIDER_EVENT_METHOD || onProviderEvent === undefined) {
+      refuseInboundRequest(request.id, 'protocol_violation', `This control client does not serve ${request.method}.`);
+      return;
+    }
+    let parsed: ProviderEventRequest;
+    try {
+      parsed = providerEventRequestSchema.parse(request.params);
+    } catch {
+      refuseInboundRequest(request.id, 'invalid_request', `${PROVIDER_EVENT_METHOD} failed strict validation.`);
+      return;
+    }
+    let result: ProviderEventResult;
+    try {
+      result = providerEventResultSchema.parse(await onProviderEvent(parsed));
+    } catch (error: unknown) {
+      if (socket.destroyed) return;
+      socket.write(
+        encodeProxyControlFrame({
+          jsonrpc: '2.0',
+          id: request.id,
+          error: {
+            code: JSON_RPC_INTERNAL_ERROR,
+            message: error instanceof Error ? error.message : `${PROVIDER_EVENT_METHOD} failed.`,
+            data: { code: 'protocol_violation' },
+          },
+        }),
+      );
+      return;
+    }
+    if (socket.destroyed) return;
+    socket.write(encodeProxyControlFrame({ jsonrpc: '2.0', id: request.id, result }));
+  };
+
   // Frames are split on the newline byte and each complete frame is decoded once. Decoding a socket chunk
   // on its own would corrupt any multi-byte character straddling the boundary, and the damage would survive
   // JSON.parse and strict validation because it lands inside a JSON string.
@@ -111,9 +190,8 @@ export async function connectControlClient(
         socket.destroy();
         return;
       }
-      // A control server never calls back, so an inbound request is out of protocol rather than work.
       if ('method' in message) {
-        socket.destroy();
+        void serveInboundRequest(message);
         return;
       }
       if (message.id === null) return;

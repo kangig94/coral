@@ -258,4 +258,55 @@ describe('provider-proxy operation ledger', () => {
 
     expect(ledger.get(KEY)?.state).toBe('executing');
   });
+
+  it('computes the next providerSeq from the newest buffered event, or the acknowledged floor once empty', () => {
+    const ledger = createOperationLedger();
+    reserved(ledger);
+
+    expect(ledger.nextProviderSeq(KEY)).toBe(1);
+
+    ledger.recordEvent(KEY, { providerSeq: 1, frame: 'first' });
+    ledger.recordEvent(KEY, { providerSeq: 2, frame: 'second' });
+    expect(ledger.nextProviderSeq(KEY)).toBe(3);
+
+    ledger.acknowledge(KEY, 2);
+    expect(ledger.nextProviderSeq(KEY)).toBe(3);
+  });
+
+  it('refuses to buffer a single event that alone exceeds the per-operation byte budget', () => {
+    const ledger = createOperationLedger();
+    reserved(ledger);
+
+    let caught: unknown;
+    try {
+      ledger.recordEvent(KEY, { providerSeq: 1, frame: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES + 1) });
+    } catch (error: unknown) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(LedgerError);
+    expect((caught as InstanceType<typeof LedgerError>).code).toBe('replay_capacity_exhausted');
+    // Refused, not partially buffered: nothing was recorded, so the sequence floor did not move.
+    expect(ledger.get(KEY)?.bufferedEvents).toEqual([]);
+    expect(ledger.nextProviderSeq(KEY)).toBe(1);
+  });
+
+  it('lists every held operation for resuming a drain after a control tenancy reattaches', () => {
+    const ledger = createOperationLedger();
+    expect(ledger.keys()).toEqual([]);
+
+    reserved(ledger, { jobId: 'job-1', operationId: 'op-1' });
+    reserved(ledger, { jobId: 'job-1', operationId: 'op-2' });
+
+    expect(ledger.keys()).toEqual(
+      expect.arrayContaining([
+        { jobId: 'job-1', operationId: 'op-1' },
+        { jobId: 'job-1', operationId: 'op-2' },
+      ]),
+    );
+    expect(ledger.keys()).toHaveLength(2);
+
+    ledger.transition({ jobId: 'job-1', operationId: 'op-1' }, 'released');
+    expect(ledger.keys()).toEqual([{ jobId: 'job-1', operationId: 'op-2' }]);
+  });
 });

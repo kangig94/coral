@@ -2,6 +2,12 @@ import { isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
 
+import {
+  providerArtifactHandleEventBodySchema,
+  providerContinuityEventBodySchema,
+  providerSuspendedEventBodySchema,
+  providerTerminalEventBodySchema,
+} from '../providers/contract.js';
 import type { ProviderOperationState } from './ledger.js';
 
 export const MAX_PROXY_CONTROL_FRAME_BYTES = 17 * 1024 * 1024;
@@ -144,6 +150,67 @@ export const proxyHandoffOperationSchema = z
     committedThroughProviderSeq: nonNegativeSafeIntegerSchema,
   })
   .strict();
+
+/**
+ * `ProviderEventBody`'s one variant with no zod schema of its own in `providers/contract.ts` — every other
+ * variant already has one there (imported above) and is reused rather than redefined, matching this file's
+ * own "don't duplicate a schema that already exists elsewhere" rule.
+ */
+const providerProgressEventBodySchema = z.object({ kind: z.literal('progress'), message: z.string() }).strict();
+
+/**
+ * `ProviderEventBody`'s wire schema, composed from `providers/contract.ts`'s own per-variant schemas plus
+ * the one variant (`progress`) that file has none for. `z.discriminatedUnion` cannot be used here:
+ * `providerTerminalEventBodySchema` carries a `.superRefine` invariant (a failed terminal must carry
+ * `failureCause`; no other terminal may), which makes it a `ZodEffects` rather than the plain `ZodObject`
+ * `discriminatedUnion` needs to read `.shape.kind` from at construction time. `z.union` still validates every
+ * member fully — each one is independently `.strict()` — it only loses the single-pass discriminant lookup.
+ */
+export const providerEventBodySchema = z.union([
+  providerProgressEventBodySchema,
+  providerContinuityEventBodySchema,
+  providerArtifactHandleEventBodySchema,
+  providerSuspendedEventBodySchema,
+  providerTerminalEventBodySchema,
+]);
+
+const providerEventSeqSchema = z.number().int().positive().safe();
+
+/**
+ * `provider.event.v1`'s request: the proxy, over the live control connection it otherwise only answers on,
+ * hands the active control one buffered event for one operation. The one method in this whole protocol that
+ * travels proxy-to-control rather than control-to-proxy.
+ */
+export const providerEventRequestSchema = z
+  .object({
+    operation: operationIdentitySchema,
+    providerSeq: providerEventSeqSchema,
+    event: providerEventBodySchema,
+  })
+  .strict();
+
+export type ProviderEventRequest = z.infer<typeof providerEventRequestSchema>;
+
+/** `provider.event.v1`'s result: a durable commit watermark, or a request to resend from an earlier point. */
+export const providerEventResultSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('ack'), committedThroughProviderSeq: nonNegativeSafeIntegerSchema }).strict(),
+  z
+    .object({
+      kind: z.literal('replay'),
+      replayFromProviderSeq: providerEventSeqSchema,
+      reason: z.string().min(1).max(200),
+    })
+    .strict(),
+]);
+
+export type ProviderEventResult = z.infer<typeof providerEventResultSchema>;
+
+/**
+ * The one method this protocol ever sends in the proxy-to-control direction. Named once here so
+ * `control-client.ts` (which must recognise it to decide whether to serve it) and `proxy.ts` (which sends it)
+ * cannot drift into two spellings of the same wire method.
+ */
+export const PROVIDER_EVENT_METHOD = 'provider.event.v1' as const;
 
 /** A grant or tenancy is build-bound: only a coordinator of the exact build a role's own capsule names may
  *  install, redeem, or open one. Shared by every role that holds a bootstrap capsule, so the same check and

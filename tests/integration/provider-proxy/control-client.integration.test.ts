@@ -2,14 +2,31 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type Server as NetServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ControlClientError,
   connectControlClient,
   type ControlClientTimer,
+  type ProviderEventHandler,
 } from '#src/provider-proxy/control-client.js';
-import { MAX_PROXY_CONTROL_FRAME_BYTES } from '#src/provider-proxy/protocol.js';
+import { MAX_PROXY_CONTROL_FRAME_BYTES, PROVIDER_EVENT_METHOD } from '#src/provider-proxy/protocol.js';
+
+const OPERATION = {
+  jobId: '11111111-1111-1111-1111-111111111111',
+  operationId: '22222222-2222-2222-2222-222222222222',
+  proxyInstanceId: '33333333-3333-3333-3333-333333333333',
+  buildSetId: '44444444-4444-4444-4444-444444444444',
+};
+
+function providerEventFrame(id: number, overrides: Record<string, unknown> = {}): string {
+  return `${JSON.stringify({
+    jsonrpc: '2.0',
+    id,
+    method: PROVIDER_EVENT_METHOD,
+    params: { operation: OPERATION, providerSeq: 1, event: { kind: 'progress', message: 'tick' }, ...overrides },
+  })}\n`;
+}
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
@@ -169,18 +186,100 @@ describe('control client', () => {
     await expect(call).rejects.toMatchObject({ code: 'control_client_closed' });
   });
 
-  it('destroys the socket when the server sends a request instead of a response', async () => {
+  it('refuses an inbound request when no provider-event handler is installed, without dropping the connection', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    respondToNextRequest(serverSocket, (id) => ({ jsonrpc: '2.0', id, result: { ok: true } }));
+
+    // The client's own in-flight call is unaffected by an unrelated inbound frame sharing no correlation to it.
+    await expect(client.call('role.work.v1', {}, 5_000)).resolves.toEqual({ ok: true });
+
+    const refusal = await new Promise<{ id: number; error: { data?: { code?: string } } }>((resolve) => {
+      serverSocket.on('data', function onData(chunk: Buffer) {
+        const message = JSON.parse(chunk.toString('utf8').split('\n')[0]) as { id: number };
+        if (message.id === 999) {
+          serverSocket.off('data', onData);
+          resolve(message as { id: number; error: { data?: { code?: string } } });
+        }
+      });
+      serverSocket.write(`${JSON.stringify({ jsonrpc: '2.0', id: 999, method: 'server.callback.v1', params: {} })}\n`);
+    });
+
+    expect(refusal.error.data?.code).toBe('protocol_violation');
+    // Refused, not dropped: the connection stays usable for whatever the client dials it for next.
+    expect(serverSocket.destroyed).toBe(false);
+    expect(client.close).not.toThrow();
+  });
+
+  it('refuses provider.event.v1 itself when no handler was installed at connect time', async () => {
     const { socketPath, sockets } = await startTestServer();
     const client = await connectControlClient(socketPath, manualTimer(), 5_000);
     cleanups.push(() => client.close());
     const serverSocket = await waitForAccept(sockets);
 
-    const call = client.call('role.work.v1', {}, 5_000);
-    // A control server never calls back; a method-bearing frame is out of protocol, not a response to wait
-    // for.
-    serverSocket.write(`${JSON.stringify({ jsonrpc: '2.0', id: 999, method: 'server.callback.v1', params: {} })}\n`);
+    const refusal = await new Promise<{ error: { data?: { code?: string } } }>((resolve) => {
+      serverSocket.once('data', (chunk: Buffer) => resolve(JSON.parse(chunk.toString('utf8').split('\n')[0])));
+      serverSocket.write(providerEventFrame(1));
+    });
 
-    await expect(call).rejects.toMatchObject({ code: 'control_client_closed' });
+    expect(refusal.error.data?.code).toBe('protocol_violation');
+  });
+
+  it('dispatches provider.event.v1 to the installed handler and writes back its validated result', async () => {
+    const received: unknown[] = [];
+    const handler: ProviderEventHandler = (request) => {
+      received.push(request);
+      return { kind: 'ack', committedThroughProviderSeq: request.providerSeq };
+    };
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000, handler);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+
+    const reply = await new Promise<{ id: number; result?: unknown }>((resolve) => {
+      serverSocket.once('data', (chunk: Buffer) => resolve(JSON.parse(chunk.toString('utf8').split('\n')[0])));
+      serverSocket.write(providerEventFrame(7));
+    });
+
+    expect(received).toEqual([{ operation: OPERATION, providerSeq: 1, event: { kind: 'progress', message: 'tick' } }]);
+    expect(reply).toEqual({ id: 7, jsonrpc: '2.0', result: { kind: 'ack', committedThroughProviderSeq: 1 } });
+  });
+
+  it('refuses provider.event.v1 params that fail strict validation without invoking the handler', async () => {
+    const handler = vi.fn<ProviderEventHandler>(() => ({ kind: 'ack', committedThroughProviderSeq: 1 }));
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000, handler);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+
+    const refusal = await new Promise<{ error: { data?: { code?: string } } }>((resolve) => {
+      serverSocket.once('data', (chunk: Buffer) => resolve(JSON.parse(chunk.toString('utf8').split('\n')[0])));
+      // providerSeq must be a positive integer; 0 fails the schema.
+      serverSocket.write(providerEventFrame(1, { providerSeq: 0 }));
+    });
+
+    expect(refusal.error.data?.code).toBe('invalid_request');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('reports a handler rejection as a protocol_violation error response', async () => {
+    const handler: ProviderEventHandler = () => {
+      throw new Error('durable commit failed');
+    };
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000, handler);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+
+    const refusal = await new Promise<{ error: { message: string; data?: { code?: string } } }>((resolve) => {
+      serverSocket.once('data', (chunk: Buffer) => resolve(JSON.parse(chunk.toString('utf8').split('\n')[0])));
+      serverSocket.write(providerEventFrame(1));
+    });
+
+    expect(refusal.error.data?.code).toBe('protocol_violation');
+    expect(refusal.error.message).toBe('durable commit failed');
   });
 
   it('surfaces the server error data.code as protocolCode on the rejected error', async () => {

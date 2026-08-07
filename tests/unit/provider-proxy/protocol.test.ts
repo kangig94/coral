@@ -7,6 +7,10 @@ import {
   guardianIdentitySchema,
   MAX_PROXY_CONTROL_FRAME_BYTES,
   operationIdentitySchema,
+  PROVIDER_EVENT_METHOD,
+  providerEventBodySchema,
+  providerEventRequestSchema,
+  providerEventResultSchema,
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   PROXY_EVENT_COMMIT_TIMEOUT_MS,
   PROXY_STATUS_RPC_TIMEOUT_MS,
@@ -162,5 +166,67 @@ describe('provider proxy protocol vocabulary', () => {
 
     expect(() => decodeProxyControlFrame(invalid)).toThrowError(expect.objectContaining({ code: 'invalid_request' }));
     expect(encodeProxyControlFrame({ jsonrpc: '2.0', id: 'frame', method: 'control.test' })).toMatch(/[^\n]\n$/);
+  });
+});
+
+describe('provider.event.v1 vocabulary', () => {
+  const operation = { jobId: UUID_A, operationId: UUID_B, proxyInstanceId: UUID_C, buildSetId: UUID_D };
+
+  it('publishes the one method name used in both directions of the reverse channel', () => {
+    expect(PROVIDER_EVENT_METHOD).toBe('provider.event.v1');
+  });
+
+  it('accepts every ProviderEventBody variant, including the progress kind contract.ts has no schema for', () => {
+    expect(providerEventBodySchema.safeParse({ kind: 'progress', message: 'tick' }).success).toBe(true);
+    expect(
+      providerEventBodySchema.safeParse({
+        kind: 'continuity',
+        conversationRef: 'ref-1',
+        resumable: true,
+        providerContinuity: null,
+      }).success,
+    ).toBe(true);
+    expect(
+      providerEventBodySchema.safeParse({
+        kind: 'artifact_handle',
+        handle: 'handle-1',
+        identity: { kind: 'file', path: '/tmp/artifact' },
+      }).success,
+    ).toBe(true);
+    expect(providerEventBodySchema.safeParse({ kind: 'suspended', reason: 'interrupt_unconfirmed' }).success).toBe(
+      true,
+    );
+    expect(providerEventBodySchema.safeParse({ kind: 'terminal' }).success).toBe(false); // missing required fields
+    expect(providerEventBodySchema.safeParse({ kind: 'unknown-kind' }).success).toBe(false);
+  });
+
+  it('validates the request strictly: canonical operation identity, a positive seq, and a covered event', () => {
+    const valid = { operation, providerSeq: 1, event: { kind: 'progress', message: 'tick' } };
+    expect(providerEventRequestSchema.safeParse(valid).success).toBe(true);
+
+    expect(providerEventRequestSchema.safeParse({ ...valid, providerSeq: 0 }).success).toBe(false);
+    expect(providerEventRequestSchema.safeParse({ ...valid, providerSeq: -1 }).success).toBe(false);
+    expect(providerEventRequestSchema.safeParse({ ...valid, providerSeq: 1.5 }).success).toBe(false);
+    expect(providerEventRequestSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
+    expect(
+      providerEventRequestSchema.safeParse({ ...valid, event: { kind: 'progress', message: 'tick', extra: 1 } })
+        .success,
+    ).toBe(false);
+  });
+
+  it('validates both result variants and rejects a kind outside the closed set', () => {
+    expect(providerEventResultSchema.safeParse({ kind: 'ack', committedThroughProviderSeq: 0 }).success).toBe(true);
+    expect(
+      providerEventResultSchema.safeParse({ kind: 'replay', replayFromProviderSeq: 1, reason: 'gap' }).success,
+    ).toBe(true);
+
+    expect(providerEventResultSchema.safeParse({ kind: 'ack', committedThroughProviderSeq: -1 }).success).toBe(false);
+    expect(
+      providerEventResultSchema.safeParse({ kind: 'replay', replayFromProviderSeq: 0, reason: 'gap' }).success,
+    ).toBe(false);
+    expect(providerEventResultSchema.safeParse({ kind: 'replay', replayFromProviderSeq: 1, reason: '' }).success).toBe(
+      false,
+    );
+    expect(providerEventResultSchema.safeParse({ kind: 'nack', committedThroughProviderSeq: 0 }).success).toBe(false);
   });
 });

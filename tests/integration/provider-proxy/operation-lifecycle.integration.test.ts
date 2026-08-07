@@ -2,12 +2,16 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import { connectControlClient } from '#src/provider-proxy/control-client.js';
+import { connectControlClient, type ProviderEventHandler } from '#src/provider-proxy/control-client.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
-import { MAX_PROXY_OPERATION_LEDGERS } from '#src/provider-proxy/ledger.js';
+import {
+  MAX_PROXY_OPERATION_LEDGERS,
+  MAX_PROVIDER_REPLAY_BYTES,
+  MAX_PROVIDER_REPLAY_EVENTS,
+} from '#src/provider-proxy/ledger.js';
 import { PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS, PROXY_STATUS_RPC_TIMEOUT_MS } from '#src/provider-proxy/protocol.js';
 import { createProxy, type SemanticOperationHost } from '#src/provider-proxy/proxy.js';
@@ -41,7 +45,12 @@ function recordingTimer(observedBudgetsMs: number[]): ControlEndpointTimer {
 type Started = { jobId: string; operationId: string };
 
 async function startProxy(
-  options: { failStage?: boolean; failConfirmActivation?: boolean; timer?: ControlEndpointTimer } = {},
+  options: {
+    failStage?: boolean;
+    failConfirmActivation?: boolean;
+    timer?: ControlEndpointTimer;
+    onProviderEvent?: ProviderEventHandler;
+  } = {},
 ) {
   const directory = mkdtempSync(join(tmpdir(), 'coral-proxy-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
@@ -130,7 +139,7 @@ async function startProxy(
   await proxy.listen();
   cleanups.push(() => proxy.close());
 
-  const control = await connectControlClient(endpoint, timer, 5_000);
+  const control = await connectControlClient(endpoint, timer, 5_000, options.onProviderEvent);
   cleanups.push(() => control.close());
   const opened = (await control.call('control.open.v1', { bootstrapNonce: NONCE, coordinator }, 5_000)) as {
     controlEpoch: number;
@@ -586,5 +595,176 @@ describe('provider-proxy operation lifecycle', () => {
     // `operation.status.v1` declares its own, tighter budget — matching the client's own
     // `OBSERVATION_REQUEST_TIMEOUT_MS` (`coordinator/live/carrier-observer.ts`) rather than the mutation default.
     expect(observedBudgetsMs).toEqual([PROXY_STATUS_RPC_TIMEOUT_MS]);
+  });
+});
+
+describe('provider-proxy provider.event.v1 emission', () => {
+  it('pushes an emitted event to active control and advances the ledger watermark on ack', async () => {
+    const received: unknown[] = [];
+    const set = await startProxy({
+      onProviderEvent: (request) => {
+        received.push(request);
+        return { kind: 'ack', committedThroughProviderSeq: request.providerSeq };
+      },
+    });
+    const { operation, reserved } = await prepare(set);
+    await activate(set, operation, reserved);
+    const key = { jobId: operation.jobId, operationId: operation.operationId };
+
+    const emitted = set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' });
+    expect(emitted).toEqual({ paused: false });
+
+    await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.committedThroughProviderSeq).toBe(1));
+    expect(received).toEqual([
+      {
+        operation: {
+          jobId: operation.jobId,
+          operationId: operation.operationId,
+          proxyInstanceId: set.shared.proxyInstanceId,
+          buildSetId: set.shared.buildSetId,
+        },
+        providerSeq: 1,
+        event: { kind: 'progress', message: 'tick' },
+      },
+    ]);
+    // Acknowledged through: nothing is left buffered for a replay nobody will ask for.
+    expect(set.proxy.ledger().get(key)?.bufferedEvents).toEqual([]);
+  });
+
+  it('resends the identical event when told to replay, until it is genuinely acknowledged', async () => {
+    const receivedSeqs: number[] = [];
+    const set = await startProxy({
+      onProviderEvent: (request) => {
+        receivedSeqs.push(request.providerSeq);
+        if (receivedSeqs.length === 1) {
+          return { kind: 'replay', replayFromProviderSeq: request.providerSeq, reason: 'not yet durable' };
+        }
+        return { kind: 'ack', committedThroughProviderSeq: request.providerSeq };
+      },
+    });
+    const { operation, reserved } = await prepare(set);
+    await activate(set, operation, reserved);
+    const key = { jobId: operation.jobId, operationId: operation.operationId };
+
+    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' });
+
+    await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.committedThroughProviderSeq).toBe(1));
+    // The same event, sent twice — a `replay` reply does not advance providerSeq allocation.
+    expect(receivedSeqs).toEqual([1, 1]);
+  });
+
+  it('pauses once the per-operation event ceiling is crossed', async () => {
+    const set = await startProxy();
+    const { operation, reserved } = await prepare(set);
+    await activate(set, operation, reserved);
+    const key = { jobId: operation.jobId, operationId: operation.operationId };
+
+    let paused = false;
+    for (let index = 0; index < MAX_PROVIDER_REPLAY_EVENTS; index += 1) {
+      paused = set.proxy.emitProviderEvent(key, { kind: 'progress', message: `tick-${index}` }).paused;
+    }
+
+    expect(paused).toBe(true);
+  });
+
+  it('throws replay_capacity_exhausted for a single event too large to ever buffer, and buffers nothing', async () => {
+    const set = await startProxy();
+    const { operation, reserved } = await prepare(set);
+    await activate(set, operation, reserved);
+    const key = { jobId: operation.jobId, operationId: operation.operationId };
+
+    let caught: unknown;
+    try {
+      set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES) });
+    } catch (error: unknown) {
+      caught = error;
+    }
+
+    expect((caught as { code?: string } | undefined)?.code).toBe('replay_capacity_exhausted');
+    expect(set.proxy.ledger().get(key)?.bufferedEvents).toEqual([]);
+  });
+
+  it('keeps an unacknowledged event buffered through a control loss, and delivers it once a successor adopts', async () => {
+    // No handler on this first connection: the proxy's own push is refused, so the event stays buffered
+    // exactly as it would if control had gone genuinely unreachable — the recovery path under test does not
+    // depend on which failure mode left the event unacknowledged.
+    const set = await startProxy();
+    const { operation, reserved } = await prepare(set);
+    await activate(set, operation, reserved);
+    const key = { jobId: operation.jobId, operationId: operation.operationId };
+
+    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' });
+    await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.bufferedEvents).toHaveLength(1));
+
+    const redeem = await installGrant(set, [operation.operationId]);
+    set.control.close();
+    set.advance(5_001);
+
+    const received: unknown[] = [];
+    const successor = await connectControlClient(set.endpoint, timer, 5_000, (request) => {
+      received.push(request);
+      return { kind: 'ack', committedThroughProviderSeq: request.providerSeq };
+    });
+    cleanups.push(() => successor.close());
+    const redeemed = (await successor.call('handoff.redeem.v1', redeem, 5_000)) as {
+      controlEpoch: number;
+      heartbeatChallenge: string;
+    };
+    await successor.call(
+      'control.heartbeat.v1',
+      { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
+      5_000,
+    );
+
+    const adopted = (await successor.call(
+      'operation.adopt.v1',
+      { operation, committedThroughProviderSeq: 0 },
+      5_000,
+    )) as { replayFromProviderSeq: number };
+    expect(adopted.replayFromProviderSeq).toBe(1);
+
+    // Waiting on the ledger's own watermark, not `received.length`: the handler runs (and pushes into
+    // `received`) before its `ack` reply has even been written back, let alone round-tripped through
+    // `pushOnTenancy` to `ledger.acknowledge` — asserting on `received` alone would race that continuation.
+    await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.committedThroughProviderSeq).toBe(1));
+    expect(received).toEqual([
+      expect.objectContaining({ providerSeq: 1, event: { kind: 'progress', message: 'first' } }),
+    ]);
+  });
+
+  it('resumes draining every held operation on a same-successor redeem retry, even without an explicit adopt', async () => {
+    const set = await startProxy();
+    const { operation, reserved } = await prepare(set);
+    await activate(set, operation, reserved);
+    const key = { jobId: operation.jobId, operationId: operation.operationId };
+    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' });
+    await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.bufferedEvents).toHaveLength(1));
+
+    const redeem = await installGrant(set, [operation.operationId]);
+    set.control.close();
+    set.advance(5_001);
+
+    const received: number[] = [];
+    const successor = await connectControlClient(set.endpoint, timer, 5_000, (request) => {
+      received.push(request.providerSeq);
+      return { kind: 'ack', committedThroughProviderSeq: request.providerSeq };
+    });
+    cleanups.push(() => successor.close());
+    const redeemed = (await successor.call('handoff.redeem.v1', redeem, 5_000)) as {
+      controlEpoch: number;
+      heartbeatChallenge: string;
+    };
+    await successor.call(
+      'control.heartbeat.v1',
+      { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
+      5_000,
+    );
+
+    // A retry of the identical redeem, on the same connection — the only branch that ever reaches
+    // `reattachControl` for this proxy: `control.open.v1`'s own bootstrap nonce is single-use, so the
+    // original coordinator's own tenancy can never re-enter it this way.
+    await successor.call('handoff.redeem.v1', redeem, 5_000);
+
+    await vi.waitFor(() => expect(received).toHaveLength(1));
   });
 });

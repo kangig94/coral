@@ -33,7 +33,13 @@ export interface ControlEndpointTimer {
 export type ControlEndpointErrorCode =
   | 'control_endpoint_listen_failed'
   | 'control_endpoint_already_listening'
-  | 'control_endpoint_closed';
+  | 'control_endpoint_closed'
+  /** `pushOnTenancy` refusals — process-local, like the three above, never serialised onto the wire. */
+  | 'control_endpoint_push_no_tenancy'
+  | 'control_endpoint_push_invalid_frame'
+  | 'control_endpoint_push_timeout'
+  | 'control_endpoint_push_lost'
+  | 'control_endpoint_push_refused';
 
 export class ControlEndpointError extends Error {
   readonly code: ControlEndpointErrorCode;
@@ -196,6 +202,14 @@ export interface ControlEndpoint {
   close(): Promise<void>;
   /** The epoch of the open tenancy, or null when none is open. */
   currentEpoch(): ControlEpoch | null;
+  /**
+   * Writes one pre-encoded request frame onto the live control tenancy's own socket and resolves with its
+   * response `result`, or rejects if there is no active tenancy, the frame is malformed, the tenancy closes
+   * or rotates before a reply lands, or no reply arrives within `timeoutMs`. This is the one direction this
+   * endpoint's own request/response loop never drives on its own — every other write it makes answers
+   * something the peer just asked. See the implementation for the full id-space and non-blocking argument.
+   */
+  pushOnTenancy(frame: string, timeoutMs: number): Promise<unknown>;
 }
 
 type Tenancy = {
@@ -205,6 +219,18 @@ type Tenancy = {
   readonly opening: Record<string, unknown>;
   socket: Socket; // one tenancy, successive connections
   active: boolean;
+};
+
+/**
+ * One outstanding `pushOnTenancy` call, keyed by the id its own frame carries. `socket` is the exact
+ * connection the write went out on — not merely "the current tenancy" — so a later rotation or close can
+ * find and reject exactly the pushes that were in flight *on that connection*, never one sent since.
+ */
+type PendingPush = {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  budget: { unref?: () => void };
+  socket: Socket;
 };
 
 function failure(id: string | number | null, code: number, message: string): ProxyControlJsonRpcMessage {
@@ -259,6 +285,10 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
   // connection close() has to reach: server.close() fires its callback only once every existing connection
   // has ended.
   const sockets = new Set<Socket>();
+  // Keyed by `String(id)` rather than the raw JSON-RPC id: `provider.event.v1` pushes mint plain numbers,
+  // but the wire schema allows a string id too, and normalising here means a lookup can never miss on a
+  // type mismatch alone.
+  const pendingPushes = new Map<string, PendingPush>();
 
   const write = (socket: Socket, message: ProxyControlJsonRpcMessage): void => {
     if (socket.destroyed) return;
@@ -399,7 +429,10 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
 
   const serveRequest = async (socket: Socket, message: ProxyControlJsonRpcMessage): Promise<void> => {
     if (!('method' in message)) {
-      // Responses are not accepted on a server endpoint; a peer sending one is out of protocol.
+      // Reached only by a response this endpoint has nothing outstanding for — a reply to a `pushOnTenancy`
+      // is matched and consumed before dispatch ever gets here. The ordinary way to arrive is a benign race:
+      // an ack that crossed its own push's timeout, which already dropped the pending entry. The refusal
+      // carries a null id, which the peer's client drops, so answering costs one frame and never loops.
       write(socket, failure(null, JSON_RPC_INVALID_REQUEST, 'Control endpoints accept requests only.'));
       return;
     }
@@ -468,6 +501,24 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
           socket.destroy();
           return;
         }
+        // A message with no `method` is a response — on this endpoint, that can only ever be a reply to a
+        // `pushOnTenancy` write, since nothing else here sends requests. The two id spaces never collide by
+        // construction, not convention: a request always carries `method`, a response never does, so the
+        // lookup below only ever matches a frame this endpoint itself addressed — never an inbound request
+        // that happens to reuse the same numeric id.
+        if (!('method' in message) && message.id !== null) {
+          const pending = pendingPushes.get(String(message.id));
+          if (pending !== undefined) {
+            pendingPushes.delete(String(message.id));
+            timer.clearTimeout(pending.budget);
+            if ('error' in message) {
+              pending.reject(new ControlEndpointError('control_endpoint_push_refused', message.error.message));
+            } else {
+              pending.resolve(message.result);
+            }
+            return;
+          }
+        }
         void serveRequest(socket, message);
       },
       () => {
@@ -479,6 +530,21 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     socket.on('error', () => socket.destroy());
     socket.on('close', () => {
       sockets.delete(socket);
+      // Any push written on this exact socket can never be answered now — reject rather than leave it
+      // pending, so a later frame on a *different* (rotated or reattached) socket can never be misread as
+      // this one's reply, and so the caller (`proxy.ts`'s drain loop) learns promptly that this event is
+      // still only buffered, not delivered.
+      for (const [id, pending] of pendingPushes) {
+        if (pending.socket !== socket) continue;
+        pendingPushes.delete(id);
+        timer.clearTimeout(pending.budget);
+        pending.reject(
+          new ControlEndpointError(
+            'control_endpoint_push_lost',
+            'The control tenancy closed before this push was acknowledged.',
+          ),
+        );
+      }
       if (pairedSocket === socket) {
         pairedSocket = null;
         observer.onPairingLost?.();
@@ -538,6 +604,69 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     },
     currentEpoch(): ControlEpoch | null {
       return tenancy?.epoch ?? null;
+    },
+    /**
+     * Scoped to the active tenancy, not "the socket": there is at most one connection holding active
+     * control, and if none is active there is nothing to push onto — this rejects immediately rather than
+     * buffering or erroring the caller's own state, so "no control right now" and "control was lost mid-push"
+     * both resolve the same way for the caller (`proxy.ts` leaves the event buffered either way).
+     *
+     * Bound to that tenancy's own connection object, not to its epoch number: a reattach can hand the same
+     * epoch a new socket, and only a genuinely new tenancy increments the epoch at all, so socket identity is
+     * the finer-grained invariant and epoch equality would be redundant with it. The pending entry is created
+     * against `live.socket` and is only ever resolved by a frame arriving on that same socket's own reader,
+     * or rejected by that same socket's own `close` handler above — so a push issued before a rotation can
+     * never land on the successor's connection as though the predecessor's stream continued, and is never
+     * silently dropped either: rejection is what lets `proxy.ts`'s drain loop leave the event in the ledger
+     * for the next `operation.adopt.v1` to replay.
+     *
+     * Never blocks `serveRequest`: this method does not go through `dispatch`, and awaiting its returned
+     * promise does not hold up the socket's own `'data'` handler — an inbound `operation.stop.v1` arriving
+     * while a push is outstanding is read and served independently, on the same tick model as any other pair
+     * of concurrent async operations sharing an event loop. Nothing here can make a slow-to-ack coordinator
+     * stall the endpoint's own request handling; only the caller's own pacing (the ledger's replay-capacity
+     * gate) slows further pushes.
+     */
+    async pushOnTenancy(frame: string, timeoutMs: number): Promise<unknown> {
+      if (closed) throw new ControlEndpointError('control_endpoint_closed', 'This control endpoint was closed.');
+      const live = tenancy;
+      if (live === null || !live.active) {
+        throw new ControlEndpointError('control_endpoint_push_no_tenancy', 'No active control tenancy to push onto.');
+      }
+      let decoded: ProxyControlJsonRpcMessage;
+      try {
+        decoded = decodeProxyControlFrame(frame);
+      } catch {
+        throw new ControlEndpointError(
+          'control_endpoint_push_invalid_frame',
+          'The frame to push failed strict validation.',
+        );
+      }
+      if (!('method' in decoded)) {
+        throw new ControlEndpointError('control_endpoint_push_invalid_frame', 'Only a request frame may be pushed.');
+      }
+      const id = String(decoded.id);
+      const socket = live.socket;
+      return new Promise<unknown>((resolve, reject) => {
+        const budget = timer.setTimeout(() => {
+          pendingPushes.delete(id);
+          reject(new ControlEndpointError('control_endpoint_push_timeout', `Push exceeded its ${timeoutMs}ms budget.`));
+        }, timeoutMs);
+        budget.unref?.();
+        pendingPushes.set(id, { resolve, reject, budget, socket });
+        if (socket.destroyed) {
+          pendingPushes.delete(id);
+          timer.clearTimeout(budget);
+          reject(
+            new ControlEndpointError(
+              'control_endpoint_push_lost',
+              'The control tenancy closed before this push could be sent.',
+            ),
+          );
+          return;
+        }
+        socket.write(frame);
+      });
     },
   };
 }
