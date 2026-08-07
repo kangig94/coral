@@ -216,12 +216,10 @@ export class LocalOperationRegistry {
 /**
  * What a `stopAndReap`-adjacent caller (`provider-proxy-acquisition-steps.ts`'s `ProviderProxyAcquisitionSteps
  * Options`/`ProviderProxySetAuthorityDependencies`, `provider-hosts/proxy-set-acquisition.ts`'s
- * `ProviderProxySetAcquisitionConfig`) needs from this registry: `operationsFor` always, `providerRootsFor`
- * only where every production caller can supply it. Named once here so the three call sites stay the
- * identical type rather than three independently-drifting `Pick`s — `providerRootsFor` is `Partial` (not
- * required) because `provider-proxy-set-inheritance.ts` builds one of those dependencies from a narrower
- * `Pick<LocalOperationRegistry, 'adopt' | 'operationsFor'>` it does not own the shape of here; the one caller
- * that reads `providerRootsFor` falls back to an empty claim when it is absent.
+ * `ProviderProxySetAcquisitionConfig`, `provider-proxy-set-inheritance.ts`'s `ProviderProxySetInheritanceDeps`)
+ * needs from this registry: `operationsFor` and `providerRootsFor`, always. Named once here so every call site
+ * stays the identical type rather than independently-drifting `Pick`s. Both are required — an empty
+ * `providerRootsFor` claim disagrees with any enforcer that has actually staged a root
+ * (`assertRecordedSetAgreement`), so there is no caller for which silently falling back to one is correct.
  */
-export type ProviderProxyOperationSnapshot = Pick<LocalOperationRegistry, 'operationsFor'> &
-  Partial<Pick<LocalOperationRegistry, 'providerRootsFor'>>;
+export type ProviderProxyOperationSnapshot = Pick<LocalOperationRegistry, 'operationsFor' | 'providerRootsFor'>;

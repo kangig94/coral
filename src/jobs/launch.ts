@@ -204,6 +204,5 @@ export const jobLaunchRequestBodySchema = z.union([
   kbCommunitySummaryJobLaunchRequestBodySchema,
 ]);
 
-export type ProviderJobLaunchRequestBody = z.infer<typeof providerJobLaunchRequestBodySchema>;
 export type KbSourceImportJobRequest = z.infer<typeof kbSourceImportJobRequestSchema>;
 export type JobLaunchRequestBody = z.infer<typeof jobLaunchRequestBodySchema>;

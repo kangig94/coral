@@ -5,7 +5,6 @@ import {
   bindingFailure,
   bindingSuccess,
   type AccountSubject,
-  type ProfileBinding,
   type ProviderBindingCodec,
   type ProviderBindingFailure,
   type ProviderBindingResult,
@@ -52,9 +51,6 @@ export type ClaudeSelection = z.infer<typeof claudeSelectionSchema>;
 
 export const claudeCredentialProfileSchema = createClaudeCredentialProfileSchema();
 export type ClaudeCredentialProfile = z.infer<typeof claudeCredentialProfileSchema>;
-
-export const claudeBindingSchema = createClaudeBindingSchema();
-export type ClaudeBinding = ProfileBinding<ClaudeCredentialProfile>;
 
 /** Capture one invocation's explicit or caller-local default Claude profile selector. */
 export function captureClaudeSelection(

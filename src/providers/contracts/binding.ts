@@ -5,8 +5,6 @@ import { jsonValueSchema, type JsonValue } from '../../infra/json-value.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { ProviderPersistedParser, ProviderValueParser } from '../binding-parser-contract.js';
 
-export type ProviderSelection = JsonValue;
-
 export const providerSelectionEnvelopeSchema = z
   .object({ provider: nonEmptyStringSchema, selection: jsonValueSchema })
   .strict();
@@ -46,7 +44,6 @@ export const providerBindingFailureReasonSchema = z.enum([
   'unsupported-selection',
   'invalid-persisted-binding',
 ]);
-export type ProviderBindingFailureReason = z.infer<typeof providerBindingFailureReasonSchema>;
 
 export type ProviderBindingFailure =
   | { readonly reason: 'missing-profile'; readonly provider: string }

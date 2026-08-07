@@ -112,11 +112,13 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
   /** This successor's own wire identity — `pid`/`processStartedAtSeconds` read fresh, matching
    *  `ensureProviderProxySet`'s own coordinator-identity construction. */
   coordinatorIdentity: CoordinatorIdentity;
-  /** Where a successfully adopted operation is registered (`adopt`) and where this successor's own later
-   *  `installHandoffGrant` reads its live snapshot from (`operationsFor`) — the same registry ordinary
-   *  acquisition threads through, so a re-bequeathal after inheritance reflects operations that have since
-   *  settled, not the fixed set this redemption happened to adopt. */
-  operationRegistry: Pick<LocalOperationRegistry, 'adopt' | 'operationsFor'>;
+  /** Where a successfully adopted operation is registered (`adopt`), where this successor's own later
+   *  `installHandoffGrant` reads its live snapshot from (`operationsFor`), and where a redeemed set's own
+   *  `stopAndReap` reads the provider roots it must name in agreement with what each enforcer actually
+   *  recorded (`providerRootsFor`) — the same registry ordinary acquisition threads through, so a
+   *  re-bequeathal after inheritance reflects operations that have since settled, not the fixed set this
+   *  redemption happened to adopt. */
+  operationRegistry: Pick<LocalOperationRegistry, 'adopt' | 'operationsFor' | 'providerRootsFor'>;
   /** Wired onto the redeemed proxy connection exactly as ordinary acquisition wires it onto a freshly opened
    *  one (`ProviderProxyAcquisitionStepsOptions.onProviderEvent`'s own doc). */
   onProviderEvent?(): ProviderEventHandler;
@@ -479,7 +481,7 @@ export interface ProviderProxySetInheritance {
 export type CreateProviderProxySetInheritanceOptions = Readonly<{
   runtime: Runtime;
   identity: ProviderProxySetAcquisitionIdentity;
-  operationRegistry: Pick<LocalOperationRegistry, 'adopt' | 'operationsFor'>;
+  operationRegistry: Pick<LocalOperationRegistry, 'adopt' | 'operationsFor' | 'providerRootsFor'>;
   onProviderEvent?(): ProviderEventHandler;
   /** Where a successfully inherited set is folded in so it participates in this coordinator's own later
    *  shutdown — `DefaultProviderHostManager.registerInheritedSet` in production. */

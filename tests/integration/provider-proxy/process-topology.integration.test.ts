@@ -590,7 +590,7 @@ describe('provider-proxy process topology: acquisition', () => {
       readProcessStartedAtSeconds: environment.readProcessStartedAtSeconds,
       // No operation is ever activated in this file's acquisition tests, so the snapshot source has nothing
       // to report — matching what a freshly acquired set's `snapshotOperations` already asserts (`[]`).
-      operationRegistry: { operationsFor: () => [] },
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
     };
   }
 

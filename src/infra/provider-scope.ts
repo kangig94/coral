@@ -22,5 +22,4 @@ export const providerScopeSchema = z.discriminatedUnion('origin', [
   systemProviderScopeSchema,
 ]);
 export type ProviderScope = z.infer<typeof providerScopeSchema>;
-export type CallerProviderScope = z.infer<typeof callerProviderScopeSchema>;
 export type SystemProviderScope = z.infer<typeof systemProviderScopeSchema>;

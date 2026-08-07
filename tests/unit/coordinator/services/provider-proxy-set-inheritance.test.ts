@@ -224,7 +224,7 @@ describe('attemptProviderProxySetInheritance', () => {
       {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
-        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
       },
       neverAborts,
     );
@@ -243,7 +243,7 @@ describe('attemptProviderProxySetInheritance', () => {
       {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
-        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
       },
       neverAborts,
     );
@@ -291,6 +291,7 @@ describe('attemptProviderProxySetInheritance', () => {
           adopt: (meta) =>
             registered.push({ jobId: meta.jobId, committedThroughProviderSeq: meta.committedThroughProviderSeq }),
           operationsFor: () => [],
+          providerRootsFor: () => [],
         },
       },
       neverAborts,
@@ -341,7 +342,7 @@ describe('attemptProviderProxySetInheritance', () => {
       {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
-        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
       },
       neverAborts,
     );
@@ -369,7 +370,7 @@ describe('attemptProviderProxySetInheritance', () => {
       {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
-        operationRegistry: { adopt, operationsFor: () => [] },
+        operationRegistry: { adopt, operationsFor: () => [], providerRootsFor: () => [] },
       },
       neverAborts,
     );
@@ -403,7 +404,7 @@ describe('attemptProviderProxySetInheritance', () => {
       {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
-        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
       },
       neverAborts,
     );
@@ -434,7 +435,7 @@ describe('attemptProviderProxySetInheritance', () => {
       {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
-        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
       },
       neverAborts,
     );
@@ -465,7 +466,7 @@ describe('attemptProviderProxySetInheritance', () => {
       {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
-        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
       },
       controller.signal,
     );
@@ -499,7 +500,7 @@ describe('attemptProviderProxySetInheritance', () => {
       {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
-        operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
       },
       controller.signal,
     );
@@ -520,7 +521,7 @@ describe('createProviderProxySetInheritance', () => {
     const inheritance = createProviderProxySetInheritance({
       runtime,
       identity,
-      operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+      operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
     });
     const outcome = await inheritance.inheritProviderProxySet(locator(), unusedDb, neverAborts);
@@ -537,7 +538,7 @@ describe('createProviderProxySetInheritance', () => {
     const inheritance = createProviderProxySetInheritance({
       runtime,
       identity,
-      operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+      operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
     });
     const outcome = await inheritance.inheritProviderProxySet(locator(), unusedDb, neverAborts);
@@ -556,7 +557,7 @@ describe('createProviderProxySetInheritance', () => {
     const inheritance = createProviderProxySetInheritance({
       runtime,
       identity,
-      operationRegistry: { adopt: vi.fn(), operationsFor: () => [] },
+      operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
       registerInheritedSet,
     });
     const outcome = await inheritance.inheritProviderProxySet(loc, unusedDb, neverAborts);

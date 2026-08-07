@@ -7,7 +7,6 @@ import {
   bindingFailure,
   bindingSuccess,
   type AccountSubject,
-  type ProviderBinding,
   type ProviderBindingCodec,
   type ProviderBindingFailure,
   type ProviderBindingRuntime,
@@ -43,9 +42,6 @@ export type CodexSelection = z.infer<typeof codexSelectionSchema>;
 
 export const codexCredentialProfileSchema = createCodexCredentialProfileSchema();
 export type CodexCredentialProfile = z.infer<typeof codexCredentialProfileSchema>;
-
-export const codexBindingSchema = createCodexBindingSchema();
-export type CodexBinding = ProviderBinding<CodexCredentialProfile, AccountSubject>;
 
 /** Capture one invocation's explicit or caller-local default Codex profile selector. */
 export function captureCodexSelection(

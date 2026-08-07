@@ -38,20 +38,6 @@ export const discussRunBindingSchema = z
   .object({ agent: z.string().min(1), executionSessionId: z.string().min(1) })
   .strict();
 
-/** Persisted discussion fields consulted by discussion-owned launch validation. */
-export const discussExecutionAuthoritySchema = z
-  .object({
-    projectRoot: z.string().min(1),
-    runtime: z
-      .object({
-        agentRuns: z.record(
-          z.object({ provider: z.string().min(1), executionSessionId: z.string().min(1).optional() }).passthrough(),
-        ),
-      })
-      .passthrough(),
-  })
-  .passthrough();
-
 export type DiscussEventKind = (typeof discussEventKinds)[number];
 const discussEventKindSet = new Set<string>(discussEventKinds);
 

@@ -399,10 +399,6 @@ function tryQuarantineStaleLock(lockDir: string, deps: DirectoryLockDeps): boole
   return quarantineClaimedLock(lockDir, claimPath, ownerPath, deps);
 }
 
-export function tryRemoveStaleDirectoryLock(lockDir: string, deps: DirectoryLockDeps): boolean {
-  return tryQuarantineStaleLock(lockDir, deps);
-}
-
 function createDirectoryLockLease(
   lockDir: string,
   ownerToken: string,

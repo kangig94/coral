@@ -96,10 +96,6 @@ export type BoundProviderAppServerExecutionRuntime = BoundProviderExecutionRunti
 export type BoundProviderStandaloneExecutionRuntime = BoundProviderExecutionRuntimeCommon &
   Readonly<{ transport: 'standalone'; runCli: ProviderCliRunner }>;
 
-export type BoundProviderExecutionRuntime =
-  | BoundProviderAppServerExecutionRuntime
-  | BoundProviderStandaloneExecutionRuntime;
-
 export interface BoundProviderAppServerCapability {
   readonly supportsInterrupt: boolean;
   readonly supportsProbe: boolean;

@@ -37,7 +37,7 @@ const environment = {
     flavor: 'prod' as const,
   },
   // `createProviderProxyAcquisitionSteps` itself is mocked in this file, so nothing reads the registry.
-  operationRegistry: { operationsFor: () => [] },
+  operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
 };
 
 function fakeSet(): ProviderProxySetAuthority {

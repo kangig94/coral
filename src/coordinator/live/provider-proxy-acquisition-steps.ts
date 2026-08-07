@@ -335,8 +335,7 @@ export type ProviderProxySetAuthorityDependencies = Readonly<{
   runtime: Pick<Runtime, 'ids' | 'env' | 'storage'>;
   /** `snapshotOperations`' source: this coordinator's own live operations, filtered to this proxy. Also
    *  `stopAndReap`'s source for the provider roots it must name in agreement with what each enforcer
-   *  actually recorded (`assertRecordedSetAgreement`) — see `ProviderProxyOperationSnapshot`'s own doc for
-   *  why `providerRootsFor` is optional and what `stopAndReap` does when it is absent. */
+   *  actually recorded (`assertRecordedSetAgreement`) — see `ProviderProxyOperationSnapshot`'s own doc. */
   operationRegistry: ProviderProxyOperationSnapshot;
 }>;
 
@@ -488,9 +487,7 @@ export function createProviderProxySetAuthority(
         // hold against this proxy, from the same registry `snapshotOperations` above reads. An empty claim
         // disagrees with any enforcer that has actually staged a root — every activated operation stages one
         // before it is ever reported as executing — so this must name every one still live, not an empty set.
-        // `?? []` only ever triggers for `provider-proxy-set-inheritance.ts`'s narrower registry pick (see
-        // this dependency's own doc) — every other caller supplies the method.
-        const providerRoots = operationRegistry.providerRootsFor?.(proxyInstanceId) ?? [];
+        const providerRoots = operationRegistry.providerRootsFor(proxyInstanceId);
         const raw = await raceAgainstAbort(
           guardianClient.call(
             'guardian.stop-and-reap.v1',

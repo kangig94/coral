@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createMonotonicClock, type MonotonicClock } from '#src/infra/monotonic-clock.js';
 import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy-acquisition-steps.js';
+import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
+import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
@@ -1913,6 +1915,77 @@ describe('provider-proxy-acquisition-steps: stopAndReap against a real guardian'
     // The real, driving proof: `guardian.stop-and-reap.v1`'s own `assertRecordedSetAgreement` accepted this
     // call and reaped for real — a hardcoded `providerRoots: []` would instead have come back `unconfirmed`
     // with "different provider-root set" (see the raw-wire coverage above proving that refusal directly).
+    expect(result).toEqual({
+      disappearanceReceipt: expect.stringContaining(`root:${ROOT.pid}@${ROOT.processStartedAtSeconds}`),
+    });
+    expect(set.alive.has(CONTAINMENT.pid)).toBe(false);
+  });
+
+  it('threads an adopted operation’s real provider root through stopAndReap, on the inheritance path’s own registry shape', async () => {
+    const set = await startSet();
+    await stage(set);
+
+    // Mirrors exactly what `provider-proxy-set-inheritance.ts`'s `adoptRedeemedOperations` does with a
+    // redeemed grant's operations: register one on a real `LocalOperationRegistry` via `adopt()` — the same
+    // write a successor uses to fold an inherited operation into its own live tracking. This is a real
+    // registry, not a hand-rolled fake, so it proves `adopt()` itself populates `providerRootsFor` correctly,
+    // not merely that a caller can hand-supply the right value.
+    const operationRegistry = new LocalOperationRegistry();
+    const meta: ProviderOperationRuntimeMeta = {
+      version: 1,
+      jobId: randomUUID(),
+      operationId: randomUUID(),
+      buildSetId: set.coordinatorIdentity.buildSetId,
+      hostFingerprint: FINGERPRINT,
+      guardianInstanceId: set.guardianIdentity.guardianInstanceId,
+      guardianPid: set.guardianIdentity.pid,
+      guardianProcessStartedAtSeconds: set.guardianIdentity.processStartedAtSeconds,
+      guardianControlEndpoint: set.guardianIdentity.canonicalControlEndpoint,
+      proxyInstanceId: set.proxyIdentity.proxyInstanceId,
+      proxyPid: set.proxyIdentity.pid,
+      reaperInstanceId: set.reaperIdentity.reaperInstanceId,
+      reaperPid: set.reaperIdentity.pid,
+      reaperProcessStartedAtSeconds: set.reaperIdentity.processStartedAtSeconds,
+      reaperControlEndpoint: set.reaperIdentity.canonicalControlEndpoint,
+      containmentKind: set.reaperIdentity.containmentKind,
+      proxyProcessStartedAtSeconds: set.proxyIdentity.processStartedAtSeconds,
+      proxyProcessGroupId: set.proxyIdentity.processGroupId,
+      canonicalEndpoint: set.proxyIdentity.canonicalEndpoint,
+      reservationId: randomUUID(),
+      activationNonce: randomUUID(),
+      providerRootPid: ROOT.pid,
+      providerRootProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+      jointContainmentReceipt: 'joint-1',
+      committedThroughProviderSeq: 0,
+    };
+    operationRegistry.adopt(meta, { stop: async () => {} }, () => {});
+
+    const authority = createProviderProxySetAuthority({
+      proxyInstanceId: set.proxyIdentity.proxyInstanceId,
+      guardianClient: set.control,
+      proxyClient: unreachableClient(),
+      reaperClient: unreachableClient(),
+      guardianIdentity: set.guardianIdentity,
+      reaperIdentity: set.reaperIdentity,
+      proxyIdentityFields: set.proxyIdentity,
+      heartbeats: [],
+      coordinatorIdentity: set.coordinatorIdentity,
+      handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
+      runtime: { ids: undefined, env: undefined, storage: undefined } as unknown as Pick<
+        Runtime,
+        'ids' | 'env' | 'storage'
+      >,
+      // The exact shape `ProviderProxySetInheritanceDeps.operationRegistry` supplies:
+      // `Pick<LocalOperationRegistry, 'adopt' | 'operationsFor' | 'providerRootsFor'>`, now required rather
+      // than the `Partial` the acquisition path alone used to carry.
+      operationRegistry,
+    });
+
+    const result = await authority.stopAndReap(new AbortController().signal);
+
+    // Same real, driving proof as the acquisition-path test above, reached through the inheritance path's
+    // own write instead of a hand-supplied closure: the guardian's `assertRecordedSetAgreement` accepted
+    // this call and reaped for real.
     expect(result).toEqual({
       disappearanceReceipt: expect.stringContaining(`root:${ROOT.pid}@${ROOT.processStartedAtSeconds}`),
     });

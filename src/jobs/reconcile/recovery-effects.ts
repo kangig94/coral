@@ -1,5 +1,4 @@
 import { type JobLifecycleFault, type JobProgressFault, type TerminalOutcomeInput } from '../outcome.js';
-import { isLivePhase } from '../phase.js';
 import type { JobStatus } from '../records.js';
 import { buildJobEventRefs } from '../refs.js';
 import type { JobStore } from '../store.js';
@@ -8,18 +7,6 @@ import type { CommitContext } from '../../store/append.js';
 import { elapsedDurationMs } from '../duration.js';
 
 type JobRecoveryError = JobLifecycleFault | JobProgressFault;
-
-export function listLiveJobs(progressStore: JobStore): JobStatus[] {
-  const results: JobStatus[] = [];
-
-  for (const jobId of progressStore.listJobIds()) {
-    const status = progressStore.readStatus(jobId);
-    if (!status || !isLivePhase(status.phase)) continue;
-    results.push(status);
-  }
-
-  return results;
-}
 
 export function markJobAsError(
   progressStore: Pick<JobStore, 'commit' | 'readLaunchProjection'>,

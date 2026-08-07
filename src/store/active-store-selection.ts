@@ -34,32 +34,22 @@ export type ActiveStoreSelectionFailureCode = (typeof selectionFailureCodes)[num
 
 export const activeStoreSelectionFailureCodeSchema = z.enum(selectionFailureCodes);
 
-const transitionFailureCodes = [
-  'transition_too_large',
-  'transition_invalid_utf8',
-  'transition_invalid_json',
-  'transition_invalid_schema',
-] as const;
+export type ActiveStoreTransitionFailureCode =
+  | 'transition_too_large'
+  | 'transition_invalid_utf8'
+  | 'transition_invalid_json'
+  | 'transition_invalid_schema';
 
-export type ActiveStoreTransitionFailureCode = (typeof transitionFailureCodes)[number];
-
-export const activeStoreTransitionFailureCodeSchema = z.enum(transitionFailureCodes);
-
-const recordReadFailureCodes = [
-  'coordination_directory_link',
-  'coordination_directory_not_regular',
-  'coordination_directory_not_canonical',
-  'coordination_directory_unavailable',
-  'record_link',
-  'record_not_regular',
-  'record_mode',
-  'record_changed',
-  'record_unavailable',
-] as const;
-
-export type ActiveStoreRecordReadFailureCode = (typeof recordReadFailureCodes)[number];
-
-export const activeStoreRecordReadFailureCodeSchema = z.enum(recordReadFailureCodes);
+export type ActiveStoreRecordReadFailureCode =
+  | 'coordination_directory_link'
+  | 'coordination_directory_not_regular'
+  | 'coordination_directory_not_canonical'
+  | 'coordination_directory_unavailable'
+  | 'record_link'
+  | 'record_not_regular'
+  | 'record_mode'
+  | 'record_changed'
+  | 'record_unavailable';
 
 export type ActiveStoreSelection = Readonly<{
   version: 1;

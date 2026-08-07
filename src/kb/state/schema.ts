@@ -1,13 +1,3 @@
-export interface KbCorpusStateRow {
-  id: 1;
-  snapshot_id: string | null;
-  content_seq: number;
-  metadata_seq: number;
-  content_manifest_hash: string | null;
-  metadata_manifest_hash: string | null;
-  last_mutation: string;
-}
-
 export interface KbCurateSchedulerRow {
   id: 1;
   processed_through_seq: number | null;
