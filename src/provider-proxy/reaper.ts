@@ -34,28 +34,18 @@ import {
   assertRecordedSetAgreement,
   canonicalUuidSchema,
   coordinatorIdentitySchema,
-  guardianIdentitySchema,
+  type guardianIdentitySchema,
   proxyIdentitySchema,
   providerRootSchema,
   reaperIdentitySchema,
   sameRecordedContainment,
   type OperationIdentity,
+  recordedContainmentSchema as containmentSchema,
+  reaperHandoffRotateParamsSchema,
+  reaperOpenParamsSchema as openParamsSchema,
 } from './protocol.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
-
-/**
- * The containment the reaper retains. It is recorded once at open and never revised, because the reaper's
- * whole value is holding an identity the group leader cannot invalidate by exiting.
- */
-const containmentSchema = z
-  .object({
-    pid: z.number().int().nonnegative(),
-    processStartedAtSeconds: z.number().int().nonnegative(),
-    processGroupId: z.number().int().nonnegative(),
-    containmentKind: z.string().min(1).max(64),
-  })
-  .strict();
 
 // The reaper's unit of account is the provider root, not the operation: it never reads an operation,
 // reservation, or activation identity, so it never parses one.
@@ -96,25 +86,6 @@ const reaperRecordRedemptionParamsSchema = z
  * recorded by `reaper.record-redemption.v1`'s own guardian-authoritative push, and a rotation caller echoing
  * it back here would only be checked against itself.
  */
-const reaperHandoffRotateParamsSchema = z
-  .object({
-    grantId: canonicalUuidSchema,
-    successor: coordinatorIdentitySchema,
-    guardianRedemptionReceipt: z.string().min(1),
-  })
-  .strict();
-
-/** The plan's `reaper.open.v1` request. Validating it is what makes identity disagreement reportable. */
-const openParamsSchema = z
-  .object({
-    bootstrapNonce: z.string().min(1),
-    coordinator: coordinatorIdentitySchema,
-    guardian: guardianIdentitySchema,
-    proxy: proxyIdentitySchema,
-    containment: containmentSchema,
-  })
-  .strict();
-
 /**
  * The caller names the guardian it believes paired with this reaper. Checked against the stable fields this
  * reaper's own bootstrap capsule holds — pid and start time are deliberately excluded, since unlike the

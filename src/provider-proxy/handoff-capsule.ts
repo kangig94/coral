@@ -77,6 +77,59 @@ export const guardianReaperHandoffInstallParamsSchema = z
   .strict();
 
 /**
+ * The three grant-bearing requests, here rather than in `protocol.ts` beside every other wire schema for one
+ * mechanical reason: each needs a grant primitive this module owns, and this module imports `protocol.ts`, so
+ * the obvious home would close a cycle `tests/invariants/production-import-graph.test.ts` fails on outright.
+ * They are shared all the same — a coordinator has to name a shape to send it, and the alternative is what
+ * these were: parsed on receipt against a declaration no sender could reach.
+ */
+
+/**
+ * The set half of a grant tuple, repeated on the wire so a coordinator holding two proxies cannot install
+ * one proxy's grant on the other by presenting the right secret alone.
+ */
+const proxyGrantSetShape = {
+  generation: generationSchema,
+  hostFingerprint: hostFingerprintSchema,
+  buildSetId: canonicalUuidSchema,
+  proxyInstanceId: canonicalUuidSchema,
+} as const;
+
+/** `handoff.install.v1`'s request — the proxy's own, and the last send in this protocol that was validated
+ *  only on receipt. Distinct from the guardian/reaper message above, not a drifted copy of it. */
+export const proxyHandoffInstallParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    secretSha256: grantSecretDigestSchema,
+    ...proxyGrantSetShape,
+    operations: handoffOperationSetSchema,
+    orphanTimeoutMs: z.number().int().positive(),
+  })
+  .strict();
+
+/** `handoff.redeem.v1`'s request. No `operations` field: the set is bound at install and returned by
+ *  redemption, never presented by a redeemer to be checked against — see `GrantRegistry.redeem`'s own doc. */
+export const proxyHandoffRedeemParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    secret: grantSecretSchema,
+    successor: coordinatorIdentitySchema,
+    ...proxyGrantSetShape,
+  })
+  .strict();
+
+/** `guardian.handoff-redeem.v1`'s request. The guardian is the sole linearization point for the plaintext
+ *  secret, and names no set: the capsule/locator agreement its caller already checked established which
+ *  guardian this is. */
+export const guardianHandoffRedeemParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    secret: grantSecretSchema,
+    successor: coordinatorIdentitySchema,
+  })
+  .strict();
+
+/**
  * The successor half of one grant: exactly what a redeemer needs to reach and authenticate against the set,
  * and nothing a durable authority already tracks on its own terms. Two facts are deliberately absent:
  *

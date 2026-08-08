@@ -37,6 +37,9 @@ import {
   proxyIdentitySchema,
   reaperIdentitySchema,
   type CoordinatorIdentity,
+  guardianOpenParamsSchema,
+  proxyControlOpenParamsSchema,
+  reaperOpenParamsSchema,
 } from '../../../provider-proxy/protocol.js';
 import type { AcquisitionUndo, ProviderProxyAcquisitionSteps } from './index.js';
 import { controlEpochSchema, heartbeatChallengeSchema, startHeartbeatLoop } from './heartbeat.js';
@@ -319,6 +322,7 @@ export function createProviderProxyAcquisitionSteps(
           endpoint: setMinted.proxyEndpoint,
           openMethod: 'control.open.v1',
           openParams: { bootstrapNonce: setMinted.proxyBootstrapNonce, coordinator: coordinatorIdentity },
+          openParamsSchema: proxyControlOpenParamsSchema,
           openResultSchema: proxyOpenResultSchema,
           identity: (opened) => opened.proxy,
           heartbeatMethod: 'control.heartbeat.v1',
@@ -346,6 +350,7 @@ export function createProviderProxyAcquisitionSteps(
             coordinator: coordinatorIdentity,
             proxy: proxySession.opened.proxy,
           },
+          openParamsSchema: guardianOpenParamsSchema,
           openResultSchema: guardianOpenResultSchema,
           identity: (opened) => opened.guardian,
           heartbeatMethod: 'guardian.heartbeat.v1',
@@ -381,6 +386,7 @@ export function createProviderProxyAcquisitionSteps(
               containmentKind: DETACHED_CONTAINMENT_KIND,
             },
           },
+          openParamsSchema: reaperOpenParamsSchema,
           openResultSchema: reaperOpenResultSchema,
           identity: (opened) => opened.reaper,
           heartbeatMethod: 'reaper.heartbeat.v1',

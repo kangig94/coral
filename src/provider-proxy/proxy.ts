@@ -1,5 +1,3 @@
-import { z } from 'zod';
-
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
 // The stop cause is shared with the coordinator's durable side. It lives in `providers/` because both sides
 // may reach it and neither may reach the other: this tree is barred from `jobs/`, and the reverse edge would
@@ -16,10 +14,9 @@ import {
 } from './control-endpoint.js';
 import {
   createGrantRegistry,
-  grantSecretDigestSchema,
-  grantSecretSchema,
-  handoffOperationSetSchema,
   type GrantBinding,
+  proxyHandoffInstallParamsSchema as handoffInstallParamsSchema,
+  proxyHandoffRedeemParamsSchema as handoffRedeemParamsSchema,
 } from './handoff-capsule.js';
 import {
   LedgerError,
@@ -35,11 +32,7 @@ import {
   PROXY_EVENT_COMMIT_TIMEOUT_MS,
   PROXY_STATUS_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
-  canonicalUuidSchema,
-  coordinatorIdentitySchema,
   encodeProxyControlFrame,
-  generationSchema,
-  hostFingerprintSchema,
   providerEventRequestSchema,
   providerEventResultSchema,
   // Aliased to the names the handlers below already use, so this move changes where these schemas live
@@ -48,6 +41,7 @@ import {
   proxyOperationAdoptParamsSchema as adoptParamsSchema,
   proxyOperationPrepareParamsSchema as prepareParamsSchema,
   proxyOperationReservationParamsSchema as reservationParamsSchema,
+  proxyControlOpenParamsSchema as openParamsSchema,
   proxyOperationStatusParamsSchema as operationStatusParamsSchema,
   proxyOperationActivateResultSchema,
   proxyOperationCancelPendingResultSchema,
@@ -65,42 +59,6 @@ import {
   type ProxyIdentity,
   type ProxyPreparedAppServerOperation,
 } from './protocol.js';
-
-const openParamsSchema = z
-  .object({ bootstrapNonce: z.string().min(1), coordinator: coordinatorIdentitySchema })
-  .strict();
-
-/**
- * The set half of a grant tuple, repeated on the wire so a coordinator holding two proxies cannot install
- * one proxy's grant on the other by presenting the right secret alone.
- */
-const grantSetShape = {
-  generation: generationSchema,
-  hostFingerprint: hostFingerprintSchema,
-  buildSetId: canonicalUuidSchema,
-  proxyInstanceId: canonicalUuidSchema,
-} as const;
-
-const handoffInstallParamsSchema = z
-  .object({
-    grantId: canonicalUuidSchema,
-    secretSha256: grantSecretDigestSchema,
-    ...grantSetShape,
-    operations: handoffOperationSetSchema,
-    orphanTimeoutMs: z.number().int().positive(),
-  })
-  .strict();
-
-/** No `operations` field: the set is bound at install and returned by redemption, never presented by a
- *  redeemer to be checked against — see `GrantRegistry.redeem`'s own doc for why. */
-const handoffRedeemParamsSchema = z
-  .object({
-    grantId: canonicalUuidSchema,
-    secret: grantSecretSchema,
-    successor: coordinatorIdentitySchema,
-    ...grantSetShape,
-  })
-  .strict();
 
 /**
  * Who actually runs a provider operation. The proxy owns the protocol, the ledger and the replay buffer; it

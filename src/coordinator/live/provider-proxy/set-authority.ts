@@ -5,6 +5,7 @@ import {
   handoffSecretDigest,
   writeHandoffCapsuleFile,
   type HandoffCapsule,
+  proxyHandoffInstallParamsSchema,
 } from '../../../provider-proxy/handoff-capsule.js';
 import type { ProviderOperationKey } from '../../../provider-proxy/ledger.js';
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
@@ -157,16 +158,14 @@ export function createProviderProxySetAuthority(
       await Promise.all([
         guardianClient.call('guardian.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
         reaperClient.call('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
-        // The one send here still validated only on receipt. The proxy's `handoff.install.v1` schema cannot
-        // move to `protocol.ts` beside the others: it needs the grant-secret and operation-set primitives from
-        // `handoff-capsule.ts`, and that module imports `protocol.ts`, so the move would close a cycle
-        // `tests/invariants/production-import-graph.test.ts` fails on. Nor may it merge with the guardian and
-        // reaper schema used two lines above — that message carries a `successor` and a teardown reserve and
-        // this one identifies the set through its grant-set fields, because the proxy learns of a handoff only
-        // through the two authorities that already hold one.
+        // Its schema lives in `handoff-capsule.ts` rather than `protocol.ts` beside the others because it
+        // needs that module's grant-secret and operation-set primitives, and `handoff-capsule.ts` imports
+        // `protocol.ts`. It does not merge with the guardian/reaper message two lines above — that one carries
+        // a `successor` and a teardown reserve where this identifies the set through its grant-set fields,
+        // because the proxy learns of a handoff only through the two authorities that already hold one.
         proxyClient.call(
           'handoff.install.v1',
-          {
+          proxyHandoffInstallParamsSchema.parse({
             grantId,
             secretSha256,
             generation: proxyIdentityFields.generation,
@@ -175,7 +174,7 @@ export function createProviderProxySetAuthority(
             proxyInstanceId: proxyIdentityFields.proxyInstanceId,
             operations: handoffOperations,
             orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
-          },
+          }),
           PROXY_CONTROL_RPC_TIMEOUT_MS,
         ),
       ]).then(([guardianAck, reaperAck, proxyAck]) => {

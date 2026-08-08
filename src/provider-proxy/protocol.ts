@@ -483,6 +483,63 @@ export const guardianStopAndReapResultSchema = z
   .object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) })
   .strict();
 
+/**
+ * The open direction. Every role's first message, and the last request family each role parsed on receipt
+ * against a schema its one sender could not name — `RoleControlPlan.openParams` was `Record<string, unknown>`
+ * while `openResultSchema` sat one field below it, so the reply was schema-checked at the seam and the request
+ * was not. Shared here, the seam requires the schema and an unvalidated open stops being expressible.
+ */
+
+/** The process-group containment a `reaper.open.v1` claims, and the one the reaper then holds for its whole
+ *  life. Here rather than in `reaper.ts` because a coordinator must name this shape to send it. */
+export const recordedContainmentSchema = z
+  .object({
+    pid: nonNegativeSafeIntegerSchema,
+    processStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    processGroupId: nonNegativeSafeIntegerSchema,
+    containmentKind: z.string().min(1).max(64),
+  })
+  .strict();
+
+/** `control.open.v1`'s request — the proxy's own open, which names no peer because it is reached first and
+ *  is the only role that can report the pid, start time, and group id the other two opens carry. */
+export const proxyControlOpenParamsSchema = z
+  .object({ bootstrapNonce: z.string().min(1), coordinator: coordinatorIdentitySchema })
+  .strict();
+
+/** `guardian.open.v1`'s request. Parsing it is what makes identity disagreement reportable. */
+export const guardianOpenParamsSchema = z
+  .object({
+    bootstrapNonce: z.string().min(1),
+    coordinator: coordinatorIdentitySchema,
+    proxy: proxyIdentitySchema,
+  })
+  .strict();
+
+/** `reaper.open.v1`'s request. It names both peers and the containment, which is what lets the reaper refuse
+ *  an open whose proxy identity disagrees with what the guardian already recorded. */
+export const reaperOpenParamsSchema = z
+  .object({
+    bootstrapNonce: z.string().min(1),
+    coordinator: coordinatorIdentitySchema,
+    guardian: guardianIdentitySchema,
+    proxy: proxyIdentitySchema,
+    containment: recordedContainmentSchema,
+  })
+  .strict();
+
+/** `reaper.handoff-rotate.v1`'s request. Here rather than beside the two redeem schemas in
+ *  `handoff-capsule.ts`: it presents the guardian's receipt instead of the plaintext secret, so it needs none
+ *  of that module's grant primitives — and a schema placed by which cycle it avoids rather than by what it
+ *  needs is the kind of home nobody finds twice. */
+export const reaperHandoffRotateParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    successor: coordinatorIdentitySchema,
+    guardianRedemptionReceipt: z.string().min(1),
+  })
+  .strict();
+
 /** `operation.prepare.v1`'s request. The envelope is validated field by field at this ingress rather than
  *  deeper in: the proxy does not interpret it — the semantic host does — but this is the boundary the bytes
  *  arrive at, and a reservation committed against a malformed envelope is one nothing could ever activate. */

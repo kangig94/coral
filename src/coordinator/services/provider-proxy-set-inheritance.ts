@@ -8,6 +8,8 @@ import {
   handoffOperationSetSchema,
   readHandoffCapsuleFile,
   type HandoffCapsule,
+  guardianHandoffRedeemParamsSchema,
+  proxyHandoffRedeemParamsSchema,
 } from '../../provider-proxy/handoff-capsule.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
@@ -18,6 +20,7 @@ import {
   type GuardianIdentity,
   type OperationIdentity,
   type ReaperIdentity,
+  reaperHandoffRotateParamsSchema,
 } from '../../provider-proxy/protocol.js';
 import type { ControlClient, ProviderEventHandler } from '../../provider-proxy/control-client.js';
 import { runtimeControlTimer, type RoleConnectRetryOptions } from '../../provider-proxy/role-spawn.js';
@@ -264,6 +267,7 @@ async function redeem(
       endpoint: capsule.guardianControlEndpoint,
       openMethod: 'guardian.handoff-redeem.v1',
       openParams: { grantId: capsule.grantId, secret: capsule.secret, successor: coordinatorIdentity },
+      openParamsSchema: guardianHandoffRedeemParamsSchema,
       openResultSchema: guardianHandoffRedeemResultSchema,
       // Nothing self-reported to verify: redemption echoes no guardian identity fields, only the receipt and
       // the set the grant was installed over. The capsule/locator agreement above already established this is
@@ -285,6 +289,7 @@ async function redeem(
         successor: coordinatorIdentity,
         guardianRedemptionReceipt: guardianSession.opened.redemptionReceipt,
       },
+      openParamsSchema: reaperHandoffRotateParamsSchema,
       openResultSchema: reaperHandoffRotateResultSchema,
       identity: () => ({}),
       heartbeatMethod: 'reaper.heartbeat.v1',
@@ -308,6 +313,7 @@ async function redeem(
         buildSetId: locator.buildSetId,
         proxyInstanceId: locator.proxyInstanceId,
       },
+      openParamsSchema: proxyHandoffRedeemParamsSchema,
       openResultSchema: proxyHandoffRedeemResultSchema,
       identity: (opened) => opened.proxy,
       heartbeatMethod: 'control.heartbeat.v1',

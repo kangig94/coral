@@ -33,11 +33,23 @@ export type ControlTimer = ReturnType<typeof runtimeControlTimer>;
  *  checks it against the concrete open-result type instead of trusting a string key at runtime. Exported so
  *  `services/provider-proxy-set-inheritance.ts` can describe its own redeem/rotate opens the same shape
  *  `establishRoleControl` already consumes, rather than a second, parallel plan type. */
-export type RoleControlPlan<TOpened extends { controlEpoch: number; heartbeatChallenge: string }> = Readonly<{
+export type RoleControlPlan<
+  TOpened extends { controlEpoch: number; heartbeatChallenge: string },
+  /** No default: `RoleControlPlan<TOpened>` would make `openParams` `any` and quietly undo the check below.
+   *  Every use infers it from the schema at a call site, so there is nothing for a default to serve. */
+  TOpenParams extends z.ZodTypeAny,
+> = Readonly<{
   role: string;
   endpoint: string;
   openMethod: string;
-  openParams: Record<string, unknown>;
+  /** Typed as the schema's own output rather than as its own parameter: an indexed access is not an inference
+   *  site, so the schema below decides the shape instead of being inferred from whatever payload was written.
+   *  Inferring the other way is how a `paramsSchema` argument ends up accepting any schema at all. */
+  openParams: z.output<TOpenParams>;
+  /** Required, which is the whole point: `openParams` used to be `Record<string, unknown>` while the reply
+   *  right below it was schema-checked, so every role parsed its own open request against a declaration its
+   *  one sender could not name. An open that skips validation no longer type-checks. */
+  openParamsSchema: TOpenParams;
   openResultSchema: z.ZodType<TOpened>;
   identity: (opened: TOpened) => Record<string, unknown>;
   heartbeatMethod: string;
@@ -63,15 +75,19 @@ export type RoleControlPlan<TOpened extends { controlEpoch: number; heartbeatCha
  * differs, the mechanics do not, so there is exactly one function that dials a role and keeps its first
  * challenge alive.
  */
-export async function establishRoleControl<TOpened extends { controlEpoch: number; heartbeatChallenge: string }>(
+export async function establishRoleControl<
+  TOpened extends { controlEpoch: number; heartbeatChallenge: string },
+  TOpenParams extends z.ZodTypeAny,
+>(
   opened: ControlClient[],
   timer: ControlTimer,
   retry: RoleConnectRetryOptions,
-  plan: RoleControlPlan<TOpened>,
+  plan: RoleControlPlan<TOpened, TOpenParams>,
 ): Promise<Readonly<{ client: ControlClient; opened: TOpened; nextHeartbeatChallenge: string }>> {
   const client = await connectRoleControlWithRetry(plan.endpoint, timer, retry, plan.onProviderEvent);
   opened.push(client);
-  const raw = await client.call(plan.openMethod, plan.openParams, PROXY_CONTROL_RPC_TIMEOUT_MS);
+  const params = plan.openParamsSchema.parse(plan.openParams) as z.output<TOpenParams>;
+  const raw = await client.call(plan.openMethod, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
   const result = plan.openResultSchema.parse(raw);
   assertIdentityFieldsAgree(plan.role, plan.expectedIdentity, plan.identity(result));
   const beat = await heartbeatOnce(client, plan.heartbeatMethod, result.controlEpoch, result.heartbeatChallenge);

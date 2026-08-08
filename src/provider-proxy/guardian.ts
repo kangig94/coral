@@ -20,9 +20,9 @@ import {
 import {
   createGrantRegistry,
   grantBindingFromCapsule,
-  grantSecretSchema,
   guardianReaperHandoffInstallParamsSchema,
   type GrantBinding,
+  guardianHandoffRedeemParamsSchema as handoffRedeemParamsSchema,
 } from './handoff-capsule.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
@@ -32,9 +32,8 @@ import {
   assertNamedReaperIdentity,
   assertNamedTeardownReserve,
   assertRecordedSetAgreement,
-  canonicalUuidSchema,
-  coordinatorIdentitySchema,
   guardianOperationActivateParamsSchema as operationActivateParamsSchema,
+  guardianOpenParamsSchema as openParamsSchema,
   guardianOperationActivateResultSchema,
   guardianOperationReleaseParamsSchema as operationReleaseParamsSchema,
   guardianOperationReleaseResultSchema,
@@ -42,7 +41,6 @@ import {
   guardianStopAndReapParamsSchema as stopAndReapParamsSchema,
   guardianStopAndReapResultSchema,
   jointContainmentReceiptSchema,
-  proxyIdentitySchema,
   sameRecordedContainment,
   type guardianIdentitySchema,
   type providerRootSchema,
@@ -52,17 +50,6 @@ import {
 } from './protocol.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
-
-/** The plan's `guardian.open.v1` request. Parsing it is what makes identity disagreement reportable. Stays
- *  private to this file: its one sender (`acquisition-steps.ts`) builds its `openParams` generically through
- *  `role-control.ts`'s `RoleControlPlan`, well outside this refactor's four incidents and this file's owner. */
-const openParamsSchema = z
-  .object({
-    bootstrapNonce: z.string().min(1),
-    coordinator: coordinatorIdentitySchema,
-    proxy: proxyIdentitySchema,
-  })
-  .strict();
 
 /** What every `reaper.*` RPC this guardian issues replies with: at minimum a state tag it can safely compare
  *  against the one value that means success. Parsed rather than cast — a peer's bytes are wire input like
@@ -181,14 +168,6 @@ function assertNamedGuardianIdentity(
 
 /** No `operations` field: the set is bound at install and returned by redemption, never presented by a
  *  redeemer to be checked against — see `GrantRegistry.redeem`'s own doc for why. */
-const handoffRedeemParamsSchema = z
-  .object({
-    grantId: canonicalUuidSchema,
-    secret: grantSecretSchema,
-    successor: coordinatorIdentitySchema,
-  })
-  .strict();
-
 /**
  * Both authorities must ACK the same identity before a root may execute, so the receipt names both — the
  * reaper's own ACK is no longer a separate receipt, because the reaper holds nothing to revise it against.
