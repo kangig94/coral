@@ -235,6 +235,7 @@ describe('semantic-operation runtime: pump loop outcomes', () => {
     const prepared = preparedFixture();
     prepareAndActivate(ledger, key, prepared);
     const closeStaged = vi.fn();
+    const stagedHostRef = fakeHostRef();
 
     providerRegistryDouble.rehydrateBinding.mockReturnValue({
       ok: true,
@@ -242,14 +243,15 @@ describe('semantic-operation runtime: pump loop outcomes', () => {
         execute: async function* () {
           yield terminalCompleted;
         },
-        openReplacement: async () => ({ hostRef: fakeHostRef(), close: closeStaged }),
+        openReplacement: async () => ({ hostRef: stagedHostRef, close: closeStaged }),
       }),
     });
 
     const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
     await host.ensureProviderRoot(key, prepared);
-    host.host.start({ key, prepared });
+    const startedHostRef = host.host.start({ key, prepared });
 
+    expect(startedHostRef).toEqual(stagedHostRef);
     await vi.waitFor(() => expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement'));
     expect(emittedEvents).toEqual([{ key, event: terminalCompleted }]);
     expect(closeStaged).toHaveBeenCalledOnce();

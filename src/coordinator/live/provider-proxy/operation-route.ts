@@ -44,8 +44,8 @@ export interface DurableProviderProxyOperationAuthority extends ProviderProxyOpe
   ): Promise<ActivateProviderOperationResult>;
   cancelOperation(
     operation: OperationIdentity,
+    prepareAttemptNumber: number,
     prepareAttemptKey: string,
-    reservation: string,
   ): Promise<CancelProviderOperationResult>;
   settleOperation(operation: OperationIdentity, finalProviderSeq: number): Promise<SettleProviderOperationResult>;
   buildOperationControl(operation: OperationIdentity): OperationStopControl;
@@ -102,8 +102,8 @@ export function createProviderProxyOperationAuthority(deps: {
       inspectProviderOperation(activationDeps, operation, prepareAttemptKey),
     authorizeOperation: (operation, evidence) => authorizeProviderOperation(activationDeps, operation, evidence),
     activatePreparedOperation: (operation, evidence) => activateProviderOperation(activationDeps, operation, evidence),
-    cancelOperation: (operation, prepareAttemptKey, reservation) =>
-      cancelProviderOperation(activationDeps, operation, prepareAttemptKey, reservation),
+    cancelOperation: (operation, prepareAttemptNumber, prepareAttemptKey) =>
+      cancelProviderOperation(activationDeps, operation, prepareAttemptNumber, prepareAttemptKey),
     settleOperation: (operation, finalProviderSeq) =>
       settleProviderOperation(activationDeps, operation, finalProviderSeq),
     buildOperationControl: (operation) => buildProviderOperationControl(activationDeps, operation),

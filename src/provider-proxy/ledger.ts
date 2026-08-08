@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 // Type-only, so no runtime edge and no cycle with `protocol.ts` (which imports this file's ledger bound).
 // `production-import-graph.test.ts` walks runtime edges alone, for exactly this reason.
-import type { JointContainmentReceipt, Reservation } from './protocol.js';
+import type { JointContainmentReceipt, ProxyOperationActivationReceipt, Reservation } from './protocol.js';
 
 /**
  * How many operations one proxy may carry at once. It lives here because it is a ledger bound; the
@@ -45,12 +45,18 @@ export type ProviderOperationKey = Readonly<{ jobId: string; operationId: string
 export type ProviderRootIdentity = Readonly<{ pid: number; processStartedAtSeconds: number }>;
 
 export const operationPrepareAttemptKeySchema = z.string().regex(/^[0-9a-f]{64}$/u);
+export const operationPrepareAttemptNumberSchema = z.number().int().positive().safe();
 export const operationPrepareStatusParamsSchema = z
   .object({ prepareAttemptKey: operationPrepareAttemptKeySchema })
   .strict();
 
 export function operationPrepareAttemptKey(
-  request: Readonly<{ operation: unknown; hostFingerprint: string; prepared: unknown }>,
+  request: Readonly<{
+    operation: unknown;
+    hostFingerprint: string;
+    prepared: unknown;
+    prepareAttemptNumber: number;
+  }>,
 ): string {
   return createHash('sha256').update(JSON.stringify(request), 'utf8').digest('hex');
 }
@@ -103,6 +109,7 @@ export type OperationLedgerEntry<Prepared = unknown> = Readonly<{
    * would drift the first time one side is updated without the other.
    */
   prepared: Prepared;
+  prepareAttemptNumber: number;
   prepareAttemptKey: string;
   providerRoot: ProviderRootIdentity | null;
   /**
@@ -112,7 +119,7 @@ export type OperationLedgerEntry<Prepared = unknown> = Readonly<{
    */
   jointContainmentReceipt: JointContainmentReceipt | null;
   activationFingerprint: string | null;
-  activationAck: Readonly<{ state: 'executing'; committedThroughProviderSeq: number }> | null;
+  activationAck: ProxyOperationActivationReceipt | null;
   committedThroughProviderSeq: number;
   bufferedEvents: readonly ReplayEvent[];
   bufferedBytes: number;
@@ -132,6 +139,7 @@ export interface OperationLedger<Prepared = unknown> {
     reservation: Reservation;
     prepared: Prepared;
     nowMs: number;
+    prepareAttemptNumber?: number;
     idempotencyKey?: string;
   }): PrepareResult<Prepared>;
   /**
@@ -147,14 +155,15 @@ export interface OperationLedger<Prepared = unknown> {
   ): void;
   renew(key: ProviderOperationKey, reservation: Reservation, nowMs: number): OperationLedgerEntry<Prepared>;
   beginActivation(key: ProviderOperationKey, reservation: Reservation, nowMs: number, fingerprint: string): void;
-  completeActivation(
-    key: ProviderOperationKey,
-    fingerprint: string,
-    ack: Readonly<{ state: 'executing'; committedThroughProviderSeq: number }>,
-  ): void;
+  completeActivation(key: ProviderOperationKey, fingerprint: string, ack: ProxyOperationActivationReceipt): void;
   beginRelease(key: ProviderOperationKey): void;
   /** Temporary direct adapter for tests and hosts that only need to seed an executing ledger. */
-  activate(key: ProviderOperationKey, reservation: Reservation, nowMs: number): void;
+  activate(
+    key: ProviderOperationKey,
+    reservation: Reservation,
+    nowMs: number,
+    receipt?: Omit<ProxyOperationActivationReceipt, 'state' | 'activationFingerprint'>,
+  ): void;
   transition(key: ProviderOperationKey, next: ProviderOperationState | 'released'): void;
   /** Buffers one provider event, returning whether the producer must pause before sending more. */
   recordEvent(key: ProviderOperationKey, event: ReplayEvent): { paused: boolean };
@@ -182,11 +191,12 @@ type MutableEntry<Prepared> = {
   reservation: Reservation;
   leaseExpiresAtMs: number;
   prepared: Prepared;
+  prepareAttemptNumber: number;
   idempotencyKey: string;
   providerRoot: ProviderRootIdentity | null;
   jointContainmentReceipt: JointContainmentReceipt | null;
   activationFingerprint: string | null;
-  activationAck: Readonly<{ state: 'executing'; committedThroughProviderSeq: number }> | null;
+  activationAck: ProxyOperationActivationReceipt | null;
   committedThroughProviderSeq: number;
   buffered: ReplayEvent[];
   bufferedBytes: number;
@@ -204,6 +214,7 @@ function snapshot<Prepared>(entry: MutableEntry<Prepared>): OperationLedgerEntry
     reservation: entry.reservation,
     leaseExpiresAtMs: entry.leaseExpiresAtMs,
     prepared: entry.prepared,
+    prepareAttemptNumber: entry.prepareAttemptNumber,
     prepareAttemptKey: entry.idempotencyKey,
     providerRoot: entry.providerRoot,
     jointContainmentReceipt: entry.jointContainmentReceipt,
@@ -242,12 +253,19 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
     proxyBufferedBytes >= MAX_PROXY_REPLAY_BYTES;
 
   return {
-    prepare({ key, reservation, prepared, nowMs, idempotencyKey = reservation }): PrepareResult<Prepared> {
+    prepare({
+      key,
+      reservation,
+      prepared,
+      nowMs,
+      prepareAttemptNumber = 1,
+      idempotencyKey = reservation,
+    }): PrepareResult<Prepared> {
       const existing = entries.get(keyOf(key));
       if (existing !== undefined) {
         // A repeat of the same prepare is the same request arriving twice — a dropped reply, a retry. It
         // returns the reservation already made; only a *different* payload for one identity is a conflict.
-        if (existing.idempotencyKey === idempotencyKey) {
+        if (existing.prepareAttemptNumber === prepareAttemptNumber && existing.idempotencyKey === idempotencyKey) {
           return { kind: 'reserved', entry: snapshot(existing) };
         }
         throw new LedgerError('operation_duplicate', `${key.jobId}/${key.operationId} is already reserved.`);
@@ -264,6 +282,7 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
         reservation,
         leaseExpiresAtMs: nowMs + PROXY_PENDING_ACTIVATION_LEASE_MS,
         prepared,
+        prepareAttemptNumber,
         idempotencyKey,
         providerRoot: null,
         jointContainmentReceipt: null,
@@ -337,12 +356,24 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
       entry.state = 'releasing';
     },
 
-    activate(key, reservation, nowMs): void {
+    activate(key, reservation, nowMs, receipt): void {
       const fingerprint = `direct:${reservation}`;
       const entry = require(key);
       if (entry.state === 'executing' && entry.activationFingerprint === fingerprint) return;
       this.beginActivation(key, reservation, nowMs, fingerprint);
-      this.completeActivation(key, fingerprint, { state: 'executing', committedThroughProviderSeq: 0 });
+      this.completeActivation(key, fingerprint, {
+        state: 'executing',
+        activationFingerprint: fingerprint,
+        startedAt: receipt?.startedAt ?? new Date(0).toISOString(),
+        hostRef: receipt?.hostRef ?? {
+          provider: 'test',
+          fingerprint: '0'.repeat(64),
+          instanceId: `direct:${key.operationId}`,
+          leaseMode: 'job-exclusive',
+          ownerJobId: key.jobId,
+        },
+        committedThroughProviderSeq: receipt?.committedThroughProviderSeq ?? 0,
+      });
     },
 
     transition(key, next): void {

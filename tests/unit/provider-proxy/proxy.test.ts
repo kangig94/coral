@@ -5,17 +5,21 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
+import type { HostRef } from '#src/providers/contract.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { createProxy, type SemanticOperationHost } from '#src/provider-proxy/proxy.js';
 import {
   PROXY_PENDING_ACTIVATION_LEASE_MS,
+  operationActivationFingerprint,
   operationPrepareAttemptKey,
   type ProviderOperationKey,
 } from '#src/provider-proxy/ledger.js';
 import type { ProxyBootstrapCapsule } from '#src/provider-proxy/bootstrap-capsule.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
+  proxyOperationCancelParamsSchema,
+  proxyOperationCancelResultSchema,
   proxyOperationInspectParamsSchema,
   proxyOperationInspectResultSchema,
   proxyOperationSettleParamsSchema,
@@ -33,10 +37,8 @@ import {
 
 /**
  * `proxy.ts`'s own control endpoint, driven over a real Unix socket with a fake `SemanticOperationHost` and a
- * fake `containment` (no real app-server child, no real guardian) — the same isolation
- * `operation-lifecycle.integration.test.ts` (another agent's concurrent territory, not touched here) already
- * uses for this exact module. This file exists separately, rather than adding to that one, only because that
- * file is off-limits for the duration of this fix.
+ * fake `containment` (no real app-server child, no real guardian). Keeping the serializer races here makes
+ * them deterministic without weakening the broader lifecycle coverage over a real control connection.
  */
 
 const timer: ControlEndpointTimer = {
@@ -46,6 +48,7 @@ const timer: ControlEndpointTimer = {
 
 const NONCE = 'a'.repeat(64);
 const FINGERPRINT = 'b'.repeat(64);
+const STARTED_AT_MS = Date.parse('2026-08-09T12:34:56.000Z');
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -70,6 +73,16 @@ const PREPARED: ProxyPreparedAppServerOperation = {
   platform: 'linux',
 };
 
+function hostRefFor(jobId: string): HostRef {
+  return {
+    provider: PREPARED.provider,
+    fingerprint: FINGERPRINT,
+    instanceId: 'host-instance-1',
+    leaseMode: 'job-exclusive',
+    ownerJobId: jobId,
+  };
+}
+
 function fakeHost(): SemanticOperationHost & {
   released: ProviderOperationKey[];
   settled: ProviderOperationKey[];
@@ -83,8 +96,9 @@ function fakeHost(): SemanticOperationHost & {
     settled,
     starts: 0,
     stops: 0,
-    start() {
+    start({ key }) {
       this.starts += 1;
+      return hostRefFor(key.jobId);
     },
     stop() {
       this.stops += 1;
@@ -177,6 +191,7 @@ async function startProxy(
     }>;
     confirmActivation?: () => Promise<void>;
     releaseMembership?: (input: Readonly<{ key: ProviderOperationKey; reservation: Reservation }>) => Promise<void>;
+    wallClockNow?: () => number;
   } = {},
 ): Promise<{ control: ControlClient; operation: PreparedOperation; proxy: ReturnType<typeof createProxy> }> {
   const directory = mkdtempSync(join(tmpdir(), 'coral-proxy-test-'));
@@ -224,6 +239,7 @@ async function startProxy(
     mintChallenge: () => `challenge-${(counter += 1)}`,
     mintReceipt: () => `receipt-${(counter += 1)}`,
     mintReservation: () => asReservation(randomUUID()),
+    wallClockNow: options.wallClockNow ?? (() => STARTED_AT_MS),
     containment: {
       // No real guardian: a fixed root/receipt is all `operation.prepare.v1` needs to stage.
       stageProviderRoot:
@@ -277,7 +293,7 @@ describe('provider-proxy proxy: staged-but-never-executed release (BLOCKING B4)'
 
     const prepared = (await control.call(
       'operation.prepare.v1',
-      { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED },
+      { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
       5_000,
     )) as { state: string; reservation: string };
     expect(prepared.state).toBe('pending-activation');
@@ -302,7 +318,7 @@ describe('provider-proxy proxy: staged-but-never-executed release (BLOCKING B4)'
 
     const prepared = (await control.call(
       'operation.prepare.v1',
-      { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED },
+      { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
       5_000,
     )) as { state: string };
     expect(prepared.state).toBe('pending-activation');
@@ -323,7 +339,7 @@ describe('provider-proxy proxy: staged-but-never-executed release (BLOCKING B4)'
 
     const prepared = (await control.call(
       'operation.prepare.v1',
-      { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED },
+      { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
       5_000,
     )) as { reservation: string };
 
@@ -345,11 +361,17 @@ describe('provider-proxy truthful operation authority', () => {
   it('replays the stored activation ACK without starting the host twice', async () => {
     const host = fakeHost();
     const { control, operation } = await startProxy(host);
-    const prepared = (await control.call(
-      'operation.prepare.v1',
-      { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED },
-      5_000,
-    )) as { reservation: Reservation; jointContainmentReceipt: JointContainmentReceipt };
+    const prepareRequest = {
+      operation,
+      hostFingerprint: FINGERPRINT,
+      prepareAttemptNumber: 1,
+      prepared: PREPARED,
+    };
+    const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
+    const prepared = (await control.call('operation.prepare.v1', prepareRequest, 5_000)) as {
+      reservation: Reservation;
+      jointContainmentReceipt: JointContainmentReceipt;
+    };
     const activation = {
       operation,
       reservation: prepared.reservation,
@@ -359,8 +381,17 @@ describe('provider-proxy truthful operation authority', () => {
 
     const first = await control.call('operation.activate.v1', activation, 5_000);
     const replay = await control.call('operation.activate.v1', activation, 5_000);
+    const inspected = await control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000);
 
+    expect(first).toEqual({
+      state: 'executing',
+      activationFingerprint: operationActivationFingerprint(activation),
+      startedAt: new Date(STARTED_AT_MS).toISOString(),
+      hostRef: hostRefFor(operation.jobId),
+      committedThroughProviderSeq: 0,
+    });
     expect(replay).toEqual(first);
+    expect(inspected).toEqual(first);
     expect(host.starts).toBe(1);
   });
 
@@ -374,7 +405,7 @@ describe('provider-proxy truthful operation authority', () => {
     const { control, operation, proxy } = await startProxy(host, timer, {
       releaseMembership: () => release.promise,
     });
-    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED };
+    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
     const prepared = (await control.call('operation.prepare.v1', prepareRequest, 5_000)) as {
       reservation: Reservation;
@@ -405,34 +436,33 @@ describe('provider-proxy truthful operation authority', () => {
     const inspectRequestParses = vi.spyOn(proxyOperationInspectParamsSchema, 'parse');
     const inspectResultParses = vi.spyOn(proxyOperationInspectResultSchema, 'parse');
     const host = fakeHost();
-    const started = deferred();
-    host.start = function start(): Promise<void> {
+    const started = deferred<HostRef>();
+    host.start = function start(): Promise<HostRef> {
       this.starts += 1;
       return started.promise;
     };
+    let wallClockMs = STARTED_AT_MS;
     const received: unknown[] = [];
     const { control, operation, proxy } = await startProxy(host, timer, {
       onProviderEvent: (request) => {
         received.push(request);
         return { kind: 'ack', committedThroughProviderSeq: request.providerSeq };
       },
+      wallClockNow: () => wallClockMs,
     });
-    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED };
+    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
     const prepared = (await control.call('operation.prepare.v1', prepareRequest, 5_000)) as {
       reservation: Reservation;
       jointContainmentReceipt: JointContainmentReceipt;
     };
-    const activating = control.call(
-      'operation.activate.v1',
-      {
-        operation,
-        reservation: prepared.reservation,
-        jointContainmentReceipt: prepared.jointContainmentReceipt,
-        jointActivationReceipt: asJointActivationReceipt('activation-1'),
-      },
-      5_000,
-    );
+    const activation = {
+      operation,
+      reservation: prepared.reservation,
+      jointContainmentReceipt: prepared.jointContainmentReceipt,
+      jointActivationReceipt: asJointActivationReceipt('activation-1'),
+    };
+    const activating = control.call('operation.activate.v1', activation, 5_000);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('starting'));
 
     proxy.emitProviderEvent(operation, { kind: 'progress', message: 'buffered' });
@@ -445,8 +475,15 @@ describe('provider-proxy truthful operation authority', () => {
     expect(inspectResultParses).toHaveBeenCalledTimes(2);
     expect(received).toEqual([]);
 
-    started.resolve();
-    await expect(activating).resolves.toMatchObject({ state: 'executing' });
+    wallClockMs += 1_000;
+    started.resolve(hostRefFor(operation.jobId));
+    await expect(activating).resolves.toEqual({
+      state: 'executing',
+      activationFingerprint: operationActivationFingerprint(activation),
+      startedAt: new Date(wallClockMs).toISOString(),
+      hostRef: hostRefFor(operation.jobId),
+      committedThroughProviderSeq: 0,
+    });
     await vi.waitFor(() => expect(received).toHaveLength(1));
   });
 
@@ -458,13 +495,107 @@ describe('provider-proxy truthful operation authority', () => {
       readMilliseconds: controlled.readMilliseconds,
       releaseMembership,
     });
-    await control.call('operation.prepare.v1', { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED }, 5_000);
+    await control.call(
+      'operation.prepare.v1',
+      { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
+      5_000,
+    );
 
     controlled.advance(PROXY_PENDING_ACTIVATION_LEASE_MS);
 
     await vi.waitFor(() => expect(proxy.ledger().get(operation)).toBeNull());
     expect(host.released).toEqual([{ jobId: operation.jobId, operationId: operation.operationId }]);
     expect(releaseMembership).toHaveBeenCalledOnce();
+  });
+
+  it('fences an attempt that never entered preparation and refuses its delayed prepare', async () => {
+    const cancelParamsParses = vi.spyOn(proxyOperationCancelParamsSchema, 'parse');
+    const cancelResultParses = vi.spyOn(proxyOperationCancelResultSchema, 'parse');
+    const releaseMembership = vi.fn(async () => {});
+    const host = fakeHost();
+    const { control, operation } = await startProxy(host, timer, { releaseMembership });
+    const prepareRequest = {
+      operation,
+      hostFingerprint: FINGERPRINT,
+      prepareAttemptNumber: 1,
+      prepared: PREPARED,
+    };
+    const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
+    const cancelRequest = proxyOperationCancelParamsSchema.parse({
+      operation,
+      prepareAttemptNumber: 1,
+      prepareAttemptKey,
+    });
+
+    const cancelled = proxyOperationCancelResultSchema.parse(
+      await control.call('operation.cancel.v2', cancelRequest, 5_000),
+    );
+
+    expect(cancelled).toEqual({
+      state: 'released-never-started',
+      operation,
+      prepareAttemptNumber: 1,
+      prepareAttemptKey,
+    });
+    await expect(control.call('operation.prepare.v1', prepareRequest, 5_000)).rejects.toThrow(/attempt is fenced/u);
+    expect(host.released).toEqual([]);
+    expect(releaseMembership).not.toHaveBeenCalled();
+    expect(cancelParamsParses).toHaveBeenCalledTimes(2);
+    expect(cancelResultParses).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a delayed lower prepare after a higher absent attempt was fenced', async () => {
+    const host = fakeHost();
+    const { control, operation } = await startProxy(host);
+    const higherPrepare = {
+      operation,
+      hostFingerprint: FINGERPRINT,
+      prepareAttemptNumber: 2,
+      prepared: PREPARED,
+    };
+    const higherAttemptKey = operationPrepareAttemptKey(higherPrepare);
+    await control.call(
+      'operation.cancel.v2',
+      { operation, prepareAttemptNumber: 2, prepareAttemptKey: higherAttemptKey },
+      5_000,
+    );
+
+    await expect(
+      control.call(
+        'operation.prepare.v1',
+        { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
+        5_000,
+      ),
+    ).rejects.toThrow(/delayed lower prepare attempt/u);
+    expect(host.starts).toBe(0);
+  });
+
+  it('accepts a higher prepare only after the previous attempt is fenced and released', async () => {
+    const host = fakeHost();
+    const { control, operation } = await startProxy(host);
+    const firstRequest = {
+      operation,
+      hostFingerprint: FINGERPRINT,
+      prepareAttemptNumber: 1,
+      prepared: PREPARED,
+    };
+    const firstAttemptKey = operationPrepareAttemptKey(firstRequest);
+    await control.call('operation.prepare.v1', firstRequest, 5_000);
+    const secondRequest = { ...firstRequest, prepareAttemptNumber: 2 };
+
+    await expect(control.call('operation.prepare.v1', secondRequest, 5_000)).rejects.toThrow(
+      /previous prepare attempt is not fenced/u,
+    );
+    await control.call(
+      'operation.cancel.v2',
+      { operation, prepareAttemptNumber: 1, prepareAttemptKey: firstAttemptKey },
+      5_000,
+    );
+
+    await expect(control.call('operation.prepare.v1', secondRequest, 5_000)).resolves.toMatchObject({
+      state: 'pending-activation',
+    });
+    expect(host.released).toEqual([{ jobId: operation.jobId, operationId: operation.operationId }]);
   });
 
   it('joins cancellation to in-flight staging before certifying never-started', async () => {
@@ -478,16 +609,16 @@ describe('provider-proxy truthful operation authority', () => {
       stageProviderRoot: () => staging.promise,
       releaseMembership,
     });
-    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED };
+    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
     const preparing = control.call('operation.prepare.v1', prepareRequest, 5_000);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('preparing'));
-    const inspected = (await control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)) as {
-      reservation: Reservation;
-    };
+    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+      state: 'preparing',
+    });
     const cancelling = control.call(
       'operation.cancel.v2',
-      { operation, prepareAttemptKey, reservation: inspected.reservation },
+      { operation, prepareAttemptNumber: 1, prepareAttemptKey },
       5_000,
     );
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('releasing'));
@@ -498,7 +629,12 @@ describe('provider-proxy truthful operation authority', () => {
     });
 
     await expect(preparing).rejects.toThrow(/lease expired/u);
-    await expect(cancelling).resolves.toEqual({ state: 'released-never-started', prepareAttemptKey });
+    await expect(cancelling).resolves.toEqual({
+      state: 'released-never-started',
+      operation,
+      prepareAttemptNumber: 1,
+      prepareAttemptKey,
+    });
     expect(host.starts).toBe(0);
     expect(host.released).toHaveLength(1);
     expect(releaseMembership).toHaveBeenCalledOnce();
@@ -506,13 +642,13 @@ describe('provider-proxy truthful operation authority', () => {
 
   it('joins cancellation to an in-flight start and refuses never-started proof after the ACK', async () => {
     const host = fakeHost();
-    const started = deferred();
-    host.start = function start(): Promise<void> {
+    const started = deferred<HostRef>();
+    host.start = function start(): Promise<HostRef> {
       this.starts += 1;
       return started.promise;
     };
     const { control, operation, proxy } = await startProxy(host);
-    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED };
+    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
     const prepared = (await control.call('operation.prepare.v1', prepareRequest, 5_000)) as {
       reservation: Reservation;
@@ -531,11 +667,11 @@ describe('provider-proxy truthful operation authority', () => {
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('starting'));
     const cancelling = control.call(
       'operation.cancel.v2',
-      { operation, prepareAttemptKey, reservation: prepared.reservation },
+      { operation, prepareAttemptNumber: 1, prepareAttemptKey },
       5_000,
     );
 
-    started.resolve();
+    started.resolve(hostRefFor(operation.jobId));
 
     await expect(activating).resolves.toMatchObject({ state: 'executing' });
     await expect(cancelling).rejects.toThrow(/Activation has begun/u);
@@ -551,7 +687,7 @@ describe('provider-proxy truthful operation authority', () => {
     const { control, operation, proxy } = await startProxy(host, timer, { releaseMembership });
     const prepared = (await control.call(
       'operation.prepare.v1',
-      { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED },
+      { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
       5_000,
     )) as { reservation: Reservation; jointContainmentReceipt: JointContainmentReceipt };
     await control.call(
@@ -598,7 +734,11 @@ describe('provider-proxy proxy: operation.prepare.v1 budget (BLOCKING B5)', () =
     const budgetsBeforePrepare = [...recording.budgets];
     expect(budgetsBeforePrepare).toEqual([PROXY_CONTROL_RPC_TIMEOUT_MS, PROXY_CONTROL_RPC_TIMEOUT_MS]);
 
-    await control.call('operation.prepare.v1', { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED }, 5_000);
+    await control.call(
+      'operation.prepare.v1',
+      { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
+      5_000,
+    );
 
     expect(recording.budgets.slice(budgetsBeforePrepare.length)).toEqual([PROXY_PENDING_ACTIVATION_LEASE_MS]);
   });

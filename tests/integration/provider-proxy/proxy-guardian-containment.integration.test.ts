@@ -11,6 +11,7 @@ import {
   type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
+import type { HostRef } from '#src/providers/contract.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { connectControlClient } from '#src/provider-proxy/control-client.js';
@@ -21,6 +22,7 @@ import {
   guardianProxyOperationReleaseParamsSchema,
   guardianProxyOperationReleaseResultSchema,
   proxyOperationActivateParamsSchema,
+  proxyOperationActivateResultSchema,
   proxyOperationCancelParamsSchema,
   proxyOperationCancelResultSchema,
   proxyOperationPrepareParamsSchema,
@@ -60,6 +62,7 @@ const CONTAINMENT = {
   containmentKind: 'posix-group',
 };
 const ROOT = { pid: 7_001, processStartedAtSeconds: 800 };
+const WALL_CLOCK_MS = Date.parse('2026-08-09T12:34:56.000Z');
 
 const PREPARED: ProxyPreparedAppServerOperation = {
   version: 1,
@@ -78,6 +81,16 @@ const PREPARED: ProxyPreparedAppServerOperation = {
   protectedEnv: {},
   platform: 'linux',
 };
+
+function hostRefFor(jobId: string): HostRef {
+  return {
+    provider: PREPARED.provider,
+    fingerprint: FINGERPRINT,
+    instanceId: `host:${jobId}`,
+    leaseMode: 'job-exclusive',
+    ownerJobId: jobId,
+  };
+}
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -285,6 +298,7 @@ async function startCoordinatorActivationSet() {
   const host: SemanticOperationHost = {
     start: ({ key, prepared }) => {
       started.push({ ...key, prepared });
+      return hostRefFor(key.jobId);
     },
     stop: () => {},
   };
@@ -307,6 +321,7 @@ async function startCoordinatorActivationSet() {
       return `proxy-receipt-${receiptCount}`;
     },
     mintReservation: () => asReservation(randomUUID()),
+    wallClockNow: () => WALL_CLOCK_MS,
     containment: createProxyGuardianContainment({
       identity: set.proxyIdentity,
       guardianChannel: set.guardianChannel,
@@ -370,6 +385,7 @@ describe('provider proxy activation against a real guardian', () => {
     const prepareRequest = proxyOperationPrepareParamsSchema.parse({
       operation,
       hostFingerprint: FINGERPRINT,
+      prepareAttemptNumber: 1,
       prepared: PREPARED,
     });
     const prepared = (await set.proxyControl.call('operation.prepare.v1', prepareRequest, 5_000)) as {
@@ -380,8 +396,8 @@ describe('provider proxy activation against a real guardian', () => {
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
     const cancelRequest = proxyOperationCancelParamsSchema.parse({
       operation,
+      prepareAttemptNumber: 1,
       prepareAttemptKey,
-      reservation: prepared.reservation,
     });
 
     const cancelResult = proxyOperationCancelResultSchema.parse(
@@ -389,6 +405,8 @@ describe('provider proxy activation against a real guardian', () => {
     );
     expect(cancelResult).toEqual({
       state: 'released-never-started',
+      operation,
+      prepareAttemptNumber: 1,
       prepareAttemptKey,
     });
 
@@ -413,6 +431,7 @@ describe('provider proxy activation against a real guardian', () => {
   it('executes coordinator activation through the real clients and both real handlers', async () => {
     const set = await startCoordinatorActivationSet();
     const activationSchemaParses = vi.spyOn(proxyOperationActivateParamsSchema, 'parse');
+    const activationResultSchemaParses = vi.spyOn(proxyOperationActivateResultSchema, 'parse');
     const operation = {
       jobId: randomUUID(),
       operationId: randomUUID(),
@@ -446,6 +465,7 @@ describe('provider proxy activation against a real guardian', () => {
     // proxy handler. Keeping both observations makes bypassing the sender parse fail this test even though a
     // currently valid payload produces identical bytes with or without that parse.
     expect(activationSchemaParses).toHaveBeenCalledTimes(2);
+    expect(activationResultSchemaParses).toHaveBeenCalledTimes(2);
   });
 
   it('forwards the ledger’s own reservation, so a later operation-activate.v1 presenting it is accepted', async () => {

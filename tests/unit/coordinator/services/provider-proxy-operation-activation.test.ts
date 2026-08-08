@@ -58,6 +58,19 @@ const PREPARED: ProxyPreparedAppServerOperation = {
   protectedEnv: {},
   platform: 'linux',
 };
+const ACTIVATION_ACK = {
+  state: 'executing' as const,
+  activationFingerprint: 'c'.repeat(64),
+  startedAt: '2026-08-09T12:34:56.000Z',
+  hostRef: {
+    provider: 'codex',
+    fingerprint: SET_IDENTITY.hostFingerprint,
+    instanceId: randomUUID(),
+    leaseMode: 'job-exclusive' as const,
+    ownerJobId: OPERATION.jobId,
+  },
+  committedThroughProviderSeq: 0,
+};
 
 function scriptedClient(answers: Record<string, unknown>): {
   client: OperationControlClient;
@@ -119,7 +132,7 @@ describe('provider proxy operation mutations', () => {
   it('keeps guardian authorization and semantic activation as separate replayable mutations', async () => {
     const reservation = randomUUID();
     const proxy = scriptedClient({
-      'operation.activate.v1': { state: 'executing', committedThroughProviderSeq: 0 },
+      'operation.activate.v1': ACTIVATION_ACK,
     });
     const guardian = scriptedClient({
       'guardian.operation-activate.v1': {
@@ -141,7 +154,7 @@ describe('provider proxy operation mutations', () => {
         jointContainmentReceipt: preparation.jointContainmentReceipt,
         jointActivationReceipt: authorized.jointActivationReceipt,
       }),
-    ).resolves.toEqual({ state: 'executing', committedThroughProviderSeq: 0 });
+    ).resolves.toEqual(ACTIVATION_ACK);
 
     expect(guardian.calls[0]?.method).toBe('guardian.operation-activate.v1');
     expect(proxy.calls[0]).toEqual({
@@ -156,23 +169,30 @@ describe('provider proxy operation mutations', () => {
   });
 
   it('uses fenced cancel v2 for prestart cleanup while retaining the executing stop capability', async () => {
-    const reservation = randomUUID();
     const prepareAttemptKey = 'b'.repeat(64);
     const proxy = scriptedClient({
-      'operation.cancel.v2': { state: 'released-never-started', prepareAttemptKey },
+      'operation.cancel.v2': {
+        state: 'released-never-started',
+        operation: OPERATION,
+        prepareAttemptNumber: 2,
+        prepareAttemptKey,
+      },
       'operation.stop.v1': { state: 'terminal-awaiting-journal-ack', committedThroughProviderSeq: 0 },
     });
     const guardian = scriptedClient({});
     const activationDeps = deps(proxy.client, guardian.client);
 
-    await expect(cancelProviderOperation(activationDeps, OPERATION, prepareAttemptKey, reservation)).resolves.toEqual({
+    await expect(cancelProviderOperation(activationDeps, OPERATION, 2, prepareAttemptKey)).resolves.toEqual({
       state: 'released-never-started',
+      operation: OPERATION,
+      prepareAttemptNumber: 2,
       prepareAttemptKey,
     });
     const control = buildProviderOperationControl(activationDeps, OPERATION);
     await control.stop('user_abort');
 
     expect(proxy.calls.map((call) => call.method)).toEqual(['operation.cancel.v2', 'operation.stop.v1']);
+    expect(proxy.calls[0]?.params).toEqual({ operation: OPERATION, prepareAttemptNumber: 2, prepareAttemptKey });
     expect(guardian.calls).toEqual([]);
   });
 

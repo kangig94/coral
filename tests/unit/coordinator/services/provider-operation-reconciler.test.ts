@@ -26,7 +26,18 @@ import {
 
 import { providerOperationRecord } from '../../store/provider-operation-fixtures.js';
 
-const activationAck = { state: 'executing', committedThroughProviderSeq: 0 } as const;
+const activationAck = {
+  state: 'executing',
+  activationFingerprint: 'c'.repeat(64),
+  startedAt: '2026-08-09T12:34:56.000Z',
+  hostRef: {
+    provider: 'codex',
+    fingerprint: 'a'.repeat(64),
+    instanceId: 'host-instance-1',
+    leaseMode: 'shared',
+  },
+  committedThroughProviderSeq: 0,
+} as const;
 
 describe('provider operation termination verdicts', () => {
   it('fires each termination only from its own semantic evidence', () => {
@@ -204,8 +215,10 @@ function createHarness(
         phasesBeforeMutation.push(readPhase());
         return activationAck;
       }),
-    cancelOperation: async (_operation, prepareAttemptKey) => ({
+    cancelOperation: async (operation, prepareAttemptNumber, prepareAttemptKey) => ({
       state: 'released-never-started',
+      operation,
+      prepareAttemptNumber,
       prepareAttemptKey,
     }),
     settleOperation:

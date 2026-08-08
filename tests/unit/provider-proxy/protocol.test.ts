@@ -29,6 +29,7 @@ import {
   ProxyControlProtocolError,
   proxyIdentitySchema,
   proxyOperationActivateParamsSchema,
+  proxyOperationActivateResultSchema,
   proxyOperationAdoptParamsSchema,
   proxyOperationCancelParamsSchema,
   proxyOperationCancelResultSchema,
@@ -449,19 +450,20 @@ describe('truthful operation wire schemas', () => {
 
   it('strictly validates inspect, fenced cancel, and cumulative settle requests and results', () => {
     const inspect = { operation, prepareAttemptKey };
-    const cancel = { ...inspect, reservation: UUID_A };
+    const cancel = { ...inspect, prepareAttemptNumber: 2 };
     const settle = { operation, finalProviderSeq: 7 };
     expect(proxyOperationInspectParamsSchema.safeParse(inspect).success).toBe(true);
     expect(proxyOperationCancelParamsSchema.safeParse(cancel).success).toBe(true);
     expect(proxyOperationSettleParamsSchema.safeParse(settle).success).toBe(true);
     expect(proxyOperationInspectParamsSchema.safeParse({ ...inspect, unexpected: true }).success).toBe(false);
-    expect(proxyOperationCancelParamsSchema.safeParse({ operation, reservation: UUID_A }).success).toBe(false);
+    expect(proxyOperationCancelParamsSchema.safeParse({ operation, prepareAttemptKey }).success).toBe(false);
+    expect(proxyOperationCancelParamsSchema.safeParse({ ...cancel, reservation: UUID_A }).success).toBe(false);
     expect(proxyOperationSettleParamsSchema.safeParse({ operation, finalProviderSeq: -1 }).success).toBe(false);
 
     expect(proxyOperationInspectResultSchema.safeParse({ state: 'absent' }).success).toBe(true);
-    expect(
-      proxyOperationCancelResultSchema.safeParse({ state: 'released-never-started', prepareAttemptKey }).success,
-    ).toBe(true);
+    expect(proxyOperationCancelResultSchema.safeParse({ state: 'released-never-started', ...cancel }).success).toBe(
+      true,
+    );
     expect(
       proxyOperationSettleResultSchema.safeParse({
         state: 'released-after-terminal',
@@ -472,7 +474,7 @@ describe('truthful operation wire schemas', () => {
     expect(
       proxyOperationCancelResultSchema.safeParse({
         state: 'released-never-started',
-        prepareAttemptKey,
+        ...cancel,
         unexpected: true,
       }).success,
     ).toBe(false);
@@ -483,6 +485,28 @@ describe('truthful operation wire schemas', () => {
         unexpected: true,
       }).success,
     ).toBe(false);
+  });
+
+  it('requires the complete activation receipt for activation replay and executing inspection', () => {
+    const receipt = {
+      state: 'executing' as const,
+      activationFingerprint: prepareAttemptKey,
+      startedAt: '2026-08-09T12:34:56.000Z',
+      hostRef: {
+        provider: 'codex',
+        fingerprint: HOST_FINGERPRINT,
+        instanceId: UUID_A,
+        leaseMode: 'job-exclusive' as const,
+        ownerJobId: operation.jobId,
+      },
+      committedThroughProviderSeq: 0,
+    };
+
+    expect(proxyOperationActivateResultSchema.safeParse(receipt).success).toBe(true);
+    expect(proxyOperationInspectResultSchema.safeParse(receipt).success).toBe(true);
+    const { hostRef: _hostRef, ...missingHostRef } = receipt;
+    expect(proxyOperationActivateResultSchema.safeParse(missingHostRef).success).toBe(false);
+    expect(proxyOperationInspectResultSchema.safeParse({ ...receipt, activationAck: receipt }).success).toBe(false);
   });
 });
 
@@ -608,12 +632,18 @@ describe('proxy control-method request schemas, shared with their coordinator se
     }
   });
 
-  it('operation.prepare.v1: rejects a missing hostFingerprint and an extra field', () => {
-    const valid = { operation, hostFingerprint: 'a'.repeat(64), prepared: PREPARED_OPERATION };
+  it('operation.prepare.v1: requires an explicit positive attempt number and rejects extra fields', () => {
+    const valid = {
+      operation,
+      hostFingerprint: 'a'.repeat(64),
+      prepareAttemptNumber: 1,
+      prepared: PREPARED_OPERATION,
+    };
     expect(proxyOperationPrepareParamsSchema.safeParse(valid).success).toBe(true);
 
     const { hostFingerprint: _omitted, ...missing } = valid;
     expect(proxyOperationPrepareParamsSchema.safeParse(missing).success).toBe(false);
+    expect(proxyOperationPrepareParamsSchema.safeParse({ ...valid, prepareAttemptNumber: 0 }).success).toBe(false);
     expect(proxyOperationPrepareParamsSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
   });
 

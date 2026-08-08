@@ -13,7 +13,11 @@ import {
   providerSuspendedEventBodySchema,
   providerTerminalEventBodySchema,
 } from '../providers/contract.js';
-import { MAX_PROXY_OPERATION_LEDGERS, operationPrepareAttemptKeySchema } from './ledger.js';
+import {
+  MAX_PROXY_OPERATION_LEDGERS,
+  operationPrepareAttemptKeySchema,
+  operationPrepareAttemptNumberSchema,
+} from './ledger.js';
 
 export const MAX_PROXY_CONTROL_FRAME_BYTES = 17 * 1024 * 1024;
 export const PROXY_CONTROL_RPC_TIMEOUT_MS = 5_000;
@@ -598,6 +602,7 @@ export const proxyOperationPrepareParamsSchema = z
   .object({
     operation: operationIdentitySchema,
     hostFingerprint: hostFingerprintSchema,
+    prepareAttemptNumber: operationPrepareAttemptNumberSchema,
     prepared: proxyPreparedAppServerOperationSchema,
   })
   .strict();
@@ -654,8 +659,12 @@ export const proxyOperationInspectParamsSchema = z
   .object({ operation: operationIdentitySchema, prepareAttemptKey: operationPrepareAttemptKeySchema })
   .strict();
 
-export const proxyOperationCancelParamsSchema = proxyOperationReservationParamsSchema
-  .extend({ prepareAttemptKey: operationPrepareAttemptKeySchema })
+export const proxyOperationCancelParamsSchema = z
+  .object({
+    operation: operationIdentitySchema,
+    prepareAttemptNumber: operationPrepareAttemptNumberSchema,
+    prepareAttemptKey: operationPrepareAttemptKeySchema,
+  })
   .strict();
 
 export const proxyOperationSettleParamsSchema = z
@@ -705,12 +714,37 @@ export const proxyOperationRenewResultSchema = z
   .object({ state: z.literal('pending-activation'), leaseExpiresInMs: z.number() })
   .strict();
 
-/** `operation.activate.v1`'s result. */
+export const activationFingerprintSchema = operationPrepareAttemptKeySchema;
+
+const proxyOperationHostRefIdentitySchema = {
+  provider: z.string().min(1),
+  fingerprint: hostFingerprintSchema,
+  instanceId: z.string().min(1),
+} as const;
+
+export const proxyOperationHostRefSchema = z.discriminatedUnion('leaseMode', [
+  z.object({ ...proxyOperationHostRefIdentitySchema, leaseMode: z.literal('shared') }).strict(),
+  z
+    .object({
+      ...proxyOperationHostRefIdentitySchema,
+      leaseMode: z.literal('job-exclusive'),
+      ownerJobId: z.string().min(1),
+    })
+    .strict(),
+]);
+
+/** `operation.activate.v1`'s result and the receipt retained for replay. */
 export const proxyOperationActivateResultSchema = z
-  .object({ state: z.literal('executing'), committedThroughProviderSeq: nonNegativeSafeIntegerSchema })
+  .object({
+    state: z.literal('executing'),
+    activationFingerprint: activationFingerprintSchema,
+    startedAt: z.string().datetime(),
+    hostRef: proxyOperationHostRefSchema,
+    committedThroughProviderSeq: nonNegativeSafeIntegerSchema,
+  })
   .strict();
 
-export const activationFingerprintSchema = operationPrepareAttemptKeySchema;
+export type ProxyOperationActivationReceipt = z.output<typeof proxyOperationActivateResultSchema>;
 
 const proxyOperationInspectPreExecutionBaseSchema = z.object({
   reservation: reservationSchema,
@@ -736,13 +770,7 @@ export const proxyOperationInspectResultSchema = z.discriminatedUnion('state', [
       activationFingerprint: activationFingerprintSchema,
     })
     .strict(),
-  z
-    .object({
-      state: z.literal('executing'),
-      activationFingerprint: activationFingerprintSchema,
-      activationAck: proxyOperationActivateResultSchema,
-    })
-    .strict(),
+  proxyOperationActivateResultSchema,
   z
     .object({
       state: z.literal('releasing'),
@@ -765,7 +793,12 @@ export const proxyOperationInspectResultSchema = z.discriminatedUnion('state', [
 ]);
 
 export const proxyOperationCancelResultSchema = z
-  .object({ state: z.literal('released-never-started'), prepareAttemptKey: operationPrepareAttemptKeySchema })
+  .object({
+    state: z.literal('released-never-started'),
+    operation: operationIdentitySchema,
+    prepareAttemptNumber: operationPrepareAttemptNumberSchema,
+    prepareAttemptKey: operationPrepareAttemptKeySchema,
+  })
   .strict();
 
 export const proxyOperationSettleResultSchema = z

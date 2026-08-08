@@ -2,7 +2,12 @@ import type { MonotonicClock } from '../infra/monotonic-clock.js';
 // The stop cause is shared with the coordinator's durable side. It lives in `providers/` because both sides
 // may reach it and neither may reach the other: this tree is barred from `jobs/`, and the reverse edge would
 // point the dependency the wrong way.
-import { isInterruptionStopCause, type ProviderEventBody, type ProviderStopCause } from '../providers/contract.js';
+import {
+  isInterruptionStopCause,
+  type HostRef,
+  type ProviderEventBody,
+  type ProviderStopCause,
+} from '../providers/contract.js';
 import { createBootstrapNonceCredential, type ProxyBootstrapCapsule } from './bootstrap-capsule.js';
 import { ControlLeaseEvidence } from './control-lease.js';
 import {
@@ -80,7 +85,7 @@ export interface SemanticOperationHost {
   /** A thrown start must not leave an executing ledger entry without a kernel. */
   start(
     input: Readonly<{ key: ProviderOperationKey; prepared: ProxyPreparedAppServerOperation }>,
-  ): Promise<void> | void;
+  ): Promise<HostRef> | HostRef;
   /** Stops a running kernel. Called for every recorded stop cause, including a clean handoff. */
   stop(input: Readonly<{ key: ProviderOperationKey; cause: ProviderStopCause }>): Promise<void> | void;
   /**
@@ -100,6 +105,7 @@ export type ProxyOptions<Scope extends symbol> = Readonly<{
   mintChallenge(): string;
   mintReceipt(): string;
   mintReservation(): Reservation;
+  wallClockNow(): number;
   /**
    * The joint receipt the guardian issued for this operation's provider root, and the activation receipt it
    * later converts. The proxy verifies both before starting a kernel, so a root neither authority recorded
@@ -188,16 +194,21 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
   const { capsule, clock, identity, host, timer, mintChallenge, mintReceipt } = options;
   const ledger = createOperationLedger<ProxyPreparedAppServerOperation>();
   const operationTails = new Map<string, Promise<void>>();
-  const cancelledPrepares = new Map<string, string>();
+  const prepareAttempts = new Map<
+    string,
+    Readonly<{ prepareAttemptNumber: number; prepareAttemptKey: string; fenced: boolean }>
+  >();
   const leaseTimers = new Map<string, { unref?: () => void }>();
   type ReleaseIntent =
     | Readonly<{
         kind: 'never-started' | 'prepare-failed' | 'activation-failed';
+        prepareAttemptNumber: number;
         prepareAttemptKey: string;
         reservation: Reservation;
       }>
     | Readonly<{
         kind: 'settled';
+        prepareAttemptNumber: number;
         prepareAttemptKey: string;
         reservation: Reservation;
         finalProviderSeq: number;
@@ -207,6 +218,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     string,
     Readonly<{
       kind: ReleaseIntent['kind'];
+      prepareAttemptNumber: number;
       prepareAttemptKey: string;
       reservation: Reservation;
       settledThroughProviderSeq: number;
@@ -238,6 +250,88 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     return result;
   };
 
+  const isPermanentlyReleased = (token: string): boolean => {
+    const released = releasedOperations.get(token);
+    return released?.kind === 'activation-failed' || released?.kind === 'settled';
+  };
+
+  const registerPrepareAttempt = (
+    key: ProviderOperationKey,
+    prepareAttemptNumber: number,
+    prepareAttemptKey: string,
+  ): void => {
+    const token = operationToken(key);
+    if (isPermanentlyReleased(token)) {
+      throw new ProxyControlProtocolError('invalid_state', 'Activation has already begun for this operation.');
+    }
+    const current = prepareAttempts.get(token);
+    if (current === undefined) {
+      prepareAttempts.set(token, { prepareAttemptNumber, prepareAttemptKey, fenced: false });
+      return;
+    }
+    if (prepareAttemptNumber < current.prepareAttemptNumber) {
+      throw new ProxyControlProtocolError('invalid_state', 'A delayed lower prepare attempt was refused.');
+    }
+    if (prepareAttemptNumber === current.prepareAttemptNumber) {
+      if (prepareAttemptKey !== current.prepareAttemptKey) {
+        throw new ProxyControlProtocolError('invalid_request', 'A prepare attempt number named different bytes.');
+      }
+      return;
+    }
+    if (!current.fenced) {
+      throw new ProxyControlProtocolError('invalid_state', 'The previous prepare attempt is not fenced.');
+    }
+    prepareAttempts.set(token, { prepareAttemptNumber, prepareAttemptKey, fenced: false });
+  };
+
+  const fencePrepareAttempt = (
+    key: ProviderOperationKey,
+    prepareAttemptNumber: number,
+    prepareAttemptKey: string,
+  ): void => {
+    const token = operationToken(key);
+    if (isPermanentlyReleased(token)) {
+      throw new ProxyControlProtocolError('invalid_state', 'Activation has already begun for this operation.');
+    }
+    const current = prepareAttempts.get(token);
+    if (current === undefined) {
+      prepareAttempts.set(token, { prepareAttemptNumber, prepareAttemptKey, fenced: true });
+      return;
+    }
+    if (prepareAttemptNumber < current.prepareAttemptNumber) {
+      throw new ProxyControlProtocolError('invalid_state', 'A delayed lower prepare attempt was refused.');
+    }
+    if (prepareAttemptNumber === current.prepareAttemptNumber) {
+      if (prepareAttemptKey !== current.prepareAttemptKey) {
+        throw new ProxyControlProtocolError('invalid_request', 'A prepare attempt number named different bytes.');
+      }
+      if (!current.fenced) prepareAttempts.set(token, { ...current, fenced: true });
+      return;
+    }
+    if (!current.fenced) {
+      throw new ProxyControlProtocolError('invalid_state', 'The previous prepare attempt is not fenced.');
+    }
+    prepareAttempts.set(token, { prepareAttemptNumber, prepareAttemptKey, fenced: true });
+  };
+
+  const assertPrepareAttemptOpen = (
+    key: ProviderOperationKey,
+    prepareAttemptNumber: number,
+    prepareAttemptKey: string,
+  ): void => {
+    const attempt = prepareAttempts.get(operationToken(key));
+    if (
+      attempt === undefined ||
+      attempt.prepareAttemptNumber !== prepareAttemptNumber ||
+      attempt.prepareAttemptKey !== prepareAttemptKey
+    ) {
+      throw new ProxyControlProtocolError('invalid_state', 'This operation is owned by another prepare attempt.');
+    }
+    if (attempt.fenced) {
+      throw new ProxyControlProtocolError('invalid_state', 'This prepare attempt is fenced.');
+    }
+  };
+
   const clearLeaseTimer = (key: ProviderOperationKey): void => {
     const token = operationToken(key);
     const handle = leaseTimers.get(token);
@@ -248,6 +342,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
 
   const sameReleaseIntent = (left: ReleaseIntent, right: ReleaseIntent): boolean =>
     left.kind === right.kind &&
+    left.prepareAttemptNumber === right.prepareAttemptNumber &&
     left.prepareAttemptKey === right.prepareAttemptKey &&
     left.reservation === right.reservation &&
     (left.kind !== 'settled' || (right.kind === 'settled' && left.finalProviderSeq === right.finalProviderSeq));
@@ -286,6 +381,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     }
     releasedOperations.set(token, {
       kind: intent.kind,
+      prepareAttemptNumber: intent.prepareAttemptNumber,
       prepareAttemptKey: intent.prepareAttemptKey,
       reservation: intent.reservation,
       settledThroughProviderSeq: intent.kind === 'settled' ? intent.finalProviderSeq : 0,
@@ -311,9 +407,10 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         ) {
           return;
         }
-        cancelledPrepares.set(token, current.prepareAttemptKey);
+        fencePrepareAttempt(key, current.prepareAttemptNumber, current.prepareAttemptKey);
         const intent: ReleaseIntent = {
           kind: 'never-started',
+          prepareAttemptNumber: current.prepareAttemptNumber,
           prepareAttemptKey: current.prepareAttemptKey,
           reservation: current.reservation,
         };
@@ -334,49 +431,55 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
 
   const cancelNeverStarted = (
     key: ProviderOperationKey,
+    prepareAttemptNumber: number,
     prepareAttemptKey: string,
-    reservation: Reservation,
   ): Promise<void> => {
     const token = operationToken(key);
     const before = ledger.get(key);
-    if (before !== null) {
-      if (before.prepareAttemptKey !== prepareAttemptKey || before.reservation !== reservation) {
-        throw new ProxyControlProtocolError('invalid_request', 'Cancel presented a different reservation.');
-      }
-      if (before.state === 'preparing' || before.state === 'prepared') {
-        cancelledPrepares.set(token, prepareAttemptKey);
-        beginRelease(key, { kind: 'never-started', prepareAttemptKey, reservation });
-      }
-    } else {
-      cancelledPrepares.set(token, prepareAttemptKey);
+    if (
+      before !== null &&
+      before.prepareAttemptNumber === prepareAttemptNumber &&
+      before.prepareAttemptKey === prepareAttemptKey &&
+      (before.state === 'starting' ||
+        before.state === 'executing' ||
+        before.state === 'terminal-awaiting-settlement' ||
+        before.state === 'suspended-awaiting-durable-decision')
+    ) {
+      throw new ProxyControlProtocolError('invalid_state', 'Activation has begun for this operation.');
+    }
+    fencePrepareAttempt(key, prepareAttemptNumber, prepareAttemptKey);
+    if (
+      before !== null &&
+      before.prepareAttemptNumber === prepareAttemptNumber &&
+      before.prepareAttemptKey === prepareAttemptKey &&
+      (before.state === 'preparing' || before.state === 'prepared')
+    ) {
+      beginRelease(key, {
+        kind: 'never-started',
+        prepareAttemptNumber,
+        prepareAttemptKey,
+        reservation: before.reservation,
+      });
     }
 
     return serializeOperation(key, async () => {
       const released = releasedOperations.get(token);
       if (released !== undefined) {
-        if (
-          released.kind !== 'never-started' ||
-          released.prepareAttemptKey !== prepareAttemptKey ||
-          released.reservation !== reservation
-        ) {
+        if (released.kind === 'activation-failed' || released.kind === 'settled') {
           throw new ProxyControlProtocolError('invalid_state', 'This operation was released after activation began.');
         }
-        return;
+        if (
+          released.prepareAttemptNumber === prepareAttemptNumber &&
+          released.prepareAttemptKey === prepareAttemptKey
+        ) {
+          return;
+        }
       }
 
       const entry = ledger.get(key);
-      if (entry === null) {
-        await options.containment.releaseMembership({ key, reservation });
-        releasedOperations.set(token, {
-          kind: 'never-started',
-          prepareAttemptKey,
-          reservation,
-          settledThroughProviderSeq: 0,
-        });
-        return;
-      }
-      if (entry.prepareAttemptKey !== prepareAttemptKey || entry.reservation !== reservation) {
-        throw new ProxyControlProtocolError('invalid_request', 'Cancel presented a different reservation.');
+      if (entry === null) return;
+      if (entry.prepareAttemptNumber !== prepareAttemptNumber || entry.prepareAttemptKey !== prepareAttemptKey) {
+        throw new ProxyControlProtocolError('invalid_state', 'Cancel does not name the active prepare attempt.');
       }
       if (
         entry.state === 'starting' ||
@@ -386,7 +489,12 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       ) {
         throw new ProxyControlProtocolError('invalid_state', 'Activation has begun for this operation.');
       }
-      const intent: ReleaseIntent = { kind: 'never-started', prepareAttemptKey, reservation };
+      const intent: ReleaseIntent = {
+        kind: 'never-started',
+        prepareAttemptNumber,
+        prepareAttemptKey,
+        reservation: entry.reservation,
+      };
       if (entry.state !== 'releasing') beginRelease(key, intent);
       const recorded = releaseIntents.get(token);
       if (recorded === undefined || recorded.kind !== 'never-started') {
@@ -603,17 +711,16 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const key = ledgerKey(request.operation);
           const token = operationToken(key);
           const attemptKey = operationPrepareAttemptKey(request);
+          registerPrepareAttempt(key, request.prepareAttemptNumber, attemptKey);
           return serializeOperation(key, async (): Promise<unknown> => {
-            const cancelledAttempt = cancelledPrepares.get(token);
+            assertPrepareAttemptOpen(key, request.prepareAttemptNumber, attemptKey);
             const released = releasedOperations.get(token);
-            const retryingFailedPrepare =
-              released?.kind === 'prepare-failed' && released.prepareAttemptKey === attemptKey;
-            if (retryingFailedPrepare) releasedOperations.delete(token);
-            if (cancelledAttempt !== undefined || (released !== undefined && !retryingFailedPrepare)) {
-              if ((cancelledAttempt ?? released?.prepareAttemptKey) !== attemptKey) {
-                throw new ProxyControlProtocolError('invalid_state', 'This operation was fenced by another prepare.');
-              }
-              throw new ProxyControlProtocolError('invalid_state', 'This prepared operation has been released.');
+            if (
+              released !== undefined &&
+              released.prepareAttemptNumber < request.prepareAttemptNumber &&
+              (released.kind === 'never-started' || released.kind === 'prepare-failed')
+            ) {
+              releasedOperations.delete(token);
             }
             let reserved: PrepareResult<ProxyPreparedAppServerOperation>;
             try {
@@ -622,12 +729,14 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
                 reservation: options.mintReservation(),
                 prepared: request.prepared,
                 nowMs: nowMs(),
+                prepareAttemptNumber: request.prepareAttemptNumber,
                 idempotencyKey: attemptKey,
               });
             } catch (error: unknown) {
               asProtocolError(error);
             }
             if (reserved.kind === 'capacity') {
+              fencePrepareAttempt(key, request.prepareAttemptNumber, attemptKey);
               return proxyOperationPrepareCapacityResultSchema.parse({
                 state: 'capacity',
                 retryable: true,
@@ -667,9 +776,11 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
               if (!isAmbiguousControlFailure(error) && entry !== null && entry.state !== 'releasing') {
                 const intent: ReleaseIntent = {
                   kind: 'prepare-failed',
+                  prepareAttemptNumber: request.prepareAttemptNumber,
                   prepareAttemptKey: attemptKey,
                   reservation: reserved.entry.reservation,
                 };
+                fencePrepareAttempt(key, request.prepareAttemptNumber, attemptKey);
                 beginRelease(key, intent);
                 await finishRelease(key, intent);
               }
@@ -727,6 +838,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             if (entry.activationAck !== null) {
               return proxyOperationActivateResultSchema.parse(entry.activationAck);
             }
+            assertPrepareAttemptOpen(key, entry.prepareAttemptNumber, entry.prepareAttemptKey);
             if (entry.jointContainmentReceipt !== request.jointContainmentReceipt) {
               throw new ProxyControlProtocolError(
                 'unauthorized_control',
@@ -739,7 +851,10 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
               jointActivationReceipt: request.jointActivationReceipt,
             });
             entry = ledger.get(key);
-            if (entry?.state === 'releasing') {
+            if (entry === null) {
+              throw new ProxyControlProtocolError('invalid_state', 'Prepared operation vanished during activation.');
+            }
+            if (entry.state === 'releasing') {
               const intent = releaseIntents.get(operationToken(key));
               if (intent !== undefined) await finishRelease(key, intent);
               throw new ProxyControlProtocolError('reservation_expired', 'The activation lease expired.');
@@ -751,10 +866,11 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
               if (error instanceof LedgerError && error.code === 'reservation_expired') {
                 const intent: ReleaseIntent = {
                   kind: 'never-started',
-                  prepareAttemptKey: entry?.prepareAttemptKey ?? '',
+                  prepareAttemptNumber: entry.prepareAttemptNumber,
+                  prepareAttemptKey: entry.prepareAttemptKey,
                   reservation: request.reservation,
                 };
-                cancelledPrepares.set(operationToken(key), intent.prepareAttemptKey);
+                fencePrepareAttempt(key, intent.prepareAttemptNumber, intent.prepareAttemptKey);
                 beginRelease(key, intent);
                 await finishRelease(key, intent);
               }
@@ -764,11 +880,13 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             if (entry === null) {
               throw new ProxyControlProtocolError('invalid_state', 'Activation began but its entry vanished.');
             }
+            let hostRef: HostRef;
             try {
-              await host.start({ key, prepared: entry.prepared });
+              hostRef = await host.start({ key, prepared: entry.prepared });
             } catch (error: unknown) {
               const intent: ReleaseIntent = {
                 kind: 'activation-failed',
+                prepareAttemptNumber: entry.prepareAttemptNumber,
                 prepareAttemptKey: entry.prepareAttemptKey,
                 reservation: entry.reservation,
               };
@@ -778,6 +896,9 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             }
             const ack = proxyOperationActivateResultSchema.parse({
               state: 'executing',
+              activationFingerprint: fingerprint,
+              startedAt: new Date(options.wallClockNow()).toISOString(),
+              hostRef,
               committedThroughProviderSeq: entry.committedThroughProviderSeq,
             });
             try {
@@ -801,12 +922,15 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const key = ledgerKey(request.operation);
           const entry = ledger.get(key);
           const token = operationToken(key);
-          const prepareAttemptKey =
-            entry?.prepareAttemptKey ??
-            releasedOperations.get(token)?.prepareAttemptKey ??
-            cancelledPrepares.get(token) ??
-            '0'.repeat(64);
-          return cancelNeverStarted(key, prepareAttemptKey, request.reservation).then(() =>
+          const released = releasedOperations.get(token);
+          if ((entry?.reservation ?? released?.reservation) !== request.reservation) {
+            throw new ProxyControlProtocolError('invalid_request', 'Cancel presented a different reservation.');
+          }
+          const attempt = prepareAttempts.get(token);
+          if (attempt === undefined) {
+            return proxyOperationCancelPendingResultSchema.parse({ state: 'released' });
+          }
+          return cancelNeverStarted(key, attempt.prepareAttemptNumber, attempt.prepareAttemptKey).then(() =>
             proxyOperationCancelPendingResultSchema.parse({ state: 'released' }),
           );
         },
@@ -820,9 +944,11 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const request = cancelParamsSchema.parse(params);
           assertNamedOperation(request.operation);
           const key = ledgerKey(request.operation);
-          return cancelNeverStarted(key, request.prepareAttemptKey, request.reservation).then(() =>
+          return cancelNeverStarted(key, request.prepareAttemptNumber, request.prepareAttemptKey).then(() =>
             proxyOperationCancelResultSchema.parse({
               state: 'released-never-started',
+              operation: request.operation,
+              prepareAttemptNumber: request.prepareAttemptNumber,
               prepareAttemptKey: request.prepareAttemptKey,
             }),
           );
@@ -841,10 +967,11 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           if (before !== null && (before.state === 'preparing' || before.state === 'prepared')) {
             const intent: ReleaseIntent = {
               kind: 'never-started',
+              prepareAttemptNumber: before.prepareAttemptNumber,
               prepareAttemptKey: before.prepareAttemptKey,
               reservation: before.reservation,
             };
-            cancelledPrepares.set(operationToken(key), before.prepareAttemptKey);
+            fencePrepareAttempt(key, before.prepareAttemptNumber, before.prepareAttemptKey);
             beginRelease(key, intent);
           }
           return serializeOperation(key, async () => {
@@ -925,6 +1052,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             }
             const intent: ReleaseIntent = {
               kind: 'settled',
+              prepareAttemptNumber: entry.prepareAttemptNumber,
               prepareAttemptKey: entry.prepareAttemptKey,
               reservation: entry.reservation,
               finalProviderSeq: request.finalProviderSeq,
@@ -1040,11 +1168,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             throw new ProxyControlProtocolError('invalid_state', 'Operation lacks its activation acknowledgement.');
           }
           if (entry.state === 'executing') {
-            return proxyOperationInspectResultSchema.parse({
-              state: 'executing',
-              activationFingerprint: entry.activationFingerprint,
-              activationAck: entry.activationAck,
-            });
+            return proxyOperationInspectResultSchema.parse(entry.activationAck);
           }
           return proxyOperationInspectResultSchema.parse({
             state: 'terminal-awaiting-settlement',
@@ -1059,8 +1183,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       'operation.status.v1',
       {
         // This method remains observation-only even when prepare reconciliation recovers a reservation: the
-        // attempt key proves which prepare result the caller already owns, while cancellation still requires
-        // the recovered reservation on the active-control method.
+        // active cancellation method establishes its own attempt fence and obtains any reservation internally.
         // The operation-list variant still has no production requester here because its responder has to
         // predate the successor build that will use it to inspect this already-running proxy.
         authority: 'observation',

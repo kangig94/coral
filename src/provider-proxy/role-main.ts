@@ -874,6 +874,7 @@ export async function startProviderProxyRole(
     // proxy's own authority to reserve — is the only expression in the tree that can produce one from raw
     // randomness. Everywhere else a reservation can only have been received.
     mintReservation: () => reservationSchema.parse(ports.runtime.ids.uuid()),
+    wallClockNow: ports.runtime.time.now,
     containment: createProxyGuardianContainment({
       identity,
       guardianChannel,

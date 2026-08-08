@@ -105,6 +105,7 @@ export function providerOperationPrepareAttempt(
   deps: Pick<ProviderProxyOperationActivationDeps, 'setIdentity'>,
   operation: OperationIdentity,
   prepared: ProxyPreparedAppServerOperation,
+  prepareAttemptNumber = 1,
 ): Readonly<{
   request: z.output<typeof proxyOperationPrepareParamsSchema>;
   prepareAttemptKey: string;
@@ -112,6 +113,7 @@ export function providerOperationPrepareAttempt(
   const request = proxyOperationPrepareParamsSchema.parse({
     operation,
     hostFingerprint: deps.setIdentity.hostFingerprint,
+    prepareAttemptNumber,
     prepared,
   });
   return { request, prepareAttemptKey: operationPrepareAttemptKey(request) };
@@ -182,10 +184,10 @@ export async function activateProviderOperation(
 export async function cancelProviderOperation(
   deps: ProviderProxyOperationActivationDeps,
   operation: OperationIdentity,
+  prepareAttemptNumber: number,
   prepareAttemptKey: string,
-  reservation: string,
 ): Promise<CancelProviderOperationResult> {
-  const params = proxyOperationCancelParamsSchema.parse({ operation, prepareAttemptKey, reservation });
+  const params = proxyOperationCancelParamsSchema.parse({ operation, prepareAttemptNumber, prepareAttemptKey });
   return callStrict(
     deps.proxyClient,
     'operation.cancel.v2',

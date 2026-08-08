@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { createRealTimePort } from '#src/infra/time.js';
+import type { HostRef } from '#src/providers/contract.js';
 import { heartbeatOnce } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import {
   connectControlClient,
@@ -41,6 +42,17 @@ import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provide
 const NONCE = 'a'.repeat(64);
 const FINGERPRINT = 'b'.repeat(64);
 const GRANT_SECRET = 'f'.repeat(64);
+const WALL_CLOCK_EPOCH_MS = Date.parse('2026-08-09T12:34:56.000Z');
+
+function hostRefFor(jobId: string): HostRef {
+  return {
+    provider: PREPARED.provider,
+    fingerprint: FINGERPRINT,
+    instanceId: `host:${jobId}`,
+    leaseMode: 'job-exclusive',
+    ownerJobId: jobId,
+  };
+}
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -126,6 +138,7 @@ async function startProxy(
       startAttempts += 1;
       if (options.failStart === true) throw new Error('the semantic kernel failed to start');
       started.push({ ...key, prepared });
+      return hostRefFor(key.jobId);
     },
     stop: ({ key, cause }) => {
       stopped.push({ ...key, cause });
@@ -155,6 +168,7 @@ async function startProxy(
       return `receipt-${receipts}`;
     },
     mintReservation: () => asReservation(randomUUID()),
+    wallClockNow: () => WALL_CLOCK_EPOCH_MS + Number(elapsed),
     containment: {
       stageProviderRoot: () => {
         stageAttempts += 1;
@@ -459,7 +473,7 @@ async function prepare(
 ): Promise<{ operation: ReturnType<ProxyUnderTest['operationFor']>; reserved: Record<string, string> }> {
   const reserved = (await set.control.call(
     'operation.prepare.v1',
-    { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED },
+    { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
     5_000,
   )) as Record<string, string>;
   return { operation, reserved };
@@ -527,7 +541,12 @@ describe('provider-proxy operation lifecycle', () => {
     // always names a root the containment can already reach.
     expect(set.started).toEqual([]);
 
-    expect(await activate(set, operation, reserved)).toEqual({ state: 'executing', committedThroughProviderSeq: 0 });
+    expect(await activate(set, operation, reserved)).toMatchObject({
+      state: 'executing',
+      startedAt: new Date(WALL_CLOCK_EPOCH_MS).toISOString(),
+      hostRef: hostRefFor(operation.jobId),
+      committedThroughProviderSeq: 0,
+    });
     // The host must receive the envelope prepare validated, not activate's own request params.
     expect(set.started).toEqual([{ jobId: operation.jobId, operationId: operation.operationId, prepared: PREPARED }]);
   });
@@ -537,7 +556,11 @@ describe('provider-proxy operation lifecycle', () => {
     const { operation, reserved } = await prepare(set);
     await activate(set, operation, reserved);
 
-    expect(await activate(set, operation, reserved)).toEqual({ state: 'executing', committedThroughProviderSeq: 0 });
+    expect(await activate(set, operation, reserved)).toMatchObject({
+      state: 'executing',
+      hostRef: hostRefFor(operation.jobId),
+      committedThroughProviderSeq: 0,
+    });
 
     // Starting a second kernel would fork the carrier this proxy exists to own.
     expect(set.started).toHaveLength(1);
@@ -709,18 +732,27 @@ describe('provider-proxy operation lifecycle', () => {
     await expect(
       set.control.call(
         'operation.prepare.v1',
-        { operation: set.operationFor(), hostFingerprint: 'c'.repeat(64), prepared: PREPARED },
+        {
+          operation: set.operationFor(),
+          hostFingerprint: 'c'.repeat(64),
+          prepareAttemptNumber: 1,
+          prepared: PREPARED,
+        },
         5_000,
       ),
     ).rejects.toThrow(/different host fingerprint/u);
   });
 
-  it('unwinds a failed prepare so the same caller-stable request can retry', async () => {
+  it('fences a failed prepare so only a higher explicit attempt can retry', async () => {
     const set = await startProxy({ failStageOnce: true });
     const operation = set.operationFor();
 
     await expect(
-      set.control.call('operation.prepare.v1', { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED }, 5_000),
+      set.control.call(
+        'operation.prepare.v1',
+        { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
+        5_000,
+      ),
     ).rejects.toThrow(/the guardian refused to stage this root/u);
 
     const key = { jobId: operation.jobId, operationId: operation.operationId };
@@ -728,14 +760,25 @@ describe('provider-proxy operation lifecycle', () => {
     expect(set.released).toEqual([key]);
 
     await expect(
-      set.control.call('operation.prepare.v1', { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED }, 5_000),
+      set.control.call(
+        'operation.prepare.v1',
+        { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
+        5_000,
+      ),
+    ).rejects.toThrow(/attempt is fenced/u);
+    await expect(
+      set.control.call(
+        'operation.prepare.v1',
+        { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 2, prepared: PREPARED },
+        5_000,
+      ),
     ).resolves.toMatchObject({ state: 'pending-activation' });
   });
 
   it('returns the original prepare result when its successful reply is retried', async () => {
     const set = await startProxy();
     const operation = set.operationFor();
-    const request = { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED };
+    const request = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
 
     const first = await set.control.call('operation.prepare.v1', request, 5_000);
     const retry = await set.control.call('operation.prepare.v1', request, 5_000);

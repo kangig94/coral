@@ -629,6 +629,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       // once the whole turn has finished (`PROXY_CONTROL_RPC_TIMEOUT_MS` is 5s; a turn can run for minutes).
       // Mutated in place (not a map replace) so `stop()`'s later `requireStaged` reads the same object.
       entry.done = runPump(key, entry, iterable);
+      return entry.staged.hostRef;
     },
 
     stop: async ({ key, cause }) => {

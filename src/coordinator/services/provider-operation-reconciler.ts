@@ -538,7 +538,7 @@ export class ProviderOperationReconciler {
     authority: DurableProviderProxyOperationAuthority,
   ): Promise<ProviderOperationRecord | null> {
     try {
-      const released = await authority.cancelOperation(record.operation, record.prepareAttemptKey, record.reservation);
+      const released = await authority.cancelOperation(record.operation, 1, record.prepareAttemptKey);
       const verdict = providerOperationTerminationVerdict(record, {
         kind: 'released-never-started',
         prepareAttemptKey: released.prepareAttemptKey,
@@ -599,7 +599,10 @@ export class ProviderOperationReconciler {
     const next = providerOperationRecordSchema.parse({
       ...record,
       phase: 'executing',
-      activationAck,
+      activationAck: {
+        state: activationAck.state,
+        committedThroughProviderSeq: activationAck.committedThroughProviderSeq,
+      },
       committedThroughProviderSeq: 0,
       revision: record.revision + 1,
       retryNotBeforeMs: this.#deps.time.now(),
