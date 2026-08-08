@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto';
+
+import { z } from 'zod';
+
 // Type-only, so no runtime edge and no cycle with `protocol.ts` (which imports this file's ledger bound).
 // `production-import-graph.test.ts` walks runtime edges alone, for exactly this reason.
 import type { JointContainmentReceipt, Reservation } from './protocol.js';
@@ -39,6 +43,17 @@ const ALLOWED_TRANSITIONS: Readonly<Record<ProviderOperationState, readonly Prov
 
 export type ProviderOperationKey = Readonly<{ jobId: string; operationId: string }>;
 export type ProviderRootIdentity = Readonly<{ pid: number; processStartedAtSeconds: number }>;
+
+export const operationPrepareAttemptKeySchema = z.string().regex(/^[0-9a-f]{64}$/u);
+export const operationPrepareStatusParamsSchema = z
+  .object({ prepareAttemptKey: operationPrepareAttemptKeySchema })
+  .strict();
+
+export function operationPrepareAttemptKey(
+  request: Readonly<{ operation: unknown; hostFingerprint: string; prepared: unknown }>,
+): string {
+  return createHash('sha256').update(JSON.stringify(request), 'utf8').digest('hex');
+}
 
 export type LedgerErrorCode =
   | 'operation_not_found'
@@ -125,6 +140,7 @@ export interface OperationLedger<Prepared = unknown> {
   ): void;
   renew(key: ProviderOperationKey, reservation: Reservation, nowMs: number): OperationLedgerEntry<Prepared>;
   activate(key: ProviderOperationKey, reservation: Reservation, nowMs: number): void;
+  rollbackActivation(key: ProviderOperationKey, reservation: Reservation): void;
   transition(key: ProviderOperationKey, next: ProviderOperationState): void;
   /** Buffers one provider event, returning whether the producer must pause before sending more. */
   recordEvent(key: ProviderOperationKey, event: ReplayEvent): { paused: boolean };
@@ -138,6 +154,7 @@ export interface OperationLedger<Prepared = unknown> {
    */
   nextProviderSeq(key: ProviderOperationKey): number;
   get(key: ProviderOperationKey): OperationLedgerEntry<Prepared> | null;
+  getByPrepareAttemptKey(prepareAttemptKey: string): OperationLedgerEntry<Prepared> | null;
   /**
    * Every operation this ledger currently holds, in no particular order. Used to resume draining every
    * operation's buffer after a control tenancy reattaches — not to look up any one operation's own state.
@@ -288,6 +305,17 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
       entry.state = 'executing';
     },
 
+    rollbackActivation(key, reservation): void {
+      const entry = require(key);
+      if (entry.reservation !== reservation) {
+        throw new LedgerError('reservation_mismatch', 'Activation rollback presented a different reservation.');
+      }
+      if (entry.state !== 'executing') {
+        throw new LedgerError('operation_invalid_transition', `Cannot roll back activation from ${entry.state}.`);
+      }
+      entry.state = 'pending-activation';
+    },
+
     transition(key, next): void {
       const entry = require(key);
       if (!ALLOWED_TRANSITIONS[entry.state].includes(next)) {
@@ -354,6 +382,13 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
     get(key): OperationLedgerEntry<Prepared> | null {
       const entry = entries.get(keyOf(key));
       return entry === undefined ? null : snapshot(entry);
+    },
+
+    getByPrepareAttemptKey(prepareAttemptKey): OperationLedgerEntry<Prepared> | null {
+      for (const entry of entries.values()) {
+        if (entry.idempotencyKey === prepareAttemptKey) return snapshot(entry);
+      }
+      return null;
     },
 
     keys(): readonly ProviderOperationKey[] {

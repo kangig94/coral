@@ -338,19 +338,14 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
         if (outcome.signal === 'SIGINT' && sigintCount === 1) {
           continue followLoop;
         }
-        if (outcome.signal === 'SIGTERM' || outcome.signal === 'SIGHUP') {
-          options.emitError(
-            new WaitResumeError(
-              `Delegated wait command ended from signal ${outcome.signal}; the jobs may still be running.`,
-              remainingJobIds,
-              serializeWaitCursor(currentCursor),
-            ),
-          );
-          return errorCodeToExit('transient');
-        }
-
-        options.emitError(new Error(`Delegated wait command ended from signal ${outcome.signal}`));
-        return fallbackExitCode();
+        options.emitError(
+          new WaitResumeError(
+            `Delegated wait command ended from signal ${outcome.signal}; the jobs may still be running.`,
+            remainingJobIds,
+            serializeWaitCursor(currentCursor),
+          ),
+        );
+        return errorCodeToExit('transient');
       }
 
       let reconnect = false;
@@ -414,9 +409,15 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
         }
 
         const handledError = mapWaitSubscriptionError(error);
-        if (!isTransientStreamError(handledError) || retriesLeft === 0) {
+        if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
           options.emitError(handledError);
           return fallbackExitCode();
+        }
+        if (retriesLeft === 0) {
+          options.emitError(
+            new WaitResumeError(handledError.message, remainingJobIds, serializeWaitCursor(currentCursor)),
+          );
+          return errorCodeToExit('transient');
         }
 
         retriesLeft -= 1;

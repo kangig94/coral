@@ -20,6 +20,7 @@ import {
   proxyIdentitySchema,
   proxyOperationAdoptParamsSchema,
   proxyOperationStopParamsSchema,
+  proxyOperationStopResultSchema,
   type CoordinatorIdentity,
   type GuardianIdentity,
   type OperationIdentity,
@@ -165,6 +166,21 @@ function capsuleMatchesLocator(
   );
 }
 
+function protocolCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const value = (error as { protocolCode?: unknown }).protocolCode;
+  return typeof value === 'string' ? value : undefined;
+}
+
+function isAmbiguousControlOutcome(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const failure = error as { code?: unknown; protocolCode?: unknown };
+  return (
+    (failure.code === 'control_call_failed' || failure.code === 'control_client_closed') &&
+    failure.protocolCode === undefined
+  );
+}
+
 /** The adopted operation's own `operation.stop.v1` and `guardian.operation-release.v1` capabilities, bound to
  *  the exact connections and operation this adoption used — the same contract
  *  `provider-proxy-operation-activation.ts`'s `buildOperationControl` gives a freshly activated operation,
@@ -183,21 +199,33 @@ function buildAdoptedOperationControl(
   operation: OperationIdentity,
   meta: ProviderOperationRuntimeMeta,
 ): OperationStopControl {
+  let releaseState: 'ready' | 'unknown' | 'released' = 'ready';
   return {
     async stop(cause) {
-      // Parsed here rather than through a shared helper: `callStrict` parses a reply unconditionally, and
-      // this send deliberately reads none. One line at the send site is the whole obligation.
       const params = proxyOperationStopParamsSchema.parse({ operation, cause });
-      await proxyClient.call('operation.stop.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+      const raw = await proxyClient.call('operation.stop.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+      proxyOperationStopResultSchema.parse(raw);
     },
     async releaseMembership() {
-      const params = guardianOperationReleaseParamsSchema.parse({
-        operation,
-        reservation: meta.reservation,
-        jointContainmentReceipt: meta.jointContainmentReceipt,
-      });
-      const raw = await guardianClient.call('guardian.operation-release.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS);
-      guardianOperationReleaseResultSchema.parse(raw);
+      if (releaseState === 'released') return;
+      const retryingUnknown = releaseState === 'unknown';
+      try {
+        const params = guardianOperationReleaseParamsSchema.parse({
+          operation,
+          reservation: meta.reservation,
+          jointContainmentReceipt: meta.jointContainmentReceipt,
+        });
+        const raw = await guardianClient.call('guardian.operation-release.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+        guardianOperationReleaseResultSchema.parse(raw);
+        releaseState = 'released';
+      } catch (error: unknown) {
+        if (retryingUnknown && protocolCode(error) === 'unauthorized_control') {
+          releaseState = 'released';
+          return;
+        }
+        releaseState = isAmbiguousControlOutcome(error) ? 'unknown' : 'ready';
+        throw error;
+      }
     },
   };
 }

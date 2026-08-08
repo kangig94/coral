@@ -21,6 +21,8 @@ import {
 import {
   LedgerError,
   createOperationLedger,
+  operationPrepareAttemptKey,
+  operationPrepareStatusParamsSchema,
   type OperationLedger,
   type PrepareResult,
   type ProviderOperationKey,
@@ -67,7 +69,7 @@ import {
  * execution stack — and what lets the ledger's state machine be tested without spawning anything.
  */
 export interface SemanticOperationHost {
-  /** Starts the kernel for an activated operation. Throwing leaves the ledger entry untouched. */
+  /** A thrown start must not leave an executing ledger entry without a kernel. */
   start(
     input: Readonly<{ key: ProviderOperationKey; prepared: ProxyPreparedAppServerOperation }>,
   ): Promise<void> | void;
@@ -161,10 +163,6 @@ function operationToken(key: ProviderOperationKey): string {
   return `${key.jobId}\u0000${key.operationId}`;
 }
 
-function prepareIdempotencyKey(operation: OperationIdentity, prepared: ProxyPreparedAppServerOperation): string {
-  return JSON.stringify([operation, prepared]);
-}
-
 function isAmbiguousControlFailure(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
   const failure = error as { code?: unknown; protocolCode?: unknown };
@@ -183,7 +181,7 @@ function isAmbiguousControlFailure(error: unknown): boolean {
 export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>): Proxy {
   const { capsule, clock, identity, host, timer, mintChallenge, mintReceipt } = options;
   const ledger = createOperationLedger<ProxyPreparedAppServerOperation>();
-  const preparingOperations = new Map<string, Readonly<{ idempotencyKey: string; promise: Promise<unknown> }>>();
+  const preparingOperations = new Map<string, Readonly<{ attemptKey: string; promise: Promise<unknown> }>>();
   const activatingOperations = new Map<string, Readonly<{ idempotencyKey: string; promise: Promise<unknown> }>>();
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
   const grants = createGrantRegistry(mintReceipt);
@@ -394,10 +392,10 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           }
           const key = ledgerKey(request.operation);
           const token = operationToken(key);
-          const idempotencyKey = prepareIdempotencyKey(request.operation, request.prepared);
+          const attemptKey = operationPrepareAttemptKey(request);
           const inFlight = preparingOperations.get(token);
           if (inFlight !== undefined) {
-            if (inFlight.idempotencyKey !== idempotencyKey) {
+            if (inFlight.attemptKey !== attemptKey) {
               throw new ProxyControlProtocolError('invalid_state', 'This operation is already being prepared.');
             }
             return inFlight.promise;
@@ -411,7 +409,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
                 reservation: options.mintReservation(),
                 prepared: request.prepared,
                 nowMs: nowMs(),
-                idempotencyKey,
+                idempotencyKey: attemptKey,
               });
             } catch (error: unknown) {
               asProtocolError(error);
@@ -462,7 +460,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
               throw error;
             }
           })();
-          preparingOperations.set(token, { idempotencyKey, promise });
+          preparingOperations.set(token, { attemptKey, promise });
           try {
             return await promise;
           } finally {
@@ -541,7 +539,17 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
               throw new ProxyControlProtocolError('invalid_state', 'Activation succeeded but its entry vanished.');
             }
             if (before?.state !== 'executing') {
-              await host.start({ key, prepared: entry.prepared });
+              try {
+                await host.start({ key, prepared: entry.prepared });
+              } catch (error: unknown) {
+                try {
+                  ledger.rollbackActivation(key, request.reservation);
+                } catch (rollbackError: unknown) {
+                  asProtocolError(rollbackError);
+                }
+                host.releaseStaged?.(key);
+                throw error;
+              }
             }
             return proxyOperationActivateResultSchema.parse({
               state: 'executing',
@@ -666,23 +674,31 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     [
       'operation.status.v1',
       {
-        // The one method served without holding control: an observation is asked by whoever is *not*
-        // running this set. It reads the ledger and the in-flight activation marker; it moves no deadline,
-        // spends no credential, and transitions nothing, so answering it can never change what this proxy
-        // would otherwise do.
+        // This method remains observation-only even when prepare reconciliation recovers a reservation: the
+        // attempt key proves which prepare result the caller already owns, while cancellation still requires
+        // the recovered reservation on the active-control method.
+        // The operation-list variant still has no production requester here because its responder has to
+        // predate the successor build that will use it to inspect this already-running proxy.
         authority: 'observation',
-        // A background health check, not a mutation the caller is blocked on — bounded well below the
-        // ordinary control budget so a wedged reply costs an asker no more than the asker itself budgets
-        // for the call.
-        //
-        // No requester lives in this repo today: the coordinator-side network observer that once paired with
-        // this handler (`coordinator/live/carrier-observer.ts`) had no importer anywhere in `src/` and was
-        // deleted. The handler stays regardless, because this is a cross-version wire surface — a *successor*
-        // coordinator build must be able to observe *this* build's already-running proxy, and a responder
-        // cannot be retrofitted into a process that has already shipped. The requester can be added later;
-        // the responder cannot, so it ships now, ahead of the build that will call it.
         budgetMs: PROXY_STATUS_RPC_TIMEOUT_MS,
         handle: (params) => {
+          const prepareStatus = operationPrepareStatusParamsSchema.safeParse(params);
+          if (prepareStatus.success) {
+            const entry = ledger.getByPrepareAttemptKey(prepareStatus.data.prepareAttemptKey);
+            if (entry === null) return { state: 'absent' };
+            if (entry.providerRoot === null || entry.jointContainmentReceipt === null) {
+              const inFlight = preparingOperations.get(operationToken(entry.key));
+              if (inFlight?.attemptKey === prepareStatus.data.prepareAttemptKey) return inFlight.promise;
+              return { state: 'preparing' };
+            }
+            return proxyOperationPreparePendingResultSchema.parse({
+              state: 'pending-activation',
+              reservation: entry.reservation,
+              leaseExpiresInMs: entry.leaseExpiresAtMs - nowMs(),
+              providerRoot: entry.providerRoot,
+              jointContainmentReceipt: entry.jointContainmentReceipt,
+            });
+          }
           const request = operationStatusParamsSchema.parse(params);
           // Every named operation must name *this* proxy. Refusing the whole request rather than the
           // offending entry is deliberate: a caller that mixed two proxies' operations together has a bug

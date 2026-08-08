@@ -6,6 +6,7 @@ import {
   writeProviderOperationRuntimeMeta,
 } from '../../jobs/runtime-meta-store.js';
 import { providerOperationRuntimeMetaSchema, type ProviderOperationRuntimeMeta } from '../../jobs/runtime-meta.js';
+import { operationPrepareAttemptKey, operationPrepareStatusParamsSchema } from '../../provider-proxy/ledger.js';
 import {
   guardianOperationActivateParamsSchema,
   guardianOperationActivateResultSchema,
@@ -33,7 +34,7 @@ import type { OperationStopControl } from './operation-registry.js';
  * The coordinator half of W2.3's closed publication order: `operation.prepare.v1` → one coordinator
  * transaction committing `provider_operation.v1` runtime meta → `guardian.operation-activate.v1` →
  * `operation.activate.v1`, with compensation for authoritative refusals and retained runtime ownership for
- * an activation whose reply is ambiguous. No other transition may start the kernel.
+ * a prepare or activation whose reply is ambiguous. No other transition may start the kernel.
  *
  * Lives in `coordinator/services/`, not `coordinator/live/`: it imports `jobs/runtime-meta*.ts` directly
  * (`architecture-layering.test.ts`'s coordinator-contract-entrypoint rule exempts `services/`, matching where
@@ -114,6 +115,11 @@ const preparePendingSchema = proxyOperationPreparePendingResultSchema.extend({
     providerOperationRuntimeMetaSchema.shape.jointContainmentReceipt.brand<'JointContainmentReceipt'>(),
 });
 const prepareResultSchema = z.union([preparePendingSchema, proxyOperationPrepareCapacityResultSchema]);
+const prepareStatusResultSchema = z.union([
+  preparePendingSchema,
+  z.object({ state: z.literal('absent') }).strict(),
+  z.object({ state: z.literal('preparing') }).strict(),
+]);
 
 export type ActivateProviderOperationResult =
   | Readonly<{
@@ -138,7 +144,7 @@ export type ActivateProviderOperationResult =
     }>
   | Readonly<{
       kind: 'unknown';
-      step: 'proxy-activate';
+      step: 'proxy-prepare' | 'proxy-activate';
       reason: string;
       committedThroughProviderSeq: number;
       meta: ProviderOperationRuntimeMeta;
@@ -193,36 +199,43 @@ function isAmbiguousControlOutcome(error: unknown): boolean {
 }
 
 function shouldRetryPrepare(error: unknown): boolean {
-  return isAmbiguousControlOutcome(error) || protocolCode(error) === 'protocol_violation';
+  return isAmbiguousControlOutcome(error);
 }
 
-const AUTHORITATIVE_ACTIVATION_REFUSALS = new Set([
-  'identity_mismatch',
-  'invalid_request',
-  'invalid_state',
-  'operation_not_found',
-  'reservation_expired',
-  'unauthorized_control',
-]);
-
-function isAuthoritativeActivationRefusal(error: unknown): boolean {
-  const code = protocolCode(error);
-  return code !== undefined && AUTHORITATIVE_ACTIVATION_REFUSALS.has(code);
+/** A lost release reply keeps the capability retryable: only a later authoritative "already absent" proves
+ *  the first call landed, while any other refusal leaves the exact membership tuple available to try again. */
+function buildGuardianMembershipRelease(
+  deps: ProviderProxyOperationActivationDeps,
+  operation: OperationIdentity,
+  reservation: Reservation,
+  jointContainmentReceipt: JointContainmentReceipt,
+  timeoutMs: number,
+): () => Promise<void> {
+  let releaseState: 'ready' | 'unknown' | 'released' = 'ready';
+  return async (): Promise<void> => {
+    if (releaseState === 'released') return;
+    const retryingUnknown = releaseState === 'unknown';
+    try {
+      await callStrict(
+        deps.guardianClient,
+        'guardian.operation-release.v1',
+        { operation, reservation, jointContainmentReceipt },
+        timeoutMs,
+        guardianOperationReleaseParamsSchema,
+        guardianOperationReleaseResultSchema,
+      );
+      releaseState = 'released';
+    } catch (error: unknown) {
+      if (retryingUnknown && protocolCode(error) === 'unauthorized_control') {
+        releaseState = 'released';
+        return;
+      }
+      releaseState = isAmbiguousControlOutcome(error) ? 'unknown' : 'ready';
+      throw error;
+    }
+  };
 }
 
-/**
- * Binds `operation.stop.v1` and `guardian.operation-release.v1` to the exact `proxyClient`/`guardianClient` and
- * `operation`/`reservation`/`jointContainmentReceipt` tuple this activation committed, for
- * `LocalOperationRegistry` (`operation-registry.ts`) to hold once activation succeeds. `stop`'s own RPC reply
- * (`state`, a ledger transition this module has no reason to interpret) is validated and discarded — the
- * caller only needs to know the send either completed or threw.
- *
- * `releaseMembership` is the success-path counterpart of `compensateAfterActivationFailure`'s guardian release
- * below: that call fires immediately when activation itself fails, before any entry exists to hold a
- * capability; this one is handed to the registry so it can fire later, once the operation this tuple names has
- * actually settled — the release the guardian's `staged` map otherwise never received for an operation that
- * completed successfully.
- */
 function buildOperationControl(
   deps: ProviderProxyOperationActivationDeps,
   operation: OperationIdentity,
@@ -230,7 +243,13 @@ function buildOperationControl(
   jointContainmentReceipt: JointContainmentReceipt,
   timeoutMs: number,
 ): OperationStopControl {
-  let releaseState: 'ready' | 'unknown' | 'released' = 'ready';
+  const releaseMembership = buildGuardianMembershipRelease(
+    deps,
+    operation,
+    reservation,
+    jointContainmentReceipt,
+    timeoutMs,
+  );
   return {
     async stop(cause: ProviderStopCause): Promise<void> {
       await callStrict(
@@ -242,28 +261,30 @@ function buildOperationControl(
         proxyOperationStopResultSchema,
       );
     },
-    async releaseMembership(): Promise<void> {
-      if (releaseState === 'released') return;
-      const retryingUnknown = releaseState === 'unknown';
-      try {
-        await callStrict(
-          deps.guardianClient,
-          'guardian.operation-release.v1',
-          { operation, reservation, jointContainmentReceipt },
-          timeoutMs,
-          guardianOperationReleaseParamsSchema,
-          guardianOperationReleaseResultSchema,
-        );
-        releaseState = 'released';
-      } catch (error: unknown) {
-        if (retryingUnknown && protocolCode(error) === 'unauthorized_control') {
-          releaseState = 'released';
-          return;
-        }
-        releaseState = isAmbiguousControlOutcome(error) ? 'unknown' : 'ready';
-        throw error;
-      }
+    releaseMembership,
+  };
+}
+
+function buildPendingOperationControl(
+  deps: ProviderProxyOperationActivationDeps,
+  operation: OperationIdentity,
+  reservation: Reservation,
+  jointContainmentReceipt: JointContainmentReceipt,
+  timeoutMs: number,
+): OperationStopControl {
+  const releaseMembership = buildGuardianMembershipRelease(
+    deps,
+    operation,
+    reservation,
+    jointContainmentReceipt,
+    timeoutMs,
+  );
+  return {
+    async stop(): Promise<void> {
+      await cancelPendingReservation(deps, operation, reservation);
+      await releaseMembership();
     },
+    releaseMembership,
   };
 }
 
@@ -341,7 +362,8 @@ async function compensateAfterActivationFailure(
  * Runs the complete closed publication order for one operation: `operation.prepare.v1` on the proxy,
  * durably committing the runtime-meta locator, `guardian.operation-activate.v1`, then `operation.activate.v1`
  * — in exactly that order, with no other transition permitted to start the kernel. A transport-ambiguous
- * prepare retries by stable operation identity; an ambiguous proxy activation remains owned by the proxy.
+ * prepare retries, then recovers its reservation by the stable attempt key before returning owned unknown;
+ * an ambiguous proxy activation remains owned by the proxy.
  */
 export async function activateProviderOperation(
   deps: ProviderProxyOperationActivationDeps,
@@ -352,16 +374,23 @@ export async function activateProviderOperation(
 
   // Step 1: operation.prepare.v1 — reservation, provider root, containment receipt; semantic execution stays
   // forbidden until step 4.
+  const prepareRequest = proxyOperationPrepareParamsSchema.parse({
+    operation,
+    hostFingerprint: deps.setIdentity.hostFingerprint,
+    prepared,
+  });
+  const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
   const prepare = (): Promise<z.output<typeof prepareResultSchema>> =>
     callStrict(
       deps.proxyClient,
       'operation.prepare.v1',
-      { operation, hostFingerprint: deps.setIdentity.hostFingerprint, prepared },
+      prepareRequest,
       timeoutMs,
       proxyOperationPrepareParamsSchema,
       prepareResultSchema,
     );
   let prepareResult: z.output<typeof prepareResultSchema>;
+  let prepareAmbiguityReason: string | null = null;
   try {
     prepareResult = await prepare();
   } catch (error: unknown) {
@@ -369,9 +398,26 @@ export async function activateProviderOperation(
     try {
       prepareResult = await prepare();
     } catch (retryError: unknown) {
-      throw new Error(`${errorReason(error)}; prepare retry failed: ${errorReason(retryError)}`, {
-        cause: retryError,
-      });
+      prepareAmbiguityReason = `${errorReason(error)}; prepare retry failed: ${errorReason(retryError)}`;
+      let statusResult: z.output<typeof prepareStatusResultSchema>;
+      try {
+        statusResult = await callStrict(
+          deps.proxyClient,
+          'operation.status.v1',
+          { prepareAttemptKey },
+          timeoutMs,
+          operationPrepareStatusParamsSchema,
+          prepareStatusResultSchema,
+        );
+      } catch (statusError: unknown) {
+        throw new Error(`${prepareAmbiguityReason}; prepare status failed: ${errorReason(statusError)}`, {
+          cause: statusError,
+        });
+      }
+      if (statusResult.state === 'absent' || statusResult.state === 'preparing') {
+        throw new Error(`${prepareAmbiguityReason}; prepare status is ${statusResult.state}`, { cause: retryError });
+      }
+      prepareResult = statusResult;
     }
   }
   if (prepareResult.state === 'capacity') {
@@ -412,6 +458,17 @@ export async function activateProviderOperation(
   } catch (error: unknown) {
     await compensateAfterActivationFailure(deps, operation, reservation, jointContainmentReceipt);
     return { kind: 'activation-failed', step: 'runtime-meta', reason: errorReason(error) };
+  }
+
+  if (prepareAmbiguityReason !== null) {
+    return {
+      kind: 'unknown',
+      step: 'proxy-prepare',
+      reason: prepareAmbiguityReason,
+      committedThroughProviderSeq: 0,
+      meta,
+      control: buildPendingOperationControl(deps, operation, reservation, jointContainmentReceipt, timeoutMs),
+    };
   }
 
   // Step 3: guardian.operation-activate.v1, against the exact committed tuple.
@@ -462,7 +519,7 @@ export async function activateProviderOperation(
       control: buildOperationControl(deps, operation, reservation, jointContainmentReceipt, timeoutMs),
     };
   } catch (error: unknown) {
-    if (isAuthoritativeActivationRefusal(error)) {
+    if (!isAmbiguousControlOutcome(error)) {
       await compensateAfterActivationFailure(deps, operation, reservation, jointContainmentReceipt);
       return { kind: 'activation-failed', step: 'proxy-activate', reason: errorReason(error) };
     }
@@ -475,7 +532,7 @@ export async function activateProviderOperation(
         control: buildOperationControl(deps, operation, reservation, jointContainmentReceipt, timeoutMs),
       };
     } catch (retryError: unknown) {
-      if (isAuthoritativeActivationRefusal(retryError)) {
+      if (!isAmbiguousControlOutcome(retryError)) {
         await compensateAfterActivationFailure(deps, operation, reservation, jointContainmentReceipt);
         return { kind: 'activation-failed', step: 'proxy-activate', reason: errorReason(retryError) };
       }

@@ -6,13 +6,63 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createProviderBootstrapCapsule,
+  type consumeProviderBootstrapCapsule as consumeProviderBootstrapCapsuleType,
   type GuardianBootstrapCapsule,
   type ProxyBootstrapCapsule,
   type ReaperBootstrapCapsule,
 } from '#src/provider-proxy/bootstrap-capsule.js';
-import { buildEnforcementOutcomeHandlers, runProviderRoleMain } from '#src/provider-proxy/role-main.js';
+import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import {
+  buildEnforcementOutcomeHandlers,
+  runProviderRoleMain,
+  startProviderGuardianRole,
+  startProviderProxyRole,
+  type ProviderRoleMainPorts,
+} from '#src/provider-proxy/role-main.js';
 import type { ProviderRole } from '#src/provider-proxy/role-argv.js';
+import type {
+  connectRoleControlWithRetry as connectRoleControlWithRetryType,
+  spawnRoleProcess as spawnRoleProcessType,
+} from '#src/provider-proxy/role-spawn.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+
+const roleSenderHarness = vi.hoisted(() => ({
+  enabled: false,
+  capsule: undefined as unknown,
+  channel: undefined as unknown,
+  spawnRoleProcess: undefined as unknown,
+}));
+
+vi.mock('#src/provider-proxy/bootstrap-capsule.js', async (importOriginal) => {
+  const actual = await importOriginal<{
+    consumeProviderBootstrapCapsule: typeof consumeProviderBootstrapCapsuleType;
+  }>();
+  return {
+    ...actual,
+    consumeProviderBootstrapCapsule: (...args: Parameters<typeof actual.consumeProviderBootstrapCapsule>) =>
+      roleSenderHarness.enabled
+        ? (roleSenderHarness.capsule as ReturnType<typeof actual.consumeProviderBootstrapCapsule>)
+        : actual.consumeProviderBootstrapCapsule(...args),
+  };
+});
+
+vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
+  const actual = await importOriginal<{
+    connectRoleControlWithRetry: typeof connectRoleControlWithRetryType;
+    spawnRoleProcess: typeof spawnRoleProcessType;
+  }>();
+  return {
+    ...actual,
+    connectRoleControlWithRetry: (...args: Parameters<typeof actual.connectRoleControlWithRetry>) =>
+      roleSenderHarness.enabled
+        ? Promise.resolve(roleSenderHarness.channel as Awaited<ReturnType<typeof actual.connectRoleControlWithRetry>>)
+        : actual.connectRoleControlWithRetry(...args),
+    spawnRoleProcess: (...args: Parameters<typeof actual.spawnRoleProcess>) =>
+      roleSenderHarness.enabled
+        ? (roleSenderHarness.spawnRoleProcess as typeof actual.spawnRoleProcess)(...args)
+        : actual.spawnRoleProcess(...args),
+  };
+});
 
 /**
  * `runProviderRoleMain`'s dispatch has no test anywhere: `process-topology.integration.test.ts` drives
@@ -25,6 +75,10 @@ import { createRealRuntime } from '#src/runtime/real.js';
 const cleanups: Array<() => void> = [];
 afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+  roleSenderHarness.enabled = false;
+  roleSenderHarness.capsule = undefined;
+  roleSenderHarness.channel = undefined;
+  roleSenderHarness.spawnRoleProcess = undefined;
 });
 
 function scopedTempDir(prefix: string): string {
@@ -32,6 +86,112 @@ function scopedTempDir(prefix: string): string {
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
+
+function pairingCapsule(role: 'guardian' | 'proxy', directory: string, pairingSecret: unknown): unknown {
+  const shared = {
+    generation: 'gen2' as const,
+    flavor: 'prod' as const,
+    buildSetId: randomUUID(),
+    hostFingerprint: randomBytes(32).toString('hex'),
+    guardianInstanceId: randomUUID(),
+    reaperInstanceId: randomUUID(),
+    proxyInstanceId: randomUUID(),
+    bootstrapNonce: randomBytes(32).toString('hex'),
+  };
+  if (role === 'guardian') {
+    return {
+      role,
+      ...shared,
+      canonicalControlEndpoint: join(directory, 'g.sock'),
+      reaperControlEndpoint: join(directory, 'r.sock'),
+      proxyEndpoint: join(directory, 'p.sock'),
+      guardianReaperAuthSecret: pairingSecret,
+      proxyGuardianAuthSecret: randomBytes(32).toString('hex'),
+    };
+  }
+  return {
+    role,
+    ...shared,
+    canonicalEndpoint: join(directory, 'p.sock'),
+    guardianControlEndpoint: join(directory, 'g.sock'),
+    proxyGuardianAuthSecret: pairingSecret,
+  };
+}
+
+function roleSenderPorts(directory: string): ProviderRoleMainPorts {
+  return {
+    runtime: createRealRuntime('prod'),
+    pluginRoot: directory,
+    baseDir: directory,
+    readProcessStartedAtSeconds: (pid) => (pid === process.pid ? 1 : null),
+  };
+}
+
+function fakeSpawnedRole(): unknown {
+  return {
+    child: {},
+    pid: 2_000_000_000,
+    processStartedAtSeconds: 1,
+    spawnFailed: new Promise<never>(() => {}),
+  };
+}
+
+function enableRoleSender(capsule: unknown, channel: ControlClient, spawnRoleProcess = vi.fn(fakeSpawnedRole)): void {
+  roleSenderHarness.enabled = true;
+  roleSenderHarness.capsule = capsule;
+  roleSenderHarness.channel = channel;
+  roleSenderHarness.spawnRoleProcess = spawnRoleProcess;
+}
+
+describe('role pairing sender schemas', () => {
+  it('refuses malformed guardian-to-reaper pairing params before consulting the reaper', async () => {
+    const directory = scopedTempDir('coral-guardian-pair-sender-');
+    const call = vi.fn(async (): Promise<never> => {
+      throw new Error('receiver was consulted');
+    });
+    enableRoleSender(pairingCapsule('guardian', directory, { unexpected: true }), { call, close: vi.fn() });
+
+    await expect(startProviderGuardianRole('/unused', roleSenderPorts(directory))).rejects.toMatchObject({
+      issues: [expect.objectContaining({ code: 'invalid_type', path: ['pairingSecret'] })],
+    });
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it('refuses malformed proxy-to-guardian pairing params before consulting the guardian', async () => {
+    const directory = scopedTempDir('coral-proxy-pair-sender-');
+    const call = vi.fn(async (): Promise<never> => {
+      throw new Error('receiver was consulted');
+    });
+    enableRoleSender(pairingCapsule('proxy', directory, { unexpected: true }), { call, close: vi.fn() });
+
+    await expect(startProviderProxyRole('/unused', roleSenderPorts(directory))).rejects.toMatchObject({
+      issues: [expect.objectContaining({ code: 'invalid_type', path: ['pairingSecret'] })],
+    });
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it('refuses a malformed reaper pairing reply before spawning or constructing the proxy', async () => {
+    const directory = scopedTempDir('coral-reaper-pair-reply-');
+    const call = vi.fn(async () => ({ state: 'paired', unexpected: true }));
+    const spawnRoleProcess = vi
+      .fn()
+      .mockImplementationOnce(fakeSpawnedRole)
+      .mockImplementation(() => {
+        throw new Error('malformed pairing reply was acted on');
+      });
+    enableRoleSender(
+      pairingCapsule('guardian', directory, randomBytes(32).toString('hex')),
+      { call, close: vi.fn() },
+      spawnRoleProcess,
+    );
+
+    await expect(startProviderGuardianRole('/unused', roleSenderPorts(directory))).rejects.toMatchObject({
+      issues: [expect.objectContaining({ code: 'unrecognized_keys', keys: ['unexpected'], path: [] })],
+    });
+    expect(call).toHaveBeenCalledOnce();
+    expect(spawnRoleProcess).toHaveBeenCalledOnce();
+  });
+});
 
 describe('runProviderRoleMain', () => {
   it("returns 0 for 'none' without constructing a runtime or touching a capsule", async () => {

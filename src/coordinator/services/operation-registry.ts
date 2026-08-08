@@ -29,15 +29,9 @@ export interface OperationStopControl {
   stop(cause: ProviderStopCause): Promise<void>;
   /**
    * `guardian.operation-release.v1` for exactly this operation, bound at activation to the same
-   * reservation/receipt tuple `guardian.operation-activate.v1` committed. `settled()` sends it once this
-   * operation's terminal is durably applied — the release the guardian's `staged` map only ever received from
-   * the *failure* path (`compensateAfterActivationFailure`) before this capability existed, which left every
-   * successful operation's membership staged for the coordinator's whole lifetime.
-   *
-   * Optional because an operation this coordinator only *adopted* from a predecessor's redeemed set
-   * (`provider-proxy-set-inheritance.ts`'s `buildAdoptedStopControl`) has no guardian client in scope at its
-   * own call site to bind one to; that membership is released only when the redeemed set's own full
-   * `stop-and-reap` teardown runs, never per operation.
+   * reservation/receipt tuple `guardian.operation-activate.v1` committed. `settled()` retains this capability
+   * until the guardian confirms that the membership is absent, because a transport failure cannot say whether
+   * the first release reached the guardian.
    */
   releaseMembership?(): Promise<void>;
 }
@@ -51,8 +45,19 @@ interface RegistryEntry {
   stopCause: ProviderStopCause | null;
 }
 
+interface PendingMembershipRelease {
+  readonly identity: ProviderOperationEventIdentity;
+  readonly release: () => Promise<void>;
+}
+
 function registryKey(jobId: string, operationId: string): string {
   return `${jobId}:${operationId}`;
+}
+
+function canRetryMembershipRelease(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const failure = error as { code?: unknown; protocolCode?: unknown };
+  return failure.code === 'control_call_failed' && failure.protocolCode === undefined;
 }
 
 /**
@@ -68,6 +73,7 @@ function registryKey(jobId: string, operationId: string): string {
  */
 export class LocalOperationRegistry {
   private readonly entries = new Map<string, RegistryEntry>();
+  private readonly pendingMembershipReleases = new Map<string, PendingMembershipRelease>();
   // A job carries at most one live operation at a time, so a job id alone finds "whichever operation is
   // currently live for it" — the shape `stop()` needs, since the abort registry only ever knows a job id
   // (registration happens in `activateCommittedProviderLaunch`, before an operation id even exists — see
@@ -122,9 +128,25 @@ export class LocalOperationRegistry {
     this.register(meta, control, release, 'adopted');
   }
 
+  private async releaseMembershipUntilConfirmed(key: string, pending: PendingMembershipRelease): Promise<void> {
+    while (this.pendingMembershipReleases.get(key) === pending) {
+      try {
+        await pending.release();
+      } catch (error: unknown) {
+        backendLog.warn(
+          `guardian.operation-release.v1 failed for job '${pending.identity.jobId}'/'${pending.identity.operationId}': ${errorMessage(error)}`,
+        );
+        if (!canRetryMembershipRelease(error)) return;
+        continue;
+      }
+      if (this.pendingMembershipReleases.get(key) === pending) this.pendingMembershipReleases.delete(key);
+    }
+  }
+
   /**
-   * Ends this coordinator's tracking of one operation: runs its `release()` once, then forgets the entry.
-   * `ProviderEventApplicationDeps.operations.settled` — the applier's only dependency on this registry.
+   * Ends this coordinator's live tracking of one operation and runs its local `release()` once. Guardian
+   * membership release remains separately owned here until its result is confirmed, so terminal application
+   * stays synchronous without discarding an ambiguous release.
    *
    * Idempotent: an identity this registry never activated, or already settled, is a silent no-op rather than
    * a fault, matching a replayed `provider.event.v1` terminal delivering the same settlement twice.
@@ -136,15 +158,11 @@ export class LocalOperationRegistry {
     this.entries.delete(key);
     if (this.liveJobIndex.get(identity.jobId) === key) this.liveJobIndex.delete(identity.jobId);
     entry.release();
-    // Fire-and-forget, like stop(): this method's contract with its one caller
-    // (`provider-event-application.ts`, invoked only after the terminal already committed) is synchronous, and
-    // a slow or dropped guardian reply must not hold up — or retroactively fail — a settle that already
-    // happened. Absent for an adopted operation (see `OperationStopControl.releaseMembership`'s own doc).
-    void entry.control.releaseMembership?.().catch((error: unknown) => {
-      backendLog.warn(
-        `guardian.operation-release.v1 failed for job '${identity.jobId}'/'${identity.operationId}': ${errorMessage(error)}`,
-      );
-    });
+    const releaseMembership = entry.control.releaseMembership;
+    if (releaseMembership === undefined) return;
+    const pending = { identity: entry.identity, release: releaseMembership.bind(entry.control) };
+    this.pendingMembershipReleases.set(key, pending);
+    void this.releaseMembershipUntilConfirmed(key, pending);
   }
 
   /**

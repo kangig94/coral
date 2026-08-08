@@ -97,6 +97,8 @@ This only affects malformed or truncated backend responses. In normal operation 
 
 `coral-cli wait jobs` reuses exit `75` for a second, unrelated meaning that is not one of the failures above: `src/cli/follow.ts` calls `errorCodeToExit('transient')` when the bounded wait's timeout elapses, or a `waiting` event names still-running jobs, while jobs remain outstanding. That is an expected, benign pause — the jobs are still running, not failing — and the fix is to resume, not retry: rerun with the printed `--cursor` value. See [Skills](./skills.md) and the provider skill files (`clients/skills/*/SKILL.md`), which document this same code as part of the `wait jobs` monitoring contract.
 
+An interrupted live wait also exits `75` with code `transient` when its delegated child ends from a signal or its subscription exhausts transient retries. The error keeps the signal or subscription diagnostic as its message and adds an exact `coral-cli wait jobs <remaining-job-ids> --cursor <current-cursor>` remediation command. A second locally received Ctrl+C remains different: it aborts the jobs and exits `1`; when the first local Ctrl+C is reflected back as delegated `SIGINT`, the CLI reconnects instead of emitting an error.
+
 ### Provider-proxy role process exit codes
 
 These are process exit codes for the backend artifact (`coral-backend.cjs`) itself when dispatched into a

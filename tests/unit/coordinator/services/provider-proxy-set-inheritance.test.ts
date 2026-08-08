@@ -256,7 +256,7 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 
-  it('parses an adopted stop payload at the sender, so a malformed one never reaches the wire', async () => {
+  it('parses an adopted stop request and rejects a malformed result at the sender', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
     const operations = [operationFor(loc)];
@@ -264,7 +264,7 @@ describe('attemptProviderProxySetInheritance', () => {
     const client = fakeClient(
       redemptionResponses(loc, operations, {
         'operation.adopt.v1': { state: 'executing', replayFromProviderSeq: 1 },
-        'operation.stop.v1': { state: 'stopping', committedThroughProviderSeq: 5 },
+        'operation.stop.v1': { state: 'stopping' },
       }),
       calls,
     );
@@ -295,7 +295,8 @@ describe('attemptProviderProxySetInheritance', () => {
     );
 
     if (adoptedStop === undefined) throw new Error('adoption did not register a stop control');
-    await adoptedStop.stop('signal_abort');
+    // A JSON-RPC success is not a protocol success when its method result has drifted from the shared schema.
+    await expect(adoptedStop.stop('signal_abort')).rejects.toThrow(/committedThroughProviderSeq/);
     expect(calls.filter((c) => c.method === 'operation.stop.v1')).toHaveLength(1);
 
     // A cause the shared schema has no place for is refused here, at the sender, and the frame is never
@@ -362,6 +363,60 @@ describe('attemptProviderProxySetInheritance', () => {
       reservation: adoptedMeta?.reservation,
       jointContainmentReceipt: adoptedMeta?.jointContainmentReceipt,
     });
+  });
+
+  it('confirms an adopted membership release when its first reply was dropped', async () => {
+    const loc = locator();
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const operations = [operationFor(loc)];
+    const calls: { method: string; params: unknown }[] = [];
+    let membershipStaged = true;
+    let releaseCalls = 0;
+    const client = fakeClient(
+      redemptionResponses(loc, operations, {
+        'operation.adopt.v1': { state: 'executing', replayFromProviderSeq: 1 },
+        'guardian.operation-release.v1': () => {
+          releaseCalls += 1;
+          if (releaseCalls === 1) {
+            membershipStaged = false;
+            throw Object.assign(new Error('guardian release reply dropped'), { code: 'control_call_failed' });
+          }
+          throw Object.assign(new Error('membership is already absent'), {
+            code: 'control_call_failed',
+            protocolCode: 'unauthorized_control',
+          });
+        },
+      }),
+      calls,
+    );
+    stubConnect(client);
+    mockedReadMeta.mockImplementation((_db: Database, jobId: string, operationId: string) =>
+      locator({ jobId, operationId, committedThroughProviderSeq: 5 }),
+    );
+
+    let adopted: OperationStopControl | undefined;
+    await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: {
+          adopt: (_meta, control) => {
+            adopted = control;
+          },
+          operationsFor: () => [],
+          providerRootsFor: () => [],
+        },
+      },
+      neverAborts,
+    );
+
+    if (adopted === undefined) throw new Error('adoption did not register a control');
+    await expect(adopted.releaseMembership?.()).rejects.toThrow(/reply dropped/u);
+    await expect(adopted.releaseMembership?.()).resolves.toBeUndefined();
+    expect(releaseCalls).toBe(2);
+    expect(membershipStaged).toBe(false);
   });
 
   it('redeems guardian, then reaper with the guardian’s own receipt, then proxy, adopting every named operation in order', async () => {

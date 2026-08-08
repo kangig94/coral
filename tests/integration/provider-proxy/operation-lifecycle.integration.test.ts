@@ -66,6 +66,7 @@ async function startProxy(
     failStage?: boolean;
     failStageOnce?: boolean;
     failConfirmActivation?: boolean;
+    failStart?: boolean;
     timer?: ControlEndpointTimer;
     onProviderEvent?: ProviderEventHandler;
   } = {},
@@ -111,10 +112,13 @@ async function startProxy(
   const started: Array<Started & { prepared: ProxyPreparedAppServerOperation }> = [];
   const stopped: Array<Started & { cause: string }> = [];
   const released: Started[] = [];
+  let startAttempts = 0;
   const host: SemanticOperationHost = {
     // Recording `prepared` (not just `key`) is what exposes a host that starts with the wrong payload: the
     // proxy must hand over the envelope prepare validated, not activate's own request params.
     start: ({ key, prepared }) => {
+      startAttempts += 1;
+      if (options.failStart === true) throw new Error('the semantic kernel failed to start');
       started.push({ ...key, prepared });
     },
     stop: ({ key, cause }) => {
@@ -213,6 +217,7 @@ async function startProxy(
     started,
     stopped,
     released,
+    startAttempts: () => startAttempts,
     stageAttempts: () => stageAttempts,
     advanceWithHeartbeat,
     advanceSilently,
@@ -243,6 +248,117 @@ const PREPARED: ProxyPreparedAppServerOperation = {
   protectedEnv: {},
   platform: 'linux',
 };
+
+async function launchThroughRoute(
+  set: ProxyUnderTest,
+  options: { dropPrepareReplies?: number; dropActivationReplies?: number } = {},
+) {
+  const db = newRawDatabase(':memory:');
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
+  cleanups.push(() => db.close());
+
+  let prepareCalls = 0;
+  let activationCalls = 0;
+  const proxyClient = {
+    call: async (method: string, params: unknown, timeoutMs: number): Promise<unknown> => {
+      if (method === 'operation.prepare.v1') prepareCalls += 1;
+      if (method === 'operation.activate.v1') activationCalls += 1;
+      const result = await set.control.call(method, params, timeoutMs);
+      if (method === 'operation.prepare.v1' && prepareCalls <= (options.dropPrepareReplies ?? 0)) {
+        throw new ControlClientError('control_call_failed', 'The prepare reply was dropped.');
+      }
+      if (method === 'operation.activate.v1' && activationCalls <= (options.dropActivationReplies ?? 0)) {
+        throw new ControlClientError('control_call_failed', 'The activation reply was dropped.');
+      }
+      return result;
+    },
+  };
+  const guardianCalls: Array<{ method: string; params: unknown }> = [];
+  const guardianClient = {
+    call: async (method: string, params: unknown): Promise<unknown> => {
+      guardianCalls.push({ method, params });
+      if (method === 'guardian.operation-activate.v1') {
+        return { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' };
+      }
+      return { state: 'membership-released' };
+    },
+  };
+  const setIdentity = {
+    buildSetId: set.shared.buildSetId,
+    hostFingerprint: FINGERPRINT,
+    guardianInstanceId: set.shared.guardianInstanceId,
+    guardianPid: 5_000,
+    guardianProcessStartedAtSeconds: 700,
+    guardianControlEndpoint: '/tmp/guardian.sock',
+    proxyInstanceId: set.shared.proxyInstanceId,
+    proxyPid: set.identity.pid,
+    reaperInstanceId: set.shared.reaperInstanceId,
+    reaperPid: 5_500,
+    reaperProcessStartedAtSeconds: 750,
+    reaperControlEndpoint: '/tmp/reaper.sock',
+    containmentKind: 'detached-group',
+    proxyProcessStartedAtSeconds: set.identity.processStartedAtSeconds,
+    proxyProcessGroupId: set.identity.processGroupId,
+    canonicalEndpoint: set.endpoint,
+  } as const;
+  const authority = {
+    proxyInstanceId: set.shared.proxyInstanceId,
+    setIdentity,
+    activateOperation: (
+      database: typeof db,
+      operation: Parameters<typeof activateProviderOperation>[1],
+      prepared: ProxyPreparedAppServerOperation,
+    ) =>
+      activateProviderOperation(
+        {
+          db: database,
+          proxyClient,
+          guardianClient,
+          setIdentity,
+          mutationRpcTimeoutMs: 5_000,
+        },
+        operation,
+        prepared,
+      ),
+  } as ProviderProxyOperationAuthority;
+  const registry = new LocalOperationRegistry();
+  const route = createAppServerProxyRoute({
+    hostManager: { routeAppServerOperation: () => authority },
+    getDb: () => db,
+    progressStore: { appendRuntimeStarted: vi.fn() },
+    now: () => 1_700_000_000_000,
+    registry,
+  });
+  const operationId = randomUUID();
+  const jobId = randomUUID();
+  const localExecution = vi.fn();
+
+  const placement = await route.activate(
+    {
+      jobId,
+      operationId,
+      hostSpec: {
+        provider: 'codex',
+        command: 'codex',
+        args: ['app-server'],
+        cwd: '/workspace',
+        leaseMode: 'job-exclusive',
+      },
+      provider: PREPARED.provider,
+      binding: PREPARED.binding,
+      request: PREPARED.request,
+      persistedContinuity: null,
+      baseEnv: PREPARED.baseEnv,
+      protectedEnv: PREPARED.protectedEnv,
+      platform: PREPARED.platform,
+    },
+    () => {},
+    new AbortController().signal,
+  );
+  if (placement === null) localExecution();
+
+  return { prepareCalls, activationCalls, guardianCalls, jobId, operationId, localExecution, placement, registry };
+}
 
 async function prepare(
   set: ProxyUnderTest,
@@ -329,110 +445,67 @@ describe('provider-proxy operation lifecycle', () => {
 
   it('does not fall back locally when the activation reply is lost after the proxy starts', async () => {
     const set = await startProxy();
-    const db = newRawDatabase(':memory:');
-    applyBundledStoreSchema(db, currentCoralStoreFormat());
-    cleanups.push(() => db.close());
+    const launched = await launchThroughRoute(set, { dropActivationReplies: 1 });
 
-    let activationCalls = 0;
-    const proxyClient = {
-      call: async (method: string, params: unknown, timeoutMs: number): Promise<unknown> => {
-        const result = await set.control.call(method, params, timeoutMs);
-        if (method === 'operation.activate.v1') {
-          activationCalls += 1;
-          if (activationCalls === 1) {
-            throw new ControlClientError('control_call_failed', 'The activation reply was dropped.');
-          }
-        }
-        return result;
-      },
-    };
-    const guardianClient = {
-      call: async (method: string): Promise<unknown> => {
-        if (method === 'guardian.operation-activate.v1') {
-          return { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' };
-        }
-        return { state: 'membership-released' };
-      },
-    };
-    const setIdentity = {
-      buildSetId: set.shared.buildSetId,
-      hostFingerprint: FINGERPRINT,
-      guardianInstanceId: set.shared.guardianInstanceId,
-      guardianPid: 5_000,
-      guardianProcessStartedAtSeconds: 700,
-      guardianControlEndpoint: '/tmp/guardian.sock',
-      proxyInstanceId: set.shared.proxyInstanceId,
-      proxyPid: set.identity.pid,
-      reaperInstanceId: set.shared.reaperInstanceId,
-      reaperPid: 5_500,
-      reaperProcessStartedAtSeconds: 750,
-      reaperControlEndpoint: '/tmp/reaper.sock',
-      containmentKind: 'detached-group',
-      proxyProcessStartedAtSeconds: set.identity.processStartedAtSeconds,
-      proxyProcessGroupId: set.identity.processGroupId,
-      canonicalEndpoint: set.endpoint,
-    };
-    const authority = {
-      proxyInstanceId: set.shared.proxyInstanceId,
-      setIdentity,
-      activateOperation: (
-        database: typeof db,
-        operation: Parameters<typeof activateProviderOperation>[1],
-        prepared: ProxyPreparedAppServerOperation,
-      ) =>
-        activateProviderOperation(
-          {
-            db: database,
-            proxyClient,
-            guardianClient,
-            setIdentity,
-            mutationRpcTimeoutMs: 5_000,
-          },
-          operation,
-          prepared,
-        ),
-    } as ProviderProxyOperationAuthority;
-    const registry = new LocalOperationRegistry();
-    const route = createAppServerProxyRoute({
-      hostManager: { routeAppServerOperation: () => authority },
-      getDb: () => db,
-      progressStore: { appendRuntimeStarted: vi.fn() },
-      now: () => 1_700_000_000_000,
-      registry,
-    });
-    const operationId = randomUUID();
-    const jobId = randomUUID();
-    const localExecution = vi.fn();
+    expect(launched.placement).toBe('executing');
+    expect(launched.localExecution).not.toHaveBeenCalled();
+    expect(launched.activationCalls).toBe(2);
+    expect(set.started).toEqual([{ jobId: launched.jobId, operationId: launched.operationId, prepared: PREPARED }]);
+    expect(launched.registry.stateForJob(launched.jobId)).toBe('activated');
+  });
 
-    const placement = await route.activate(
-      {
-        jobId,
-        operationId,
-        hostSpec: {
-          provider: 'codex',
-          command: 'codex',
-          args: ['app-server'],
-          cwd: '/workspace',
-          leaseMode: 'job-exclusive',
+  it('does not fall back locally when both activation attempts lose their replies', async () => {
+    const set = await startProxy();
+    const launched = await launchThroughRoute(set, { dropActivationReplies: 2 });
+
+    expect(launched.placement).toBe('executing');
+    expect(launched.localExecution).not.toHaveBeenCalled();
+    expect(launched.activationCalls).toBe(2);
+    expect(set.started).toEqual([{ jobId: launched.jobId, operationId: launched.operationId, prepared: PREPARED }]);
+    expect(launched.registry.stateForJob(launched.jobId)).toBe('activated');
+  });
+
+  it('does not fall back locally when both prepare replies are lost and retains cleanup ownership', async () => {
+    const set = await startProxy();
+    const launched = await launchThroughRoute(set, { dropPrepareReplies: 2 });
+    const key = { jobId: launched.jobId, operationId: launched.operationId };
+
+    expect(launched.placement).toBe('executing');
+    expect(launched.localExecution).not.toHaveBeenCalled();
+    expect(launched.prepareCalls).toBe(2);
+    expect(launched.activationCalls).toBe(0);
+    expect(set.started).toEqual([]);
+    const owned = set.proxy.ledger().get(key);
+    expect(owned?.state).toBe('pending-activation');
+    expect(launched.registry.stateForJob(launched.jobId)).toBe('activated');
+
+    launched.registry.stop(launched.jobId, 'user_abort');
+    await vi.waitFor(() => expect(set.proxy.ledger().get(key)).toBeNull());
+    await vi.waitFor(() =>
+      expect(launched.guardianCalls).toContainEqual({
+        method: 'guardian.operation-release.v1',
+        params: {
+          operation: expect.objectContaining(key),
+          reservation: owned?.reservation,
+          jointContainmentReceipt: owned?.jointContainmentReceipt,
         },
-        provider: PREPARED.provider,
-        binding: PREPARED.binding,
-        request: PREPARED.request,
-        persistedContinuity: null,
-        baseEnv: PREPARED.baseEnv,
-        protectedEnv: PREPARED.protectedEnv,
-        platform: PREPARED.platform,
-      },
-      () => {},
-      new AbortController().signal,
+      }),
     );
-    if (placement === null) localExecution();
+    expect(set.released).toContainEqual(key);
+  });
 
-    expect(placement).toBe('executing');
-    expect(localExecution).not.toHaveBeenCalled();
-    expect(activationCalls).toBe(2);
-    expect(set.started).toEqual([{ jobId, operationId, prepared: PREPARED }]);
-    expect(registry.stateForJob(jobId)).toBe('activated');
+  it('falls back locally and releases the reservation when the semantic kernel fails to start', async () => {
+    const set = await startProxy({ failStart: true });
+    const launched = await launchThroughRoute(set);
+    const key = { jobId: launched.jobId, operationId: launched.operationId };
+
+    expect(launched.placement).toBeNull();
+    expect(launched.localExecution).toHaveBeenCalledOnce();
+    expect(launched.activationCalls).toBe(1);
+    expect(set.startAttempts()).toBe(1);
+    expect(set.started).toEqual([]);
+    expect(set.proxy.ledger().get(key)).toBeNull();
+    expect(set.released).toContainEqual(key);
   });
 
   it('refuses activation that presents a containment receipt nobody staged, and starts no kernel', async () => {

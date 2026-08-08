@@ -137,7 +137,29 @@ describe('LocalOperationRegistry', () => {
     expect(releaseMembership).toHaveBeenCalledTimes(1);
   });
 
-  it('settled() tolerates a control capability with no releaseMembership() — adopted operations carry none', () => {
+  it('settled() retries a release whose reply was dropped and does not leak the guardian membership', async () => {
+    const registry = new LocalOperationRegistry();
+    const m = meta();
+    const stagedMemberships = new Set([m.operationId]);
+    let releaseCalls = 0;
+    const releaseMembership = vi.fn(async () => {
+      releaseCalls += 1;
+      if (releaseCalls === 1) {
+        stagedMemberships.delete(m.operationId);
+        throw Object.assign(new Error('guardian release reply dropped'), { code: 'control_call_failed' });
+      }
+    });
+    const control: OperationStopControl = { stop: async () => {}, releaseMembership };
+
+    registry.activate(m, control, () => {});
+    registry.settled(identityFor(m));
+
+    await vi.waitFor(() => expect(releaseMembership).toHaveBeenCalledTimes(2));
+    expect(stagedMemberships).not.toContain(m.operationId);
+    expect(registry.stateForJob(m.jobId)).toBeNull();
+  });
+
+  it('settled() tolerates a control capability with no releaseMembership()', () => {
     const registry = new LocalOperationRegistry();
     const m = meta();
     const release = vi.fn();
@@ -148,21 +170,24 @@ describe('LocalOperationRegistry', () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it('settled() tolerates a releaseMembership() that rejects, rather than throwing into the caller', async () => {
+  it('settled() retries a rejected releaseMembership() without throwing into the caller', async () => {
     const registry = new LocalOperationRegistry();
     const m = meta();
+    let releaseAttempts = 0;
     const control: OperationStopControl = {
       stop: async () => {},
-      releaseMembership: async () => Promise.reject(new Error('guardian unreachable')),
+      releaseMembership: async () => {
+        releaseAttempts += 1;
+        if (releaseAttempts === 1) {
+          throw Object.assign(new Error('guardian unreachable'), { code: 'control_call_failed' });
+        }
+      },
     };
 
     registry.activate(m, control, () => {});
 
     expect(() => registry.settled(identityFor(m))).not.toThrow();
-    await Promise.resolve();
-    await Promise.resolve();
-    // The entry is still forgotten even though the release failed — settlement's own contract does not depend
-    // on the guardian RPC's outcome.
+    await vi.waitFor(() => expect(releaseAttempts).toBe(2));
     expect(registry.stateForJob(m.jobId)).toBeNull();
   });
 
