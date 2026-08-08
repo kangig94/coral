@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
-import type { AppServerProxyRouteRequest } from '#src/jobs/contracts/app-server-proxy-route.js';
 import { readProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import { providerOperationPrepareAttempt } from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import {
   ProviderOperationReconciler,
   providerOperationTerminationVerdict,
@@ -54,7 +54,12 @@ describe('provider operation termination verdicts', () => {
       ],
       [
         providerOperationRecord('prestart-cleanup-pending'),
-        { kind: 'released-never-started', prepareAttemptKey: 'b'.repeat(64) },
+        {
+          kind: 'released-never-started',
+          operation: providerOperationRecord('prestart-cleanup-pending').operation,
+          prepareAttemptNumber: 1,
+          prepareAttemptKey: 'b'.repeat(64),
+        },
         'released-never-started',
       ],
       [
@@ -94,27 +99,6 @@ const PREPARED = {
   platform: 'linux',
 } as const;
 
-function requestFor(record: ProviderOperationRecord): AppServerProxyRouteRequest {
-  return {
-    jobId: record.operation.jobId,
-    operationId: record.operation.operationId,
-    hostSpec: {
-      provider: 'codex',
-      command: 'codex',
-      args: ['app-server'],
-      cwd: '/workspace',
-      leaseMode: 'job-exclusive',
-    },
-    provider: 'codex',
-    binding: PREPARED.binding,
-    request: PREPARED.request,
-    persistedContinuity: null,
-    baseEnv: PREPARED.baseEnv,
-    protectedEnv: PREPARED.protectedEnv,
-    platform: PREPARED.platform,
-  };
-}
-
 function createHarness(
   overrides: {
     prepareOperation?: DurableProviderProxyOperationAuthority['prepareOperation'];
@@ -122,6 +106,8 @@ function createHarness(
     authorizeOperation?: DurableProviderProxyOperationAuthority['authorizeOperation'];
     activatePreparedOperation?: DurableProviderProxyOperationAuthority['activatePreparedOperation'];
     settleOperation?: DurableProviderProxyOperationAuthority['settleOperation'];
+    cancelOperation?: DurableProviderProxyOperationAuthority['cancelOperation'];
+    materializePrepare?: () => typeof PREPARED | Promise<typeof PREPARED>;
     failCommitOnce?: boolean;
   } = {},
 ) {
@@ -155,10 +141,39 @@ function createHarness(
       throw error;
     }
   };
-  const progressStore: Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus'> = {
+  const progressStore: Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus' | 'readLaunchProjection'> = {
     getDb: () => db,
     commit,
-    readStatus: () => null,
+    readStatus: () => ({
+      jobId: record.operation.jobId,
+      owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
+      sessionId: record.prepareSource.sessionId,
+      provider: 'codex',
+      projectRoot: '/workspace',
+      backendNamespace: 'tests',
+      jobKind: 'provider',
+      phase: 'running',
+      updatedAt: '2026-08-09T12:34:55.000Z',
+    }),
+    readLaunchProjection: () => ({
+      jobId: record.operation.jobId,
+      owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
+      sessionId: record.prepareSource.sessionId,
+      provider: 'codex',
+      projectRoot: '/workspace',
+      backendNamespace: 'tests',
+      pool: 'curate',
+      enqueueSequence: 1,
+      createdAt: '2026-08-09T12:34:55.000Z',
+      jobKind: 'provider',
+      providerAction: 'exec',
+      request: {
+        prompt: 'do the thing',
+        cwd: '/workspace',
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+    }),
   };
   const phasesBeforeMutation: string[] = [];
   const readPhase = (): string => readProviderOperation(db, record.operation)?.phase ?? 'missing';
@@ -215,12 +230,14 @@ function createHarness(
         phasesBeforeMutation.push(readPhase());
         return activationAck;
       }),
-    cancelOperation: async (operation, prepareAttemptNumber, prepareAttemptKey) => ({
-      state: 'released-never-started',
-      operation,
-      prepareAttemptNumber,
-      prepareAttemptKey,
-    }),
+    cancelOperation:
+      overrides.cancelOperation ??
+      (async (operation, prepareAttemptNumber, prepareAttemptKey) => ({
+        state: 'released-never-started',
+        operation,
+        prepareAttemptNumber,
+        prepareAttemptKey,
+      })),
     settleOperation:
       overrides.settleOperation ??
       (async (_operation, finalProviderSeq) => ({
@@ -235,6 +252,7 @@ function createHarness(
     getProgressStore: () => progressStore,
     authorityFor: () => authority,
     registry,
+    materializePrepare: overrides.materializePrepare ?? (() => PREPARED),
     backendNamespace: 'tests',
     time: {
       now: () => now,
@@ -242,14 +260,14 @@ function createHarness(
       clearTimeout: () => undefined,
     },
   });
-  const begin = () =>
-    reconciler.begin({
-      record,
-      prepared: PREPARED,
-      request: requestFor(record),
-      release: vi.fn(),
+  const begin = () => {
+    const attempt = providerOperationPrepareAttempt(authority, record.operation, PREPARED, record.prepareAttemptNumber);
+    return reconciler.begin({
+      record: { ...record, prepareAttemptKey: attempt.prepareAttemptKey },
+      attempt,
       authority,
     });
+  };
 
   return {
     record,
@@ -382,6 +400,7 @@ describe('ProviderOperationReconciler publication', () => {
       authorityFor: () => null,
       acquireAuthority,
       registry: harness.registry,
+      materializePrepare: () => PREPARED,
       backendNamespace: 'tests',
       time: {
         now: () => 100,
@@ -411,6 +430,7 @@ describe('ProviderOperationReconciler publication', () => {
       authorityFor: () => null,
       acquireAuthority,
       registry,
+      materializePrepare: () => PREPARED,
       backendNamespace: 'tests',
       time: {
         now: () => 100,
@@ -456,6 +476,130 @@ describe('ProviderOperationReconciler publication', () => {
 
     await vi.waitFor(() => expect(prepareCalls).toBe(2));
     await expect(publication).resolves.toEqual({ kind: 'remote-executing' });
+  });
+
+  it('fences an absent recovered attempt, journals its replacement, then finishes execution', async () => {
+    const sendObservations: Array<{
+      durableAttemptNumber: number;
+      durableAttemptKey: string;
+      sentAttemptNumber: number;
+      sentAttemptKey: string;
+    }> = [];
+    let observeSend: (
+      attempt: Parameters<DurableProviderProxyOperationAuthority['prepareOperation']>[0],
+    ) => void = () => undefined;
+    const prepareOperation = vi.fn(async (attempt) => {
+      observeSend(attempt);
+      return {
+        state: 'pending-activation' as const,
+        reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+        leaseExpiresInMs: 15_000,
+        providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+        jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+      };
+    });
+    const inspectOperation = vi.fn(async () => ({ state: 'absent' as const }));
+    const cancelOperation = vi.fn(async (operation, prepareAttemptNumber, prepareAttemptKey) => ({
+      state: 'released-never-started' as const,
+      operation,
+      prepareAttemptNumber,
+      prepareAttemptKey,
+    }));
+    const materializePrepare = vi.fn(() => PREPARED);
+    const harness = createHarness({ prepareOperation, inspectOperation, cancelOperation, materializePrepare });
+    observeSend = (attempt) => {
+      const durable = readProviderOperation(harness.db, harness.record.operation);
+      if (durable?.phase !== 'prepare-pending') throw new Error('prepare was sent without a pending journal attempt');
+      sendObservations.push({
+        durableAttemptNumber: durable.prepareAttemptNumber,
+        durableAttemptKey: durable.prepareAttemptKey,
+        sentAttemptNumber: attempt.request.prepareAttemptNumber,
+        sentAttemptKey: attempt.prepareAttemptKey,
+      });
+    };
+    insertProviderOperation(harness.db, harness.record);
+
+    await harness.reconciler.reconcile(harness.record, harness.authority);
+
+    expect(inspectOperation).toHaveBeenCalledWith(harness.record.operation, harness.record.prepareAttemptKey);
+    expect(cancelOperation).toHaveBeenCalledWith(
+      harness.record.operation,
+      harness.record.prepareAttemptNumber,
+      harness.record.prepareAttemptKey,
+    );
+    expect(materializePrepare).toHaveBeenCalledOnce();
+    expect(sendObservations).toEqual([
+      {
+        durableAttemptNumber: 2,
+        durableAttemptKey: expect.any(String),
+        sentAttemptNumber: 2,
+        sentAttemptKey: expect.any(String),
+      },
+    ]);
+    expect(sendObservations[0]?.sentAttemptKey).toBe(sendObservations[0]?.durableAttemptKey);
+    expect(readProviderOperation(harness.db, harness.record.operation)).toMatchObject({
+      phase: 'executing',
+      prepareAttemptNumber: 2,
+      prepareAttemptKey: sendObservations[0]?.sentAttemptKey,
+    });
+  });
+
+  it('does not rotate or send when cancellation proof names a different attempt', async () => {
+    const prepareOperation = vi.fn();
+    const materializePrepare = vi.fn(() => PREPARED);
+    const harness = createHarness({
+      prepareOperation,
+      inspectOperation: async () => ({ state: 'absent' }),
+      cancelOperation: async (operation, prepareAttemptNumber, prepareAttemptKey) => ({
+        state: 'released-never-started',
+        operation,
+        prepareAttemptNumber: prepareAttemptNumber + 1,
+        prepareAttemptKey,
+      }),
+      materializePrepare,
+    });
+    insertProviderOperation(harness.db, harness.record);
+
+    await harness.reconciler.reconcile(harness.record, harness.authority);
+
+    expect(materializePrepare).not.toHaveBeenCalled();
+    expect(prepareOperation).not.toHaveBeenCalled();
+    expect(readProviderOperation(harness.db, harness.record.operation)).toMatchObject({
+      phase: 'prepare-pending',
+      prepareAttemptNumber: 1,
+      prepareAttemptKey: harness.record.prepareAttemptKey,
+      retryCount: 1,
+      lastError: expect.objectContaining({
+        message: 'Cancellation acknowledgement did not fence the journaled prepare attempt.',
+      }),
+    });
+  });
+
+  it('publishes a replayed activation receipt and registers reconstructable cleanup', async () => {
+    const harness = createHarness();
+    const recovered = providerOperationRecord('proxy-activation-pending');
+    insertProviderOperation(harness.db, recovered);
+
+    await harness.reconciler.reconcile(recovered, harness.authority);
+
+    expect(harness.appended).toEqual([
+      expect.objectContaining({
+        type: 'job.runtime.started',
+        body: {
+          transport: 'app-server',
+          startedAt: activationAck.startedAt,
+          providerMeta: {
+            provider: activationAck.hostRef.provider,
+            leaseState: 'acquired',
+            hostRef: activationAck.hostRef,
+          },
+        },
+      }),
+    ]);
+    expect(harness.registry.activate).toHaveBeenCalledWith(expect.any(Object), expect.any(Object), {
+      jobId: recovered.operation.jobId,
+      pool: 'curate',
+    });
   });
 
   it('resumes a recovered pending cleanup when redeemed proxy control is established', async () => {

@@ -57,9 +57,32 @@ import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import { jobLaunchRequestedEvent } from '../store.js';
 import { writeDurableCliProcessRuntimeMeta } from '../runtime-meta-store.js';
 import type { AppServerProxyRoute } from '../contracts/app-server-proxy-route.js';
+import type {
+  ProviderOperationChildAuthorization,
+  ProviderOperationCleanupIdentity,
+  ProviderOperationCleanupOwner,
+  ProviderOperationEnvironmentInput,
+  ProviderOperationProtectedEnvironment,
+} from '../contracts/provider-operation-lifecycle.js';
+import { readProviderOperationJobLaunchEventSeq } from '../provider-operation-state.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 type LauncherJobEventBody = JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
+function providerOperationEnvironment(input?: ProviderOperationEnvironmentInput): Readonly<{
+  env: Readonly<Record<string, string>>;
+  childAuthorization?: ProviderOperationChildAuthorization;
+}> {
+  if (
+    input !== undefined &&
+    typeof input.env === 'object' &&
+    input.env !== null &&
+    typeof input.childAuthorization === 'object' &&
+    input.childAuthorization !== null
+  ) {
+    return input as ProviderOperationProtectedEnvironment;
+  }
+  return { env: (input ?? {}) as Readonly<Record<string, string>> };
+}
 
 function missingContinuityMiddleware(method: keyof NonNullable<ProviderRuntime['continuityBridge']>): never {
   throw new Error(`runtime.continuityBridge.${method}() called without sessionContinuity() middleware.`);
@@ -127,7 +150,7 @@ type ProviderLaunchOptions = {
   discussionRun?: DiscussionRunDescriptor;
 };
 
-export class LaunchOrchestrator {
+export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   // Tracks every admitted app-server job before its first asynchronous
   // preparation boundary. Quiesce-for-handoff acts on this set; CLI/durable
   // jobs not in the set keep the existing handoff preservation behavior.
@@ -147,8 +170,7 @@ export class LaunchOrchestrator {
   }
 
   /**
-   * Lets go of the in-process bookkeeping a proxied operation still holds, once its terminal has committed
-   * through the provider-event path.
+   * Lets go of in-process bookkeeping only when this generation still owns some for the durable identity.
    *
    * `executeJob` returns `'preserved'` for a proxied operation so it never double-applies effects, and
    * `'preserved'` also suppresses the admission release in its own `finally` — correctly, for every other
@@ -157,20 +179,26 @@ export class LaunchOrchestrator {
    * admission. So this is the one thing that ever frees the slot, and without it the pool fills with finished
    * work and the daemon quietly stops launching anything.
    *
-   * Idempotent by construction — every call below tolerates an id it has already forgotten — because a replay
-   * can deliver the same terminal more than once.
-   *
-   * Private, and called by nothing in this class directly: `executePreparedProvider` wraps this in a closure
-   * at the exact moment it delegates to `appServerProxyRoute.activate(...)` — the only moment this launcher
-   * still has `jobId`/`pool` in scope — and hands that closure forward as `release`. Ownership of calling it
-   * travels with the operation from there; this method is not an external callback target.
+   * A restarted generation may register the same durable cleanup identity without having restored an
+   * admission slot. Returning `false` lets the jobs-layer router try another project service without turning
+   * absence into an admission release.
    */
-  private releaseProxiedOperation(jobId: string, pool: LaunchPool): void {
+  releaseProviderOperationLocalState(identity: ProviderOperationCleanupIdentity): boolean {
+    const { jobId, pool } = identity;
+    const ownsAdmission = this.deps.jobPools.get(jobId) === pool;
+    const ownsLocalState =
+      ownsAdmission ||
+      this.deps.abortRegistry.getSignal(jobId) !== null ||
+      this.appServerJobs.has(jobId) ||
+      this.appServerHandoffAborts.has(jobId);
+    if (!ownsLocalState) return false;
+
     this.deps.abortRegistry.remove(jobId);
     this.deps.jobPools.delete(jobId);
     this.appServerJobs.delete(jobId);
     this.appServerHandoffAborts.delete(jobId);
-    this.deps.launchAdmission.releaseLaunch(jobId, pool);
+    if (ownsAdmission) this.deps.launchAdmission.releaseLaunch(jobId, pool);
+    return true;
   }
 
   async quiesceAppServerJobsForHandoff(): Promise<void> {
@@ -332,7 +360,7 @@ export class LaunchOrchestrator {
     opts: Omit<ProviderLaunchOptions, 'protectedEnv'> & {
       owner: ExecutionOwner;
       requestedJobId?: string;
-      mintProtectedEnv: (jobId: string) => Record<string, string>;
+      mintProtectedEnv: (jobId: string) => ProviderOperationEnvironmentInput;
     },
   ): ProviderSessionLaunchDecision {
     const { jobPools } = this.deps;
@@ -483,7 +511,7 @@ export class LaunchOrchestrator {
       expectedVersion: number;
       sessionBusyMessage: string;
       requestedJobId?: string;
-      mintProtectedEnv: (jobId: string) => Record<string, string>;
+      mintProtectedEnv: (jobId: string) => ProviderOperationEnvironmentInput;
     },
   ): ProviderSessionLaunchDecision {
     const { jobPools } = this.deps;
@@ -570,7 +598,7 @@ export class LaunchOrchestrator {
       replacesWorkflowJobId: string;
       pool?: LaunchPool;
       projectRoot: string;
-      mintProtectedEnv: (jobId: string) => Record<string, string>;
+      mintProtectedEnv: (jobId: string) => ProviderOperationEnvironmentInput;
     },
   ): ProviderSessionLaunchDecision {
     const pool = opts.pool ?? 'default';
@@ -654,7 +682,7 @@ export class LaunchOrchestrator {
     admission: AcceptedAdmission;
     pool: LaunchPool;
     committedSession?: ProviderSession;
-    mintProtectedEnv: (jobId: string) => Record<string, string>;
+    mintProtectedEnv: (jobId: string) => ProviderOperationEnvironmentInput;
   }): void {
     try {
       if (input.committedSession !== undefined) {
@@ -728,7 +756,7 @@ export class LaunchOrchestrator {
     request: ProviderRequest,
     admission: AcceptedAdmission,
     pool: LaunchPool,
-    protectedEnv?: Record<string, string>,
+    protectedEnv?: ProviderOperationEnvironmentInput,
   ): void {
     const { abortRegistry, launchAdmission } = this.deps;
     const signal = abortRegistry.getSignal(jobId);
@@ -807,7 +835,7 @@ export class LaunchOrchestrator {
     launchRecord: JobLaunch,
     admission: QueuedHandle,
     pool: LaunchPool,
-    protectedEnv: Readonly<Record<string, string>>,
+    protectedEnv: ProviderOperationEnvironmentInput,
   ): void {
     const { abortRegistry, launchAdmission } = this.deps;
     const jobId = launchRecord.jobId;
@@ -850,9 +878,7 @@ export class LaunchOrchestrator {
           sessionId,
           executionSignal,
           pool,
-          {
-            ...protectedEnv,
-          },
+          protectedEnv,
         );
         preserveOwnership = disposition === 'preserved';
         if (disposition === 'settled') permitAcquired = false;
@@ -951,7 +977,7 @@ export class LaunchOrchestrator {
     sessionId: string,
     signal: AbortSignal,
     pool: LaunchPool,
-    protectedEnv?: Record<string, string>,
+    protectedEnv?: ProviderOperationEnvironmentInput,
   ): Promise<'settled' | 'preserved'> {
     const session = this.deps.sessionManager.get(provider.name, sessionId);
     if (!session) {
@@ -992,11 +1018,12 @@ export class LaunchOrchestrator {
           }
         : {}),
     });
+    const operationEnvironment = providerOperationEnvironment(protectedEnv);
     const prepared = provider.prepareExecution({
       request: requestWithInject,
       persistedContinuity: continuity.value,
       baseEnv: this.deps.runtime.env.fullSnapshot(),
-      protectedEnv,
+      protectedEnv: operationEnvironment.env,
       platform: this.deps.runtime.env.platform(),
       storage: this.deps.runtime.storage,
     });
@@ -1020,7 +1047,8 @@ export class LaunchOrchestrator {
         pool,
         requestWithInject,
         continuity.value,
-        protectedEnv,
+        operationEnvironment,
+        initialVersion,
       );
       if (providerStream.kind === 'cancelled') return 'preserved';
       if (providerStream.kind === 'proxied') {
@@ -1245,7 +1273,11 @@ export class LaunchOrchestrator {
     pool: LaunchPool,
     requestForRoute: ProviderRequest,
     persistedContinuity: ProviderContinuityBlob | undefined,
-    protectedEnv: Record<string, string> | undefined,
+    operationEnvironment: Readonly<{
+      env: Readonly<Record<string, string>>;
+      childAuthorization?: ProviderOperationChildAuthorization;
+    }>,
+    sessionVersion: number,
   ): Promise<
     | Readonly<{ kind: 'local'; stream: AsyncIterable<ProviderEventBody> }>
     | Readonly<{ kind: 'proxied' }>
@@ -1255,23 +1287,26 @@ export class LaunchOrchestrator {
       const route = this.deps.appServerProxyRoute;
       if (signal.aborted) return { kind: 'cancelled' };
       if (route !== undefined) {
+        if (operationEnvironment.childAuthorization === undefined) {
+          throw new Error('Provider operation child authorization is unavailable for durable publication.');
+        }
         const activation = await route.activate(
           {
             jobId,
             operationId: this.deps.runtime.ids.uuid(),
+            jobLaunchEventSeq: readProviderOperationJobLaunchEventSeq(this.deps.progressStore.getDb(), jobId),
+            sessionId: requestForRoute.sessionId,
+            sessionVersion,
+            childAuthorization: operationEnvironment.childAuthorization,
             hostSpec: prepared.hostSpec,
             provider: provider.name,
             binding: provider.envelope,
             request: requestForRoute,
             persistedContinuity: persistedContinuity ?? null,
             baseEnv: this.deps.runtime.env.fullSnapshot(),
-            protectedEnv: protectedEnv ?? {},
+            protectedEnv: operationEnvironment.env,
             platform: this.deps.runtime.env.platform(),
           },
-          // The only moment this launcher still has `jobId`/`pool` in scope for a proxied operation: passed
-          // forward here rather than left for something external to call back in later. See
-          // `releaseProxiedOperation`'s own doc.
-          () => this.releaseProxiedOperation(jobId, pool),
           signal,
         );
         if (activation.kind === 'remote-executing') {
@@ -1281,7 +1316,7 @@ export class LaunchOrchestrator {
           // socket's `provider.event.v1` applier instead, which does not consult either set. Leaving the
           // entries in place would make a later `quiesceAppServerJobsForHandoff` believe this job's writes
           // are fenced when nothing here ever fences them, so drop them the instant local admission ownership
-          // moves to the proxy rather than waiting for `releaseProxiedOperation` at settlement.
+          // moves to the proxy rather than waiting for identity-addressed cleanup at settlement.
           this.appServerJobs.delete(jobId);
           this.appServerHandoffAborts.delete(jobId);
           return { kind: 'proxied' };

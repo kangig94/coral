@@ -5,6 +5,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import { providerHandoffCapsulePath } from '../../infra/path/index.js';
 import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import type { ProviderOperationRuntimeMeta } from '../../jobs/runtime-meta.js';
+import type { ProviderOperationCleanupIdentity } from '../../jobs/contracts/provider-operation-lifecycle.js';
 import {
   handoffOperationSetSchema,
   readHandoffCapsuleFile,
@@ -144,6 +145,7 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
   coordinatorIdentity: CoordinatorIdentity;
   /** Where executing operations are registered after adoption and where stop-and-reap reads live roots. */
   operationRegistry: Pick<LocalOperationRegistry, 'adopt' | 'operationsFor' | 'providerRootsFor'>;
+  cleanupIdentityFor(jobId: string): ProviderOperationCleanupIdentity;
   /** Reads the journal afresh when this successor later bequeaths the set again. */
   snapshotProviderOperations?: (proxyInstanceId: string) => readonly ProviderOperationKey[];
   /** Wired onto the redeemed proxy connection exactly as ordinary acquisition wires it onto a freshly opened
@@ -204,6 +206,7 @@ async function adoptRedeemedOperations(
   operations: readonly OperationIdentity[],
   db: Database,
   operationRegistry: Pick<LocalOperationRegistry, 'adopt'>,
+  cleanupIdentityFor: (jobId: string) => ProviderOperationCleanupIdentity,
 ): Promise<ReadonlySet<string>> {
   const adoptedJobIds = new Set<string>();
   for (const operation of operations) {
@@ -227,7 +230,11 @@ async function adoptRedeemedOperations(
     }
     if (record.phase !== 'executing') continue;
     const meta = providerOperationRuntimeMeta(record);
-    operationRegistry.adopt(meta, buildAdoptedOperationControl(proxyClient, operation), () => {});
+    operationRegistry.adopt(
+      meta,
+      buildAdoptedOperationControl(proxyClient, operation),
+      cleanupIdentityFor(operation.jobId),
+    );
     adoptedJobIds.add(operation.jobId);
   }
   return adoptedJobIds;
@@ -397,6 +404,7 @@ async function redeem(
       proxySession.opened.operations,
       db,
       deps.operationRegistry,
+      deps.cleanupIdentityFor,
     );
 
     const guardianIdentity: GuardianIdentity = {
@@ -528,6 +536,7 @@ export type CreateProviderProxySetInheritanceOptions = Readonly<{
   runtime: Runtime;
   identity: ProviderProxySetAcquisitionIdentity;
   operationRegistry: Pick<LocalOperationRegistry, 'adopt' | 'operationsFor' | 'providerRootsFor'>;
+  cleanupIdentityFor(jobId: string): ProviderOperationCleanupIdentity;
   snapshotProviderOperations?: (proxyInstanceId: string) => readonly ProviderOperationKey[];
   onProviderEvent?(): ProviderEventHandler;
   /** Where a successfully inherited set is folded in so it participates in this coordinator's own later
@@ -583,6 +592,7 @@ export function createProviderProxySetInheritance(
                 buildSetId: options.identity.buildSetId,
               },
               operationRegistry: options.operationRegistry,
+              cleanupIdentityFor: options.cleanupIdentityFor,
               snapshotProviderOperations: options.snapshotProviderOperations,
               ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
             },

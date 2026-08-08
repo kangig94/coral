@@ -4,6 +4,10 @@ import type { LocalOperationRegistryState } from '../../jobs/carrier-observation
 import type { ProviderOperationEventIdentity } from '../../jobs/provider-event.js';
 import type { ProviderOperationRuntimeMeta } from '../../jobs/runtime-meta.js';
 import type { ProviderStopCause } from '../../providers/contract.js';
+import type {
+  ProviderOperationCleanupIdentity,
+  ProviderOperationCleanupPort,
+} from '../../jobs/contracts/provider-operation-lifecycle.js';
 
 /**
  * The write half of `jobs/carrier-observation.ts`'s `LocalOperationRegistryState` (W2.3): the object nothing
@@ -25,7 +29,7 @@ interface RegistryEntry {
   readonly identity: ProviderOperationEventIdentity;
   readonly providerRoot: Readonly<{ pid: number; processStartedAtSeconds: number }>;
   readonly control: OperationStopControl;
-  readonly release: () => void;
+  readonly cleanup: ProviderOperationCleanupIdentity;
   readonly state: LocalOperationRegistryState;
   stopCause: ProviderStopCause | null;
 }
@@ -38,25 +42,27 @@ function registryKey(jobId: string, operationId: string): string {
  * One coordinator generation's live app-server operations, keyed exactly like the proxy ledger and the
  * `provider_operation.v1:<jobId>:<operationId>` meta row each entry is built from.
  *
- * `register` (private) takes the durable meta row itself rather than a hand-assembled identity, on purpose:
- * a meta row is the one thing both this session's live-activation caller (`activate`, which just wrote it)
- * and W2.5's future crash-recovery adoption (which would read it back from the store) equally have in hand.
- * W2.5 adds a second thin entry point — `adopt(meta, control, release)`, state `'adopted'` — calling this
- * same private builder instead of inventing a parallel structure. Not built here: recovery adoption of a live
- * proxied operation is explicitly out of this branch's scope.
+ * `register` (private) takes the durable meta row itself rather than a hand-assembled identity because both
+ * live activation and restart/handoff adoption have that same record in hand. `activate` and `adopt` remain
+ * thin entry points onto this one builder; only their local-state classification differs.
  */
 export class LocalOperationRegistry {
   private readonly entries = new Map<string, RegistryEntry>();
+  private cleanupPort: ProviderOperationCleanupPort = { release: () => undefined };
   // A job carries at most one live operation at a time, so a job id alone finds "whichever operation is
   // currently live for it" — the shape `stop()` needs, since the abort registry only ever knows a job id
   // (registration happens in `activateCommittedProviderLaunch`, before an operation id even exists — see
   // `jobs/shell/launch.ts`).
   private readonly liveJobIndex = new Map<string, string>();
 
+  connectCleanup(port: ProviderOperationCleanupPort): void {
+    this.cleanupPort = port;
+  }
+
   private register(
     meta: ProviderOperationRuntimeMeta,
     control: OperationStopControl,
-    release: () => void,
+    cleanup: ProviderOperationCleanupIdentity,
     state: LocalOperationRegistryState,
   ): void {
     const identity: ProviderOperationEventIdentity = {
@@ -70,18 +76,21 @@ export class LocalOperationRegistry {
       pid: meta.providerRootPid,
       processStartedAtSeconds: meta.providerRootProcessStartedAtSeconds,
     };
-    this.entries.set(key, { identity, providerRoot, control, release, state, stopCause: null });
+    this.entries.set(key, { identity, providerRoot, control, cleanup, state, stopCause: null });
     this.liveJobIndex.set(identity.jobId, key);
   }
 
   /**
    * Registers a live operation only after the activation ACK and runtime-started event commit together — see
-   * `ProviderOperationReconciler`, the only production caller. `release` is the launcher's own closure for
-   * letting go of the in-process bookkeeping (admission slot, abort registration, job pool entry) it built at
-   * the moment of delegation; this registry only ever calls it once, from `settled()`.
+   * `ProviderOperationReconciler`, the only production caller. The cleanup identity comes from the immutable
+   * job launch, so the same registration path remains available after coordinator restart.
    */
-  activate(meta: ProviderOperationRuntimeMeta, control: OperationStopControl, release: () => void): void {
-    this.register(meta, control, release, 'activated');
+  activate(
+    meta: ProviderOperationRuntimeMeta,
+    control: OperationStopControl,
+    cleanup: ProviderOperationCleanupIdentity,
+  ): void {
+    this.register(meta, control, cleanup, 'activated');
   }
 
   /**
@@ -92,17 +101,19 @@ export class LocalOperationRegistry {
    * caller already read back from the store — the same "meta row is what both a live activation and a later
    * adoption equally have in hand" contract this class's own header doc promises.
    *
-   * `release` is almost always a no-op: this coordinator never built any local admission/abort/pool
-   * bookkeeping for a job it did not launch, so there is nothing of its own to let go of when the operation
-   * later settles. It is still a parameter, not a hardcoded no-op, so a future caller with real local state to
-   * release is not blocked from supplying one.
+   * A generation that restored local admission state can resolve the same identity; one that did not has a
+   * natural no-op at the jobs-layer cleanup port.
    */
-  adopt(meta: ProviderOperationRuntimeMeta, control: OperationStopControl, release: () => void): void {
-    this.register(meta, control, release, 'adopted');
+  adopt(
+    meta: ProviderOperationRuntimeMeta,
+    control: OperationStopControl,
+    cleanup: ProviderOperationCleanupIdentity,
+  ): void {
+    this.register(meta, control, cleanup, 'adopted');
   }
 
   /**
-   * Ends this coordinator's live tracking of one operation and runs its local `release()` once. Remote and
+   * Ends this coordinator's live tracking of one operation and addresses local cleanup once. Remote and
    * guardian release stay with the durable settlement reconciler, so this method retains no dead control
    * client after the terminal commit.
    *
@@ -115,7 +126,7 @@ export class LocalOperationRegistry {
     if (entry === undefined) return;
     this.entries.delete(key);
     if (this.liveJobIndex.get(identity.jobId) === key) this.liveJobIndex.delete(identity.jobId);
-    entry.release();
+    this.cleanupPort.release(entry.cleanup);
   }
 
   /**

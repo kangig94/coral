@@ -65,11 +65,24 @@ describe('provider operation journal', () => {
         expect(decodeProviderOperationRecord(encodeProviderOperationRecord(record))).toEqual(record);
       }
 
+      const pending = providerOperationRecord('prepare-pending');
+      if (pending.phase !== 'prepare-pending') throw new Error('expected prepare-pending fixture');
       const oversized = providerOperationRecordSchema.parse({
-        ...providerOperationRecord('guardian-activation-pending'),
-        jointContainmentReceipt: 'x'.repeat(64 * 1024),
+        ...pending,
+        prepareSource: {
+          ...pending.prepareSource,
+          childAuthorization: {
+            ...pending.prepareSource.childAuthorization,
+            principalWire: {
+              subject: 'agent',
+              binding: { kind: 'project', root: `/${'x'.repeat(65_000)}` },
+              attenuatedCaps: ['liveness'],
+            },
+          },
+        },
       });
       expect(() => encodeProviderOperationRecord(oversized)).toThrow(/exceeding the 65536-byte limit/);
+      expect(() => decodeProviderOperationRecord(JSON.stringify(oversized))).toThrow(/exceeding the 65536-byte limit/);
 
       const invalid = {
         ...providerOperationRecord('prepare-pending'),

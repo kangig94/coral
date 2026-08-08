@@ -373,6 +373,9 @@ async function launchThroughRoute(
   const authority = authorityForClient(proxyClient);
   let activeAuthority = authority;
   const registry = new LocalOperationRegistry();
+  const operationId = randomUUID();
+  const jobId = randomUUID();
+  const sessionId = randomUUID();
   const runtimeStarted: unknown[] = [];
   const commit: JobProgressStore['commit'] = (callback) => {
     const pending: unknown[] = [];
@@ -394,9 +397,38 @@ async function launchThroughRoute(
   };
   const time = createRealTimePort();
   const reconciler = new ProviderOperationReconciler({
-    getProgressStore: () => ({ getDb: () => db, commit, readStatus: () => null }),
+    getProgressStore: () => ({
+      getDb: () => db,
+      commit,
+      readStatus: () => ({
+        jobId,
+        owner: { kind: 'provider-session', id: sessionId },
+        sessionId,
+        provider: PREPARED.provider,
+        projectRoot: '/project',
+        backendNamespace: 'tests',
+        jobKind: 'provider',
+        phase: 'running',
+        updatedAt: new Date(WALL_CLOCK_EPOCH_MS).toISOString(),
+      }),
+      readLaunchProjection: () => ({
+        jobId,
+        owner: { kind: 'provider-session', id: sessionId },
+        sessionId,
+        provider: PREPARED.provider,
+        projectRoot: '/project',
+        backendNamespace: 'tests',
+        pool: 'default',
+        enqueueSequence: 1,
+        createdAt: new Date(WALL_CLOCK_EPOCH_MS).toISOString(),
+        jobKind: 'provider',
+        providerAction: 'exec',
+        request: PREPARED.request,
+      }),
+    }),
     authorityFor: () => activeAuthority,
     registry,
+    materializePrepare: () => PREPARED,
     backendNamespace: 'tests',
     time,
   });
@@ -407,14 +439,15 @@ async function launchThroughRoute(
     reconciler,
     now: () => time.now(),
   });
-  const operationId = randomUUID();
-  const jobId = randomUUID();
   const localExecution = vi.fn();
 
   const placementPromise = route.activate(
     {
       jobId,
       operationId,
+      jobLaunchEventSeq: 1,
+      sessionId,
+      sessionVersion: 1,
       hostSpec: {
         provider: 'codex',
         command: 'codex',
@@ -429,8 +462,16 @@ async function launchThroughRoute(
       baseEnv: PREPARED.baseEnv,
       protectedEnv: PREPARED.protectedEnv,
       platform: PREPARED.platform,
+      childAuthorization: {
+        principalWire: {
+          subject: 'agent',
+          binding: { kind: 'project', root: '/project' },
+          attenuatedCaps: ['liveness', 'jobs:read'],
+        },
+        namespace: 'tests',
+        expiresAtMs: WALL_CLOCK_EPOCH_MS + 60_000,
+      },
     },
-    () => {},
     new AbortController().signal,
   );
   const placement = options.leavePlacementPending === true ? undefined : await placementPromise;

@@ -565,7 +565,7 @@ describe('assertRecordedSetAgreement', () => {
       committedThroughProviderSeq: 0,
     };
 
-    registry.activate(meta, { stop: async () => {} }, () => {});
+    registry.activate(meta, { stop: async () => {} }, { jobId: meta.jobId, pool: 'default' });
     // The operation's terminal commits and the registry forgets it — concurrently, from teardown's own view,
     // with the enforcer that still recorded `ROOT_A` (a released membership does not remove the enforcer's own
     // recorded root — only teardown itself may conclude absence).

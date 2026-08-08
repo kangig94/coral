@@ -29,6 +29,10 @@ import type { BackendDefaultsPlan } from './defaults.js';
 import { createStoreServicesRef, type StoreServicesRef } from './store-services-ref.js';
 import { ChildPrincipalRegistry } from '../child-principal-registry.js';
 import { readProviderOperations } from '../../store/provider-operation-journal.js';
+import {
+  providerOperationCleanupIdentity,
+  readProviderOperationJobLaunch,
+} from '../../jobs/provider-operation-state.js';
 
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
 const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
@@ -295,6 +299,8 @@ export function createCoordinatorWorld(
       identity: { instanceId, buildSetId, flavor },
       snapshotProviderOperations,
       operationRegistry,
+      cleanupIdentityFor: (jobId) =>
+        providerOperationCleanupIdentity(readProviderOperationJobLaunch(storeServicesRef.get().progressStore, jobId)),
       ...(options.buildProviderEventHandler === undefined
         ? {}
         : { onProviderEvent: options.buildProviderEventHandler }),

@@ -8,6 +8,7 @@ import {
   activateProviderOperation,
   authorizeProviderOperation,
   prepareProviderOperation,
+  providerOperationPrepareAttempt,
   type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
@@ -445,7 +446,7 @@ describe('provider proxy activation against a real guardian', () => {
       setIdentity: set.setIdentity,
       mutationRpcTimeoutMs: 5_000,
     };
-    const prepared = await prepareProviderOperation(deps, operation, PREPARED);
+    const prepared = await prepareProviderOperation(deps, providerOperationPrepareAttempt(deps, operation, PREPARED));
     if (prepared.state !== 'pending-activation') throw new Error('expected a prepared operation');
     const authorized = await authorizeProviderOperation(deps, operation, {
       reservation: prepared.reservation,

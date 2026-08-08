@@ -57,6 +57,7 @@ const unusedDb = {} as Database;
 // immediately), so a signal that never aborts exercises exactly the same path the never-aborted case in
 // production takes; the abort/deadline-checkpoint behavior itself is covered separately.
 const neverAborts = new AbortController().signal;
+const cleanupIdentityFor = (jobId: string) => ({ jobId, pool: 'curate' as const });
 
 const GUARDIAN_INSTANCE_ID = randomUUID();
 const REAPER_INSTANCE_ID = randomUUID();
@@ -134,6 +135,7 @@ function executingRecord(meta: ProviderOperationRuntimeMeta): Extract<ProviderOp
         kind: meta.containmentKind,
       },
     },
+    prepareAttemptNumber: 1,
     prepareAttemptKey: 'b'.repeat(64),
     phase: 'executing',
     reservation: meta.reservation,
@@ -143,7 +145,19 @@ function executingRecord(meta: ProviderOperationRuntimeMeta): Extract<ProviderOp
     },
     jointContainmentReceipt: meta.jointContainmentReceipt,
     jointActivationReceipt: 'activation-receipt',
-    activationAck: { state: 'executing', committedThroughProviderSeq: 0 },
+    activationAck: {
+      state: 'executing',
+      activationFingerprint: 'c'.repeat(64),
+      startedAt: '2026-08-09T12:34:56.000Z',
+      hostRef: {
+        provider: 'codex',
+        fingerprint: meta.hostFingerprint,
+        instanceId: 'host-instance-1',
+        leaseMode: 'job-exclusive',
+        ownerJobId: meta.jobId,
+      },
+      committedThroughProviderSeq: 0,
+    },
     committedThroughProviderSeq: meta.committedThroughProviderSeq,
     revision: 0,
     retryNotBeforeMs: 0,
@@ -303,6 +317,7 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
+        cleanupIdentityFor,
       },
       neverAborts,
     );
@@ -322,6 +337,7 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
+        cleanupIdentityFor,
       },
       neverAborts,
     );
@@ -367,6 +383,7 @@ describe('attemptProviderProxySetInheritance', () => {
           operationsFor: () => [],
           providerRootsFor: () => [],
         },
+        cleanupIdentityFor,
       },
       neverAborts,
     );
@@ -417,7 +434,11 @@ describe('attemptProviderProxySetInheritance', () => {
       locator({ jobId, operationId, committedThroughProviderSeq: jobId === loc.jobId ? 5 : 9 }),
     );
 
-    const registered: { jobId: string; committedThroughProviderSeq: number }[] = [];
+    const registered: {
+      jobId: string;
+      committedThroughProviderSeq: number;
+      cleanup: { jobId: string; pool: 'default' | 'discuss' | 'curate' };
+    }[] = [];
     const outcome = await attemptProviderProxySetInheritance(
       loc,
       unusedDb,
@@ -425,11 +446,16 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: {
-          adopt: (meta) =>
-            registered.push({ jobId: meta.jobId, committedThroughProviderSeq: meta.committedThroughProviderSeq }),
+          adopt: (meta, _control, cleanup) =>
+            registered.push({
+              jobId: meta.jobId,
+              committedThroughProviderSeq: meta.committedThroughProviderSeq,
+              cleanup,
+            }),
           operationsFor: () => [],
           providerRootsFor: () => [],
         },
+        cleanupIdentityFor,
       },
       neverAborts,
     );
@@ -441,6 +467,7 @@ describe('attemptProviderProxySetInheritance', () => {
     expect([...outcome.adoptedJobIds].sort()).toEqual([mine.jobId, other.jobId].sort());
     expect(registered).toHaveLength(2);
     expect(registered.find((r) => r.jobId === loc.jobId)?.committedThroughProviderSeq).toBe(5);
+    expect(registered.find((r) => r.jobId === loc.jobId)?.cleanup).toEqual({ jobId: loc.jobId, pool: 'curate' });
 
     const methodOrder = calls.map((c) => c.method);
     expect(methodOrder.indexOf('guardian.handoff-redeem.v1')).toBeLessThan(
@@ -472,6 +499,7 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: { adopt, operationsFor: () => [], providerRootsFor: () => [] },
+        cleanupIdentityFor,
       },
       neverAborts,
     );
@@ -514,6 +542,7 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
+        cleanupIdentityFor,
       },
       neverAborts,
     );
@@ -542,6 +571,7 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: { adopt, operationsFor: () => [], providerRootsFor: () => [] },
+        cleanupIdentityFor,
       },
       neverAborts,
     );
@@ -576,6 +606,7 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
+        cleanupIdentityFor,
       },
       neverAborts,
     );
@@ -607,6 +638,7 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
+        cleanupIdentityFor,
       },
       neverAborts,
     );
@@ -638,6 +670,7 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
+        cleanupIdentityFor,
       },
       controller.signal,
     );
@@ -672,6 +705,7 @@ describe('attemptProviderProxySetInheritance', () => {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
         operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
+        cleanupIdentityFor,
       },
       controller.signal,
     );
@@ -693,6 +727,7 @@ describe('createProviderProxySetInheritance', () => {
       runtime,
       identity,
       operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
+      cleanupIdentityFor,
       registerInheritedSet,
     });
     const outcome = await inheritance.inheritProviderProxySet(locator(), unusedDb, neverAborts);
@@ -710,6 +745,7 @@ describe('createProviderProxySetInheritance', () => {
       runtime,
       identity,
       operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
+      cleanupIdentityFor,
       registerInheritedSet,
     });
     const outcome = await inheritance.inheritProviderProxySet(locator(), unusedDb, neverAborts);
@@ -731,6 +767,7 @@ describe('createProviderProxySetInheritance', () => {
       runtime,
       identity,
       operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
+      cleanupIdentityFor,
       registerInheritedSet,
     });
     const outcome = await inheritance.inheritProviderProxySet(loc, unusedDb, neverAborts);

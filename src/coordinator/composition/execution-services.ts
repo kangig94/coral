@@ -16,6 +16,10 @@ import {
 import { backendLog } from '../../infra/backend-log.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
 import type { ProviderProxySetLocator } from '../services/provider-proxy-set-inheritance.js';
+import { ProviderOperationCleanupRouter } from '../../jobs/provider-operation-cleanup.js';
+import { readProviderOperationJobLaunch } from '../../jobs/provider-operation-state.js';
+import { readProjectionProviderSession } from '../../sessions/projections.js';
+import { materializeProviderOperationPrepare } from '../services/provider-operation-prepare.js';
 
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
@@ -65,6 +69,8 @@ export function createExecutionServices({
 } {
   const services = new Map<string, ProjectRequestPort>();
   const storeServicesRef = world.storeServicesRef;
+  const providerOperationCleanup = new ProviderOperationCleanupRouter();
+  world.operationRegistry.connectCleanup(providerOperationCleanup);
   const getProgressStore = () => storeServicesRef.get().progressStore;
   const authorityFor = (record: ProviderOperationRecord) => {
     const set = world.providerProxyAuthority
@@ -86,6 +92,18 @@ export function createExecutionServices({
       return outcome.kind === 'inherited' ? outcome.set : null;
     },
     registry: world.operationRegistry,
+    materializePrepare: (record) =>
+      materializeProviderOperationPrepare(
+        {
+          runtime,
+          providerRegistry: world.providerRegistry,
+          childPrincipalRegistry: world.childPrincipalRegistry,
+          readJobLaunch: (jobId, eventSeq) => readProviderOperationJobLaunch(getProgressStore(), jobId, eventSeq),
+          readSession: (sessionId) => readProjectionProviderSession(getProgressStore().getDb(), sessionId),
+        },
+        record.operation,
+        record.prepareSource,
+      ),
     backendNamespace,
     time: runtime.time,
     onError: (message) => backendLog.warn(message),
@@ -126,6 +144,7 @@ export function createExecutionServices({
         now: () => runtime.time.now(),
       }),
       operations: { stop: (jobId, cause) => world.operationRegistry.stop(jobId, cause) },
+      providerOperationCleanup,
       observeCarriers: createObserveCarriers(
         {
           getDb: () => getProgressStore().getDb(),

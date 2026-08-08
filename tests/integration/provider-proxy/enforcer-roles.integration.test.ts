@@ -2123,7 +2123,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
       jointContainmentReceipt: 'joint-1',
       committedThroughProviderSeq: 0,
     };
-    operationRegistry.adopt(meta, { stop: async () => {} }, () => {});
+    operationRegistry.adopt(meta, { stop: async () => {} }, { jobId: meta.jobId, pool: 'default' });
 
     const authority = createProviderProxySetAuthority({
       proxyInstanceId: set.proxyIdentity.proxyInstanceId,

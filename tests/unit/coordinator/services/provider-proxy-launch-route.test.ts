@@ -9,6 +9,9 @@ import { createAppServerProxyRoute } from '#src/coordinator/services/provider-pr
 const request: AppServerProxyRouteRequest = {
   jobId: randomUUID(),
   operationId: randomUUID(),
+  jobLaunchEventSeq: 41,
+  sessionId: randomUUID(),
+  sessionVersion: 3,
   hostSpec: {
     provider: 'codex',
     command: 'codex',
@@ -30,6 +33,15 @@ const request: AppServerProxyRouteRequest = {
   baseEnv: { PATH: '/usr/bin' },
   protectedEnv: {},
   platform: 'linux',
+  childAuthorization: {
+    principalWire: {
+      subject: 'agent',
+      binding: { kind: 'project', root: '/workspace' },
+      attenuatedCaps: ['liveness', 'jobs:read'],
+    },
+    namespace: 'tests',
+    expiresAtMs: 60_000,
+  },
 };
 
 function authority(): DurableProviderProxyOperationAuthority {
@@ -79,7 +91,7 @@ describe('createAppServerProxyRoute', () => {
       now: () => 10,
     });
 
-    await expect(route.activate(request, vi.fn(), new AbortController().signal)).resolves.toMatchObject({
+    await expect(route.activate(request, new AbortController().signal)).resolves.toMatchObject({
       kind: 'local-authorized',
     });
     expect(begin).not.toHaveBeenCalled();
@@ -96,12 +108,12 @@ describe('createAppServerProxyRoute', () => {
     const controller = new AbortController();
     controller.abort();
 
-    await expect(route.activate(request, vi.fn(), controller.signal)).resolves.toEqual({ kind: 'cancelled' });
+    await expect(route.activate(request, controller.signal)).resolves.toEqual({ kind: 'cancelled' });
     expect(routeAppServerOperation).not.toHaveBeenCalled();
     expect(begin).not.toHaveBeenCalled();
   });
 
-  it('hands a prepare-pending row and the exact prepared envelope to the reconciler', async () => {
+  it('hands the reconciler a source-complete row and its exact journaled attempt', async () => {
     const set = authority();
     const begin = vi.fn(async () => ({ kind: 'remote-executing' as const }));
     const route = createAppServerProxyRoute({
@@ -109,18 +121,22 @@ describe('createAppServerProxyRoute', () => {
       reconciler: { begin },
       now: () => 10,
     });
-    const release = vi.fn();
-
-    await expect(route.activate(request, release, new AbortController().signal)).resolves.toEqual({
+    await expect(route.activate(request, new AbortController().signal)).resolves.toEqual({
       kind: 'remote-executing',
     });
     expect(begin).toHaveBeenCalledWith(
       expect.objectContaining({
         authority: set,
-        release,
-        request,
         record: expect.objectContaining({
           phase: 'prepare-pending',
+          prepareAttemptNumber: 1,
+          prepareSource: {
+            jobLaunchEventSeq: request.jobLaunchEventSeq,
+            sessionId: request.sessionId,
+            sessionVersion: request.sessionVersion,
+            platform: request.platform,
+            childAuthorization: request.childAuthorization,
+          },
           revision: 0,
           operation: expect.objectContaining({
             jobId: request.jobId,
@@ -129,7 +145,13 @@ describe('createAppServerProxyRoute', () => {
             buildSetId: set.setIdentity.buildSetId,
           }),
         }),
-        prepared: expect.objectContaining({ version: 1, provider: request.provider }),
+        attempt: expect.objectContaining({
+          request: expect.objectContaining({
+            prepareAttemptNumber: 1,
+            operation: expect.objectContaining({ jobId: request.jobId, operationId: request.operationId }),
+            prepared: expect.objectContaining({ version: 1, provider: request.provider }),
+          }),
+        }),
       }),
     );
   });
@@ -144,7 +166,7 @@ describe('createAppServerProxyRoute', () => {
       now: () => 10,
     });
 
-    await expect(route.activate(request, vi.fn(), new AbortController().signal)).resolves.toMatchObject({
+    await expect(route.activate(request, new AbortController().signal)).resolves.toMatchObject({
       kind: 'failed',
     });
     expect(begin).not.toHaveBeenCalled();

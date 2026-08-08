@@ -20,8 +20,8 @@ import type { ProviderBindingCatalog } from '#src/providers/catalog.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import type { ProviderOperationEventIdentity } from '#src/jobs/provider-event.js';
 import { providerOperationRuntimeMetaKey } from '#src/jobs/runtime-meta.js';
+import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
-import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import {
   createProviderEventHandler,
   createStoreProviderEventEffectPort,
@@ -162,8 +162,10 @@ function seedOperation(): { jobId: string; sessionId: string; identity: Provider
     .run(providerOperationRuntimeMetaKey(jobId, OPERATION_ID), JSON.stringify(compatibilityMeta));
   insertProviderOperation(
     progressStore.getDb(),
-    providerOperationRecordSchema.parse({
-      version: 1,
+    // The shared builder rather than a second hand-assembled record: this file already drifted from the
+    // schema once by carrying its own copy, and the only thing it genuinely needs to differ on is agreeing
+    // with the compatibility row and set locator it just wrote.
+    providerOperationRecord('executing', {
       operation: identity,
       locator: {
         hostFingerprint: compatibilityMeta.hostFingerprint,
@@ -192,21 +194,6 @@ function seedOperation(): { jobId: string; sessionId: string; identity: Provider
           kind: compatibilityMeta.containmentKind,
         },
       },
-      prepareAttemptKey: 'b'.repeat(64),
-      phase: 'executing',
-      reservation,
-      providerRoot: {
-        pid: compatibilityMeta.providerRootPid,
-        processStartedAtSeconds: compatibilityMeta.providerRootProcessStartedAtSeconds,
-      },
-      jointContainmentReceipt: compatibilityMeta.jointContainmentReceipt,
-      jointActivationReceipt: 'activation-receipt-1',
-      activationAck: { state: 'executing', committedThroughProviderSeq: 0 },
-      committedThroughProviderSeq: 0,
-      revision: 0,
-      retryNotBeforeMs: 0,
-      retryCount: 0,
-      lastError: null,
     }),
   );
 

@@ -1,4 +1,4 @@
-import type { OperationIdentity, ProxyPreparedAppServerOperation } from '../../../provider-proxy/protocol.js';
+import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 import {
   activateProviderOperation,
   authorizeProviderOperation,
@@ -14,6 +14,7 @@ import {
   type OperationControlClient,
   type PrepareProviderOperationResult,
   type ProviderProxyOperationActivationDeps,
+  type ProviderOperationPrepareAttempt,
   type ProviderProxySetIdentity,
   type SettleProviderOperationResult,
 } from '../../services/provider-proxy-operation-activation.js';
@@ -25,10 +26,7 @@ export interface ProviderProxyOperationAuthority extends ProviderProxySetAuthori
 }
 
 export interface DurableProviderProxyOperationAuthority extends ProviderProxyOperationAuthority {
-  prepareOperation(
-    operation: OperationIdentity,
-    prepared: ProxyPreparedAppServerOperation,
-  ): Promise<PrepareProviderOperationResult>;
+  prepareOperation(attempt: ProviderOperationPrepareAttempt): Promise<PrepareProviderOperationResult>;
   inspectOperation(operation: OperationIdentity, prepareAttemptKey: string): Promise<InspectProviderOperationResult>;
   authorizeOperation(
     operation: OperationIdentity,
@@ -97,7 +95,7 @@ export function createProviderProxyOperationAuthority(deps: {
   return {
     ...deps.base,
     setIdentity: deps.setIdentity,
-    prepareOperation: (operation, prepared) => prepareProviderOperation(activationDeps, operation, prepared),
+    prepareOperation: (attempt) => prepareProviderOperation(activationDeps, attempt),
     inspectOperation: (operation, prepareAttemptKey) =>
       inspectProviderOperation(activationDeps, operation, prepareAttemptKey),
     authorizeOperation: (operation, evidence) => authorizeProviderOperation(activationDeps, operation, evidence),

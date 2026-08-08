@@ -36,6 +36,7 @@ import { toProviderRequest } from '../../../jobs/provider-request.js';
 import type { InterruptedAppServerReason } from '../../../jobs/reconcile/interrupted-reason.js';
 import { CHILD_PRINCIPAL_CAPABILITIES, type ChildPrincipalRegistry } from '../../child-principal-registry.js';
 import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../../security/child-principal-env.js';
+import type { ProviderOperationProtectedEnvironment } from '../../../jobs/contracts/provider-operation-lifecycle.js';
 import type { Principal } from '../../../security/principal.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
 import { snapshotProviderRecoveryAuthority } from './authority-snapshot.js';
@@ -101,7 +102,10 @@ export class RecoveryService {
     };
   }
 
-  private queuedRecoveryChildEnv(session: ProviderRecoverySession, jobId: string): Readonly<Record<string, string>> {
+  private queuedRecoveryChildEnv(
+    session: ProviderRecoverySession,
+    jobId: string,
+  ): ProviderOperationProtectedEnvironment {
     const childCredential = this.deps.childPrincipalRegistry.register({
       issuer: 'job-recovery',
       parentPrincipal: this.deps.parentPrincipal,
@@ -111,11 +115,14 @@ export class RecoveryService {
       nowMs: this.deps.runtime.time.now(),
       childCaps: CHILD_PRINCIPAL_CAPABILITIES,
     });
-    return Object.freeze({
-      CORAL_JOB_ID: jobId,
-      CORAL_SESSION_ID: session.sessionId,
-      [CORAL_CHILD_PRINCIPAL_HANDLE]: childCredential.handle,
-    });
+    return {
+      env: Object.freeze({
+        CORAL_JOB_ID: jobId,
+        CORAL_SESSION_ID: session.sessionId,
+        [CORAL_CHILD_PRINCIPAL_HANDLE]: childCredential.handle,
+      }),
+      childAuthorization: childCredential.authorization,
+    };
   }
 
   private async readProviderSession(launchRecord: JobLaunch): Promise<

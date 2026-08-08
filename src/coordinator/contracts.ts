@@ -23,6 +23,7 @@ import type { WorkflowCommand } from '../workflow/input.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { ChildPrincipalRegistry } from './child-principal-registry.js';
 import type { AppServerProxyRoute } from '../jobs/contracts/app-server-proxy-route.js';
+import type { ProviderOperationCleanupRegistrar } from '../jobs/contracts/provider-operation-lifecycle.js';
 
 interface CoordinatorSessionOps {
   start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
@@ -84,6 +85,7 @@ export type ExecutionServiceDeps = {
   /** The registry's abort-side capability (W2.3) — see `LaunchOrchestratorDeps.operations` in
    *  `jobs/shell/launch.ts` for the full contract. Optional for the same reason `appServerProxyRoute` is. */
   operations?: { stop(jobId: string, cause: ProviderStopCause): void };
+  providerOperationCleanup?: ProviderOperationCleanupRegistrar;
   /**
    * Reports what is carrying each still-pending job, local-registry classification only. Optional because a
    * wait works without it — see `WaitCoordinatorDeps.observeCarriers` in `jobs/shell/wait.ts`.

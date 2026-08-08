@@ -104,6 +104,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       ...(deps.appServerProxyRoute === undefined ? {} : { appServerProxyRoute: deps.appServerProxyRoute }),
       ...(deps.operations === undefined ? {} : { operations: deps.operations }),
     });
+    deps.providerOperationCleanup?.register(this.launchOrchestrator);
     const waitCoordinator = new WaitCoordinator({
       sessionManager: this.sessionManager,
       launchQueue: deps.launchCoordinator,

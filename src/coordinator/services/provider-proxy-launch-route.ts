@@ -17,7 +17,7 @@ export function createAppServerProxyRoute(deps: {
   readonly now: () => number;
 }): AppServerProxyRoute {
   return {
-    async activate(request: AppServerProxyRouteRequest, release: () => void, signal: AbortSignal) {
+    async activate(request: AppServerProxyRouteRequest, signal: AbortSignal) {
       if (signal.aborted) return { kind: 'cancelled' };
       const authority = deps.hostManager.routeAppServerOperation(request.hostSpec);
       if (authority === null) {
@@ -46,13 +46,22 @@ export function createAppServerProxyRoute(deps: {
         protectedEnv: request.protectedEnv,
         platform: request.platform,
       });
-      const { prepareAttemptKey } = providerOperationPrepareAttempt(authority, operation, prepared);
+      const prepareAttemptNumber = 1;
+      const attempt = providerOperationPrepareAttempt(authority, operation, prepared, prepareAttemptNumber);
       const record = providerOperationRecordSchema.parse({
         version: 1,
         operation,
         locator: providerOperationSetLocator(authority.setIdentity),
-        prepareAttemptKey,
+        prepareAttemptNumber,
+        prepareAttemptKey: attempt.prepareAttemptKey,
         phase: 'prepare-pending',
+        prepareSource: {
+          jobLaunchEventSeq: request.jobLaunchEventSeq,
+          sessionId: request.sessionId,
+          sessionVersion: request.sessionVersion,
+          platform: request.platform,
+          childAuthorization: request.childAuthorization,
+        },
         revision: 0,
         retryNotBeforeMs: deps.now(),
         retryCount: 0,
@@ -60,7 +69,7 @@ export function createAppServerProxyRoute(deps: {
       });
       if (record.phase !== 'prepare-pending') throw new Error('Prepare-pending journal record failed validation.');
 
-      return deps.reconciler.begin({ record, prepared, request, release, authority });
+      return deps.reconciler.begin({ record, attempt, authority });
     },
   };
 }

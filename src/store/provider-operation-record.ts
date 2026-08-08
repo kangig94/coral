@@ -2,6 +2,8 @@ import { isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
 
+import { principalWireSchema } from '../security/principal-wire.js';
+
 const canonicalUuidSchema = z
   .string()
   .length(36)
@@ -17,8 +19,9 @@ const canonicalEndpointSchema = z
   .refine((value) => isAbsolute(value) && normalize(value) === value, 'endpoint must be an absolute canonical path')
   .describe('absolute normalized filesystem path');
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
-const receiptSchema = z.string().min(1);
+const receiptSchema = z.string().min(1).max(4096);
 const MAX_PROVIDER_OPERATION_RECORD_BYTES = 64 * 1024;
+const MAX_PRINCIPAL_WIRE_BYTES = 64 * 1024;
 
 export const providerOperationIdentitySchema = z
   .object({
@@ -78,7 +81,55 @@ const providerRootSchema = z
 export const providerOperationActivationAckSchema = z
   .object({
     state: z.literal('executing'),
+    activationFingerprint: fingerprintSchema,
+    startedAt: z.string().datetime(),
+    hostRef: z.discriminatedUnion('leaseMode', [
+      z
+        .object({
+          provider: z.string().min(1).max(128),
+          fingerprint: fingerprintSchema,
+          instanceId: z.string().min(1).max(1024),
+          leaseMode: z.literal('shared'),
+        })
+        .strict(),
+      z
+        .object({
+          provider: z.string().min(1).max(128),
+          fingerprint: fingerprintSchema,
+          instanceId: z.string().min(1).max(1024),
+          leaseMode: z.literal('job-exclusive'),
+          ownerJobId: canonicalUuidSchema,
+        })
+        .strict(),
+    ]),
     committedThroughProviderSeq: nonNegativeSafeIntegerSchema,
+  })
+  .strict();
+
+const childAuthorizationSchema = z
+  .object({
+    principalWire: principalWireSchema,
+    namespace: z.string().min(1).max(1024),
+    expiresAtMs: nonNegativeSafeIntegerSchema,
+  })
+  .strict()
+  .superRefine((authorization, context) => {
+    if (Buffer.byteLength(JSON.stringify(authorization.principalWire), 'utf8') > MAX_PRINCIPAL_WIRE_BYTES) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['principalWire'],
+        message: `principal wire exceeds the ${MAX_PRINCIPAL_WIRE_BYTES}-byte limit`,
+      });
+    }
+  });
+
+export const providerOperationPrepareSourceSchema = z
+  .object({
+    jobLaunchEventSeq: nonNegativeSafeIntegerSchema,
+    sessionId: canonicalUuidSchema,
+    sessionVersion: z.number().int().positive().safe(),
+    platform: z.string().min(1).max(64),
+    childAuthorization: childAuthorizationSchema,
   })
   .strict();
 
@@ -95,6 +146,7 @@ const commonFields = {
   version: z.literal(1),
   operation: providerOperationIdentitySchema,
   locator: providerOperationSetLocatorSchema,
+  prepareAttemptNumber: z.number().int().positive().safe(),
   prepareAttemptKey: fingerprintSchema,
   revision: nonNegativeSafeIntegerSchema,
   retryNotBeforeMs: nonNegativeSafeIntegerSchema,
@@ -123,6 +175,7 @@ const preparePendingSchema = z
   .object({
     ...commonFields,
     phase: z.literal('prepare-pending'),
+    prepareSource: providerOperationPrepareSourceSchema,
   })
   .strict();
 
@@ -153,7 +206,6 @@ const executingSchema = z
 const prestartCleanupPendingSchema = z
   .object({
     ...commonFields,
-    reservation: canonicalUuidSchema,
     phase: z.literal('prestart-cleanup-pending'),
     cleanupIntent: z.literal('release-never-started'),
   })
@@ -205,6 +257,27 @@ export const providerOperationRecordSchema = z
         message: 'provider watermark cannot precede the activation acknowledgement',
       });
     }
+    if (
+      (record.phase === 'executing' || record.phase === 'settlement-pending') &&
+      record.activationAck.hostRef.fingerprint !== record.locator.hostFingerprint
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['activationAck', 'hostRef', 'fingerprint'],
+        message: 'activation host fingerprint must equal the durable locator',
+      });
+    }
+    if (
+      (record.phase === 'executing' || record.phase === 'settlement-pending') &&
+      record.activationAck.hostRef.leaseMode === 'job-exclusive' &&
+      record.activationAck.hostRef.ownerJobId !== record.operation.jobId
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['activationAck', 'hostRef', 'ownerJobId'],
+        message: 'job-exclusive activation host must belong to the operation job',
+      });
+    }
     if (record.phase === 'settlement-pending' && record.terminalProviderSeq !== record.committedThroughProviderSeq) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -218,6 +291,7 @@ export const providerOperationRecordSchema = z
   );
 
 export type ProviderOperationIdentity = Readonly<z.infer<typeof providerOperationIdentitySchema>>;
+export type ProviderOperationPrepareSource = Readonly<z.infer<typeof providerOperationPrepareSourceSchema>>;
 export type ProviderOperationActivationAck = Readonly<z.infer<typeof providerOperationActivationAckSchema>>;
 export type ProviderOperationRecord = Readonly<z.infer<typeof providerOperationRecordSchema>>;
 export type ProviderOperationPhase = ProviderOperationRecord['phase'];

@@ -1,13 +1,14 @@
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
-import { nowIsoString } from '../../infra/time.js';
-import type {
-  AppServerProxyPlacementResult,
-  AppServerProxyRouteRequest,
-} from '../../jobs/contracts/app-server-proxy-route.js';
+import type { AppServerProxyPlacementResult } from '../../jobs/contracts/app-server-proxy-route.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { buildJobEventRefs } from '../../jobs/refs.js';
 import { deleteProviderOperationRuntimeMeta } from '../../jobs/runtime-meta-store.js';
 import type { ProxyPreparedAppServerOperation } from '../../provider-proxy/protocol.js';
+import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
+import {
+  providerOperationCleanupIdentity,
+  readProviderOperationJobLaunch,
+} from '../../jobs/provider-operation-state.js';
 import {
   compareAndSwapProviderOperation,
   deleteProviderOperation,
@@ -28,7 +29,9 @@ import {
   providerOperationErrorCode,
   providerOperationErrorIsAmbiguous,
   providerOperationErrorReason,
+  providerOperationPrepareAttempt,
   providerOperationRuntimeMeta,
+  type ProviderOperationPrepareAttempt,
   writeProviderOperationCompatibilityMeta,
 } from './provider-proxy-operation-activation.js';
 
@@ -39,7 +42,12 @@ export type ProviderOperationReconciliationEvidence =
       activationAck: ProviderOperationActivationAck;
       localRuntimeCommitCompleted: boolean;
     }>
-  | Readonly<{ kind: 'released-never-started'; prepareAttemptKey: string }>
+  | Readonly<{
+      kind: 'released-never-started';
+      operation: ProviderOperationIdentity;
+      prepareAttemptNumber: number;
+      prepareAttemptKey: string;
+    }>
   | Readonly<{ kind: 'released-after-terminal'; settledThroughProviderSeq: number }>
   | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>;
 
@@ -67,6 +75,8 @@ export function providerOperationTerminationVerdict(
   if (
     evidence.kind === 'released-never-started' &&
     record.phase === 'prestart-cleanup-pending' &&
+    operationKey(evidence.operation) === operationKey(record.operation) &&
+    evidence.prepareAttemptNumber === record.prepareAttemptNumber &&
     evidence.prepareAttemptKey === record.prepareAttemptKey
   ) {
     return { kind: 'released-never-started' };
@@ -86,20 +96,21 @@ export function providerOperationTerminationVerdict(
 
 type ActivePublication = Readonly<{
   operation: ProviderOperationIdentity;
-  prepared: ProxyPreparedAppServerOperation;
-  request: AppServerProxyRouteRequest;
-  release: () => void;
+  attempt: ProviderOperationPrepareAttempt;
   resolve: (result: AppServerProxyPlacementResult) => void;
 }>;
 
 type ProviderOperationReconcilerDeps = Readonly<{
-  getProgressStore: () => Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus'>;
+  getProgressStore: () => Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus' | 'readLaunchProjection'>;
   authorityFor: (record: ProviderOperationRecord) => DurableProviderProxyOperationAuthority | null;
   acquireAuthority?: (
     record: ProviderOperationRecord,
     signal: AbortSignal,
   ) => Promise<DurableProviderProxyOperationAuthority | null>;
   registry: Pick<LocalOperationRegistry, 'activate'>;
+  materializePrepare: (
+    record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
+  ) => Promise<ProxyPreparedAppServerOperation> | ProxyPreparedAppServerOperation;
   backendNamespace: string;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   batchSize?: number;
@@ -108,9 +119,7 @@ type ProviderOperationReconcilerDeps = Readonly<{
 
 export type BeginProviderOperationPublication = Readonly<{
   record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>;
-  prepared: ProxyPreparedAppServerOperation;
-  request: AppServerProxyRouteRequest;
-  release: () => void;
+  attempt: ProviderOperationPrepareAttempt;
   authority: DurableProviderProxyOperationAuthority;
 }>;
 
@@ -139,23 +148,6 @@ function sameAuthority(record: ProviderOperationRecord, authority: DurableProvid
 
 function retryDelayMs(retryCount: number): number {
   return Math.min(TIMER_MIN_MS * 2 ** Math.min(retryCount, 6), TIMER_MAX_MS);
-}
-
-function acquiredHostRef(request: AppServerProxyRouteRequest, record: ProviderOperationRecord) {
-  return request.hostSpec.leaseMode === 'job-exclusive'
-    ? {
-        provider: request.provider,
-        fingerprint: record.locator.hostFingerprint,
-        instanceId: record.operation.proxyInstanceId,
-        leaseMode: 'job-exclusive' as const,
-        ownerJobId: request.jobId,
-      }
-    : {
-        provider: request.provider,
-        fingerprint: record.locator.hostFingerprint,
-        instanceId: record.operation.proxyInstanceId,
-        leaseMode: 'shared' as const,
-      };
 }
 
 export class ProviderOperationReconciler {
@@ -216,9 +208,7 @@ export class ProviderOperationReconciler {
     return new Promise<AppServerProxyPlacementResult>((resolve) => {
       this.#publications.set(key, {
         operation: input.record.operation,
-        prepared: input.prepared,
-        request: input.request,
-        release: input.release,
+        attempt: input.attempt,
         resolve,
       });
       try {
@@ -329,53 +319,20 @@ export class ProviderOperationReconciler {
     authority: DurableProviderProxyOperationAuthority,
   ): Promise<ProviderOperationRecord | null> {
     const publication = this.#publications.get(operationKey(record.operation));
-    if (publication === undefined) {
-      await this.#recordRetry(record, new Error('The prepared operation envelope is unavailable in this generation.'));
-      return null;
+    if (publication === undefined || !this.#attemptMatchesRecord(record, publication.attempt)) {
+      return this.#recoverPrepare(record, authority);
     }
 
     try {
-      const result = await authority.prepareOperation(record.operation, publication.prepared);
-      if (result.state === 'capacity') {
-        const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
-        if (deleted.kind === 'conflict') return deleted.current;
-        this.#complete(record.operation, { kind: 'local-authorized', reason: result.reason });
-        return null;
-      }
-      return this.#transition(
-        record,
-        providerOperationRecordSchema.parse({
-          ...record,
-          phase: 'guardian-activation-pending',
-          reservation: result.reservation,
-          providerRoot: result.providerRoot,
-          jointContainmentReceipt: result.jointContainmentReceipt,
-          revision: record.revision + 1,
-          retryNotBeforeMs: this.#deps.time.now(),
-          retryCount: 0,
-          lastError: null,
-        }),
-      );
+      const result = await this.#sendJournaledPrepare(record, publication.attempt, authority);
+      return this.#acceptPrepareResult(record, result);
     } catch (error: unknown) {
       let retryError = error;
       if (providerOperationErrorIsAmbiguous(error)) {
         try {
           const inspected = await authority.inspectOperation(record.operation, record.prepareAttemptKey);
           if (inspected.state === 'prepared') {
-            return this.#transition(
-              record,
-              providerOperationRecordSchema.parse({
-                ...record,
-                phase: 'guardian-activation-pending',
-                reservation: inspected.reservation,
-                providerRoot: inspected.providerRoot,
-                jointContainmentReceipt: inspected.jointContainmentReceipt,
-                revision: record.revision + 1,
-                retryNotBeforeMs: this.#deps.time.now(),
-                retryCount: 0,
-                lastError: null,
-              }),
-            );
+            return this.#acceptPreparedEvidence(record, inspected);
           }
         } catch (inspectionError: unknown) {
           retryError = new Error(
@@ -384,6 +341,134 @@ export class ProviderOperationReconciler {
         }
       }
       await this.#recordRetry(record, retryError);
+      return null;
+    }
+  }
+
+  #attemptMatchesRecord(
+    record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
+    attempt: ProviderOperationPrepareAttempt,
+  ): boolean {
+    return (
+      attempt.request.prepareAttemptNumber === record.prepareAttemptNumber &&
+      attempt.prepareAttemptKey === record.prepareAttemptKey &&
+      operationPrepareAttemptKey(attempt.request) === record.prepareAttemptKey &&
+      operationKey(attempt.request.operation) === operationKey(record.operation)
+    );
+  }
+
+  async #sendJournaledPrepare(
+    record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
+    attempt: ProviderOperationPrepareAttempt,
+    authority: DurableProviderProxyOperationAuthority,
+  ): Promise<Awaited<ReturnType<DurableProviderProxyOperationAuthority['prepareOperation']>>> {
+    if (!this.#attemptMatchesRecord(record, attempt)) {
+      throw new Error('Provider operation prepare send is not backed by the committed journal attempt.');
+    }
+    return authority.prepareOperation(attempt);
+  }
+
+  #acceptPrepareResult(
+    record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
+    result: Awaited<ReturnType<DurableProviderProxyOperationAuthority['prepareOperation']>>,
+  ): ProviderOperationRecord | null {
+    if (result.state === 'capacity') {
+      const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+      if (deleted.kind === 'conflict') return deleted.current;
+      this.#complete(record.operation, { kind: 'local-authorized', reason: result.reason });
+      return null;
+    }
+    return this.#acceptPreparedEvidence(record, result);
+  }
+
+  #acceptPreparedEvidence(
+    record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
+    evidence: Readonly<{
+      reservation: string;
+      providerRoot: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+      jointContainmentReceipt: string;
+    }>,
+  ): ProviderOperationRecord | null {
+    return this.#transition(
+      record,
+      providerOperationRecordSchema.parse({
+        version: record.version,
+        operation: record.operation,
+        locator: record.locator,
+        prepareAttemptNumber: record.prepareAttemptNumber,
+        prepareAttemptKey: record.prepareAttemptKey,
+        phase: 'guardian-activation-pending',
+        reservation: evidence.reservation,
+        providerRoot: evidence.providerRoot,
+        jointContainmentReceipt: evidence.jointContainmentReceipt,
+        revision: record.revision + 1,
+        retryNotBeforeMs: this.#deps.time.now(),
+        retryCount: 0,
+        lastError: null,
+      }),
+    );
+  }
+
+  async #recoverPrepare(
+    record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
+    authority: DurableProviderProxyOperationAuthority,
+  ): Promise<ProviderOperationRecord | null> {
+    try {
+      const inspected = await authority.inspectOperation(record.operation, record.prepareAttemptKey);
+      if (inspected.state === 'prepared') return this.#acceptPreparedEvidence(record, inspected);
+      if (inspected.state === 'preparing') {
+        await this.#recordRetry(record, new Error('Proxy still reports the journaled prepare attempt as preparing.'));
+        return null;
+      }
+      if (inspected.state !== 'absent') {
+        await this.#recordRetry(
+          record,
+          new Error(`Proxy reported incompatible state '${inspected.state}' for a prepare-pending operation.`),
+        );
+        return null;
+      }
+
+      const released = await authority.cancelOperation(
+        record.operation,
+        record.prepareAttemptNumber,
+        record.prepareAttemptKey,
+      );
+      if (
+        operationKey(released.operation) !== operationKey(record.operation) ||
+        released.prepareAttemptNumber !== record.prepareAttemptNumber ||
+        released.prepareAttemptKey !== record.prepareAttemptKey
+      ) {
+        throw new Error('Cancellation acknowledgement did not fence the journaled prepare attempt.');
+      }
+
+      const prepared = await this.#deps.materializePrepare(record);
+      const nextAttemptNumber = record.prepareAttemptNumber + 1;
+      if (!Number.isSafeInteger(nextAttemptNumber))
+        throw new Error('Provider operation prepare attempts are exhausted.');
+      const attempt = providerOperationPrepareAttempt(authority, record.operation, prepared, nextAttemptNumber);
+      const rotated = providerOperationRecordSchema.parse({
+        ...record,
+        prepareAttemptNumber: nextAttemptNumber,
+        prepareAttemptKey: attempt.prepareAttemptKey,
+        revision: record.revision + 1,
+        retryNotBeforeMs: this.#deps.time.now(),
+        retryCount: 0,
+        lastError: null,
+      });
+      if (rotated.phase !== 'prepare-pending') throw new Error('Prepare attempt rotation failed validation.');
+
+      const rotation = compareAndSwapProviderOperation(this.#deps.getProgressStore().getDb(), record, rotated);
+      if (rotation.kind === 'conflict') return rotation.current;
+
+      try {
+        const result = await this.#sendJournaledPrepare(rotated, attempt, authority);
+        return this.#acceptPrepareResult(rotated, result);
+      } catch (error: unknown) {
+        await this.#recordRetry(rotated, error);
+        return null;
+      }
+    } catch (error: unknown) {
+      await this.#recordRetry(record, error);
       return null;
     }
   }
@@ -421,9 +506,9 @@ export class ProviderOperationReconciler {
           version: record.version,
           operation: record.operation,
           locator: record.locator,
+          prepareAttemptNumber: record.prepareAttemptNumber,
           prepareAttemptKey: record.prepareAttemptKey,
           phase: 'prestart-cleanup-pending',
-          reservation: record.reservation,
           cleanupIntent: 'release-never-started',
           revision: record.revision + 1,
           retryNotBeforeMs: this.#deps.time.now(),
@@ -500,9 +585,9 @@ export class ProviderOperationReconciler {
           version: record.version,
           operation: record.operation,
           locator: record.locator,
+          prepareAttemptNumber: record.prepareAttemptNumber,
           prepareAttemptKey: record.prepareAttemptKey,
           phase: 'prestart-cleanup-pending',
-          reservation: record.reservation,
           cleanupIntent: 'release-never-started',
           revision: record.revision + 1,
           retryNotBeforeMs: this.#deps.time.now(),
@@ -538,9 +623,15 @@ export class ProviderOperationReconciler {
     authority: DurableProviderProxyOperationAuthority,
   ): Promise<ProviderOperationRecord | null> {
     try {
-      const released = await authority.cancelOperation(record.operation, 1, record.prepareAttemptKey);
+      const released = await authority.cancelOperation(
+        record.operation,
+        record.prepareAttemptNumber,
+        record.prepareAttemptKey,
+      );
       const verdict = providerOperationTerminationVerdict(record, {
         kind: 'released-never-started',
+        operation: released.operation,
+        prepareAttemptNumber: released.prepareAttemptNumber,
         prepareAttemptKey: released.prepareAttemptKey,
       });
       if (verdict.kind !== 'released-never-started') {
@@ -592,17 +683,10 @@ export class ProviderOperationReconciler {
     if (activationAck.committedThroughProviderSeq !== 0) {
       throw new Error('A fresh activation acknowledgement must begin at provider watermark zero.');
     }
-    const publication = this.#publications.get(operationKey(record.operation));
-    if (publication === undefined) {
-      throw new Error('Runtime publication context is unavailable in this coordinator generation.');
-    }
     const next = providerOperationRecordSchema.parse({
       ...record,
       phase: 'executing',
-      activationAck: {
-        state: activationAck.state,
-        committedThroughProviderSeq: activationAck.committedThroughProviderSeq,
-      },
+      activationAck,
       committedThroughProviderSeq: 0,
       revision: record.revision + 1,
       retryNotBeforeMs: this.#deps.time.now(),
@@ -612,6 +696,15 @@ export class ProviderOperationReconciler {
     if (next.phase !== 'executing') throw new Error('Executing journal transition failed validation.');
 
     const progressStore = this.#deps.getProgressStore();
+    const launch = readProviderOperationJobLaunch(progressStore, record.operation.jobId);
+    const status = progressStore.readStatus(record.operation.jobId);
+    if (status === null || status.sessionId === null || status.sessionId !== launch.sessionId) {
+      throw new Error('Provider operation runtime publication lacks matching durable job metadata.');
+    }
+    if (launch.provider !== activationAck.hostRef.provider) {
+      throw new Error('Activation acknowledgement provider does not match the durable job launch.');
+    }
+    const cleanup = providerOperationCleanupIdentity(launch);
     let updated = false;
     progressStore.commit((commit) => {
       const result = compareAndSwapProviderOperation(progressStore.getDb(), record, next);
@@ -620,20 +713,19 @@ export class ProviderOperationReconciler {
       }
       updated = true;
       writeProviderOperationCompatibilityMeta(progressStore.getDb(), next);
-      const status = progressStore.readStatus(record.operation.jobId);
       commit.append({
         type: 'job.runtime.started',
         stream: { kind: 'job', id: record.operation.jobId },
-        namespace: status?.backendNamespace ?? this.#deps.backendNamespace,
-        project: status?.projectRoot,
-        refs: buildJobEventRefs({ jobId: record.operation.jobId, sessionId: status?.sessionId ?? null }),
+        namespace: status.backendNamespace,
+        project: status.projectRoot,
+        refs: buildJobEventRefs({ jobId: record.operation.jobId, sessionId: status.sessionId }),
         body: {
           transport: 'app-server',
-          startedAt: nowIsoString(this.#deps.time.now()),
+          startedAt: activationAck.startedAt,
           providerMeta: {
-            provider: publication.request.provider,
+            provider: activationAck.hostRef.provider,
             leaseState: 'acquired',
-            hostRef: acquiredHostRef(publication.request, next),
+            hostRef: activationAck.hostRef,
           },
         },
       });
@@ -641,14 +733,26 @@ export class ProviderOperationReconciler {
     });
 
     if (!updated) {
-      if (readProviderOperation(progressStore.getDb(), record.operation)?.phase === 'executing') return;
+      const current = readProviderOperation(progressStore.getDb(), record.operation);
+      if (current?.phase === 'executing') {
+        this.#registerExecuting(current, authority, cleanup);
+        return;
+      }
       throw new Error('Provider operation journal changed before execution could be committed.');
     }
 
-    const meta = providerOperationRuntimeMeta(next);
-    const control = authority.buildOperationControl(record.operation);
-    this.#deps.registry.activate(meta, control, publication.release);
+    this.#registerExecuting(next, authority, cleanup);
     this.#complete(record.operation, { kind: 'remote-executing' });
+  }
+
+  #registerExecuting(
+    record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
+    authority: DurableProviderProxyOperationAuthority,
+    cleanup: ReturnType<typeof providerOperationCleanupIdentity>,
+  ): void {
+    const meta = providerOperationRuntimeMeta(record);
+    const control = authority.buildOperationControl(record.operation);
+    this.#deps.registry.activate(meta, control, cleanup);
   }
 
   #transition(expected: ProviderOperationRecord, next: ProviderOperationRecord): ProviderOperationRecord | null {

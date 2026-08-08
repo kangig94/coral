@@ -108,7 +108,10 @@ describe('provider proxy operation mutations', () => {
 
     const first = providerOperationPrepareAttempt(activationDeps, OPERATION, PREPARED);
     const second = providerOperationPrepareAttempt(activationDeps, OPERATION, PREPARED);
-    await expect(prepareProviderOperation(activationDeps, OPERATION, PREPARED)).resolves.toEqual(pending);
+    await expect(
+      prepareProviderOperation(activationDeps, { ...first, prepareAttemptKey: 'd'.repeat(64) }),
+    ).rejects.toThrow('Provider operation prepare attempt fingerprint does not match its exact request.');
+    await expect(prepareProviderOperation(activationDeps, first)).resolves.toEqual(pending);
 
     expect(first.prepareAttemptKey).toBe(second.prepareAttemptKey);
     expect(proxy.calls).toEqual([{ method: 'operation.prepare.v1', params: first.request }]);

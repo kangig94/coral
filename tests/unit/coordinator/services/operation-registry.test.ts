@@ -39,6 +39,16 @@ function identityFor(m: ProviderOperationRuntimeMeta): ProviderOperationEventIde
   return { jobId: m.jobId, operationId: m.operationId, proxyInstanceId: m.proxyInstanceId, buildSetId: m.buildSetId };
 }
 
+function cleanupFor(m: ProviderOperationRuntimeMeta) {
+  return { jobId: m.jobId, pool: 'default' as const };
+}
+
+function registryWithCleanup(release = vi.fn()) {
+  const registry = new LocalOperationRegistry();
+  registry.connectCleanup({ release });
+  return { registry, release };
+}
+
 function fakeControl(): { control: OperationStopControl; stopCalls: string[] } {
   const stopCalls: string[] = [];
   return {
@@ -57,7 +67,7 @@ describe('LocalOperationRegistry', () => {
     const m = meta();
     const { control } = fakeControl();
 
-    registry.activate(m, control, () => {});
+    registry.activate(m, control, cleanupFor(m));
 
     expect(registry.stateForJob(m.jobId)).toBe('activated');
   });
@@ -72,22 +82,21 @@ describe('LocalOperationRegistry', () => {
     const m = meta();
     const { control } = fakeControl();
 
-    registry.adopt(m, control, () => {});
+    registry.adopt(m, control, cleanupFor(m));
 
     expect(registry.stateForJob(m.jobId)).toBe('adopted');
     expect(registry.operationsFor(m.proxyInstanceId)).toEqual([identityFor(m)]);
   });
 
-  it('adopt() runs its release() exactly once on settlement, like activate()', () => {
-    const registry = new LocalOperationRegistry();
+  it('adopt() releases reconstructed local state exactly once on settlement, like activate()', () => {
+    const { registry, release } = registryWithCleanup();
     const m = meta();
     const { control } = fakeControl();
-    const release = vi.fn();
-
-    registry.adopt(m, control, release);
+    registry.adopt(m, control, cleanupFor(m));
     registry.settled(identityFor(m));
 
-    expect(release).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledWith(cleanupFor(m));
     expect(registry.stateForJob(m.jobId)).toBeNull();
   });
 
@@ -95,7 +104,7 @@ describe('LocalOperationRegistry', () => {
     const registry = new LocalOperationRegistry();
     const m = meta();
     const { control, stopCalls } = fakeControl();
-    registry.adopt(m, control, () => {});
+    registry.adopt(m, control, cleanupFor(m));
 
     registry.stop(m.jobId, 'signal_abort');
     await Promise.resolve();
@@ -104,13 +113,11 @@ describe('LocalOperationRegistry', () => {
     expect(stopCalls).toEqual(['signal_abort']);
   });
 
-  it('settled() runs release() exactly once and forgets the entry', () => {
-    const registry = new LocalOperationRegistry();
+  it('settled() releases identity-addressed local state exactly once and forgets the entry', () => {
+    const { registry, release } = registryWithCleanup();
     const m = meta();
     const { control } = fakeControl();
-    const release = vi.fn();
-
-    registry.activate(m, control, release);
+    registry.activate(m, control, cleanupFor(m));
     registry.settled(identityFor(m));
 
     expect(release).toHaveBeenCalledTimes(1);
@@ -128,7 +135,8 @@ describe('LocalOperationRegistry', () => {
     // merely confirming an empty registry does nothing.
     const activated = meta();
     const release = vi.fn();
-    registry.activate(activated, fakeControl().control, release);
+    registry.connectCleanup({ release });
+    registry.activate(activated, fakeControl().control, cleanupFor(activated));
 
     expect(() =>
       registry.settled({ jobId: 'unknown', operationId: 'unknown', proxyInstanceId: 'p', buildSetId: 'b' }),
@@ -143,7 +151,7 @@ describe('LocalOperationRegistry', () => {
     const registry = new LocalOperationRegistry();
     const m = meta();
     const { control, stopCalls } = fakeControl();
-    registry.activate(m, control, () => {});
+    registry.activate(m, control, cleanupFor(m));
 
     registry.stop(m.jobId, 'signal_abort');
     // `stop()` is fire-and-forget from the caller's side; give the queued microtask a turn.
@@ -160,7 +168,7 @@ describe('LocalOperationRegistry', () => {
     // capability rather than merely confirming an empty registry does nothing.
     const activated = meta();
     const { control, stopCalls } = fakeControl();
-    registry.activate(activated, control, () => {});
+    registry.activate(activated, control, cleanupFor(activated));
 
     expect(() => registry.stop('never-registered', 'signal_abort')).not.toThrow();
     await Promise.resolve();
@@ -175,7 +183,7 @@ describe('LocalOperationRegistry', () => {
     const registry = new LocalOperationRegistry();
     const m = meta();
     const { control, stopCalls } = fakeControl();
-    registry.activate(m, control, () => {});
+    registry.activate(m, control, cleanupFor(m));
 
     registry.stop(m.jobId, 'signal_abort');
     registry.stop(m.jobId, 'user_abort');
@@ -189,7 +197,7 @@ describe('LocalOperationRegistry', () => {
   it('recordedStopCauseFor() answers null for an operation that was never stopped', () => {
     const registry = new LocalOperationRegistry();
     const m = meta();
-    registry.activate(m, fakeControl().control, () => {});
+    registry.activate(m, fakeControl().control, cleanupFor(m));
 
     expect(registry.recordedStopCauseFor(identityFor(m))).toBeNull();
   });
@@ -198,7 +206,7 @@ describe('LocalOperationRegistry', () => {
     const registry = new LocalOperationRegistry();
     const m = meta();
     const control: OperationStopControl = { stop: async () => Promise.reject(new Error('rpc failed')) };
-    registry.activate(m, control, () => {});
+    registry.activate(m, control, cleanupFor(m));
 
     expect(() => registry.stop(m.jobId, 'signal_abort')).not.toThrow();
     await Promise.resolve();
@@ -214,8 +222,8 @@ describe('LocalOperationRegistry', () => {
       const proxyInstanceId = randomUUID();
       const onSet = meta({ proxyInstanceId });
       const offSet = meta();
-      registry.activate(onSet, fakeControl().control, () => {});
-      registry.activate(offSet, fakeControl().control, () => {});
+      registry.activate(onSet, fakeControl().control, cleanupFor(onSet));
+      registry.activate(offSet, fakeControl().control, cleanupFor(offSet));
 
       expect(registry.operationsFor(proxyInstanceId)).toEqual([identityFor(onSet)]);
     });
@@ -229,7 +237,7 @@ describe('LocalOperationRegistry', () => {
       const registry = new LocalOperationRegistry();
       const proxyInstanceId = randomUUID();
       const m = meta({ proxyInstanceId });
-      registry.activate(m, fakeControl().control, () => {});
+      registry.activate(m, fakeControl().control, cleanupFor(m));
       registry.settled(identityFor(m));
 
       expect(registry.operationsFor(proxyInstanceId)).toEqual([]);
@@ -240,8 +248,8 @@ describe('LocalOperationRegistry', () => {
       const proxyInstanceId = randomUUID();
       const first = meta({ proxyInstanceId });
       const second = meta({ proxyInstanceId });
-      registry.activate(first, fakeControl().control, () => {});
-      registry.activate(second, fakeControl().control, () => {});
+      registry.activate(first, fakeControl().control, cleanupFor(first));
+      registry.activate(second, fakeControl().control, cleanupFor(second));
 
       const found = registry.operationsFor(proxyInstanceId);
       expect(found).toHaveLength(2);

@@ -106,10 +106,7 @@ export function providerOperationPrepareAttempt(
   operation: OperationIdentity,
   prepared: ProxyPreparedAppServerOperation,
   prepareAttemptNumber = 1,
-): Readonly<{
-  request: z.output<typeof proxyOperationPrepareParamsSchema>;
-  prepareAttemptKey: string;
-}> {
+): ProviderOperationPrepareAttempt {
   const request = proxyOperationPrepareParamsSchema.parse({
     operation,
     hostFingerprint: deps.setIdentity.hostFingerprint,
@@ -119,12 +116,19 @@ export function providerOperationPrepareAttempt(
   return { request, prepareAttemptKey: operationPrepareAttemptKey(request) };
 }
 
+export type ProviderOperationPrepareAttempt = Readonly<{
+  request: z.output<typeof proxyOperationPrepareParamsSchema>;
+  prepareAttemptKey: string;
+}>;
+
 export async function prepareProviderOperation(
   deps: ProviderProxyOperationActivationDeps,
-  operation: OperationIdentity,
-  prepared: ProxyPreparedAppServerOperation,
+  attempt: ProviderOperationPrepareAttempt,
 ): Promise<PrepareProviderOperationResult> {
-  const { request } = providerOperationPrepareAttempt(deps, operation, prepared);
+  const request = proxyOperationPrepareParamsSchema.parse(attempt.request);
+  if (operationPrepareAttemptKey(request) !== attempt.prepareAttemptKey) {
+    throw new Error('Provider operation prepare attempt fingerprint does not match its exact request.');
+  }
   return callStrict(deps.proxyClient, 'operation.prepare.v1', request, deps.mutationRpcTimeoutMs, prepareResultSchema);
 }
 

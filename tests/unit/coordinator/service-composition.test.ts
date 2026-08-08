@@ -2034,11 +2034,18 @@ describe('ExecutionService', () => {
           launchRecord,
           expect.objectContaining({ type: 'queued' }),
           'default',
-          {
-            CORAL_JOB_ID: jobId,
-            CORAL_SESSION_ID: sessionId,
-            [CORAL_CHILD_PRINCIPAL_HANDLE]: expect.any(String),
-          },
+          expect.objectContaining({
+            env: {
+              CORAL_JOB_ID: jobId,
+              CORAL_SESSION_ID: sessionId,
+              [CORAL_CHILD_PRINCIPAL_HANDLE]: expect.any(String),
+            },
+            childAuthorization: expect.objectContaining({
+              namespace: 'test-namespace',
+              expiresAtMs: expect.any(Number),
+              principalWire: expect.any(Object),
+            }),
+          }),
         );
       });
 
