@@ -36,8 +36,6 @@ export function formatStoreResetReport(report: StoreResetPublicReport): string {
           `- Observed bundle hash: ${observed(report.resetPolicyEvidence.observedTarget.bundleHash)}`,
           `- Observed flavor: ${observed(report.resetPolicyEvidence.observedTarget.flavor)}`,
           `- Observed store fingerprint: ${observed(report.resetPolicyEvidence.observedTarget.storeFormatFingerprint)}`,
-          `- Executable path SHA-256: ${observed(report.resetPolicyEvidence.observedTarget.executablePathSha256)}`,
-          `- Executable SHA-256: ${observed(report.resetPolicyEvidence.observedTarget.executableSha256)}`,
         ]),
     '',
     '## Evidence',

@@ -261,25 +261,6 @@ describe('provider proxy enforcer deadline evidence', () => {
     expectSameInstant(fake.clock, guardian.bounds().lastRoundTripEvidenceAt, evidenceAt);
   });
 
-  it('does not move either deadline for proxy heartbeats or ordinary authenticated frames', () => {
-    const fake = createFakeClock(guardianClockScope, 500);
-    const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('c'));
-    fake.set(1_000);
-    const first = mustAccept(guardian.issueFirstChallenge());
-    fake.set(1_100);
-    guardian.echoChallenge(first.challenge);
-    const before = guardian.bounds();
-    const work = vi.fn();
-    fake.set(1_200);
-
-    expect(guardian.dispatchOrdinaryFrame('proxy-heartbeat', work)).toEqual({ accepted: true });
-    expect(guardian.dispatchOrdinaryFrame('authenticated-frame', work)).toEqual({ accepted: true });
-    const after = guardian.bounds();
-    expectSameInstant(fake.clock, after.exitDeadline, before.exitDeadline);
-    expectSameInstant(fake.clock, after.adoptionDeadline, before.adoptionDeadline);
-    expect(work).toHaveBeenCalledTimes(2);
-  });
-
   it('ignores positive and negative wall-clock jumps', () => {
     const fake = createFakeClock(guardianClockScope, 500);
     const guardian = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('c'));
@@ -475,23 +456,6 @@ describe('provider proxy pairing loss', () => {
     reaper.observePairingLoss();
 
     expect(fake.clock.compare(reaper.bounds().adoptionDeadline, naturalAdoptionDeadline)).toBeLessThan(0);
-  });
-
-  it('makes a heartbeat past the collapsed deadline latch teardown, proving the acceleration is real', () => {
-    const fake = createFakeClock(reaperClockScope, 1_000);
-    const reaper = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('c'));
-    fake.set(5_000);
-    reaper.observePairingLoss();
-    fake.set(5_001);
-    const work = vi.fn();
-
-    expect(reaper.dispatchOrdinaryFrame('authenticated-frame', work)).toEqual({
-      accepted: false,
-      reason: 'teardown-latched',
-    });
-
-    expect(work).not.toHaveBeenCalled();
-    expect(reaper.state()).toBe('teardown-latched');
   });
 
   it('is a no-op once its own collapse has already passed, like every other dispatch method', () => {

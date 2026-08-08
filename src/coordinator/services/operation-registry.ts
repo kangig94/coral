@@ -18,14 +18,28 @@ import type { ProviderStopCause } from '../../providers/contract.js';
  */
 
 /**
- * The one live capability an entry needs beyond its durable identity: send `operation.stop.v1` for exactly
- * this operation against the exact proxy connection that owns it. Built by `activateProviderOperation`
- * (`provider-proxy-operation-activation.ts`), which already holds the `proxyClient` and
+ * The live capabilities an entry needs beyond its durable identity: send `operation.stop.v1` for exactly this
+ * operation against the exact proxy connection that owns it, and — once its terminal has durably committed —
+ * release its guardian-staged membership. Built by `activateProviderOperation`
+ * (`provider-proxy-operation-activation.ts`), which already holds the `proxyClient`/`guardianClient` and
  * `mutationRpcTimeoutMs` this needs — restated here as a shape rather than imported, the same reason
  * `provider-proxy-operation-activation.ts`'s own `OperationControlClient` exists.
  */
 export interface OperationStopControl {
   stop(cause: ProviderStopCause): Promise<void>;
+  /**
+   * `guardian.operation-release.v1` for exactly this operation, bound at activation to the same
+   * reservation/receipt tuple `guardian.operation-activate.v1` committed. `settled()` sends it once this
+   * operation's terminal is durably applied — the release the guardian's `staged` map only ever received from
+   * the *failure* path (`compensateAfterActivationFailure`) before this capability existed, which left every
+   * successful operation's membership staged for the coordinator's whole lifetime.
+   *
+   * Optional because an operation this coordinator only *adopted* from a predecessor's redeemed set
+   * (`provider-proxy-set-inheritance.ts`'s `buildAdoptedStopControl`) has no guardian client in scope at its
+   * own call site to bind one to; that membership is released only when the redeemed set's own full
+   * `stop-and-reap` teardown runs, never per operation.
+   */
+  releaseMembership?(): Promise<void>;
 }
 
 interface RegistryEntry {
@@ -122,6 +136,15 @@ export class LocalOperationRegistry {
     this.entries.delete(key);
     if (this.liveJobIndex.get(identity.jobId) === key) this.liveJobIndex.delete(identity.jobId);
     entry.release();
+    // Fire-and-forget, like stop(): this method's contract with its one caller
+    // (`provider-event-application.ts`, invoked only after the terminal already committed) is synchronous, and
+    // a slow or dropped guardian reply must not hold up — or retroactively fail — a settle that already
+    // happened. Absent for an adopted operation (see `OperationStopControl.releaseMembership`'s own doc).
+    void entry.control.releaseMembership?.().catch((error: unknown) => {
+      backendLog.warn(
+        `guardian.operation-release.v1 failed for job '${identity.jobId}'/'${identity.operationId}': ${errorMessage(error)}`,
+      );
+    });
   }
 
   /**
@@ -186,11 +209,13 @@ export class LocalOperationRegistry {
   /**
    * Every distinct provider root this coordinator's own live operations hold against one proxy set —
    * `guardian.stop-and-reap.v1`/`reaper.stop-and-reap.v1`'s own `providerRoots` argument
-   * (`provider-proxy/set-authority.ts`'s `stopAndReap`): both enforcers refuse a teardown that disagrees
-   * with what they actually recorded (`assertRecordedSetAgreement`), so this is the coordinator's own half of
-   * that agreement — an empty claim against a set that has actually staged a root always disagrees. Deduped
-   * by process identity, mirroring `ArmedEnforcer.recordedRoots()`: a shared host serving more than one
-   * activated operation is one teardown target, not one per operation.
+   * (`provider-proxy/set-authority.ts`'s `stopAndReap`): both enforcers refuse a teardown that claims a root
+   * they never recorded (`assertRecordedSetAgreement`), so this is the coordinator's own half of that
+   * agreement. An empty (or partial) claim against an enforcer that has actually staged a root is not itself a
+   * disagreement — `settled()` drops an operation's root from here the moment its terminal commits, which can
+   * race a concurrent teardown reading the enforcer's own, still-recorded set, and `assertRecordedSetAgreement`
+   * accepts exactly that undershoot. Deduped by process identity, mirroring `ArmedEnforcer.recordedRoots()`: a
+   * shared host serving more than one activated operation is one teardown target, not one per operation.
    */
   providerRootsFor(proxyInstanceId: string): readonly Readonly<{ pid: number; processStartedAtSeconds: number }>[] {
     const seen = new Map<string, Readonly<{ pid: number; processStartedAtSeconds: number }>>();
@@ -209,8 +234,9 @@ export class LocalOperationRegistry {
  * `provider-hosts/proxy-set-acquisition.ts`'s `ProviderProxySetAcquisitionConfig`,
  * `provider-proxy-set-inheritance.ts`'s `ProviderProxySetInheritanceDeps`)
  * needs from this registry: `operationsFor` and `providerRootsFor`, always. Named once here so every call site
- * stays the identical type rather than independently-drifting `Pick`s. Both are required — an empty
- * `providerRootsFor` claim disagrees with any enforcer that has actually staged a root
- * (`assertRecordedSetAgreement`), so there is no caller for which silently falling back to one is correct.
+ * stays the identical type rather than independently-drifting `Pick`s. Both are required — `providerRootsFor`
+ * is this coordinator's own honest half of `assertRecordedSetAgreement` (an enforcer never faults a claim for
+ * naming *fewer* roots than it recorded, only for naming one it never recorded), so there is no caller for
+ * which silently falling back to a fixed answer instead of this live one is correct.
  */
 export type ProviderProxyOperationSnapshot = Pick<LocalOperationRegistry, 'operationsFor' | 'providerRootsFor'>;

@@ -279,13 +279,12 @@ describe('provider-proxy control endpoint', () => {
   });
 
   it('refuses an open that does not present the nonce and establishes no tenancy', async () => {
-    const { socketPath, endpoint } = await startEndpoint();
+    const { socketPath } = await startEndpoint();
     const client = await connect(socketPath);
 
     const refused = await client.call('role.open.v1', { bootstrapNonce: 'b'.repeat(64) });
 
     expect(refused.error?.message).toContain('did not present the bootstrap nonce');
-    expect(endpoint.currentEpoch()).toBeNull();
   });
 
   it('activates on a matching echo, rotates the challenge, and reports round-trip evidence once', async () => {
@@ -364,11 +363,10 @@ describe('provider-proxy control endpoint', () => {
     // 'invalid_state' alone cannot tell "retry" from "give up" — the reason has to travel as its own
     // structured field, not only inside the human-readable message, for a caller to act on it.
     expect(refused.error?.data?.reason).toBe('control-active');
-    expect(set.endpoint.currentEpoch()).toBe(1);
   });
 
   it('hands a successor the next epoch once control has lapsed, without reporting the new tenancy lost', async () => {
-    const { socketPath, observer, endpoint } = await startEndpoint();
+    const { socketPath, observer } = await startEndpoint();
     const incumbent = await connect(socketPath);
     await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
     // Control lapses the way the deadline machine sees it: the outstanding challenge goes unanswered.
@@ -388,12 +386,11 @@ describe('provider-proxy control endpoint', () => {
     expect(beat.result).toEqual({ state: 'active', nextHeartbeatChallenge: 'challenge-3' });
     // The predecessor's socket must not be able to report a loss that lands on the successor's tenancy.
     expect(observer.onControlLost).toHaveBeenCalledExactlyOnceWith(1);
-    expect(endpoint.currentEpoch()).toBe(2);
   });
 
   it('destroys the displaced connection without ending the tenancy that replaced it', async () => {
     const set = await startEndpoint();
-    const { socketPath, observer, endpoint } = set;
+    const { socketPath, observer } = set;
     const incumbent = await connect(socketPath);
     await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
     await incumbent.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
@@ -409,7 +406,6 @@ describe('provider-proxy control endpoint', () => {
     // as a control loss at all: the tenancy it would name is already gone, and reporting one here would
     // hand the deadline machine an EOF that collapses the successor's own control window.
     expect(observer.onControlLost).not.toHaveBeenCalled();
-    expect(endpoint.currentEpoch()).toBe(2);
   });
 
   it('refuses a second tenancy on the connection that already holds one', async () => {
@@ -578,13 +574,12 @@ describe('provider-proxy control endpoint', () => {
   });
 
   it('reports control loss with the epoch that ended', async () => {
-    const { socketPath, observer, endpoint } = await startEndpoint();
+    const { socketPath, observer } = await startEndpoint();
     const client = await connect(socketPath);
     await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
 
     client.close();
     await vi.waitFor(() => expect(observer.onControlLost).toHaveBeenCalledExactlyOnceWith(1));
-    expect(endpoint.currentEpoch()).toBeNull();
   });
 
   it('destroys a connection whose accumulating frame passes the cap before any newline', async () => {
@@ -767,7 +762,6 @@ describe('provider-proxy control endpoint: pushOnTenancy', () => {
     // arriving on the successor's own (different) socket could never satisfy it even without this cleanup,
     // but nothing here should leave it hanging either.
     await rejected;
-    expect(endpoint.currentEpoch()).toBe(2);
   });
 
   it('does not block an ordinary inbound request while a push is outstanding', async () => {

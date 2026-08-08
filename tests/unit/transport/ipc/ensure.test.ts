@@ -233,6 +233,36 @@ describe('ipc ensure', () => {
     });
   });
 
+  it('reuses a present healthy coordinator whose discovery record carries a field this build predates', async () => {
+    makeHome();
+    const root = createPluginRoot();
+    writeDiscovery(root, {
+      port: 4203,
+      token: 'existing-token',
+      instanceId: 'existing-coordinator',
+    });
+    // A build newer than this one added a field to the record before either build's schema knew about
+    // it — simulated by writing straight to disk, past `writeDiscovery`'s own field set.
+    const filePath = discoveryPath(root);
+    const written = JSON.parse(readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(filePath, JSON.stringify({ ...written, futureField: 'added-by-a-newer-coordinator' }), 'utf-8');
+
+    mockState.health.mockResolvedValue({
+      status: 'ok',
+      version: '0.5.2',
+      bundleHash: 'test-hash',
+      flavor: 'prod',
+      instanceId: 'existing-coordinator',
+      namespace: pluginRootNamespace(root),
+    });
+
+    const { ensure } = await importEnsure();
+    const ensured = await ensure(root);
+
+    expect(ensured.instanceId).toBe('existing-coordinator');
+    expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
   describe('child existing-only lifecycle', () => {
     it('reuses a mismatched incumbent without boot auth, shutdown, release probing, or spawn', async () => {
       makeHome();

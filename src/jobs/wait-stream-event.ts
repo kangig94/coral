@@ -28,6 +28,9 @@ export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEve
   return { cursor, shouldRender: true };
 }
 
+// Every variant below but `interrupted` is `.passthrough()`, not `.strict()`: a coordinator newer than
+// this build may add an optional field to any of them, and tolerating that one unknown key is what lets
+// this build keep decoding the event instead of `.parse` throwing partway through the wait stream.
 const waitProgressEventSchema = z
   .object({
     type: z.literal('progress'),
@@ -36,7 +39,7 @@ const waitProgressEventSchema = z
     message: z.string(),
     timing: jobProgressTimingSchema,
   })
-  .strict();
+  .passthrough();
 
 const waitQueuedEventBaseSchema = z.object({
   type: z.literal('queued'),
@@ -51,21 +54,21 @@ const waitQueuedProviderEventSchema = waitQueuedEventBaseSchema
     jobKind: z.literal('provider'),
     sessionId: z.string().min(1),
   })
-  .strict();
+  .passthrough();
 
 const waitQueuedWorkflowEventSchema = waitQueuedEventBaseSchema
   .extend({
     jobKind: z.literal('workflow'),
     workflowId: z.string().min(1),
   })
-  .strict();
+  .passthrough();
 
 const waitQueuedKbEventSchema = waitQueuedEventBaseSchema
   .extend({
     jobKind: z.literal('kb'),
     systemTaskId: z.string().min(1),
   })
-  .strict();
+  .passthrough();
 
 const waitTerminalEventSchema = z
   .object({
@@ -78,7 +81,7 @@ const waitTerminalEventSchema = z
     continuity: continuitySnapshotSchema.nullable().optional(),
     usage: usageSummarySchema.optional(),
   })
-  .strict();
+  .passthrough();
 
 /**
  * Structurally incapable of carrying a terminal: no `seq`, no `result`, no `resultPath`, no continuity
@@ -106,7 +109,7 @@ const waitWaitingEventSchema = z
     // unknowns" by the field's absence, and an always-present empty array erases that distinction.
     carrierUnknownJobIds: z.array(z.string().min(1)).max(MAX_WAIT_JOB_IDS).nonempty().optional(),
   })
-  .strict();
+  .passthrough();
 
 const waitStreamEventSchema = z.union([
   waitProgressEventSchema,

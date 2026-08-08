@@ -18,5 +18,8 @@ export function renderHandoffNotice(success: HandoffSuccess): void {
   }
 
   noticeRendered = true;
-  process.stderr.write(`handed off to ${success.version}; use that version from now on\n`);
+  process.stderr.write(
+    `handed off to ${success.version}; this repeats on every run until the installed plugin is upgraded to ` +
+      `${success.version} or newer\n`,
+  );
 }

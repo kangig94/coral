@@ -129,7 +129,7 @@ describe('control heartbeats reach the deadline machine', () => {
     expect(clock.compare(after.exitDeadline, before.exitDeadline)).toBe(1);
   });
 
-  it('refuses a replayed challenge and leaves the deadlines where they were', async () => {
+  it('refuses a second connection at accept time while control is live, leaving the deadlines where they were', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'coral-evidence-'));
     cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
     const socketPath = join(directory, 'g.sock');
@@ -195,7 +195,9 @@ describe('control heartbeats reach the deadline machine', () => {
       ]),
     ).rejects.toThrow(/EPIPE|ECONNRESET/u);
 
-    // A consumed challenge cannot re-earn evidence, so the replay buys no extra life.
+    // The refused socket never reached frame parsing, so nothing downstream of accept() could have run —
+    // this checks that an accept-time refusal really is a no-op on deadline state, not that a challenge was
+    // evaluated and found stale (`orphan-deadline.test.ts` already proves that at the unit level).
     expect(clock.compare(deadlines.bounds().adoptionDeadline, afterFirst.adoptionDeadline)).toBe(0);
   });
 });

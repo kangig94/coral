@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
 import { providerHandoffCapsulePath } from '../../infra/path/index.js';
 import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import type { ProviderOperationRuntimeMeta } from '../../jobs/runtime-meta.js';
@@ -20,6 +22,8 @@ import {
   type GuardianIdentity,
   type OperationIdentity,
   type ReaperIdentity,
+  guardianOperationReleaseParamsSchema,
+  guardianOperationReleaseResultSchema,
   reaperHandoffRotateParamsSchema,
 } from '../../provider-proxy/protocol.js';
 import type { ControlClient, ProviderEventHandler } from '../../provider-proxy/control-client.js';
@@ -161,17 +165,39 @@ function capsuleMatchesLocator(
   );
 }
 
-/** `operation.stop.v1`, bound to the exact proxy connection and operation this adoption used — the same
- *  contract `provider-proxy-operation-activation.ts`'s `buildStopControl` gives a freshly activated operation,
+/** The adopted operation's own `operation.stop.v1` and `guardian.operation-release.v1` capabilities, bound to
+ *  the exact connections and operation this adoption used — the same contract
+ *  `provider-proxy-operation-activation.ts`'s `buildOperationControl` gives a freshly activated operation,
  *  restated here rather than imported: that module's own dependency shape (a full activation `db`/`setIdentity`)
- *  does not fit an adoption, which has neither. */
-function buildAdoptedStopControl(proxyClient: ControlClient, operation: OperationIdentity): OperationStopControl {
+ *  does not fit an adoption, which has neither.
+ *
+ *  An adopted operation needs the release capability for the same reason a freshly activated one does. The
+ *  guardian's staged membership is what its teardown set is checked against, and it outlives the coordinator
+ *  that staged it — so a successor that settles an inherited operation without releasing would leave the
+ *  predecessor's membership behind, against a proxy set this coordinator now owns. The two correlation values
+ *  come out of the durable row rather than from anything this process minted, which is the only place a
+ *  successor could get them: it never saw the reply that created them. */
+function buildAdoptedOperationControl(
+  proxyClient: ControlClient,
+  guardianClient: ControlClient,
+  operation: OperationIdentity,
+  meta: ProviderOperationRuntimeMeta,
+): OperationStopControl {
   return {
     async stop(cause) {
       // Parsed here rather than through a shared helper: `callStrict` parses a reply unconditionally, and
       // this send deliberately reads none. One line at the send site is the whole obligation.
       const params = proxyOperationStopParamsSchema.parse({ operation, cause });
       await proxyClient.call('operation.stop.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+    },
+    async releaseMembership() {
+      const params = guardianOperationReleaseParamsSchema.parse({
+        operation,
+        reservation: meta.reservation,
+        jointContainmentReceipt: meta.jointContainmentReceipt,
+      });
+      const raw = await guardianClient.call('guardian.operation-release.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+      guardianOperationReleaseResultSchema.parse(raw);
     },
   };
 }
@@ -184,6 +210,7 @@ function buildAdoptedStopControl(proxyClient: ControlClient, operation: Operatio
  */
 async function adoptRedeemedOperations(
   proxyClient: ControlClient,
+  guardianClient: ControlClient,
   operations: readonly OperationIdentity[],
   db: Database,
   operationRegistry: Pick<LocalOperationRegistry, 'adopt'>,
@@ -205,7 +232,7 @@ async function adoptRedeemedOperations(
     } catch {
       continue;
     }
-    operationRegistry.adopt(meta, buildAdoptedStopControl(proxyClient, operation), () => {});
+    operationRegistry.adopt(meta, buildAdoptedOperationControl(proxyClient, guardianClient, operation, meta), () => {});
     adoptedJobIds.add(operation.jobId);
   }
   return adoptedJobIds;
@@ -336,6 +363,12 @@ async function redeem(
     // Keepalive is already established the moment `establishRoleControl` returns for each role — every one of
     // the three opens above already echoed its own first challenge before this line runs. What starts here is
     // the ongoing renewal past that first echo, exactly mirroring ordinary acquisition's own three loops.
+    //
+    // A degrading heartbeat is otherwise silent until the enforcer's own deadline fires (`heartbeat.ts`'s own
+    // doc) — logged here, per role, so an operator sees it before then.
+    const onHeartbeatError = (role: 'guardian' | 'reaper' | 'proxy', instanceId: string) => (error: unknown) => {
+      backendLog.warn(`provider-proxy ${role} heartbeat echo failed for ${instanceId}: ${errorMessage(error)}`);
+    };
     heartbeats = [
       startHeartbeatLoop(
         guardianSession.client,
@@ -343,7 +376,7 @@ async function redeem(
         runtime,
         guardianSession.opened.controlEpoch,
         guardianSession.nextHeartbeatChallenge,
-        () => {},
+        onHeartbeatError('guardian', locator.guardianInstanceId),
       ),
       startHeartbeatLoop(
         reaperSession.client,
@@ -351,7 +384,7 @@ async function redeem(
         runtime,
         reaperSession.opened.controlEpoch,
         reaperSession.nextHeartbeatChallenge,
-        () => {},
+        onHeartbeatError('reaper', locator.reaperInstanceId),
       ),
       startHeartbeatLoop(
         proxySession.client,
@@ -359,13 +392,14 @@ async function redeem(
         runtime,
         proxySession.opened.controlEpoch,
         proxySession.nextHeartbeatChallenge,
-        () => {},
+        onHeartbeatError('proxy', locator.proxyInstanceId),
       ),
     ];
     signal.throwIfAborted();
 
     const adoptedJobIds = await adoptRedeemedOperations(
       proxySession.client,
+      guardianSession.client,
       proxySession.opened.operations,
       db,
       deps.operationRegistry,
@@ -446,8 +480,9 @@ async function redeem(
     // Stop every heartbeat loop this attempt started before closing its clients — the mirror image of
     // `createProviderProxySetAuthority`'s own `initiateControlClose` ordering, and the same order ordinary
     // acquisition's undo already uses (`provider-proxy/acquisition-steps.ts`'s `establishControl` undo). A
-    // loop left running against a closed client would call `client.call` into an `onError` that only logs,
-    // forever, on every future heartbeat interval — this attempt failed, so nothing is left to keep alive.
+    // loop left running against a closed client would call `client.call` into an `onError` that logs and
+    // continues, forever, on every future heartbeat interval — this attempt failed, so nothing is left to
+    // keep alive.
     for (const heartbeat of heartbeats) heartbeat.stop();
     for (const client of opened) client.close();
     throw error;

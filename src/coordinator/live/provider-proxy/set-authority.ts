@@ -210,15 +210,18 @@ export function createProviderProxySetAuthority(
     },
     stopAndReap: async (signal) => {
       try {
-        // The coordinator's own half of the set-agreement both enforcers require exactly
+        // The coordinator's own half of the set-agreement both enforcers check
         // (`assertRecordedSetAgreement`): every provider root this coordinator's own live operations still
-        // hold against this proxy, from the same registry `snapshotOperations` above reads. An empty claim
-        // disagrees with any enforcer that has actually staged a root — every activated operation stages one
-        // before it is ever reported as executing — so this must name every one still live, not an empty set.
+        // hold against this proxy, from the same registry `snapshotOperations` above reads. Claiming fewer
+        // than the enforcer recorded is legitimate and expected — an operation that settled released its
+        // registry entry and may still be releasing its guardian membership — so the check is a subset test.
+        // What it refuses is a root this coordinator names that the enforcer never staged, which means the
+        // two are reasoning about different containments.
         const providerRoots = operationRegistry.providerRootsFor(proxyInstanceId);
-        // Parsed against the exact schema `guardian.ts` parses this request with on receipt, so a mistake
-        // here — an empty `providerRoots` claim, say — fails at this sender rather than at the guardian's own
-        // `.strict()` refusal.
+        // Parsed against the exact schema `guardian.ts` parses this request with on receipt, so a malformed
+        // payload fails at this sender rather than at the guardian's own `.strict()` refusal. It does not
+        // check the set itself — an undershooting claim is legitimate, and only the enforcer holds what it
+        // would have to be checked against.
         const stopAndReapPayload = guardianStopAndReapParamsSchema.parse({
           guardian: guardianIdentity,
           reaper: reaperIdentity,

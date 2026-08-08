@@ -245,7 +245,10 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   storeResetCommand
     .command('discard')
-    .description('Quarantine and replace an incompatible generated store; replay this command on a newer owning build')
+    .description(
+      'Quarantine and replace an incompatible generated store; if a newer local Coral build is already selected ' +
+        'to own this store, the command runs there instead of here',
+    )
     .requiredOption(
       '--target <target>',
       'Store generation to discard (current; gen2 also accepted, legacy is inspection-only)',

@@ -25,7 +25,9 @@ describe('handoff-notice', () => {
     renderHandoffNotice(success);
 
     expectTypeOf(renderHandoffNotice).parameter(0).toEqualTypeOf<HandoffSuccess>();
-    expect(stderr).toBe('handed off to 2.3.4; use that version from now on\n');
+    expect(stderr).toBe(
+      'handed off to 2.3.4; this repeats on every run until the installed plugin is upgraded to 2.3.4 or newer\n',
+    );
     expect(process.stderr.write).toHaveBeenCalledOnce();
     // Stdout carries the delegated child's real answer; a notice appended there would break `-f json`.
     expect(stdoutWrite).not.toHaveBeenCalled();

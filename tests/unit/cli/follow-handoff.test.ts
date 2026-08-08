@@ -322,17 +322,21 @@ describe('cli follow handoff', () => {
     expect(parseSerializedWaitCursor(serializeWaitCursor(progressed.cursor))).toEqual({ afterSeq: 4 });
   });
 
-  it('should reject the deleted snapshot acknowledgement field from wire events', () => {
-    expect(() =>
-      parseWaitStreamEvent(
-        'waiting',
-        JSON.stringify({
-          type: 'waiting',
-          waitingJobIds: ['job-1'],
-          snapshotRenderId: 'retired-snapshot-id',
-        }),
-      ),
-    ).toThrow();
+  it('tolerates the retired snapshot-acknowledgement field name as an ordinary unrecognized field', () => {
+    // `snapshotRenderId` was deleted with the whole snapshot-acknowledgement mechanism (87e7a72f); what
+    // keeps it dead is its absence from `WaitCursor` and from every renderer, not a wire-level rejection
+    // of the key. Passthrough tolerance — added so a newer coordinator can add an additive field without
+    // breaking this build's parse — necessarily tolerates this name too, so the event still renders and
+    // advances the cursor exactly as if the field were absent.
+    const withRetiredField = parseWaitStreamEvent(
+      'waiting',
+      JSON.stringify({ type: 'waiting', waitingJobIds: ['job-1'], snapshotRenderId: 'retired-snapshot-id' }),
+    );
+    expect(withRetiredField).toMatchObject({ type: 'waiting', waitingJobIds: ['job-1'] });
+
+    const decision = advanceWaitRenderCursor({ afterSeq: 0 }, withRetiredField as WaitStreamEvent);
+    expect(decision.cursor).toEqual({ afterSeq: 0 });
+
     expect(parseWaitStreamEvent('waiting', JSON.stringify({ type: 'waiting', waitingJobIds: ['job-1'] }))).toEqual({
       type: 'waiting',
       waitingJobIds: ['job-1'],

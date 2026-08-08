@@ -136,8 +136,6 @@ function newerTargetIncidentManifest(): StoreResetIncidentManifestV3 {
         bundleHash: 'fedcba9876543210',
         flavor: 'prod',
         storeFormatFingerprint: `sha256:${'e'.repeat(64)}`,
-        executablePathSha256: 'c'.repeat(64),
-        executableSha256: 'd'.repeat(64),
       },
     },
   };
@@ -823,7 +821,7 @@ describe('operator store-reset discard', () => {
 });
 
 describe('backend store-reset commands', () => {
-  it('describes discard as replaying the command on a newer owning build', () => {
+  it('describes discard as running on a newer build when one already owns the store', () => {
     const program = new Command();
     registerBackendCommands(program, {
       storeReset: { list: () => ({ incidents: [] }), report: async () => publicReport(), discard: operationsDiscard },
@@ -835,7 +833,8 @@ describe('backend store-reset commands', () => {
       ?.commands.find((command) => command.name() === 'discard');
 
     expect(discard?.description()).toBe(
-      'Quarantine and replace an incompatible generated store; replay this command on a newer owning build',
+      'Quarantine and replace an incompatible generated store; if a newer local Coral build is already selected ' +
+        'to own this store, the command runs there instead of here',
     );
   });
 
@@ -864,7 +863,9 @@ describe('backend store-reset commands', () => {
       expect.objectContaining({ activeSelectionTarget: target }),
     );
     expect(stdout).toBe('');
-    expect(stderr).toBe('handed off to 2.0.0; use that version from now on\n');
+    expect(stderr).toBe(
+      'handed off to 2.0.0; this repeats on every run until the installed plugin is upgraded to 2.0.0 or newer\n',
+    );
     expect(process.exitCode).toBeUndefined();
   });
 

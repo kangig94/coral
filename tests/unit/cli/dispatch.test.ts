@@ -453,13 +453,13 @@ describe('kb lazy reconcile', () => {
 
     expect(mockState.request).toHaveBeenCalledTimes(1);
     expect(stderrWrite).toHaveBeenCalledTimes(1);
-    // The notice has to carry all three facts a user needs: the command will fail, why nothing was restarted,
-    // and how to get KB on now.
+    // The notice states the condition only — the command's own `kb_disabled` error (not this advisory)
+    // carries the one authoritative recovery instruction, so it must not repeat here.
     const notice = stderrWrite.mock.calls[0]?.[0] as string;
     expect(notice).toContain('KB is disabled on the running Coral coordinator');
     expect(notice).toContain('this command will fail');
-    expect(notice).toContain('CORAL_BACKEND_IDLE_MS');
-    expect(notice).toContain('coral-cli backend shutdown');
+    expect(notice).not.toContain('CORAL_BACKEND_IDLE_MS');
+    expect(notice).not.toContain('coral-cli backend shutdown');
   });
 
   it('does not restart when the daemon already has KB online', async () => {

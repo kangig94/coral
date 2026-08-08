@@ -191,8 +191,6 @@ function resetPolicyForTransition(transition: ActiveStoreTransition): NewerStore
         bundleHash: selectedManifest?.bundleHash ?? null,
         flavor: selectedManifest?.flavor ?? null,
         storeFormatFingerprint: selectedManifest?.storeFormatFingerprint ?? null,
-        executablePathSha256: null,
-        executableSha256: null,
       },
     },
   };

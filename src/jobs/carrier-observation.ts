@@ -117,10 +117,11 @@ function acquiredVerdict(registryState: LocalOperationRegistryState): Verdict {
 }
 
 /**
- * Three independent facts have to agree before a durable CLI counts as live, and the plan is explicit that
- * pid liveness alone is not enough: a recycled pid is alive and is not this job. A recorded process that
- * fails any of them is genuinely gone, which is what makes this the one class that can answer `absent` from
- * local evidence alone.
+ * Two of the three recorded facts actually vary: pid liveness alone is not enough, since a recycled pid is
+ * alive and is not this job, so `matchesRecordedStart` is what tells a resurrected identity from the genuine
+ * one. `transportEvidence` stays fixed `true` at every production evidence builder — a durable CLI has no
+ * control channel to source a contradicting signal from (`runtime-meta.ts`'s own doc on why the recorded
+ * identity is pid-plus-start-time and nothing more) — so today only the first two can turn this `absent`.
  */
 function durableCliVerdict(process: DurableCliProcessEvidence): Verdict {
   if (process.kind === 'uncaptured') return { liveness: 'unknown', source: 'no-local-evidence' };
@@ -178,16 +179,4 @@ export function classifyCarrier(input: CarrierObservationInput): CarrierObservat
     return { ...observation, defect: 'local-unknown-after-recovery-decision' };
   }
   return observation;
-}
-
-/**
- * Whether an observation keeps a job counted as active.
- *
- * The single place the conservative rule lives, so health, idle, and retirement cannot drift apart on it:
- * only a positive `absent` releases anything, and `unknown` holds the job open. Retirement asks this against
- * local registries only — it never probes — so a network answer can never be what decides that hard
- * retirement is safe.
- */
-export function carrierCountsActive(observation: CarrierObservation): boolean {
-  return observation.liveness !== 'absent';
 }

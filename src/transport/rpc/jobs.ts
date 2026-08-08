@@ -24,6 +24,11 @@ export const jobWaitSchema = z
     projectRoot: projectRootSchema,
     timeoutSeconds: z.number().int().min(1).max(1200).optional(),
     cursor: waitCursorSchema.optional(),
+    // Absent on any CLI built before the `interrupted` event existed — that build's renderer has no case
+    // for it and no `default`, so the coordinator must not emit one unless the subscriber names itself able
+    // to render it. Never inferred from version or bundle identity: a client that predates the field and one
+    // that sends `false` are indistinguishable to the coordinator, and both get the pre-`interrupted` stream.
+    supportsInterrupted: z.boolean().optional(),
   })
   .strict();
 

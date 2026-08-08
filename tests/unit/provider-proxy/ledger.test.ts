@@ -29,7 +29,6 @@ describe('provider-proxy operation ledger', () => {
     ledger.transition(KEY, 'released');
 
     expect(ledger.get(KEY)).toBeNull();
-    expect(ledger.size()).toBe(0);
   });
 
   it('refuses a transition the state machine does not name', () => {
@@ -110,7 +109,7 @@ describe('provider-proxy operation ledger', () => {
     });
 
     expect(refused).toEqual({ kind: 'capacity', retryable: true, reason: 'operation-ledgers' });
-    expect(ledger.size()).toBe(128);
+    expect(ledger.get({ jobId: 'job-1', operationId: 'op-128' })).toBeNull();
   });
 
   it('requires provider sequences to increase', () => {
@@ -132,19 +131,6 @@ describe('provider-proxy operation ledger', () => {
     expect(paused).toBe(true);
     expect(ledger.acknowledge(KEY, MAX_PROVIDER_REPLAY_EVENTS).resumed).toBe(true);
     expect(ledger.get(KEY)?.bufferedBytes).toBe(0);
-  });
-
-  it('replays only what the consumer has not acknowledged', () => {
-    const ledger = createOperationLedger();
-    reserved(ledger);
-    ledger.recordEvent(KEY, { providerSeq: 1, frame: 'x'.repeat(5) });
-    ledger.recordEvent(KEY, { providerSeq: 2, frame: 'y'.repeat(5) });
-    ledger.recordEvent(KEY, { providerSeq: 3, frame: 'z'.repeat(5) });
-
-    ledger.acknowledge(KEY, 1);
-
-    expect(ledger.replayFrom(KEY, 1).map((event) => event.providerSeq)).toEqual([2, 3]);
-    expect(ledger.get(KEY)?.committedThroughProviderSeq).toBe(1);
   });
 
   it('refuses an acknowledgement that moves backwards', () => {
@@ -178,7 +164,6 @@ describe('provider-proxy operation ledger', () => {
 
     // A retry of the same request must not be a conflict; only a different payload for one identity is.
     reserved(ledger);
-    expect(ledger.size()).toBe(1);
 
     expect(() => ledger.prepare({ key: KEY, reservation: asReservation('other'), prepared: {}, nowMs: 0 })).toThrow(
       LedgerError,
@@ -241,17 +226,6 @@ describe('provider-proxy operation ledger', () => {
     expect(() => ledger.transition(KEY, 'terminal-awaiting-journal-ack')).toThrow(LedgerError);
     ledger.transition(KEY, 'released');
     expect(ledger.get(KEY)).toBeNull();
-  });
-
-  it('replays the frames a reconnecting consumer has not acknowledged', () => {
-    const ledger = createOperationLedger();
-    reserved(ledger);
-    ledger.recordEvent(KEY, { providerSeq: 1, frame: 'first' });
-    ledger.recordEvent(KEY, { providerSeq: 2, frame: 'second' });
-    ledger.acknowledge(KEY, 1);
-
-    // The point of buffering: what comes back is the events themselves, not a record that they existed.
-    expect(ledger.replayFrom(KEY, 1)).toEqual([{ providerSeq: 2, frame: 'second' }]);
   });
 
   it('treats a repeated activation of a running operation as the same request', () => {

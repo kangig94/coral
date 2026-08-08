@@ -229,7 +229,10 @@ const verifiedBackendInfoSchema = z
     instanceId: nonEmptyStringSchema,
     processStartedAt: z.number().int().positive().optional(),
   })
-  .strict();
+  // Same record `readDiscoveryRecord` parses in infra/backend-discovery.ts, re-validated here with a
+  // narrower (all-required) shape — tolerant for the same reason: a future writer's extra field must not
+  // make this build's own read of the record it just wrote fail.
+  .passthrough();
 
 function parseRawCoordinatorHealth(value: unknown): RawCoordinatorHealth | null {
   const parsed = rawCoordinatorHealthSchema.safeParse(value);

@@ -162,7 +162,6 @@ async function startGuardianAndReaper(): Promise<{
     echoChallenge: () => ({ accepted: true, nextChallenge: mintChallenge() }) as const,
     observeEof: () => {},
     observePairingLoss: () => {},
-    dispatchOrdinaryFrame: () => ({ accepted: true }) as const,
     latchTeardown: () => {},
     markContainmentAbsent: () => {},
     markExited: () => {},

@@ -173,7 +173,8 @@ describe('cross-version-handoff-notice', () => {
     renderHandoffNotice(outcome);
     renderHandoffNotice(outcome);
 
-    const notice = 'handed off to 2.3.4; use that version from now on\n';
+    const notice =
+      'handed off to 2.3.4; this repeats on every run until the installed plugin is upgraded to 2.3.4 or newer\n';
     expect(stderr).toBe(notice);
     expect(process.stderr.write).toHaveBeenCalledOnce();
     expect(stdoutWrite).toHaveBeenCalledOnce();

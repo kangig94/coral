@@ -70,6 +70,13 @@ const ROLE_SPAWN_READY_DEADLINE_MS = 10_000;
 const ROLE_SPAWN_READY_RETRY_INTERVAL_MS = 20;
 const ROLE_CONNECT_TIMEOUT_MS = 2_000;
 
+// One `unique symbol` per role clock, so a clock built for one role's containment can never type-check as
+// interchangeable with another's — each is its own process-local authority.
+const guardianConstructionUnwindClockScope: unique symbol = Symbol('coral.provider-proxy.guardian-unwind');
+const guardianRoleClockScope: unique symbol = Symbol('coral.provider-proxy.guardian');
+const reaperRoleClockScope: unique symbol = Symbol('coral.provider-proxy.reaper');
+const proxyRoleClockScope: unique symbol = Symbol('coral.provider-proxy.proxy');
+
 export type ProviderRoleMainPorts = Readonly<{
   runtime: Runtime;
   pluginRoot: string;
@@ -429,7 +436,7 @@ async function unwindGuardianConstruction(
   // Phase 2: identity-check and reap every process this attempt started, newest first. Its own scoped clock,
   // matching the pattern every role's own construction (`startProviderGuardianRole`, `startProviderReaperRole`,
   // `startProviderProxyRole`) already uses to mint one on demand rather than share another subsystem's.
-  const clock = createMonotonicClock(Symbol('coral.provider-proxy.guardian-unwind'));
+  const clock = createMonotonicClock(guardianConstructionUnwindClockScope);
   const environment = buildContainmentEnvironment(clock, ports);
   if (partial.proxySpawn !== null) {
     const proxySpawn = partial.proxySpawn;
@@ -488,7 +495,7 @@ export async function startProviderGuardianRole(
   ports: ProviderRoleMainPorts,
 ): Promise<GuardianRoleHandle> {
   const capsule = consumeProviderBootstrapCapsule(capsulePath, 'guardian', buildCapsuleEnv(ports));
-  const clock = createMonotonicClock(Symbol('coral.provider-proxy.guardian'));
+  const clock = createMonotonicClock(guardianRoleClockScope);
   const deadlines = buildDeadlines(clock, ports);
   const containmentEnvironment = buildContainmentEnvironment(clock, ports);
   const timer = runtimeControlTimer(ports.runtime);
@@ -608,7 +615,7 @@ export async function startProviderReaperRole(
   ports: ProviderRoleMainPorts,
 ): Promise<ReaperRoleHandle> {
   const capsule = consumeProviderBootstrapCapsule(capsulePath, 'reaper', buildCapsuleEnv(ports));
-  const clock = createMonotonicClock(Symbol('coral.provider-proxy.reaper'));
+  const clock = createMonotonicClock(reaperRoleClockScope);
   const deadlines = buildDeadlines(clock, ports);
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
 
@@ -785,7 +792,7 @@ export async function startProviderProxyRole(
   ports: ProviderRoleMainPorts,
 ): Promise<ProxyRoleHandle> {
   const capsule = consumeProviderBootstrapCapsule(capsulePath, 'proxy', buildCapsuleEnv(ports));
-  const clock = createMonotonicClock(Symbol('coral.provider-proxy.proxy'));
+  const clock = createMonotonicClock(proxyRoleClockScope);
   const self = readSelfIdentity(ports);
   const timer = runtimeControlTimer(ports.runtime);
 

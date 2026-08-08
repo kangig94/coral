@@ -347,8 +347,6 @@ function setInterruptedResetCause(
               bundleHash: 'fedcba9876543210',
               flavor: 'prod',
               storeFormatFingerprint: `sha256:${'e'.repeat(64)}`,
-              executablePathSha256: 'c'.repeat(64),
-              executableSha256: 'd'.repeat(64),
             },
           }
         : null,

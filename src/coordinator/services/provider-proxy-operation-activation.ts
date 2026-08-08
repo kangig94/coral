@@ -126,8 +126,8 @@ export type ActivateProviderOperationResult =
        *  the caller (`createAppServerProxyRoute`) can register it with `LocalOperationRegistry.activate()`
        *  without re-deriving it from anything. */
       meta: ProviderOperationRuntimeMeta;
-      /** This operation's `operation.stop.v1` capability, bound to the exact `proxyClient` and identity this
-       *  activation used. */
+      /** This operation's `operation.stop.v1` and `guardian.operation-release.v1` capabilities, bound to the
+       *  exact `proxyClient`/`guardianClient` and identity/reservation/receipt tuple this activation used. */
       control: OperationStopControl;
     }>
   /** The proxy's own ledger is at `MAX_PROXY_OPERATION_LEDGERS` capacity. Admission stays with the caller —
@@ -171,14 +171,23 @@ async function callStrict<TSchema extends z.ZodTypeAny, TResult>(
 }
 
 /**
- * Binds `operation.stop.v1` to the exact `proxyClient` and `operation` this activation used, for
- * `LocalOperationRegistry` (`operation-registry.ts`) to hold once activation succeeds. The RPC's own reply
+ * Binds `operation.stop.v1` and `guardian.operation-release.v1` to the exact `proxyClient`/`guardianClient` and
+ * `operation`/`reservation`/`jointContainmentReceipt` tuple this activation committed, for
+ * `LocalOperationRegistry` (`operation-registry.ts`) to hold once activation succeeds. `stop`'s own RPC reply
  * (`state`, a ledger transition this module has no reason to interpret) is validated and discarded — the
  * caller only needs to know the send either completed or threw.
+ *
+ * `releaseMembership` is the success-path counterpart of `compensateAfterActivationFailure`'s guardian release
+ * below: that call fires immediately when activation itself fails, before any entry exists to hold a
+ * capability; this one is handed to the registry so it can fire later, once the operation this tuple names has
+ * actually settled — the release the guardian's `staged` map otherwise never received for an operation that
+ * completed successfully.
  */
-function buildStopControl(
+function buildOperationControl(
   deps: ProviderProxyOperationActivationDeps,
   operation: OperationIdentity,
+  reservation: Reservation,
+  jointContainmentReceipt: JointContainmentReceipt,
   timeoutMs: number,
 ): OperationStopControl {
   return {
@@ -190,6 +199,16 @@ function buildStopControl(
         timeoutMs,
         proxyOperationStopParamsSchema,
         proxyOperationStopResultSchema,
+      );
+    },
+    async releaseMembership(): Promise<void> {
+      await callStrict(
+        deps.guardianClient,
+        'guardian.operation-release.v1',
+        { operation, reservation, jointContainmentReceipt },
+        timeoutMs,
+        guardianOperationReleaseParamsSchema,
+        guardianOperationReleaseResultSchema,
       );
     },
   };
@@ -335,7 +354,7 @@ export async function activateProviderOperation(
       kind: 'executing',
       committedThroughProviderSeq: activateResult.committedThroughProviderSeq,
       meta,
-      control: buildStopControl(deps, operation, timeoutMs),
+      control: buildOperationControl(deps, operation, reservation, jointContainmentReceipt, timeoutMs),
     };
   } catch (error: unknown) {
     await compensateAfterActivationFailure(deps, operation, reservation, jointContainmentReceipt);

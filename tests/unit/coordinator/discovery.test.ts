@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -145,5 +145,34 @@ describe('coordinator discovery', () => {
     );
 
     expect(probeCoordinator(runtime)).toBeNull();
+  });
+
+  it('reads a discovery record that carries a field this build predates', async () => {
+    makeHome();
+    const { readDiscoveryRecord, writeDiscoveryRecord } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+
+    writeDiscoveryRecord(
+      {
+        pid: process.pid,
+        port: 4313,
+        socketPath: coordinatorPaths('prod').socketPath,
+        bundleHash: 'bundle-d',
+        flavor: 'prod',
+        namespace: 'ns-d',
+        startedAt: Date.now(),
+        token: 'token-d',
+        bootToken: 'boot-token-d',
+      },
+      runtime,
+    );
+
+    // A build newer than this one adds a field to the record before either build's schema knows about
+    // it — simulated here by writing it straight to disk, past `writeDiscoveryRecord`'s own field set.
+    const infoPath = runtime.paths.coral.coordinator.infoFile;
+    const written = JSON.parse(readFileSync(infoPath, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(infoPath, JSON.stringify({ ...written, futureField: 'added-by-a-newer-coordinator' }), 'utf-8');
+
+    expect(readDiscoveryRecord(runtime)).toMatchObject({ namespace: 'ns-d', token: 'token-d' });
   });
 });

@@ -43,6 +43,11 @@ const DEBUG_SIMULATION_SCENARIOS_ROOT = ['tools', 'simulation', 'scenarios'].joi
 const RETIRED_PROVIDERS_CONTINUITY_MUTATION = ['src', 'providers', 'continuity-mutation.ts'].join('/');
 const RETIRED_STATUS_SCHEMA_FAULT = ['stale', 'status', 'schema'].join('_');
 const RETIRED_TEXT_ARTIFACT_LOCK_METHOD = ['ensureTextArtifacts', 'FreshUnderLock'].join('');
+// The snapshot-acknowledgement mechanism went with `87e7a72f`. Its field name was kept out by the wait
+// schemas' `.strict()` until those became `.passthrough()` so a newer coordinator's additive fields stop
+// killing an older CLI's wait. Tolerating an unknown field on the wire is not the same as letting the
+// mechanism back into `src/`, and this is where that second thing is now held.
+const RETIRED_SNAPSHOT_RENDER_FIELD = ['snapshot', 'RenderId'].join('');
 const RETIRED_KB_DAEMON_ARG = '--kb-daemon';
 const RETIRED_KB_DAEMON_PLAINTEXT_SHUTDOWN = 'Plain-text shutdown remains supported';
 const RETIRED_KB_DAEMON_OLD_SUPERVISORS = 'old supervisors';
@@ -552,6 +557,7 @@ describe('architecture boundary guard', () => {
       collectProductionStringResidue([
         RETIRED_STATUS_SCHEMA_FAULT,
         RETIRED_TEXT_ARTIFACT_LOCK_METHOD,
+        RETIRED_SNAPSHOT_RENDER_FIELD,
         RETIRED_KB_DAEMON_ARG,
         RETIRED_KB_DAEMON_PLAINTEXT_SHUTDOWN,
         RETIRED_KB_DAEMON_OLD_SUPERVISORS,

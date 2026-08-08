@@ -323,6 +323,7 @@ describe('cli follow', () => {
         // cursor before being killed — asserted as the derived value, not as a round number.
         timeoutSeconds: 590,
         projectRoot: '/project/root',
+        supportsInterrupted: true,
       },
       {
         timeoutMs: 3_000,

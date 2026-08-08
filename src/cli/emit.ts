@@ -90,7 +90,7 @@ export function isAcceptedLaunchResponse(value: unknown): value is AcceptedLaunc
   );
 }
 
-export function emitAcceptedLaunchResponse(decision: AcceptedLaunchResponse): void {
+function emitAcceptedLaunchResponse(decision: AcceptedLaunchResponse): void {
   process.stdout.write(`${formatDetachedLaunchStatus(decision)}\n${formatLaunchWaitHint(decision)}\n`);
 }
 

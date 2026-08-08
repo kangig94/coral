@@ -63,7 +63,10 @@ const coordinatorDiscoveryRecordSchema = z
     instanceId: nonEmptyStringSchema.optional(),
     processStartedAt: positiveIntegerSchema.optional(),
   })
-  .strict();
+  // A build older than a future field must still read this record — `.strict()` would make that build's
+  // `probeCoordinator` reject it outright the day a newer writer adds one, when every field it already
+  // knows about is still present and valid.
+  .passthrough();
 
 function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | null {
   const parsed = coordinatorDiscoveryRecordSchema.safeParse(value);

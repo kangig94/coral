@@ -193,6 +193,34 @@ describe('activateProviderOperation', () => {
     expect(proxy.calls).toEqual(['operation.prepare.v1', 'operation.activate.v1', 'operation.stop.v1']);
   });
 
+  it('returns a control capability that sends guardian.operation-release.v1 for exactly this operation', async () => {
+    const db = testDb();
+    const proxy = scriptedClient({
+      'operation.prepare.v1': [PREPARE_PENDING],
+      'operation.activate.v1': [{ state: 'executing', committedThroughProviderSeq: 0 }],
+    });
+    const guardian = scriptedClient({
+      'guardian.operation-activate.v1': [
+        { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' },
+      ],
+      'guardian.operation-release.v1': [{ state: 'membership-released' }],
+    });
+
+    const result = await activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED);
+    if (result.kind !== 'executing') throw new Error(`expected 'executing', got '${result.kind}'`);
+
+    await result.control.releaseMembership?.();
+
+    expect(guardian.calls).toEqual(['guardian.operation-activate.v1', 'guardian.operation-release.v1']);
+    // The payload, not just the method name — the same reservation/receipt tuple this activation committed,
+    // not a value re-derived or re-read from anything.
+    expect(guardian.paramsFor('guardian.operation-release.v1')).toEqual({
+      operation: OPERATION,
+      reservation: PREPARE_PENDING.reservation,
+      jointContainmentReceipt: PREPARE_PENDING.jointContainmentReceipt,
+    });
+  });
+
   it('reports capacity and writes nothing when the proxy ledger is full', async () => {
     const db = testDb();
     const proxy = scriptedClient({

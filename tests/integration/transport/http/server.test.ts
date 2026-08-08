@@ -4508,6 +4508,64 @@ describe('execution backend server', () => {
     });
   });
 
+  it('withholds interrupted wait events from a subscriber that never declared it can render them', async () => {
+    const fakeService = createFakeExecutionService({
+      waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
+        yield {
+          type: 'interrupted',
+          jobId: 'job-1',
+          storedPhase: 'running',
+          observedMaxJournalSeq: 3,
+          remainingJobIds: ['job-1'],
+          observation: { kind: 'carrier_interrupted', reason: 'carrier_absent' },
+          continuity: 'unavailable',
+          outcome: 'unknown',
+        };
+        yield {
+          type: 'terminal',
+          jobId: 'job-1',
+          seq: 8,
+          remainingJobIds: [],
+          resultPath: jobResultPath('job-1'),
+          result: { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
+        };
+      }),
+    });
+    const progressStore = createProgressStore();
+    createdJobIds.add('job-1');
+    initTestJob(progressStore, {
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+    });
+    const backend = await startBackendServer({
+      createExecutionService: () => fakeService as never,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobIds: ['job-1'],
+        timeoutSeconds: 1,
+        projectRoot: '/tmp/project',
+      }),
+    });
+    const body = await response.text();
+
+    // An already-installed CLI predating `interrupted` never sends `supportsInterrupted`, and its
+    // `follow.ts` has no `default` case in the switch that renders wait events — an event type it does
+    // not recognize crashes the render instead of being skipped. Withholding the event at the wire is
+    // what keeps that CLI working; the terminal event still has to reach it.
+    expect(body).not.toContain('event: interrupted');
+    expect(body).toContain('event: terminal');
+  });
+
   it('streams passive dashboard SSE events and applies the optional job filter', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
     const eventBus = new TypedEventBus();

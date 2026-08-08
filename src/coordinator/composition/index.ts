@@ -362,8 +362,9 @@ function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): Exp
     switch (code) {
       case 'invalid_request':
         return "Retry with valid expansion command arguments or run 'coral-cli expansion --help'.";
-      case 'kb_disabled':
-        return 'Enable the KB daemon runtime and restart Coral, then retry.';
+      // No 'kb_disabled' case: every producer of that code (createDisabledKbDaemonSupervisor) already sets
+      // its own `result.remediation`, so `result.remediation ?? errorRemediation(result.code)` never reaches
+      // this function with that code. A case here would be dead and would drift from the real remediation.
       case 'kb_initializing':
       case 'kb_offline':
       case 'kb_unavailable':

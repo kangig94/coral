@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
+import { backendLog } from '../../../infra/backend-log.js';
 import { BUILD_FLAVOR_ENV_KEY } from '../../../infra/build-flavor.js';
+import { errorMessage } from '../../../infra/error-format.js';
 import { probeProcessStartedAtSeconds } from '../../../infra/node-process.js';
 import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '../../../providers/app-server-transport.js';
 import {
@@ -402,6 +404,11 @@ export function createProviderProxyAcquisitionSteps(
           },
         });
 
+        // A degrading heartbeat is otherwise silent until the enforcer's own deadline fires (`heartbeat.ts`'s
+        // own doc) — logged here, per role, so an operator sees it before then.
+        const onHeartbeatError = (role: 'proxy' | 'guardian' | 'reaper', instanceId: string) => (error: unknown) => {
+          backendLog.warn(`provider-proxy ${role} heartbeat echo failed for ${instanceId}: ${errorMessage(error)}`);
+        };
         const heartbeats = [
           startHeartbeatLoop(
             proxySession.client,
@@ -409,7 +416,7 @@ export function createProviderProxyAcquisitionSteps(
             runtime,
             proxySession.opened.controlEpoch,
             proxySession.nextHeartbeatChallenge,
-            () => {},
+            onHeartbeatError('proxy', setMinted.proxyInstanceId),
           ),
           startHeartbeatLoop(
             guardianSession.client,
@@ -417,7 +424,7 @@ export function createProviderProxyAcquisitionSteps(
             runtime,
             guardianSession.opened.controlEpoch,
             guardianSession.nextHeartbeatChallenge,
-            () => {},
+            onHeartbeatError('guardian', setMinted.guardianInstanceId),
           ),
           startHeartbeatLoop(
             reaperSession.client,
@@ -425,7 +432,7 @@ export function createProviderProxyAcquisitionSteps(
             runtime,
             reaperSession.opened.controlEpoch,
             reaperSession.nextHeartbeatChallenge,
-            () => {},
+            onHeartbeatError('reaper', setMinted.reaperInstanceId),
           ),
         ];
 

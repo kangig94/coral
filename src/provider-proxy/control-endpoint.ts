@@ -200,8 +200,6 @@ export type ControlEndpointOptions = Readonly<{
 export interface ControlEndpoint {
   listen(): Promise<void>;
   close(): Promise<void>;
-  /** The epoch of the open tenancy, or null when none is open. */
-  currentEpoch(): ControlEpoch | null;
   /**
    * Writes one pre-encoded request frame onto the live control tenancy's own socket and resolves with its
    * response `result`, or rejects if there is no active tenancy, the frame is malformed, the tenancy closes
@@ -611,9 +609,6 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       await new Promise<void>((resolve) => {
         running.close(() => resolve());
       });
-    },
-    currentEpoch(): ControlEpoch | null {
-      return tenancy?.epoch ?? null;
     },
     /**
      * Scoped to the active tenancy, not "the socket": there is at most one connection holding active

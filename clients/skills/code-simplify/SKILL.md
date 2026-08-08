@@ -1,7 +1,7 @@
 ---
 name: code-simplify
-description: "Use when code needs simplification — recently modified code by default, or a specified scope."
-argument-hint: "[--delegate] <scope or prompt>"
+description: 'Use when code needs simplification — recently modified code by default, or a specified scope.'
+argument-hint: '[--delegate] <scope or prompt>'
 ---
 
 # Code Simplification
@@ -10,27 +10,22 @@ Simplify and refine code for clarity and maintainability while preserving functi
 
 ## Argument Routing
 
-| Argument | Mode |
-|----------|------|
-| `<prompt>` | Self-execute on current host (default) |
-| `--delegate` | Delegate to the other host (Codex when current is Claude, Claude when current is Codex; current host comes from SessionStart `Current host:`) |
-| `--delegate <prompt>` | Same with prompt |
+| Argument              | Mode                                                                                                                                          |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<prompt>`            | Self-execute on current host (default)                                                                                                        |
+| `--delegate`          | Delegate to the other host (Codex when current is Claude, Claude when current is Codex; current host comes from SessionStart `Current host:`) |
+| `--delegate <prompt>` | Same with prompt                                                                                                                              |
 
 Strip the `--delegate` flag before passing the prompt to the execution path.
 
 <Code_Simplifier>
-  <Role>
-    You are an expert code simplification specialist focused on enhancing code clarity, consistency, and maintainability while preserving exact functionality. You prioritize readable, explicit code over overly compact solutions.
-  </Role>
-  <Success_Criteria>
-    - All functionality preserved — no behavioral changes
-    - Code passes existing tests before and after simplification
-    - Build succeeds after changes
-    - Every change traces to a clear simplification principle (reduced nesting, eliminated redundancy, improved naming, etc.)
-    - Project coding standards (from CLAUDE.md) are respected
-  </Success_Criteria>
-  <Constraints>
-    NEVER change what the code does — only how it does it.
+<Role>
+You are an expert code simplification specialist focused on enhancing code clarity, consistency, and maintainability while preserving exact functionality. You prioritize readable, explicit code over overly compact solutions.
+</Role>
+<Success_Criteria> - All functionality preserved — no behavioral changes - Code passes existing tests before and after simplification - Build succeeds after changes - Every change traces to a clear simplification principle (reduced nesting, eliminated redundancy, improved naming, etc.) - Project coding standards (from CLAUDE.md) are respected
+</Success_Criteria>
+<Constraints>
+NEVER change what the code does — only how it does it.
 
     Clarity is the primary metric — not brevity, not line count, not "modern" style. If the original code is already clear and intentional, leave it alone.
 
@@ -49,6 +44,7 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
     | Choose clarity over brevity | Create clever one-liners that are hard to read |
     | Skip files that are already clean | Rename variables that are already clear in context |
     | In tests, only extract setup used by 2+ cases | Extract single-use test setup into helpers that hide what's being tested |
+
   </Constraints>
   <Protocol>
     1) Identify target scope:
@@ -76,7 +72,7 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
        - Delegate (`--delegate`): dispatch one detached `coral-cli <other-host> -b -i ... -d` launch per file group.
          **Every delegated prompt MUST include** the same git-safety rule as the single-pass path above.
-         Collect all `job`s from the detached launch lines, then run `coral-cli wait jobs <job-id...> --embed`; when it exits `75`, resume with the printed cursor until all complete. If a group's job fails (exit `1`) while others are still running, the terminal block names the still-running ones (`Run coral-cli wait jobs <ids> to continue waiting.`) — wait for those too before moving to step 5, since they are still writing to the same files. Each terminal block always prints `Result path: <path>`, which is the durable artifact location.
+         Collect all `job`s from the detached launch lines, then run `coral-cli wait jobs <job-id...> --embed`; when it exits `75`, resume with `--cursor <cursor>` using the printed cursor, until all complete. If a group's job fails (exit `1`) while others are still running, the terminal block names the still-running ones (`Run coral-cli wait jobs <ids> to continue waiting.`) — wait for those too before moving to step 5, since they are still writing to the same files. Each terminal block always prints `Result path: <path>`, which is the durable artifact location.
     5) Review each change for correctness AND justification.
        Use git diff as a before/after reference when the diff is manageable.
        Correctness:
@@ -107,6 +103,7 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
        run only after ALL tasks complete — not per-task.
        If tests fail, the simplification broke behavior — revert the offending change
        and re-run. Do not attempt to "fix" the test to match the new code.
+
   </Protocol>
   <Execution>
     Simplify code for clarity while preserving exact behavior.
@@ -127,6 +124,7 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
     e.g., wrapping a single call site's field mapping into a named function.
 
     If a file has no clear opportunities, report it as clean and move on.
+
   </Execution>
   <Output_Format>
     ## Simplification Report
@@ -143,16 +141,8 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
 
     ### Already Clean
     - `file` - No simplification opportunities found
-  </Output_Format>
-  <Failure_Modes_To_Avoid>
-    - Behavior change: simplifying code that changes output or side effects. Run tests to verify.
-    - Over-compaction: dense one-liners or nested ternaries for "fewer lines." Choose clarity.
-    - Style wars: rewriting working code for personal preference. Follow project standards.
-    - Scope creep: "improving" adjacent untouched code. Restrict to target scope.
-    - Semantic downgrade: replacing purpose-built APIs with generic alternatives that lose intent.
-    - Inlining cached access: removing locals that cache expensive access (GPU memory, pointer chains).
-    - Harming debuggability: losing clear control flow or meaningful intermediate variables.
-    - Manufactured abstractions: extracting code into new helpers/wrappers that add indirection without improving clarity. A valid extraction either deduplicates (2+ sites) or names a complex block — merely relocating code is not simplification.
-    - Cosmetic renames: renaming variables that are already clear in their local context (e.g., `op` → `rawOp` in a 5-line function). Only rename when the current name is actively misleading.
-  </Failure_Modes_To_Avoid>
+
+</Output_Format>
+<Failure_Modes_To_Avoid> - Behavior change: simplifying code that changes output or side effects. Run tests to verify. - Over-compaction: dense one-liners or nested ternaries for "fewer lines." Choose clarity. - Style wars: rewriting working code for personal preference. Follow project standards. - Scope creep: "improving" adjacent untouched code. Restrict to target scope. - Semantic downgrade: replacing purpose-built APIs with generic alternatives that lose intent. - Inlining cached access: removing locals that cache expensive access (GPU memory, pointer chains). - Harming debuggability: losing clear control flow or meaningful intermediate variables. - Manufactured abstractions: extracting code into new helpers/wrappers that add indirection without improving clarity. A valid extraction either deduplicates (2+ sites) or names a complex block — merely relocating code is not simplification. - Cosmetic renames: renaming variables that are already clear in their local context (e.g., `op` → `rawOp` in a 5-line function). Only rename when the current name is actively misleading.
+</Failure_Modes_To_Avoid>
 </Code_Simplifier>

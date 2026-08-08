@@ -51,6 +51,8 @@ import {
   RecoveryOwnershipReleaseError,
 } from './interrupted-finalizer.js';
 
+const carrierDetachedRecoveryClockScope: unique symbol = Symbol('coral.recovery.carrier-detached');
+
 function requireProviderLaunchRecord(
   launchRecord: JobLaunch,
   operation: string,
@@ -277,7 +279,7 @@ export class RecoveryService {
           process: this.deps.runtime.process,
           platform: this.deps.runtime.env.platform() as NodeJS.Platform,
           db: this.deps.progressStore.getDb(),
-          clock: createMonotonicClock(Symbol('coral.recovery.carrier-detached')),
+          clock: createMonotonicClock(carrierDetachedRecoveryClockScope),
         }),
     });
     options.signal.throwIfAborted();

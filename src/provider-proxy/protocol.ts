@@ -297,9 +297,15 @@ export function assertNamedCoordinatorBuild(
   }
 }
 
-/** The caller names the roots it believes are recorded. A disagreement means one side is reasoning about a
- *  different containment, which teardown must surface rather than silently reap its own view of — the same
- *  check both the guardian and the reaper perform on their own half of the same stop-and-reap request. */
+/** The caller names the roots it believes are recorded. This is a subset check, not an equality check: the
+ *  enforcer's recorded set is a superset of the caller's claim by construction. The coordinator can only ever
+ *  claim roots its own live registry still tracks (`LocalOperationRegistry.providerRootsFor`), and an
+ *  operation's root drops out of that live registry the instant its terminal commits (`settled()`) — which can
+ *  race a concurrent teardown reading the enforcer's own, still-recorded set. A claim that undershoots what the
+ *  enforcer recorded is exactly what that race looks like, not a fault. What teardown must still surface is the
+ *  other direction: a claim naming a root the enforcer never recorded means one side is reasoning about a
+ *  different containment — the same check both the guardian and the reaper perform on their own half of the
+ *  same stop-and-reap request. */
 export function assertRecordedSetAgreement(
   role: 'guardian' | 'reaper',
   claimed: readonly { pid: number; processStartedAtSeconds: number }[],
@@ -308,8 +314,7 @@ export function assertRecordedSetAgreement(
   const key = (root: { pid: number; processStartedAtSeconds: number }): string =>
     `${root.pid}@${root.processStartedAtSeconds}`;
   const recordedKeys = new Set(recorded.map(key));
-  const claimedKeys = new Set(claimed.map(key));
-  if (recordedKeys.size !== claimedKeys.size || [...claimedKeys].some((entry) => !recordedKeys.has(entry))) {
+  if (claimed.some((root) => !recordedKeys.has(key(root)))) {
     throw new ProxyControlProtocolError(
       'identity_mismatch',
       `Teardown named a different provider-root set than this ${role} recorded.`,
@@ -439,10 +444,13 @@ export const guardianOperationActivateParamsSchema = z
   .strict();
 
 /**
- * `guardian.operation-release.v1`'s request — `provider-proxy-operation-activation.ts`'s compensation call
- * after a failed activation. `jointContainmentReceipt` is required: the guardian's release handler refuses a
- * caller that cannot present the receipt its own staging minted, and omitting it here previously made this
- * compensation itself throw on the wire, replacing the activation failure it existed to report.
+ * `guardian.operation-release.v1`'s request, sent from two moments in `provider-proxy-operation-activation.ts`:
+ * `compensateAfterActivationFailure`'s compensation call after a failed activation, and the
+ * `OperationStopControl.releaseMembership` capability a *successful* activation hands `LocalOperationRegistry`
+ * (`operation-registry.ts`) to send once that operation's terminal durably commits. `jointContainmentReceipt`
+ * is required: the guardian's release handler refuses a caller that cannot present the receipt its own staging
+ * minted, and omitting it here previously made the failure-path compensation itself throw on the wire,
+ * replacing the activation failure it existed to report.
  */
 export const guardianOperationReleaseParamsSchema = z
   .object({

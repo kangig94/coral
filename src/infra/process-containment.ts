@@ -25,7 +25,7 @@ export type RecordedContainmentIdentity = RecordedProcessIdentity &
   }>;
 
 /** Runtime capabilities required to reap one recorded containment. */
-export type ProcessContainmentEnvironment<Scope extends symbol = symbol> = {
+export type ProcessContainmentEnvironment<Scope extends symbol> = {
   /**
    * The largest recorded set this containment will act on. It is injected because "how many targets" is the
    * caller's bound, not a process-control constant — naming a provider concept here would put a domain

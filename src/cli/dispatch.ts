@@ -127,7 +127,7 @@ export type AbortCapableClient = {
   abortJobs(jobIds: string[]): Promise<AbortResult>;
 };
 
-export type CliCommandClient = AbortCapableClient & {
+type CliCommandClient = AbortCapableClient & {
   createSession(
     provider: string,
     prompt: string,
@@ -196,12 +196,6 @@ export type ProviderRunOptions = {
   owner?: string;
   bypassPermissions?: boolean;
   detach?: boolean;
-};
-
-export type WaitOptions = {
-  jobs: string;
-  cursor?: string;
-  embed?: boolean;
 };
 
 export type AbortOptions = {
@@ -499,11 +493,12 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         (s) => s.id === 'kb' && s.phase === 'offline' && s.reason === KB_DISABLED_REASON,
       );
       if (kbDisabled) {
+        // Condition only, no remediation: the command's own `kb_disabled` error carries the one
+        // authoritative recovery instruction (see createDisabledKbDaemonSupervisor). Repeating it here
+        // would print the same advice twice, back to back, for a single failure.
         process.stderr.write(
-          'KB is disabled on the running Coral coordinator, so this command will fail; continuing without a ' +
-            'restart so in-flight work is not interrupted. KB turns on at the next idle restart ' +
-            "(CORAL_BACKEND_IDLE_MS, default ~6h) — run 'coral-cli backend shutdown' to force it now if " +
-            'nothing else is running.\n',
+          'KB is disabled on the running Coral coordinator; this command will fail. Continuing without a ' +
+            'restart so in-flight work is not interrupted.\n',
         );
         return;
       }

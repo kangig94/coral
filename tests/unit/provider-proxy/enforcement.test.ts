@@ -11,6 +11,7 @@ import {
 } from '#src/provider-proxy/enforcement.js';
 
 const CONTAINMENT = { pid: 4_242, processStartedAtSeconds: 1_000, processGroupId: 4_242 } as const;
+const enforcementClockScope: unique symbol = Symbol('enforcement-clock');
 
 function root(pid: number): RecordedProcessIdentity {
   return { pid, processStartedAtSeconds: 2_000 };
@@ -40,7 +41,7 @@ function createManualScheduler(): EnforcementScheduler & { runDue(): void; pendi
 
 function createHarness(options: { adoptionInMs: number; alive?: Set<number>; stubborn?: ReadonlySet<number> }) {
   let elapsedMs = 0n;
-  const clock = createMonotonicClock(Symbol('enforcement-clock'), {
+  const clock = createMonotonicClock(enforcementClockScope, {
     readMilliseconds: () => elapsedMs,
     // Sleeping advances this clock, so a grace or confirmation wait actually consumes its budget instead
     // of spinning against a frozen reading.

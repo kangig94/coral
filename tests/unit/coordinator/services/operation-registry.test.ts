@@ -122,6 +122,50 @@ describe('LocalOperationRegistry', () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
+  it('settled() sends the control capability’s releaseMembership() — the guardian release a successfully activated operation never got before this fix', async () => {
+    const registry = new LocalOperationRegistry();
+    const m = meta();
+    const releaseMembership = vi.fn().mockResolvedValue(undefined);
+    const control: OperationStopControl = { stop: async () => {}, releaseMembership };
+
+    registry.activate(m, control, () => {});
+    registry.settled(identityFor(m));
+    // releaseMembership() is fired-and-forgotten from inside settled() — give the queued microtask a turn.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(releaseMembership).toHaveBeenCalledTimes(1);
+  });
+
+  it('settled() tolerates a control capability with no releaseMembership() — adopted operations carry none', () => {
+    const registry = new LocalOperationRegistry();
+    const m = meta();
+    const release = vi.fn();
+
+    registry.adopt(m, { stop: async () => {} }, release);
+
+    expect(() => registry.settled(identityFor(m))).not.toThrow();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('settled() tolerates a releaseMembership() that rejects, rather than throwing into the caller', async () => {
+    const registry = new LocalOperationRegistry();
+    const m = meta();
+    const control: OperationStopControl = {
+      stop: async () => {},
+      releaseMembership: async () => Promise.reject(new Error('guardian unreachable')),
+    };
+
+    registry.activate(m, control, () => {});
+
+    expect(() => registry.settled(identityFor(m))).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+    // The entry is still forgotten even though the release failed — settlement's own contract does not depend
+    // on the guardian RPC's outcome.
+    expect(registry.stateForJob(m.jobId)).toBeNull();
+  });
+
   it('settled() on an identity this registry never activated is a silent no-op', () => {
     const registry = new LocalOperationRegistry();
     // A real, unrelated entry in the registry — proves the unknown identity is genuinely ignored rather than

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertRecordedSetAgreement,
   coordinatorIdentitySchema,
   decodeProxyControlFrame,
   encodeProxyControlFrame,
@@ -28,6 +29,8 @@ import {
   proxyOperationStopParamsSchema,
   reaperIdentitySchema,
 } from '#src/provider-proxy/protocol.js';
+import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
+import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
 
 const UUID_A = '11111111-1111-4111-8111-111111111111';
 const UUID_B = '22222222-2222-4222-8222-222222222222';
@@ -368,6 +371,77 @@ describe('guardian control-method request schemas, shared with their one coordin
     expect(guardianRegisterProviderRootParamsSchema.safeParse(missingReservation).success).toBe(false);
 
     expect(guardianRegisterProviderRootParamsSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
+  });
+});
+
+describe('assertRecordedSetAgreement', () => {
+  const ROOT_A = { pid: 5_001, processStartedAtSeconds: 900 };
+  const ROOT_B = { pid: 5_002, processStartedAtSeconds: 901 };
+
+  it('accepts an exact match between claimed and recorded roots', () => {
+    expect(() => assertRecordedSetAgreement('guardian', [ROOT_A], [ROOT_A])).not.toThrow();
+  });
+
+  it('accepts a claimed set that undershoots what this role recorded — the enforcer is a superset by construction', () => {
+    expect(() => assertRecordedSetAgreement('guardian', [], [ROOT_A])).not.toThrow();
+    expect(() => assertRecordedSetAgreement('reaper', [ROOT_A], [ROOT_A, ROOT_B])).not.toThrow();
+  });
+
+  it('rejects a claimed root the enforcer never recorded, regardless of what else it claims', () => {
+    expect(() => assertRecordedSetAgreement('guardian', [ROOT_B], [ROOT_A])).toThrow(/different provider-root set/u);
+    expect(() => assertRecordedSetAgreement('guardian', [ROOT_A, ROOT_B], [ROOT_A])).toThrow(
+      /different provider-root set/u,
+    );
+  });
+
+  it('drives a real LocalOperationRegistry through settle-then-teardown — the coordinator claim a settle racing teardown produces', () => {
+    // Not a fake `providerRootsFor: () => []` held in artificial agreement with a guardian that staged
+    // nothing: this is the actual write path (`activate` then `settled`) an operation's terminal drives
+    // (`provider-event-application.ts`), read back through the actual read path (`providerRootsFor`) teardown
+    // uses (`set-authority.ts`'s `stopAndReap`) — proving the two are reconciled by this function, not by
+    // holding them in lockstep by construction.
+    const registry = new LocalOperationRegistry();
+    const identity = { jobId: UUID_A, operationId: UUID_B, proxyInstanceId: UUID_C, buildSetId: UUID_D };
+    const meta: ProviderOperationRuntimeMeta = {
+      version: 1,
+      jobId: identity.jobId,
+      operationId: identity.operationId,
+      buildSetId: identity.buildSetId,
+      hostFingerprint: HOST_FINGERPRINT,
+      guardianInstanceId: guardianIdentity.guardianInstanceId,
+      guardianPid: guardianIdentity.pid,
+      guardianProcessStartedAtSeconds: guardianIdentity.processStartedAtSeconds,
+      guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
+      proxyInstanceId: identity.proxyInstanceId,
+      proxyPid: proxyIdentity.pid,
+      reaperInstanceId: reaperIdentity.reaperInstanceId,
+      reaperPid: reaperIdentity.pid,
+      reaperProcessStartedAtSeconds: reaperIdentity.processStartedAtSeconds,
+      reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
+      containmentKind: reaperIdentity.containmentKind,
+      proxyProcessStartedAtSeconds: proxyIdentity.processStartedAtSeconds,
+      proxyProcessGroupId: proxyIdentity.processGroupId,
+      canonicalEndpoint: proxyIdentity.canonicalEndpoint,
+      reservation: UUID_A,
+      providerRootPid: ROOT_A.pid,
+      providerRootProcessStartedAtSeconds: ROOT_A.processStartedAtSeconds,
+      jointContainmentReceipt: 'joint-1',
+      committedThroughProviderSeq: 0,
+    };
+
+    registry.activate(meta, { stop: async () => {} }, () => {});
+    // The operation's terminal commits and the registry forgets it — concurrently, from teardown's own view,
+    // with the enforcer that still recorded `ROOT_A` (a released membership does not remove the enforcer's own
+    // recorded root — only teardown itself may conclude absence).
+    registry.settled(identity);
+
+    const claimed = registry.providerRootsFor(identity.proxyInstanceId);
+    expect(claimed).toEqual([]);
+
+    // Before this fix, `assertRecordedSetAgreement`'s exact-equality check made this throw `identity_mismatch`
+    // for `[]` vs `[ROOT_A]` — a settled operation's own honest claim, refused as though it were a caller
+    // reasoning about a different containment.
+    expect(() => assertRecordedSetAgreement('guardian', claimed, [ROOT_A])).not.toThrow();
   });
 });
 

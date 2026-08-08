@@ -27,6 +27,7 @@ import { readProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta-store.j
 import { connectRoleControlWithRetry } from '#src/provider-proxy/role-spawn.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
+import type { OperationStopControl } from '#src/coordinator/services/operation-registry.js';
 import type { Database } from '#src/store/db.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
@@ -311,6 +312,56 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(() =>
       proxyOperationAdoptParamsSchema.parse({ ...(adopt?.params as object), committedThroughProviderSeq: -1 }),
     ).toThrow();
+  });
+
+  it('gives an adopted operation the membership release its activation never got to hand it', async () => {
+    const loc = locator();
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const operations = [operationFor(loc)];
+    const calls: { method: string; params: unknown }[] = [];
+    const client = fakeClient(
+      redemptionResponses(loc, operations, {
+        'operation.adopt.v1': { state: 'executing', replayFromProviderSeq: 1 },
+        'guardian.operation-release.v1': { state: 'membership-released' },
+      }),
+      calls,
+    );
+    stubConnect(client);
+    mockedReadMeta.mockImplementation((_db: Database, jobId: string, operationId: string) =>
+      locator({ jobId, operationId, committedThroughProviderSeq: 5 }),
+    );
+
+    let adopted: OperationStopControl | undefined;
+    let adoptedMeta: ProviderOperationRuntimeMeta | undefined;
+    await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: {
+          adopt: (meta, control) => {
+            adoptedMeta = meta;
+            adopted = control;
+          },
+          operationsFor: () => [],
+          providerRootsFor: () => [],
+        },
+      },
+      neverAborts,
+    );
+
+    if (adopted === undefined) throw new Error('adoption did not register a control');
+    // The successor never saw the reply that minted these values, so the durable row is the only place it
+    // could get them — which is the whole reason an adopted operation can release at all.
+    await adopted.releaseMembership?.();
+    const release = calls.filter((c) => c.method === 'guardian.operation-release.v1');
+    expect(release).toHaveLength(1);
+    expect(release[0]?.params).toMatchObject({
+      operation: { jobId: operations[0]?.jobId, operationId: operations[0]?.operationId },
+      reservation: adoptedMeta?.reservation,
+      jointContainmentReceipt: adoptedMeta?.jointContainmentReceipt,
+    });
   });
 
   it('redeems guardian, then reaper with the guardian’s own receipt, then proxy, adopting every named operation in order', async () => {

@@ -65,11 +65,11 @@ type PerformerRuntime = Readonly<{
 
 /** What `reapCarrier` needs to build one recorded-containment reap: real ports at the composition root, or a
  *  fake clock/process pair in tests — see `reapProviderOperationCarrier`. */
-export type CarrierReapDeps = Readonly<{
+export type CarrierReapDeps<Scope extends symbol> = Readonly<{
   process: Pick<Runtime['process'], 'kill' | 'isAlive'>;
   platform: NodeJS.Platform;
   db: Database;
-  clock: MonotonicClock<symbol>;
+  clock: MonotonicClock<Scope>;
   /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe, matching every other
    *  `ProcessContainmentEnvironment` composer (e.g. `provider-proxy/role-main.ts`). */
   readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
@@ -87,9 +87,9 @@ export type CarrierReapDeps = Readonly<{
  * failure here is logged, not thrown, because the safety-critical step (confirming the carrier is gone) has
  * already succeeded by this point, and a residual row is harmless once the job it named goes terminal.
  */
-export async function reapProviderOperationCarrier(
+export async function reapProviderOperationCarrier<Scope extends symbol>(
   locator: ProviderOperationRuntimeMeta,
-  deps: CarrierReapDeps,
+  deps: CarrierReapDeps<Scope>,
 ): Promise<void> {
   const containment: RecordedContainmentIdentity = {
     pid: locator.proxyPid,

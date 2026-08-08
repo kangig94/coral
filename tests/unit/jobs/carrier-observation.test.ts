@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  carrierCountsActive,
-  classifyCarrier,
-  type CarrierEvidence,
-  type CarrierObservationInput,
-} from '#src/jobs/carrier-observation.js';
+import { classifyCarrier, type CarrierEvidence, type CarrierObservationInput } from '#src/jobs/carrier-observation.js';
 
 function observe(evidence: CarrierEvidence, overrides: Partial<CarrierObservationInput> = {}) {
   return classifyCarrier({
@@ -58,7 +53,6 @@ describe('classifyCarrier', () => {
     // owned. The verdict still holds the job open — reporting the defect must not also change the answer.
     expect(observation.defect).toBe('local-unknown-after-recovery-decision');
     expect(observation.liveness).toBe('unknown');
-    expect(carrierCountsActive(observation)).toBe(true);
   });
 
   it('does not report the defect for classes whose unknown recovery never claimed to bound', () => {
@@ -120,20 +114,5 @@ describe('classifyCarrier', () => {
       expect(observation.liveness).toBe('unknown');
       expect(observation.source).toBe('no-local-evidence');
     });
-  });
-});
-
-describe('carrierCountsActive', () => {
-  it('holds a job open for everything except a positive absence', () => {
-    expect(carrierCountsActive(observe({ carrierClass: 'workflow', ownedByThisCoordinator: true }))).toBe(true);
-    expect(carrierCountsActive(observe({ carrierClass: 'workflow', ownedByThisCoordinator: false }))).toBe(true);
-    expect(
-      carrierCountsActive(
-        observe({
-          carrierClass: 'durable-cli',
-          process: { kind: 'recorded', alive: false, matchesRecordedStart: false, transportEvidence: true },
-        }),
-      ),
-    ).toBe(false);
   });
 });

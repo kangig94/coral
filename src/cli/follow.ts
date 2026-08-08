@@ -482,6 +482,9 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
             timeoutSeconds,
             projectRoot: options.projectRoot,
             ...(cursor ? { cursor } : {}),
+            // `emitWaitEvent` above has a case for `interrupted`; declaring that here is what lets a
+            // coordinator new enough to derive it actually put one on the wire.
+            supportsInterrupted: true,
           },
           {
             timeoutMs: HEALTH_TIMEOUT_MS,

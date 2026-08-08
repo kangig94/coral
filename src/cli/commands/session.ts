@@ -201,6 +201,10 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
             jobIds: [...activeJobIds],
             timeoutSeconds,
             projectRoot,
+            // Declared by every subscriber in this build that can render the event. A coordinator withholds
+            // `interrupted` from anyone who does not say this, which is how an already-installed CLI — whose
+            // wait switch has no arm for an unknown type — keeps working against a newer backend.
+            supportsInterrupted: true,
             ...(cursor ? { cursor } : {}),
           },
           { signal },
@@ -219,6 +223,11 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     .option('--cursor <cursor>', 'Opaque resume cursor (from previous wait output)')
     .option('--embed', 'Embed terminal result content when size permits (path is always present)')
     .option('--verbose', 'Show detailed usage breakdown on terminal events')
+    .addHelpText(
+      'after',
+      '\nExits 75 if jobs are still pending when the wait window closes (not 0); rerun with the printed ' +
+        '--cursor to keep waiting on the same jobs.\n',
+    )
     .action(async (jobIdArgs: string[], opts: WaitJobsOptions) => {
       await runWaitJobs(parseJobIds(jobIdArgs.join(' ')), opts, waitJobsCommand);
     });

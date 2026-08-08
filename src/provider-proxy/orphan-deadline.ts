@@ -154,7 +154,7 @@ export type DeadlineDispatchResult =
   | Readonly<{ accepted: true }>
   | Readonly<{
       accepted: false;
-      reason: 'control-active' | 'control-lost' | 'invalid-state' | 'teardown-latched';
+      reason: 'control-active' | 'invalid-state' | 'teardown-latched';
     }>;
 
 /** `DeadlineDispatchResult`'s own refusal reasons, named once so a challenge-carrying result can reuse them. */
@@ -174,8 +174,6 @@ export type ChallengeEchoResult =
   | Exclude<ControlLeaseEchoResult, { accepted: true }>
   | Readonly<{ accepted: false; reason: 'teardown-latched' }>;
 
-export type ProviderProxyOrdinaryFrameKind = 'proxy-heartbeat' | 'authenticated-frame';
-
 export type EnforcerDeadlineStateMachine<Scope extends symbol> = Readonly<{
   state(): EnforcerDeadlineState;
   bounds(): ProviderProxyEnforcerBounds<Scope>;
@@ -191,7 +189,6 @@ export type EnforcerDeadlineStateMachine<Scope extends symbol> = Readonly<{
    */
   reattachControl(): DeadlineDispatchResult;
   observeEof(): void;
-  dispatchOrdinaryFrame(kind: ProviderProxyOrdinaryFrameKind, work: () => void): DeadlineDispatchResult;
   /**
    * Admits a successor control tenancy and mints its first challenge. Refused while control is live or once
    * teardown has latched. The credential's one-shot lives with its owner, so this authorizes and does not
@@ -330,13 +327,6 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       // `adoptionDeadline` itself collapses to `now`, so any later call already sees itself latched out by
       // `sampleBeforeQueuedWork` above.
       pairingLossAt = pairingLossAt === null ? now : clock.earlier(pairingLossAt, now);
-    },
-    dispatchOrdinaryFrame: (_kind: ProviderProxyOrdinaryFrameKind, work: () => void): DeadlineDispatchResult => {
-      const now = sampleBeforeQueuedWork();
-      if (now === null) return { accepted: false, reason: 'teardown-latched' };
-      if (!evidence.isControlLive(now)) return { accepted: false, reason: 'control-lost' };
-      work();
-      return { accepted: true };
     },
     admitSuccessor: (): DeadlineChallengeIssueResult => {
       const now = sampleBeforeQueuedWork();

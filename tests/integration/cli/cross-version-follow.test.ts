@@ -240,7 +240,9 @@ describe('cross-version follow', () => {
 
     expect(result).toBe(0);
     expect(readFileSync(tracePath, 'utf8')).toBe('old-one\nold-two\nnew-three\nnew-four\n');
-    expect(stderr).toBe('handed off to 2.0.0; use that version from now on\n');
+    expect(stderr).toBe(
+      'handed off to 2.0.0; this repeats on every run until the installed plugin is upgraded to 2.0.0 or newer\n',
+    );
     expect(subscribe).toHaveBeenCalledOnce();
     expect(mockState.ensure).toHaveBeenCalledTimes(2);
   });

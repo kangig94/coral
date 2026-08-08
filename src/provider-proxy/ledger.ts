@@ -122,8 +122,6 @@ export interface OperationLedger<Prepared = unknown> {
   recordEvent(key: ProviderOperationKey, event: ReplayEvent): { paused: boolean };
   /** Acknowledges through a sequence, freeing the buffer it covers and resuming the producer. */
   acknowledge(key: ProviderOperationKey, committedThroughProviderSeq: number): { resumed: boolean };
-  /** Events after the acknowledged point, which a reconnecting consumer must be replayed. */
-  replayFrom(key: ProviderOperationKey, afterProviderSeq: number): readonly ReplayEvent[];
   /**
    * The `providerSeq` the next `recordEvent` call for this operation must use: one past whatever is
    * currently the newest buffered event, or one past the last acknowledged point once the buffer is empty.
@@ -132,7 +130,6 @@ export interface OperationLedger<Prepared = unknown> {
    */
   nextProviderSeq(key: ProviderOperationKey): number;
   get(key: ProviderOperationKey): OperationLedgerEntry<Prepared> | null;
-  size(): number;
   /**
    * Every operation this ledger currently holds, in no particular order. Used to resume draining every
    * operation's buffer after a control tenancy reattaches — not to look up any one operation's own state.
@@ -329,11 +326,6 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
       return { resumed: wasPaused && !entry.paused };
     },
 
-    replayFrom(key, afterProviderSeq): readonly ReplayEvent[] {
-      const entry = require(key);
-      return Object.freeze(entry.buffered.filter((event) => event.providerSeq > afterProviderSeq));
-    },
-
     nextProviderSeq(key): number {
       const entry = require(key);
       const last = entry.buffered.at(-1);
@@ -343,10 +335,6 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
     get(key): OperationLedgerEntry<Prepared> | null {
       const entry = entries.get(keyOf(key));
       return entry === undefined ? null : snapshot(entry);
-    },
-
-    size(): number {
-      return entries.size;
     },
 
     keys(): readonly ProviderOperationKey[] {
