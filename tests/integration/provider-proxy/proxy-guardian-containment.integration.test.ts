@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   activateProviderOperation,
+  authorizeProviderOperation,
+  prepareProviderOperation,
   type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
@@ -418,19 +420,26 @@ describe('provider proxy activation against a real guardian', () => {
       buildSetId: set.proxyIdentity.buildSetId,
     };
 
-    const result = await activateProviderOperation(
-      {
-        db: set.db,
-        proxyClient: set.proxyControl,
-        guardianClient: set.control,
-        setIdentity: set.setIdentity,
-        mutationRpcTimeoutMs: 5_000,
-      },
-      operation,
-      PREPARED,
-    );
+    const deps = {
+      proxyClient: set.proxyControl,
+      guardianClient: set.control,
+      setIdentity: set.setIdentity,
+      mutationRpcTimeoutMs: 5_000,
+    };
+    const prepared = await prepareProviderOperation(deps, operation, PREPARED);
+    if (prepared.state !== 'pending-activation') throw new Error('expected a prepared operation');
+    const authorized = await authorizeProviderOperation(deps, operation, {
+      reservation: prepared.reservation,
+      providerRoot: prepared.providerRoot,
+      jointContainmentReceipt: prepared.jointContainmentReceipt,
+    });
+    const result = await activateProviderOperation(deps, operation, {
+      reservation: prepared.reservation,
+      jointContainmentReceipt: prepared.jointContainmentReceipt,
+      jointActivationReceipt: authorized.jointActivationReceipt,
+    });
 
-    expect(result.kind).toBe('executing');
+    expect(result.state).toBe('executing');
     expect(set.started).toEqual([{ jobId: operation.jobId, operationId: operation.operationId, prepared: PREPARED }]);
     expect(set.proxy.ledger().get(operation)).toMatchObject({ state: 'executing' });
     // The same shared schema gates the hand-built payload once before it is written and once in the real

@@ -1,59 +1,108 @@
-import type { Database } from '../../../store/db.js';
-import type { ControlClient } from '../../../provider-proxy/control-client.js';
 import type { OperationIdentity, ProxyPreparedAppServerOperation } from '../../../provider-proxy/protocol.js';
 import {
   activateProviderOperation,
+  authorizeProviderOperation,
+  buildProviderOperationControl,
+  cancelProviderOperation,
+  inspectProviderOperation,
+  prepareProviderOperation,
   type ActivateProviderOperationResult,
+  type AuthorizeProviderOperationResult,
+  type CancelProviderOperationResult,
+  type InspectProviderOperationResult,
+  type OperationControlClient,
+  type PrepareProviderOperationResult,
+  type ProviderProxyOperationActivationDeps,
   type ProviderProxySetIdentity,
 } from '../../services/provider-proxy-operation-activation.js';
+import type { OperationStopControl } from '../../services/operation-registry.js';
 import type { ProviderProxySetAuthority } from './authority.js';
 
-/**
- * What launching an app-server operation through a live proxy set needs, beyond what coordinated shutdown
- * needs (`ProviderProxySetAuthority`, `authority.ts`). A strict superset of the same concrete
- * set, built at the exact same `establishControl` construction site (`acquisition-steps.ts`)
- * — not a second registry, and not a widening of `ProviderProxySetAuthority` itself, which stays exactly as
- * documented there: written from coordinated shutdown's side, on purpose.
- */
 export interface ProviderProxyOperationAuthority extends ProviderProxySetAuthority {
-  /** This set's fixed set-level identity — the same tuple `operation.prepare.v1` reports and the coordinator
-   *  commits into `provider_operation.v1` runtime meta. Fixed for the whole lifetime of this set. */
   readonly setIdentity: ProviderProxySetIdentity;
-  /** Runs the closed W2.3 publication order (`operation.prepare.v1` → runtime-meta commit →
-   *  `guardian.operation-activate.v1` → `operation.activate.v1`) for one operation against this exact set. */
-  activateOperation(
-    db: Database,
-    operation: OperationIdentity,
-    prepared: ProxyPreparedAppServerOperation,
-  ): Promise<ActivateProviderOperationResult>;
 }
 
-/**
- * Wraps an already-built `ProviderProxySetAuthority` with the operation-routing capability. `base`'s methods
- * are preserved as-is (spread, not re-implemented) so a caller holding this value as a plain
- * `ProviderProxySetAuthority` — shutdown — sees exactly the behavior `createProviderProxySetAuthority` gave it.
- */
+export interface DurableProviderProxyOperationAuthority extends ProviderProxyOperationAuthority {
+  prepareOperation(
+    operation: OperationIdentity,
+    prepared: ProxyPreparedAppServerOperation,
+  ): Promise<PrepareProviderOperationResult>;
+  inspectOperation(operation: OperationIdentity, prepareAttemptKey: string): Promise<InspectProviderOperationResult>;
+  authorizeOperation(
+    operation: OperationIdentity,
+    evidence: Readonly<{
+      reservation: string;
+      providerRoot: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+      jointContainmentReceipt: string;
+    }>,
+  ): Promise<AuthorizeProviderOperationResult>;
+  activatePreparedOperation(
+    operation: OperationIdentity,
+    evidence: Parameters<typeof activateProviderOperation>[2],
+  ): Promise<ActivateProviderOperationResult>;
+  cancelOperation(
+    operation: OperationIdentity,
+    prepareAttemptKey: string,
+    reservation: string,
+  ): Promise<CancelProviderOperationResult>;
+  buildOperationControl(
+    operation: OperationIdentity,
+    evidence: Readonly<{ reservation: string; jointContainmentReceipt: string }>,
+  ): OperationStopControl;
+}
+
+type ProviderProxyControlEstablishedListener = (authority: DurableProviderProxyOperationAuthority) => void;
+const controlEstablishedListeners = new Set<ProviderProxyControlEstablishedListener>();
+
+export function subscribeProviderProxyControlEstablished(
+  listener: ProviderProxyControlEstablishedListener,
+): () => void {
+  controlEstablishedListeners.add(listener);
+  return () => controlEstablishedListeners.delete(listener);
+}
+
+export function notifyProviderProxyControlEstablished(authority: DurableProviderProxyOperationAuthority): void {
+  for (const listener of controlEstablishedListeners) listener(authority);
+}
+
+export function isProviderProxyOperationAuthority(
+  value: ProviderProxySetAuthority,
+): value is DurableProviderProxyOperationAuthority {
+  const candidate = value as Partial<DurableProviderProxyOperationAuthority>;
+  return (
+    candidate.setIdentity !== undefined &&
+    typeof candidate.prepareOperation === 'function' &&
+    typeof candidate.inspectOperation === 'function' &&
+    typeof candidate.authorizeOperation === 'function' &&
+    typeof candidate.activatePreparedOperation === 'function' &&
+    typeof candidate.cancelOperation === 'function' &&
+    typeof candidate.buildOperationControl === 'function'
+  );
+}
+
 export function createProviderProxyOperationAuthority(deps: {
   base: ProviderProxySetAuthority;
   setIdentity: ProviderProxySetIdentity;
-  proxyClient: ControlClient;
-  guardianClient: ControlClient;
+  proxyClient: OperationControlClient;
+  guardianClient: OperationControlClient;
   mutationRpcTimeoutMs: number;
-}): ProviderProxyOperationAuthority {
+}): DurableProviderProxyOperationAuthority {
+  const activationDeps: ProviderProxyOperationActivationDeps = {
+    proxyClient: deps.proxyClient,
+    guardianClient: deps.guardianClient,
+    setIdentity: deps.setIdentity,
+    mutationRpcTimeoutMs: deps.mutationRpcTimeoutMs,
+  };
   return {
     ...deps.base,
     setIdentity: deps.setIdentity,
-    activateOperation: (db, operation, prepared) =>
-      activateProviderOperation(
-        {
-          db,
-          proxyClient: deps.proxyClient,
-          guardianClient: deps.guardianClient,
-          setIdentity: deps.setIdentity,
-          mutationRpcTimeoutMs: deps.mutationRpcTimeoutMs,
-        },
-        operation,
-        prepared,
-      ),
+    prepareOperation: (operation, prepared) => prepareProviderOperation(activationDeps, operation, prepared),
+    inspectOperation: (operation, prepareAttemptKey) =>
+      inspectProviderOperation(activationDeps, operation, prepareAttemptKey),
+    authorizeOperation: (operation, evidence) => authorizeProviderOperation(activationDeps, operation, evidence),
+    activatePreparedOperation: (operation, evidence) => activateProviderOperation(activationDeps, operation, evidence),
+    cancelOperation: (operation, prepareAttemptKey, reservation) =>
+      cancelProviderOperation(activationDeps, operation, prepareAttemptKey, reservation),
+    buildOperationControl: (operation, evidence) => buildProviderOperationControl(activationDeps, operation, evidence),
   };
 }

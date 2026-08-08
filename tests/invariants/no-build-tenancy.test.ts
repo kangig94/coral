@@ -67,6 +67,11 @@ const NAMESPACE_PROVENANCE_ALLOWLIST = new Map<string, number>([
   ['src/coordinator/lifecycle.ts#createCrashedJobTerminalizationPolicy', 1],
   ['src/coordinator/services/job-launch.ts#JobLaunchService.mintChildPrincipalSecretEnv', 1],
   ['src/coordinator/services/provider-event-application.ts#resolveJobContext', 1],
+  // `job.runtime.started` is appended here rather than through `JobStore.appendRuntimeStarted` because it must
+  // land in the SAME transaction as the saga's compare-and-swap into `executing`: a runtime-started event whose
+  // journal transition rolled back would report a kernel the coordinator does not own. Same provenance
+  // expression, one transaction deeper.
+  ['src/coordinator/services/provider-operation-reconciler.ts#ProviderOperationReconciler.#commitExecuting', 1],
   ['src/coordinator/services/recovery/index.ts#settleCoordinatorRecoveryItem', 2],
   ['src/coordinator/services/recovery/interrupted-finalizer.ts#finalizeInterruptedAppServerRecovery', 1],
   ['src/coordinator/services/recovery/interrupted-finalizer.ts#directTerminalAppender', 1],
@@ -152,8 +157,15 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
   return current;
 }
 
+/**
+ * A `#private` method's name is a `PrivateIdentifier`, not an `Identifier`, so leaving it out collapsed every
+ * private method in a class to the same `<computed>` key. An allowlist entry spelled that way would exempt any
+ * private method the class ever grows — a permission nobody could review, which is the shape this file exists
+ * to refuse. The `#` is kept in the name so the key matches how the method is written.
+ */
 function propertyName(node: ts.PropertyName | ts.BindingName | undefined): string | null {
   if (node === undefined) return null;
+  if (ts.isPrivateIdentifier(node)) return node.text;
   if (ts.isIdentifier(node) || ts.isStringLiteralLike(node) || ts.isNumericLiteral(node)) return node.text;
   return null;
 }

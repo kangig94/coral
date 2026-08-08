@@ -1022,6 +1022,7 @@ export class LaunchOrchestrator {
         continuity.value,
         protectedEnv,
       );
+      if (providerStream.kind === 'cancelled') return 'preserved';
       if (providerStream.kind === 'proxied') {
         // Activation succeeded: `applyProviderEventAtSeq`, wired as the proxy's `onProviderEvent` handler on
         // the live control connection this coordinator holds, is now the sole and exclusive applier of every
@@ -1245,10 +1246,15 @@ export class LaunchOrchestrator {
     requestForRoute: ProviderRequest,
     persistedContinuity: ProviderContinuityBlob | undefined,
     protectedEnv: Record<string, string> | undefined,
-  ): Promise<Readonly<{ kind: 'local'; stream: AsyncIterable<ProviderEventBody> }> | Readonly<{ kind: 'proxied' }>> {
+  ): Promise<
+    | Readonly<{ kind: 'local'; stream: AsyncIterable<ProviderEventBody> }>
+    | Readonly<{ kind: 'proxied' }>
+    | Readonly<{ kind: 'cancelled' }>
+  > {
     if (prepared.kind === 'app-server') {
       const route = this.deps.appServerProxyRoute;
-      if (route !== undefined && !signal.aborted) {
+      if (signal.aborted) return { kind: 'cancelled' };
+      if (route !== undefined) {
         const activation = await route.activate(
           {
             jobId,
@@ -1268,7 +1274,7 @@ export class LaunchOrchestrator {
           () => this.releaseProxiedOperation(jobId, pool),
           signal,
         );
-        if (activation === 'executing') {
+        if (activation.kind === 'remote-executing') {
           // `registerAppServerJob` enrolled this job before its placement was known, into tracking that only
           // ever fences *local* write paths (`onAppServerWaiting`/`onHostRef`/`checkpointJobContinuityAtomic`
           // above) — a proxied operation takes none of them; its durable effects come from the control
@@ -1280,8 +1286,11 @@ export class LaunchOrchestrator {
           this.appServerHandoffAborts.delete(jobId);
           return { kind: 'proxied' };
         }
-        // A transport-ambiguous activation is reported as `executing` above, reserving `null` for paths that
-        // did not authorize proxy execution.
+        if (activation.kind === 'cancelled') return { kind: 'cancelled' };
+        if (activation.kind === 'failed') throw new Error(activation.reason);
+        if (activation.kind !== 'local-authorized') {
+          throw new Error('App-server placement resolved without an execution authority.');
+        }
       }
       return {
         kind: 'local',

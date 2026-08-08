@@ -50,7 +50,11 @@ import { startHeartbeatLoop } from './heartbeat.js';
 import { establishRoleControl } from './role-control.js';
 import { createProviderProxySetAuthority } from './set-authority.js';
 import { buildGuardianSpawnUndo } from './spawn-undo.js';
-import { createProviderProxyOperationAuthority, type ProviderProxyOperationAuthority } from './operation-route.js';
+import {
+  createProviderProxyOperationAuthority,
+  notifyProviderProxyControlEstablished,
+  type ProviderProxyOperationAuthority,
+} from './operation-route.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-operation-activation.js';
 
 /**
@@ -73,20 +77,8 @@ export const ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS = 2_000;
 export const ESTABLISH_CONTROL_RETRY_INTERVAL_MS = 20;
 export const ESTABLISH_CONTROL_READY_DEADLINE_MS = 10_000;
 
-/**
- * The one mutation-RPC timeout `activateProviderOperation` (`coordinator/services/provider-proxy-operation-
- * activation.ts`) uses for its whole closed publication order: `operation.prepare.v1`, both activation calls,
- * and their compensation. `operation.prepare.v1` alone can legitimately spend a full app-server cold start
- * (`PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS`) plus the guardian round trip `stageProviderRoot` chains through it
- * (`PROXY_CONTROL_RPC_TIMEOUT_MS`) — the proxy's own `operation.prepare.v1` is declared `budgetMs:
- * 'caller-deadline'` for exactly this reason (`proxy.ts`), so it is this caller-side timeout, not the
- * endpoint's, that now bounds it. A flat `PROXY_CONTROL_RPC_TIMEOUT_MS` ceiling here — the value every other,
- * genuinely-short call in that sequence also used — abandoned a legitimate cold start client-side before the
- * proxy could ever finish it, leaving the untracked app-server child and guardian root registration nothing
- * ever released. The four calls share one timeout rather than four because `activateProviderOperation`'s own
- * body applies one value to all of them; the other three settle in milliseconds in the ordinary case, so
- * sizing the shared ceiling for the one call that can legitimately run long costs them nothing.
- */
+// Prepare can consume a full app-server cold start plus guardian staging. A shorter caller deadline would turn
+// an ordinary cold start into an ambiguous mutation and delay the reconciler until inspection or replay proves it.
 export const PROXY_OPERATION_ACTIVATION_RPC_TIMEOUT_MS =
   PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS + PROXY_CONTROL_RPC_TIMEOUT_MS;
 
@@ -484,6 +476,7 @@ export function createProviderProxyAcquisitionSteps(
           guardianClient: guardianSession.client,
           mutationRpcTimeoutMs: PROXY_OPERATION_ACTIVATION_RPC_TIMEOUT_MS,
         });
+        notifyProviderProxyControlEstablished(set);
 
         return {
           set,

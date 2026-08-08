@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
+import { createRealTimePort } from '#src/infra/time.js';
 import { heartbeatOnce } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import {
   connectControlClient,
@@ -15,10 +16,11 @@ import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { activateProviderOperation } from '#src/coordinator/services/provider-proxy-operation-activation.js';
+import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
-import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import { createProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import {
   MAX_PROXY_OPERATION_LEDGERS,
   MAX_PROVIDER_REPLAY_BYTES,
@@ -255,10 +257,11 @@ async function launchThroughRoute(
   set: ProxyUnderTest,
   options: {
     dropPrepareReplies?: number;
-    dropPrepareStatusReplies?: number;
-    preparingStatusReplies?: number;
+    dropPrepareInspectReplies?: number;
+    preparingInspectReplies?: number;
     dropGuardianActivationReplies?: number;
     dropActivationReplies?: number;
+    leavePlacementPending?: boolean;
   } = {},
 ) {
   const db = newRawDatabase(':memory:');
@@ -266,19 +269,25 @@ async function launchThroughRoute(
   cleanups.push(() => db.close());
 
   let prepareCalls = 0;
-  let prepareStatusCalls = 0;
+  let prepareInspectCalls = 0;
   let guardianActivationCalls = 0;
   let activationCalls = 0;
   const proxyClient = {
     call: async (method: string, params: unknown, timeoutMs: number): Promise<unknown> => {
       if (method === 'operation.prepare.v1') prepareCalls += 1;
-      if (method === 'operation.status.v1') {
-        prepareStatusCalls += 1;
-        if (prepareStatusCalls <= (options.dropPrepareStatusReplies ?? 0)) {
-          throw new ControlClientError('control_call_failed', 'The prepare status reply was dropped.');
+      if (method === 'operation.inspect.v2') {
+        prepareInspectCalls += 1;
+        if (prepareInspectCalls <= (options.dropPrepareInspectReplies ?? 0)) {
+          throw new ControlClientError('control_call_failed', 'The prepare inspect reply was dropped.');
         }
-        if (prepareStatusCalls <= (options.dropPrepareStatusReplies ?? 0) + (options.preparingStatusReplies ?? 0)) {
-          return { state: 'preparing' };
+        if (prepareInspectCalls <= (options.dropPrepareInspectReplies ?? 0) + (options.preparingInspectReplies ?? 0)) {
+          const inspected = (await set.control.call(method, params, timeoutMs)) as { reservation?: string };
+          if (inspected.reservation === undefined) return inspected;
+          return {
+            state: 'preparing',
+            reservation: inspected.reservation,
+            leaseExpiresInMs: 15_000,
+          };
         }
       }
       if (method === 'operation.activate.v1') activationCalls += 1;
@@ -324,39 +333,60 @@ async function launchThroughRoute(
     proxyProcessGroupId: set.identity.processGroupId,
     canonicalEndpoint: set.endpoint,
   } as const;
-  const authority = {
-    proxyInstanceId: set.shared.proxyInstanceId,
+  const authority = createProviderProxyOperationAuthority({
+    base: {
+      proxyInstanceId: set.shared.proxyInstanceId,
+      snapshotOperations: async () => [],
+      installHandoffGrant: async () => undefined,
+      stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
+      stopHeartbeats: () => undefined,
+      initiateControlClose: async () => undefined,
+    },
     setIdentity,
-    activateOperation: (
-      database: typeof db,
-      operation: Parameters<typeof activateProviderOperation>[1],
-      prepared: ProxyPreparedAppServerOperation,
-    ) =>
-      activateProviderOperation(
-        {
-          db: database,
-          proxyClient,
-          guardianClient,
-          setIdentity,
-          mutationRpcTimeoutMs: 5_000,
-        },
-        operation,
-        prepared,
-      ),
-  } as ProviderProxyOperationAuthority;
+    proxyClient,
+    guardianClient,
+    mutationRpcTimeoutMs: 5_000,
+  });
   const registry = new LocalOperationRegistry();
+  const runtimeStarted: unknown[] = [];
+  const commit: JobProgressStore['commit'] = (callback) => {
+    const pending: unknown[] = [];
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      callback({
+        append: (input) => {
+          pending.push(input);
+          return {} as never;
+        },
+      });
+      db.exec('COMMIT');
+      runtimeStarted.push(...pending);
+      return [];
+    } catch (error: unknown) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  };
+  const time = createRealTimePort();
+  const reconciler = new ProviderOperationReconciler({
+    getProgressStore: () => ({ getDb: () => db, commit, readStatus: () => null }),
+    authorityFor: () => authority,
+    registry,
+    backendNamespace: 'tests',
+    time,
+  });
+  reconciler.start();
+  cleanups.push(() => reconciler.stop());
   const route = createAppServerProxyRoute({
     hostManager: { routeAppServerOperation: () => authority },
-    getDb: () => db,
-    progressStore: { appendRuntimeStarted: vi.fn() },
-    now: () => 1_700_000_000_000,
-    registry,
+    reconciler,
+    now: () => time.now(),
   });
   const operationId = randomUUID();
   const jobId = randomUUID();
   const localExecution = vi.fn();
 
-  const placement = await route.activate(
+  const placementPromise = route.activate(
     {
       jobId,
       operationId,
@@ -378,19 +408,30 @@ async function launchThroughRoute(
     () => {},
     new AbortController().signal,
   );
-  if (placement === null) localExecution();
+  const placement = options.leavePlacementPending === true ? undefined : await placementPromise;
+  if (placement?.kind === 'local-authorized') localExecution();
 
   return {
-    prepareCalls,
-    prepareStatusCalls,
-    guardianActivationCalls,
-    activationCalls,
+    get prepareCalls() {
+      return prepareCalls;
+    },
+    get prepareInspectCalls() {
+      return prepareInspectCalls;
+    },
+    get guardianActivationCalls() {
+      return guardianActivationCalls;
+    },
+    get activationCalls() {
+      return activationCalls;
+    },
     guardianCalls,
     jobId,
     operationId,
     localExecution,
     placement,
+    placementPromise,
     registry,
+    runtimeStarted,
   };
 }
 
@@ -481,7 +522,7 @@ describe('provider-proxy operation lifecycle', () => {
     const set = await startProxy();
     const launched = await launchThroughRoute(set, { dropActivationReplies: 1 });
 
-    expect(launched.placement).toBe('executing');
+    expect(launched.placement).toEqual({ kind: 'remote-executing' });
     expect(launched.localExecution).not.toHaveBeenCalled();
     expect(launched.activationCalls).toBe(2);
     expect(set.started).toEqual([{ jobId: launched.jobId, operationId: launched.operationId, prepared: PREPARED }]);
@@ -492,79 +533,75 @@ describe('provider-proxy operation lifecycle', () => {
     const set = await startProxy();
     const launched = await launchThroughRoute(set, { dropActivationReplies: 2 });
 
-    expect(launched.placement).toBe('executing');
+    expect(launched.placement).toEqual({ kind: 'remote-executing' });
     expect(launched.localExecution).not.toHaveBeenCalled();
-    expect(launched.activationCalls).toBe(2);
+    expect(launched.activationCalls).toBe(3);
     expect(set.started).toEqual([{ jobId: launched.jobId, operationId: launched.operationId, prepared: PREPARED }]);
     expect(launched.registry.stateForJob(launched.jobId)).toBe('activated');
   });
 
   it('continues activation after both prepare replies are lost and starts one kernel', async () => {
     const set = await startProxy();
-    const launched = await launchThroughRoute(set, { dropPrepareReplies: 2 });
+    const launched = await launchThroughRoute(set, { dropPrepareReplies: 2, preparingInspectReplies: 1 });
     const key = { jobId: launched.jobId, operationId: launched.operationId };
 
-    expect(launched.placement).toBe('executing');
+    expect(launched.placement).toEqual({ kind: 'remote-executing' });
     expect(launched.localExecution).not.toHaveBeenCalled();
     expect(launched.prepareCalls).toBe(2);
+    expect(launched.prepareInspectCalls).toBe(2);
     expect(launched.activationCalls).toBe(1);
+    expect(set.startAttempts()).toBe(1);
     expect(set.started).toEqual([{ jobId: launched.jobId, operationId: launched.operationId, prepared: PREPARED }]);
     const owned = set.proxy.ledger().get(key);
     expect(owned?.state).toBe('executing');
     expect(launched.registry.stateForJob(launched.jobId)).toBe('activated');
   });
 
-  it('keeps local fallback suppressed until a preparing reservation is recovered for cleanup', async () => {
+  it('replays two lost guardian activation replies before publishing exactly one kernel start', async () => {
     const set = await startProxy();
     const launched = await launchThroughRoute(set, {
-      dropPrepareReplies: 2,
-      dropPrepareStatusReplies: 1,
-      preparingStatusReplies: 1,
       dropGuardianActivationReplies: 2,
     });
     const key = { jobId: launched.jobId, operationId: launched.operationId };
 
-    expect(launched.placement).toBe('executing');
+    expect(launched.placement).toEqual({ kind: 'remote-executing' });
     expect(launched.localExecution).not.toHaveBeenCalled();
-    expect(launched.prepareStatusCalls).toBe(2);
-    expect(set.proxy.ledger().get(key)?.state).toBe('prepared');
+    expect(launched.prepareInspectCalls).toBe(0);
+    expect(launched.guardianActivationCalls).toBe(3);
+    expect(launched.activationCalls).toBe(1);
+    expect(set.startAttempts()).toBe(1);
+    expect(set.proxy.ledger().get(key)?.state).toBe('executing');
+    expect(set.started).toEqual([{ jobId: launched.jobId, operationId: launched.operationId, prepared: PREPARED }]);
+    expect(launched.runtimeStarted).toEqual([expect.objectContaining({ type: 'job.runtime.started' })]);
     expect(launched.registry.stateForJob(launched.jobId)).toBe('activated');
-
-    launched.registry.stop(launched.jobId, 'user_abort');
-    await vi.waitFor(() => expect(set.proxy.ledger().get(key)).toBeNull());
-    await vi.waitFor(() =>
-      expect(launched.guardianCalls).toContainEqual({
-        method: 'guardian.operation-release.v1',
-        params: {
-          operation: expect.objectContaining(key),
-          reservation: expect.any(String),
-          jointContainmentReceipt: expect.any(String),
-        },
-      }),
-    );
-    expect(set.released).toContainEqual(key);
   });
 
   it('does not let a guardian activation timeout authorise local fallback', async () => {
     const set = await startProxy();
     const launched = await launchThroughRoute(set, { dropGuardianActivationReplies: 1 });
 
-    expect(launched.placement).toBe('executing');
+    expect(launched.placement).toEqual({ kind: 'remote-executing' });
     expect(launched.localExecution).not.toHaveBeenCalled();
     expect(launched.guardianActivationCalls).toBe(2);
     expect(launched.activationCalls).toBe(1);
     expect(set.started).toEqual([{ jobId: launched.jobId, operationId: launched.operationId, prepared: PREPARED }]);
   });
 
-  it('falls back locally and releases the reservation when the semantic kernel fails to start', async () => {
+  it('keeps placement unresolved when the semantic kernel may have begun activation', async () => {
     const set = await startProxy({ failStart: true });
-    const launched = await launchThroughRoute(set);
+    const launched = await launchThroughRoute(set, { leavePlacementPending: true });
     const key = { jobId: launched.jobId, operationId: launched.operationId };
+    let placementSettled = false;
+    void launched.placementPromise.then(() => {
+      placementSettled = true;
+    });
 
-    expect(launched.placement).toBeNull();
-    expect(launched.localExecution).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(set.startAttempts()).toBe(1));
+    await vi.waitFor(() => expect(set.released).toContainEqual(key));
+
+    expect(placementSettled).toBe(false);
+    expect(launched.localExecution).not.toHaveBeenCalled();
     expect(launched.activationCalls).toBe(1);
-    expect(set.startAttempts()).toBe(1);
     expect(set.started).toEqual([]);
     expect(set.proxy.ledger().get(key)).toBeNull();
     expect(set.released).toContainEqual(key);

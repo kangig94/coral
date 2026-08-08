@@ -1433,7 +1433,7 @@ describe('ExecutionService launch', () => {
     it('takes the proxied branch exclusively: consumeJobStream and completeConsumedJob are never reached for an operation the proxy already owns', async () => {
       const { provider, execute } = makeAppServerProvider();
       mockState.getNewProvider.mockReturnValue(provider);
-      const activate = vi.fn(async () => 'executing' as const);
+      const activate = vi.fn(async () => ({ kind: 'remote-executing' as const }));
       const service = createService(ctx, { appServerProxyRoute: { activate } });
       // Spies on the class's own prototype method, not a mocked module: `completeConsumedJob` is private and
       // has no separate module seam, so this is the direct way to prove it specifically was never invoked —
@@ -1481,14 +1481,10 @@ describe('ExecutionService launch', () => {
       });
     });
 
-    it('calls a configured route before falling back, when it declines activation and compensates', async () => {
+    it('runs the local executor when the route explicitly authorizes local placement', async () => {
       const { provider, execute } = makeAppServerProvider();
       mockState.getNewProvider.mockReturnValue(provider);
-      // `null` is exactly what `AppServerProxyRoute.activate` returns for "no live set" or "activation failed
-      // and was cleanly compensated" — the fallback this file's own doc says is deliberate and correct. What
-      // distinguishes this from the no-route test above is that a route *is* configured, so the local path
-      // this run completes through must be reached by way of that decline, not by skipping the call outright.
-      const activate = vi.fn(async () => null);
+      const activate = vi.fn(async () => ({ kind: 'local-authorized' as const, reason: 'capacity' }));
       const service = createService(ctx, {
         appServerProxyRoute: { activate },
         appServerHostAuthority: fakeAppServerHostAuthority(),
@@ -1500,15 +1496,35 @@ describe('ExecutionService launch', () => {
       trackJob(decision.jobId);
       await waitForTerminalEvent(service, decision.jobId);
 
-      // The proxy path was genuinely attempted, not silently skipped: a regression that stopped calling
-      // `activate` at all would still complete this job through the same local fallback and pass every other
-      // assertion here, which is exactly the observational gap an end-to-end run cannot close either (see
-      // `launch.ts`'s own fallback doc) — this is the one assertion that would catch it.
+      // Local execution is safe here because this exact route decision authorized it, not merely because the
+      // remote path returned without claiming execution.
       expect(activate).toHaveBeenCalledOnce();
       expect(execute).toHaveBeenCalledOnce();
       expect(getInternals(service).progressStore.readTerminalProjection(decision.jobId)?.outcome).toEqual({
         kind: 'completed',
       });
+    });
+
+    it.each([
+      ['cancelled', { kind: 'cancelled' as const }],
+      ['failed', { kind: 'failed' as const, reason: 'indeterminate activation' }],
+    ])('never runs the local executor for a %s placement result', async (_name, placement) => {
+      const { provider, execute } = makeAppServerProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const activate = vi.fn(async () => placement);
+      const service = createService(ctx, {
+        appServerProxyRoute: { activate },
+        appServerHostAuthority: fakeAppServerHostAuthority(),
+      });
+
+      const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') throw new Error('expected running launch');
+      trackJob(decision.jobId);
+      await vi.waitFor(() => expect(activate).toHaveBeenCalledOnce());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(execute).not.toHaveBeenCalled();
     });
   });
 });

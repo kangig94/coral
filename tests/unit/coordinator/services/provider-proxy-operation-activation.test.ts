@@ -1,28 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
-import { ZodError } from 'zod';
 
-import { currentCoralStoreFormat } from '#src/store-format.js';
-import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
-import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { readProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
-import {
-  providerRootSchema,
-  type OperationIdentity,
-  type ProxyPreparedAppServerOperation,
-} from '#src/provider-proxy/protocol.js';
+import { describe, expect, it } from 'vitest';
+
+import type { OperationIdentity, ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
 import {
   activateProviderOperation,
+  authorizeProviderOperation,
+  buildProviderOperationControl,
+  cancelProviderOperation,
+  inspectProviderOperation,
+  prepareProviderOperation,
+  providerOperationPrepareAttempt,
   type OperationControlClient,
   type ProviderProxyOperationActivationDeps,
   type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-operation-activation.js';
-
-function testDb(): Database {
-  const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db, currentCoralStoreFormat());
-  return db;
-}
 
 const SET_IDENTITY: ProviderProxySetIdentity = {
   buildSetId: randomUUID(),
@@ -42,14 +34,12 @@ const SET_IDENTITY: ProviderProxySetIdentity = {
   proxyProcessGroupId: 200,
   canonicalEndpoint: '/tmp/proxy.sock',
 };
-
 const OPERATION: OperationIdentity = {
   jobId: randomUUID(),
   operationId: randomUUID(),
   proxyInstanceId: SET_IDENTITY.proxyInstanceId,
   buildSetId: SET_IDENTITY.buildSetId,
 };
-
 const PREPARED: ProxyPreparedAppServerOperation = {
   version: 1,
   provider: 'codex',
@@ -68,350 +58,126 @@ const PREPARED: ProxyPreparedAppServerOperation = {
   platform: 'linux',
 };
 
-const PREPARE_PENDING = {
-  state: 'pending-activation' as const,
-  reservation: randomUUID(),
-  leaseExpiresInMs: 15_000,
-  providerRoot: { pid: 7_001, processStartedAtSeconds: 800 },
-  jointContainmentReceipt: 'joint-1',
-};
-
-/** Records every call made to it, in order, and answers each from a scripted queue — one fake per role, since
- *  `activateProviderOperation` talks to the proxy and the guardian on two separate connections. */
-function scriptedClient(answers: Record<string, unknown[]>): {
+function scriptedClient(answers: Record<string, unknown>): {
   client: OperationControlClient;
-  calls: string[];
-  paramsFor(method: string): unknown;
+  calls: Array<{ method: string; params: unknown }>;
 } {
-  const calls: string[] = [];
-  const sent = new Map<string, unknown>();
-  const cursor = new Map<string, number>();
-  const client: OperationControlClient = {
-    call: async (method, params, _timeoutMs) => {
-      calls.push(method);
-      sent.set(method, params);
-      const queue = answers[method];
-      if (queue === undefined) throw new Error(`unscripted call to ${method}`);
-      const index = cursor.get(method) ?? 0;
-      cursor.set(method, index + 1);
-      const answer = queue[Math.min(index, queue.length - 1)];
-      if (answer instanceof Error) throw answer;
-      return answer;
+  const calls: Array<{ method: string; params: unknown }> = [];
+  return {
+    calls,
+    client: {
+      call: async (method, params) => {
+        calls.push({ method, params });
+        if (!(method in answers)) throw new Error(`unscripted call to ${method}`);
+        return answers[method];
+      },
     },
   };
-  return { client, calls, paramsFor: (method) => sent.get(method) };
 }
 
-function deps(
-  db: Database,
-  proxy: OperationControlClient,
-  guardian: OperationControlClient,
-): ProviderProxyOperationActivationDeps {
-  return { db, proxyClient: proxy, guardianClient: guardian, setIdentity: SET_IDENTITY, mutationRpcTimeoutMs: 5_000 };
+function deps(proxy: OperationControlClient, guardian: OperationControlClient): ProviderProxyOperationActivationDeps {
+  return { proxyClient: proxy, guardianClient: guardian, setIdentity: SET_IDENTITY, mutationRpcTimeoutMs: 5_000 };
 }
 
-describe('activateProviderOperation', () => {
-  it('runs the closed publication order and commits the runtime-meta locator before activation', async () => {
-    const db = testDb();
-    const proxy = scriptedClient({
-      'operation.prepare.v1': [PREPARE_PENDING],
-      'operation.activate.v1': [{ state: 'executing', committedThroughProviderSeq: 0 }],
+describe('provider proxy operation mutations', () => {
+  it('derives one stable prepare attempt and validates the exact prepare reply', async () => {
+    const pending = {
+      state: 'pending-activation',
+      reservation: randomUUID(),
+      leaseExpiresInMs: 15_000,
+      providerRoot: { pid: 701, processStartedAtSeconds: 800 },
+      jointContainmentReceipt: 'joint-1',
+    } as const;
+    const proxy = scriptedClient({ 'operation.prepare.v1': pending });
+    const guardian = scriptedClient({});
+    const activationDeps = deps(proxy.client, guardian.client);
+
+    const first = providerOperationPrepareAttempt(activationDeps, OPERATION, PREPARED);
+    const second = providerOperationPrepareAttempt(activationDeps, OPERATION, PREPARED);
+    await expect(prepareProviderOperation(activationDeps, OPERATION, PREPARED)).resolves.toEqual(pending);
+
+    expect(first.prepareAttemptKey).toBe(second.prepareAttemptKey);
+    expect(proxy.calls).toEqual([{ method: 'operation.prepare.v1', params: first.request }]);
+  });
+
+  it('uses observation-only inspect v2 with the full operation identity and attempt key', async () => {
+    const proxy = scriptedClient({ 'operation.inspect.v2': { state: 'absent' } });
+    const guardian = scriptedClient({});
+    const prepareAttemptKey = 'b'.repeat(64);
+
+    await expect(
+      inspectProviderOperation(deps(proxy.client, guardian.client), OPERATION, prepareAttemptKey),
+    ).resolves.toEqual({
+      state: 'absent',
     });
-    // Read from *inside* the guardian client's `call`, at the instant `guardian.operation-activate.v1` fires
-    // — the only way to prove the meta commit happens-before activation rather than merely observe a result
-    // consistent with it. A final call-order array plus a post-hoc DB read would pass identically if the
-    // write moved to just before the function's own final `return`, after both RPCs; this would not, per
-    // `active-store-selection-locking.test.ts`'s "observe state from inside a dependency callback before it
-    // resolves" technique.
-    const guardianCalls: string[] = [];
-    let metaDuringGuardianActivate: unknown;
-    const guardian: OperationControlClient = {
-      call: async (method) => {
-        guardianCalls.push(method);
-        metaDuringGuardianActivate = readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId);
-        return { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' };
+    expect(proxy.calls).toEqual([
+      { method: 'operation.inspect.v2', params: { operation: OPERATION, prepareAttemptKey } },
+    ]);
+  });
+
+  it('keeps guardian authorization and semantic activation as separate replayable mutations', async () => {
+    const reservation = randomUUID();
+    const proxy = scriptedClient({
+      'operation.activate.v1': { state: 'executing', committedThroughProviderSeq: 0 },
+    });
+    const guardian = scriptedClient({
+      'guardian.operation-activate.v1': {
+        state: 'activation-authorized',
+        jointActivationReceipt: 'joint-activation-1',
       },
+    });
+    const activationDeps = deps(proxy.client, guardian.client);
+    const preparation = {
+      reservation,
+      providerRoot: { pid: 701, processStartedAtSeconds: 800 },
+      jointContainmentReceipt: 'joint-1',
     };
 
-    const result = await activateProviderOperation(deps(db, proxy.client, guardian), OPERATION, PREPARED);
+    const authorized = await authorizeProviderOperation(activationDeps, OPERATION, preparation);
+    await expect(
+      activateProviderOperation(activationDeps, OPERATION, {
+        reservation,
+        jointContainmentReceipt: preparation.jointContainmentReceipt,
+        jointActivationReceipt: authorized.jointActivationReceipt,
+      }),
+    ).resolves.toEqual({ state: 'executing', committedThroughProviderSeq: 0 });
 
-    if (result.kind !== 'executing') throw new Error(`expected 'executing', got '${result.kind}'`);
-    expect(result.committedThroughProviderSeq).toBe(0);
-    // Message-exact order: prepare, then the meta commit is durable (checked below) before either activation
-    // call, then guardian activation, then proxy activation.
-    expect(proxy.calls).toEqual(['operation.prepare.v1', 'operation.activate.v1']);
-    expect(guardianCalls).toEqual(['guardian.operation-activate.v1']);
-
-    // The payload, not just the method name. `operation.activate.v1` is where the guardian's freshly issued
-    // receipt has to arrive unaltered — forwarding the wrong value there is the defect this whole sequence
-    // exists to close, and it is invisible to an assertion that only records which methods were called. That
-    // blind spot is exactly how one of the four incidents survived a test asserting the correct call order.
-    expect(proxy.paramsFor('operation.activate.v1')).toEqual({
-      operation: OPERATION,
-      reservation: PREPARE_PENDING.reservation,
-      jointContainmentReceipt: PREPARE_PENDING.jointContainmentReceipt,
-      jointActivationReceipt: 'joint-activation-1',
+    expect(guardian.calls[0]?.method).toBe('guardian.operation-activate.v1');
+    expect(proxy.calls[0]).toEqual({
+      method: 'operation.activate.v1',
+      params: {
+        operation: OPERATION,
+        reservation,
+        jointContainmentReceipt: 'joint-1',
+        jointActivationReceipt: 'joint-activation-1',
+      },
     });
+  });
 
-    // The load-bearing assertion: the row was already durable when the guardian activation RPC fired, not
-    // merely present by the time this whole call resolved.
-    expect(metaDuringGuardianActivate).toMatchObject({
-      jobId: OPERATION.jobId,
-      operationId: OPERATION.operationId,
-      buildSetId: SET_IDENTITY.buildSetId,
-      reservation: PREPARE_PENDING.reservation,
-      providerRootPid: 7_001,
-      providerRootProcessStartedAtSeconds: 800,
+  it('uses fenced cancel v2 for prestart cleanup while retaining the executing stop capability', async () => {
+    const reservation = randomUUID();
+    const prepareAttemptKey = 'b'.repeat(64);
+    const proxy = scriptedClient({
+      'operation.cancel.v2': { state: 'released-never-started', prepareAttemptKey },
+      'operation.stop.v1': { state: 'terminal-awaiting-journal-ack', committedThroughProviderSeq: 0 },
+    });
+    const guardian = scriptedClient({
+      'guardian.operation-release.v1': { state: 'membership-released' },
+    });
+    const activationDeps = deps(proxy.client, guardian.client);
+
+    await expect(cancelProviderOperation(activationDeps, OPERATION, prepareAttemptKey, reservation)).resolves.toEqual({
+      state: 'released-never-started',
+      prepareAttemptKey,
+    });
+    const control = buildProviderOperationControl(activationDeps, OPERATION, {
+      reservation,
       jointContainmentReceipt: 'joint-1',
     });
+    await control.stop('user_abort');
+    await control.releaseMembership?.();
 
-    const meta = readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId);
-    expect(meta).toEqual(metaDuringGuardianActivate);
-    // `result.meta` is the exact row `LocalOperationRegistry.activate()` gets handed — not a copy re-derived
-    // from anything, the same row this test just read back independently.
-    expect(result.meta).toEqual(meta);
-  });
-
-  it('returns a control capability that sends operation.stop.v1 for exactly this operation', async () => {
-    const db = testDb();
-    const proxy = scriptedClient({
-      'operation.prepare.v1': [PREPARE_PENDING],
-      'operation.activate.v1': [{ state: 'executing', committedThroughProviderSeq: 0 }],
-      'operation.stop.v1': [{ state: 'terminal-awaiting-journal-ack', committedThroughProviderSeq: 0 }],
-    });
-    const guardian = scriptedClient({
-      'guardian.operation-activate.v1': [
-        { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' },
-      ],
-    });
-
-    const result = await activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED);
-    if (result.kind !== 'executing') throw new Error(`expected 'executing', got '${result.kind}'`);
-
-    await result.control.stop('user_abort');
-
-    expect(proxy.calls).toEqual(['operation.prepare.v1', 'operation.activate.v1', 'operation.stop.v1']);
-  });
-
-  it('returns a control capability that sends guardian.operation-release.v1 for exactly this operation', async () => {
-    const db = testDb();
-    const proxy = scriptedClient({
-      'operation.prepare.v1': [PREPARE_PENDING],
-      'operation.activate.v1': [{ state: 'executing', committedThroughProviderSeq: 0 }],
-    });
-    const guardian = scriptedClient({
-      'guardian.operation-activate.v1': [
-        { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' },
-      ],
-      'guardian.operation-release.v1': [{ state: 'membership-released' }],
-    });
-
-    const result = await activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED);
-    if (result.kind !== 'executing') throw new Error(`expected 'executing', got '${result.kind}'`);
-
-    await result.control.releaseMembership?.();
-
-    expect(guardian.calls).toEqual(['guardian.operation-activate.v1', 'guardian.operation-release.v1']);
-    // The payload, not just the method name — the same reservation/receipt tuple this activation committed,
-    // not a value re-derived or re-read from anything.
-    expect(guardian.paramsFor('guardian.operation-release.v1')).toEqual({
-      operation: OPERATION,
-      reservation: PREPARE_PENDING.reservation,
-      jointContainmentReceipt: PREPARE_PENDING.jointContainmentReceipt,
-    });
-  });
-
-  it('treats a repeated guardian release as complete when the first reply was lost', async () => {
-    const db = testDb();
-    const proxy = scriptedClient({
-      'operation.prepare.v1': [PREPARE_PENDING],
-      'operation.activate.v1': [{ state: 'executing', committedThroughProviderSeq: 0 }],
-    });
-    let releaseCalls = 0;
-    const guardian: OperationControlClient = {
-      call: async (method) => {
-        if (method === 'guardian.operation-activate.v1') {
-          return { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' };
-        }
-        releaseCalls += 1;
-        if (releaseCalls === 1) {
-          throw Object.assign(new Error('release reply dropped'), { code: 'control_call_failed' });
-        }
-        throw Object.assign(new Error('membership is already absent'), {
-          code: 'control_call_failed',
-          protocolCode: 'unauthorized_control',
-        });
-      },
-    };
-
-    const result = await activateProviderOperation(deps(db, proxy.client, guardian), OPERATION, PREPARED);
-    if (result.kind !== 'executing') throw new Error(`expected 'executing', got '${result.kind}'`);
-
-    await expect(result.control.releaseMembership?.()).rejects.toThrow(/reply dropped/u);
-    await expect(result.control.releaseMembership?.()).resolves.toBeUndefined();
-    expect(releaseCalls).toBe(2);
-  });
-
-  it('reports capacity and writes nothing when the proxy ledger is full', async () => {
-    const db = testDb();
-    const proxy = scriptedClient({
-      'operation.prepare.v1': [{ state: 'capacity', retryable: true, reason: 'operation-ledgers' }],
-    });
-    const guardian = scriptedClient({});
-
-    const result = await activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED);
-
-    expect(result).toEqual({ kind: 'capacity', retryable: true, reason: 'operation-ledgers' });
-    expect(readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId)).toBeNull();
-    expect(guardian.calls).toEqual([]);
-  });
-
-  it('compensates in the exact order — delete meta, then cancel-pending, then guardian release — and never starts the kernel, when guardian activation fails', async () => {
-    const db = testDb();
-    const proxy = scriptedClient({
-      'operation.prepare.v1': [PREPARE_PENDING],
-      'operation.cancel-pending.v1': [{ state: 'released' }],
-    });
-    // Read from inside the failing call, before it throws — proves the row genuinely existed and was then
-    // deleted by compensation, not that it was simply never written. A post-hoc `null` read alone cannot
-    // distinguish "written then deleted" from "never written".
-    let metaBeforeFailure: unknown;
-    const guardianCalls: string[] = [];
-    let releaseParams: unknown;
-    const guardian: OperationControlClient = {
-      call: async (method, params) => {
-        guardianCalls.push(method);
-        if (method === 'guardian.operation-activate.v1') {
-          metaBeforeFailure = readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId);
-          throw new Error('reservation_expired');
-        }
-        releaseParams = params;
-        return { state: 'membership-released' };
-      },
-    };
-
-    const result = await activateProviderOperation(deps(db, proxy.client, guardian), OPERATION, PREPARED);
-
-    expect(result).toEqual({ kind: 'activation-failed', step: 'guardian-activate', reason: 'reservation_expired' });
-    // The kernel is never started on this path: `operation.activate.v1` never appears in the proxy's calls.
-    expect(proxy.calls).toEqual(['operation.prepare.v1', 'operation.cancel-pending.v1']);
-    expect(guardianCalls).toEqual(['guardian.operation-activate.v1', 'guardian.operation-release.v1']);
-    // The payload, not just the method name. `guardian.operation-release.v1`'s params schema is `.strict()` and
-    // requires the receipt its own staging minted, so a release omitting it is refused on the wire — and that
-    // refusal replaces the activation failure that called this compensation. Asserting only the call order left
-    // it invisible, because a fake client accepts any payload.
-    expect(releaseParams).toEqual({
-      operation: OPERATION,
-      reservation: PREPARE_PENDING.reservation,
-      jointContainmentReceipt: PREPARE_PENDING.jointContainmentReceipt,
-    });
-    expect(metaBeforeFailure).toMatchObject({ jobId: OPERATION.jobId, operationId: OPERATION.operationId });
-    // The meta was committed by prepare's step 2, then deleted by compensation before either release call —
-    // if it were still present, a locator would outlive its own reservation.
-    expect(readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId)).toBeNull();
-  });
-
-  it('compensates the same way when the proxy itself refuses activation', async () => {
-    const db = testDb();
-    const refusal = Object.assign(new Error('reservation_expired'), { protocolCode: 'reservation_expired' });
-    // Read from inside the failing call, before it throws — proves this path also writes-then-deletes rather
-    // than never writing, the same ambiguity the guardian-side compensation test above closes.
-    let metaBeforeFailure: unknown;
-    const proxyCalls: string[] = [];
-    const proxy: OperationControlClient = {
-      call: async (method) => {
-        proxyCalls.push(method);
-        if (method === 'operation.prepare.v1') return PREPARE_PENDING;
-        if (method === 'operation.activate.v1') {
-          metaBeforeFailure = readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId);
-          throw refusal;
-        }
-        return { state: 'released' };
-      },
-    };
-    const guardian = scriptedClient({
-      'guardian.operation-activate.v1': [
-        { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' },
-      ],
-      'guardian.operation-release.v1': [{ state: 'membership-released' }],
-    });
-
-    const result = await activateProviderOperation(deps(db, proxy, guardian.client), OPERATION, PREPARED);
-
-    expect(result).toEqual({ kind: 'activation-failed', step: 'proxy-activate', reason: 'reservation_expired' });
-    expect(proxyCalls).toEqual(['operation.prepare.v1', 'operation.activate.v1', 'operation.cancel-pending.v1']);
-    expect(metaBeforeFailure).toMatchObject({ jobId: OPERATION.jobId, operationId: OPERATION.operationId });
-    expect(readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId)).toBeNull();
-    expect(guardian.calls).toEqual(['guardian.operation-activate.v1', 'guardian.operation-release.v1']);
-  });
-
-  it('retains runtime ownership when both activation replies are ambiguous', async () => {
-    const db = testDb();
-    const ambiguous = Object.assign(new Error('activation reply timed out'), { code: 'control_call_failed' });
-    const proxy = scriptedClient({
-      'operation.prepare.v1': [PREPARE_PENDING],
-      'operation.activate.v1': [ambiguous, ambiguous],
-    });
-    const guardian = scriptedClient({
-      'guardian.operation-activate.v1': [
-        { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' },
-      ],
-    });
-
-    const result = await activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED);
-
-    expect(result).toMatchObject({ kind: 'unknown', step: 'proxy-activate' });
-    expect(proxy.calls).toEqual(['operation.prepare.v1', 'operation.activate.v1', 'operation.activate.v1']);
-    expect(guardian.calls).toEqual(['guardian.operation-activate.v1']);
-    expect(readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId)).not.toBeNull();
-  });
-
-  it('refuses the same out-of-range provider root that protocol.ts’s own providerRootSchema refuses', async () => {
-    // Guards the single-schema fix directly: this coordinator step used to validate `providerRoot` against
-    // its own local copy of the shape; `protocol.ts`'s exported `providerRootSchema` is the one now parsing
-    // it here too, so the two can no longer independently decide whether the same value is well-formed.
-    expect(providerRootSchema.safeParse({ pid: 1e21, processStartedAtSeconds: 800 }).success).toBe(false);
-
-    const db = testDb();
-    const proxy = scriptedClient({
-      'operation.prepare.v1': [{ ...PREPARE_PENDING, providerRoot: { pid: 1e21, processStartedAtSeconds: 800 } }],
-    });
-    const guardian = scriptedClient({});
-
-    await expect(
-      activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED),
-    ).rejects.toThrow();
-    expect(readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId)).toBeNull();
-  });
-
-  it('refuses a malformed prepare reply rather than committing meta from an unvalidated shape', async () => {
-    const db = testDb();
-    const proxy = scriptedClient({ 'operation.prepare.v1': [{ state: 'pending-activation' }] });
-    const guardian = scriptedClient({});
-
-    await expect(
-      activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED),
-    ).rejects.toThrow();
-
-    expect(readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId)).toBeNull();
-  });
-
-  it('refuses a non-canonical reservation at the prepare reply, before a provider root is staged', async () => {
-    const db = testDb();
-    const proxy = scriptedClient({ 'operation.prepare.v1': [{ ...PREPARE_PENDING, reservation: 'not-a-uuid' }] });
-    const guardian = scriptedClient({});
-
-    await expect(
-      activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED),
-    ).rejects.toThrow(ZodError);
-
-    // The shape of the bug this closes, not merely that something threw. `operation.prepare.v1` is the step
-    // that stages a provider root on the proxy, so a reservation refused *here* is refused before anything
-    // durable or remote exists. When this ingress accepted `z.string().min(1)`, the same reply travelled on
-    // and threw at `writeProviderOperationRuntimeMeta` instead — a `ProviderOperationRuntimeMetaCodecError`
-    // raised after the root was staged, leaving the proxy holding a reservation the coordinator had refused.
-    expect(proxy.calls).toEqual(['operation.prepare.v1']);
-    expect(guardian.calls).toEqual([]);
-    expect(readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId)).toBeNull();
+    expect(proxy.calls.map((call) => call.method)).toEqual(['operation.cancel.v2', 'operation.stop.v1']);
+    expect(guardian.calls.map((call) => call.method)).toEqual(['guardian.operation-release.v1']);
   });
 });

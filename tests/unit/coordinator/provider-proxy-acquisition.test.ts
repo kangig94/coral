@@ -32,9 +32,6 @@ const SET: ProviderProxyOperationAuthority = {
     proxyProcessGroupId: 2,
     canonicalEndpoint: '/tmp/proxy.sock',
   },
-  activateOperation: async () => {
-    throw new Error('not exercised by this test');
-  },
 };
 
 type Recorded = { readonly log: string[]; readonly steps: ProviderProxyAcquisitionSteps };

@@ -458,10 +458,11 @@ export const guardianOperationActivateParamsSchema = z
   .strict();
 
 /**
- * `guardian.operation-release.v1`'s request, sent from two moments in `provider-proxy-operation-activation.ts`:
- * `compensateAfterActivationFailure`'s compensation call after a failed activation, and the
- * `OperationStopControl.releaseMembership` capability a *successful* activation hands `LocalOperationRegistry`
- * (`operation-registry.ts`) to send once that operation's terminal durably commits. `jointContainmentReceipt`
+ * `guardian.operation-release.v1`'s request. Its one sender is now the `OperationStopControl.releaseMembership`
+ * capability a successful activation hands `LocalOperationRegistry` (`operation-registry.ts`), which sends it
+ * once that operation's terminal durably commits and retries until the guardian confirms. The failure-path
+ * caller this used to name is gone: a failed or uncertain activation no longer compensates from a closure that
+ * evaporates with the call, it advances a durable saga phase the reconciler owns. `jointContainmentReceipt`
  * is required: the guardian's release handler refuses a caller that cannot present the receipt its own staging
  * minted, and omitting it here previously made the failure-path compensation itself throw on the wire,
  * replacing the activation failure it existed to report.

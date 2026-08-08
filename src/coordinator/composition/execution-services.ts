@@ -8,6 +8,12 @@ import { prepareCached } from '../../store/db.js';
 import { aggregateWorkflowUsage } from '../../jobs/workflow-usage.js';
 import { admittedByThisCoordinator, createObserveCarriers } from './carrier-observation.js';
 import { createAppServerProxyRoute } from '../services/provider-proxy-launch-route.js';
+import { ProviderOperationReconciler } from '../services/provider-operation-reconciler.js';
+import {
+  isProviderProxyOperationAuthority,
+  subscribeProviderProxyControlEstablished,
+} from '../live/provider-proxy/operation-route.js';
+import { backendLog } from '../../infra/backend-log.js';
 
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
@@ -35,6 +41,21 @@ export function createExecutionServices({
   const services = new Map<string, ProjectRequestPort>();
   const storeServicesRef = world.storeServicesRef;
   const getProgressStore = () => storeServicesRef.get().progressStore;
+  const providerOperationReconciler = new ProviderOperationReconciler({
+    getProgressStore,
+    authorityFor: (record) => {
+      const set = world.providerProxyAuthority
+        ?.liveSets()
+        .find((candidate) => candidate.proxyInstanceId === record.operation.proxyInstanceId);
+      return set !== undefined && isProviderProxyOperationAuthority(set) ? set : null;
+    },
+    registry: world.operationRegistry,
+    backendNamespace,
+    time: runtime.time,
+    onError: (message) => backendLog.warn(message),
+  });
+  providerOperationReconciler.start();
+  subscribeProviderProxyControlEstablished((authority) => providerOperationReconciler.onControlEstablished(authority));
 
   function getExecutionService(ctx: InvocationContext): ProjectRequestPort {
     const key = ctx.projectRoot;
@@ -64,12 +85,8 @@ export function createExecutionServices({
       getCurrentJournalSeq,
       appServerProxyRoute: createAppServerProxyRoute({
         hostManager: world.providerHostManager,
-        getDb: () => getProgressStore().getDb(),
-        progressStore: {
-          appendRuntimeStarted: (jobId, record) => getProgressStore().appendRuntimeStarted(jobId, record),
-        },
+        reconciler: providerOperationReconciler,
         now: () => runtime.time.now(),
-        registry: world.operationRegistry,
       }),
       operations: { stop: (jobId, cause) => world.operationRegistry.stop(jobId, cause) },
       observeCarriers: createObserveCarriers(

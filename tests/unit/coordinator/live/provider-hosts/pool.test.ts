@@ -59,9 +59,6 @@ function fakeInheritedProxySet(proxyInstanceId: string): ProviderProxyOperationA
       proxyProcessGroupId: 200,
       canonicalEndpoint: '/tmp/proxy.sock',
     },
-    activateOperation: () => {
-      throw new Error('unreachable: this fixture never activates a new operation');
-    },
   };
 }
 

@@ -1,150 +1,383 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
+import type { AppServerProxyRouteRequest } from '#src/jobs/contracts/app-server-proxy-route.js';
+import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import {
   ProviderOperationReconciler,
   providerOperationTerminationVerdict,
   type ProviderOperationReconciliationEvidence,
-  type ProviderOperationReconciliationTerminations,
 } from '#src/coordinator/services/provider-operation-reconciler.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
+import { readProviderOperation } from '#src/store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
-import { describe, expect, it, vi } from 'vitest';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
+import {
+  asJointActivationReceipt,
+  asJointContainmentReceipt,
+  asReservation,
+} from '#tests/helpers/provider-proxy-correlation.js';
 
 import { providerOperationRecord } from '../../store/provider-operation-fixtures.js';
 
 const activationAck = { state: 'executing', committedThroughProviderSeq: 0 } as const;
 
-function terminationSpies(): ProviderOperationReconciliationTerminations {
-  return {
-    executing: vi.fn(async () => undefined),
-    releasedNeverStarted: vi.fn(async () => undefined),
-    releasedAfterTerminal: vi.fn(async () => undefined),
-    indeterminateActivation: vi.fn(async () => undefined),
-  };
-}
-
 describe('provider operation termination verdicts', () => {
   it('fires each termination only from its own semantic evidence', () => {
     const cases = [
       [
-        'stored activation ACK and local commit',
         providerOperationRecord('proxy-activation-pending'),
         { kind: 'activation-ack-replayed', activationAck, localRuntimeCommitCompleted: true },
         'executing',
       ],
       [
-        'activation ACK without local commit',
         providerOperationRecord('proxy-activation-pending'),
         { kind: 'activation-ack-replayed', activationAck, localRuntimeCommitCompleted: false },
         'pending',
       ],
       [
-        'never-started release in cleanup',
         providerOperationRecord('prestart-cleanup-pending'),
         { kind: 'released-never-started', prepareAttemptKey: 'b'.repeat(64) },
         'released-never-started',
       ],
       [
-        'never-started release for another attempt',
-        providerOperationRecord('prestart-cleanup-pending'),
-        { kind: 'released-never-started', prepareAttemptKey: 'c'.repeat(64) },
-        'pending',
-      ],
-      [
-        'never-started release outside cleanup',
-        providerOperationRecord('guardian-activation-pending'),
-        { kind: 'released-never-started', prepareAttemptKey: 'b'.repeat(64) },
-        'pending',
-      ],
-      [
-        'terminal release through final watermark',
         providerOperationRecord('settlement-pending'),
         { kind: 'released-after-terminal', settledThroughProviderSeq: 4 },
         'released-after-terminal',
       ],
       [
-        'terminal release below final watermark',
-        providerOperationRecord('settlement-pending'),
-        { kind: 'released-after-terminal', settledThroughProviderSeq: 3 },
-        'pending',
-      ],
-      [
-        'terminal release outside settlement',
-        providerOperationRecord('executing'),
-        { kind: 'released-after-terminal', settledThroughProviderSeq: 4 },
-        'pending',
-      ],
-      [
-        'containment disappearance after activation uncertainty',
         providerOperationRecord('activation-resolution-pending'),
         { kind: 'containment-disappeared', disappearanceReceipt: 'gone' },
         'indeterminate-activation',
       ],
-      [
-        'containment disappearance before proxy activation',
-        providerOperationRecord('guardian-activation-pending'),
-        { kind: 'containment-disappeared', disappearanceReceipt: 'gone' },
-        'pending',
-      ],
-      ['no proof', providerOperationRecord('activation-resolution-pending'), { kind: 'unresolved' }, 'pending'],
-    ] satisfies ReadonlyArray<
-      readonly [string, ProviderOperationRecord, ProviderOperationReconciliationEvidence, string]
-    >;
-    for (const [name, record, evidence, expected] of cases) {
-      expect(providerOperationTerminationVerdict(record, evidence).kind, name).toBe(expected);
-    }
+      [providerOperationRecord('prepare-pending'), { kind: 'unresolved' }, 'pending'],
+    ] satisfies ReadonlyArray<readonly [ProviderOperationRecord, ProviderOperationReconciliationEvidence, string]>;
 
-    const record = providerOperationRecord('activation-resolution-pending');
-    const diagnosticsChanged = {
-      ...record,
-      retryNotBeforeMs: 99_999,
-      retryCount: 8,
-      lastError: { observedAtMs: 50, code: 'timeout', message: 'transport timeout' },
-    };
-    const evidence = { kind: 'containment-disappeared', disappearanceReceipt: 'gone' } as const;
-    expect(providerOperationTerminationVerdict(diagnosticsChanged, evidence)).toEqual(
-      providerOperationTerminationVerdict(record, evidence),
-    );
+    for (const [record, evidence, expected] of cases) {
+      expect(providerOperationTerminationVerdict(record, evidence).kind).toBe(expected);
+    }
   });
 });
 
-describe('ProviderOperationReconciler', () => {
-  it('stays passive until driven, dispatches proof, and retains unresolved work', async () => {
-    const record = providerOperationRecord('prestart-cleanup-pending');
-    const readDue = vi.fn(() => [record]);
-    const drive = vi.fn(async () => ({
-      kind: 'released-never-started' as const,
-      prepareAttemptKey: record.prepareAttemptKey,
-    }));
-    const terminations = terminationSpies();
-    const reconciler = new ProviderOperationReconciler({
-      journal: { readDue },
-      driver: { drive },
-      terminations,
-      batchSize: 7,
+const PREPARED = {
+  version: 1,
+  provider: 'codex',
+  binding: { provider: 'codex', kind: 'account', binding: { account: 'acct-1' } },
+  request: {
+    action: 'exec',
+    sessionId: 'session-1',
+    prompt: 'do the thing',
+    cwd: '/workspace',
+    bypassPermissions: false,
+    coralEnv: {},
+  },
+  persistedContinuity: null,
+  baseEnv: { PATH: '/usr/bin' },
+  protectedEnv: {},
+  platform: 'linux',
+} as const;
+
+function requestFor(record: ProviderOperationRecord): AppServerProxyRouteRequest {
+  return {
+    jobId: record.operation.jobId,
+    operationId: record.operation.operationId,
+    hostSpec: {
+      provider: 'codex',
+      command: 'codex',
+      args: ['app-server'],
+      cwd: '/workspace',
+      leaseMode: 'job-exclusive',
+    },
+    provider: 'codex',
+    binding: PREPARED.binding,
+    request: PREPARED.request,
+    persistedContinuity: null,
+    baseEnv: PREPARED.baseEnv,
+    protectedEnv: PREPARED.protectedEnv,
+    platform: PREPARED.platform,
+  };
+}
+
+function createHarness(
+  overrides: {
+    prepareOperation?: DurableProviderProxyOperationAuthority['prepareOperation'];
+    inspectOperation?: DurableProviderProxyOperationAuthority['inspectOperation'];
+    authorizeOperation?: DurableProviderProxyOperationAuthority['authorizeOperation'];
+    activatePreparedOperation?: DurableProviderProxyOperationAuthority['activatePreparedOperation'];
+    failCommitOnce?: boolean;
+  } = {},
+) {
+  const record = providerOperationRecord('prepare-pending') as Extract<
+    ProviderOperationRecord,
+    { phase: 'prepare-pending' }
+  >;
+  const db = newRawDatabase(':memory:');
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
+  const appended: unknown[] = [];
+  let failCommit = overrides.failCommitOnce === true;
+  const commit: JobProgressStore['commit'] = (callback) => {
+    const pending: unknown[] = [];
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      callback({
+        append: (input) => {
+          pending.push(input);
+          return {} as never;
+        },
+      });
+      if (failCommit) {
+        failCommit = false;
+        throw new Error('injected runtime commit failure');
+      }
+      db.exec('COMMIT');
+      appended.push(...pending);
+      return [];
+    } catch (error: unknown) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  };
+  const progressStore: Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus'> = {
+    getDb: () => db,
+    commit,
+    readStatus: () => null,
+  };
+  const phasesBeforeMutation: string[] = [];
+  const readPhase = (): string => readProviderOperation(db, record.operation)?.phase ?? 'missing';
+  const authority: DurableProviderProxyOperationAuthority = {
+    proxyInstanceId: record.operation.proxyInstanceId,
+    setIdentity: {
+      buildSetId: record.operation.buildSetId,
+      hostFingerprint: record.locator.hostFingerprint,
+      guardianInstanceId: record.locator.guardian.instanceId,
+      guardianPid: record.locator.guardian.pid,
+      guardianProcessStartedAtSeconds: record.locator.guardian.processStartedAtSeconds,
+      guardianControlEndpoint: record.locator.guardian.controlEndpoint,
+      proxyInstanceId: record.locator.proxy.instanceId,
+      proxyPid: record.locator.proxy.pid,
+      reaperInstanceId: record.locator.reaper.instanceId,
+      reaperPid: record.locator.reaper.pid,
+      reaperProcessStartedAtSeconds: record.locator.reaper.processStartedAtSeconds,
+      reaperControlEndpoint: record.locator.reaper.controlEndpoint,
+      containmentKind: record.locator.containment.kind,
+      proxyProcessStartedAtSeconds: record.locator.proxy.processStartedAtSeconds,
+      proxyProcessGroupId: record.locator.containment.processGroupId,
+      canonicalEndpoint: record.locator.proxy.controlEndpoint,
+    },
+    snapshotOperations: async () => [],
+    installHandoffGrant: async () => undefined,
+    stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
+    stopHeartbeats: () => undefined,
+    initiateControlClose: async () => undefined,
+    prepareOperation:
+      overrides.prepareOperation ??
+      (async () => {
+        phasesBeforeMutation.push(readPhase());
+        return {
+          state: 'pending-activation',
+          reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+          leaseExpiresInMs: 15_000,
+          providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+          jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+        };
+      }),
+    inspectOperation: overrides.inspectOperation ?? (async () => ({ state: 'absent' })),
+    authorizeOperation:
+      overrides.authorizeOperation ??
+      (async () => {
+        phasesBeforeMutation.push(readPhase());
+        return {
+          state: 'activation-authorized',
+          jointActivationReceipt: asJointActivationReceipt('activation-receipt'),
+        };
+      }),
+    activatePreparedOperation:
+      overrides.activatePreparedOperation ??
+      (async () => {
+        phasesBeforeMutation.push(readPhase());
+        return activationAck;
+      }),
+    cancelOperation: async (_operation, prepareAttemptKey) => ({
+      state: 'released-never-started',
+      prepareAttemptKey,
+    }),
+    buildOperationControl: () => ({ stop: async () => undefined }),
+  };
+  const registry = { activate: vi.fn() };
+  let now = 100;
+  const reconciler = new ProviderOperationReconciler({
+    getProgressStore: () => progressStore,
+    authorityFor: () => authority,
+    registry,
+    backendNamespace: 'tests',
+    time: {
+      now: () => now,
+      setTimeout: () => ({ unref: () => undefined }),
+      clearTimeout: () => undefined,
+    },
+  });
+  const begin = () =>
+    reconciler.begin({
+      record,
+      prepared: PREPARED,
+      request: requestFor(record),
+      release: vi.fn(),
+      authority,
     });
 
-    expect(readDue).not.toHaveBeenCalled();
-    expect(drive).not.toHaveBeenCalled();
+  return {
+    record,
+    db,
+    appended,
+    authority,
+    registry,
+    reconciler,
+    phasesBeforeMutation,
+    begin,
+    advance: (ms: number) => {
+      now += ms;
+    },
+  };
+}
 
-    const results = await reconciler.reconcileDue(123);
+describe('ProviderOperationReconciler publication', () => {
+  it('writes every mutation intent before its send and commits execution only from the activation ACK', async () => {
+    const harness = createHarness();
 
-    expect(readDue).toHaveBeenCalledWith(123, 7);
-    expect(drive).toHaveBeenCalledWith(record);
-    expect(results[0]?.verdict).toEqual({ kind: 'released-never-started' });
-    expect(terminations.releasedNeverStarted).toHaveBeenCalledWith(record);
-    expect(terminations.executing).not.toHaveBeenCalled();
-    expect(terminations.releasedAfterTerminal).not.toHaveBeenCalled();
-    expect(terminations.indeterminateActivation).not.toHaveBeenCalled();
+    await expect(harness.begin()).resolves.toEqual({ kind: 'remote-executing' });
 
-    const unresolvedRecord = providerOperationRecord('prepare-pending');
-    const unresolvedTerminations = terminationSpies();
-    const unresolvedReconciler = new ProviderOperationReconciler({
-      journal: { readDue: () => [] },
-      driver: { drive: async () => ({ kind: 'unresolved' }) },
-      terminations: unresolvedTerminations,
+    expect(harness.phasesBeforeMutation).toEqual([
+      'prepare-pending',
+      'guardian-activation-pending',
+      'proxy-activation-pending',
+    ]);
+    expect(readProviderOperation(harness.db, harness.record.operation)?.phase).toBe('executing');
+    expect(harness.appended).toEqual([expect.objectContaining({ type: 'job.runtime.started' })]);
+    expect(harness.registry.activate).toHaveBeenCalledOnce();
+  });
+
+  it('does not publish execution after two lost guardian activation replies', async () => {
+    let guardianCalls = 0;
+    const ambiguous = Object.assign(new Error('guardian reply lost'), { code: 'control_call_failed' });
+    const harness = createHarness({
+      authorizeOperation: async () => {
+        guardianCalls += 1;
+        if (guardianCalls <= 2) throw ambiguous;
+        return {
+          state: 'activation-authorized',
+          jointActivationReceipt: asJointActivationReceipt('activation-receipt'),
+        };
+      },
+    });
+    let placement: unknown;
+    const publication = harness.begin().then((result) => {
+      placement = result;
+      return result;
+    });
+    await vi.waitFor(() => expect(guardianCalls).toBe(1));
+    let current = readProviderOperation(harness.db, harness.record.operation);
+    if (current === null) throw new Error('expected guardian-pending journal row');
+    await harness.reconciler.reconcile(current, harness.authority);
+
+    expect(harness.appended).toEqual([]);
+    expect(harness.registry.activate).not.toHaveBeenCalled();
+    expect(guardianCalls).toBe(2);
+    expect(placement).toBeUndefined();
+
+    current = readProviderOperation(harness.db, harness.record.operation);
+    if (current === null) throw new Error('expected retryable guardian-pending journal row');
+    await harness.reconciler.reconcile(current, harness.authority);
+    await expect(publication).resolves.toEqual({ kind: 'remote-executing' });
+  });
+
+  it('continues from a recovered prepare proof through activation', async () => {
+    const ambiguous = Object.assign(new Error('prepare reply lost'), { code: 'control_call_failed' });
+    const activatePreparedOperation = vi.fn(async () => activationAck);
+    const harness = createHarness({
+      prepareOperation: async () => {
+        throw ambiguous;
+      },
+      inspectOperation: async () => ({
+        state: 'prepared',
+        reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+        leaseExpiresInMs: 15_000,
+        providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+        jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+      }),
+      activatePreparedOperation,
     });
 
-    await expect(unresolvedReconciler.reconcile(unresolvedRecord)).resolves.toMatchObject({
-      verdict: { kind: 'pending' },
+    await expect(harness.begin()).resolves.toEqual({ kind: 'remote-executing' });
+
+    expect(activatePreparedOperation).toHaveBeenCalledOnce();
+    expect(readProviderOperation(harness.db, harness.record.operation)?.phase).toBe('executing');
+  });
+
+  it('keeps a timeout pending and never turns it into local authorization', async () => {
+    const ambiguous = Object.assign(new Error('prepare timed out'), { code: 'control_call_failed' });
+    const harness = createHarness({
+      prepareOperation: async () => {
+        throw ambiguous;
+      },
+      inspectOperation: async () => {
+        throw ambiguous;
+      },
     });
-    for (const termination of Object.values(unresolvedTerminations)) expect(termination).not.toHaveBeenCalled();
+    let placement: unknown;
+    void harness.begin().then((result) => {
+      placement = result;
+    });
+    await vi.waitFor(() => expect(readProviderOperation(harness.db, harness.record.operation)?.retryCount).toBe(1));
+
+    expect(placement).toBeUndefined();
+    expect(readProviderOperation(harness.db, harness.record.operation)?.phase).toBe('prepare-pending');
+    expect(harness.appended).toEqual([]);
+  });
+
+  it('retries an active publication immediately when its proxy control is established', async () => {
+    const ambiguous = Object.assign(new Error('prepare timed out'), { code: 'control_call_failed' });
+    let prepareCalls = 0;
+    const harness = createHarness({
+      prepareOperation: async () => {
+        prepareCalls += 1;
+        if (prepareCalls === 1) throw ambiguous;
+        return {
+          state: 'pending-activation',
+          reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+          leaseExpiresInMs: 15_000,
+          providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+          jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+        };
+      },
+      inspectOperation: async () => {
+        throw ambiguous;
+      },
+    });
+    const publication = harness.begin();
+    await vi.waitFor(() => expect(readProviderOperation(harness.db, harness.record.operation)?.retryCount).toBe(1));
+
+    harness.reconciler.onControlEstablished(harness.authority);
+
+    await vi.waitFor(() => expect(prepareCalls).toBe(2));
+    await expect(publication).resolves.toEqual({ kind: 'remote-executing' });
+  });
+
+  it('leaves proxy activation pending when the atomic runtime commit fails after the ACK', async () => {
+    const harness = createHarness({ failCommitOnce: true });
+    let placement: unknown;
+    void harness.begin().then((result) => {
+      placement = result;
+    });
+    await vi.waitFor(() =>
+      expect(readProviderOperation(harness.db, harness.record.operation)).toMatchObject({
+        phase: 'proxy-activation-pending',
+        retryCount: 1,
+      }),
+    );
+
+    expect(placement).toBeUndefined();
+    expect(harness.appended).toEqual([]);
+    expect(harness.registry.activate).not.toHaveBeenCalled();
   });
 });

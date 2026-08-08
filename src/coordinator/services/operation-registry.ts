@@ -20,7 +20,7 @@ import type { ProviderStopCause } from '../../providers/contract.js';
 /**
  * The live capabilities an entry needs beyond its durable identity: send `operation.stop.v1` for exactly this
  * operation against the exact proxy connection that owns it, and — once its terminal has durably committed —
- * release its guardian-staged membership. Built by `activateProviderOperation`
+ * release its guardian-staged membership. Built after the reconciler commits execution
  * (`provider-proxy-operation-activation.ts`), which already holds the `proxyClient`/`guardianClient` and
  * `mutationRpcTimeoutMs` this needs — restated here as a shape rather than imported, the same reason
  * `provider-proxy-operation-activation.ts`'s own `OperationControlClient` exists.
@@ -102,8 +102,8 @@ export class LocalOperationRegistry {
   }
 
   /**
-   * Registers a live operation the instant `operation.activate.v1` ACKs `executing` — see
-   * `createAppServerProxyRoute`, the only production caller. `release` is the launcher's own closure for
+   * Registers a live operation only after the activation ACK and runtime-started event commit together — see
+   * `ProviderOperationReconciler`, the only production caller. `release` is the launcher's own closure for
    * letting go of the in-process bookkeeping (admission slot, abort registration, job pool entry) it built at
    * the moment of delegation; this registry only ever calls it once, from `settled()`.
    */
