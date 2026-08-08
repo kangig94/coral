@@ -551,6 +551,55 @@ export const proxyOperationStatusParamsSchema = z
 // coordinator identity, because the proxy learns of a handoff only through the two authorities that already
 // hold one. That is a different message, not a drifted copy — see `handoff-capsule.ts`'s own note.
 
+/**
+ * The reply direction, for the same reason `guardian.ts`'s three results are here: a result this proxy builds
+ * by hand and nothing checks until a separately-maintained expectation parses it in another process is this
+ * bug class pointed backwards. `proxy.ts` returns each of these by parsing the schema below, so dropping a
+ * field fails inside the process that owns the field.
+ *
+ * The coordinator does not restate them. It derives its ingress schema from these — narrowing exactly the two
+ * fields it must also be able to persist, which is a question this module cannot ask, since `provider-proxy/`
+ * may not import `jobs/`. Deriving rather than restating is what makes the two unable to drift: a field added
+ * here appears there without anyone remembering to add it.
+ */
+
+/** `operation.prepare.v1`'s reserved result. */
+export const proxyOperationPreparePendingResultSchema = z
+  .object({
+    state: z.literal('pending-activation'),
+    reservation: reservationSchema,
+    leaseExpiresInMs: z.number(),
+    providerRoot: providerRootSchema,
+    jointContainmentReceipt: jointContainmentReceiptSchema,
+  })
+  .strict();
+
+/** `operation.prepare.v1`'s capacity result — a typed retryable answer rather than an error, because
+ *  admission stays with the coordinator and a refused reservation writes nothing to unwind. */
+export const proxyOperationPrepareCapacityResultSchema = z
+  .object({ state: z.literal('capacity'), retryable: z.boolean(), reason: z.string() })
+  .strict();
+
+/** `operation.renew-activation.v1`'s result. */
+export const proxyOperationRenewResultSchema = z
+  .object({ state: z.literal('pending-activation'), leaseExpiresInMs: z.number() })
+  .strict();
+
+/** `operation.activate.v1`'s result. */
+export const proxyOperationActivateResultSchema = z
+  .object({ state: z.literal('executing'), committedThroughProviderSeq: nonNegativeSafeIntegerSchema })
+  .strict();
+
+/** `operation.cancel-pending.v1`'s result. */
+export const proxyOperationCancelPendingResultSchema = z.object({ state: z.literal('released') }).strict();
+
+/** `operation.stop.v1`'s result. `state` is the ledger's own state rather than a closed set: the proxy reports
+ *  where the operation actually landed, and enumerating that here would be a second copy of the ledger's
+ *  vocabulary maintained by whoever changed it last. */
+export const proxyOperationStopResultSchema = z
+  .object({ state: z.string().min(1), committedThroughProviderSeq: nonNegativeSafeIntegerSchema })
+  .strict();
+
 const jsonRpcIdSchema = z.union([z.string().min(1), z.number().safe()]);
 
 const proxyControlJsonRpcRequestSchema = z

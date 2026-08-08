@@ -49,6 +49,12 @@ import {
   proxyOperationPrepareParamsSchema as prepareParamsSchema,
   proxyOperationReservationParamsSchema as reservationParamsSchema,
   proxyOperationStatusParamsSchema as operationStatusParamsSchema,
+  proxyOperationActivateResultSchema,
+  proxyOperationCancelPendingResultSchema,
+  proxyOperationPrepareCapacityResultSchema,
+  proxyOperationPreparePendingResultSchema,
+  proxyOperationRenewResultSchema,
+  proxyOperationStopResultSchema,
   proxyOperationStopParamsSchema as stopParamsSchema,
   type CoordinatorIdentity,
   type JointActivationReceipt,
@@ -424,7 +430,11 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           // Capacity is a typed retryable answer, not an error: admission stays with the coordinator, and
           // the proxy writes nothing it would then have to unwind.
           if (reserved.kind === 'capacity') {
-            return { state: 'capacity', retryable: true, reason: reserved.reason };
+            return proxyOperationPrepareCapacityResultSchema.parse({
+              state: 'capacity',
+              retryable: true,
+              reason: reserved.reason,
+            });
           }
           // The root is staged with both enforcers before the reservation is reported, so a reservation the
           // coordinator commits always names a root the containment can already reach. `reserved.entry` — not
@@ -438,13 +448,13 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           // Retained on the ledger entry — the single owner of this operation's state — so activate can
           // refuse a caller presenting a receipt nobody staged.
           ledger.recordContainmentReceipt(key, staged.receipt);
-          return {
+          return proxyOperationPreparePendingResultSchema.parse({
             state: 'pending-activation',
             reservation: reserved.entry.reservation,
             leaseExpiresInMs: reserved.entry.leaseExpiresAtMs - nowMs(),
             providerRoot: staged.providerRoot,
             jointContainmentReceipt: staged.receipt,
-          };
+          });
         },
       },
     ],
@@ -461,7 +471,10 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const request = reservationParamsSchema.parse(params);
           try {
             const entry = ledger.renew(ledgerKey(request.operation), request.reservation, nowMs());
-            return { state: 'pending-activation', leaseExpiresInMs: entry.leaseExpiresAtMs - nowMs() };
+            return proxyOperationRenewResultSchema.parse({
+              state: 'pending-activation',
+              leaseExpiresInMs: entry.leaseExpiresAtMs - nowMs(),
+            });
           } catch (error: unknown) {
             asProtocolError(error);
           }
@@ -510,7 +523,10 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           if (before?.state !== 'executing') {
             await host.start({ key, prepared: entry.prepared });
           }
-          return { state: 'executing', committedThroughProviderSeq: entry.committedThroughProviderSeq };
+          return proxyOperationActivateResultSchema.parse({
+            state: 'executing',
+            committedThroughProviderSeq: entry.committedThroughProviderSeq,
+          });
         },
       },
     ],
@@ -524,7 +540,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const entry = ledger.get(key);
           // Idempotent: an entry already gone is a cancel that already landed, and reporting `released`
           // is the truthful answer rather than a not-found the caller would have to special-case.
-          if (entry === null) return { state: 'released' };
+          if (entry === null) return proxyOperationCancelPendingResultSchema.parse({ state: 'released' });
           if (entry.reservation !== request.reservation) {
             throw new ProxyControlProtocolError('invalid_request', 'Cancel presented a different reservation.');
           }
@@ -539,7 +555,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           // a cancelled reservation needs its own release here or the staged app-server child runs for the
           // rest of this proxy's life with nothing left referencing it.
           host.releaseStaged?.(key);
-          return { state: 'released' };
+          return proxyOperationCancelPendingResultSchema.parse({ state: 'released' });
         },
       },
     ],
@@ -580,10 +596,10 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             host.releaseStaged?.(key);
           }
           const after = ledger.get(key);
-          return {
+          return proxyOperationStopResultSchema.parse({
             state: after?.state ?? 'released',
             committedThroughProviderSeq: after?.committedThroughProviderSeq ?? 0,
-          };
+          });
         },
       },
     ],

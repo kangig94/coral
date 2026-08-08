@@ -11,11 +11,15 @@ import {
   guardianOperationActivateResultSchema,
   guardianOperationReleaseParamsSchema,
   guardianOperationReleaseResultSchema,
-  providerRootSchema,
   proxyOperationActivateParamsSchema,
+  proxyOperationActivateResultSchema,
+  proxyOperationCancelPendingResultSchema,
+  proxyOperationPrepareCapacityResultSchema,
   proxyOperationPrepareParamsSchema,
+  proxyOperationPreparePendingResultSchema,
   proxyOperationReservationParamsSchema,
   proxyOperationStopParamsSchema,
+  proxyOperationStopResultSchema,
   type JointActivationReceipt,
   type JointContainmentReceipt,
   type OperationIdentity,
@@ -101,30 +105,18 @@ const MUTATION_RPC_TIMEOUT_DEFAULT_MS = 5_000;
  * `provider-proxy/` type, and a value read back out of SQLite after a restart was minted by no live authority
  * in this process, so branding it would need a `trustTheStore()` constructor — a mint with nothing behind it.
  * Writing the branded value back is free, since a brand is assignable to the plain string the row holds.
+ *
+ * Which leaves the rest of the reply shape coming from the proxy's own schema, extended rather than retyped.
+ * The proxy is the authority on what it emits; this function is the authority on what it can still persist.
+ * Two questions, and the `extend` is what keeps them one shape: a field the proxy adds arrives here without
+ * anyone remembering to add it, and only the two the durable row constrains are named.
  */
-const preparePendingSchema = z
-  .object({
-    state: z.literal('pending-activation'),
-    reservation: providerOperationRuntimeMetaSchema.shape.reservation.brand<'Reservation'>(),
-    leaseExpiresInMs: z.number(),
-    providerRoot: providerRootSchema,
-    jointContainmentReceipt:
-      providerOperationRuntimeMetaSchema.shape.jointContainmentReceipt.brand<'JointContainmentReceipt'>(),
-  })
-  .strict();
-const prepareCapacitySchema = z
-  .object({ state: z.literal('capacity'), retryable: z.boolean(), reason: z.string() })
-  .strict();
-const prepareResultSchema = z.union([preparePendingSchema, prepareCapacitySchema]);
-
-const proxyActivateResultSchema = z
-  .object({ state: z.literal('executing'), committedThroughProviderSeq: z.number().int().nonnegative().safe() })
-  .strict();
-
-const cancelPendingResultSchema = z.object({ state: z.literal('released') }).strict();
-const stopResultSchema = z
-  .object({ state: z.string().min(1), committedThroughProviderSeq: z.number().int().nonnegative().safe() })
-  .strict();
+const preparePendingSchema = proxyOperationPreparePendingResultSchema.extend({
+  reservation: providerOperationRuntimeMetaSchema.shape.reservation.brand<'Reservation'>(),
+  jointContainmentReceipt:
+    providerOperationRuntimeMetaSchema.shape.jointContainmentReceipt.brand<'JointContainmentReceipt'>(),
+});
+const prepareResultSchema = z.union([preparePendingSchema, proxyOperationPrepareCapacityResultSchema]);
 
 export type ActivateProviderOperationResult =
   | Readonly<{
@@ -197,7 +189,7 @@ function buildStopControl(
         { operation, cause },
         timeoutMs,
         proxyOperationStopParamsSchema,
-        stopResultSchema,
+        proxyOperationStopResultSchema,
       );
     },
   };
@@ -222,7 +214,7 @@ async function compensateAfterActivationFailure(
     { operation, reservation },
     deps.mutationRpcTimeoutMs,
     proxyOperationReservationParamsSchema,
-    cancelPendingResultSchema,
+    proxyOperationCancelPendingResultSchema,
   );
   // The receipt travels here for the same reason `guardian.operation-activate.v1` carries it: the guardian's
   // release handler refuses a caller that cannot present the receipt its own staging minted, and its params
@@ -337,7 +329,7 @@ export async function activateProviderOperation(
       { operation, reservation, jointContainmentReceipt, jointActivationReceipt },
       timeoutMs,
       proxyOperationActivateParamsSchema,
-      proxyActivateResultSchema,
+      proxyOperationActivateResultSchema,
     );
     return {
       kind: 'executing',
