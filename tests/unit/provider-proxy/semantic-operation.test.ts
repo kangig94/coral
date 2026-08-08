@@ -62,7 +62,7 @@ import {
 // see the "agrees byte-for-byte" case below for why importing the forbidden-to-production original here is
 // exactly the point).
 import { hostFingerprintFromSpec, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
-import { asReservation } from '#tests/helpers/provider-proxy-correlation.js';
+import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 const runtime: Runtime = createRealRuntime('prod');
 
@@ -207,6 +207,7 @@ function prepareAndActivate(
 ): void {
   const reserved = ledger.prepare({ key, reservation: asReservation('res'), prepared, nowMs: 0 });
   if (reserved.kind !== 'reserved') throw new Error('expected a reservation');
+  ledger.recordPreparation(key, { pid: 1, processStartedAtSeconds: 1 }, asJointContainmentReceipt('contained'));
   ledger.activate(key, asReservation('res'), 0);
 }
 
@@ -228,7 +229,7 @@ const terminalCompleted: ProviderEventBody = {
 // --- pump loop outcomes ------------------------------------------------------------------------------------
 
 describe('semantic-operation runtime: pump loop outcomes', () => {
-  it('drains a kernel that completes normally and settles the ledger to terminal-awaiting-journal-ack', async () => {
+  it('drains a kernel that completes normally and leaves it awaiting settlement', async () => {
     const { proxy, ledger, emittedEvents } = createTestProxy();
     const key = testKey();
     const prepared = preparedFixture();
@@ -249,7 +250,7 @@ describe('semantic-operation runtime: pump loop outcomes', () => {
     await host.ensureProviderRoot(key, prepared);
     host.host.start({ key, prepared });
 
-    await vi.waitFor(() => expect(ledger.get(key)?.state).toBe('terminal-awaiting-journal-ack'));
+    await vi.waitFor(() => expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement'));
     expect(emittedEvents).toEqual([{ key, event: terminalCompleted }]);
     expect(closeStaged).toHaveBeenCalledOnce();
   });
@@ -273,7 +274,7 @@ describe('semantic-operation runtime: pump loop outcomes', () => {
     await host.ensureProviderRoot(key, prepared);
     host.host.start({ key, prepared });
 
-    await vi.waitFor(() => expect(ledger.get(key)?.state).toBe('terminal-awaiting-journal-ack'));
+    await vi.waitFor(() => expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement'));
     expect(emittedEvents).toHaveLength(1);
     const [{ event }] = emittedEvents;
     if (event.kind !== 'terminal') throw new Error('expected a terminal event');
@@ -313,7 +314,7 @@ describe('semantic-operation runtime: pump loop outcomes', () => {
     const [{ event }] = emittedEvents;
     if (event.kind !== 'terminal') throw new Error('expected a terminal event');
     expect(event.terminal.outcome).toEqual({ kind: 'aborted', reason: 'user_abort' });
-    expect(ledger.get(key)?.state).toBe('terminal-awaiting-journal-ack');
+    expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement');
   });
 
   it('emits nothing when the kernel throws while an interruption-cause stop is in flight', async () => {
@@ -392,15 +393,15 @@ describe('semantic-operation runtime: stop() racing a still-draining emit', () =
     // 'stop-resolved' instead of before it — this is the ordering guarantee the doc comment promises.
     expect(order).toEqual(['stop-called', 'closed', 'stop-resolved']);
     expect(emittedEvents).toEqual([{ key, event: terminalCompleted }]);
-    expect(ledger.get(key)?.state).toBe('terminal-awaiting-journal-ack');
+    expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement');
 
     // No event was emitted after stop() resolved.
     expect(emittedEvents).toHaveLength(1);
 
-    // The one-event straggler already carried this operation to `terminal-awaiting-journal-ack` via this
+    // The one-event straggler already carried this operation to `terminal-awaiting-settlement` via this
     // module's own `safeTransition`. A second actor (proxy.ts's `operation.stop.v1`, racing the same natural
     // completion) attempting the very same transition afterwards is refused, not silently reapplied.
-    expect(() => ledger.transition(key, 'terminal-awaiting-journal-ack')).toThrow(/does not reach/u);
+    expect(() => ledger.transition(key, 'terminal-awaiting-settlement')).toThrow(/does not reach/u);
   });
 });
 
@@ -449,7 +450,7 @@ describe('semantic-operation runtime: paused back-pressure', () => {
 
     expect(pullCount).toBe(2);
     await vi.advanceTimersByTimeAsync(0);
-    expect(ledger.get(key)?.state).toBe('terminal-awaiting-journal-ack');
+    expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement');
     // The terminal's own emitProviderEvent call, made once capacity was well clear, reported not-paused.
     expect(emittedEvents.at(-1)).toEqual({ key, event: terminalCompleted });
   });

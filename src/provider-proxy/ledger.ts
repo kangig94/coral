@@ -20,26 +20,26 @@ export const MAX_PROXY_REPLAY_BYTES = 64 * 1024 * 1024;
 /** How long a reservation stays activatable without renewal, on the proxy's own clock. */
 export const PROXY_PENDING_ACTIVATION_LEASE_MS = 15_000;
 
-/**
- * The only states an operation may hold. `pending-recovery` is reachable only from `pending-activation`:
- * an expired reservation forbids execution but stays queryable, so control can still cancel exactly it.
- */
+/** The phases are evidence: `starting` means the host call is unresolved, never that a kernel exists. */
 export type ProviderOperationState =
-  | 'pending-activation'
+  | 'preparing'
+  | 'prepared'
+  | 'starting'
   | 'executing'
-  | 'terminal-awaiting-journal-ack'
+  | 'terminal-awaiting-settlement'
   | 'suspended-awaiting-durable-decision'
-  | 'pending-recovery'
-  | 'released';
+  | 'releasing';
 
-const ALLOWED_TRANSITIONS: Readonly<Record<ProviderOperationState, readonly ProviderOperationState[]>> = Object.freeze({
-  'pending-activation': ['executing', 'pending-recovery', 'released'],
-  executing: ['terminal-awaiting-journal-ack', 'suspended-awaiting-durable-decision'],
-  'terminal-awaiting-journal-ack': ['released'],
-  'suspended-awaiting-durable-decision': ['released'],
-  'pending-recovery': ['released'],
-  released: [],
-});
+const ALLOWED_TRANSITIONS: Readonly<Record<ProviderOperationState, readonly (ProviderOperationState | 'released')[]>> =
+  Object.freeze({
+    preparing: ['prepared', 'releasing'],
+    prepared: ['starting', 'releasing'],
+    starting: ['executing', 'releasing'],
+    executing: ['terminal-awaiting-settlement', 'suspended-awaiting-durable-decision'],
+    'terminal-awaiting-settlement': ['releasing'],
+    'suspended-awaiting-durable-decision': ['releasing'],
+    releasing: ['released'],
+  });
 
 export type ProviderOperationKey = Readonly<{ jobId: string; operationId: string }>;
 export type ProviderRootIdentity = Readonly<{ pid: number; processStartedAtSeconds: number }>;
@@ -52,6 +52,10 @@ export const operationPrepareStatusParamsSchema = z
 export function operationPrepareAttemptKey(
   request: Readonly<{ operation: unknown; hostFingerprint: string; prepared: unknown }>,
 ): string {
+  return createHash('sha256').update(JSON.stringify(request), 'utf8').digest('hex');
+}
+
+export function operationActivationFingerprint(request: unknown): string {
   return createHash('sha256').update(JSON.stringify(request), 'utf8').digest('hex');
 }
 
@@ -99,6 +103,7 @@ export type OperationLedgerEntry<Prepared = unknown> = Readonly<{
    * would drift the first time one side is updated without the other.
    */
   prepared: Prepared;
+  prepareAttemptKey: string;
   providerRoot: ProviderRootIdentity | null;
   /**
    * The guardian's receipt for the staged provider root. Null until prepare's staging completes, since
@@ -106,6 +111,8 @@ export type OperationLedgerEntry<Prepared = unknown> = Readonly<{
    * caller's receipt against this one, so an activation can never name a root nobody staged.
    */
   jointContainmentReceipt: JointContainmentReceipt | null;
+  activationFingerprint: string | null;
+  activationAck: Readonly<{ state: 'executing'; committedThroughProviderSeq: number }> | null;
   committedThroughProviderSeq: number;
   bufferedEvents: readonly ReplayEvent[];
   bufferedBytes: number;
@@ -139,9 +146,16 @@ export interface OperationLedger<Prepared = unknown> {
     jointContainmentReceipt: JointContainmentReceipt,
   ): void;
   renew(key: ProviderOperationKey, reservation: Reservation, nowMs: number): OperationLedgerEntry<Prepared>;
+  beginActivation(key: ProviderOperationKey, reservation: Reservation, nowMs: number, fingerprint: string): void;
+  completeActivation(
+    key: ProviderOperationKey,
+    fingerprint: string,
+    ack: Readonly<{ state: 'executing'; committedThroughProviderSeq: number }>,
+  ): void;
+  beginRelease(key: ProviderOperationKey): void;
+  /** Temporary direct adapter for tests and hosts that only need to seed an executing ledger. */
   activate(key: ProviderOperationKey, reservation: Reservation, nowMs: number): void;
-  rollbackActivation(key: ProviderOperationKey, reservation: Reservation): void;
-  transition(key: ProviderOperationKey, next: ProviderOperationState): void;
+  transition(key: ProviderOperationKey, next: ProviderOperationState | 'released'): void;
   /** Buffers one provider event, returning whether the producer must pause before sending more. */
   recordEvent(key: ProviderOperationKey, event: ReplayEvent): { paused: boolean };
   /** Acknowledges through a sequence, freeing the buffer it covers and resuming the producer. */
@@ -171,6 +185,8 @@ type MutableEntry<Prepared> = {
   idempotencyKey: string;
   providerRoot: ProviderRootIdentity | null;
   jointContainmentReceipt: JointContainmentReceipt | null;
+  activationFingerprint: string | null;
+  activationAck: Readonly<{ state: 'executing'; committedThroughProviderSeq: number }> | null;
   committedThroughProviderSeq: number;
   buffered: ReplayEvent[];
   bufferedBytes: number;
@@ -188,24 +204,19 @@ function snapshot<Prepared>(entry: MutableEntry<Prepared>): OperationLedgerEntry
     reservation: entry.reservation,
     leaseExpiresAtMs: entry.leaseExpiresAtMs,
     prepared: entry.prepared,
+    prepareAttemptKey: entry.idempotencyKey,
     providerRoot: entry.providerRoot,
     jointContainmentReceipt: entry.jointContainmentReceipt,
+    activationFingerprint: entry.activationFingerprint,
+    activationAck: entry.activationAck,
     committedThroughProviderSeq: entry.committedThroughProviderSeq,
     bufferedEvents: Object.freeze([...entry.buffered]),
     bufferedBytes: entry.bufferedBytes,
   });
 }
 
-/**
- * The lease's one expiry rule, shared verbatim by every path that may act on a reservation still pending
- * activation. Duplicating this check per call site is exactly how one of them could drift — e.g. keep
- * honouring a lease the other has already deemed expired — so both `renew` and `activate` route through it.
- */
 function requireLeaseCurrent(entry: MutableEntry<unknown>, nowMs: number): void {
-  if (entry.state === 'pending-recovery' || nowMs >= entry.leaseExpiresAtMs) {
-    // An expired reservation forbids the action but stays queryable, so control can still cancel exactly
-    // this reservation rather than losing track of what it authorized.
-    entry.state = 'pending-recovery';
+  if (nowMs >= entry.leaseExpiresAtMs) {
     throw new LedgerError('reservation_expired', 'The activation lease expired.');
   }
 }
@@ -249,13 +260,15 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
       }
       const entry: MutableEntry<Prepared> = {
         key,
-        state: 'pending-activation',
+        state: 'preparing',
         reservation,
         leaseExpiresAtMs: nowMs + PROXY_PENDING_ACTIVATION_LEASE_MS,
         prepared,
         idempotencyKey,
         providerRoot: null,
         jointContainmentReceipt: null,
+        activationFingerprint: null,
+        activationAck: null,
         committedThroughProviderSeq: 0,
         buffered: [],
         bufferedBytes: 0,
@@ -272,8 +285,12 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
 
     recordPreparation(key, providerRoot, jointContainmentReceipt): void {
       const entry = require(key);
+      if (entry.state !== 'preparing' && entry.state !== 'releasing') {
+        throw new LedgerError('operation_invalid_transition', `Cannot record preparation from ${entry.state}.`);
+      }
       entry.providerRoot = providerRoot;
       entry.jointContainmentReceipt = jointContainmentReceipt;
+      if (entry.state === 'preparing') entry.state = 'prepared';
     },
 
     renew(key, reservation, nowMs): OperationLedgerEntry<Prepared> {
@@ -281,7 +298,7 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
       if (entry.reservation !== reservation) {
         throw new LedgerError('reservation_mismatch', 'Renewal presented a different reservation.');
       }
-      if (entry.state !== 'pending-activation' && entry.state !== 'pending-recovery') {
+      if (entry.state !== 'preparing' && entry.state !== 'prepared') {
         throw new LedgerError('operation_invalid_transition', `Cannot renew from ${entry.state}.`);
       }
       requireLeaseCurrent(entry, nowMs);
@@ -289,31 +306,43 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
       return snapshot(entry);
     },
 
-    activate(key, reservation, nowMs): void {
+    beginActivation(key, reservation, nowMs, fingerprint): void {
       const entry = require(key);
       if (entry.reservation !== reservation) {
         throw new LedgerError('reservation_mismatch', 'Activation presented a different reservation.');
       }
-      // A repeat for an operation already executing is the same request arriving twice, not a new one: the
-      // lease governs whether a reservation may *start*, so applying it here would let a late duplicate
-      // demote a running kernel to pending-recovery and from there to released.
-      if (entry.state === 'executing') return;
       requireLeaseCurrent(entry, nowMs);
-      if (entry.state !== 'pending-activation') {
+      if (entry.state !== 'prepared') {
         throw new LedgerError('operation_invalid_transition', `Cannot activate from ${entry.state}.`);
       }
+      entry.state = 'starting';
+      entry.activationFingerprint = fingerprint;
+    },
+
+    completeActivation(key, fingerprint, ack): void {
+      const entry = require(key);
+      if (entry.state !== 'starting' || entry.activationFingerprint !== fingerprint) {
+        throw new LedgerError('operation_invalid_transition', `Cannot complete activation from ${entry.state}.`);
+      }
+      entry.activationAck = Object.freeze({ ...ack });
       entry.state = 'executing';
     },
 
-    rollbackActivation(key, reservation): void {
+    beginRelease(key): void {
       const entry = require(key);
-      if (entry.reservation !== reservation) {
-        throw new LedgerError('reservation_mismatch', 'Activation rollback presented a different reservation.');
+      if (entry.state === 'releasing') return;
+      if (!ALLOWED_TRANSITIONS[entry.state].includes('releasing')) {
+        throw new LedgerError('operation_invalid_transition', `${entry.state} does not reach releasing.`);
       }
-      if (entry.state !== 'executing') {
-        throw new LedgerError('operation_invalid_transition', `Cannot roll back activation from ${entry.state}.`);
-      }
-      entry.state = 'pending-activation';
+      entry.state = 'releasing';
+    },
+
+    activate(key, reservation, nowMs): void {
+      const fingerprint = `direct:${reservation}`;
+      const entry = require(key);
+      if (entry.state === 'executing' && entry.activationFingerprint === fingerprint) return;
+      this.beginActivation(key, reservation, nowMs, fingerprint);
+      this.completeActivation(key, fingerprint, { state: 'executing', committedThroughProviderSeq: 0 });
     },
 
     transition(key, next): void {
@@ -321,15 +350,24 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
       if (!ALLOWED_TRANSITIONS[entry.state].includes(next)) {
         throw new LedgerError('operation_invalid_transition', `${entry.state} does not reach ${next}.`);
       }
-      entry.state = next;
       if (next === 'released') {
         proxyBufferedBytes -= entry.bufferedBytes;
         entries.delete(keyOf(key));
+        return;
       }
+      entry.state = next;
     },
 
     recordEvent(key, event): { paused: boolean } {
       const entry = require(key);
+      if (
+        entry.state !== 'starting' &&
+        entry.state !== 'executing' &&
+        entry.state !== 'terminal-awaiting-settlement' &&
+        entry.state !== 'suspended-awaiting-durable-decision'
+      ) {
+        throw new LedgerError('operation_invalid_transition', `Cannot record an event from ${entry.state}.`);
+      }
       const last = entry.buffered.at(-1);
       const floor = last?.providerSeq ?? entry.committedThroughProviderSeq;
       if (event.providerSeq <= floor) {

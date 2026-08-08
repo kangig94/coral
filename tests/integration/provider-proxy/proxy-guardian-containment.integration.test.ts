@@ -14,9 +14,14 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import type { EnforcementScheduler } from '#src/provider-proxy/enforcement.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
-import { createOperationLedger } from '#src/provider-proxy/ledger.js';
+import { createOperationLedger, operationPrepareAttemptKey } from '#src/provider-proxy/ledger.js';
 import {
+  guardianProxyOperationReleaseParamsSchema,
+  guardianProxyOperationReleaseResultSchema,
   proxyOperationActivateParamsSchema,
+  proxyOperationCancelParamsSchema,
+  proxyOperationCancelResultSchema,
+  proxyOperationPrepareParamsSchema,
   type ProxyIdentity,
   type ProxyPreparedAppServerOperation,
 } from '#src/provider-proxy/protocol.js';
@@ -348,6 +353,61 @@ async function startCoordinatorActivationSet() {
 }
 
 describe('provider proxy activation against a real guardian', () => {
+  it('uses the shared schemas at both hops while proxy cancellation releases guardian membership', async () => {
+    const set = await startCoordinatorActivationSet();
+    const guardianReleaseParses = vi.spyOn(guardianProxyOperationReleaseParamsSchema, 'parse');
+    const guardianReleaseResultParses = vi.spyOn(guardianProxyOperationReleaseResultSchema, 'parse');
+    const cancelParses = vi.spyOn(proxyOperationCancelParamsSchema, 'parse');
+    const cancelResultParses = vi.spyOn(proxyOperationCancelResultSchema, 'parse');
+    const operation = {
+      jobId: randomUUID(),
+      operationId: randomUUID(),
+      proxyInstanceId: set.proxyIdentity.proxyInstanceId,
+      buildSetId: set.proxyIdentity.buildSetId,
+    };
+    const prepareRequest = proxyOperationPrepareParamsSchema.parse({
+      operation,
+      hostFingerprint: FINGERPRINT,
+      prepared: PREPARED,
+    });
+    const prepared = (await set.proxyControl.call('operation.prepare.v1', prepareRequest, 5_000)) as {
+      reservation: string;
+      jointContainmentReceipt: string;
+      providerRoot: typeof ROOT;
+    };
+    const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
+    const cancelRequest = proxyOperationCancelParamsSchema.parse({
+      operation,
+      prepareAttemptKey,
+      reservation: prepared.reservation,
+    });
+
+    const cancelResult = proxyOperationCancelResultSchema.parse(
+      await set.proxyControl.call('operation.cancel.v2', cancelRequest, 5_000),
+    );
+    expect(cancelResult).toEqual({
+      state: 'released-never-started',
+      prepareAttemptKey,
+    });
+
+    expect(cancelParses).toHaveBeenCalledTimes(2);
+    expect(cancelResultParses).toHaveBeenCalledTimes(2);
+    expect(guardianReleaseParses).toHaveBeenCalledTimes(2);
+    expect(guardianReleaseResultParses).toHaveBeenCalledTimes(2);
+    await expect(
+      set.control.call(
+        'guardian.operation-activate.v1',
+        {
+          operation,
+          reservation: prepared.reservation,
+          providerRoot: prepared.providerRoot,
+          jointContainmentReceipt: prepared.jointContainmentReceipt,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow(/Activation must present/u);
+  });
+
   it('executes coordinator activation through the real clients and both real handlers', async () => {
     const set = await startCoordinatorActivationSet();
     const activationSchemaParses = vi.spyOn(proxyOperationActivateParamsSchema, 'parse');

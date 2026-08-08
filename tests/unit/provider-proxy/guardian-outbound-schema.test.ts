@@ -202,6 +202,58 @@ function refuseReceiverConsultation(harness: GuardianHarness): void {
 }
 
 describe('guardian outbound schemas', () => {
+  it('replays one stable activation receipt for the exact membership tuple', async () => {
+    const harness = createGuardianHarness();
+    await armGuardian(harness);
+    const operation = harness.operation();
+    const reservation = randomUUID();
+    const staged = (await harness.method('guardian.register-provider-root.v1').handle({
+      proxy: harness.proxyIdentity,
+      operation,
+      reservation,
+      providerPid: ROOT.pid,
+      providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+    })) as { jointContainmentReceipt: string };
+    harness.mintReceipt.mockClear();
+    harness.reaperCall.mockClear();
+    const activation = {
+      operation,
+      reservation,
+      providerRoot: ROOT,
+      jointContainmentReceipt: staged.jointContainmentReceipt,
+    };
+
+    const first = await harness.method('guardian.operation-activate.v1').handle(activation);
+    const replay = await harness.method('guardian.operation-activate.v1').handle(activation);
+
+    expect(replay).toEqual(first);
+    expect(harness.mintReceipt).toHaveBeenCalledOnce();
+    expect(harness.reaperCall).toHaveBeenCalledOnce();
+  });
+
+  it('lets the paired proxy release membership idempotently', async () => {
+    const harness = createGuardianHarness();
+    await armGuardian(harness);
+    const operation = harness.operation();
+    const reservation = randomUUID();
+    await harness.method('guardian.register-provider-root.v1').handle({
+      proxy: harness.proxyIdentity,
+      operation,
+      reservation,
+      providerPid: ROOT.pid,
+      providerProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
+    });
+    const release = { proxy: harness.proxyIdentity, operation, reservation };
+
+    expect(harness.method('guardian.operation-release.v2').authority).toBe('pairing');
+    expect(harness.method('guardian.operation-release.v2').handle(release)).toEqual({
+      state: 'membership-released',
+    });
+    expect(harness.method('guardian.operation-release.v2').handle(release)).toEqual({
+      state: 'membership-absent',
+    });
+  });
+
   it('refuses malformed record-containment params before consulting the reaper', async () => {
     const harness = createGuardianHarness();
     refuseReceiverConsultation(harness);

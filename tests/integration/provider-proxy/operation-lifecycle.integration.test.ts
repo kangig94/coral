@@ -23,6 +23,7 @@ import {
   MAX_PROXY_OPERATION_LEDGERS,
   MAX_PROVIDER_REPLAY_BYTES,
   MAX_PROVIDER_REPLAY_EVENTS,
+  PROXY_PENDING_ACTIVATION_LEASE_MS,
 } from '#src/provider-proxy/ledger.js';
 import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import {
@@ -166,6 +167,7 @@ async function startProxy(
         }
         return Promise.resolve();
       },
+      releaseMembership: () => Promise.resolve(),
     },
   });
   await proxy.listen();
@@ -525,7 +527,7 @@ describe('provider-proxy operation lifecycle', () => {
     expect(launched.placement).toBe('executing');
     expect(launched.localExecution).not.toHaveBeenCalled();
     expect(launched.prepareStatusCalls).toBe(2);
-    expect(set.proxy.ledger().get(key)?.state).toBe('pending-activation');
+    expect(set.proxy.ledger().get(key)?.state).toBe('prepared');
     expect(launched.registry.stateForJob(launched.jobId)).toBe('activated');
 
     launched.registry.stop(launched.jobId, 'user_abort');
@@ -909,7 +911,7 @@ describe('provider-proxy operation lifecycle', () => {
     observedBudgetsMs.length = 0;
     await set.control.call('operation.renew-activation.v1', { operation, reservation: reserved.reservation }, 5_000);
     // An ordinary mutation method declares no `budgetMs` of its own, so it inherits the endpoint default.
-    expect(observedBudgetsMs).toEqual([PROXY_CONTROL_RPC_TIMEOUT_MS]);
+    expect(observedBudgetsMs).toEqual([PROXY_CONTROL_RPC_TIMEOUT_MS, PROXY_PENDING_ACTIVATION_LEASE_MS]);
 
     observedBudgetsMs.length = 0;
     await set.control.call('operation.status.v1', { operations: [operation] }, 5_000);

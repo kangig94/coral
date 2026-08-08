@@ -38,6 +38,8 @@ import {
   guardianOperationActivateResultSchema,
   guardianOperationReleaseParamsSchema as operationReleaseParamsSchema,
   guardianOperationReleaseResultSchema,
+  guardianProxyOperationReleaseParamsSchema as proxyOperationReleaseParamsSchema,
+  guardianProxyOperationReleaseResultSchema,
   guardianRegisterProviderRootParamsSchema as registerProviderRootParamsSchema,
   guardianStopAndReapParamsSchema as stopAndReapParamsSchema,
   guardianStopAndReapResultSchema,
@@ -53,6 +55,8 @@ import {
   type guardianIdentitySchema,
   type providerRootSchema,
   type JointContainmentReceipt,
+  type JointActivationReceipt,
+  type OperationIdentity,
   type ReaperIdentity,
   type Reservation,
 } from './protocol.js';
@@ -172,11 +176,26 @@ function assertNamedGuardianIdentity(
  * The reservation tuple is recorded, not just parsed, so a caller presenting a different one for a known
  * operation is a disagreement this membership can detect rather than silently accept.
  */
-type StagedMembership = Readonly<{
+type StagedMembership = {
+  operation: OperationIdentity;
   jointContainmentReceipt: JointContainmentReceipt;
+  jointActivationReceipt: JointActivationReceipt | null;
   reservation: Reservation;
   root: z.infer<typeof providerRootSchema>;
-}>;
+};
+
+function membershipKey(operation: OperationIdentity): string {
+  return `${operation.jobId}\u0000${operation.operationId}`;
+}
+
+function sameOperationIdentity(left: OperationIdentity, right: OperationIdentity): boolean {
+  return (
+    left.jobId === right.jobId &&
+    left.operationId === right.operationId &&
+    left.proxyInstanceId === right.proxyInstanceId &&
+    left.buildSetId === right.buildSetId
+  );
+}
 
 /** A detached spawn becomes the leader of its own new process group, so its group id equals its own pid —
  *  the one fact Node's `child_process` does not report back directly, and the same equality
@@ -281,6 +300,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
   const grants = createGrantRegistry(mintReceipt);
   const staged = new Map<string, StagedMembership>();
+  const activating = new Map<string, Promise<z.infer<typeof guardianOperationActivateResultSchema>>>();
 
   const methods = new Map<string, ControlMethod>([
     [
@@ -385,9 +405,12 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           const root = { pid: request.providerPid, processStartedAtSeconds: request.providerProcessStartedAtSeconds };
           // Idempotent by stable identity: the same operation reporting the same root gets the receipt it
           // already holds, rather than a fresh one that silently invalidates it.
-          const already = staged.get(request.operation.operationId);
+          const key = membershipKey(request.operation);
+          const already = staged.get(key);
           if (already !== undefined) {
             if (
+              !sameOperationIdentity(already.operation, request.operation) ||
+              already.reservation !== request.reservation ||
               already.root.pid !== root.pid ||
               already.root.processStartedAtSeconds !== root.processStartedAtSeconds
             ) {
@@ -431,8 +454,10 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           // "after both recorded the same root" a thing the compiler checks rather than a thing this
           // handler's statement order happens to arrange.
           const jointContainmentReceipt = mintJointContainmentReceipt(acknowledgement, record, mintReceipt);
-          staged.set(request.operation.operationId, {
+          staged.set(key, {
+            operation: request.operation,
             jointContainmentReceipt,
+            jointActivationReceipt: null,
             reservation: request.reservation,
             root: record.root,
           });
@@ -446,7 +471,8 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         authority: 'active',
         handle: async (params) => {
           const request = operationActivateParamsSchema.parse(params);
-          const membership = staged.get(request.operation.operationId);
+          const key = membershipKey(request.operation);
+          const membership = staged.get(key);
           if (membership === undefined || membership.jointContainmentReceipt !== request.jointContainmentReceipt) {
             throw new ProxyControlProtocolError(
               'unauthorized_control',
@@ -461,28 +487,47 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               'Activation named a different reservation than this operation staged.',
             );
           }
+          if (!sameOperationIdentity(membership.operation, request.operation)) {
+            throw new ProxyControlProtocolError('identity_mismatch', 'Activation named a different operation.');
+          }
           if (
             membership.root.pid !== request.providerRoot.pid ||
             membership.root.processStartedAtSeconds !== request.providerRoot.processStartedAtSeconds
           ) {
             throw new ProxyControlProtocolError('identity_mismatch', 'Activation named a different provider root.');
           }
-          // Activation authority is converted only after the reaper confirms it still holds the same root —
-          // proof this reaper is alive and still containing the target at the instant of activation. There is
-          // no operation for it to authorize, so a retry that reaches an unchanged root always succeeds.
-          const reaperParams = reaperConfirmProviderRootParamsSchema.parse({
-            providerRoot: request.providerRoot,
-          });
-          const reaperResult = await options.reaperChannel.call(
-            'reaper.confirm-provider-root.v1',
-            reaperParams,
-            PROXY_CONTROL_RPC_TIMEOUT_MS,
-          );
-          reaperConfirmProviderRootResultSchema.parse(reaperResult);
-          return guardianOperationActivateResultSchema.parse({
-            state: 'activation-authorized',
-            jointActivationReceipt: mintReceipt(),
-          });
+          if (membership.jointActivationReceipt !== null) {
+            return guardianOperationActivateResultSchema.parse({
+              state: 'activation-authorized',
+              jointActivationReceipt: membership.jointActivationReceipt,
+            });
+          }
+          const inFlight = activating.get(key);
+          if (inFlight !== undefined) return inFlight;
+
+          const promise = (async () => {
+            const reaperParams = reaperConfirmProviderRootParamsSchema.parse({
+              providerRoot: request.providerRoot,
+            });
+            const reaperResult = await options.reaperChannel.call(
+              'reaper.confirm-provider-root.v1',
+              reaperParams,
+              PROXY_CONTROL_RPC_TIMEOUT_MS,
+            );
+            reaperConfirmProviderRootResultSchema.parse(reaperResult);
+            const result = guardianOperationActivateResultSchema.parse({
+              state: 'activation-authorized',
+              jointActivationReceipt: mintReceipt(),
+            });
+            membership.jointActivationReceipt = result.jointActivationReceipt;
+            return result;
+          })();
+          activating.set(key, promise);
+          try {
+            return await promise;
+          } finally {
+            if (activating.get(key) === promise) activating.delete(key);
+          }
         },
       },
     ],
@@ -492,8 +537,12 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         authority: 'active',
         handle: (params) => {
           const request = operationReleaseParamsSchema.parse(params);
-          const membership = staged.get(request.operation.operationId);
-          if (membership === undefined || membership.jointContainmentReceipt !== request.jointContainmentReceipt) {
+          const key = membershipKey(request.operation);
+          const membership = staged.get(key);
+          if (membership === undefined) {
+            return guardianOperationReleaseResultSchema.parse({ state: 'membership-released' });
+          }
+          if (membership.jointContainmentReceipt !== request.jointContainmentReceipt) {
             throw new ProxyControlProtocolError(
               'unauthorized_control',
               'Release must present the joint containment receipt.',
@@ -507,10 +556,41 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               'Release named a different reservation than this operation staged.',
             );
           }
+          if (!sameOperationIdentity(membership.operation, request.operation)) {
+            throw new ProxyControlProtocolError('identity_mismatch', 'Release named a different operation.');
+          }
           // The membership record is dropped, but the recorded root stays in the enforcer: a released
           // operation does not prove its process is gone, and only teardown may conclude absence.
-          staged.delete(request.operation.operationId);
+          staged.delete(key);
+          activating.delete(key);
           return guardianOperationReleaseResultSchema.parse({ state: 'membership-released' });
+        },
+      },
+    ],
+    [
+      'guardian.operation-release.v2',
+      {
+        authority: 'pairing',
+        handle: (params) => {
+          const request = proxyOperationReleaseParamsSchema.parse(params);
+          assertNamedProxyIdentity('guardian', request.proxy, capsule);
+          const key = membershipKey(request.operation);
+          const membership = staged.get(key);
+          if (membership === undefined) {
+            return guardianProxyOperationReleaseResultSchema.parse({ state: 'membership-absent' });
+          }
+          if (!sameOperationIdentity(membership.operation, request.operation)) {
+            throw new ProxyControlProtocolError('identity_mismatch', 'Release named a different operation.');
+          }
+          if (membership.reservation !== request.reservation) {
+            throw new ProxyControlProtocolError(
+              'identity_mismatch',
+              'Release named a different reservation than this operation staged.',
+            );
+          }
+          staged.delete(key);
+          activating.delete(key);
+          return guardianProxyOperationReleaseResultSchema.parse({ state: 'membership-released' });
         },
       },
     ],

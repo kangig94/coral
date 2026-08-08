@@ -21,11 +21,13 @@ import {
 import {
   LedgerError,
   createOperationLedger,
+  operationActivationFingerprint,
   operationPrepareAttemptKey,
   operationPrepareStatusParamsSchema,
   type OperationLedger,
   type PrepareResult,
   type ProviderOperationKey,
+  type ProviderOperationState,
   type ProviderRootIdentity,
 } from './ledger.js';
 import { PROXY_CONTROL_LEASE_MS } from './orphan-deadline.js';
@@ -46,12 +48,18 @@ import {
   proxyOperationReservationParamsSchema as reservationParamsSchema,
   proxyControlOpenParamsSchema as openParamsSchema,
   proxyOperationStatusParamsSchema as operationStatusParamsSchema,
+  proxyOperationInspectParamsSchema as inspectParamsSchema,
+  proxyOperationCancelParamsSchema as cancelParamsSchema,
+  proxyOperationSettleParamsSchema as settleParamsSchema,
   proxyOperationActivateResultSchema,
   proxyOperationCancelPendingResultSchema,
+  proxyOperationCancelResultSchema,
+  proxyOperationInspectResultSchema,
   proxyOperationPrepareCapacityResultSchema,
   proxyOperationPreparePendingResultSchema,
   proxyOperationRenewResultSchema,
   proxyOperationStopResultSchema,
+  proxyOperationSettleResultSchema,
   proxyOperationStopParamsSchema as stopParamsSchema,
   type CoordinatorIdentity,
   type JointActivationReceipt,
@@ -76,14 +84,11 @@ export interface SemanticOperationHost {
   /** Stops a running kernel. Called for every recorded stop cause, including a clean handoff. */
   stop(input: Readonly<{ key: ProviderOperationKey; cause: ProviderStopCause }>): Promise<void> | void;
   /**
-   * Releases a staged provider root that never reached `executing` — a cancelled reservation, or a stop
-   * that arrived before activation. `stop()`'s contract is "stops a running kernel", so a ledger entry that
-   * never started one has nothing for it to interrupt; this is the only other way `operation.prepare.v1`'s
-   * own staged app-server session ever gets released. Idempotent: a key never staged, or already released
-   * through `start`/`stop`'s own cleanup, is a safe no-op. Optional so a test double exercising only the
-   * executing path is not required to implement it.
+   * `stop()` is reserved for a host whose activation ACK was stored. Cancellation, expiry, and a rejected
+   * start still need a separate idempotent path to discard the staging created by prepare.
    */
   releaseStaged?(key: ProviderOperationKey): void;
+  releaseSettled?(key: ProviderOperationKey): void;
 }
 
 export type ProxyOptions<Scope extends symbol> = Readonly<{
@@ -120,6 +125,7 @@ export type ProxyOptions<Scope extends symbol> = Readonly<{
         jointActivationReceipt: JointActivationReceipt;
       }>,
     ): Promise<void>;
+    releaseMembership(input: Readonly<{ key: ProviderOperationKey; reservation: Reservation }>): Promise<void>;
   }>;
 }>;
 
@@ -181,8 +187,31 @@ function isAmbiguousControlFailure(error: unknown): boolean {
 export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>): Proxy {
   const { capsule, clock, identity, host, timer, mintChallenge, mintReceipt } = options;
   const ledger = createOperationLedger<ProxyPreparedAppServerOperation>();
-  const preparingOperations = new Map<string, Readonly<{ attemptKey: string; promise: Promise<unknown> }>>();
-  const activatingOperations = new Map<string, Readonly<{ idempotencyKey: string; promise: Promise<unknown> }>>();
+  const operationTails = new Map<string, Promise<void>>();
+  const cancelledPrepares = new Map<string, string>();
+  const leaseTimers = new Map<string, { unref?: () => void }>();
+  type ReleaseIntent =
+    | Readonly<{
+        kind: 'never-started' | 'prepare-failed' | 'activation-failed';
+        prepareAttemptKey: string;
+        reservation: Reservation;
+      }>
+    | Readonly<{
+        kind: 'settled';
+        prepareAttemptKey: string;
+        reservation: Reservation;
+        finalProviderSeq: number;
+      }>;
+  const releaseIntents = new Map<string, ReleaseIntent>();
+  const releasedOperations = new Map<
+    string,
+    Readonly<{
+      kind: ReleaseIntent['kind'];
+      prepareAttemptKey: string;
+      reservation: Reservation;
+      settledThroughProviderSeq: number;
+    }>
+  >();
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
   const grants = createGrantRegistry(mintReceipt);
   // Ledger leases are plain milliseconds on the proxy's own clock, measured from its start. The branded
@@ -193,6 +222,179 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
   const nowMs = (): number => clock.millisecondsBetween(startedAt, clock.now());
   // Operational control is evidence for no containment window, so it has no ceiling to clamp against.
   const evidence = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, startedAt, () => null);
+
+  const serializeOperation = <T>(key: ProviderOperationKey, action: () => Promise<T> | T): Promise<T> => {
+    const token = operationToken(key);
+    const previous = operationTails.get(token) ?? Promise.resolve();
+    const result = previous.then(action, action);
+    const tail = result.then(
+      () => {},
+      () => {},
+    );
+    operationTails.set(token, tail);
+    void tail.then(() => {
+      if (operationTails.get(token) === tail) operationTails.delete(token);
+    });
+    return result;
+  };
+
+  const clearLeaseTimer = (key: ProviderOperationKey): void => {
+    const token = operationToken(key);
+    const handle = leaseTimers.get(token);
+    if (handle === undefined) return;
+    timer.clearTimeout(handle);
+    leaseTimers.delete(token);
+  };
+
+  const sameReleaseIntent = (left: ReleaseIntent, right: ReleaseIntent): boolean =>
+    left.kind === right.kind &&
+    left.prepareAttemptKey === right.prepareAttemptKey &&
+    left.reservation === right.reservation &&
+    (left.kind !== 'settled' || (right.kind === 'settled' && left.finalProviderSeq === right.finalProviderSeq));
+
+  const beginRelease = (key: ProviderOperationKey, intent: ReleaseIntent): void => {
+    const token = operationToken(key);
+    const existing = releaseIntents.get(token);
+    if (existing !== undefined && !sameReleaseIntent(existing, intent)) {
+      throw new ProxyControlProtocolError('invalid_state', 'This operation is already releasing for another reason.');
+    }
+    releaseIntents.set(token, existing ?? intent);
+    clearLeaseTimer(key);
+    try {
+      ledger.beginRelease(key);
+    } catch (error: unknown) {
+      asProtocolError(error);
+    }
+  };
+
+  const finishRelease = async (key: ProviderOperationKey, intent: ReleaseIntent): Promise<void> => {
+    const token = operationToken(key);
+    const recorded = releaseIntents.get(token);
+    if (recorded === undefined || !sameReleaseIntent(recorded, intent)) {
+      throw new ProxyControlProtocolError(
+        'invalid_state',
+        'This release does not match the operation release in flight.',
+      );
+    }
+    if (intent.kind === 'settled') host.releaseSettled?.(key);
+    else host.releaseStaged?.(key);
+    await options.containment.releaseMembership({ key, reservation: intent.reservation });
+    try {
+      ledger.transition(key, 'released');
+    } catch (error: unknown) {
+      asProtocolError(error);
+    }
+    releasedOperations.set(token, {
+      kind: intent.kind,
+      prepareAttemptKey: intent.prepareAttemptKey,
+      reservation: intent.reservation,
+      settledThroughProviderSeq: intent.kind === 'settled' ? intent.finalProviderSeq : 0,
+    });
+    releaseIntents.delete(token);
+  };
+
+  const armLeaseTimer = (key: ProviderOperationKey): void => {
+    clearLeaseTimer(key);
+    const entry = ledger.get(key);
+    if (entry === null || (entry.state !== 'preparing' && entry.state !== 'prepared')) return;
+    const token = operationToken(key);
+    const leaseExpiresAtMs = entry.leaseExpiresAtMs;
+    const handle = timer.setTimeout(
+      () => {
+        if (leaseTimers.get(token) !== handle) return;
+        leaseTimers.delete(token);
+        const current = ledger.get(key);
+        if (
+          current === null ||
+          current.leaseExpiresAtMs !== leaseExpiresAtMs ||
+          (current.state !== 'preparing' && current.state !== 'prepared')
+        ) {
+          return;
+        }
+        cancelledPrepares.set(token, current.prepareAttemptKey);
+        const intent: ReleaseIntent = {
+          kind: 'never-started',
+          prepareAttemptKey: current.prepareAttemptKey,
+          reservation: current.reservation,
+        };
+        beginRelease(key, intent);
+        void serializeOperation(key, () => finishRelease(key, intent)).catch(() => {});
+      },
+      Math.max(0, leaseExpiresAtMs - nowMs()),
+    );
+    handle.unref?.();
+    leaseTimers.set(token, handle);
+  };
+
+  const legacyState = (state: ProviderOperationState): string => {
+    if (state === 'preparing' || state === 'prepared' || state === 'starting') return 'pending-activation';
+    if (state === 'terminal-awaiting-settlement') return 'terminal-awaiting-journal-ack';
+    return state;
+  };
+
+  const cancelNeverStarted = (
+    key: ProviderOperationKey,
+    prepareAttemptKey: string,
+    reservation: Reservation,
+  ): Promise<void> => {
+    const token = operationToken(key);
+    const before = ledger.get(key);
+    if (before !== null) {
+      if (before.prepareAttemptKey !== prepareAttemptKey || before.reservation !== reservation) {
+        throw new ProxyControlProtocolError('invalid_request', 'Cancel presented a different reservation.');
+      }
+      if (before.state === 'preparing' || before.state === 'prepared') {
+        cancelledPrepares.set(token, prepareAttemptKey);
+        beginRelease(key, { kind: 'never-started', prepareAttemptKey, reservation });
+      }
+    } else {
+      cancelledPrepares.set(token, prepareAttemptKey);
+    }
+
+    return serializeOperation(key, async () => {
+      const released = releasedOperations.get(token);
+      if (released !== undefined) {
+        if (
+          released.kind !== 'never-started' ||
+          released.prepareAttemptKey !== prepareAttemptKey ||
+          released.reservation !== reservation
+        ) {
+          throw new ProxyControlProtocolError('invalid_state', 'This operation was released after activation began.');
+        }
+        return;
+      }
+
+      const entry = ledger.get(key);
+      if (entry === null) {
+        await options.containment.releaseMembership({ key, reservation });
+        releasedOperations.set(token, {
+          kind: 'never-started',
+          prepareAttemptKey,
+          reservation,
+          settledThroughProviderSeq: 0,
+        });
+        return;
+      }
+      if (entry.prepareAttemptKey !== prepareAttemptKey || entry.reservation !== reservation) {
+        throw new ProxyControlProtocolError('invalid_request', 'Cancel presented a different reservation.');
+      }
+      if (
+        entry.state === 'starting' ||
+        entry.state === 'executing' ||
+        entry.state === 'terminal-awaiting-settlement' ||
+        entry.state === 'suspended-awaiting-durable-decision'
+      ) {
+        throw new ProxyControlProtocolError('invalid_state', 'Activation has begun for this operation.');
+      }
+      const intent: ReleaseIntent = { kind: 'never-started', prepareAttemptKey, reservation };
+      if (entry.state !== 'releasing') beginRelease(key, intent);
+      const recorded = releaseIntents.get(token);
+      if (recorded === undefined || recorded.kind !== 'never-started') {
+        throw new ProxyControlProtocolError('invalid_state', 'Activation has begun for this operation.');
+      }
+      await finishRelease(key, recorded);
+    });
+  };
 
   // --- provider.event.v1 outbound push -------------------------------------------------------------------
   // `endpoint` is assigned near the bottom of this function (it needs `challenges` and `methods`, both built
@@ -237,6 +439,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     try {
       while (true) {
         const entry = ledger.get(key);
+        if (entry?.state === 'starting' || entry?.state === 'preparing' || entry?.state === 'prepared') return;
         const next = entry?.bufferedEvents[0];
         if (next === undefined) return;
         let response: unknown;
@@ -359,6 +562,12 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     }
   };
 
+  const assertNamedOperation = (operation: OperationIdentity): void => {
+    if (operation.proxyInstanceId !== capsule.proxyInstanceId || operation.buildSetId !== capsule.buildSetId) {
+      throw new ProxyControlProtocolError('identity_mismatch', 'The named operation is not held by this proxy.');
+    }
+  };
+
   const methods = new Map<string, ControlMethod>([
     [
       'control.open.v1',
@@ -385,23 +594,27 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         // alternative left the handler completing in the background with nothing coordinating it, orphaning
         // the staged app-server child and a guardian root registration nobody would ever release.
         budgetMs: 'caller-deadline',
-        handle: async (params) => {
+        handle: (params) => {
           const request = prepareParamsSchema.parse(params);
+          assertNamedOperation(request.operation);
           if (request.hostFingerprint !== capsule.hostFingerprint) {
             throw new ProxyControlProtocolError('identity_mismatch', 'Prepare named a different host fingerprint.');
           }
           const key = ledgerKey(request.operation);
           const token = operationToken(key);
           const attemptKey = operationPrepareAttemptKey(request);
-          const inFlight = preparingOperations.get(token);
-          if (inFlight !== undefined) {
-            if (inFlight.attemptKey !== attemptKey) {
-              throw new ProxyControlProtocolError('invalid_state', 'This operation is already being prepared.');
+          return serializeOperation(key, async (): Promise<unknown> => {
+            const cancelledAttempt = cancelledPrepares.get(token);
+            const released = releasedOperations.get(token);
+            const retryingFailedPrepare =
+              released?.kind === 'prepare-failed' && released.prepareAttemptKey === attemptKey;
+            if (retryingFailedPrepare) releasedOperations.delete(token);
+            if (cancelledAttempt !== undefined || (released !== undefined && !retryingFailedPrepare)) {
+              if ((cancelledAttempt ?? released?.prepareAttemptKey) !== attemptKey) {
+                throw new ProxyControlProtocolError('invalid_state', 'This operation was fenced by another prepare.');
+              }
+              throw new ProxyControlProtocolError('invalid_state', 'This prepared operation has been released.');
             }
-            return inFlight.promise;
-          }
-
-          const promise = (async (): Promise<unknown> => {
             let reserved: PrepareResult<ProxyPreparedAppServerOperation>;
             try {
               reserved = ledger.prepare({
@@ -421,6 +634,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
                 reason: reserved.reason,
               });
             }
+            armLeaseTimer(key);
             if (reserved.entry.providerRoot !== null && reserved.entry.jointContainmentReceipt !== null) {
               return proxyOperationPreparePendingResultSchema.parse({
                 state: 'pending-activation',
@@ -444,28 +658,24 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
                 jointContainmentReceipt: staged.receipt,
               });
               ledger.recordPreparation(key, result.providerRoot, result.jointContainmentReceipt);
+              if (ledger.get(key)?.state === 'releasing') {
+                throw new ProxyControlProtocolError('reservation_expired', 'The activation lease expired.');
+              }
               return result;
             } catch (error: unknown) {
-              if (!isAmbiguousControlFailure(error)) {
-                const entry = ledger.get(key);
-                if (entry !== null && entry.reservation === reserved.entry.reservation) {
-                  try {
-                    ledger.transition(key, 'released');
-                  } catch (transitionError: unknown) {
-                    asProtocolError(transitionError);
-                  }
-                }
-                host.releaseStaged?.(key);
+              const entry = ledger.get(key);
+              if (!isAmbiguousControlFailure(error) && entry !== null && entry.state !== 'releasing') {
+                const intent: ReleaseIntent = {
+                  kind: 'prepare-failed',
+                  prepareAttemptKey: attemptKey,
+                  reservation: reserved.entry.reservation,
+                };
+                beginRelease(key, intent);
+                await finishRelease(key, intent);
               }
               throw error;
             }
-          })();
-          preparingOperations.set(token, { attemptKey, promise });
-          try {
-            return await promise;
-          } finally {
-            if (preparingOperations.get(token)?.promise === promise) preparingOperations.delete(token);
-          }
+          });
         },
       },
     ],
@@ -480,15 +690,20 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         authority: 'active',
         handle: (params) => {
           const request = reservationParamsSchema.parse(params);
-          try {
-            const entry = ledger.renew(ledgerKey(request.operation), request.reservation, nowMs());
-            return proxyOperationRenewResultSchema.parse({
-              state: 'pending-activation',
-              leaseExpiresInMs: entry.leaseExpiresAtMs - nowMs(),
-            });
-          } catch (error: unknown) {
-            asProtocolError(error);
-          }
+          assertNamedOperation(request.operation);
+          const key = ledgerKey(request.operation);
+          return serializeOperation(key, () => {
+            try {
+              const entry = ledger.renew(key, request.reservation, nowMs());
+              armLeaseTimer(key);
+              return proxyOperationRenewResultSchema.parse({
+                state: 'pending-activation',
+                leaseExpiresInMs: entry.leaseExpiresAtMs - nowMs(),
+              });
+            } catch (error: unknown) {
+              asProtocolError(error);
+            }
+          });
         },
       },
     ],
@@ -496,72 +711,83 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       'operation.activate.v1',
       {
         authority: 'active',
-        handle: async (params) => {
+        handle: (params) => {
           const request = activateParamsSchema.parse(params);
+          assertNamedOperation(request.operation);
           const key = ledgerKey(request.operation);
-          const before = ledger.get(key);
-          // The containment receipt is the ledger's own record of which staged root this reservation was
-          // reported against; a caller presenting any other string is activating against a root nobody
-          // staged with either enforcer.
-          if (before !== null && before.jointContainmentReceipt !== request.jointContainmentReceipt) {
-            throw new ProxyControlProtocolError(
-              'unauthorized_control',
-              'Activation named a different containment receipt.',
-            );
-          }
-          const token = operationToken(key);
-          const idempotencyKey = JSON.stringify([
-            request.reservation,
-            request.jointContainmentReceipt,
-            request.jointActivationReceipt,
-          ]);
-          const inFlight = activatingOperations.get(token);
-          if (inFlight !== undefined) {
-            if (inFlight.idempotencyKey !== idempotencyKey) {
-              throw new ProxyControlProtocolError('invalid_state', 'This operation is already being activated.');
+          const fingerprint = operationActivationFingerprint(request);
+          return serializeOperation(key, async (): Promise<unknown> => {
+            let entry = ledger.get(key);
+            if (entry === null) {
+              throw new ProxyControlProtocolError('operation_not_found', 'No such prepared operation.');
             }
-            return inFlight.promise;
-          }
-
-          const promise = (async (): Promise<unknown> => {
+            if (entry.activationFingerprint !== null && entry.activationFingerprint !== fingerprint) {
+              throw new ProxyControlProtocolError('invalid_state', 'Activation does not match the stored attempt.');
+            }
+            if (entry.activationAck !== null) {
+              return proxyOperationActivateResultSchema.parse(entry.activationAck);
+            }
+            if (entry.jointContainmentReceipt !== request.jointContainmentReceipt) {
+              throw new ProxyControlProtocolError(
+                'unauthorized_control',
+                'Activation named a different containment receipt.',
+              );
+            }
             await options.containment.confirmActivation({
               key,
               jointContainmentReceipt: request.jointContainmentReceipt,
               jointActivationReceipt: request.jointActivationReceipt,
             });
+            entry = ledger.get(key);
+            if (entry?.state === 'releasing') {
+              const intent = releaseIntents.get(operationToken(key));
+              if (intent !== undefined) await finishRelease(key, intent);
+              throw new ProxyControlProtocolError('reservation_expired', 'The activation lease expired.');
+            }
             try {
-              ledger.activate(key, request.reservation, nowMs());
+              ledger.beginActivation(key, request.reservation, nowMs(), fingerprint);
+              clearLeaseTimer(key);
             } catch (error: unknown) {
+              if (error instanceof LedgerError && error.code === 'reservation_expired') {
+                const intent: ReleaseIntent = {
+                  kind: 'never-started',
+                  prepareAttemptKey: entry?.prepareAttemptKey ?? '',
+                  reservation: request.reservation,
+                };
+                cancelledPrepares.set(operationToken(key), intent.prepareAttemptKey);
+                beginRelease(key, intent);
+                await finishRelease(key, intent);
+              }
               asProtocolError(error);
             }
-            const entry = ledger.get(key);
+            entry = ledger.get(key);
             if (entry === null) {
-              throw new ProxyControlProtocolError('invalid_state', 'Activation succeeded but its entry vanished.');
+              throw new ProxyControlProtocolError('invalid_state', 'Activation began but its entry vanished.');
             }
-            if (before?.state !== 'executing') {
-              try {
-                await host.start({ key, prepared: entry.prepared });
-              } catch (error: unknown) {
-                try {
-                  ledger.rollbackActivation(key, request.reservation);
-                } catch (rollbackError: unknown) {
-                  asProtocolError(rollbackError);
-                }
-                host.releaseStaged?.(key);
-                throw error;
-              }
+            try {
+              await host.start({ key, prepared: entry.prepared });
+            } catch (error: unknown) {
+              const intent: ReleaseIntent = {
+                kind: 'activation-failed',
+                prepareAttemptKey: entry.prepareAttemptKey,
+                reservation: entry.reservation,
+              };
+              beginRelease(key, intent);
+              await finishRelease(key, intent);
+              throw error;
             }
-            return proxyOperationActivateResultSchema.parse({
+            const ack = proxyOperationActivateResultSchema.parse({
               state: 'executing',
               committedThroughProviderSeq: entry.committedThroughProviderSeq,
             });
-          })();
-          activatingOperations.set(token, { idempotencyKey, promise });
-          try {
-            return await promise;
-          } finally {
-            if (activatingOperations.get(token)?.promise === promise) activatingOperations.delete(token);
-          }
+            try {
+              ledger.completeActivation(key, fingerprint, ack);
+            } catch (error: unknown) {
+              asProtocolError(error);
+            }
+            void pump(key);
+            return ack;
+          });
         },
       },
     ],
@@ -571,26 +797,35 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         authority: 'active',
         handle: (params) => {
           const request = reservationParamsSchema.parse(params);
+          assertNamedOperation(request.operation);
           const key = ledgerKey(request.operation);
           const entry = ledger.get(key);
-          // Idempotent: an entry already gone is a cancel that already landed, and reporting `released`
-          // is the truthful answer rather than a not-found the caller would have to special-case.
-          if (entry === null) return proxyOperationCancelPendingResultSchema.parse({ state: 'released' });
-          if (entry.reservation !== request.reservation) {
-            throw new ProxyControlProtocolError('invalid_request', 'Cancel presented a different reservation.');
-          }
-          try {
-            ledger.transition(key, 'released');
-          } catch (error: unknown) {
-            asProtocolError(error);
-          }
-          // The ledger entry never reached `executing`, so no kernel was ever started for it — but
-          // `operation.prepare.v1` may already have staged its provider root. `host.stop` is the only other
-          // thing that releases that staging, and it is reachable only from the `executing` path below, so
-          // a cancelled reservation needs its own release here or the staged app-server child runs for the
-          // rest of this proxy's life with nothing left referencing it.
-          host.releaseStaged?.(key);
-          return proxyOperationCancelPendingResultSchema.parse({ state: 'released' });
+          const token = operationToken(key);
+          const prepareAttemptKey =
+            entry?.prepareAttemptKey ??
+            releasedOperations.get(token)?.prepareAttemptKey ??
+            cancelledPrepares.get(token) ??
+            '0'.repeat(64);
+          return cancelNeverStarted(key, prepareAttemptKey, request.reservation).then(() =>
+            proxyOperationCancelPendingResultSchema.parse({ state: 'released' }),
+          );
+        },
+      },
+    ],
+    [
+      'operation.cancel.v2',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = cancelParamsSchema.parse(params);
+          assertNamedOperation(request.operation);
+          const key = ledgerKey(request.operation);
+          return cancelNeverStarted(key, request.prepareAttemptKey, request.reservation).then(() =>
+            proxyOperationCancelResultSchema.parse({
+              state: 'released-never-started',
+              prepareAttemptKey: request.prepareAttemptKey,
+            }),
+          );
         },
       },
     ],
@@ -598,42 +833,112 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       'operation.stop.v1',
       {
         authority: 'active',
-        handle: async (params) => {
+        handle: (params) => {
           const request = stopParamsSchema.parse(params);
+          assertNamedOperation(request.operation);
           const key = ledgerKey(request.operation);
-          const entry = ledger.get(key);
-          if (entry === null) throw new ProxyControlProtocolError('operation_not_found', 'No such operation.');
-          // The terminal is not `released`: the coordinator must durably decide first, and deleting the
-          // entry here would drop the replay buffer that decision still needs. Only a recorded restart or
-          // handoff suspends — the abort causes end the operation outright, and claiming they interrupted
-          // it would write an interruption the user never suffered.
-          const next = isInterruptionStopCause(request.cause)
-            ? 'suspended-awaiting-durable-decision'
-            : 'terminal-awaiting-journal-ack';
-          if (entry.state === 'executing') {
-            await host.stop({ key, cause: request.cause });
-            try {
-              ledger.transition(key, next);
-            } catch (error: unknown) {
-              asProtocolError(error);
-            }
-          } else {
-            // `SemanticOperationHost.stop`'s contract is "stops a running kernel" — an entry that never
-            // reached `executing` has none to stop. Releasing it here is what keeps a pending-activation or
-            // pending-recovery entry from being stuck forever with nothing left to end it.
-            try {
-              ledger.transition(key, 'released');
-            } catch (error: unknown) {
-              asProtocolError(error);
-            }
-            // Same staged-but-never-started release `operation.cancel-pending.v1` performs: nothing else
-            // drops the app-server child `operation.prepare.v1` may have staged for this key.
-            host.releaseStaged?.(key);
+          const before = ledger.get(key);
+          if (before !== null && (before.state === 'preparing' || before.state === 'prepared')) {
+            const intent: ReleaseIntent = {
+              kind: 'never-started',
+              prepareAttemptKey: before.prepareAttemptKey,
+              reservation: before.reservation,
+            };
+            cancelledPrepares.set(operationToken(key), before.prepareAttemptKey);
+            beginRelease(key, intent);
           }
-          const after = ledger.get(key);
-          return proxyOperationStopResultSchema.parse({
-            state: after?.state ?? 'released',
-            committedThroughProviderSeq: after?.committedThroughProviderSeq ?? 0,
+          return serializeOperation(key, async () => {
+            const entry = ledger.get(key);
+            if (entry === null) throw new ProxyControlProtocolError('operation_not_found', 'No such operation.');
+            const next = isInterruptionStopCause(request.cause)
+              ? 'suspended-awaiting-durable-decision'
+              : 'terminal-awaiting-settlement';
+            if (entry.state === 'executing') {
+              await host.stop({ key, cause: request.cause });
+              const afterStop = ledger.get(key);
+              if (afterStop?.state === 'executing') {
+                try {
+                  ledger.transition(key, next);
+                } catch (error: unknown) {
+                  asProtocolError(error);
+                }
+              }
+            } else if (entry.state === 'preparing' || entry.state === 'prepared' || entry.state === 'releasing') {
+              const intent = releaseIntents.get(operationToken(key));
+              if (intent === undefined || intent.kind !== 'never-started') {
+                throw new ProxyControlProtocolError('invalid_state', 'Activation has begun for this operation.');
+              }
+              await finishRelease(key, intent);
+            }
+            const after = ledger.get(key);
+            return proxyOperationStopResultSchema.parse({
+              state: after === null ? 'released' : legacyState(after.state),
+              committedThroughProviderSeq: after?.committedThroughProviderSeq ?? 0,
+            });
+          });
+        },
+      },
+    ],
+    [
+      'operation.settle.v2',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = settleParamsSchema.parse(params);
+          assertNamedOperation(request.operation);
+          const key = ledgerKey(request.operation);
+          const token = operationToken(key);
+          return serializeOperation(key, async () => {
+            const released = releasedOperations.get(token);
+            if (released !== undefined) {
+              if (released.kind !== 'settled' || request.finalProviderSeq > released.settledThroughProviderSeq) {
+                throw new ProxyControlProtocolError('invalid_state', 'Settlement exceeds the released watermark.');
+              }
+              return proxyOperationSettleResultSchema.parse({
+                state: 'released-after-terminal',
+                settledThroughProviderSeq: released.settledThroughProviderSeq,
+              });
+            }
+
+            const entry = ledger.get(key);
+            if (entry === null) {
+              return proxyOperationSettleResultSchema.parse({
+                state: 'released-after-terminal',
+                settledThroughProviderSeq: request.finalProviderSeq,
+              });
+            }
+            if (
+              entry.state !== 'terminal-awaiting-settlement' &&
+              entry.state !== 'suspended-awaiting-durable-decision' &&
+              entry.state !== 'releasing'
+            ) {
+              throw new ProxyControlProtocolError('invalid_state', 'Operation is not ready for settlement.');
+            }
+            const lastProviderSeq = ledger.nextProviderSeq(key) - 1;
+            if (request.finalProviderSeq !== lastProviderSeq) {
+              throw new ProxyControlProtocolError('invalid_request', 'Settlement named a different final sequence.');
+            }
+            try {
+              ledger.acknowledge(key, request.finalProviderSeq);
+            } catch (error: unknown) {
+              asProtocolError(error);
+            }
+            const intent: ReleaseIntent = {
+              kind: 'settled',
+              prepareAttemptKey: entry.prepareAttemptKey,
+              reservation: entry.reservation,
+              finalProviderSeq: request.finalProviderSeq,
+            };
+            if (entry.state !== 'releasing') beginRelease(key, intent);
+            const recorded = releaseIntents.get(token);
+            if (recorded === undefined || recorded.kind !== 'settled') {
+              throw new ProxyControlProtocolError('invalid_state', 'Operation is releasing without settlement.');
+            }
+            await finishRelease(key, recorded);
+            return proxyOperationSettleResultSchema.parse({
+              state: 'released-after-terminal',
+              settledThroughProviderSeq: request.finalProviderSeq,
+            });
           });
         },
       },
@@ -644,6 +949,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         authority: 'active',
         handle: (params) => {
           const request = adoptParamsSchema.parse(params);
+          assertNamedOperation(request.operation);
           const redemption = grants.redemption();
           if (redemption === null) {
             throw new ProxyControlProtocolError('invalid_state', 'No grant has been redeemed on this proxy.');
@@ -667,7 +973,85 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           // onto, so whatever this operation still has buffered past the watermark it just acknowledged is
           // exactly the `replayFromProviderSeq` it is about to be told to expect.
           void pump(key);
-          return { state: entry.state, replayFromProviderSeq: request.committedThroughProviderSeq + 1 };
+          return { state: legacyState(entry.state), replayFromProviderSeq: request.committedThroughProviderSeq + 1 };
+        },
+      },
+    ],
+    [
+      'operation.inspect.v2',
+      {
+        authority: 'observation',
+        budgetMs: PROXY_STATUS_RPC_TIMEOUT_MS,
+        handle: (params) => {
+          const request = inspectParamsSchema.parse(params);
+          assertNamedOperation(request.operation);
+          const entry = ledger.get(ledgerKey(request.operation));
+          if (entry === null) return proxyOperationInspectResultSchema.parse({ state: 'absent' });
+          if (entry.prepareAttemptKey !== request.prepareAttemptKey) {
+            throw new ProxyControlProtocolError('invalid_state', 'Inspect does not match the prepared operation.');
+          }
+          if (entry.state === 'preparing') {
+            return proxyOperationInspectResultSchema.parse({
+              state: 'preparing',
+              reservation: entry.reservation,
+              leaseExpiresInMs: entry.leaseExpiresAtMs - nowMs(),
+            });
+          }
+          if (entry.state === 'prepared') {
+            if (entry.providerRoot === null || entry.jointContainmentReceipt === null) {
+              throw new ProxyControlProtocolError('invalid_state', 'Prepared operation lacks containment evidence.');
+            }
+            return proxyOperationInspectResultSchema.parse({
+              state: 'prepared',
+              reservation: entry.reservation,
+              leaseExpiresInMs: entry.leaseExpiresAtMs - nowMs(),
+              providerRoot: entry.providerRoot,
+              jointContainmentReceipt: entry.jointContainmentReceipt,
+            });
+          }
+          if (entry.state === 'starting') {
+            if (
+              entry.providerRoot === null ||
+              entry.jointContainmentReceipt === null ||
+              entry.activationFingerprint === null
+            ) {
+              throw new ProxyControlProtocolError('invalid_state', 'Starting operation lacks activation evidence.');
+            }
+            return proxyOperationInspectResultSchema.parse({
+              state: 'starting',
+              reservation: entry.reservation,
+              providerRoot: entry.providerRoot,
+              jointContainmentReceipt: entry.jointContainmentReceipt,
+              activationFingerprint: entry.activationFingerprint,
+            });
+          }
+          if (entry.state === 'releasing') {
+            return proxyOperationInspectResultSchema.parse({
+              state: 'releasing',
+              reservation: entry.reservation,
+              providerRoot: entry.providerRoot,
+              jointContainmentReceipt: entry.jointContainmentReceipt,
+              activationFingerprint: entry.activationFingerprint,
+              activationAck: entry.activationAck,
+              committedThroughProviderSeq: entry.committedThroughProviderSeq,
+            });
+          }
+          if (entry.activationFingerprint === null || entry.activationAck === null) {
+            throw new ProxyControlProtocolError('invalid_state', 'Operation lacks its activation acknowledgement.');
+          }
+          if (entry.state === 'executing') {
+            return proxyOperationInspectResultSchema.parse({
+              state: 'executing',
+              activationFingerprint: entry.activationFingerprint,
+              activationAck: entry.activationAck,
+            });
+          }
+          return proxyOperationInspectResultSchema.parse({
+            state: 'terminal-awaiting-settlement',
+            activationFingerprint: entry.activationFingerprint,
+            activationAck: entry.activationAck,
+            committedThroughProviderSeq: entry.committedThroughProviderSeq,
+          });
         },
       },
     ],
@@ -687,8 +1071,6 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             const entry = ledger.getByPrepareAttemptKey(prepareStatus.data.prepareAttemptKey);
             if (entry === null) return { state: 'absent' };
             if (entry.providerRoot === null || entry.jointContainmentReceipt === null) {
-              const inFlight = preparingOperations.get(operationToken(entry.key));
-              if (inFlight?.attemptKey === prepareStatus.data.prepareAttemptKey) return inFlight.promise;
               return { state: 'preparing' };
             }
             return proxyOperationPreparePendingResultSchema.parse({
@@ -721,7 +1103,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
                 : {
                     operation,
                     held: true as const,
-                    state: activatingOperations.has(operationToken(entry.key)) ? 'executing' : entry.state,
+                    state: legacyState(entry.state),
                     committedThroughProviderSeq: entry.committedThroughProviderSeq,
                   };
             }),
@@ -787,7 +1169,11 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
 
   return {
     listen: () => endpoint.listen(),
-    close: () => endpoint.close(),
+    close: () => {
+      for (const handle of leaseTimers.values()) timer.clearTimeout(handle);
+      leaseTimers.clear();
+      return endpoint.close();
+    },
     ledger: () => ledger,
     emitProviderEvent,
   };

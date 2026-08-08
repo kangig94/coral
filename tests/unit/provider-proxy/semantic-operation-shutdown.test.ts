@@ -43,7 +43,7 @@ import {
   createSemanticOperationRuntime,
   type ProxyAppServerHostAuthority,
 } from '#src/provider-proxy/semantic-operation.js';
-import { asReservation } from '#tests/helpers/provider-proxy-correlation.js';
+import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 const runtime: Runtime = createRealRuntime('prod');
 
@@ -128,6 +128,7 @@ function prepareAndActivate(
 ): void {
   const reserved = ledger.prepare({ key, reservation: asReservation('res'), prepared, nowMs: 0 });
   if (reserved.kind !== 'reserved') throw new Error('expected a reservation');
+  ledger.recordPreparation(key, { pid: 1, processStartedAtSeconds: 1 }, asJointContainmentReceipt('contained'));
   ledger.activate(key, asReservation('res'), 0);
 }
 
@@ -189,7 +190,7 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
     expect(closeStaged).toHaveBeenCalledOnce();
     // A synthesized aborted terminal reached the ledger — proof the kernel's own abort was actually driven,
     // not merely awaited past.
-    expect(ledger.get(key)?.state).toBe('terminal-awaiting-journal-ack');
+    expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement');
   });
 
   it('releases a staged-but-never-started provider root without touching a kernel', async () => {

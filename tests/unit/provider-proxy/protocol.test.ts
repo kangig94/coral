@@ -12,6 +12,8 @@ import {
   guardianIdentitySchema,
   guardianOperationActivateParamsSchema,
   guardianOperationReleaseParamsSchema,
+  guardianProxyOperationReleaseParamsSchema,
+  guardianProxyOperationReleaseResultSchema,
   guardianRegisterProviderRootParamsSchema,
   guardianStopAndReapParamsSchema,
   MAX_PROXY_CONTROL_FRAME_BYTES,
@@ -28,9 +30,15 @@ import {
   proxyIdentitySchema,
   proxyOperationActivateParamsSchema,
   proxyOperationAdoptParamsSchema,
+  proxyOperationCancelParamsSchema,
+  proxyOperationCancelResultSchema,
+  proxyOperationInspectParamsSchema,
+  proxyOperationInspectResultSchema,
   proxyOperationPrepareParamsSchema,
   proxyOperationReservationParamsSchema,
   proxyOperationStopParamsSchema,
+  proxyOperationSettleParamsSchema,
+  proxyOperationSettleResultSchema,
   reaperIdentitySchema,
   reaperConfirmProviderRootParamsSchema,
   reaperConfirmProviderRootResultSchema,
@@ -419,6 +427,62 @@ describe('guardian control-method request schemas, shared with their one coordin
     expect(guardianRegisterProviderRootParamsSchema.safeParse(missingReservation).success).toBe(false);
 
     expect(guardianRegisterProviderRootParamsSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
+  });
+});
+
+describe('truthful operation wire schemas', () => {
+  const operation = { jobId: UUID_A, operationId: UUID_B, proxyInstanceId: UUID_C, buildSetId: UUID_D };
+  const prepareAttemptKey = 'f'.repeat(64);
+
+  it('strictly validates proxy-owned guardian release in both directions', () => {
+    const request = { proxy: proxyIdentity, operation, reservation: UUID_A };
+    expect(guardianProxyOperationReleaseParamsSchema.safeParse(request).success).toBe(true);
+    expect(guardianProxyOperationReleaseParamsSchema.safeParse({ ...request, unexpected: true }).success).toBe(false);
+    expect(guardianProxyOperationReleaseParamsSchema.safeParse({ proxy: proxyIdentity, operation }).success).toBe(
+      false,
+    );
+    expect(guardianProxyOperationReleaseResultSchema.safeParse({ state: 'membership-absent' }).success).toBe(true);
+    expect(
+      guardianProxyOperationReleaseResultSchema.safeParse({ state: 'membership-absent', unexpected: true }).success,
+    ).toBe(false);
+  });
+
+  it('strictly validates inspect, fenced cancel, and cumulative settle requests and results', () => {
+    const inspect = { operation, prepareAttemptKey };
+    const cancel = { ...inspect, reservation: UUID_A };
+    const settle = { operation, finalProviderSeq: 7 };
+    expect(proxyOperationInspectParamsSchema.safeParse(inspect).success).toBe(true);
+    expect(proxyOperationCancelParamsSchema.safeParse(cancel).success).toBe(true);
+    expect(proxyOperationSettleParamsSchema.safeParse(settle).success).toBe(true);
+    expect(proxyOperationInspectParamsSchema.safeParse({ ...inspect, unexpected: true }).success).toBe(false);
+    expect(proxyOperationCancelParamsSchema.safeParse({ operation, reservation: UUID_A }).success).toBe(false);
+    expect(proxyOperationSettleParamsSchema.safeParse({ operation, finalProviderSeq: -1 }).success).toBe(false);
+
+    expect(proxyOperationInspectResultSchema.safeParse({ state: 'absent' }).success).toBe(true);
+    expect(
+      proxyOperationCancelResultSchema.safeParse({ state: 'released-never-started', prepareAttemptKey }).success,
+    ).toBe(true);
+    expect(
+      proxyOperationSettleResultSchema.safeParse({
+        state: 'released-after-terminal',
+        settledThroughProviderSeq: 7,
+      }).success,
+    ).toBe(true);
+    expect(proxyOperationInspectResultSchema.safeParse({ state: 'absent', unexpected: true }).success).toBe(false);
+    expect(
+      proxyOperationCancelResultSchema.safeParse({
+        state: 'released-never-started',
+        prepareAttemptKey,
+        unexpected: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      proxyOperationSettleResultSchema.safeParse({
+        state: 'released-after-terminal',
+        settledThroughProviderSeq: 7,
+        unexpected: true,
+      }).success,
+    ).toBe(false);
   });
 });
 

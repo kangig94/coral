@@ -451,8 +451,8 @@ type StagedOperation = {
   pendingStopCause: ProviderStopCause | null;
   /** Resolves once the pump loop has fully settled; `stop()` awaits this so no event can be emitted after it
    *  returns (proxy.ts transitions the ledger immediately after `stop()` resolves). `null` until `host.start`
-   *  assigns it — `stop()` is only ever called once `start()` has already run (proxy.ts calls `host.stop` only
-   *  from the `executing` state, which only `start()` reaches), so by the time it is read it is always set;
+   *  assigns it — `stop()` is only ever called after the proxy has stored the activation ACK, so by the time
+   *  it is read it is always set;
    *  mutated in place rather than replacing the map entry, so `start`/`stop` and the pump loop all observe the
    *  same object. */
   done: Promise<void> | null;
@@ -525,7 +525,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
 
   const safeTransition = (
     key: ProviderOperationKey,
-    next: 'terminal-awaiting-journal-ack' | 'suspended-awaiting-durable-decision',
+    next: 'terminal-awaiting-settlement' | 'suspended-awaiting-durable-decision',
   ): void => {
     try {
       getProxy().ledger().transition(key, next);
@@ -553,7 +553,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     } catch {
       /* the ledger entry is gone (already released); nothing left to notify */
     }
-    safeTransition(key, 'terminal-awaiting-journal-ack');
+    safeTransition(key, 'terminal-awaiting-settlement');
   };
 
   const emitAbortedTerminal = (key: ProviderOperationKey, cause: ProviderStopCause): void => {
@@ -569,7 +569,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     } catch {
       /* ledger entry already gone */
     }
-    safeTransition(key, 'terminal-awaiting-journal-ack');
+    safeTransition(key, 'terminal-awaiting-settlement');
   };
 
   const runPump = async (
@@ -579,15 +579,14 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
   ): Promise<void> => {
     const proxy = getProxy();
     try {
-      // `runPump` runs exactly once per key — `proxy.ts`'s `operation.activate.v1` handler only calls
-      // `host.start` on a transition into `executing`, and a repeat activation is refused a second kernel — so
-      // nothing outside this single call ever resolves `entry.done` concurrently with it.
+      // The stored activation ACK makes a retry return before reaching `host.start`, so nothing outside this
+      // single call ever resolves `entry.done` concurrently with it.
       for await (const event of iterable) {
         const { paused } = proxy.emitProviderEvent(key, event);
         if (paused) await awaitEmitCapacity(key, entry.abortController.signal);
 
         if (event.kind === 'terminal') {
-          safeTransition(key, 'terminal-awaiting-journal-ack');
+          safeTransition(key, 'terminal-awaiting-settlement');
           break;
         }
         if (event.kind === 'suspended') {
@@ -649,6 +648,13 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       if (entry === undefined || entry.done !== null) return;
       staged.delete(keyStr);
       entry.staged.close();
+    },
+
+    releaseSettled: (key) => {
+      const keyStr = operationKeyString(key);
+      const entry = staged.get(keyStr);
+      if (entry === undefined) return;
+      staged.delete(keyStr);
     },
   };
 

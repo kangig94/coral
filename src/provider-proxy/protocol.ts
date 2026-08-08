@@ -13,7 +13,7 @@ import {
   providerSuspendedEventBodySchema,
   providerTerminalEventBodySchema,
 } from '../providers/contract.js';
-import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
+import { MAX_PROXY_OPERATION_LEDGERS, operationPrepareAttemptKeySchema } from './ledger.js';
 
 export const MAX_PROXY_CONTROL_FRAME_BYTES = 17 * 1024 * 1024;
 export const PROXY_CONTROL_RPC_TIMEOUT_MS = 5_000;
@@ -474,6 +474,15 @@ export const guardianOperationReleaseParamsSchema = z
   })
   .strict();
 
+/** The proxy authenticates this release through its pairing tenancy, so it does not need a coordinator-held receipt. */
+export const guardianProxyOperationReleaseParamsSchema = z
+  .object({
+    proxy: proxyIdentitySchema,
+    operation: operationIdentitySchema,
+    reservation: reservationSchema,
+  })
+  .strict();
+
 /** `guardian.stop-and-reap.v1`'s request. Sent by `set-authority.ts`'s `stopAndReap`. */
 export const guardianStopAndReapParamsSchema = z
   .object({
@@ -485,7 +494,7 @@ export const guardianStopAndReapParamsSchema = z
   .strict();
 
 /**
- * The four request schemas above close one direction of this bug class; a hand-assembled *result* built by
+ * The request schemas above close one direction of this bug class; a hand-assembled *result* built by
  * `guardian.ts`'s own handler and never checked against anything until its one coordinator caller parses a
  * separately-maintained expectation is the same defect pointed the other way. `guardian.ts` now builds each
  * of these results by parsing the identical schema its caller parses the reply with, so the two can no longer
@@ -499,6 +508,10 @@ export const guardianOperationActivateResultSchema = z
 
 /** `guardian.operation-release.v1`'s result. */
 export const guardianOperationReleaseResultSchema = z.object({ state: z.literal('membership-released') }).strict();
+
+export const guardianProxyOperationReleaseResultSchema = z
+  .object({ state: z.enum(['membership-released', 'membership-absent']) })
+  .strict();
 
 /** `guardian.stop-and-reap.v1`'s result. */
 export const guardianStopAndReapResultSchema = z
@@ -636,6 +649,18 @@ export const proxyOperationStatusParamsSchema = z
   .object({ operations: z.array(operationIdentitySchema).min(1).max(MAX_PROXY_OPERATION_LEDGERS) })
   .strict();
 
+export const proxyOperationInspectParamsSchema = z
+  .object({ operation: operationIdentitySchema, prepareAttemptKey: operationPrepareAttemptKeySchema })
+  .strict();
+
+export const proxyOperationCancelParamsSchema = proxyOperationReservationParamsSchema
+  .extend({ prepareAttemptKey: operationPrepareAttemptKeySchema })
+  .strict();
+
+export const proxyOperationSettleParamsSchema = z
+  .object({ operation: operationIdentitySchema, finalProviderSeq: nonNegativeSafeIntegerSchema })
+  .strict();
+
 // Two request schemas stay private to `proxy.ts`: `handoff.install.v1` and `handoff.redeem.v1`. Both need
 // `grantSecretSchema`/`grantSecretDigestSchema`/`handoffOperationSetSchema`, which live in
 // `handoff-capsule.ts` — and that module imports this one, so moving them here would close a cycle that
@@ -646,7 +671,7 @@ export const proxyOperationStatusParamsSchema = z
 // hold one. That is a different message, not a drifted copy — see `handoff-capsule.ts`'s own note.
 
 /**
- * The reply direction, for the same reason `guardian.ts`'s three results are here: a result this proxy builds
+ * The reply direction, for the same reason `guardian.ts`'s results are here: a result this proxy builds
  * by hand and nothing checks until a separately-maintained expectation parses it in another process is this
  * bug class pointed backwards. `proxy.ts` returns each of these by parsing the schema below, so dropping a
  * field fails inside the process that owns the field.
@@ -682,6 +707,68 @@ export const proxyOperationRenewResultSchema = z
 /** `operation.activate.v1`'s result. */
 export const proxyOperationActivateResultSchema = z
   .object({ state: z.literal('executing'), committedThroughProviderSeq: nonNegativeSafeIntegerSchema })
+  .strict();
+
+export const activationFingerprintSchema = operationPrepareAttemptKeySchema;
+
+const proxyOperationInspectPreExecutionBaseSchema = z.object({
+  reservation: reservationSchema,
+  leaseExpiresInMs: z.number(),
+});
+
+export const proxyOperationInspectResultSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('absent') }).strict(),
+  proxyOperationInspectPreExecutionBaseSchema.extend({ state: z.literal('preparing') }).strict(),
+  proxyOperationInspectPreExecutionBaseSchema
+    .extend({
+      state: z.literal('prepared'),
+      providerRoot: providerRootSchema,
+      jointContainmentReceipt: jointContainmentReceiptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      state: z.literal('starting'),
+      reservation: reservationSchema,
+      providerRoot: providerRootSchema,
+      jointContainmentReceipt: jointContainmentReceiptSchema,
+      activationFingerprint: activationFingerprintSchema,
+    })
+    .strict(),
+  z
+    .object({
+      state: z.literal('executing'),
+      activationFingerprint: activationFingerprintSchema,
+      activationAck: proxyOperationActivateResultSchema,
+    })
+    .strict(),
+  z
+    .object({
+      state: z.literal('releasing'),
+      reservation: reservationSchema,
+      providerRoot: providerRootSchema.nullable(),
+      jointContainmentReceipt: jointContainmentReceiptSchema.nullable(),
+      activationFingerprint: activationFingerprintSchema.nullable(),
+      activationAck: proxyOperationActivateResultSchema.nullable(),
+      committedThroughProviderSeq: nonNegativeSafeIntegerSchema,
+    })
+    .strict(),
+  z
+    .object({
+      state: z.literal('terminal-awaiting-settlement'),
+      activationFingerprint: activationFingerprintSchema,
+      activationAck: proxyOperationActivateResultSchema,
+      committedThroughProviderSeq: nonNegativeSafeIntegerSchema,
+    })
+    .strict(),
+]);
+
+export const proxyOperationCancelResultSchema = z
+  .object({ state: z.literal('released-never-started'), prepareAttemptKey: operationPrepareAttemptKeySchema })
+  .strict();
+
+export const proxyOperationSettleResultSchema = z
+  .object({ state: z.literal('released-after-terminal'), settledThroughProviderSeq: nonNegativeSafeIntegerSchema })
   .strict();
 
 /** `operation.cancel-pending.v1`'s result. */

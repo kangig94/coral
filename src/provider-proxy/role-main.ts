@@ -35,6 +35,8 @@ import {
 import type { ControlClient } from './control-client.js';
 import {
   guardianRegisterProviderRootParamsSchema,
+  guardianProxyOperationReleaseParamsSchema,
+  guardianProxyOperationReleaseResultSchema,
   jointContainmentReceiptSchema,
   providerRootSchema,
   reservationSchema,
@@ -698,7 +700,7 @@ export type ProxyGuardianContainmentDeps = Readonly<{
 }>;
 
 /**
- * Builds the two containment closures a proxy uses to talk to its guardian on the kernel's behalf:
+ * Builds the containment closures a proxy uses to talk to its guardian on the kernel's behalf:
  * `stageProviderRoot` (called from `operation.prepare.v1`) and `confirmActivation` (called from
  * `operation.activate.v1`). Extracted out of `startProviderProxyRole` so it can be exercised against a real
  * `createGuardian` in a test without spawning a real provider — only `ensureProviderRoot` needs replacing for
@@ -778,6 +780,25 @@ export function createProxyGuardianContainment(
         throw new Error('Activation presented an empty activation receipt.');
       }
     },
+    releaseMembership: async ({ key, reservation }) => {
+      const params = guardianProxyOperationReleaseParamsSchema.parse({
+        proxy: deps.identity,
+        operation: {
+          jobId: key.jobId,
+          operationId: key.operationId,
+          proxyInstanceId: deps.identity.proxyInstanceId,
+          buildSetId: deps.identity.buildSetId,
+        },
+        reservation,
+      });
+      const response = await deps.guardianChannel.call(
+        'guardian.operation-release.v2',
+        params,
+        PROXY_CONTROL_RPC_TIMEOUT_MS,
+      );
+      guardianProxyOperationReleaseResultSchema.parse(response);
+      recognisedReceipts.delete(containmentKeyString(key));
+    },
   };
 }
 
@@ -786,7 +807,7 @@ export function createProxyGuardianContainment(
  * root.v1` requires, and starts listening. The semantic carrier itself — reconstructing the bound provider,
  * running its kernel, and pumping `ProviderEventBody`s into `proxy.emitProviderEvent` — is
  * `semantic-operation.ts`'s `SemanticOperationHost`; this role main owns the process topology, endpoint and
- * guardian-authentication surface, and the two containment closures that talk to the guardian on the kernel's
+ * guardian-authentication surface, and the containment closures that talk to the guardian on the kernel's
  * behalf (`Proxy`'s own `containment.stageProviderRoot`/`confirmActivation`).
  */
 export async function startProviderProxyRole(
