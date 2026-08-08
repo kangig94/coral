@@ -328,6 +328,37 @@ describe('provider-proxy control endpoint', () => {
     expect(active.result).toEqual({ state: 'worked' });
   });
 
+  it('revokes active method authority when the lease lapses while its socket stays open', async () => {
+    const set = await startEndpoint();
+    const client = await connect(set.socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    set.lapseControl();
+    const refused = await client.call('role.work.v1', {});
+
+    expect(refused.error?.data?.code).toBe('unauthorized_control');
+    expect(refused.error?.message).toContain('requires active control');
+  });
+
+  it('strictly rejects unknown heartbeat and pairing parameters', async () => {
+    const heartbeatSet = await startEndpoint();
+    const control = await connect(heartbeatSet.socketPath);
+    await control.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+
+    const heartbeat = await control.call('role.heartbeat.v1', {
+      controlEpoch: 1,
+      heartbeatChallenge: 'challenge-1',
+      unexpected: true,
+    });
+    expect(heartbeat.error?.data?.code).toBe('protocol_violation');
+
+    const pairingSet = await startEndpoint({ pairing: { openMethod: 'role.pair.v1', secret: 'shared-secret' } });
+    const peer = await connect(pairingSet.socketPath);
+    const pairing = await peer.call('role.pair.v1', { pairingSecret: 'shared-secret', unexpected: true });
+    expect(pairing.error?.data?.code).toBe('protocol_violation');
+  });
+
   it('reports an unknown method as method-not-found, with a data.code a caller can branch on', async () => {
     const { socketPath } = await startEndpoint();
     const client = await connect(socketPath);
@@ -684,6 +715,19 @@ describe('provider-proxy control endpoint: pushOnTenancy', () => {
     await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
 
     await expect(endpoint.pushOnTenancy(pushFrame(1), 200)).rejects.toMatchObject({
+      code: 'control_endpoint_push_no_tenancy',
+    });
+  });
+
+  it('rejects a push after the active tenancy’s lease lapses without an EOF', async () => {
+    const set = await startEndpoint();
+    const client = await connect(set.socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    set.lapseControl();
+
+    await expect(set.endpoint.pushOnTenancy(pushFrame(1), 200)).rejects.toMatchObject({
       code: 'control_endpoint_push_no_tenancy',
     });
   });

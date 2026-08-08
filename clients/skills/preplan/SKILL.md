@@ -138,7 +138,7 @@ items with the "unconfirmed" marker, then seek user feedback.
     terminal = Bash(`coral-cli wait jobs ${job} --embed`)   // foreground; returns at terminal or the bound
     output = Read(<path from the terminal's `Result path:` line>)
     ```
-    Exit `0` means every job completed successfully; `1` means a failed, aborted, or faulted job; `75` means work is still running — resume with `--cursor <cursor>` using the printed cursor, and keep looping until a non-`75` result before reading the terminal result. A `provider_exit` outcome is separate: it exits with the provider's own normalized code (0–255, including `0`), not necessarily `1`.
+    Exit `0` means every job succeeded (`completed`, or `provider_exit` whose child exited `0`); `1` means a failed, aborted, or faulted job; `75` means work is still running — resume with `--cursor <cursor>` using the printed cursor, and keep looping until a non-`75` result before reading the terminal result. A non-zero `provider_exit` code is the provider's own, passed through unchanged (0–255).
 
     Then consume `output`: for items where pioneer identifies a genuinely more elegant form, mark the
     sub-item unconfirmed and add the three-point spectrum (default, minimal, elegant) with pioneer's

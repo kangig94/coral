@@ -24,6 +24,7 @@ import {
   type OperationLedger,
   type PrepareResult,
   type ProviderOperationKey,
+  type ProviderRootIdentity,
 } from './ledger.js';
 import { PROXY_CONTROL_LEASE_MS } from './orphan-deadline.js';
 import {
@@ -108,7 +109,7 @@ export type ProxyOptions<Scope extends symbol> = Readonly<{
     stageProviderRoot(
       key: ProviderOperationKey,
       reserved: Readonly<{ reservation: Reservation; prepared: ProxyPreparedAppServerOperation }>,
-    ): Promise<Readonly<{ providerRoot: unknown; receipt: JointContainmentReceipt }>>;
+    ): Promise<Readonly<{ providerRoot: ProviderRootIdentity; receipt: JointContainmentReceipt }>>;
     /** Throws unless the guardian recognises both receipts for this exact operation. */
     confirmActivation(
       input: Readonly<{
@@ -156,6 +157,23 @@ function ledgerKey(operation: OperationIdentity): ProviderOperationKey {
   return { jobId: operation.jobId, operationId: operation.operationId };
 }
 
+function operationToken(key: ProviderOperationKey): string {
+  return `${key.jobId}\u0000${key.operationId}`;
+}
+
+function prepareIdempotencyKey(operation: OperationIdentity, prepared: ProxyPreparedAppServerOperation): string {
+  return JSON.stringify([operation, prepared]);
+}
+
+function isAmbiguousControlFailure(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const failure = error as { code?: unknown; protocolCode?: unknown };
+  return (
+    (failure.code === 'control_call_failed' || failure.code === 'control_client_closed') &&
+    failure.protocolCode === undefined
+  );
+}
+
 /**
  * The proxy holds the live carrier and the operation ledger. Its control tenancy is *operational*: losing it
  * stops mutation, but unlike the guardian's and the reaper's it bounds nothing — containment is the
@@ -165,6 +183,8 @@ function ledgerKey(operation: OperationIdentity): ProviderOperationKey {
 export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>): Proxy {
   const { capsule, clock, identity, host, timer, mintChallenge, mintReceipt } = options;
   const ledger = createOperationLedger<ProxyPreparedAppServerOperation>();
+  const preparingOperations = new Map<string, Readonly<{ idempotencyKey: string; promise: Promise<unknown> }>>();
+  const activatingOperations = new Map<string, Readonly<{ idempotencyKey: string; promise: Promise<unknown> }>>();
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
   const grants = createGrantRegistry(mintReceipt);
   // Ledger leases are plain milliseconds on the proxy's own clock, measured from its start. The branded
@@ -197,7 +217,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
   // Stops this proxy from running two overlapping drains of the same operation's buffer. Not a second source
   // of truth for anything the ledger itself owns — membership here only ever gates concurrency.
   const pumpingOperations = new Set<string>();
-  const pumpToken = (key: ProviderOperationKey): string => `${key.jobId}\u0000${key.operationId}`;
+  const pumpToken = operationToken;
 
   /**
    * Drains one operation's buffered-but-unacknowledged events over the live control tenancy, oldest first,
@@ -373,46 +393,81 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             throw new ProxyControlProtocolError('identity_mismatch', 'Prepare named a different host fingerprint.');
           }
           const key = ledgerKey(request.operation);
-          const reservation = options.mintReservation();
-          let reserved: PrepareResult<ProxyPreparedAppServerOperation>;
+          const token = operationToken(key);
+          const idempotencyKey = prepareIdempotencyKey(request.operation, request.prepared);
+          const inFlight = preparingOperations.get(token);
+          if (inFlight !== undefined) {
+            if (inFlight.idempotencyKey !== idempotencyKey) {
+              throw new ProxyControlProtocolError('invalid_state', 'This operation is already being prepared.');
+            }
+            return inFlight.promise;
+          }
+
+          const promise = (async (): Promise<unknown> => {
+            let reserved: PrepareResult<ProxyPreparedAppServerOperation>;
+            try {
+              reserved = ledger.prepare({
+                key,
+                reservation: options.mintReservation(),
+                prepared: request.prepared,
+                nowMs: nowMs(),
+                idempotencyKey,
+              });
+            } catch (error: unknown) {
+              asProtocolError(error);
+            }
+            if (reserved.kind === 'capacity') {
+              return proxyOperationPrepareCapacityResultSchema.parse({
+                state: 'capacity',
+                retryable: true,
+                reason: reserved.reason,
+              });
+            }
+            if (reserved.entry.providerRoot !== null && reserved.entry.jointContainmentReceipt !== null) {
+              return proxyOperationPreparePendingResultSchema.parse({
+                state: 'pending-activation',
+                reservation: reserved.entry.reservation,
+                leaseExpiresInMs: reserved.entry.leaseExpiresAtMs - nowMs(),
+                providerRoot: reserved.entry.providerRoot,
+                jointContainmentReceipt: reserved.entry.jointContainmentReceipt,
+              });
+            }
+
+            try {
+              const staged = await options.containment.stageProviderRoot(key, {
+                reservation: reserved.entry.reservation,
+                prepared: reserved.entry.prepared,
+              });
+              const result = proxyOperationPreparePendingResultSchema.parse({
+                state: 'pending-activation',
+                reservation: reserved.entry.reservation,
+                leaseExpiresInMs: reserved.entry.leaseExpiresAtMs - nowMs(),
+                providerRoot: staged.providerRoot,
+                jointContainmentReceipt: staged.receipt,
+              });
+              ledger.recordPreparation(key, result.providerRoot, result.jointContainmentReceipt);
+              return result;
+            } catch (error: unknown) {
+              if (!isAmbiguousControlFailure(error)) {
+                const entry = ledger.get(key);
+                if (entry !== null && entry.reservation === reserved.entry.reservation) {
+                  try {
+                    ledger.transition(key, 'released');
+                  } catch (transitionError: unknown) {
+                    asProtocolError(transitionError);
+                  }
+                }
+                host.releaseStaged?.(key);
+              }
+              throw error;
+            }
+          })();
+          preparingOperations.set(token, { idempotencyKey, promise });
           try {
-            reserved = ledger.prepare({
-              key,
-              reservation,
-              prepared: request.prepared,
-              nowMs: nowMs(),
-            });
-          } catch (error: unknown) {
-            asProtocolError(error);
+            return await promise;
+          } finally {
+            if (preparingOperations.get(token)?.promise === promise) preparingOperations.delete(token);
           }
-          // Capacity is a typed retryable answer, not an error: admission stays with the coordinator, and
-          // the proxy writes nothing it would then have to unwind.
-          if (reserved.kind === 'capacity') {
-            return proxyOperationPrepareCapacityResultSchema.parse({
-              state: 'capacity',
-              retryable: true,
-              reason: reserved.reason,
-            });
-          }
-          // The root is staged with both enforcers before the reservation is reported, so a reservation the
-          // coordinator commits always names a root the containment can already reach. `reserved.entry` — not
-          // the freshly minted `reservation` above — is what gets forwarded: on an
-          // idempotent repeat of an already-reserved operation, `ledger.prepare()` returns the *existing*
-          // entry, and that entry's own reservation is the one every later step must agree with.
-          const staged = await options.containment.stageProviderRoot(key, {
-            reservation: reserved.entry.reservation,
-            prepared: reserved.entry.prepared,
-          });
-          // Retained on the ledger entry — the single owner of this operation's state — so activate can
-          // refuse a caller presenting a receipt nobody staged.
-          ledger.recordContainmentReceipt(key, staged.receipt);
-          return proxyOperationPreparePendingResultSchema.parse({
-            state: 'pending-activation',
-            reservation: reserved.entry.reservation,
-            leaseExpiresInMs: reserved.entry.leaseExpiresAtMs - nowMs(),
-            providerRoot: staged.providerRoot,
-            jointContainmentReceipt: staged.receipt,
-          });
         },
       },
     ],
@@ -456,35 +511,49 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
               'Activation named a different containment receipt.',
             );
           }
-          // The guardian mints the activation receipt independently of the ledger, so only it — not a
-          // string comparison here — can confirm the pair belongs to this exact operation.
-          await options.containment.confirmActivation({
-            key,
-            jointContainmentReceipt: request.jointContainmentReceipt,
-            jointActivationReceipt: request.jointActivationReceipt,
-          });
+          const token = operationToken(key);
+          const idempotencyKey = JSON.stringify([
+            request.reservation,
+            request.jointContainmentReceipt,
+            request.jointActivationReceipt,
+          ]);
+          const inFlight = activatingOperations.get(token);
+          if (inFlight !== undefined) {
+            if (inFlight.idempotencyKey !== idempotencyKey) {
+              throw new ProxyControlProtocolError('invalid_state', 'This operation is already being activated.');
+            }
+            return inFlight.promise;
+          }
+
+          const promise = (async (): Promise<unknown> => {
+            await options.containment.confirmActivation({
+              key,
+              jointContainmentReceipt: request.jointContainmentReceipt,
+              jointActivationReceipt: request.jointActivationReceipt,
+            });
+            try {
+              ledger.activate(key, request.reservation, nowMs());
+            } catch (error: unknown) {
+              asProtocolError(error);
+            }
+            const entry = ledger.get(key);
+            if (entry === null) {
+              throw new ProxyControlProtocolError('invalid_state', 'Activation succeeded but its entry vanished.');
+            }
+            if (before?.state !== 'executing') {
+              await host.start({ key, prepared: entry.prepared });
+            }
+            return proxyOperationActivateResultSchema.parse({
+              state: 'executing',
+              committedThroughProviderSeq: entry.committedThroughProviderSeq,
+            });
+          })();
+          activatingOperations.set(token, { idempotencyKey, promise });
           try {
-            ledger.activate(key, request.reservation, nowMs());
-          } catch (error: unknown) {
-            asProtocolError(error);
+            return await promise;
+          } finally {
+            if (activatingOperations.get(token)?.promise === promise) activatingOperations.delete(token);
           }
-          const entry = ledger.get(key);
-          if (entry === null) {
-            // `activate` above throws `operation_not_found` for an absent entry, so reaching here means the
-            // ledger answered two different ways about the same key in one turn. Refusing is the only honest
-            // answer left: the alternative this replaced was `entry?.prepared`, which would have started a
-            // kernel with `undefined` as its work — a carrier running nothing, reported as executing.
-            throw new ProxyControlProtocolError('invalid_state', 'Activation succeeded but its entry vanished.');
-          }
-          // Only a transition into `executing` starts a kernel. A repeat activation is the same request
-          // arriving twice; starting a second kernel for it would fork the carrier this proxy exists to own.
-          if (before?.state !== 'executing') {
-            await host.start({ key, prepared: entry.prepared });
-          }
-          return proxyOperationActivateResultSchema.parse({
-            state: 'executing',
-            committedThroughProviderSeq: entry.committedThroughProviderSeq,
-          });
         },
       },
     ],
@@ -598,8 +667,9 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       'operation.status.v1',
       {
         // The one method served without holding control: an observation is asked by whoever is *not*
-        // running this set. It reads the ledger and returns; it moves no deadline, spends no credential,
-        // and transitions nothing, so answering it can never change what this proxy would otherwise do.
+        // running this set. It reads the ledger and the in-flight activation marker; it moves no deadline,
+        // spends no credential, and transitions nothing, so answering it can never change what this proxy
+        // would otherwise do.
         authority: 'observation',
         // A background health check, not a mutation the caller is blocked on — bounded well below the
         // ordinary control budget so a wedged reply costs an asker no more than the asker itself budgets
@@ -635,7 +705,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
                 : {
                     operation,
                     held: true as const,
-                    state: entry.state,
+                    state: activatingOperations.has(operationToken(entry.key)) ? 'executing' : entry.state,
                     committedThroughProviderSeq: entry.committedThroughProviderSeq,
                   };
             }),

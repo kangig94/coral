@@ -32,11 +32,8 @@ import type { OperationStopControl } from './operation-registry.js';
 /**
  * The coordinator half of W2.3's closed publication order: `operation.prepare.v1` → one coordinator
  * transaction committing `provider_operation.v1` runtime meta → `guardian.operation-activate.v1` →
- * `operation.activate.v1`, with the exact activation-expiry compensation the plan requires. No other
- * transition may start the kernel — every step below either advances toward `operation.activate.v1`'s
- * `executing` ACK or runs the full compensation before returning; there is no path that returns success
- * without an execution ACK, and no path that leaves committed meta behind without either an executing
- * operation or a completed release.
+ * `operation.activate.v1`, with compensation for authoritative refusals and retained runtime ownership for
+ * an activation whose reply is ambiguous. No other transition may start the kernel.
  *
  * Lives in `coordinator/services/`, not `coordinator/live/`: it imports `jobs/runtime-meta*.ts` directly
  * (`architecture-layering.test.ts`'s coordinator-contract-entrypoint rule exempts `services/`, matching where
@@ -133,10 +130,20 @@ export type ActivateProviderOperationResult =
   /** The proxy's own ledger is at `MAX_PROXY_OPERATION_LEDGERS` capacity. Admission stays with the caller —
    *  nothing was written, so a retry is exactly as safe as the first attempt. */
   | Readonly<{ kind: 'capacity'; retryable: boolean; reason: string }>
-  /** Activation could not complete after the meta commit. Compensation already ran — the meta row named by
-   *  `operation` is durably deleted, the proxy's pending reservation is released, and the guardian's staged
-   *  membership is released — and the kernel was never started. */
-  | Readonly<{ kind: 'activation-failed'; step: 'guardian-activate' | 'proxy-activate'; reason: string }>;
+  /** An authoritative refusal or local commit failure for which compensation completed. */
+  | Readonly<{
+      kind: 'activation-failed';
+      step: 'runtime-meta' | 'guardian-activate' | 'proxy-activate';
+      reason: string;
+    }>
+  | Readonly<{
+      kind: 'unknown';
+      step: 'proxy-activate';
+      reason: string;
+      committedThroughProviderSeq: number;
+      meta: ProviderOperationRuntimeMeta;
+      control: OperationStopControl;
+    }>;
 
 /**
  * Calls one control method, checking the request against its own schema on the way out and the reply on the
@@ -170,6 +177,39 @@ async function callStrict<TSchema extends z.ZodTypeAny, TResult>(
   return resultSchema.parse(raw);
 }
 
+function protocolCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const value = (error as { protocolCode?: unknown }).protocolCode;
+  return typeof value === 'string' ? value : undefined;
+}
+
+function isAmbiguousControlOutcome(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const failure = error as { code?: unknown; protocolCode?: unknown };
+  return (
+    (failure.code === 'control_call_failed' || failure.code === 'control_client_closed') &&
+    failure.protocolCode === undefined
+  );
+}
+
+function shouldRetryPrepare(error: unknown): boolean {
+  return isAmbiguousControlOutcome(error) || protocolCode(error) === 'protocol_violation';
+}
+
+const AUTHORITATIVE_ACTIVATION_REFUSALS = new Set([
+  'identity_mismatch',
+  'invalid_request',
+  'invalid_state',
+  'operation_not_found',
+  'reservation_expired',
+  'unauthorized_control',
+]);
+
+function isAuthoritativeActivationRefusal(error: unknown): boolean {
+  const code = protocolCode(error);
+  return code !== undefined && AUTHORITATIVE_ACTIVATION_REFUSALS.has(code);
+}
+
 /**
  * Binds `operation.stop.v1` and `guardian.operation-release.v1` to the exact `proxyClient`/`guardianClient` and
  * `operation`/`reservation`/`jointContainmentReceipt` tuple this activation committed, for
@@ -190,6 +230,7 @@ function buildOperationControl(
   jointContainmentReceipt: JointContainmentReceipt,
   timeoutMs: number,
 ): OperationStopControl {
+  let releaseState: 'ready' | 'unknown' | 'released' = 'ready';
   return {
     async stop(cause: ProviderStopCause): Promise<void> {
       await callStrict(
@@ -202,24 +243,79 @@ function buildOperationControl(
       );
     },
     async releaseMembership(): Promise<void> {
-      await callStrict(
-        deps.guardianClient,
-        'guardian.operation-release.v1',
-        { operation, reservation, jointContainmentReceipt },
-        timeoutMs,
-        guardianOperationReleaseParamsSchema,
-        guardianOperationReleaseResultSchema,
-      );
+      if (releaseState === 'released') return;
+      const retryingUnknown = releaseState === 'unknown';
+      try {
+        await callStrict(
+          deps.guardianClient,
+          'guardian.operation-release.v1',
+          { operation, reservation, jointContainmentReceipt },
+          timeoutMs,
+          guardianOperationReleaseParamsSchema,
+          guardianOperationReleaseResultSchema,
+        );
+        releaseState = 'released';
+      } catch (error: unknown) {
+        if (retryingUnknown && protocolCode(error) === 'unauthorized_control') {
+          releaseState = 'released';
+          return;
+        }
+        releaseState = isAmbiguousControlOutcome(error) ? 'unknown' : 'ready';
+        throw error;
+      }
     },
   };
 }
 
-/**
- * Deletes the exact matching meta row, then releases the pending reservation, then releases the guardian's
- * staged membership — the plan's exact compensation order, reversed from commit order. Every step is
- * idempotent on the receiving end (`operation.cancel-pending.v1` reports a repeated cancel as `released`
- * rather than not-found), so a retry of this whole sequence after a partial failure is safe to attempt again.
- */
+async function cancelPendingReservation(
+  deps: ProviderProxyOperationActivationDeps,
+  operation: OperationIdentity,
+  reservation: Reservation,
+): Promise<void> {
+  const cancel = (): Promise<unknown> =>
+    callStrict(
+      deps.proxyClient,
+      'operation.cancel-pending.v1',
+      { operation, reservation },
+      deps.mutationRpcTimeoutMs,
+      proxyOperationReservationParamsSchema,
+      proxyOperationCancelPendingResultSchema,
+    );
+  try {
+    await cancel();
+  } catch (error: unknown) {
+    if (!isAmbiguousControlOutcome(error)) throw error;
+    await cancel();
+  }
+}
+
+async function releaseGuardianMembership(
+  deps: ProviderProxyOperationActivationDeps,
+  operation: OperationIdentity,
+  reservation: Reservation,
+  jointContainmentReceipt: JointContainmentReceipt,
+): Promise<void> {
+  const release = (): Promise<unknown> =>
+    callStrict(
+      deps.guardianClient,
+      'guardian.operation-release.v1',
+      { operation, reservation, jointContainmentReceipt },
+      deps.mutationRpcTimeoutMs,
+      guardianOperationReleaseParamsSchema,
+      guardianOperationReleaseResultSchema,
+    );
+  try {
+    await release();
+  } catch (error: unknown) {
+    if (!isAmbiguousControlOutcome(error)) throw error;
+    try {
+      await release();
+    } catch (retryError: unknown) {
+      if (protocolCode(retryError) !== 'unauthorized_control') throw retryError;
+    }
+  }
+}
+
 async function compensateAfterActivationFailure(
   deps: ProviderProxyOperationActivationDeps,
   operation: OperationIdentity,
@@ -227,37 +323,25 @@ async function compensateAfterActivationFailure(
   jointContainmentReceipt: JointContainmentReceipt,
 ): Promise<void> {
   deleteProviderOperationRuntimeMeta(deps.db, operation.jobId, operation.operationId);
-  await callStrict(
-    deps.proxyClient,
-    'operation.cancel-pending.v1',
-    { operation, reservation },
-    deps.mutationRpcTimeoutMs,
-    proxyOperationReservationParamsSchema,
-    proxyOperationCancelPendingResultSchema,
-  );
-  // The receipt travels here for the same reason `guardian.operation-activate.v1` carries it: the guardian's
-  // release handler refuses a caller that cannot present the receipt its own staging minted, and its params
-  // schema is `.strict()` with the receipt required. Omitting it used to reach the wire and throw there,
-  // which replaced the activation failure that called it with a validation error about the compensation —
-  // `guardianOperationReleaseParamsSchema` now parses this payload here too, so that omission fails at this
-  // call site instead, with this exact intent visible in the stack rather than a generic wire refusal.
-  await callStrict(
-    deps.guardianClient,
-    'guardian.operation-release.v1',
-    { operation, reservation, jointContainmentReceipt },
-    deps.mutationRpcTimeoutMs,
-    guardianOperationReleaseParamsSchema,
-    guardianOperationReleaseResultSchema,
-  );
+  let failure: unknown;
+  try {
+    await cancelPendingReservation(deps, operation, reservation);
+  } catch (error: unknown) {
+    failure = error;
+  }
+  try {
+    await releaseGuardianMembership(deps, operation, reservation, jointContainmentReceipt);
+  } catch (error: unknown) {
+    failure ??= error;
+  }
+  if (failure !== undefined) throw failure instanceof Error ? failure : new Error(errorReason(failure));
 }
 
 /**
  * Runs the complete closed publication order for one operation: `operation.prepare.v1` on the proxy,
  * durably committing the runtime-meta locator, `guardian.operation-activate.v1`, then `operation.activate.v1`
- * — in exactly that order, with no other transition permitted to start the kernel. A failure at either
- * activation call runs the full compensation and returns `activation-failed`; the kernel is never started on
- * that path. A `capacity` reply from prepare writes nothing and returns immediately — admission stays with
- * the caller.
+ * — in exactly that order, with no other transition permitted to start the kernel. A transport-ambiguous
+ * prepare retries by stable operation identity; an ambiguous proxy activation remains owned by the proxy.
  */
 export async function activateProviderOperation(
   deps: ProviderProxyOperationActivationDeps,
@@ -268,14 +352,28 @@ export async function activateProviderOperation(
 
   // Step 1: operation.prepare.v1 — reservation, provider root, containment receipt; semantic execution stays
   // forbidden until step 4.
-  const prepareResult = await callStrict(
-    deps.proxyClient,
-    'operation.prepare.v1',
-    { operation, hostFingerprint: deps.setIdentity.hostFingerprint, prepared },
-    timeoutMs,
-    proxyOperationPrepareParamsSchema,
-    prepareResultSchema,
-  );
+  const prepare = (): Promise<z.output<typeof prepareResultSchema>> =>
+    callStrict(
+      deps.proxyClient,
+      'operation.prepare.v1',
+      { operation, hostFingerprint: deps.setIdentity.hostFingerprint, prepared },
+      timeoutMs,
+      proxyOperationPrepareParamsSchema,
+      prepareResultSchema,
+    );
+  let prepareResult: z.output<typeof prepareResultSchema>;
+  try {
+    prepareResult = await prepare();
+  } catch (error: unknown) {
+    if (!shouldRetryPrepare(error)) throw error;
+    try {
+      prepareResult = await prepare();
+    } catch (retryError: unknown) {
+      throw new Error(`${errorReason(error)}; prepare retry failed: ${errorReason(retryError)}`, {
+        cause: retryError,
+      });
+    }
+  }
   if (prepareResult.state === 'capacity') {
     return { kind: 'capacity', retryable: prepareResult.retryable, reason: prepareResult.reason };
   }
@@ -309,7 +407,12 @@ export async function activateProviderOperation(
     jointContainmentReceipt,
     committedThroughProviderSeq: 0,
   };
-  writeProviderOperationRuntimeMeta(deps.db, meta);
+  try {
+    writeProviderOperationRuntimeMeta(deps.db, meta);
+  } catch (error: unknown) {
+    await compensateAfterActivationFailure(deps, operation, reservation, jointContainmentReceipt);
+    return { kind: 'activation-failed', step: 'runtime-meta', reason: errorReason(error) };
+  }
 
   // Step 3: guardian.operation-activate.v1, against the exact committed tuple.
   // Branded: the only way to hold one is to have parsed the guardian's reply that carried it, which is what
@@ -341,8 +444,8 @@ export async function activateProviderOperation(
   //
   // That extra field is now unstateable from here: `proxyOperationActivateParamsSchema` is `.strict()` and is
   // parsed at this sender before the frame is written, so the same mistake fails here rather than on arrival.
-  try {
-    const activateResult = await callStrict(
+  const activate = (): Promise<z.output<typeof proxyOperationActivateResultSchema>> =>
+    callStrict(
       deps.proxyClient,
       'operation.activate.v1',
       { operation, reservation, jointContainmentReceipt, jointActivationReceipt },
@@ -350,6 +453,8 @@ export async function activateProviderOperation(
       proxyOperationActivateParamsSchema,
       proxyOperationActivateResultSchema,
     );
+  try {
+    const activateResult = await activate();
     return {
       kind: 'executing',
       committedThroughProviderSeq: activateResult.committedThroughProviderSeq,
@@ -357,8 +462,32 @@ export async function activateProviderOperation(
       control: buildOperationControl(deps, operation, reservation, jointContainmentReceipt, timeoutMs),
     };
   } catch (error: unknown) {
-    await compensateAfterActivationFailure(deps, operation, reservation, jointContainmentReceipt);
-    return { kind: 'activation-failed', step: 'proxy-activate', reason: errorReason(error) };
+    if (isAuthoritativeActivationRefusal(error)) {
+      await compensateAfterActivationFailure(deps, operation, reservation, jointContainmentReceipt);
+      return { kind: 'activation-failed', step: 'proxy-activate', reason: errorReason(error) };
+    }
+    try {
+      const activateResult = await activate();
+      return {
+        kind: 'executing',
+        committedThroughProviderSeq: activateResult.committedThroughProviderSeq,
+        meta,
+        control: buildOperationControl(deps, operation, reservation, jointContainmentReceipt, timeoutMs),
+      };
+    } catch (retryError: unknown) {
+      if (isAuthoritativeActivationRefusal(retryError)) {
+        await compensateAfterActivationFailure(deps, operation, reservation, jointContainmentReceipt);
+        return { kind: 'activation-failed', step: 'proxy-activate', reason: errorReason(retryError) };
+      }
+      return {
+        kind: 'unknown',
+        step: 'proxy-activate',
+        reason: `${errorReason(error)}; retry failed: ${errorReason(retryError)}`,
+        committedThroughProviderSeq: 0,
+        meta,
+        control: buildOperationControl(deps, operation, reservation, jointContainmentReceipt, timeoutMs),
+      };
+    }
   }
 }
 

@@ -39,12 +39,14 @@ import {
   proxyIdentitySchema,
   reaperIdentitySchema,
   type CoordinatorIdentity,
+  controlEpochSchema,
   guardianOpenParamsSchema,
+  heartbeatChallengeSchema,
   proxyControlOpenParamsSchema,
   reaperOpenParamsSchema,
 } from '../../../provider-proxy/protocol.js';
 import type { AcquisitionUndo, ProviderProxyAcquisitionSteps } from './index.js';
-import { controlEpochSchema, heartbeatChallengeSchema, startHeartbeatLoop } from './heartbeat.js';
+import { startHeartbeatLoop } from './heartbeat.js';
 import { establishRoleControl } from './role-control.js';
 import { createProviderProxySetAuthority } from './set-authority.js';
 import { buildGuardianSpawnUndo } from './spawn-undo.js';

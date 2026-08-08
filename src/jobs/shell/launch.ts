@@ -85,9 +85,8 @@ export interface LaunchOrchestratorDeps {
   getEventMetadata?: () => Pick<CoralEventInput, 'correlationId' | 'namespace' | 'project'> | null;
   /**
    * Tries to hand an app-server operation to a live, detached provider proxy set before running it in this
-   * process (W2.3). Absent in every composition that does not wire proxy routing (every test, and any
-   * coordinator build with no live set) — `executeJob` treats that identically to the port returning `null`:
-   * always fall back to in-process execution.
+   * process (W2.3). The port remains optional so compositions without proxy routing preserve in-process
+   * execution; `executeJob` treats absence identically to the port returning `null`.
    */
   appServerProxyRoute?: AppServerProxyRoute;
   /**
@@ -1281,11 +1280,8 @@ export class LaunchOrchestrator {
           this.appServerHandoffAborts.delete(jobId);
           return { kind: 'proxied' };
         }
-        // Explicit fallback: no live proxy set exists for this executable identity, or the proxy declined
-        // activation and cleanly compensated (`activateProviderOperation`'s own contract guarantees the
-        // meta row, reservation, and staged guardian membership are all released before it reports failure —
-        // the kernel was never started). Either way nothing durable happened yet, so running the job in this
-        // process below is exactly as safe as if `appServerProxyRoute` had never been configured.
+        // A transport-ambiguous activation is reported as `executing` above, reserving `null` for paths that
+        // did not authorize proxy execution.
       }
       return {
         kind: 'local',

@@ -5,14 +5,26 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import { connectControlClient, type ProviderEventHandler } from '#src/provider-proxy/control-client.js';
+import { heartbeatOnce } from '#src/coordinator/live/provider-proxy/heartbeat.js';
+import {
+  connectControlClient,
+  ControlClientError,
+  type ProviderEventHandler,
+} from '#src/provider-proxy/control-client.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { activateProviderOperation } from '#src/coordinator/services/provider-proxy-operation-activation.js';
+import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
+import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
+import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import {
   MAX_PROXY_OPERATION_LEDGERS,
   MAX_PROVIDER_REPLAY_BYTES,
   MAX_PROVIDER_REPLAY_EVENTS,
 } from '#src/provider-proxy/ledger.js';
-import { PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
+import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   PROXY_STATUS_RPC_TIMEOUT_MS,
@@ -52,6 +64,7 @@ type Started = { jobId: string; operationId: string };
 async function startProxy(
   options: {
     failStage?: boolean;
+    failStageOnce?: boolean;
     failConfirmActivation?: boolean;
     timer?: ControlEndpointTimer;
     onProviderEvent?: ProviderEventHandler;
@@ -97,6 +110,7 @@ async function startProxy(
   const clock = createMonotonicClock(Symbol('proxy-lifecycle'), { readMilliseconds: () => elapsed });
   const started: Array<Started & { prepared: ProxyPreparedAppServerOperation }> = [];
   const stopped: Array<Started & { cause: string }> = [];
+  const released: Started[] = [];
   const host: SemanticOperationHost = {
     // Recording `prepared` (not just `key`) is what exposes a host that starts with the wrong payload: the
     // proxy must hand over the envelope prepare validated, not activate's own request params.
@@ -106,9 +120,13 @@ async function startProxy(
     stop: ({ key, cause }) => {
       stopped.push({ ...key, cause });
     },
+    releaseStaged: (key) => {
+      released.push(key);
+    },
   };
 
   let receipts = 0;
+  let stageAttempts = 0;
   const proxy = createProxy({
     capsule: {
       role: 'proxy',
@@ -129,7 +147,10 @@ async function startProxy(
     mintReservation: () => asReservation(randomUUID()),
     containment: {
       stageProviderRoot: () => {
-        if (options.failStage === true) throw new Error('the guardian refused to stage this root');
+        stageAttempts += 1;
+        if (options.failStage === true || (options.failStageOnce === true && stageAttempts === 1)) {
+          throw new Error('the guardian refused to stage this root');
+        }
         return Promise.resolve({
           providerRoot: { pid: 7_001, processStartedAtSeconds: 800 },
           receipt: asJointContainmentReceipt('joint-1'),
@@ -152,11 +173,27 @@ async function startProxy(
     controlEpoch: number;
     heartbeatChallenge: string;
   };
-  await control.call(
-    'control.heartbeat.v1',
-    { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
-    5_000,
-  );
+  let heartbeatChallenge = (
+    await heartbeatOnce(control, 'control.heartbeat.v1', opened.controlEpoch, opened.heartbeatChallenge)
+  ).nextHeartbeatChallenge;
+
+  const advanceWithHeartbeat = async (ms: number): Promise<void> => {
+    let remainingMs = ms;
+    while (remainingMs > 0) {
+      const stepMs = Math.min(remainingMs, PROXY_CONTROL_HEARTBEAT_MS);
+      elapsed += BigInt(stepMs);
+      remainingMs -= stepMs;
+      if (stepMs === PROXY_CONTROL_HEARTBEAT_MS) {
+        heartbeatChallenge = (
+          await heartbeatOnce(control, 'control.heartbeat.v1', opened.controlEpoch, heartbeatChallenge)
+        ).nextHeartbeatChallenge;
+      }
+    }
+  };
+
+  const advanceSilently = (ms: number): void => {
+    elapsed += BigInt(ms);
+  };
 
   const operationFor = () => ({
     jobId: randomUUID(),
@@ -165,11 +202,21 @@ async function startProxy(
     buildSetId: shared.buildSetId,
   });
 
-  const advance = (ms: number): void => {
-    elapsed += BigInt(ms);
+  return {
+    proxy,
+    control,
+    endpoint,
+    shared,
+    coordinator,
+    identity,
+    operationFor,
+    started,
+    stopped,
+    released,
+    stageAttempts: () => stageAttempts,
+    advanceWithHeartbeat,
+    advanceSilently,
   };
-
-  return { proxy, control, endpoint, shared, coordinator, identity, operationFor, started, stopped, advance };
 }
 
 type ProxyUnderTest = Awaited<ReturnType<typeof startProxy>>;
@@ -280,6 +327,114 @@ describe('provider-proxy operation lifecycle', () => {
     expect(set.started).toHaveLength(1);
   });
 
+  it('does not fall back locally when the activation reply is lost after the proxy starts', async () => {
+    const set = await startProxy();
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    cleanups.push(() => db.close());
+
+    let activationCalls = 0;
+    const proxyClient = {
+      call: async (method: string, params: unknown, timeoutMs: number): Promise<unknown> => {
+        const result = await set.control.call(method, params, timeoutMs);
+        if (method === 'operation.activate.v1') {
+          activationCalls += 1;
+          if (activationCalls === 1) {
+            throw new ControlClientError('control_call_failed', 'The activation reply was dropped.');
+          }
+        }
+        return result;
+      },
+    };
+    const guardianClient = {
+      call: async (method: string): Promise<unknown> => {
+        if (method === 'guardian.operation-activate.v1') {
+          return { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' };
+        }
+        return { state: 'membership-released' };
+      },
+    };
+    const setIdentity = {
+      buildSetId: set.shared.buildSetId,
+      hostFingerprint: FINGERPRINT,
+      guardianInstanceId: set.shared.guardianInstanceId,
+      guardianPid: 5_000,
+      guardianProcessStartedAtSeconds: 700,
+      guardianControlEndpoint: '/tmp/guardian.sock',
+      proxyInstanceId: set.shared.proxyInstanceId,
+      proxyPid: set.identity.pid,
+      reaperInstanceId: set.shared.reaperInstanceId,
+      reaperPid: 5_500,
+      reaperProcessStartedAtSeconds: 750,
+      reaperControlEndpoint: '/tmp/reaper.sock',
+      containmentKind: 'detached-group',
+      proxyProcessStartedAtSeconds: set.identity.processStartedAtSeconds,
+      proxyProcessGroupId: set.identity.processGroupId,
+      canonicalEndpoint: set.endpoint,
+    };
+    const authority = {
+      proxyInstanceId: set.shared.proxyInstanceId,
+      setIdentity,
+      activateOperation: (
+        database: typeof db,
+        operation: Parameters<typeof activateProviderOperation>[1],
+        prepared: ProxyPreparedAppServerOperation,
+      ) =>
+        activateProviderOperation(
+          {
+            db: database,
+            proxyClient,
+            guardianClient,
+            setIdentity,
+            mutationRpcTimeoutMs: 5_000,
+          },
+          operation,
+          prepared,
+        ),
+    } as ProviderProxyOperationAuthority;
+    const registry = new LocalOperationRegistry();
+    const route = createAppServerProxyRoute({
+      hostManager: { routeAppServerOperation: () => authority },
+      getDb: () => db,
+      progressStore: { appendRuntimeStarted: vi.fn() },
+      now: () => 1_700_000_000_000,
+      registry,
+    });
+    const operationId = randomUUID();
+    const jobId = randomUUID();
+    const localExecution = vi.fn();
+
+    const placement = await route.activate(
+      {
+        jobId,
+        operationId,
+        hostSpec: {
+          provider: 'codex',
+          command: 'codex',
+          args: ['app-server'],
+          cwd: '/workspace',
+          leaseMode: 'job-exclusive',
+        },
+        provider: PREPARED.provider,
+        binding: PREPARED.binding,
+        request: PREPARED.request,
+        persistedContinuity: null,
+        baseEnv: PREPARED.baseEnv,
+        protectedEnv: PREPARED.protectedEnv,
+        platform: PREPARED.platform,
+      },
+      () => {},
+      new AbortController().signal,
+    );
+    if (placement === null) localExecution();
+
+    expect(placement).toBe('executing');
+    expect(localExecution).not.toHaveBeenCalled();
+    expect(activationCalls).toBe(2);
+    expect(set.started).toEqual([{ jobId, operationId, prepared: PREPARED }]);
+    expect(registry.stateForJob(jobId)).toBe('activated');
+  });
+
   it('refuses activation that presents a containment receipt nobody staged, and starts no kernel', async () => {
     const set = await startProxy();
     const { operation, reserved } = await prepare(set);
@@ -310,26 +465,33 @@ describe('provider-proxy operation lifecycle', () => {
     ).rejects.toThrow(/different host fingerprint/u);
   });
 
-  it('leaves an orphaned pending-activation entry in the ledger when staging the provider root fails', async () => {
-    const set = await startProxy({ failStage: true });
+  it('unwinds a failed prepare so the same caller-stable request can retry', async () => {
+    const set = await startProxy({ failStageOnce: true });
     const operation = set.operationFor();
 
     await expect(
       set.control.call('operation.prepare.v1', { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED }, 5_000),
     ).rejects.toThrow(/the guardian refused to stage this root/u);
 
-    // `ledger.prepare()` already inserted the entry before `stageProviderRoot` ran. The failed RPC never told
-    // the coordinator a reservation exists, but the ledger still holds one — stuck
-    // `pending-activation` with no containment receipt, since `recordContainmentReceipt` never ran.
     const key = { jobId: operation.jobId, operationId: operation.operationId };
-    expect(set.proxy.ledger().get(key)).toMatchObject({ state: 'pending-activation', jointContainmentReceipt: null });
+    expect(set.proxy.ledger().get(key)).toBeNull();
+    expect(set.released).toEqual([key]);
 
-    // Nobody outside this proxy ever learned the orphaned reservation's id, so a retried prepare for the same
-    // operation identity cannot be mistaken for the same request arriving twice — it is refused as a
-    // duplicate, and the orphaned entry occupies this operation's ledger slot until its lease expires.
     await expect(
       set.control.call('operation.prepare.v1', { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED }, 5_000),
-    ).rejects.toThrow(/already reserved/u);
+    ).resolves.toMatchObject({ state: 'pending-activation' });
+  });
+
+  it('returns the original prepare result when its successful reply is retried', async () => {
+    const set = await startProxy();
+    const operation = set.operationFor();
+    const request = { operation, hostFingerprint: FINGERPRINT, prepared: PREPARED };
+
+    const first = await set.control.call('operation.prepare.v1', request, 5_000);
+    const retry = await set.control.call('operation.prepare.v1', request, 5_000);
+
+    expect(retry).toEqual(first);
+    expect(set.stageAttempts()).toBe(1);
   });
 
   it('answers capacity exhaustion as a typed retryable state rather than an error', async () => {
@@ -348,7 +510,7 @@ describe('provider-proxy operation lifecycle', () => {
   it('moves an expired reservation to a state control can still cancel', async () => {
     const set = await startProxy();
     const { operation, reserved } = await prepare(set);
-    set.advance(15_001);
+    await set.advanceWithHeartbeat(15_001);
 
     await expect(activate(set, operation, reserved)).rejects.toThrow(/lease expired/u);
 
@@ -362,7 +524,7 @@ describe('provider-proxy operation lifecycle', () => {
   it('renews a pending-activation reservation, extending its lease from the call’s own now', async () => {
     const set = await startProxy();
     const { operation, reserved } = await prepare(set);
-    set.advance(1_000);
+    await set.advanceWithHeartbeat(1_000);
 
     const renewed = (await set.control.call(
       'operation.renew-activation.v1',
@@ -377,7 +539,7 @@ describe('provider-proxy operation lifecycle', () => {
 
     // The renewed lease actually took effect: activating well past the original (unrenewed) deadline still
     // succeeds rather than being refused as expired.
-    set.advance(14_500);
+    await set.advanceWithHeartbeat(14_500);
     expect(await activate(set, operation, reserved)).toMatchObject({ state: 'executing' });
   });
 
@@ -473,7 +635,7 @@ describe('provider-proxy operation lifecycle', () => {
     await activate(set, outside.operation, outside.reserved);
     const redeem = await installGrant(set, [inside.operation.operationId]);
     set.control.close();
-    set.advance(5_001);
+    set.advanceSilently(5_001);
 
     const successor = await connectControlClient(set.endpoint, timer, 5_000);
     cleanups.push(() => successor.close());
@@ -559,7 +721,7 @@ describe('provider-proxy operation lifecycle', () => {
     // A grant that names no operations is enough: only the tenancy this redemption opens is under test.
     const redeem = await installGrant(set, []);
     set.control.close();
-    set.advance(5_001);
+    set.advanceSilently(5_001);
 
     const successor = await connectControlClient(set.endpoint, timer, 5_000);
     cleanups.push(() => successor.close());
@@ -571,7 +733,7 @@ describe('provider-proxy operation lifecycle', () => {
     // Right up to — but not reaching — the bare lease boundary measured from redemption itself: operational
     // control carries no adoption-style ceiling to clamp this any earlier, unlike the enforcer's own first
     // challenge (see orphan-deadline.test.ts's "caps the first challenge at the adoption deadline").
-    set.advance(PROXY_CONTROL_LEASE_MS - 1);
+    set.advanceSilently(PROXY_CONTROL_LEASE_MS - 1);
     const stillLive = (await successor.call(
       'control.heartbeat.v1',
       { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
@@ -724,7 +886,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
 
     const redeem = await installGrant(set, [operation.operationId]);
     set.control.close();
-    set.advance(5_001);
+    set.advanceSilently(5_001);
 
     const received: unknown[] = [];
     const successor = await connectControlClient(set.endpoint, timer, 5_000, (request) => {
@@ -768,7 +930,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
 
     const redeem = await installGrant(set, [operation.operationId]);
     set.control.close();
-    set.advance(5_001);
+    set.advanceSilently(5_001);
 
     const received: number[] = [];
     const successor = await connectControlClient(set.endpoint, timer, 5_000, (request) => {

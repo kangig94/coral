@@ -1,16 +1,11 @@
-import { z } from 'zod';
-
 import { PROXY_CONTROL_HEARTBEAT_MS } from '../../../provider-proxy/orphan-deadline.js';
-import { PROXY_CONTROL_RPC_TIMEOUT_MS } from '../../../provider-proxy/protocol.js';
+import {
+  PROXY_CONTROL_RPC_TIMEOUT_MS,
+  controlHeartbeatParamsSchema,
+  controlHeartbeatResultSchema,
+} from '../../../provider-proxy/protocol.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ControlClient } from '../../../provider-proxy/control-client.js';
-
-export const heartbeatChallengeSchema = z.string().min(1);
-export const controlEpochSchema = z.number().int().nonnegative().safe();
-
-const heartbeatResultSchema = z
-  .object({ state: z.literal('active'), nextHeartbeatChallenge: heartbeatChallengeSchema })
-  .strict();
 
 /** Sends one heartbeat and returns the next challenge. Exported so `role-control.ts`'s `establishRoleControl`
  *  can send the first heartbeat immediately after a role opens, on the identical call `startHeartbeatLoop`
@@ -21,8 +16,9 @@ export async function heartbeatOnce(
   controlEpoch: number,
   heartbeatChallenge: string,
 ): Promise<{ nextHeartbeatChallenge: string }> {
-  const raw = await client.call(method, { controlEpoch, heartbeatChallenge }, PROXY_CONTROL_RPC_TIMEOUT_MS);
-  return heartbeatResultSchema.parse(raw);
+  const params = controlHeartbeatParamsSchema.parse({ controlEpoch, heartbeatChallenge });
+  const raw = await client.call(method, params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+  return controlHeartbeatResultSchema.parse(raw);
 }
 
 export type HeartbeatLoop = Readonly<{ stop(): void }>;

@@ -15,6 +15,8 @@ import {
 } from '../../provider-proxy/handoff-capsule.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
+  controlEpochSchema,
+  heartbeatChallengeSchema,
   proxyIdentitySchema,
   proxyOperationAdoptParamsSchema,
   proxyOperationStopParamsSchema,
@@ -78,8 +80,6 @@ import type { LocalOperationRegistry, OperationStopControl } from './operation-r
  */
 const INHERITANCE_REDEMPTION_DEADLINE_MS = 45_000;
 
-const controlEpochSchema = z.number().int().nonnegative().safe();
-const heartbeatChallengeSchema = z.string().min(1);
 const adoptResultSchema = z
   .object({ state: z.string().min(1), replayFromProviderSeq: z.number().int().positive().safe() })
   .strict();

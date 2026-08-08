@@ -34,7 +34,7 @@ The persisted snapshot has two facets:
 
 ## Event Flow
 
-Domain events and their strict Journal body schemas are defined in `src/discuss/events.ts`; `src/discuss/store-registry.ts` registers one schema per `discuss.*` event type.
+Domain events and their strict Journal body schemas are defined in `src/discuss/events.ts`; `src/discuss/event-registry.ts` registers one schema per `discuss.*` event type.
 
 | Group             | Events                                                                         |
 | ----------------- | ------------------------------------------------------------------------------ |

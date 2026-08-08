@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import type { z } from 'zod';
 
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
 import type { ProcessContainmentEnvironment, RecordedContainmentIdentity } from '../infra/process-containment.js';
@@ -21,8 +21,9 @@ import {
   createGrantRegistry,
   grantBindingFromCapsule,
   guardianReaperHandoffInstallParamsSchema,
-  type GrantBinding,
   guardianHandoffRedeemParamsSchema as handoffRedeemParamsSchema,
+  reaperRecordRedemptionParamsSchema,
+  type GrantBinding,
 } from './handoff-capsule.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
@@ -41,6 +42,13 @@ import {
   guardianStopAndReapParamsSchema as stopAndReapParamsSchema,
   guardianStopAndReapResultSchema,
   jointContainmentReceiptSchema,
+  reaperConfirmProviderRootParamsSchema,
+  reaperConfirmProviderRootResultSchema,
+  recordedContainmentSchema,
+  reaperRecordContainmentResultSchema,
+  reaperRecordRedemptionResultSchema,
+  reaperRegisterProviderRootParamsSchema,
+  reaperRegisterProviderRootResultSchema,
   sameRecordedContainment,
   type guardianIdentitySchema,
   type providerRootSchema,
@@ -50,13 +58,6 @@ import {
 } from './protocol.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
-
-/** What every `reaper.*` RPC this guardian issues replies with: at minimum a state tag it can safely compare
- *  against the one value that means success. Parsed rather than cast — a peer's bytes are wire input like
- *  any other, and a raw cast would let a malformed or absent reply (`result: null` makes `.state` a
- *  `TypeError`) crash instead of reporting the closed protocol vocabulary this domain's own acquisition-steps
- *  header already promises every reply gets parsed into. */
-const reaperAckSchema = z.object({ state: z.string() }).passthrough();
 
 /**
  * Evidence that the reaper recorded one exact provider root, carrying the root it is evidence about.
@@ -89,10 +90,7 @@ function acknowledgeReaperRoot(
   reply: unknown,
   root: Readonly<{ pid: number; processStartedAtSeconds: number }>,
 ): ReaperRootAcknowledgement {
-  const result = reaperAckSchema.parse(reply);
-  if (result.state !== 'root-recorded') {
-    throw new ProxyControlProtocolError('invalid_state', 'The reaper did not record the reported provider root.');
-  }
+  reaperRegisterProviderRootResultSchema.parse(reply);
   return { root } as unknown as ReaperRootAcknowledgement;
 }
 
@@ -351,21 +349,18 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           // `operations` here is this guardian's own installed record (`redemption.grant.operations`), not
           // anything the request carried — the redeemer never presented one (see `handoffRedeemParamsSchema`),
           // so this is the reaper's only source for the set, and it is an authoritative one.
-          const reaperResult = reaperAckSchema.parse(
-            await options.reaperChannel.call(
-              'reaper.record-redemption.v1',
-              {
-                grantId: request.grantId,
-                successor: request.successor,
-                operations: redemption.grant.operations,
-                redemptionReceipt: redemption.redemptionReceipt,
-              },
-              PROXY_CONTROL_RPC_TIMEOUT_MS,
-            ),
+          const reaperParams = reaperRecordRedemptionParamsSchema.parse({
+            grantId: request.grantId,
+            successor: request.successor,
+            operations: redemption.grant.operations,
+            redemptionReceipt: redemption.redemptionReceipt,
+          });
+          const reaperResult = await options.reaperChannel.call(
+            'reaper.record-redemption.v1',
+            reaperParams,
+            PROXY_CONTROL_RPC_TIMEOUT_MS,
           );
-          if (reaperResult.state !== 'redemption-recorded') {
-            throw new ProxyControlProtocolError('invalid_state', 'The reaper did not record the redemption.');
-          }
+          reaperRecordRedemptionResultSchema.parse(reaperResult);
           return {
             holder: request.successor.instanceId,
             fields: {
@@ -422,10 +417,11 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           // Forward the exact root; the joint receipt is only minted once both authorities ACK the same
           // identity, so neither can be talked into containing something the other never recorded. The
           // reaper is asked to record a root, not an operation — it has no operation vocabulary to forward.
+          const reaperParams = reaperRegisterProviderRootParamsSchema.parse({ providerRoot: root });
           const acknowledgement = acknowledgeReaperRoot(
             await options.reaperChannel.call(
               'reaper.register-provider-root.v1',
-              { providerRoot: root },
+              reaperParams,
               PROXY_CONTROL_RPC_TIMEOUT_MS,
             ),
             root,
@@ -474,16 +470,15 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           // Activation authority is converted only after the reaper confirms it still holds the same root —
           // proof this reaper is alive and still containing the target at the instant of activation. There is
           // no operation for it to authorize, so a retry that reaches an unchanged root always succeeds.
-          const reaperResult = reaperAckSchema.parse(
-            await options.reaperChannel.call(
-              'reaper.confirm-provider-root.v1',
-              { providerRoot: request.providerRoot },
-              PROXY_CONTROL_RPC_TIMEOUT_MS,
-            ),
+          const reaperParams = reaperConfirmProviderRootParamsSchema.parse({
+            providerRoot: request.providerRoot,
+          });
+          const reaperResult = await options.reaperChannel.call(
+            'reaper.confirm-provider-root.v1',
+            reaperParams,
+            PROXY_CONTROL_RPC_TIMEOUT_MS,
           );
-          if (reaperResult.state !== 'root-recorded') {
-            throw new ProxyControlProtocolError('invalid_state', 'The reaper did not confirm the provider root.');
-          }
+          reaperConfirmProviderRootResultSchema.parse(reaperResult);
           return guardianOperationActivateResultSchema.parse({
             state: 'activation-authorized',
             jointActivationReceipt: mintReceipt(),
@@ -617,12 +612,13 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       // this guardian's own deadline.
       enforcer.arm();
 
-      const reaperResult = reaperAckSchema.parse(
-        await options.reaperChannel.call('reaper.record-containment.v1', containment, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      const reaperParams = recordedContainmentSchema.parse(containment);
+      const reaperResult = await options.reaperChannel.call(
+        'reaper.record-containment.v1',
+        reaperParams,
+        PROXY_CONTROL_RPC_TIMEOUT_MS,
       );
-      if (reaperResult.state !== 'containment-recorded') {
-        throw new ProxyControlProtocolError('invalid_state', 'The reaper did not record the containment.');
-      }
+      reaperRecordContainmentResultSchema.parse(reaperResult);
     },
   };
 }

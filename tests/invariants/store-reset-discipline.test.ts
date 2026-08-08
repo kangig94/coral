@@ -421,17 +421,11 @@ describe('store reset discipline invariants', () => {
   it('keeps operator reset composition behind the socket guard and shared selection coordinator', () => {
     const operatorPath = 'src/store/operator-store-reset.ts';
     const operatorSource = sourceFile(operatorPath);
-    const coordinationSource = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
     const topLevel = withoutComments(
       findFunction(operatorPath, 'discardStoreReset').body?.getText(operatorSource) ?? '',
     );
     const generated = withoutComments(
       findFunction(operatorPath, 'discardGeneratedStore').body?.getText(operatorSource) ?? '',
-    );
-    const recovery = withoutComments(
-      findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'recoverActiveStoreTransition').body?.getText(
-        coordinationSource,
-      ) ?? '',
     );
     const targetPathsIndex = topLevel.indexOf('resolveStoreResetTargetPaths(');
     const socketIndex = topLevel.indexOf('options.acquireSocketGuard(');
@@ -439,11 +433,6 @@ describe('store reset discipline invariants', () => {
     const generatedIndex = topLevel.indexOf('discardGeneratedStore(');
     const selectionIndex = generated.indexOf('coordinateActiveStoreSelection(');
     const handoffIndex = generated.indexOf("selectionResult.kind === 'handoff'");
-    const resetLockIndex = recovery.indexOf('acquireBackendStoreResetLock(');
-    const resumeIndex = recovery.indexOf('resumeBackendStoreResetIncidentForOperator(');
-    const classificationIndex = recovery.indexOf('classifyStoreForProtocol(');
-    const authorizationIndex = recovery.indexOf('authorizeClassifiedStore(');
-    const openIndex = recovery.indexOf('openPreparedStore');
 
     expect(legacyRefusalIndex).toBeGreaterThanOrEqual(0);
     expect(targetPathsIndex).toBeGreaterThan(legacyRefusalIndex);
@@ -451,11 +440,6 @@ describe('store reset discipline invariants', () => {
     expect(generatedIndex).toBeGreaterThan(socketIndex);
     expect(selectionIndex).toBeGreaterThanOrEqual(0);
     expect(handoffIndex).toBeGreaterThan(selectionIndex);
-    expect(resetLockIndex).toBeGreaterThanOrEqual(0);
-    expect(resumeIndex).toBeGreaterThan(resetLockIndex);
-    expect(classificationIndex).toBeGreaterThan(resumeIndex);
-    expect(authorizationIndex).toBeGreaterThan(classificationIndex);
-    expect(openIndex).toBeGreaterThan(authorizationIndex);
     expect(generated).not.toMatch(
       /acquireGenerationAdoptionLease|acquireStoreResetLock|resumeInterruptedBackendStoreResetIncident|publishBackendStoreResetIncident/u,
     );

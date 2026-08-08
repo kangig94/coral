@@ -4,6 +4,10 @@ import { createServer, type Server as NetServer, type Socket } from 'node:net';
 import { truncate } from '../infra/text.js';
 import {
   ProxyControlProtocolError,
+  controlHeartbeatParamsSchema,
+  controlHeartbeatResultSchema,
+  controlPairParamsSchema,
+  controlPairResultSchema,
   createFrameReader,
   decodeProxyControlFrame,
   encodeProxyControlFrame,
@@ -167,9 +171,9 @@ export interface ControlChallengeAuthority {
    */
   reattachControl(): { readonly accepted: boolean; readonly reason?: string };
   /**
-   * Whether the established tenancy still holds control. Admission reads this rather than socket liveness:
-   * a wedged coordinator keeps its socket open indefinitely, and a successor has to be able to reach the
-   * endpoint past it once the lease has lapsed.
+   * Whether the established tenancy still holds control. Admission and mutation authorization read this
+   * rather than socket liveness: a wedged coordinator keeps its socket open indefinitely, but its lease must
+   * still end both its authority and its ability to exclude a successor.
    */
   controlIsLive(): boolean;
   /**
@@ -361,12 +365,9 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     if (live === null || live.socket !== socket) {
       throw new ProxyControlProtocolError('invalid_request', 'No control tenancy is open on this connection.');
     }
-    const echo = params as { controlEpoch?: unknown; heartbeatChallenge?: unknown } | null;
-    if (typeof echo !== 'object' || echo === null || echo.controlEpoch !== live.epoch) {
+    const echo = controlHeartbeatParamsSchema.parse(params);
+    if (echo.controlEpoch !== live.epoch) {
       throw new ProxyControlProtocolError('invalid_request', 'Heartbeat did not name this control tenancy.');
-    }
-    if (typeof echo.heartbeatChallenge !== 'string') {
-      throw new ProxyControlProtocolError('invalid_request', 'Heartbeat carried no challenge.');
     }
     // The authority compares and consumes, so a replayed frame cannot re-earn evidence and the endpoint
     // cannot accept an echo the deadline model has already ruled out.
@@ -378,7 +379,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       );
     }
     live.active = true;
-    return { state: 'active', nextHeartbeatChallenge: recorded.nextChallenge };
+    return controlHeartbeatResultSchema.parse({ state: 'active', nextHeartbeatChallenge: recorded.nextChallenge });
   };
 
   const dispatch = async (socket: Socket, method: string, params: unknown): Promise<unknown> => {
@@ -390,9 +391,9 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       if (pairedSocket !== null && !pairedSocket.destroyed && pairedSocket !== socket) {
         throw new ProxyControlProtocolError('unauthorized_control', 'A peer already holds the pairing channel.');
       }
-      const supplied = (params as { pairingSecret?: unknown } | null)?.pairingSecret;
+      const supplied = controlPairParamsSchema.parse(params).pairingSecret;
       const expected = Buffer.from(pairing.secret, 'utf8');
-      const offered = typeof supplied === 'string' ? Buffer.from(supplied, 'utf8') : Buffer.alloc(0);
+      const offered = Buffer.from(supplied, 'utf8');
       if (offered.length !== expected.length || !timingSafeEqual(offered, expected)) {
         throw new ProxyControlProtocolError('unauthorized_control', 'Pairing did not present the shared secret.');
       }
@@ -402,7 +403,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
         throw new ProxyControlProtocolError('unauthorized_control', 'The control connection may not also pair.');
       }
       pairedSocket = socket;
-      return { state: 'paired' };
+      return controlPairResultSchema.parse({ state: 'paired' });
     }
     const entry = role.methods.get(method);
     if (entry === undefined) {
@@ -429,7 +430,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       return entry.handle(params);
     }
     const live = tenancy;
-    if (live === null || live.socket !== socket || !live.active) {
+    if (live === null || live.socket !== socket || !live.active || !challenges.controlIsLive()) {
       throw new ProxyControlProtocolError('unauthorized_control', `${method} requires active control.`);
     }
     return entry.handle(params);
@@ -635,7 +636,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     async pushOnTenancy(frame: string, timeoutMs: number): Promise<unknown> {
       if (closed) throw new ControlEndpointError('control_endpoint_closed', 'This control endpoint was closed.');
       const live = tenancy;
-      if (live === null || !live.active) {
+      if (live === null || !live.active || !challenges.controlIsLive()) {
         throw new ControlEndpointError('control_endpoint_push_no_tenancy', 'No active control tenancy to push onto.');
       }
       let decoded: ProxyControlJsonRpcMessage;

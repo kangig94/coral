@@ -159,8 +159,8 @@ function verdictFor(evidence: CarrierEvidence): Verdict {
  * Classifies one stored-nonterminal job's carrier from local evidence alone.
  *
  * Pure by construction — no clock, no filesystem, no socket — because this is the half of observation that
- * health, idle, and every read path may use. The bounded network probe is a separate authority precisely so
- * that "may I look at this?" and "may I go ask?" cannot be confused at a call site.
+ * health, idle, and every read path may use. No network observer exists; keeping classification local
+ * preserves the boundary between reading carrier evidence and any future authority to probe for it.
  */
 export function classifyCarrier(input: CarrierObservationInput): CarrierObservation {
   const { liveness, source } = verdictFor(input.evidence);

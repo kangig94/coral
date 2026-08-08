@@ -152,9 +152,9 @@ export function createProviderProxySetAuthority(
         teardownReserveMs: deadlineConfig.teardownReserveMs,
       });
 
-      // All three authorities install the identical value or none of them do: a caller that reaps this set
-      // after any one install fails leaves nothing to unwind, since `GrantRegistry.install` is idempotent for
-      // the exact same value and the containment is about to be torn down regardless of how far this got.
+      // These installs are not transactional: `Promise.all` can reject after one or two authorities accepted
+      // the grant. The shutdown caller makes a partial install safe by reaping this set after any install
+      // failure, so the containment is torn down regardless of how far this got.
       await Promise.all([
         guardianClient.call('guardian.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
         reaperClient.call('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),

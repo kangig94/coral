@@ -20,6 +20,20 @@ export const PROXY_CONTROL_RPC_TIMEOUT_MS = 5_000;
 export const PROXY_EVENT_COMMIT_TIMEOUT_MS = 30_000;
 export const PROXY_STATUS_RPC_TIMEOUT_MS = 500;
 
+export const controlEpochSchema = z.number().int().nonnegative().safe();
+export const heartbeatChallengeSchema = z.string().min(1);
+
+export const controlHeartbeatParamsSchema = z
+  .object({ controlEpoch: controlEpochSchema, heartbeatChallenge: heartbeatChallengeSchema })
+  .strict();
+
+export const controlHeartbeatResultSchema = z
+  .object({ state: z.literal('active'), nextHeartbeatChallenge: heartbeatChallengeSchema })
+  .strict();
+
+export const controlPairParamsSchema = z.object({ pairingSecret: z.string().min(1) }).strict();
+export const controlPairResultSchema = z.object({ state: z.literal('paired') }).strict();
+
 export const PROXY_CONTROL_PROTOCOL_ERROR_CODES = [
   'invalid_request',
   'unauthorized_control',
@@ -471,7 +485,7 @@ export const guardianStopAndReapParamsSchema = z
   .strict();
 
 /**
- * The three request schemas above close one direction of this bug class; a hand-assembled *result* built by
+ * The four request schemas above close one direction of this bug class; a hand-assembled *result* built by
  * `guardian.ts`'s own handler and never checked against anything until its one coordinator caller parses a
  * separately-maintained expectation is the same defect pointed the other way. `guardian.ts` now builds each
  * of these results by parsing the identical schema its caller parses the reply with, so the two can no longer
@@ -508,6 +522,21 @@ export const recordedContainmentSchema = z
     containmentKind: z.string().min(1).max(64),
   })
   .strict();
+
+/** Guardian-to-reaper requests and replies cross the same untyped control-client seam as coordinator RPCs.
+ *  `reaper.record-containment.v1`'s request is `recordedContainmentSchema` itself — the same shape
+ *  `reaper.open.v1` carries, named for what it is rather than once per method that sends it. */
+export const reaperRecordContainmentResultSchema = z
+  .object({ state: z.literal('containment-recorded'), reaper: reaperIdentitySchema })
+  .strict();
+
+export const reaperRegisterProviderRootParamsSchema = z.object({ providerRoot: providerRootSchema }).strict();
+export const reaperRegisterProviderRootResultSchema = z.object({ state: z.literal('root-recorded') }).strict();
+
+export const reaperConfirmProviderRootParamsSchema = z.object({ providerRoot: providerRootSchema }).strict();
+export const reaperConfirmProviderRootResultSchema = z.object({ state: z.literal('root-recorded') }).strict();
+
+export const reaperRecordRedemptionResultSchema = z.object({ state: z.literal('redemption-recorded') }).strict();
 
 /** `control.open.v1`'s request — the proxy's own open, which names no peer because it is reached first and
  *  is the only role that can report the pid, start time, and group id the other two opens carry. */

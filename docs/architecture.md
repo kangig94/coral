@@ -402,7 +402,7 @@ KB runtime
 
 Foundation layer
   -> Infra/runtime/causality primitives consumed by higher layers
-  -> Store-format split: older/corrupt state resets automatically under the reset lock; newer state keeps the typed operator-recovery refusal
+  -> Store-format routing: older/corrupt state resets automatically; a valid selected-newer target hands off, while absent/malformed/invalid selection recovers or resets before opening locally
 ```
 
 ## Runtime State

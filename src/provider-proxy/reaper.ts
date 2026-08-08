@@ -20,7 +20,7 @@ import {
   createGrantRegistry,
   grantBindingFromCapsule,
   guardianReaperHandoffInstallParamsSchema,
-  handoffOperationSetSchema,
+  reaperRecordRedemptionParamsSchema,
   sameOperations,
   type GrantBinding,
 } from './handoff-capsule.js';
@@ -32,50 +32,30 @@ import {
   assertNamedReaperIdentity,
   assertNamedTeardownReserve,
   assertRecordedSetAgreement,
-  canonicalUuidSchema,
-  coordinatorIdentitySchema,
   type guardianIdentitySchema,
   proxyIdentitySchema,
   providerRootSchema,
+  reaperConfirmProviderRootParamsSchema,
+  reaperConfirmProviderRootResultSchema,
   reaperIdentitySchema,
+  recordedContainmentSchema,
+  reaperRecordContainmentResultSchema,
+  reaperRecordRedemptionResultSchema,
+  reaperRegisterProviderRootParamsSchema,
+  reaperRegisterProviderRootResultSchema,
   sameRecordedContainment,
   type OperationIdentity,
-  recordedContainmentSchema as containmentSchema,
   reaperHandoffRotateParamsSchema,
   reaperOpenParamsSchema as openParamsSchema,
 } from './protocol.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 
-// The reaper's unit of account is the provider root, not the operation: it never reads an operation,
-// reservation, or activation identity, so it never parses one.
-const providerRootParamsSchema = z
-  .object({
-    providerRoot: providerRootSchema,
-  })
-  .strict();
-
 const stopAndReapParamsSchema = z
   .object({
     reaper: reaperIdentitySchema,
     proxy: proxyIdentitySchema,
     providerRoots: z.array(providerRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
-  })
-  .strict();
-
-/**
- * The guardian's own pairing-channel push, the instant `guardian.handoff-redeem.v1` consumes the grant: proof
- * that a genuine redemption happened, since only the guardian ever sees the plaintext secret and only the
- * guardian holds this reaper's paired channel. This reaper never independently checks the secret — the
- * guardian is the sole linearization point, so a second successor holding the same plaintext secret from the
- * same capsule is refused here for lacking a receipt, even though the grant it presents is genuine.
- */
-const reaperRecordRedemptionParamsSchema = z
-  .object({
-    grantId: canonicalUuidSchema,
-    successor: coordinatorIdentitySchema,
-    operations: handoffOperationSetSchema,
-    redemptionReceipt: z.string().min(1),
   })
   .strict();
 
@@ -229,14 +209,17 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         // The guardian's channel, because the guardian is the party that watched the group come into being.
         authority: 'pairing',
         handle: (params) => {
-          const request = containmentSchema.parse(params);
+          const request = recordedContainmentSchema.parse(params);
           if (recorded !== null) {
             // Idempotent for the identical containment, a mismatch otherwise: revising it would silently
             // move what this reaper is holding, and only one group was ever created for this set.
             if (!sameRecordedContainment(recorded, request)) {
               throw new ProxyControlProtocolError('identity_mismatch', 'This reaper already holds a containment.');
             }
-            return { state: 'containment-recorded', reaper: identityOf(recorded) };
+            return reaperRecordContainmentResultSchema.parse({
+              state: 'containment-recorded',
+              reaper: identityOf(recorded),
+            });
           }
           recorded = request;
           enforcer = createArmedEnforcer({
@@ -251,7 +234,10 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           // Armed the moment it knows what to enforce, so a coordinator that dies immediately afterwards is
           // already bounded by this reaper's own deadline.
           enforcer.arm();
-          return { state: 'containment-recorded', reaper: identityOf(request) };
+          return reaperRecordContainmentResultSchema.parse({
+            state: 'containment-recorded',
+            reaper: identityOf(request),
+          });
         },
       },
     ],
@@ -260,7 +246,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       {
         authority: 'pairing',
         handle: (params) => {
-          const request = providerRootParamsSchema.parse(params);
+          const request = reaperRegisterProviderRootParamsSchema.parse(params);
           try {
             // Idempotent by construction, not by a receipt this handler manages: the enforcer's own record
             // returns early when this exact root is already held, so a repeat costs nothing and a long-lived
@@ -274,7 +260,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             }
             throw error;
           }
-          return { state: 'root-recorded' };
+          return reaperRegisterProviderRootResultSchema.parse({ state: 'root-recorded' });
         },
       },
     ],
@@ -283,7 +269,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       {
         authority: 'pairing',
         handle: (params) => {
-          const request = providerRootParamsSchema.parse(params);
+          const request = reaperConfirmProviderRootParamsSchema.parse(params);
           const isRecorded = requireEnforcer()
             .recordedRoots()
             .some(
@@ -296,7 +282,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           if (!isRecorded) {
             throw new ProxyControlProtocolError('invalid_state', 'This reaper never recorded the named provider root.');
           }
-          return { state: 'root-recorded' };
+          return reaperConfirmProviderRootResultSchema.parse({ state: 'root-recorded' });
         },
       },
     ],
@@ -343,7 +329,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
                 'This reaper already recorded a different redemption.',
               );
             }
-            return { state: 'redemption-recorded' };
+            return reaperRecordRedemptionResultSchema.parse({ state: 'redemption-recorded' });
           }
           recordedRedemption = {
             grantId: request.grantId,
@@ -351,7 +337,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             operations: request.operations,
             redemptionReceipt: request.redemptionReceipt,
           };
-          return { state: 'redemption-recorded' };
+          return reaperRecordRedemptionResultSchema.parse({ state: 'redemption-recorded' });
         },
       },
     ],

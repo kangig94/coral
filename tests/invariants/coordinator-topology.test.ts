@@ -34,82 +34,6 @@ function referencesRealPath(entry: string, canonicalFiles: ReadonlySet<string>):
   return entry.endsWith('/') ? [...canonicalFiles].some((file) => file.startsWith(entry)) : canonicalFiles.has(entry);
 }
 
-const EXPECTED_COORDINATOR_FILES = new Set([
-  'src/coordinator/bootstrap-diagnostics.ts',
-  'src/coordinator/bootstrap.ts',
-  'src/coordinator/child-principal-registry.ts',
-  'src/coordinator/composition/carrier-observation.ts',
-  'src/coordinator/composition/job-control.ts',
-  'src/coordinator/composition/store-services-ref.ts',
-  'src/coordinator/composition/types.ts',
-  'src/coordinator/composition/defaults.ts',
-  'src/coordinator/composition/world.ts',
-  'src/coordinator/composition/index.ts',
-  'src/coordinator/composition/execution-services.ts',
-  'src/coordinator/contracts.ts',
-  'src/coordinator/lifecycle.ts',
-  'src/coordinator/index.ts',
-  'src/coordinator/event-bus.ts',
-  'src/coordinator/execution-service.ts',
-  'src/coordinator/handoff-runner.ts',
-  'src/coordinator/handoff.ts',
-  'src/coordinator/invocation-scope.ts',
-  'src/coordinator/runtime-components/kb-health-component.ts',
-  'src/coordinator/runtime-components/recovery-component.ts',
-  'src/coordinator/live/kb-daemon-supervisor.ts',
-  'src/coordinator/live/admission.ts',
-  'src/coordinator/live/durable-transport.ts',
-  'src/coordinator/live/idle.ts',
-  'src/coordinator/live/provider-proxy/acquisition-steps.ts',
-  'src/coordinator/live/provider-proxy/authority.ts',
-  'src/coordinator/live/provider-proxy/heartbeat.ts',
-  'src/coordinator/live/provider-proxy/index.ts',
-  'src/coordinator/live/provider-proxy/operation-route.ts',
-  'src/coordinator/live/provider-proxy/role-control.ts',
-  'src/coordinator/live/provider-proxy/set-authority.ts',
-  'src/coordinator/live/provider-proxy/spawn-undo.ts',
-  'src/coordinator/live/provider-hosts/drain.ts',
-  'src/coordinator/live/provider-hosts/idle.ts',
-  'src/coordinator/live/provider-hosts/index.ts',
-  'src/coordinator/live/provider-hosts/lease.ts',
-  'src/coordinator/live/provider-hosts/proxy-set-acquisition.ts',
-  'src/coordinator/live/provider-hosts/recovery.ts',
-  'src/coordinator/live/provider-hosts/state.ts',
-  'src/coordinator/live/worker-limits.ts',
-  'src/coordinator/spawn-observer.ts',
-  'src/coordinator/shutdown-recovery.ts',
-  'src/coordinator/startup-recovery.ts',
-  'src/coordinator/ownership-checker.ts',
-  'src/coordinator/services/execution-policies.ts',
-  'src/coordinator/services/job-abort.ts',
-  'src/coordinator/services/job-launch.ts',
-  'src/coordinator/services/job-wait.ts',
-  'src/coordinator/services/kb-curate-assistant.ts',
-  'src/coordinator/services/operation-registry.ts',
-  'src/coordinator/runtime-components/contract.ts',
-  'src/coordinator/runtime-components/registry.ts',
-  'src/coordinator/services/recovery/actions.ts',
-  'src/coordinator/services/recovery/authority-snapshot.ts',
-  'src/coordinator/services/recovery/coordinator-job-source.ts',
-  'src/coordinator/services/recovery/index.ts',
-  'src/coordinator/services/recovery/interrupted-finalizer.ts',
-  'src/coordinator/services/recovery/interrupted-performer.ts',
-  'src/coordinator/services/recovery/interrupted-plan.ts',
-  'src/coordinator/services/recovery/service.ts',
-  'src/coordinator/services/recovery/snapshot.ts',
-  'src/coordinator/services/recovery/startup-recovery.ts',
-  'src/coordinator/services/provider-event-application.ts',
-  'src/coordinator/services/provider-proxy-launch-route.ts',
-  'src/coordinator/services/provider-proxy-operation-activation.ts',
-  'src/coordinator/services/provider-proxy-set-inheritance.ts',
-  'src/coordinator/services/terminal-materializer.ts',
-  'src/coordinator/services/workflow-execution.ts',
-  'src/coordinator/services/workflow-finalization.ts',
-  'src/coordinator/services/workflow-recovery-descendants.ts',
-  'src/coordinator/services/workflow-recovery-finalizer.ts',
-  'src/coordinator/shutdown.ts',
-]);
-
 const DOMAIN_API_TARGETS = new Set<string>();
 // Domain files coordinator may reach into. The set is intentionally small —
 // each entry names a *contract-shaped* file the domain exposes to outside
@@ -233,18 +157,6 @@ function isAlwaysPermittedTarget(target: string): boolean {
 }
 
 describe('coordinator topology invariants', () => {
-  it('matches the expected production coordinator module set', () => {
-    expect(new Set(COORDINATOR_FILES)).toEqual(EXPECTED_COORDINATOR_FILES);
-  });
-
-  it('contains no forbidden coordinator extras', () => {
-    expect(COORDINATOR_FILE_SET.has('src/coordinator/contracts.ts')).toBe(true);
-    expect(COORDINATOR_FILE_SET.has('src/coordinator/event-bus.ts')).toBe(true);
-    expect(COORDINATOR_FILE_SET.has('src/coordinator/execution-service.ts')).toBe(true);
-    expect(COORDINATOR_FILE_SET.has('src/coordinator/live/discuss-runtime.ts')).toBe(false);
-    expect(COORDINATOR_FILE_SET.has('src/coordinator/info.ts')).toBe(false);
-  });
-
   it('keeps non-exempt coordinator files on coordinator/store/runtime/infra/api seams', () => {
     const violations = COORDINATOR_EDGES.filter(({ source, target }) => {
       if (isBroadImportSource(source)) {

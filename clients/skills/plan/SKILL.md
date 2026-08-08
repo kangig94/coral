@@ -10,13 +10,13 @@ Execute a multi-round planning session with architect/critic review.
 
 ## Argument Routing
 
-| Argument       | Mode                                                                                               |
-| -------------- | -------------------------------------------------------------------------------------------------- |
-| `<prompt>`     | Self-execute on current host (default)                                                             |
+| Argument       | Mode                                                                                                                              |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `<prompt>`     | Self-execute on current host (default)                                                                                            |
 | `--delegate`   | Add review pass on the other host (Codex when current is Claude, Claude when current is Codex; from SessionStart `Current host:`) |
-| `round=N`      | Review rounds for every applicable phase (default `1`). e.g. `round=3` for deeper iteration. |
-| `round=N,M`    | Per-phase budget: Phase 1 (`<other-host>`) gets `N` rounds, Phase 2 (`<current-host>`) gets `M`. **Turns `--delegate` on.** |
-| `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                         |
+| `round=N`      | Review rounds for every applicable phase (default `1`). e.g. `round=3` for deeper iteration.                                      |
+| `round=N,M`    | Per-phase budget: Phase 1 (`<other-host>`) gets `N` rounds, Phase 2 (`<current-host>`) gets `M`. **Turns `--delegate` on.**       |
+| `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                                                        |
 
 Reviewers and the resolver always run — the round budget only sets how many times each phase iterates.
 
@@ -142,7 +142,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     launch = Bash(`coral-cli workflow -e "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d`)
     ```
     Reviewers always run in `--deep` methodology and the resolver always runs — both are independent of the round budget.
-    `coral-cli wait jobs <job>` → the terminal output prints `Result path: <path>`; read that artifact for the full workflow result and locate the resolver's synthesis section there. Exit `0` means every job completed successfully; `1` means a failed, aborted, or faulted job; `75` means work is still running — resume with `--cursor <cursor>` using the printed cursor, and keep looping until a non-`75` result before moving to 4b. A `provider_exit` outcome is separate: it exits with the provider's own normalized code (0–255, including `0`), not necessarily `1`.
+    `coral-cli wait jobs <job>` → the terminal output prints `Result path: <path>`; read that artifact for the full workflow result and locate the resolver's synthesis section there. Exit `0` means every job succeeded (`completed`, or `provider_exit` whose child exited `0`); `1` means a failed, aborted, or faulted job; `75` means work is still running — resume with `--cursor <cursor>` using the printed cursor, and keep looping until a non-`75` result before moving to 4b. A non-zero `provider_exit` code is the provider's own, passed through unchanged (0–255).
 
     **4b. Post-Round Processing**
 

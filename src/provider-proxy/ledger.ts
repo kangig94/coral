@@ -38,6 +38,7 @@ const ALLOWED_TRANSITIONS: Readonly<Record<ProviderOperationState, readonly Prov
 });
 
 export type ProviderOperationKey = Readonly<{ jobId: string; operationId: string }>;
+export type ProviderRootIdentity = Readonly<{ pid: number; processStartedAtSeconds: number }>;
 
 export type LedgerErrorCode =
   | 'operation_not_found'
@@ -83,6 +84,7 @@ export type OperationLedgerEntry<Prepared = unknown> = Readonly<{
    * would drift the first time one side is updated without the other.
    */
   prepared: Prepared;
+  providerRoot: ProviderRootIdentity | null;
   /**
    * The guardian's receipt for the staged provider root. Null until prepare's staging completes, since
    * capacity is checked — and the entry created — before that root is ever staged. Activate compares a
@@ -108,6 +110,7 @@ export interface OperationLedger<Prepared = unknown> {
     reservation: Reservation;
     prepared: Prepared;
     nowMs: number;
+    idempotencyKey?: string;
   }): PrepareResult<Prepared>;
   /**
    * Attaches the guardian's staging receipt once prepare's async staging completes. A separate step because
@@ -115,6 +118,11 @@ export interface OperationLedger<Prepared = unknown> {
    * receipt into `prepare`'s input would mean staging every reservation before knowing it will be admitted.
    */
   recordContainmentReceipt(key: ProviderOperationKey, jointContainmentReceipt: JointContainmentReceipt): void;
+  recordPreparation(
+    key: ProviderOperationKey,
+    providerRoot: ProviderRootIdentity,
+    jointContainmentReceipt: JointContainmentReceipt,
+  ): void;
   renew(key: ProviderOperationKey, reservation: Reservation, nowMs: number): OperationLedgerEntry<Prepared>;
   activate(key: ProviderOperationKey, reservation: Reservation, nowMs: number): void;
   transition(key: ProviderOperationKey, next: ProviderOperationState): void;
@@ -143,6 +151,8 @@ type MutableEntry<Prepared> = {
   reservation: Reservation;
   leaseExpiresAtMs: number;
   prepared: Prepared;
+  idempotencyKey: string;
+  providerRoot: ProviderRootIdentity | null;
   jointContainmentReceipt: JointContainmentReceipt | null;
   committedThroughProviderSeq: number;
   buffered: ReplayEvent[];
@@ -161,6 +171,7 @@ function snapshot<Prepared>(entry: MutableEntry<Prepared>): OperationLedgerEntry
     reservation: entry.reservation,
     leaseExpiresAtMs: entry.leaseExpiresAtMs,
     prepared: entry.prepared,
+    providerRoot: entry.providerRoot,
     jointContainmentReceipt: entry.jointContainmentReceipt,
     committedThroughProviderSeq: entry.committedThroughProviderSeq,
     bufferedEvents: Object.freeze([...entry.buffered]),
@@ -203,12 +214,12 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
     proxyBufferedBytes >= MAX_PROXY_REPLAY_BYTES;
 
   return {
-    prepare({ key, reservation, prepared, nowMs }): PrepareResult<Prepared> {
+    prepare({ key, reservation, prepared, nowMs, idempotencyKey = reservation }): PrepareResult<Prepared> {
       const existing = entries.get(keyOf(key));
       if (existing !== undefined) {
         // A repeat of the same prepare is the same request arriving twice — a dropped reply, a retry. It
         // returns the reservation already made; only a *different* payload for one identity is a conflict.
-        if (existing.reservation === reservation) {
+        if (existing.idempotencyKey === idempotencyKey) {
           return { kind: 'reserved', entry: snapshot(existing) };
         }
         throw new LedgerError('operation_duplicate', `${key.jobId}/${key.operationId} is already reserved.`);
@@ -225,6 +236,8 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
         reservation,
         leaseExpiresAtMs: nowMs + PROXY_PENDING_ACTIVATION_LEASE_MS,
         prepared,
+        idempotencyKey,
+        providerRoot: null,
         jointContainmentReceipt: null,
         committedThroughProviderSeq: 0,
         buffered: [],
@@ -237,6 +250,12 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
 
     recordContainmentReceipt(key, jointContainmentReceipt): void {
       const entry = require(key);
+      entry.jointContainmentReceipt = jointContainmentReceipt;
+    },
+
+    recordPreparation(key, providerRoot, jointContainmentReceipt): void {
+      const entry = require(key);
+      entry.providerRoot = providerRoot;
       entry.jointContainmentReceipt = jointContainmentReceipt;
     },
 

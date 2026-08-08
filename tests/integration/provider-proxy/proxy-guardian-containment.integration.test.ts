@@ -2,14 +2,25 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  activateProviderOperation,
+  type ProviderProxySetIdentity,
+} from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
 import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import type { EnforcementScheduler } from '#src/provider-proxy/enforcement.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
 import { createOperationLedger } from '#src/provider-proxy/ledger.js';
-import type { ProxyIdentity, ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
+import {
+  proxyOperationActivateParamsSchema,
+  type ProxyIdentity,
+  type ProxyPreparedAppServerOperation,
+} from '#src/provider-proxy/protocol.js';
+import { createProxy, type SemanticOperationHost } from '#src/provider-proxy/proxy.js';
 import { createReaper } from '#src/provider-proxy/reaper.js';
 import { createProxyGuardianContainment } from '#src/provider-proxy/role-main.js';
 import {
@@ -17,6 +28,7 @@ import {
   asJointContainmentReceipt,
   asReservation,
 } from '#tests/helpers/provider-proxy-correlation.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 
 /**
  * Drives `createProxyGuardianContainment` — the containment closures `startProviderProxyRole` installs on a
@@ -78,11 +90,7 @@ const idleScheduler: EnforcementScheduler = { schedule: () => ({}), cancel: () =
  * (`guardian.open.v1`) and the proxy's own paired peer channel (`guardian.pair.v1`) — exactly the
  * `guardianChannel` `startProviderProxyRole` hands to `createProxyGuardianContainment` in production.
  */
-async function startGuardianAndReaper(): Promise<{
-  control: Awaited<ReturnType<typeof connectControlClient>>;
-  guardianChannel: Awaited<ReturnType<typeof connectControlClient>>;
-  proxyIdentity: ProxyIdentity;
-}> {
+async function startGuardianAndReaper() {
   const directory = mkdtempSync(join(tmpdir(), 'coral-proxy-containment-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const guardianEndpoint = join(directory, 'g.sock');
@@ -251,10 +259,126 @@ async function startGuardianAndReaper(): Promise<{
   cleanups.push(() => guardianChannel.close());
   await guardianChannel.call('guardian.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
 
-  return { control, guardianChannel, proxyIdentity };
+  return {
+    control,
+    guardianChannel,
+    proxyIdentity,
+    shared,
+    coordinatorIdentity,
+    clock,
+    guardianEndpoint,
+    reaperEndpoint,
+    proxyEndpoint,
+  };
 }
 
-describe('createProxyGuardianContainment against a real guardian', () => {
+async function startCoordinatorActivationSet() {
+  const set = await startGuardianAndReaper();
+  const started: Array<{ jobId: string; operationId: string; prepared: ProxyPreparedAppServerOperation }> = [];
+  const host: SemanticOperationHost = {
+    start: ({ key, prepared }) => {
+      started.push({ ...key, prepared });
+    },
+    stop: () => {},
+  };
+  let receiptCount = 0;
+  const proxy = createProxy({
+    capsule: {
+      role: 'proxy',
+      ...set.shared,
+      canonicalEndpoint: set.proxyEndpoint,
+      guardianControlEndpoint: set.guardianEndpoint,
+      proxyGuardianAuthSecret: PAIR_SECRET,
+    },
+    clock: set.clock,
+    identity: set.proxyIdentity,
+    host,
+    timer,
+    mintChallenge: () => randomUUID(),
+    mintReceipt: () => {
+      receiptCount += 1;
+      return `proxy-receipt-${receiptCount}`;
+    },
+    mintReservation: () => asReservation(randomUUID()),
+    containment: createProxyGuardianContainment({
+      identity: set.proxyIdentity,
+      guardianChannel: set.guardianChannel,
+      ensureProviderRoot: async () => ROOT,
+    }),
+  });
+  await proxy.listen();
+  cleanups.push(() => proxy.close());
+
+  const proxyControl = await connectControlClient(set.proxyEndpoint, timer, 5_000);
+  cleanups.push(() => proxyControl.close());
+  const opened = (await proxyControl.call(
+    'control.open.v1',
+    { bootstrapNonce: NONCE, coordinator: set.coordinatorIdentity },
+    5_000,
+  )) as { controlEpoch: number; heartbeatChallenge: string };
+  await proxyControl.call(
+    'control.heartbeat.v1',
+    { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
+    5_000,
+  );
+
+  const db = newRawDatabase(':memory:');
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
+  cleanups.push(() => db.close());
+  const setIdentity: ProviderProxySetIdentity = {
+    buildSetId: set.shared.buildSetId,
+    hostFingerprint: set.shared.hostFingerprint,
+    guardianInstanceId: set.shared.guardianInstanceId,
+    guardianPid: 5_102,
+    guardianProcessStartedAtSeconds: 902,
+    guardianControlEndpoint: set.guardianEndpoint,
+    proxyInstanceId: set.proxyIdentity.proxyInstanceId,
+    proxyPid: set.proxyIdentity.pid,
+    reaperInstanceId: set.shared.reaperInstanceId,
+    reaperPid: 5_101,
+    reaperProcessStartedAtSeconds: 901,
+    reaperControlEndpoint: set.reaperEndpoint,
+    containmentKind: CONTAINMENT.containmentKind,
+    proxyProcessStartedAtSeconds: set.proxyIdentity.processStartedAtSeconds,
+    proxyProcessGroupId: set.proxyIdentity.processGroupId,
+    canonicalEndpoint: set.proxyEndpoint,
+  };
+
+  return { ...set, db, proxy, proxyControl, setIdentity, started };
+}
+
+describe('provider proxy activation against a real guardian', () => {
+  it('executes coordinator activation through the real clients and both real handlers', async () => {
+    const set = await startCoordinatorActivationSet();
+    const activationSchemaParses = vi.spyOn(proxyOperationActivateParamsSchema, 'parse');
+    const operation = {
+      jobId: randomUUID(),
+      operationId: randomUUID(),
+      proxyInstanceId: set.proxyIdentity.proxyInstanceId,
+      buildSetId: set.proxyIdentity.buildSetId,
+    };
+
+    const result = await activateProviderOperation(
+      {
+        db: set.db,
+        proxyClient: set.proxyControl,
+        guardianClient: set.control,
+        setIdentity: set.setIdentity,
+        mutationRpcTimeoutMs: 5_000,
+      },
+      operation,
+      PREPARED,
+    );
+
+    expect(result.kind).toBe('executing');
+    expect(set.started).toEqual([{ jobId: operation.jobId, operationId: operation.operationId, prepared: PREPARED }]);
+    expect(set.proxy.ledger().get(operation)).toMatchObject({ state: 'executing' });
+    // The same shared schema gates the hand-built payload once before it is written and once in the real
+    // proxy handler. Keeping both observations makes bypassing the sender parse fail this test even though a
+    // currently valid payload produces identical bytes with or without that parse.
+    expect(activationSchemaParses).toHaveBeenCalledTimes(2);
+  });
+
   it('forwards the ledger’s own reservation, so a later operation-activate.v1 presenting it is accepted', async () => {
     const { control, guardianChannel, proxyIdentity } = await startGuardianAndReaper();
 

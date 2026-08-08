@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertRecordedSetAgreement,
+  controlHeartbeatParamsSchema,
+  controlHeartbeatResultSchema,
+  controlPairParamsSchema,
+  controlPairResultSchema,
   coordinatorIdentitySchema,
   decodeProxyControlFrame,
   encodeProxyControlFrame,
@@ -28,7 +32,15 @@ import {
   proxyOperationReservationParamsSchema,
   proxyOperationStopParamsSchema,
   reaperIdentitySchema,
+  reaperConfirmProviderRootParamsSchema,
+  reaperConfirmProviderRootResultSchema,
+  recordedContainmentSchema,
+  reaperRecordContainmentResultSchema,
+  reaperRecordRedemptionResultSchema,
+  reaperRegisterProviderRootParamsSchema,
+  reaperRegisterProviderRootResultSchema,
 } from '#src/provider-proxy/protocol.js';
+import { reaperRecordRedemptionParamsSchema } from '#src/provider-proxy/handoff-capsule.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
 
@@ -208,6 +220,42 @@ describe('provider proxy protocol vocabulary', () => {
 
     expect(() => decodeProxyControlFrame(invalid)).toThrowError(expect.objectContaining({ code: 'invalid_request' }));
     expect(encodeProxyControlFrame({ jsonrpc: '2.0', id: 'frame', method: 'control.test' })).toMatch(/[^\n]\n$/);
+  });
+});
+
+describe('shared heartbeat, pairing, and guardian-to-reaper schemas', () => {
+  it('accepts each exact request and result while rejecting an unknown field', () => {
+    const providerRoot = { pid: 7_001, processStartedAtSeconds: 800 };
+    const containment = { ...providerRoot, processGroupId: 7_001, containmentKind: 'posix-process-group' };
+    const cases: ReadonlyArray<
+      readonly [{ safeParse(value: unknown): { success: boolean } }, Record<string, unknown>]
+    > = [
+      [controlHeartbeatParamsSchema, { controlEpoch: 1, heartbeatChallenge: 'challenge-1' }],
+      [controlHeartbeatResultSchema, { state: 'active', nextHeartbeatChallenge: 'challenge-2' }],
+      [controlPairParamsSchema, { pairingSecret: 'shared-secret' }],
+      [controlPairResultSchema, { state: 'paired' }],
+      [recordedContainmentSchema, containment],
+      [reaperRecordContainmentResultSchema, { state: 'containment-recorded', reaper: reaperIdentity }],
+      [reaperRegisterProviderRootParamsSchema, { providerRoot }],
+      [reaperRegisterProviderRootResultSchema, { state: 'root-recorded' }],
+      [reaperConfirmProviderRootParamsSchema, { providerRoot }],
+      [reaperConfirmProviderRootResultSchema, { state: 'root-recorded' }],
+      [
+        reaperRecordRedemptionParamsSchema,
+        {
+          grantId: UUID_A,
+          successor: coordinatorIdentity,
+          operations: [operationIdentity],
+          redemptionReceipt: 'redemption-receipt',
+        },
+      ],
+      [reaperRecordRedemptionResultSchema, { state: 'redemption-recorded' }],
+    ];
+
+    for (const [schema, valid] of cases) {
+      expect(schema.safeParse(valid).success).toBe(true);
+      expect(schema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
+    }
   });
 });
 

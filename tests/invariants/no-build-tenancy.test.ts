@@ -61,12 +61,6 @@ const REBIND_ALLOWLIST = new Map<string, number>([
   ['src/coordinator/services/recovery/service.ts#RecoveryService.adoptRunningJob', 1],
 ]);
 
-const STALE_ARTIFACT_ALLOWLIST = new Map<string, number>([
-  ['src/jobs/stale-job-cleanup-recovery-source.ts#staleJobCleanupSource', 1],
-  ['src/coordinator/startup-recovery.ts#runStartupStaleArtifactPrune', 1],
-  ['src/coordinator/lifecycle.ts#createStaleJobCleanupPolicy', 1],
-]);
-
 const NAMESPACE_PROVENANCE_ALLOWLIST = new Map<string, number>([
   ['src/coordinator/composition/index.ts#recordHostedKbFailure', 1],
   ['src/coordinator/execution-service.ts#ExecutionService.runWithInvocationScope', 1],
@@ -356,7 +350,6 @@ function scanNoBuildTenancySources(
   const violations: string[] = [];
   const seen = new Set<string>();
   const rebindHits = new Map<string, number>();
-  const staleArtifactHits = new Map<string, number>();
   const namespaceProvenanceHits = new Map<string, number>();
   const namespaceSqlPredicateHits = new Map<string, number>();
 
@@ -444,10 +437,6 @@ function scanNoBuildTenancySources(
       }
 
       if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
-        const allowlistKey = `${source.file}#${node.name.text}`;
-        if (STALE_ARTIFACT_ALLOWLIST.has(allowlistKey)) {
-          staleArtifactHits.set(allowlistKey, (staleArtifactHits.get(allowlistKey) ?? 0) + 1);
-        }
         if (
           node.name.text === 'crashedJobTerminalizationSource' &&
           node.parameters.some((parameter) => propertyName(parameter.name) === 'namespace')
@@ -556,11 +545,6 @@ function scanNoBuildTenancySources(
       const actual = rebindHits.get(key) ?? 0;
       if (actual !== expected)
         violations.push(`${key}: rebindNamespace allowlist expected ${expected}, found ${actual}`);
-    }
-    for (const [key, expected] of STALE_ARTIFACT_ALLOWLIST) {
-      const actual = staleArtifactHits.get(key) ?? 0;
-      if (actual !== expected)
-        violations.push(`${key}: stale-artifact allowlist expected ${expected}, found ${actual}`);
     }
     for (const [key, expected] of NAMESPACE_PROVENANCE_ALLOWLIST) {
       const actual = namespaceProvenanceHits.get(key) ?? 0;

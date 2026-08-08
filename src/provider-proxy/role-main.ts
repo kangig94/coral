@@ -39,6 +39,8 @@ import {
   providerRootSchema,
   reservationSchema,
   PROXY_CONTROL_RPC_TIMEOUT_MS,
+  controlPairParamsSchema,
+  controlPairResultSchema,
   type JointContainmentReceipt,
   type ProxyIdentity,
   type ProxyPreparedAppServerOperation,
@@ -526,11 +528,12 @@ export async function startProviderGuardianRole(
       sleep: (ms) => ports.runtime.time.sleep(ms),
     });
     reaperChannel = await raceReadinessAgainstSpawnFailure(reaperConnected, reaperSpawn.spawnFailed);
-    await reaperChannel.call(
+    const pairingResult = await reaperChannel.call(
       'reaper.pair.v1',
-      { pairingSecret: capsule.guardianReaperAuthSecret },
+      controlPairParamsSchema.parse({ pairingSecret: capsule.guardianReaperAuthSecret }),
       PROXY_CONTROL_RPC_TIMEOUT_MS,
     );
+    controlPairResultSchema.parse(pairingResult);
 
     const pairedReaperChannel = reaperChannel;
     // Forward-referenced by `close` below (assigned into `createGuardian`'s own `onOutcome` before the
@@ -663,8 +666,7 @@ export async function startProviderReaperRole(
   };
 }
 
-/** `guardian.register-provider-root.v1`'s reply, validated at the one place this role parses it. Mirrors the
- *  `reaperAckSchema`/explicit-`state`-check style `guardian.ts` itself uses for the RPCs it issues. */
+/** `guardian.register-provider-root.v1`'s reply, kept strict because the paired guardian is still a wire peer. */
 const registerProviderRootResultSchema = z
   .object({
     state: z.literal('staged-contained'),
@@ -820,11 +822,12 @@ export async function startProviderProxyRole(
     now: () => ports.runtime.time.now(),
     sleep: (ms) => ports.runtime.time.sleep(ms),
   });
-  await guardianChannel.call(
+  const pairingResult = await guardianChannel.call(
     'guardian.pair.v1',
-    { pairingSecret: capsule.proxyGuardianAuthSecret },
+    controlPairParamsSchema.parse({ pairingSecret: capsule.proxyGuardianAuthSecret }),
     PROXY_CONTROL_RPC_TIMEOUT_MS,
   );
+  controlPairResultSchema.parse(pairingResult);
 
   const hostAuthority = createProxyAppServerHostAuthority(ports.runtime);
   // Forward-referenced: `createSemanticOperationRuntime`'s host needs the `Proxy` this call is itself building

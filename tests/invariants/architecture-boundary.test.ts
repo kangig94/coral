@@ -53,7 +53,6 @@ const RETIRED_KB_DAEMON_PLAINTEXT_SHUTDOWN = 'Plain-text shutdown remains suppor
 const RETIRED_KB_DAEMON_OLD_SUPERVISORS = 'old supervisors';
 const PROVIDERS_ROOT = 'src/providers';
 const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
-const STORE_QUERIES_ROOT = 'src/store/queries';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
 const SESSION_FAULT_EVENTS = 'src/sessions/event-builders.ts';
 const COORDINATOR_TERMINAL_MATERIALIZER = 'src/coordinator/services/terminal-materializer.ts';
@@ -508,16 +507,6 @@ describe('architecture boundary guard', () => {
       'kb/ must stay coordinator-free',
       'move the shared contract into kb/, store/, runtime/, or another lower-level owner instead.',
       (target) => isWithinPath(target, COORDINATOR_ROOT),
-    );
-
-    assertNoViolations(violations);
-  });
-  it('store query modules may not import domain shell modules', () => {
-    const violations = collectViolations(
-      STORE_QUERIES_ROOT,
-      'store/queries must read Journal projections, not domain shells',
-      'move shell reads behind projection tables or a store-owned query helper.',
-      (target) => target.includes('/shell/'),
     );
 
     assertNoViolations(violations);

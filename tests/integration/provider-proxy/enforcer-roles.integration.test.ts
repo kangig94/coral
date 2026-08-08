@@ -832,6 +832,31 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toThrow(/never recorded/u);
   });
 
+  it('strictly rejects unknown fields on every guardian-to-reaper request family', async () => {
+    const set = await startSet();
+    const calls: Array<() => Promise<unknown>> = [
+      () => set.reaperChannel.call('reaper.record-containment.v1', { ...CONTAINMENT, unexpected: true }, 5_000),
+      () => set.reaperChannel.call('reaper.register-provider-root.v1', { providerRoot: ROOT, unexpected: true }, 5_000),
+      () => set.reaperChannel.call('reaper.confirm-provider-root.v1', { providerRoot: ROOT, unexpected: true }, 5_000),
+      () =>
+        set.reaperChannel.call(
+          'reaper.record-redemption.v1',
+          {
+            grantId: randomUUID(),
+            successor: set.coordinatorIdentity,
+            operations: [],
+            redemptionReceipt: 'redemption-receipt',
+            unexpected: true,
+          },
+          5_000,
+        ),
+    ];
+
+    for (const call of calls) {
+      await expect(call()).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+    }
+  });
+
   it('translates an EnforcementError from the root cap into a closed-set protocol code, not the catch-all', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'coral-root-cap-'));
     cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
@@ -944,10 +969,9 @@ describe('provider-proxy guardian and reaper', () => {
   });
 
   /**
-   * A guardian with no real reaper behind it — `reaperChannel.call` is fully controlled by `stubReaperCall` —
-   * for tests that must observe the guardian's own disagreement-with-the-reaper checks. No real reaper's own
-   * handler ever triggers these: it always either confirms the exact request or throws, never replies with a
-   * foreign state, so exercising them needs a reaper that can be told to.
+   * A guardian with no real reaper behind it. Setup supplies the complete method-specific containment reply
+   * the guardian now requires; later calls are controlled by `stubReaperCall`, letting tests return malformed
+   * replies a real reaper's own handler would never emit.
    */
   async function startBareGuardianWithStubReaper(
     stubReaperCall: (method: string, params: unknown) => Promise<unknown>,
@@ -969,6 +993,18 @@ describe('provider-proxy guardian and reaper', () => {
       readProcessStartedAtSeconds: () => CONTAINMENT.processStartedAtSeconds,
     };
     const guardianEndpoint = join(directory, 'g.sock');
+    const reaperIdentity = {
+      reaperInstanceId: shared.reaperInstanceId,
+      pid: 5_101,
+      processStartedAtSeconds: 901,
+      guardianInstanceId: shared.guardianInstanceId,
+      generation: shared.generation,
+      flavor: shared.flavor,
+      buildSetId: shared.buildSetId,
+      hostFingerprint: FINGERPRINT,
+      canonicalControlEndpoint: join(directory, 'r.sock'),
+      containmentKind: CONTAINMENT.containmentKind,
+    };
     const guardian = createGuardian({
       capsule: {
         role: 'guardian',
@@ -985,7 +1021,13 @@ describe('provider-proxy guardian and reaper', () => {
       scheduler: idleScheduler,
       timer,
       mintReceipt: () => 'receipt-bare-guardian',
-      reaperChannel: { call: stubReaperCall, close: (): void => {} },
+      reaperChannel: {
+        call: (method, params) =>
+          method === 'reaper.record-containment.v1'
+            ? Promise.resolve({ state: 'containment-recorded', reaper: reaperIdentity })
+            : stubReaperCall(method, params),
+        close: (): void => {},
+      },
       self: { pid: 5_102, processStartedAtSeconds: 902 },
       reaperSelf: { pid: 5_101, processStartedAtSeconds: 901 },
       onOutcome: () => {},
@@ -1063,7 +1105,7 @@ describe('provider-proxy guardian and reaper', () => {
         },
         5_000,
       ),
-    ).rejects.toThrow(/did not record the reported provider root/u);
+    ).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
 
     // Deliberately not followed by "and no receipt was minted". A black-box activation call cannot tell that
     // apart from "this operation was never staged" — the guardian answers `unauthorized_control` either way —
@@ -1103,7 +1145,7 @@ describe('provider-proxy guardian and reaper', () => {
         },
         5_000,
       ),
-    ).rejects.toThrow(/did not confirm the provider root/u);
+    ).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
   });
 
   it('keeps a released membership recorded so only teardown may conclude absence', async () => {

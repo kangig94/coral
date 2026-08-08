@@ -221,6 +221,37 @@ describe('activateProviderOperation', () => {
     });
   });
 
+  it('treats a repeated guardian release as complete when the first reply was lost', async () => {
+    const db = testDb();
+    const proxy = scriptedClient({
+      'operation.prepare.v1': [PREPARE_PENDING],
+      'operation.activate.v1': [{ state: 'executing', committedThroughProviderSeq: 0 }],
+    });
+    let releaseCalls = 0;
+    const guardian: OperationControlClient = {
+      call: async (method) => {
+        if (method === 'guardian.operation-activate.v1') {
+          return { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' };
+        }
+        releaseCalls += 1;
+        if (releaseCalls === 1) {
+          throw Object.assign(new Error('release reply dropped'), { code: 'control_call_failed' });
+        }
+        throw Object.assign(new Error('membership is already absent'), {
+          code: 'control_call_failed',
+          protocolCode: 'unauthorized_control',
+        });
+      },
+    };
+
+    const result = await activateProviderOperation(deps(db, proxy.client, guardian), OPERATION, PREPARED);
+    if (result.kind !== 'executing') throw new Error(`expected 'executing', got '${result.kind}'`);
+
+    await expect(result.control.releaseMembership?.()).rejects.toThrow(/reply dropped/u);
+    await expect(result.control.releaseMembership?.()).resolves.toBeUndefined();
+    expect(releaseCalls).toBe(2);
+  });
+
   it('reports capacity and writes nothing when the proxy ledger is full', async () => {
     const db = testDb();
     const proxy = scriptedClient({
@@ -282,6 +313,7 @@ describe('activateProviderOperation', () => {
 
   it('compensates the same way when the proxy itself refuses activation', async () => {
     const db = testDb();
+    const refusal = Object.assign(new Error('reservation_expired'), { protocolCode: 'reservation_expired' });
     // Read from inside the failing call, before it throws — proves this path also writes-then-deletes rather
     // than never writing, the same ambiguity the guardian-side compensation test above closes.
     let metaBeforeFailure: unknown;
@@ -292,7 +324,7 @@ describe('activateProviderOperation', () => {
         if (method === 'operation.prepare.v1') return PREPARE_PENDING;
         if (method === 'operation.activate.v1') {
           metaBeforeFailure = readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId);
-          throw new Error('reservation_expired');
+          throw refusal;
         }
         return { state: 'released' };
       },
@@ -311,6 +343,27 @@ describe('activateProviderOperation', () => {
     expect(metaBeforeFailure).toMatchObject({ jobId: OPERATION.jobId, operationId: OPERATION.operationId });
     expect(readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId)).toBeNull();
     expect(guardian.calls).toEqual(['guardian.operation-activate.v1', 'guardian.operation-release.v1']);
+  });
+
+  it('retains runtime ownership when both activation replies are ambiguous', async () => {
+    const db = testDb();
+    const ambiguous = Object.assign(new Error('activation reply timed out'), { code: 'control_call_failed' });
+    const proxy = scriptedClient({
+      'operation.prepare.v1': [PREPARE_PENDING],
+      'operation.activate.v1': [ambiguous, ambiguous],
+    });
+    const guardian = scriptedClient({
+      'guardian.operation-activate.v1': [
+        { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' },
+      ],
+    });
+
+    const result = await activateProviderOperation(deps(db, proxy.client, guardian.client), OPERATION, PREPARED);
+
+    expect(result).toMatchObject({ kind: 'unknown', step: 'proxy-activate' });
+    expect(proxy.calls).toEqual(['operation.prepare.v1', 'operation.activate.v1', 'operation.activate.v1']);
+    expect(guardian.calls).toEqual(['guardian.operation-activate.v1']);
+    expect(readProviderOperationRuntimeMeta(db, OPERATION.jobId, OPERATION.operationId)).not.toBeNull();
   });
 
   it('refuses the same out-of-range provider root that protocol.ts’s own providerRootSchema refuses', async () => {

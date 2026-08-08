@@ -93,6 +93,18 @@ export class ProviderSelectionError extends Error {
   }
 }
 
+export class WaitResumeError extends Error {
+  readonly code = 'transient';
+  readonly exitCode = 75;
+  readonly remediation: string;
+
+  constructor(message: string, jobIds: readonly string[], serializedCursor: string) {
+    super(message);
+    this.name = 'WaitResumeError';
+    this.remediation = `Rerun \`coral-cli wait jobs ${jobIds.join(' ')} --cursor ${serializedCursor}\` to continue waiting.`;
+  }
+}
+
 /**
  * Collapses a ZodError from CLI argument validation into a UsageError whose
  * message reads as flag guidance (issue messages already phrased as `--flag ...`
@@ -203,7 +215,11 @@ function structuredBodyError(
 }
 
 function directErrorEnvelope(error: unknown): CliErrorResult | null {
-  if (error instanceof StoreResetCliError || error instanceof ChildPrincipalBindingError) {
+  if (
+    error instanceof StoreResetCliError ||
+    error instanceof ChildPrincipalBindingError ||
+    error instanceof WaitResumeError
+  ) {
     return remediatedError(error);
   }
 

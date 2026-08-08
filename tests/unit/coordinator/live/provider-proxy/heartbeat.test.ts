@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { startHeartbeatLoop } from '#src/coordinator/live/provider-proxy/heartbeat.js';
+import { heartbeatOnce, startHeartbeatLoop } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import { PROXY_CONTROL_HEARTBEAT_MS } from '#src/provider-proxy/orphan-deadline.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -33,6 +33,15 @@ function runtimeWithTime(time: VirtualTime): Runtime {
 }
 
 describe('startHeartbeatLoop', () => {
+  it('rejects an invalid heartbeat before the untyped control client can write it', async () => {
+    const call = vi.fn(async () => ({ state: 'active', nextHeartbeatChallenge: 'challenge-1' }));
+    const client = { call, close: () => {} } as ControlClient;
+
+    await expect(heartbeatOnce(client, 'control.heartbeat.v1', -1, 'challenge-0')).rejects.toThrow();
+
+    expect(call).not.toHaveBeenCalled();
+  });
+
   it('echoes the current challenge on every tick and carries the reply into the next one', async () => {
     const time = new VirtualTime();
     const { client, calls } = scriptedClient(['challenge-1', 'challenge-2']);

@@ -15,7 +15,7 @@ import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transpo
 import { runHandoff, type HandoffOutcome } from '../coordinator/handoff-runner.js';
 import { formatLaunch } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
-import { errorCodeToExit } from './errors.js';
+import { errorCodeToExit, WaitResumeError } from './errors.js';
 import { renderHandoffNotice } from './handoff-notice.js';
 import { mapWaitSubscriptionError } from './wait-stream-error.js';
 import {
@@ -338,6 +338,16 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
         if (outcome.signal === 'SIGINT' && sigintCount === 1) {
           continue followLoop;
         }
+        if (outcome.signal === 'SIGTERM' || outcome.signal === 'SIGHUP') {
+          options.emitError(
+            new WaitResumeError(
+              `Delegated wait command ended from signal ${outcome.signal}; the jobs may still be running.`,
+              remainingJobIds,
+              serializeWaitCursor(currentCursor),
+            ),
+          );
+          return errorCodeToExit('transient');
+        }
 
         options.emitError(new Error(`Delegated wait command ended from signal ${outcome.signal}`));
         return fallbackExitCode();
@@ -423,8 +433,14 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
         continue;
       }
 
-      options.emitError(new Error('wait stream ended without a terminal event'));
-      return fallbackExitCode();
+      options.emitError(
+        new WaitResumeError(
+          'The wait stream ended before a terminal event; the jobs may still be running.',
+          remainingJobIds,
+          serializeWaitCursor(currentCursor),
+        ),
+      );
+      return errorCodeToExit('transient');
     }
   } finally {
     causeRenderer.close();

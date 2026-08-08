@@ -76,6 +76,16 @@ export const guardianReaperHandoffInstallParamsSchema = z
   })
   .strict();
 
+/** `reaper.record-redemption.v1` stays beside the grant operation set it carries, avoiding a runtime cycle. */
+export const reaperRecordRedemptionParamsSchema = z
+  .object({
+    grantId: canonicalUuidSchema,
+    successor: coordinatorIdentitySchema,
+    operations: handoffOperationSetSchema,
+    redemptionReceipt: z.string().min(1),
+  })
+  .strict();
+
 /**
  * The three grant-bearing requests, here rather than in `protocol.ts` beside every other wire schema for one
  * mechanical reason: each needs a grant primitive this module owns, and this module imports `protocol.ts`, so

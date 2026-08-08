@@ -66,7 +66,7 @@ NEVER change what the code does — only how it does it.
          **Every delegated prompt MUST include**: "NEVER run git checkout, git restore, git reset, git clean,
          or any command that discards uncommitted changes. Other processes may be working in the same
          worktree. Only edit target files through tool calls."
-         Then run `coral-cli wait jobs <job> --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience. Exit `0` means every job completed successfully; `1` means a failed, aborted, or faulted job; `75` means work is still running — resume with `--cursor <cursor>` using the printed cursor, and keep looping until a non-`75` result before continuing to step 5. A `provider_exit` outcome is separate: it exits with the provider's own normalized code (0–255, including `0`), not necessarily `1`.
+         Then run `coral-cli wait jobs <job> --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience. Exit `0` means every job succeeded (`completed`, or `provider_exit` whose child exited `0`); `1` means a failed, aborted, or faulted job; `75` means work is still running — resume with `--cursor <cursor>` using the printed cursor, and keep looping until a non-`75` result before continuing to step 5. A non-zero `provider_exit` code is the provider's own, passed through unchanged (0–255).
        Parallel split:
        - Self-execute (default): spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.

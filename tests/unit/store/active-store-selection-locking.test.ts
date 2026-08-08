@@ -699,6 +699,41 @@ describe('active-store-selection locking', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
+  it('should authorize the classified store before invoking the prepared-store opener', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    const storeFormat = currentCoralStoreFormat();
+    stubStoreOpen({
+      kind: 'legacy-adoptable',
+      currentFingerprint: storeFormat.fingerprint,
+      currentProductVersion: currentSelection.manifest.version,
+      storedFingerprint: storeFormat.fingerprint,
+    });
+    const openPreparedStore = vi.fn(() => fakeDatabase());
+    const release = vi.fn();
+
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat,
+        currentSelection,
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+          acquireStoreRecoveryLease: async () => ({ assertOwned: vi.fn(), release }),
+          openPreparedStore,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'store_schema_outdated' });
+
+    // A helper that opened first and authorized later would still satisfy every source-order assertion that
+    // used to cover this boundary. Observing the injected opener is the boundary itself: refusal must make it
+    // unreachable, irrespective of how recovery is split across helpers.
+    expect(openPreparedStore).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it('should report a record trust violation before trying to acquire a recovery lease', async () => {
     const { runtime, currentSelection, authority } = harness();
     const paths = resolveActiveStoreRecordPaths(runtime);

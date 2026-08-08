@@ -112,7 +112,9 @@ await failOpen(async () => {
   }
 
   lines.push(
-    'Wait exit codes: 0 = all succeeded; 1 = failed, aborted, or faulted; provider_exit = normalized child code; 75 = still running, resume with the printed cursor.',
+    'Wait exit codes: 0 = all succeeded (completed, or provider_exit with child code 0); ' +
+      '1 = failed, aborted, or faulted; provider_exit = normalized child code; ' +
+      'nonterminal 75 = still running with a resume cursor; terminal provider_exit may also return 75, with no cursor.',
   );
 
   console.log(

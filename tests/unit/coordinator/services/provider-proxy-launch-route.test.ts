@@ -189,6 +189,30 @@ describe('createAppServerProxyRoute', () => {
     );
   });
 
+  it("returns 'executing' for an unknown activation outcome so local execution stays suppressed", async () => {
+    const meta = providerOperationRuntimeMeta();
+    const control = { stop: vi.fn(async () => {}) };
+    const activateOperation = vi.fn(
+      async (): Promise<ActivateProviderOperationResult> => ({
+        kind: 'unknown',
+        step: 'proxy-activate',
+        reason: 'both activation replies timed out',
+        committedThroughProviderSeq: 0,
+        meta,
+        control,
+      }),
+    );
+    const { route, registry } = deps({
+      hostManager: { routeAppServerOperation: () => fakeAuthority(activateOperation) },
+    });
+    const request = requestFixture({ jobId: meta.jobId, operationId: meta.operationId });
+
+    const result = await route.activate(request, vi.fn(), new AbortController().signal);
+
+    expect(result).toBe('executing');
+    expect(registry.stateForJob(request.jobId)).toBe('activated');
+  });
+
   it('reaches the registry with the exact release closure activate() was handed', async () => {
     const meta = providerOperationRuntimeMeta();
     const control = { stop: vi.fn(async () => {}) };
