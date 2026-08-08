@@ -227,6 +227,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
   let remainingJobIds = allJobIds;
   let sendCursor = rawCursor !== undefined;
   let retriesLeft = TRANSIENT_RETRY_LIMIT;
+  let hasOpenedSubscription = false;
   let localAbortRequested = false;
   let sigintCount = 0;
   let abortPromise: Promise<void> | null = null;
@@ -300,7 +301,17 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
         }
 
         const handledError = mapWaitSubscriptionError(error);
-        if (!isTransientStreamError(handledError) || retriesLeft === 0) {
+        if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
+          options.emitError(handledError);
+          return fallbackExitCode();
+        }
+        if (retriesLeft === 0) {
+          if (hasOpenedSubscription) {
+            options.emitError(
+              new WaitResumeError(handledError.message, remainingJobIds, serializeWaitCursor(currentCursor)),
+            );
+            return errorCodeToExit('transient');
+          }
           options.emitError(handledError);
           return fallbackExitCode();
         }
@@ -348,6 +359,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
         return errorCodeToExit('transient');
       }
 
+      hasOpenedSubscription = true;
       let reconnect = false;
       try {
         for await (const raw of connection.subscription) {

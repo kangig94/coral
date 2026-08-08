@@ -251,17 +251,34 @@ const PREPARED: ProxyPreparedAppServerOperation = {
 
 async function launchThroughRoute(
   set: ProxyUnderTest,
-  options: { dropPrepareReplies?: number; dropActivationReplies?: number } = {},
+  options: {
+    dropPrepareReplies?: number;
+    dropPrepareStatusReplies?: number;
+    preparingStatusReplies?: number;
+    dropGuardianActivationReplies?: number;
+    dropActivationReplies?: number;
+  } = {},
 ) {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db, currentCoralStoreFormat());
   cleanups.push(() => db.close());
 
   let prepareCalls = 0;
+  let prepareStatusCalls = 0;
+  let guardianActivationCalls = 0;
   let activationCalls = 0;
   const proxyClient = {
     call: async (method: string, params: unknown, timeoutMs: number): Promise<unknown> => {
       if (method === 'operation.prepare.v1') prepareCalls += 1;
+      if (method === 'operation.status.v1') {
+        prepareStatusCalls += 1;
+        if (prepareStatusCalls <= (options.dropPrepareStatusReplies ?? 0)) {
+          throw new ControlClientError('control_call_failed', 'The prepare status reply was dropped.');
+        }
+        if (prepareStatusCalls <= (options.dropPrepareStatusReplies ?? 0) + (options.preparingStatusReplies ?? 0)) {
+          return { state: 'preparing' };
+        }
+      }
       if (method === 'operation.activate.v1') activationCalls += 1;
       const result = await set.control.call(method, params, timeoutMs);
       if (method === 'operation.prepare.v1' && prepareCalls <= (options.dropPrepareReplies ?? 0)) {
@@ -278,6 +295,10 @@ async function launchThroughRoute(
     call: async (method: string, params: unknown): Promise<unknown> => {
       guardianCalls.push({ method, params });
       if (method === 'guardian.operation-activate.v1') {
+        guardianActivationCalls += 1;
+        if (guardianActivationCalls <= (options.dropGuardianActivationReplies ?? 0)) {
+          throw new ControlClientError('control_call_failed', 'The guardian activation reply was dropped.');
+        }
         return { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' };
       }
       return { state: 'membership-released' };
@@ -357,7 +378,18 @@ async function launchThroughRoute(
   );
   if (placement === null) localExecution();
 
-  return { prepareCalls, activationCalls, guardianCalls, jobId, operationId, localExecution, placement, registry };
+  return {
+    prepareCalls,
+    prepareStatusCalls,
+    guardianActivationCalls,
+    activationCalls,
+    guardianCalls,
+    jobId,
+    operationId,
+    localExecution,
+    placement,
+    registry,
+  };
 }
 
 async function prepare(
@@ -465,7 +497,7 @@ describe('provider-proxy operation lifecycle', () => {
     expect(launched.registry.stateForJob(launched.jobId)).toBe('activated');
   });
 
-  it('does not fall back locally when both prepare replies are lost and retains cleanup ownership', async () => {
+  it('continues activation after both prepare replies are lost and starts one kernel', async () => {
     const set = await startProxy();
     const launched = await launchThroughRoute(set, { dropPrepareReplies: 2 });
     const key = { jobId: launched.jobId, operationId: launched.operationId };
@@ -473,10 +505,27 @@ describe('provider-proxy operation lifecycle', () => {
     expect(launched.placement).toBe('executing');
     expect(launched.localExecution).not.toHaveBeenCalled();
     expect(launched.prepareCalls).toBe(2);
-    expect(launched.activationCalls).toBe(0);
-    expect(set.started).toEqual([]);
+    expect(launched.activationCalls).toBe(1);
+    expect(set.started).toEqual([{ jobId: launched.jobId, operationId: launched.operationId, prepared: PREPARED }]);
     const owned = set.proxy.ledger().get(key);
-    expect(owned?.state).toBe('pending-activation');
+    expect(owned?.state).toBe('executing');
+    expect(launched.registry.stateForJob(launched.jobId)).toBe('activated');
+  });
+
+  it('keeps local fallback suppressed until a preparing reservation is recovered for cleanup', async () => {
+    const set = await startProxy();
+    const launched = await launchThroughRoute(set, {
+      dropPrepareReplies: 2,
+      dropPrepareStatusReplies: 1,
+      preparingStatusReplies: 1,
+      dropGuardianActivationReplies: 2,
+    });
+    const key = { jobId: launched.jobId, operationId: launched.operationId };
+
+    expect(launched.placement).toBe('executing');
+    expect(launched.localExecution).not.toHaveBeenCalled();
+    expect(launched.prepareStatusCalls).toBe(2);
+    expect(set.proxy.ledger().get(key)?.state).toBe('pending-activation');
     expect(launched.registry.stateForJob(launched.jobId)).toBe('activated');
 
     launched.registry.stop(launched.jobId, 'user_abort');
@@ -486,12 +535,23 @@ describe('provider-proxy operation lifecycle', () => {
         method: 'guardian.operation-release.v1',
         params: {
           operation: expect.objectContaining(key),
-          reservation: owned?.reservation,
-          jointContainmentReceipt: owned?.jointContainmentReceipt,
+          reservation: expect.any(String),
+          jointContainmentReceipt: expect.any(String),
         },
       }),
     );
     expect(set.released).toContainEqual(key);
+  });
+
+  it('does not let a guardian activation timeout authorise local fallback', async () => {
+    const set = await startProxy();
+    const launched = await launchThroughRoute(set, { dropGuardianActivationReplies: 1 });
+
+    expect(launched.placement).toBe('executing');
+    expect(launched.localExecution).not.toHaveBeenCalled();
+    expect(launched.guardianActivationCalls).toBe(2);
+    expect(launched.activationCalls).toBe(1);
+    expect(set.started).toEqual([{ jobId: launched.jobId, operationId: launched.operationId, prepared: PREPARED }]);
   });
 
   it('falls back locally and releases the reservation when the semantic kernel fails to start', async () => {

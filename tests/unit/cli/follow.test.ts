@@ -725,10 +725,58 @@ describe('cli follow', () => {
     expect(mockState.subscribe).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps retrying BackendUnreachableError until the retry budget is exhausted and emits the envelope on stderr only', async () => {
+  it('emits the current cursor when BackendUnreachableError exhausts reconnect attempts after progress', async () => {
+    const { launchAndFollow } = await loadFollowModule();
+    const { BackendUnreachableError } = await import('#src/infra/http-errors.js');
+    const progressEvent = makeProgressEvent('Checkpoint reached');
+    const waitingEvent = makeRunningEvent();
+    const cursor = serializeWaitCursor({ afterSeq: 1 });
+    const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
+    const emitError = vi.fn();
+
+    mockState.ensure.mockResolvedValue(makeBackend());
+    mockState.subscribe
+      .mockResolvedValueOnce(
+        makeSubscription(async function* () {
+          yield progressEvent;
+          yield waitingEvent;
+        }),
+      )
+      .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'))
+      .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'))
+      .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'));
+
+    const options = makeOptions({
+      emitError,
+      backoffScheduler,
+    });
+
+    await expect(launchAndFollow(options)).resolves.toBe(75);
+
+    expect(buildErrorEnvelope(emitError.mock.calls[0]?.[0])).toEqual({
+      envelope: {
+        error: true,
+        code: 'transient',
+        message: 'fetch failed',
+        remediation: `Rerun \`coral-cli wait jobs job-1 --cursor ${cursor}\` to continue waiting.`,
+      },
+      exitCode: 75,
+    });
+    expect(backoffScheduler).toHaveBeenCalledTimes(2);
+    expect(backoffScheduler).toHaveBeenNthCalledWith(1, 1_000);
+    expect(backoffScheduler).toHaveBeenNthCalledWith(2, 1_000);
+    expect(mockState.ensure).toHaveBeenCalledTimes(4);
+    expect(mockState.subscribe).toHaveBeenCalledTimes(4);
+  });
+
+  it('keeps BackendUnreachableError when every initial connection attempt fails', async () => {
     const { launchAndFollow } = await loadFollowModule();
     const { BackendUnreachableError } = await import('#src/infra/http-errors.js');
     const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
+    const emitError = vi.fn((error: unknown) => {
+      expect(error).toBeInstanceOf(BackendUnreachableError);
+      process.exitCode = 69;
+    });
 
     mockState.ensure.mockResolvedValue(makeBackend());
     mockState.subscribe
@@ -736,22 +784,13 @@ describe('cli follow', () => {
       .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'))
       .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'));
 
-    const options = makeOptions({
-      emitError: (error: unknown) => {
-        expect(error).toBeInstanceOf(BackendUnreachableError);
-        process.stderr.write('fetch failed [code=backend_unreachable]\n');
-        process.exitCode = 69;
-      },
-      backoffScheduler,
-    });
+    const options = makeOptions({ emitError, backoffScheduler });
 
     await expect(launchAndFollow(options)).resolves.toBe(69);
 
-    expect(stdout).toBe(`${formatLaunch(options.launchResult)}\n`);
-    expect(stderr).toBe('fetch failed [code=backend_unreachable]\n');
+    expect(emitError).toHaveBeenCalledOnce();
+    expect((emitError.mock.calls[0]?.[0] as Error).message).toBe('fetch failed');
     expect(backoffScheduler).toHaveBeenCalledTimes(2);
-    expect(backoffScheduler).toHaveBeenNthCalledWith(1, 1_000);
-    expect(backoffScheduler).toHaveBeenNthCalledWith(2, 1_000);
     expect(mockState.ensure).toHaveBeenCalledTimes(3);
     expect(mockState.subscribe).toHaveBeenCalledTimes(3);
   });

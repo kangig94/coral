@@ -59,8 +59,8 @@ export function createAppServerProxyRoute(deps: {
   readonly getDb: () => Database;
   readonly progressStore: Pick<JobProgressStore, 'appendRuntimeStarted'>;
   readonly now: () => number;
-  /** Where this coordinator generation's live app-server operations get registered the instant activation
-   *  ACKs — the one write site for `jobs/carrier-observation.ts`'s `LocalOperationRegistryState`. */
+  /** Where this coordinator generation's remotely owned app-server operations get registered — the one write
+   *  site for `jobs/carrier-observation.ts`'s `LocalOperationRegistryState`. */
   readonly registry: Pick<LocalOperationRegistry, 'activate'>;
 }): AppServerProxyRoute {
   return {
@@ -100,11 +100,17 @@ export function createAppServerProxyRoute(deps: {
         return null;
       }
       if (result.kind === 'capacity') return null;
+      if (result.kind === 'absent') return null;
       if (result.kind === 'activation-failed') {
         backendLog.warn(
           `Provider proxy refused activation for job '${request.jobId}' at ${result.step} (${result.reason}); falling back to in-process execution.`,
         );
         return null;
+      }
+      if (result.kind === 'unknown' && result.step === 'proxy-prepare') {
+        const message = `Provider proxy prepare outcome is unknown for job '${request.jobId}' (${result.reason}); local execution is suppressed.`;
+        backendLog.warn(message);
+        throw new Error(message);
       }
       if (result.kind === 'unknown') {
         backendLog.warn(
