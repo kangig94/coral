@@ -78,12 +78,18 @@ const PREPARE_PENDING = {
 
 /** Records every call made to it, in order, and answers each from a scripted queue — one fake per role, since
  *  `activateProviderOperation` talks to the proxy and the guardian on two separate connections. */
-function scriptedClient(answers: Record<string, unknown[]>): { client: OperationControlClient; calls: string[] } {
+function scriptedClient(answers: Record<string, unknown[]>): {
+  client: OperationControlClient;
+  calls: string[];
+  paramsFor(method: string): unknown;
+} {
   const calls: string[] = [];
+  const sent = new Map<string, unknown>();
   const cursor = new Map<string, number>();
   const client: OperationControlClient = {
-    call: async (method, _params, _timeoutMs) => {
+    call: async (method, params, _timeoutMs) => {
       calls.push(method);
+      sent.set(method, params);
       const queue = answers[method];
       if (queue === undefined) throw new Error(`unscripted call to ${method}`);
       const index = cursor.get(method) ?? 0;
@@ -93,7 +99,7 @@ function scriptedClient(answers: Record<string, unknown[]>): { client: Operation
       return answer;
     },
   };
-  return { client, calls };
+  return { client, calls, paramsFor: (method) => sent.get(method) };
 }
 
 function deps(
@@ -135,6 +141,17 @@ describe('activateProviderOperation', () => {
     // call, then guardian activation, then proxy activation.
     expect(proxy.calls).toEqual(['operation.prepare.v1', 'operation.activate.v1']);
     expect(guardianCalls).toEqual(['guardian.operation-activate.v1']);
+
+    // The payload, not just the method name. `operation.activate.v1` is where the guardian's freshly issued
+    // receipt has to arrive unaltered — forwarding the wrong value there is the defect this whole sequence
+    // exists to close, and it is invisible to an assertion that only records which methods were called. That
+    // blind spot is exactly how one of the four incidents survived a test asserting the correct call order.
+    expect(proxy.paramsFor('operation.activate.v1')).toEqual({
+      operation: OPERATION,
+      reservation: PREPARE_PENDING.reservation,
+      jointContainmentReceipt: PREPARE_PENDING.jointContainmentReceipt,
+      jointActivationReceipt: 'joint-activation-1',
+    });
 
     // The load-bearing assertion: the row was already durable when the guardian activation RPC fired, not
     // merely present by the time this whole call resolved.

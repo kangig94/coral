@@ -21,9 +21,16 @@ const PRODUCTION_FILES = listProductionSourceFiles(join(REPO_ROOT, 'src'));
  * schema could refuse it; the guardian's stored membership simply could never agree with what the coordinator
  * later presented, and every activation failed `identity_mismatch`.
  *
- * The rule currently matches nothing in `src/`, which is the point — and also the hazard. A rule that names
- * nothing is indistinguishable from a rule that is broken, so it is exercised against fixtures on every run
- * instead of being trusted because the tree happens to be clean.
+ * What it checks, precisely: a correlation-named property whose **own initializer expression** contains
+ * randomness. It does not follow dataflow, so `const r = ids.uuid(); call({ reservation: r })` and
+ * `{ reservation: mintReservation() }` both pass — and the second is how this codebase legitimately spells its
+ * own mints (`acquisition-steps.ts`, `set-authority.ts`), so the rule cannot be widened to catch it without
+ * flagging the authorities it exists to protect. The brands are what cover the indirect spelling; this rule
+ * covers the direct one, which is the shape the real defect actually had.
+ *
+ * It matches nothing in `src/` today, which is the point — and also the hazard. A rule that names nothing is
+ * indistinguishable from a rule that is broken, so it is exercised against fixtures on every run rather than
+ * trusted because the tree happens to be clean.
  */
 const CORRELATION_FIELDS = new Set([
   'reservation',
@@ -38,6 +45,8 @@ const CORRELATION_FIELDS = new Set([
   'bootstrapNonce',
   'guardianReaperAuthSecret',
   'proxyGuardianAuthSecret',
+  'pairingSecret',
+  'disappearanceReceipt',
   'heartbeatChallenge',
   'nextHeartbeatChallenge',
   'challenge',

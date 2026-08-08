@@ -144,7 +144,7 @@ export type ProxyOptions<Scope extends symbol> = Readonly<{
     stageProviderRoot(
       key: ProviderOperationKey,
       reserved: Readonly<{ reservation: Reservation; prepared: ProxyPreparedAppServerOperation }>,
-    ): Promise<Readonly<{ providerRoot: unknown; receipt: string }>>;
+    ): Promise<Readonly<{ providerRoot: unknown; receipt: JointContainmentReceipt }>>;
     /** Throws unless the guardian recognises both receipts for this exact operation. */
     confirmActivation(
       input: Readonly<{

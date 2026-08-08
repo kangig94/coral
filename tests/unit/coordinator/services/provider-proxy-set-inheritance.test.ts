@@ -34,6 +34,7 @@ import {
   createProviderProxySetInheritance,
 } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
 import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import { proxyOperationAdoptParamsSchema } from '#src/provider-proxy/protocol.js';
 
 const mockedReadCapsule = vi.mocked(readHandoffCapsuleFile);
 const mockedReadMeta = vi.mocked(readProviderOperationRuntimeMeta);
@@ -300,6 +301,16 @@ describe('attemptProviderProxySetInheritance', () => {
     // written — the proxy's own receipt-side `.strict()` parse never gets the chance to refuse it.
     await expect(adoptedStop.stop('not-a-real-cause')).rejects.toThrow();
     expect(calls.filter((c) => c.method === 'operation.stop.v1')).toHaveLength(1);
+
+    // The sibling send in this same file gets the same treatment. Its watermark always comes from an
+    // already-validated durable row, so the runtime path cannot produce a bad one today — which is exactly
+    // why the schema is worth asserting directly rather than trusting the caller to keep being careful.
+    const adopt = calls.find((c) => c.method === 'operation.adopt.v1');
+    expect(adopt).toBeDefined();
+    expect(() => proxyOperationAdoptParamsSchema.parse(adopt?.params)).not.toThrow();
+    expect(() =>
+      proxyOperationAdoptParamsSchema.parse({ ...(adopt?.params as object), committedThroughProviderSeq: -1 }),
+    ).toThrow();
   });
 
   it('redeems guardian, then reaper with the guardian’s own receipt, then proxy, adopting every named operation in order', async () => {

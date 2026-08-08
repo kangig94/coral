@@ -15,7 +15,7 @@ import {
   type ProxyIdentity,
   type ProxyPreparedAppServerOperation,
 } from '#src/provider-proxy/protocol.js';
-import { asReservation } from '#tests/helpers/provider-proxy-correlation.js';
+import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 /**
  * `proxy.ts`'s own control endpoint, driven over a real Unix socket with a fake `SemanticOperationHost` and a
@@ -142,7 +142,7 @@ async function startProxy(
       // No real guardian: a fixed root/receipt is all `operation.prepare.v1` needs to stage.
       stageProviderRoot: async () => ({
         providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
-        receipt: 'joint-1',
+        receipt: asJointContainmentReceipt('joint-1'),
       }),
       confirmActivation: async () => {},
     },

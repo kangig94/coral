@@ -48,6 +48,7 @@ import {
   type providerRootSchema,
   type JointContainmentReceipt,
   type ReaperIdentity,
+  type Reservation,
 } from './protocol.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
@@ -108,13 +109,51 @@ function acknowledgeReaperRoot(
   return { root } as unknown as ReaperRootAcknowledgement;
 }
 
-/** The one place a joint containment receipt comes into existence, and it needs the reaper's acknowledgement
- *  to do it. */
+/**
+ * The guardian's own half of the same fact: its enforcer has recorded this root and will contain it. Separate
+ * from the reaper's acknowledgement because they are separate authorities — the whole point of the joint
+ * receipt is that neither can be talked into containing something the other never recorded, and a token that
+ * proved only one of them would leave half of that rule enforced by statement order, which is what it was
+ * before.
+ */
+declare const guardianRecorded: unique symbol;
+type GuardianRootRecord = Readonly<{
+  readonly [guardianRecorded]: true;
+  readonly root: Readonly<{ pid: number; processStartedAtSeconds: number }>;
+}>;
+
+/** The one producer of a `GuardianRootRecord`, and the only place this guardian's enforcer is told to hold a
+ *  root. Translating `EnforcementError` here keeps that internal vocabulary off the wire. */
+function recordGuardianRoot(
+  armed: Readonly<{ registerProviderRoot(root: Readonly<{ pid: number; processStartedAtSeconds: number }>): void }>,
+  acknowledgement: ReaperRootAcknowledgement,
+): GuardianRootRecord {
+  try {
+    armed.registerProviderRoot(acknowledgement.root);
+  } catch (error: unknown) {
+    // The cap was already checked before the reaper was asked, so reaching this is a defect rather than an
+    // expected race — but `EnforcementError` is this module's internal vocabulary, not a protocol code, and
+    // it must not cross the wire untranslated: the caller would get a message with no code to act on.
+    if (error instanceof EnforcementError) {
+      throw new ProxyControlProtocolError('invalid_state', error.message);
+    }
+    throw error;
+  }
+  return { root: acknowledgement.root } as unknown as GuardianRootRecord;
+}
+
+/**
+ * The one place a joint containment receipt comes into existence, and it needs both authorities' evidence to
+ * do it — which is what makes "only after both recorded the same root" a thing the compiler checks. Both
+ * tokens are phantom-typed, so requiring them costs nothing at runtime.
+ */
 function mintJointContainmentReceipt(
   acknowledgement: ReaperRootAcknowledgement,
+  record: GuardianRootRecord,
   mintReceipt: () => string,
 ): JointContainmentReceipt {
   void acknowledgement;
+  void record;
   return jointContainmentReceiptSchema.parse(mintReceipt());
 }
 
@@ -158,7 +197,7 @@ const handoffRedeemParamsSchema = z
  */
 type StagedMembership = Readonly<{
   jointContainmentReceipt: JointContainmentReceipt;
-  reservation: string;
+  reservation: Reservation;
   root: z.infer<typeof providerRootSchema>;
 }>;
 
@@ -412,27 +451,17 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             ),
             root,
           );
-          try {
-            armed.registerProviderRoot(acknowledgement.root);
-          } catch (error: unknown) {
-            // The cap was already checked above, so reaching this is a defect rather than an expected race —
-            // but `EnforcementError` is this module's internal vocabulary, not a protocol code, and it must
-            // not cross the wire untranslated: the caller would get a message with no code to act on.
-            if (error instanceof EnforcementError) {
-              throw new ProxyControlProtocolError('invalid_state', error.message);
-            }
-            throw error;
-          }
-          // Minted here and nowhere else, and only from the reaper's acknowledgement — which is what makes
-          // "after both authorities recorded the same root" a thing the compiler checks rather than a thing
-          // this handler's statement order happens to arrange.
-          const jointContainmentReceipt = mintJointContainmentReceipt(acknowledgement, mintReceipt);
+          const record = recordGuardianRoot(armed, acknowledgement);
+          // Minted here and nowhere else, and only from both authorities' evidence — which is what makes
+          // "after both recorded the same root" a thing the compiler checks rather than a thing this
+          // handler's statement order happens to arrange.
+          const jointContainmentReceipt = mintJointContainmentReceipt(acknowledgement, record, mintReceipt);
           staged.set(request.operation.operationId, {
             jointContainmentReceipt,
             reservation: request.reservation,
-            root: acknowledgement.root,
+            root: record.root,
           });
-          return { state: 'staged-contained', providerRoot: acknowledgement.root, jointContainmentReceipt };
+          return { state: 'staged-contained', providerRoot: record.root, jointContainmentReceipt };
         },
       },
     ],

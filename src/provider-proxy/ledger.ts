@@ -1,6 +1,6 @@
 // Type-only, so no runtime edge and no cycle with `protocol.ts` (which imports this file's ledger bound).
 // `production-import-graph.test.ts` walks runtime edges alone, for exactly this reason.
-import type { Reservation } from './protocol.js';
+import type { JointContainmentReceipt, Reservation } from './protocol.js';
 
 /**
  * How many operations one proxy may carry at once. It lives here because it is a ledger bound; the
@@ -88,7 +88,7 @@ export type OperationLedgerEntry<Prepared = unknown> = Readonly<{
    * capacity is checked — and the entry created — before that root is ever staged. Activate compares a
    * caller's receipt against this one, so an activation can never name a root nobody staged.
    */
-  jointContainmentReceipt: string | null;
+  jointContainmentReceipt: JointContainmentReceipt | null;
   committedThroughProviderSeq: number;
   bufferedEvents: readonly ReplayEvent[];
   bufferedBytes: number;
@@ -114,7 +114,7 @@ export interface OperationLedger<Prepared = unknown> {
    * capacity must be checked — and the entry created — before an operation is ever staged; folding the
    * receipt into `prepare`'s input would mean staging every reservation before knowing it will be admitted.
    */
-  recordContainmentReceipt(key: ProviderOperationKey, jointContainmentReceipt: string): void;
+  recordContainmentReceipt(key: ProviderOperationKey, jointContainmentReceipt: JointContainmentReceipt): void;
   renew(key: ProviderOperationKey, reservation: Reservation, nowMs: number): OperationLedgerEntry<Prepared>;
   activate(key: ProviderOperationKey, reservation: Reservation, nowMs: number): void;
   transition(key: ProviderOperationKey, next: ProviderOperationState): void;
@@ -146,7 +146,7 @@ type MutableEntry<Prepared> = {
   reservation: Reservation;
   leaseExpiresAtMs: number;
   prepared: Prepared;
-  jointContainmentReceipt: string | null;
+  jointContainmentReceipt: JointContainmentReceipt | null;
   committedThroughProviderSeq: number;
   buffered: ReplayEvent[];
   bufferedBytes: number;

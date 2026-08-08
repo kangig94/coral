@@ -71,7 +71,9 @@ export type Reservation = z.infer<typeof reservationSchema>;
  * A correlation value is minted by exactly one authority and, everywhere else, only ever received. Branding
  * says that in the type system: `runtime.ids.uuid()` returns `string`, which is not a `JointActivationReceipt`,
  * so a party that is not the authority cannot type one into existence — it can only have been handed one, or
- * have parsed one out of a message that carried it.
+ * have parsed one out of a message that carried it. The confinement is to auditable sites, not absolute: a
+ * brand is a compile-time fiction, `.parse()` is what mints one, and these schemas are exported, so any module
+ * holding one can construct a value. What that buys is that the sites able to do it are few and named.
  *
  * `.brand()` and not `.transform()`: it is a pass-through at runtime, so the bytes on the wire are unchanged,
  * which a protocol whose peers may be a build older or newer than this one requires absolutely. The cost is

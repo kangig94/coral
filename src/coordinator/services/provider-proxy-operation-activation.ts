@@ -88,7 +88,7 @@ export interface ProviderProxyOperationActivationDeps {
 const MUTATION_RPC_TIMEOUT_DEFAULT_MS = 5_000;
 
 /**
- * The three correlation fields are taken from the row this same function is about to write, not restated:
+ * The two correlation fields are taken from the row this same function is about to write, not restated:
  * `z.string().min(1)` accepted values the durable schema refuses, so a non-canonical reservation passed this
  * ingress and then threw at `writeProviderOperationRuntimeMeta` — after `operation.prepare.v1` had already
  * staged a provider root. Two files independently choosing the same shape agree by coincidence; deriving one
@@ -169,8 +169,12 @@ async function callStrict<TSchema extends z.ZodTypeAny, TResult>(
   paramsSchema: TSchema,
   resultSchema: z.ZodType<TResult, z.ZodTypeDef, unknown>,
 ): Promise<TResult> {
-  paramsSchema.parse(params);
-  const raw = await client.call(method, params, timeoutMs);
+  // The parsed value is what goes on the wire, not the input it was parsed from. Identical today — none of
+  // these schemas transforms — but the first `.default()` or `z.coerce` would otherwise make the value that
+  // was validated and the bytes that were sent two different things, which is this branch's own thesis
+  // pointed inward. `provider-proxy-set-inheritance.ts`'s two inline sends already do it this way.
+  const validated = paramsSchema.parse(params) as z.output<TSchema>;
+  const raw = await client.call(method, validated, timeoutMs);
   return resultSchema.parse(raw);
 }
 

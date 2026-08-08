@@ -19,7 +19,7 @@ import {
   type ProxyPreparedAppServerOperation,
 } from '#src/provider-proxy/protocol.js';
 import { createProxy, type SemanticOperationHost } from '#src/provider-proxy/proxy.js';
-import { asReservation } from '#tests/helpers/provider-proxy-correlation.js';
+import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 const NONCE = 'a'.repeat(64);
 const FINGERPRINT = 'b'.repeat(64);
@@ -130,7 +130,10 @@ async function startProxy(
     containment: {
       stageProviderRoot: () => {
         if (options.failStage === true) throw new Error('the guardian refused to stage this root');
-        return Promise.resolve({ providerRoot: { pid: 7_001, processStartedAtSeconds: 800 }, receipt: 'joint-1' });
+        return Promise.resolve({
+          providerRoot: { pid: 7_001, processStartedAtSeconds: 800 },
+          receipt: asJointContainmentReceipt('joint-1'),
+        });
       },
       confirmActivation: () => {
         if (options.failConfirmActivation === true) {
