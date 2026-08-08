@@ -116,6 +116,23 @@ const BOUNDARIES = [
   },
 ] as const;
 
+const META_KEYSPACE_BOUNDARIES = [
+  {
+    prefix: 'provider_operation_saga.v1:',
+    evidence: [
+      ['src/store/provider-operation-record.ts', 'providerOperationRecordSchema.safeParse(record)'],
+      ['src/store/provider-operation-record.ts', 'providerOperationRecordSchema.safeParse(value)'],
+      ['src/store/provider-operation-journal.ts', 'const encoded = encodeProviderOperationRecord(record)'],
+      ['src/store/provider-operation-journal.ts', 'const expectedEncoded = encodeProviderOperationRecord(expected)'],
+      ['src/store/provider-operation-journal.ts', 'const nextEncoded = encodeProviderOperationRecord(next)'],
+      ['src/store/provider-operation-journal.ts', 'record = decodeProviderOperationRecord(value)'],
+      ['src/store/provider-operation-journal.ts', 'providerOperationDueEntrySchema.safeParse(row)'],
+      ['src/store/provider-operation-journal.ts', 'dueEntryMatchesRecord(due, record)'],
+      ['src/store/provider-operation-journal.ts', 'UPDATE meta SET value = ? WHERE key = ? AND value = ?'],
+    ],
+  },
+] as const;
+
 describe('persisted JSON boundary inventory', () => {
   it('independently ties every audited SQL JSON column to its codec and read/write evidence', () => {
     expect(persistedCodecNamesFromDdl(SCHEMA)).toEqual(BOUNDARIES.map(({ name }) => name).sort());
@@ -132,6 +149,18 @@ describe('persisted JSON boundary inventory', () => {
 
       for (const [file, token] of boundary.evidence) {
         expect(readFileSync(join(ROOT, file), 'utf-8'), `${boundary.name} has no evidence in ${file}`).toContain(token);
+      }
+    }
+  });
+
+  it('separately audits runtime-enforced JSON boundaries in heterogeneous meta keyspaces', () => {
+    for (const boundary of META_KEYSPACE_BOUNDARIES) {
+      expect(SCHEMA).toContain('CREATE TABLE IF NOT EXISTS meta');
+      expect(SCHEMA).not.toContain(`@persisted-codec ${boundary.prefix}`);
+      expect(readFileSync(join(ROOT, 'src/store/provider-operation-journal.ts'), 'utf-8')).toContain(boundary.prefix);
+      for (const [file, token] of boundary.evidence) {
+        const source = readFileSync(join(ROOT, file), 'utf-8');
+        expect(source, `${boundary.prefix} has no evidence in ${file}`).toContain(token);
       }
     }
   });
