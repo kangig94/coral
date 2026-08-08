@@ -2072,6 +2072,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
         Runtime,
         'ids' | 'env' | 'storage'
       >,
+      snapshotProviderOperations: () => [],
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [ROOT] },
     });
 
@@ -2139,9 +2140,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
         Runtime,
         'ids' | 'env' | 'storage'
       >,
-      // The exact shape `ProviderProxySetInheritanceDeps.operationRegistry` supplies:
-      // `Pick<LocalOperationRegistry, 'adopt' | 'operationsFor' | 'providerRootsFor'>`, now required rather
-      // than the `Partial` the acquisition path alone used to carry.
+      snapshotProviderOperations: () => [],
       operationRegistry,
     });
 

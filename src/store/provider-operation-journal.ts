@@ -29,6 +29,7 @@ type ProviderOperationDueEntry = Readonly<{
 const PROVIDER_OPERATION_SAGA_PREFIX = 'provider_operation_saga.v1:';
 const PROVIDER_OPERATION_RECORD_PREFIX = `${PROVIDER_OPERATION_SAGA_PREFIX}record:`;
 const PROVIDER_OPERATION_DUE_PREFIX = `${PROVIDER_OPERATION_SAGA_PREFIX}due:`;
+const PROVIDER_OPERATION_READ_PAGE_SIZE = 128;
 const FIXED_WIDTH_INTEGER_DIGITS = String(Number.MAX_SAFE_INTEGER).length;
 const UUID_KEY_SOURCE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const PROVIDER_OPERATION_RECORD_KEY_PATTERN = new RegExp(
@@ -250,6 +251,24 @@ export function readProviderOperation(
   identity: ProviderOperationIdentity,
 ): ProviderOperationRecord | null {
   return readCanonicalRecord(db, canonicalRecordKey(identity)) ?? null;
+}
+
+export function readProviderOperations(db: Database): readonly ProviderOperationRecord[] {
+  const records: ProviderOperationRecord[] = [];
+  let cursor = PROVIDER_OPERATION_RECORD_PREFIX;
+  for (;;) {
+    const rows = db
+      .prepare<[string, string, number], MetaRow>(
+        `SELECT key, value FROM meta
+         WHERE key > ? AND key < ?
+         ORDER BY key
+         LIMIT ?`,
+      )
+      .all(cursor, `${PROVIDER_OPERATION_RECORD_PREFIX}\uffff`, PROVIDER_OPERATION_READ_PAGE_SIZE);
+    for (const row of rows) records.push(decodeCanonicalValue(row.key, row.value));
+    if (rows.length < PROVIDER_OPERATION_READ_PAGE_SIZE) return records;
+    cursor = rows.at(-1)?.key ?? cursor;
+  }
 }
 
 export function readProviderOperationsDue(

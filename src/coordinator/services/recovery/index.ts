@@ -5,6 +5,7 @@ import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
 import { readProviderOperationRuntimeMetaForJob } from '../../../jobs/runtime-meta-store.js';
 import type { ProviderOperationRuntimeMeta } from '../../../jobs/runtime-meta.js';
+import { readProviderOperations } from '../../../store/provider-operation-journal.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { JobStore } from '../../../jobs/store.js';
@@ -1030,6 +1031,11 @@ export function createRecoveryCoordinator(
     state.recoveryRegistry = recoveryRegistry;
     const queuedRecoverable: QueuedRecoverableJob[] = [];
     const runningRecoverable: RunningRecoverableJob[] = [];
+    const sagaOwnedJobIds = new Set(
+      readProviderOperations(progressStore.getDb())
+        .filter((record) => record.phase !== 'executing')
+        .map((record) => record.operation.jobId),
+    );
 
     const recoveryItems: CoordinatorRecoveryItem[] = [];
     await runCoordinatorWalk({
@@ -1037,7 +1043,9 @@ export function createRecoveryCoordinator(
       coordinatorCommit: ctx.coordinatorCommit,
       summary: 'Coordinator recovery snapshot hydration',
       settle: (item) => {
-        recoveryItems.push(item);
+        // A non-executing saga row knows whether remote publication or release may still have happened;
+        // generic recovery must not make a second, incompatible execution decision from the job projection.
+        if (!sagaOwnedJobIds.has(item.jobId)) recoveryItems.push(item);
         return {
           kind: 'advanced',
           outcome: 'settled',

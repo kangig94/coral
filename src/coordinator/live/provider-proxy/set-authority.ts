@@ -66,9 +66,10 @@ export type ProviderProxySetAuthorityDependencies = Readonly<{
   handoffCapsulePath: string;
   /** `ids`/`env`/`storage` for minting the grant and writing its capsule durably. */
   runtime: Pick<Runtime, 'ids' | 'env' | 'storage'>;
-  /** `snapshotOperations`' source: this coordinator's own live operations, filtered to this proxy. Also
-   *  `stopAndReap`'s source for the provider roots it must name in agreement with what each enforcer
-   *  actually recorded (`assertRecordedSetAgreement`) — see `ProviderProxyOperationSnapshot`'s own doc. */
+  /** Reads every durable operation still owned by this proxy set, including publication and settlement work
+   *  that has no live-registry entry in this coordinator generation. */
+  snapshotProviderOperations: (proxyInstanceId: string) => readonly ProviderOperationKey[];
+  /** `stopAndReap`'s source for provider roots this generation can still name in set agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
 }>;
 
@@ -93,21 +94,20 @@ export function createProviderProxySetAuthority(
     coordinatorIdentity,
     handoffCapsulePath,
     runtime,
+    snapshotProviderOperations,
     operationRegistry,
   } = deps;
 
   return {
     proxyInstanceId,
-    // Taken once per proxy (shutdown.ts calls this exactly once, then hands the fixed result to
-    // `installHandoffGrant`) from this coordinator's own live-operation bookkeeping — the same registry
-    // `provider-proxy-operation-activation.ts` writes at `operation.activate.v1` ACK. Byte-sorted here so the
-    // contract this method documents holds independent of what `installHandoffGrant` does with it.
-    snapshotOperations: async () =>
-      [...operationRegistry.operationsFor(proxyInstanceId)]
-        .map((identity) => ({ jobId: identity.jobId, operationId: identity.operationId }))
-        .sort((left, right) =>
-          left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
-        ),
+    snapshotOperations: async (signal) => {
+      signal.throwIfAborted();
+      const operations = [...snapshotProviderOperations(proxyInstanceId)].sort((left, right) =>
+        left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
+      );
+      signal.throwIfAborted();
+      return operations;
+    },
     installHandoffGrant: async (operations: readonly ProviderOperationKey[], signal: AbortSignal) => {
       if (operations.length === 0) {
         throw new Error('installHandoffGrant requires at least one operation to install a grant over.');
@@ -212,7 +212,7 @@ export function createProviderProxySetAuthority(
       try {
         // The coordinator's own half of the set-agreement both enforcers check
         // (`assertRecordedSetAgreement`): every provider root this coordinator's own live operations still
-        // hold against this proxy, from the same registry `snapshotOperations` above reads. Claiming fewer
+        // hold against this proxy. Claiming fewer
         // than the enforcer recorded is legitimate and expected — an operation that settled released its
         // registry entry and may still be releasing its guardian membership — so the check is a subset test.
         // What it refuses is a root this coordinator names that the enforcer never staged, which means the

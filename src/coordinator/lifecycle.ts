@@ -670,6 +670,8 @@ export type LifecycleDeps = {
   readonly getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   readonly getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   readonly listExecutionServices: () => ProjectRequestPort[];
+  readonly reconcileProviderOperationsAtStartup?: (signal: AbortSignal) => Promise<void>;
+  readonly stopProviderOperationReconciler?: () => void;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
@@ -749,6 +751,7 @@ async function runLifecycleStartup({
     providerRegistry,
     server,
     getRecoveryService,
+    reconcileProviderOperationsAtStartup,
     getDiscussStoreForSource,
     knownDiscussSources,
     getDiscussContext,
@@ -995,6 +998,10 @@ async function runLifecycleStartup({
     runtimeState.setLaunchFenceActive(true);
 
     // ===== Era II (recovery) =====
+    // This order is load-bearing: a pending publication contains remote facts that the generic job walk
+    // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
+    await reconcileProviderOperationsAtStartup?.(signal);
+    signal.throwIfAborted();
     // Per-job isolation: corrupt sessions should not abort recovery.
     // `bound.runStartupRecovery` registers journal cursors then awaits
     // `waitFreshUntil` against `currentMaxSeq`; that wait runs here in Era II
@@ -1157,6 +1164,7 @@ export function createLifecycle(
     terminateAllFn,
     providerHostManager,
     providerProxyAuthority,
+    stopProviderOperationReconciler,
     kbDaemonSupervisor,
     disposeLifecycleReactor = () => {},
     hooks,
@@ -1204,6 +1212,7 @@ export function createLifecycle(
     // reason would propagate as a bare string and lose the `name`
     // discriminator.
     state.startupAbort?.abort();
+    stopProviderOperationReconciler?.();
 
     state.shutdownPromise = (async () => {
       if (runtimeState.getLifecycle() === 'stopped') return;

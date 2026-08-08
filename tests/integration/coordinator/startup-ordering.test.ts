@@ -17,6 +17,7 @@ import { sessionContinuationLeaseRecordedEvent } from '#src/sessions/continuatio
 import { providerSessionSchema } from '#src/sessions/entry.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import type { Database } from '#src/store/db.js';
+import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -39,7 +40,7 @@ afterEach(() => {
 });
 
 describe('coordinator startup ordering', () => {
-  it('journal waitFreshUntil resolves before jobsReconcile.runStartup is called', async () => {
+  it('reconciles provider-operation sagas before generic jobs startup recovery', async () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-home-'));
     const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-plugin-'));
     tempRoots.push(home, pluginRoot);
@@ -55,6 +56,11 @@ describe('coordinator startup ordering', () => {
 
     const runtime = createRealRuntime('prod');
     const order: string[] = [];
+    const reconcileProviderOperations = vi
+      .spyOn(ProviderOperationReconciler.prototype, 'reconcileAtStartup')
+      .mockImplementation(async () => {
+        order.push('providerOperationReconciler.reconcileAtStartup');
+      });
     const waitFreshUntil = vi.spyOn(ConsumerDriver.prototype, 'waitFreshUntil').mockImplementation(async () => {
       order.push('waitFreshUntil:start');
       await Promise.resolve();
@@ -88,11 +94,15 @@ describe('coordinator startup ordering', () => {
       expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'discuss', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'workflow', expect.any(Number));
       expect(runStartup).toHaveBeenCalledTimes(1);
+      expect(reconcileProviderOperations).toHaveBeenCalledTimes(1);
       // Three-era boot: journal `waitFreshUntil` (Era II) resolves BEFORE
       // `jobsReconcile.runStartup`; KB corpus replay no longer waits in boot.
       const firstWaitResolved = order.indexOf('waitFreshUntil:resolved');
       expect(firstWaitResolved).toBeGreaterThanOrEqual(0);
       expect(order.indexOf('jobsReconcile.runStartup')).toBeGreaterThan(firstWaitResolved);
+      expect(order.indexOf('providerOperationReconciler.reconcileAtStartup')).toBeLessThan(
+        order.indexOf('jobsReconcile.runStartup'),
+      );
     } finally {
       await coordinator.shutdown('test-cleanup');
       await coordinator.waitForShutdown();

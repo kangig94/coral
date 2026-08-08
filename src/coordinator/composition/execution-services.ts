@@ -14,6 +14,8 @@ import {
   subscribeProviderProxyControlEstablished,
 } from '../live/provider-proxy/operation-route.js';
 import { backendLog } from '../../infra/backend-log.js';
+import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
+import type { ProviderProxySetLocator } from '../services/provider-proxy-set-inheritance.js';
 
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
@@ -27,6 +29,27 @@ function listInstantiatedExecutionServices(services: ReadonlyMap<string, Project
   return [...services.values()];
 }
 
+function providerProxySetLocator(record: ProviderOperationRecord): ProviderProxySetLocator {
+  return {
+    buildSetId: record.operation.buildSetId,
+    hostFingerprint: record.locator.hostFingerprint,
+    guardianInstanceId: record.locator.guardian.instanceId,
+    guardianPid: record.locator.guardian.pid,
+    guardianProcessStartedAtSeconds: record.locator.guardian.processStartedAtSeconds,
+    guardianControlEndpoint: record.locator.guardian.controlEndpoint,
+    proxyInstanceId: record.locator.proxy.instanceId,
+    proxyPid: record.locator.proxy.pid,
+    proxyProcessStartedAtSeconds: record.locator.proxy.processStartedAtSeconds,
+    proxyProcessGroupId: record.locator.containment.processGroupId,
+    canonicalEndpoint: record.locator.proxy.controlEndpoint,
+    reaperInstanceId: record.locator.reaper.instanceId,
+    reaperPid: record.locator.reaper.pid,
+    reaperProcessStartedAtSeconds: record.locator.reaper.processStartedAtSeconds,
+    reaperControlEndpoint: record.locator.reaper.controlEndpoint,
+    containmentKind: record.locator.containment.kind,
+  };
+}
+
 export function createExecutionServices({
   world,
   runtime,
@@ -37,25 +60,39 @@ export function createExecutionServices({
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];
+  reconcileProviderOperationsAtStartup: (signal: AbortSignal) => Promise<void>;
+  stopProviderOperationReconciler: () => void;
 } {
   const services = new Map<string, ProjectRequestPort>();
   const storeServicesRef = world.storeServicesRef;
   const getProgressStore = () => storeServicesRef.get().progressStore;
+  const authorityFor = (record: ProviderOperationRecord) => {
+    const set = world.providerProxyAuthority
+      ?.liveSets()
+      .find((candidate) => candidate.proxyInstanceId === record.operation.proxyInstanceId);
+    return set !== undefined && isProviderProxyOperationAuthority(set) ? set : null;
+  };
   const providerOperationReconciler = new ProviderOperationReconciler({
     getProgressStore,
-    authorityFor: (record) => {
-      const set = world.providerProxyAuthority
-        ?.liveSets()
-        .find((candidate) => candidate.proxyInstanceId === record.operation.proxyInstanceId);
-      return set !== undefined && isProviderProxyOperationAuthority(set) ? set : null;
+    authorityFor,
+    acquireAuthority: async (record, signal) => {
+      const live = authorityFor(record);
+      if (live !== null || world.providerProxyInheritance === undefined) return live;
+      const outcome = await world.providerProxyInheritance.inheritProviderProxySet(
+        providerProxySetLocator(record),
+        getProgressStore().getDb(),
+        signal,
+      );
+      return outcome.kind === 'inherited' ? outcome.set : null;
     },
     registry: world.operationRegistry,
     backendNamespace,
     time: runtime.time,
     onError: (message) => backendLog.warn(message),
   });
-  providerOperationReconciler.start();
-  subscribeProviderProxyControlEstablished((authority) => providerOperationReconciler.onControlEstablished(authority));
+  const unsubscribeProviderProxyControlEstablished = subscribeProviderProxyControlEstablished((authority) =>
+    providerOperationReconciler.onControlEstablished(authority),
+  );
 
   function getExecutionService(ctx: InvocationContext): ProjectRequestPort {
     const key = ctx.projectRoot;
@@ -116,5 +153,10 @@ export function createExecutionServices({
     getExecutionService,
     getRecoveryService,
     listExecutionServices,
+    reconcileProviderOperationsAtStartup: (signal) => providerOperationReconciler.reconcileAtStartup(signal),
+    stopProviderOperationReconciler: () => {
+      unsubscribeProviderProxyControlEstablished();
+      providerOperationReconciler.stop();
+    },
   };
 }

@@ -6,9 +6,9 @@ vi.mock('#src/provider-proxy/handoff-capsule.js', async (importOriginal) => {
   return { ...original, readHandoffCapsuleFile: vi.fn() };
 });
 
-vi.mock('#src/jobs/runtime-meta-store.js', async (importOriginal) => {
+vi.mock('#src/store/provider-operation-journal.js', async (importOriginal) => {
   const original = await importOriginal<object>();
-  return { ...original, readProviderOperationRuntimeMeta: vi.fn() };
+  return { ...original, readProviderOperation: vi.fn() };
 });
 
 vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
@@ -23,31 +23,34 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
 
 import { readHandoffCapsuleFile, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
-import { readProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import { connectRoleControlWithRetry } from '#src/provider-proxy/role-spawn.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
 import type { Database } from '#src/store/db.js';
+import { readProviderOperation } from '#src/store/provider-operation-journal.js';
+import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
   attemptProviderProxySetInheritance,
   createProviderProxySetInheritance,
 } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
-import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import {
+  subscribeProviderProxyControlEstablished,
+  type ProviderProxyOperationAuthority,
+} from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { proxyOperationAdoptParamsSchema } from '#src/provider-proxy/protocol.js';
 
 const mockedReadCapsule = vi.mocked(readHandoffCapsuleFile);
-const mockedReadMeta = vi.mocked(readProviderOperationRuntimeMeta);
+const mockedReadOperation = vi.mocked(readProviderOperation);
+const mockedReadMeta = vi.fn<
+  (_db: Database, jobId: string, operationId: string) => ProviderOperationRuntimeMeta | null
+>(() => null);
 const mockedConnect = vi.mocked(connectRoleControlWithRetry);
 const mockedProbe = vi.mocked(probeProcessStartedAtSeconds);
 
 // Call history, not implementations, so `mockedProbe`'s default `1_700_000_000` (set in the `vi.mock` factory
 // above) survives — only each test's own explicit `.mockReturnValueOnce`/`.mockResolvedValueOnce` setup and
 // this shared `.not.toHaveBeenCalled()`-style assertions must not see a sibling test's earlier calls.
-beforeEach(() => {
-  vi.clearAllMocks();
-});
-
 const runtime = createRealRuntime('prod');
 const unusedDb = {} as Database;
 // Every test in this file drives one redemption attempt to completion synchronously (fake clients settle
@@ -94,6 +97,81 @@ function locator(overrides: Partial<ProviderOperationRuntimeMeta> = {}): Provide
     ...overrides,
   };
 }
+
+function executingRecord(meta: ProviderOperationRuntimeMeta): Extract<ProviderOperationRecord, { phase: 'executing' }> {
+  const record = providerOperationRecordSchema.parse({
+    version: 1,
+    operation: {
+      jobId: meta.jobId,
+      operationId: meta.operationId,
+      proxyInstanceId: meta.proxyInstanceId,
+      buildSetId: meta.buildSetId,
+    },
+    locator: {
+      hostFingerprint: meta.hostFingerprint,
+      proxy: {
+        instanceId: meta.proxyInstanceId,
+        pid: meta.proxyPid,
+        processStartedAtSeconds: meta.proxyProcessStartedAtSeconds,
+        controlEndpoint: meta.canonicalEndpoint,
+      },
+      guardian: {
+        instanceId: meta.guardianInstanceId,
+        pid: meta.guardianPid,
+        processStartedAtSeconds: meta.guardianProcessStartedAtSeconds,
+        controlEndpoint: meta.guardianControlEndpoint,
+      },
+      reaper: {
+        instanceId: meta.reaperInstanceId,
+        pid: meta.reaperPid,
+        processStartedAtSeconds: meta.reaperProcessStartedAtSeconds,
+        controlEndpoint: meta.reaperControlEndpoint,
+      },
+      containment: {
+        pid: meta.proxyPid,
+        processStartedAtSeconds: meta.proxyProcessStartedAtSeconds,
+        processGroupId: meta.proxyProcessGroupId,
+        kind: meta.containmentKind,
+      },
+    },
+    prepareAttemptKey: 'b'.repeat(64),
+    phase: 'executing',
+    reservation: meta.reservation,
+    providerRoot: {
+      pid: meta.providerRootPid,
+      processStartedAtSeconds: meta.providerRootProcessStartedAtSeconds,
+    },
+    jointContainmentReceipt: meta.jointContainmentReceipt,
+    jointActivationReceipt: 'activation-receipt',
+    activationAck: { state: 'executing', committedThroughProviderSeq: 0 },
+    committedThroughProviderSeq: meta.committedThroughProviderSeq,
+    revision: 0,
+    retryNotBeforeMs: 0,
+    retryCount: 0,
+    lastError: null,
+  });
+  if (record.phase !== 'executing') throw new Error('executing fixture failed validation');
+  return record;
+}
+
+function activationPendingRecord(meta: ProviderOperationRuntimeMeta): ProviderOperationRecord {
+  const executing = executingRecord(meta);
+  const { activationAck, committedThroughProviderSeq, ...pending } = executing;
+  void activationAck;
+  void committedThroughProviderSeq;
+  return providerOperationRecordSchema.parse({
+    ...pending,
+    phase: 'proxy-activation-pending',
+  });
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockedReadOperation.mockImplementation((db, operation) => {
+    const meta = mockedReadMeta(db, operation.jobId, operation.operationId);
+    return meta === null ? null : executingRecord(meta);
+  });
+});
 
 function capsuleFor(loc: ProviderOperationRuntimeMeta, overrides: Partial<HandoffCapsule> = {}): HandoffCapsule {
   return {
@@ -372,6 +450,40 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(methodOrder.indexOf('handoff.redeem.v1')).toBeLessThan(methodOrder.indexOf('operation.adopt.v1'));
   });
 
+  it('adopts a pending journal row at the proxy without registering it as executing', async () => {
+    const loc = locator();
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const operation = operationFor(loc);
+    const calls: { method: string; params: unknown }[] = [];
+    const client = fakeClient(
+      redemptionResponses(loc, [operation], {
+        'operation.adopt.v1': { state: 'prepared', replayFromProviderSeq: 1 },
+      }),
+      calls,
+    );
+    stubConnect(client);
+    mockedReadOperation.mockReturnValueOnce(activationPendingRecord(loc));
+    const adopt = vi.fn();
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { adopt, operationsFor: () => [], providerRootsFor: () => [] },
+      },
+      neverAborts,
+    );
+
+    expect(outcome.kind).toBe('inherited');
+    expect(calls.find((call) => call.method === 'operation.adopt.v1')?.params).toEqual(
+      expect.objectContaining({ committedThroughProviderSeq: 0 }),
+    );
+    expect(adopt).not.toHaveBeenCalled();
+    if (outcome.kind === 'inherited') expect(outcome.adoptedJobIds).toEqual(new Set());
+  });
+
   it('skips a per-operation adopt refusal without failing the whole redeemed set', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
@@ -606,12 +718,14 @@ describe('createProviderProxySetInheritance', () => {
     expect(registerInheritedSet).not.toHaveBeenCalled();
   });
 
-  it('folds a redeemed set into registerInheritedSet on success', async () => {
+  it('registers and announces a redeemed set so pending journal phases resume', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
     const client = fakeClient(redemptionResponses(loc, []), []);
     stubConnect(client);
     const registerInheritedSet = vi.fn<(set: ProviderProxyOperationAuthority) => void>();
+    const established = vi.fn();
+    const unsubscribe = subscribeProviderProxyControlEstablished(established);
 
     const inheritance = createProviderProxySetInheritance({
       runtime,
@@ -620,9 +734,14 @@ describe('createProviderProxySetInheritance', () => {
       registerInheritedSet,
     });
     const outcome = await inheritance.inheritProviderProxySet(loc, unusedDb, neverAborts);
+    const replayedOutcome = await inheritance.inheritProviderProxySet(loc, unusedDb, neverAborts);
+    unsubscribe();
 
     expect(outcome.kind).toBe('inherited');
+    expect(replayedOutcome).toBe(outcome);
     expect(registerInheritedSet).toHaveBeenCalledTimes(1);
+    expect(established).toHaveBeenCalledTimes(1);
+    expect(mockedConnect).toHaveBeenCalledTimes(3);
     if (outcome.kind === 'inherited') {
       expect(registerInheritedSet).toHaveBeenCalledWith(outcome.set);
     }

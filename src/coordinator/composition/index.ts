@@ -1079,6 +1079,8 @@ export function createCoordinatorCore(
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,
     listExecutionServices: services.listExecutionServices,
+    reconcileProviderOperationsAtStartup: services.reconcileProviderOperationsAtStartup,
+    stopProviderOperationReconciler: services.stopProviderOperationReconciler,
     getDiscussStoreForSource: discuss.getDiscussStoreForSource,
     knownDiscussSources: () => knownDiscussSources(discuss.readHelpersDeps),
     getDiscussContext: discuss.getDiscussContext,

@@ -5,6 +5,7 @@ import {
   deleteProviderOperation,
   insertProviderOperation,
   readProviderOperation,
+  readProviderOperations,
   readProviderOperationsDue,
 } from '#src/store/provider-operation-journal.js';
 import {
@@ -195,6 +196,22 @@ describe('provider operation journal', () => {
         )
         .all(DUE_PREFIX, `${DUE_PREFIX}${String(100).padStart(16, '0')};`, 1);
       expect(plan.map(({ detail }) => detail).join('\n')).toMatch(/SEARCH meta USING INDEX .*\(key>\? AND key<\?\)/u);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('enumerates every canonical journal row across keyset pages and phases', () => {
+    const db = createDb();
+    try {
+      const records = Array.from({ length: 130 }, (_, index) =>
+        providerOperationRecord(PHASES[index % PHASES.length] ?? 'prepare-pending', { job: index + 1 }),
+      );
+      for (const record of records) insertProviderOperation(db, record);
+
+      expect(readProviderOperations(db)).toEqual(
+        [...records].sort((left, right) => left.operation.jobId.localeCompare(right.operation.jobId)),
+      );
     } finally {
       db.close();
     }

@@ -11,7 +11,11 @@ import {
 } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { compareAndSwapProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
+import {
+  compareAndSwapProviderOperation,
+  insertProviderOperation,
+  readProviderOperation,
+} from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import {
@@ -238,6 +242,7 @@ function createHarness(
     record,
     db,
     appended,
+    progressStore,
     authority,
     registry,
     reconciler,
@@ -343,6 +348,75 @@ describe('ProviderOperationReconciler publication', () => {
     expect(harness.appended).toEqual([]);
   });
 
+  it('drives a recovered proxy-activation-pending row to proven prestart release', async () => {
+    const activationRefused = Object.assign(new Error('activation refused'), { code: 'activation_refused' });
+    const activatePreparedOperation = vi.fn(async () => {
+      throw activationRefused;
+    });
+    const inspectOperation = vi.fn(async () => ({
+      state: 'prepared' as const,
+      reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+      leaseExpiresInMs: 15_000,
+      providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+      jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+    }));
+    const harness = createHarness({ activatePreparedOperation, inspectOperation });
+    const recovered = providerOperationRecord('proxy-activation-pending');
+    insertProviderOperation(harness.db, recovered);
+    const acquireAuthority = vi.fn(async () => harness.authority);
+    const reconciler = new ProviderOperationReconciler({
+      getProgressStore: () => harness.progressStore,
+      authorityFor: () => null,
+      acquireAuthority,
+      registry: harness.registry,
+      backendNamespace: 'tests',
+      time: {
+        now: () => 100,
+        setTimeout: () => ({ unref: () => undefined }),
+        clearTimeout: () => undefined,
+      },
+    });
+
+    await reconciler.reconcileAtStartup(new AbortController().signal);
+
+    expect(acquireAuthority).toHaveBeenCalledWith(recovered, expect.any(AbortSignal));
+    expect(activatePreparedOperation).toHaveBeenCalledOnce();
+    expect(inspectOperation).toHaveBeenCalledOnce();
+    expect(readProviderOperation(harness.db, recovered.operation)).toBeNull();
+    expect(harness.registry.activate).not.toHaveBeenCalled();
+    expect(harness.appended).toEqual([]);
+  });
+
+  it('keeps a recovered activation pending when its durable proxy locator is unreachable', async () => {
+    const harness = createHarness();
+    const recovered = providerOperationRecord('proxy-activation-pending');
+    insertProviderOperation(harness.db, recovered);
+    const acquireAuthority = vi.fn(async () => null);
+    const registry = { activate: vi.fn() };
+    const reconciler = new ProviderOperationReconciler({
+      getProgressStore: () => harness.progressStore,
+      authorityFor: () => null,
+      acquireAuthority,
+      registry,
+      backendNamespace: 'tests',
+      time: {
+        now: () => 100,
+        setTimeout: () => ({ unref: () => undefined }),
+        clearTimeout: () => undefined,
+      },
+    });
+
+    await reconciler.reconcileAtStartup(new AbortController().signal);
+
+    expect(acquireAuthority).toHaveBeenCalledWith(recovered, expect.any(AbortSignal));
+    expect(readProviderOperation(harness.db, recovered.operation)).toMatchObject({
+      phase: 'proxy-activation-pending',
+      retryCount: 1,
+    });
+    expect(registry.activate).not.toHaveBeenCalled();
+    expect(harness.appended).toEqual([]);
+  });
+
   it('retries an active publication immediately when its proxy control is established', async () => {
     const ambiguous = Object.assign(new Error('prepare timed out'), { code: 'control_call_failed' });
     let prepareCalls = 0;
@@ -369,6 +443,18 @@ describe('ProviderOperationReconciler publication', () => {
 
     await vi.waitFor(() => expect(prepareCalls).toBe(2));
     await expect(publication).resolves.toEqual({ kind: 'remote-executing' });
+  });
+
+  it('resumes a recovered pending cleanup when redeemed proxy control is established', async () => {
+    const harness = createHarness();
+    const recovered = providerOperationRecord('prestart-cleanup-pending');
+    insertProviderOperation(harness.db, recovered);
+
+    harness.reconciler.onControlEstablished(harness.authority);
+
+    await vi.waitFor(() => expect(readProviderOperation(harness.db, recovered.operation)).toBeNull());
+    expect(harness.registry.activate).not.toHaveBeenCalled();
+    expect(harness.appended).toEqual([]);
   });
 
   it('leaves proxy activation pending when the atomic runtime commit fails after the ACK', async () => {

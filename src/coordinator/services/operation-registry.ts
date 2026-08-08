@@ -163,11 +163,9 @@ export class LocalOperationRegistry {
   }
 
   /**
-   * Every operation this coordinator currently tracks against one proxy set — `installHandoffGrant`'s
-   * snapshot (W2.7): a grant installed over a set neither authority agreed to would strand it, so shutdown
-   * takes this exactly once per proxy and installs the grant over that fixed list, never a later re-read.
-   * A settled entry is already gone from `entries` (see `settled()`), so this can never report one that no
-   * longer exists.
+   * Every operation this coordinator currently tracks against one proxy set. This is a live-runtime view;
+   * durable handoff membership comes from the provider-operation journal because publication can precede
+   * registration here.
    */
   operationsFor(proxyInstanceId: string): readonly ProviderOperationEventIdentity[] {
     const found: ProviderOperationEventIdentity[] = [];
@@ -200,14 +198,8 @@ export class LocalOperationRegistry {
 }
 
 /**
- * What a `stopAndReap`-adjacent caller (`provider-proxy/acquisition-steps.ts`'s `ProviderProxyAcquisitionSteps
- * Options`, `provider-proxy/set-authority.ts`'s `ProviderProxySetAuthorityDependencies`,
- * `provider-hosts/proxy-set-acquisition.ts`'s `ProviderProxySetAcquisitionConfig`,
- * `provider-proxy-set-inheritance.ts`'s `ProviderProxySetInheritanceDeps`)
- * needs from this registry: `operationsFor` and `providerRootsFor`, always. Named once here so every call site
- * stays the identical type rather than independently-drifting `Pick`s. Both are required — `providerRootsFor`
- * is this coordinator's own honest half of `assertRecordedSetAgreement` (an enforcer never faults a claim for
- * naming *fewer* roots than it recorded, only for naming one it never recorded), so there is no caller for
- * which silently falling back to a fixed answer instead of this live one is correct.
+ * What a set authority needs from the live registry for `stopAndReap`. `operationsFor` remains optional for
+ * callers that also expose the diagnostic live view; handoff membership never reads it.
  */
-export type ProviderProxyOperationSnapshot = Pick<LocalOperationRegistry, 'operationsFor' | 'providerRootsFor'>;
+export type ProviderProxyOperationSnapshot = Pick<LocalOperationRegistry, 'providerRootsFor'> &
+  Partial<Pick<LocalOperationRegistry, 'operationsFor'>>;

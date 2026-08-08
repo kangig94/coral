@@ -13,6 +13,7 @@ import {
   deleteProviderOperation,
   insertProviderOperation,
   readProviderOperation,
+  readProviderOperations,
   readProviderOperationsDue,
 } from '../../store/provider-operation-journal.js';
 import {
@@ -94,6 +95,10 @@ type ActivePublication = Readonly<{
 type ProviderOperationReconcilerDeps = Readonly<{
   getProgressStore: () => Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus'>;
   authorityFor: (record: ProviderOperationRecord) => DurableProviderProxyOperationAuthority | null;
+  acquireAuthority?: (
+    record: ProviderOperationRecord,
+    signal: AbortSignal,
+  ) => Promise<DurableProviderProxyOperationAuthority | null>;
   registry: Pick<LocalOperationRegistry, 'activate'>;
   backendNamespace: string;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
@@ -118,6 +123,7 @@ export function notifyProviderOperationSettlementPending(identity: ProviderOpera
 
 const TIMER_MIN_MS = 25;
 const TIMER_MAX_MS = 2_000;
+const NEVER_ABORTS = new AbortController().signal;
 
 function operationKey(identity: ProviderOperationIdentity): string {
   return `${identity.jobId}:${identity.operationId}:${identity.proxyInstanceId}:${identity.buildSetId}`;
@@ -192,6 +198,15 @@ export class ProviderOperationReconciler {
     }
   }
 
+  async reconcileAtStartup(signal: AbortSignal): Promise<void> {
+    this.start();
+    const records = readProviderOperations(this.#deps.getProgressStore().getDb());
+    for (const record of records) {
+      signal.throwIfAborted();
+      if (record.phase !== 'executing') await this.reconcile(record, undefined, signal);
+    }
+  }
+
   begin(input: BeginProviderOperationPublication): Promise<AppServerProxyPlacementResult> {
     const key = operationKey(input.record.operation);
     if (this.#publications.has(key)) {
@@ -243,11 +258,12 @@ export class ProviderOperationReconciler {
   reconcile(
     record: ProviderOperationRecord,
     preferredAuthority?: DurableProviderProxyOperationAuthority,
+    signal?: AbortSignal,
   ): Promise<void> {
     const key = operationKey(record.operation);
     const existing = this.#inFlight.get(key);
     if (existing !== undefined) return existing;
-    const running = this.#drive(record, preferredAuthority).finally(() => {
+    const running = this.#drive(record, preferredAuthority, signal).finally(() => {
       this.#inFlight.delete(key);
       if (record.phase !== 'settlement-pending' && this.#settlements.has(key)) this.wake();
     });
@@ -258,16 +274,23 @@ export class ProviderOperationReconciler {
   async #drive(
     initial: ProviderOperationRecord,
     preferredAuthority?: DurableProviderProxyOperationAuthority,
+    signal?: AbortSignal,
   ): Promise<void> {
     let record: ProviderOperationRecord | null = initial;
     let authority =
       preferredAuthority !== undefined && sameAuthority(initial, preferredAuthority)
         ? preferredAuthority
         : this.#deps.authorityFor(initial);
+    if (authority === null && this.#deps.acquireAuthority !== undefined) {
+      authority = await this.#deps.acquireAuthority(initial, signal ?? NEVER_ABORTS);
+    }
 
     for (let transitionCount = 0; transitionCount < 8 && record !== null; transitionCount += 1) {
       if (record.phase === 'executing') return;
       authority = authority !== null && sameAuthority(record, authority) ? authority : this.#deps.authorityFor(record);
+      if (authority === null && this.#deps.acquireAuthority !== undefined) {
+        authority = await this.#deps.acquireAuthority(record, signal ?? NEVER_ABORTS);
+      }
       if (authority === null) {
         await this.#recordRetry(record, new Error('No live control authority is available for this proxy set.'));
         return;
@@ -691,7 +714,6 @@ export class ProviderOperationReconciler {
       const progressStore = this.#deps.getProgressStore();
       const records = readProviderOperationsDue(progressStore.getDb(), this.#deps.time.now(), this.#batchSize);
       for (const record of records) {
-        if (!this.#publications.has(operationKey(record.operation))) continue;
         if (preferredAuthority !== undefined && !sameAuthority(record, preferredAuthority)) continue;
         await this.reconcile(record, preferredAuthority);
       }
@@ -721,20 +743,8 @@ export class ProviderOperationReconciler {
 
   async #reconcileActiveForAuthority(authority: DurableProviderProxyOperationAuthority): Promise<void> {
     const db = this.#deps.getProgressStore().getDb();
-    for (const publication of this.#publications.values()) {
-      if (publication.operation.proxyInstanceId !== authority.proxyInstanceId) continue;
-      const record = readProviderOperation(db, publication.operation);
-      if (record !== null && sameAuthority(record, authority)) await this.reconcile(record, authority);
-    }
-    for (const [key, identity] of this.#settlements) {
-      const record = readProviderOperation(db, identity);
-      if (record === null) {
-        this.#settlements.delete(key);
-        continue;
-      }
-      if (record.phase === 'settlement-pending' && sameAuthority(record, authority)) {
-        await this.reconcile(record, authority);
-      }
+    for (const record of readProviderOperations(db)) {
+      if (record.phase !== 'executing' && sameAuthority(record, authority)) await this.reconcile(record, authority);
     }
   }
 

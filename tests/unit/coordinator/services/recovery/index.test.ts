@@ -21,6 +21,10 @@ import type { RecoveryCapableService, ProviderRecoveryAuthority } from '#src/job
 import type { JobLaunch } from '#src/jobs/records.js';
 import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
+import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
+import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
+
+import { providerOperationRecord } from '../../../store/provider-operation-fixtures.js';
 
 /**
  * Finding 1's routing decision lives in `runRecoveryAdoption`'s inheritance pre-pass
@@ -222,6 +226,87 @@ describe('runRecoveryAdoption inheritance pre-pass', () => {
     // pre-pass (this fix) or only later in the settle loop's own cleanup is exactly the window this fix closes,
     // but either way nothing should still be holding the job hostage to the broken handler.
     expect(recoveryCoordinator.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
+  });
+});
+
+describe('runStartupRecovery provider-operation ownership', () => {
+  it('does not let generic recovery decide a job still owned by a pending saga row', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    const sessionId = 'pending-saga-session';
+    const proxyInstanceId = randomUUID();
+    seedRunningAppServerJob(progressStore, { jobId, sessionId, provider: 'codex', proxyInstanceId });
+    const fixture = providerOperationRecord('proxy-activation-pending');
+    const pending = providerOperationRecordSchema.parse({
+      ...fixture,
+      operation: {
+        ...fixture.operation,
+        jobId,
+        operationId: randomUUID(),
+        proxyInstanceId,
+      },
+      locator: {
+        ...fixture.locator,
+        proxy: { ...fixture.locator.proxy, instanceId: proxyInstanceId },
+      },
+    });
+    insertProviderOperation(progressStore.getDb(), pending);
+
+    const fakeService = createFakeService();
+    const createInvocationContext = (projectRoot: string): InvocationContext => ({
+      projectRoot,
+      pluginRoot: '/tmp/plugin',
+      coralEnv: {},
+      principal: testProjectPrincipal(projectRoot),
+    });
+    const getRecoveryService = (): RecoveryCapableService => fakeService;
+    const signal = new AbortController().signal;
+    const log = vi.fn();
+    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => progressStore.commit(cb);
+    const boundRecovery = await createBoundJobsRecoveryHarness({
+      identity: {
+        pluginRoot: '/tmp/plugin',
+        namespace: NAMESPACE,
+        version: 'test-version',
+        buildSetId: '00000000-0000-4000-8000-000000000000',
+        bundleHash: 'test-bundle',
+        cliBundleHash: 'test-cli-bundle',
+        claudeAppserverBundleHash: 'test-claude-bundle',
+        flavor: 'prod',
+        instanceId: 'pending-saga-recovery-test',
+        token: 'test-token',
+        bootToken: 'test-boot-token',
+        shutdownToken: 'test-shutdown-token',
+        now: () => runtime.time.now(),
+        log,
+      },
+      runtime,
+      progressStore,
+      providerRegistry: {} as never,
+      getRecoveryService,
+      createInvocationContext,
+      signal,
+      coordinatorCommit,
+    });
+    const recoveryCoordinator = createRecoveryCoordinator(
+      {
+        progressStore,
+        runtime,
+        runtimeState: { setLaunchFenceActive: vi.fn() },
+        eventBus: { emit: vi.fn() } as never,
+        getRecoveryService,
+        createInvocationContext,
+        log,
+      },
+      boundRecovery.bound,
+    );
+
+    await boundRecovery.run(recoveryCoordinator);
+
+    expect(fakeService.captureProviderRecoveryAuthority).not.toHaveBeenCalled();
+    expect(fakeService.finalizeInterruptedAppServerJob).not.toHaveBeenCalled();
+    expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
   });
 });
 
