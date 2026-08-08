@@ -6,8 +6,6 @@ import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
   guardianOperationActivateParamsSchema,
   guardianOperationActivateResultSchema,
-  guardianOperationReleaseParamsSchema,
-  guardianOperationReleaseResultSchema,
   proxyOperationActivateParamsSchema,
   proxyOperationActivateResultSchema,
   proxyOperationCancelParamsSchema,
@@ -17,6 +15,8 @@ import {
   proxyOperationPrepareCapacityResultSchema,
   proxyOperationPrepareParamsSchema,
   proxyOperationPreparePendingResultSchema,
+  proxyOperationSettleParamsSchema,
+  proxyOperationSettleResultSchema,
   proxyOperationStopParamsSchema,
   proxyOperationStopResultSchema,
   type OperationIdentity,
@@ -66,6 +66,7 @@ export type InspectProviderOperationResult = z.output<typeof proxyOperationInspe
 export type AuthorizeProviderOperationResult = z.output<typeof guardianOperationActivateResultSchema>;
 export type ActivateProviderOperationResult = z.output<typeof proxyOperationActivateResultSchema>;
 export type CancelProviderOperationResult = z.output<typeof proxyOperationCancelResultSchema>;
+export type SettleProviderOperationResult = z.output<typeof proxyOperationSettleResultSchema>;
 
 async function callStrict<TResult>(
   client: OperationControlClient,
@@ -194,47 +195,24 @@ export async function cancelProviderOperation(
   );
 }
 
-function buildGuardianMembershipRelease(
+export async function settleProviderOperation(
   deps: ProviderProxyOperationActivationDeps,
   operation: OperationIdentity,
-  reservation: string,
-  jointContainmentReceipt: string,
-): () => Promise<void> {
-  let releaseState: 'ready' | 'unknown' | 'released' = 'ready';
-  return async (): Promise<void> => {
-    if (releaseState === 'released') return;
-    const retryingUnknown = releaseState === 'unknown';
-    try {
-      const params = guardianOperationReleaseParamsSchema.parse({
-        operation,
-        reservation,
-        jointContainmentReceipt,
-      });
-      await callStrict(
-        deps.guardianClient,
-        'guardian.operation-release.v1',
-        params,
-        deps.mutationRpcTimeoutMs,
-        guardianOperationReleaseResultSchema,
-      );
-      releaseState = 'released';
-    } catch (error: unknown) {
-      const protocolCode =
-        typeof error === 'object' && error !== null ? (error as { protocolCode?: unknown }).protocolCode : undefined;
-      if (retryingUnknown && protocolCode === 'unauthorized_control') {
-        releaseState = 'released';
-        return;
-      }
-      releaseState = providerOperationErrorIsAmbiguous(error) ? 'unknown' : 'ready';
-      throw error;
-    }
-  };
+  finalProviderSeq: number,
+): Promise<SettleProviderOperationResult> {
+  const params = proxyOperationSettleParamsSchema.parse({ operation, finalProviderSeq });
+  return callStrict(
+    deps.proxyClient,
+    'operation.settle.v2',
+    params,
+    deps.mutationRpcTimeoutMs,
+    proxyOperationSettleResultSchema,
+  );
 }
 
 export function buildProviderOperationControl(
   deps: ProviderProxyOperationActivationDeps,
   operation: OperationIdentity,
-  evidence: Readonly<{ reservation: string; jointContainmentReceipt: string }>,
 ): OperationStopControl {
   return {
     async stop(cause: ProviderStopCause): Promise<void> {
@@ -247,12 +225,6 @@ export function buildProviderOperationControl(
         proxyOperationStopResultSchema,
       );
     },
-    releaseMembership: buildGuardianMembershipRelease(
-      deps,
-      operation,
-      evidence.reservation,
-      evidence.jointContainmentReceipt,
-    ),
   };
 }
 

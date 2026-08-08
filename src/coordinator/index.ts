@@ -401,10 +401,12 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       recordedStopCauseFor: (identity) => operationRegistry.recordedStopCauseFor(identity),
       operations: {
         settled: (identity) => {
-          // The durable `provider_operation.v1` delete for this identity now happens inside the same
-          // transaction that commits the terminal (`appendJobTerminal`, `provider-event-application.ts`) —
-          // a crash between commit and cleanup can no longer strand the row, and a composition root has no
-          // business opening a second, separate write against a transaction that already closed. This
+          // The terminal commit no longer deletes this operation's durable row at all: the same transaction
+          // that appends the terminal moves the saga to `settlement-pending` (`provider-event-application.ts`),
+          // and the row survives as a tombstone until the proxy confirms release. Deleting at terminal time
+          // made a lost settlement reply unreplayable — the ledger entry it was meant to release outlived the
+          // only thing that could name it. A composition root has no business writing durable state here
+          // regardless, and now has nothing durable left to write. This
           // callback is left with only the in-process release: the admission slot, abort registration, and
           // job pool entry this coordinator generation itself holds for the job — never durable, and never
           // owned by anything but this process — freed here because it is what frees the admission slot

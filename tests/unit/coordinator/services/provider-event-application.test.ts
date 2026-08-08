@@ -20,6 +20,8 @@ import type { ProviderBindingCatalog } from '#src/providers/catalog.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import type { ProviderOperationEventIdentity } from '#src/jobs/provider-event.js';
 import { providerOperationRuntimeMetaKey } from '#src/jobs/runtime-meta.js';
+import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
+import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import {
   createProviderEventHandler,
   createStoreProviderEventEffectPort,
@@ -98,9 +100,7 @@ function testDeps(overrides: Partial<ProviderEventApplicationDeps> = {}): Provid
   };
 }
 
-/** Allocates and claims a real session, initializes a real job against it, and commits the W2.3 runtime-meta
- *  locator `verifyIdentity` requires — everything `applyProviderEventAtSeq`'s real port needs before it will
- *  apply a single event. */
+/** Allocates a claimed job and its executing saga plus the temporary v1 compatibility locator. */
 function seedOperation(): { jobId: string; sessionId: string; identity: ProviderOperationEventIdentity } {
   const jobId = randomUUID();
   const session = allocateTestSession(
@@ -127,38 +127,88 @@ function seedOperation(): { jobId: string; sessionId: string; identity: Provider
     proxyInstanceId: PROXY_INSTANCE_ID,
     buildSetId: BUILD_SET_ID,
   };
+  const guardianInstanceId = randomUUID();
+  const reaperInstanceId = randomUUID();
+  const reservation = randomUUID();
+  const compatibilityMeta = {
+    version: 1,
+    jobId,
+    operationId: OPERATION_ID,
+    buildSetId: BUILD_SET_ID,
+    hostFingerprint: 'a'.repeat(64),
+    guardianInstanceId,
+    guardianPid: 100,
+    guardianProcessStartedAtSeconds: 1,
+    guardianControlEndpoint: '/tmp/guardian.sock',
+    proxyInstanceId: PROXY_INSTANCE_ID,
+    proxyPid: 200,
+    reaperInstanceId,
+    reaperPid: 300,
+    reaperProcessStartedAtSeconds: 2,
+    reaperControlEndpoint: '/tmp/reaper.sock',
+    containmentKind: 'detached-group',
+    proxyProcessStartedAtSeconds: 3,
+    proxyProcessGroupId: 200,
+    canonicalEndpoint: '/tmp/proxy.sock',
+    reservation,
+    providerRootPid: 400,
+    providerRootProcessStartedAtSeconds: 4,
+    jointContainmentReceipt: 'receipt-1',
+    committedThroughProviderSeq: 0,
+  } as const;
   progressStore
     .getDb()
     .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
-    .run(
-      providerOperationRuntimeMetaKey(jobId, OPERATION_ID),
-      JSON.stringify({
-        version: 1,
-        jobId,
-        operationId: OPERATION_ID,
-        buildSetId: BUILD_SET_ID,
-        hostFingerprint: 'a'.repeat(64),
-        guardianInstanceId: randomUUID(),
-        guardianPid: 100,
-        guardianProcessStartedAtSeconds: 1,
-        guardianControlEndpoint: '/tmp/guardian.sock',
-        proxyInstanceId: PROXY_INSTANCE_ID,
-        proxyPid: 200,
-        reaperInstanceId: randomUUID(),
-        reaperPid: 300,
-        reaperProcessStartedAtSeconds: 2,
-        reaperControlEndpoint: '/tmp/reaper.sock',
-        containmentKind: 'detached-group',
-        proxyProcessStartedAtSeconds: 3,
-        proxyProcessGroupId: 200,
-        canonicalEndpoint: '/tmp/proxy.sock',
-        reservation: randomUUID(),
-        providerRootPid: 400,
-        providerRootProcessStartedAtSeconds: 4,
-        jointContainmentReceipt: 'receipt-1',
-        committedThroughProviderSeq: 0,
-      }),
-    );
+    .run(providerOperationRuntimeMetaKey(jobId, OPERATION_ID), JSON.stringify(compatibilityMeta));
+  insertProviderOperation(
+    progressStore.getDb(),
+    providerOperationRecordSchema.parse({
+      version: 1,
+      operation: identity,
+      locator: {
+        hostFingerprint: compatibilityMeta.hostFingerprint,
+        proxy: {
+          instanceId: PROXY_INSTANCE_ID,
+          pid: compatibilityMeta.proxyPid,
+          processStartedAtSeconds: compatibilityMeta.proxyProcessStartedAtSeconds,
+          controlEndpoint: compatibilityMeta.canonicalEndpoint,
+        },
+        guardian: {
+          instanceId: guardianInstanceId,
+          pid: compatibilityMeta.guardianPid,
+          processStartedAtSeconds: compatibilityMeta.guardianProcessStartedAtSeconds,
+          controlEndpoint: compatibilityMeta.guardianControlEndpoint,
+        },
+        reaper: {
+          instanceId: reaperInstanceId,
+          pid: compatibilityMeta.reaperPid,
+          processStartedAtSeconds: compatibilityMeta.reaperProcessStartedAtSeconds,
+          controlEndpoint: compatibilityMeta.reaperControlEndpoint,
+        },
+        containment: {
+          pid: compatibilityMeta.proxyPid,
+          processStartedAtSeconds: compatibilityMeta.proxyProcessStartedAtSeconds,
+          processGroupId: compatibilityMeta.proxyProcessGroupId,
+          kind: compatibilityMeta.containmentKind,
+        },
+      },
+      prepareAttemptKey: 'b'.repeat(64),
+      phase: 'executing',
+      reservation,
+      providerRoot: {
+        pid: compatibilityMeta.providerRootPid,
+        processStartedAtSeconds: compatibilityMeta.providerRootProcessStartedAtSeconds,
+      },
+      jointContainmentReceipt: compatibilityMeta.jointContainmentReceipt,
+      jointActivationReceipt: 'activation-receipt-1',
+      activationAck: { state: 'executing', committedThroughProviderSeq: 0 },
+      committedThroughProviderSeq: 0,
+      revision: 0,
+      retryNotBeforeMs: 0,
+      retryCount: 0,
+      lastError: null,
+    }),
+  );
 
   return { jobId, sessionId: session.sessionId, identity };
 }
@@ -350,7 +400,7 @@ describe('createStoreProviderEventEffectPort', () => {
     expect(readSession(sessionId)?.activeJobId).toBeUndefined();
   });
 
-  it('deletes the operation runtime-meta locator in the same transaction as the terminal it commits', async () => {
+  it('writes the settlement tombstone after terminal effects and the final watermark in the same transaction', async () => {
     const { identity } = seedOperation();
     const port = createStoreProviderEventEffectPort(testDeps());
     const readMetaRow = () =>
@@ -358,8 +408,6 @@ describe('createStoreProviderEventEffectPort', () => {
         .getDb()
         .prepare('SELECT value FROM meta WHERE key = ?')
         .get(providerOperationRuntimeMetaKey(identity.jobId, identity.operationId));
-
-    expect(readMetaRow()).not.toBeUndefined();
 
     await port.runInTransaction(async (tx) => {
       await port.appendJobTerminal(tx, identity, 1, {
@@ -371,22 +419,23 @@ describe('createStoreProviderEventEffectPort', () => {
         },
       });
       await port.releaseSessionClaim(tx, identity);
-      // `advanceWatermark` before the release: it still reads and rewrites this exact row, so releasing any
-      // earlier in the same transaction would make that read fail (`applyProviderEventAtSeq` enforces this
-      // same order for every real terminal/suspended event).
       await port.advanceWatermark(tx, identity, 1);
-      await port.releaseOperationLocator(tx, identity);
+      await port.markSettlementPending(tx, identity, 1);
       return undefined;
     });
 
-    // Finding 5: this delete used to run only from the in-process `settled` callback (`coordinator/index.ts`),
-    // strictly after this whole transaction had already committed — a crash in that gap stranded the row
-    // permanently. It is proven gone here, immediately after the transaction that committed the terminal,
-    // with no separate `settled()` call in between.
-    expect(readMetaRow()).toBeUndefined();
+    expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
+      phase: 'settlement-pending',
+      committedThroughProviderSeq: 1,
+      terminalProviderSeq: 1,
+      settlementIntent: 'release-after-terminal',
+    });
+    const compatibility = readMetaRow() as { value: string } | undefined;
+    expect(compatibility).not.toBeUndefined();
+    expect(JSON.parse(compatibility?.value ?? '{}')).toMatchObject({ committedThroughProviderSeq: 1 });
   });
 
-  it('rolls back the operation runtime-meta delete together with the terminal when a later step fails', async () => {
+  it('rolls back the settlement tombstone together with terminal effects and the final watermark', async () => {
     const { identity } = seedOperation();
     const port = createStoreProviderEventEffectPort(testDeps());
     const readMetaRow = () =>
@@ -407,16 +456,17 @@ describe('createStoreProviderEventEffectPort', () => {
         });
         await port.releaseSessionClaim(tx, identity);
         await port.advanceWatermark(tx, identity, 1);
-        await port.releaseOperationLocator(tx, identity);
-        throw new Error('boom after locator release');
+        await port.markSettlementPending(tx, identity, 1);
+        throw new Error('boom after settlement intent');
       }),
-    ).rejects.toThrow('boom after locator release');
+    ).rejects.toThrow('boom after settlement intent');
 
-    // The delete is plain SQL against the same `BEGIN IMMEDIATE` transaction, not a second, independent write
-    // — a `ROLLBACK` after it undoes it exactly as it undoes the terminal event and watermark advance it ran
-    // alongside.
     expect(readMetaRow()).not.toBeUndefined();
     expect(progressStore.readTerminalProjection(identity.jobId)).toBeNull();
+    expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
+      phase: 'executing',
+      committedThroughProviderSeq: 0,
+    });
   });
 
   it('threads the recorded interruption trigger into a truthful session.interrupted, linked to its terminal', async () => {
@@ -474,6 +524,29 @@ describe('createProviderEventHandler', () => {
     expect(progressStore.readJobEvents(identity.jobId).filter((event) => event.type === 'progress')).toHaveLength(1);
   });
 
+  it('replays a terminal whose ACK was lost while retaining its settlement tombstone', async () => {
+    const { identity } = seedOperation();
+    const handler = createProviderEventHandler(testDeps());
+    const request = {
+      operation: identity,
+      providerSeq: 1,
+      event: {
+        kind: 'terminal' as const,
+        terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' as const } },
+        diagnostics: {},
+      },
+    };
+
+    expect(await handler(request)).toEqual({ kind: 'ack', committedThroughProviderSeq: 1 });
+    expect(await handler(request)).toEqual({ kind: 'ack', committedThroughProviderSeq: 1 });
+
+    expect(progressStore.readJobEvents(identity.jobId).filter((event) => event.type === 'terminal')).toHaveLength(1);
+    expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
+      phase: 'settlement-pending',
+      terminalProviderSeq: 1,
+    });
+  });
+
   it('requests replay from the current watermark on a sequence gap, writing nothing', async () => {
     const { identity } = seedOperation();
     const handler = createProviderEventHandler(testDeps());
@@ -511,6 +584,7 @@ describe('createProviderEventHandler', () => {
     const interrupted = rawEventsByType(sessionId, 'session.interrupted')[0];
     expect((interrupted?.body as { trigger?: string } | undefined)?.trigger).toBe('restart');
     expect(readSession(sessionId)?.activeJobId).toBeUndefined();
+    expect(readProviderOperation(progressStore.getDb(), identity)?.phase).toBe('settlement-pending');
   });
 
   it('refuses a suspended event with no recorded operation.stop.v1 cause rather than guessing one', async () => {

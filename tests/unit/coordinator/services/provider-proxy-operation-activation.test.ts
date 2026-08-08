@@ -11,6 +11,7 @@ import {
   inspectProviderOperation,
   prepareProviderOperation,
   providerOperationPrepareAttempt,
+  settleProviderOperation,
   type OperationControlClient,
   type ProviderProxyOperationActivationDeps,
   type ProviderProxySetIdentity,
@@ -161,23 +162,33 @@ describe('provider proxy operation mutations', () => {
       'operation.cancel.v2': { state: 'released-never-started', prepareAttemptKey },
       'operation.stop.v1': { state: 'terminal-awaiting-journal-ack', committedThroughProviderSeq: 0 },
     });
-    const guardian = scriptedClient({
-      'guardian.operation-release.v1': { state: 'membership-released' },
-    });
+    const guardian = scriptedClient({});
     const activationDeps = deps(proxy.client, guardian.client);
 
     await expect(cancelProviderOperation(activationDeps, OPERATION, prepareAttemptKey, reservation)).resolves.toEqual({
       state: 'released-never-started',
       prepareAttemptKey,
     });
-    const control = buildProviderOperationControl(activationDeps, OPERATION, {
-      reservation,
-      jointContainmentReceipt: 'joint-1',
-    });
+    const control = buildProviderOperationControl(activationDeps, OPERATION);
     await control.stop('user_abort');
-    await control.releaseMembership?.();
 
     expect(proxy.calls.map((call) => call.method)).toEqual(['operation.cancel.v2', 'operation.stop.v1']);
-    expect(guardian.calls.map((call) => call.method)).toEqual(['guardian.operation-release.v1']);
+    expect(guardian.calls).toEqual([]);
+  });
+
+  it('sends cumulative settlement through the proxy with the final provider sequence', async () => {
+    const proxy = scriptedClient({
+      'operation.settle.v2': { state: 'released-after-terminal', settledThroughProviderSeq: 7 },
+    });
+    const guardian = scriptedClient({});
+
+    await expect(settleProviderOperation(deps(proxy.client, guardian.client), OPERATION, 7)).resolves.toEqual({
+      state: 'released-after-terminal',
+      settledThroughProviderSeq: 7,
+    });
+    expect(proxy.calls).toEqual([
+      { method: 'operation.settle.v2', params: { operation: OPERATION, finalProviderSeq: 7 } },
+    ]);
+    expect(guardian.calls).toEqual([]);
   });
 });

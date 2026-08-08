@@ -27,7 +27,6 @@ import { readProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta-store.j
 import { connectRoleControlWithRetry } from '#src/provider-proxy/role-spawn.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
-import type { OperationStopControl } from '#src/coordinator/services/operation-registry.js';
 import type { Database } from '#src/store/db.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
@@ -313,110 +312,6 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(() =>
       proxyOperationAdoptParamsSchema.parse({ ...(adopt?.params as object), committedThroughProviderSeq: -1 }),
     ).toThrow();
-  });
-
-  it('gives an adopted operation the membership release its activation never got to hand it', async () => {
-    const loc = locator();
-    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
-    const operations = [operationFor(loc)];
-    const calls: { method: string; params: unknown }[] = [];
-    const client = fakeClient(
-      redemptionResponses(loc, operations, {
-        'operation.adopt.v1': { state: 'executing', replayFromProviderSeq: 1 },
-        'guardian.operation-release.v1': { state: 'membership-released' },
-      }),
-      calls,
-    );
-    stubConnect(client);
-    mockedReadMeta.mockImplementation((_db: Database, jobId: string, operationId: string) =>
-      locator({ jobId, operationId, committedThroughProviderSeq: 5 }),
-    );
-
-    let adopted: OperationStopControl | undefined;
-    let adoptedMeta: ProviderOperationRuntimeMeta | undefined;
-    await attemptProviderProxySetInheritance(
-      loc,
-      unusedDb,
-      {
-        runtime,
-        coordinatorIdentity: COORDINATOR_IDENTITY,
-        operationRegistry: {
-          adopt: (meta, control) => {
-            adoptedMeta = meta;
-            adopted = control;
-          },
-          operationsFor: () => [],
-          providerRootsFor: () => [],
-        },
-      },
-      neverAborts,
-    );
-
-    if (adopted === undefined) throw new Error('adoption did not register a control');
-    // The successor never saw the reply that minted these values, so the durable row is the only place it
-    // could get them — which is the whole reason an adopted operation can release at all.
-    await adopted.releaseMembership?.();
-    const release = calls.filter((c) => c.method === 'guardian.operation-release.v1');
-    expect(release).toHaveLength(1);
-    expect(release[0]?.params).toMatchObject({
-      operation: { jobId: operations[0]?.jobId, operationId: operations[0]?.operationId },
-      reservation: adoptedMeta?.reservation,
-      jointContainmentReceipt: adoptedMeta?.jointContainmentReceipt,
-    });
-  });
-
-  it('confirms an adopted membership release when its first reply was dropped', async () => {
-    const loc = locator();
-    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
-    const operations = [operationFor(loc)];
-    const calls: { method: string; params: unknown }[] = [];
-    let membershipStaged = true;
-    let releaseCalls = 0;
-    const client = fakeClient(
-      redemptionResponses(loc, operations, {
-        'operation.adopt.v1': { state: 'executing', replayFromProviderSeq: 1 },
-        'guardian.operation-release.v1': () => {
-          releaseCalls += 1;
-          if (releaseCalls === 1) {
-            membershipStaged = false;
-            throw Object.assign(new Error('guardian release reply dropped'), { code: 'control_call_failed' });
-          }
-          throw Object.assign(new Error('membership is already absent'), {
-            code: 'control_call_failed',
-            protocolCode: 'unauthorized_control',
-          });
-        },
-      }),
-      calls,
-    );
-    stubConnect(client);
-    mockedReadMeta.mockImplementation((_db: Database, jobId: string, operationId: string) =>
-      locator({ jobId, operationId, committedThroughProviderSeq: 5 }),
-    );
-
-    let adopted: OperationStopControl | undefined;
-    await attemptProviderProxySetInheritance(
-      loc,
-      unusedDb,
-      {
-        runtime,
-        coordinatorIdentity: COORDINATOR_IDENTITY,
-        operationRegistry: {
-          adopt: (_meta, control) => {
-            adopted = control;
-          },
-          operationsFor: () => [],
-          providerRootsFor: () => [],
-        },
-      },
-      neverAborts,
-    );
-
-    if (adopted === undefined) throw new Error('adoption did not register a control');
-    await expect(adopted.releaseMembership?.()).rejects.toThrow(/reply dropped/u);
-    await expect(adopted.releaseMembership?.()).resolves.toBeUndefined();
-    expect(releaseCalls).toBe(2);
-    expect(membershipStaged).toBe(false);
   });
 
   it('redeems guardian, then reaper with the guardian’s own receipt, then proxy, adopting every named operation in order', async () => {

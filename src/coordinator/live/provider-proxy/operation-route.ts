@@ -6,6 +6,7 @@ import {
   cancelProviderOperation,
   inspectProviderOperation,
   prepareProviderOperation,
+  settleProviderOperation,
   type ActivateProviderOperationResult,
   type AuthorizeProviderOperationResult,
   type CancelProviderOperationResult,
@@ -14,6 +15,7 @@ import {
   type PrepareProviderOperationResult,
   type ProviderProxyOperationActivationDeps,
   type ProviderProxySetIdentity,
+  type SettleProviderOperationResult,
 } from '../../services/provider-proxy-operation-activation.js';
 import type { OperationStopControl } from '../../services/operation-registry.js';
 import type { ProviderProxySetAuthority } from './authority.js';
@@ -45,10 +47,8 @@ export interface DurableProviderProxyOperationAuthority extends ProviderProxyOpe
     prepareAttemptKey: string,
     reservation: string,
   ): Promise<CancelProviderOperationResult>;
-  buildOperationControl(
-    operation: OperationIdentity,
-    evidence: Readonly<{ reservation: string; jointContainmentReceipt: string }>,
-  ): OperationStopControl;
+  settleOperation(operation: OperationIdentity, finalProviderSeq: number): Promise<SettleProviderOperationResult>;
+  buildOperationControl(operation: OperationIdentity): OperationStopControl;
 }
 
 type ProviderProxyControlEstablishedListener = (authority: DurableProviderProxyOperationAuthority) => void;
@@ -76,6 +76,7 @@ export function isProviderProxyOperationAuthority(
     typeof candidate.authorizeOperation === 'function' &&
     typeof candidate.activatePreparedOperation === 'function' &&
     typeof candidate.cancelOperation === 'function' &&
+    typeof candidate.settleOperation === 'function' &&
     typeof candidate.buildOperationControl === 'function'
   );
 }
@@ -103,6 +104,8 @@ export function createProviderProxyOperationAuthority(deps: {
     activatePreparedOperation: (operation, evidence) => activateProviderOperation(activationDeps, operation, evidence),
     cancelOperation: (operation, prepareAttemptKey, reservation) =>
       cancelProviderOperation(activationDeps, operation, prepareAttemptKey, reservation),
-    buildOperationControl: (operation, evidence) => buildProviderOperationControl(activationDeps, operation, evidence),
+    settleOperation: (operation, finalProviderSeq) =>
+      settleProviderOperation(activationDeps, operation, finalProviderSeq),
+    buildOperationControl: (operation) => buildProviderOperationControl(activationDeps, operation),
   };
 }

@@ -25,8 +25,6 @@ import {
   type GuardianIdentity,
   type OperationIdentity,
   type ReaperIdentity,
-  guardianOperationReleaseParamsSchema,
-  guardianOperationReleaseResultSchema,
   reaperHandoffRotateParamsSchema,
 } from '../../provider-proxy/protocol.js';
 import type { ControlClient, ProviderEventHandler } from '../../provider-proxy/control-client.js';
@@ -166,66 +164,13 @@ function capsuleMatchesLocator(
   );
 }
 
-function protocolCode(error: unknown): string | undefined {
-  if (typeof error !== 'object' || error === null) return undefined;
-  const value = (error as { protocolCode?: unknown }).protocolCode;
-  return typeof value === 'string' ? value : undefined;
-}
-
-function isAmbiguousControlOutcome(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const failure = error as { code?: unknown; protocolCode?: unknown };
-  return (
-    (failure.code === 'control_call_failed' || failure.code === 'control_client_closed') &&
-    failure.protocolCode === undefined
-  );
-}
-
-/** The adopted operation's own `operation.stop.v1` and `guardian.operation-release.v1` capabilities, bound to
- *  the exact connections and operation this adoption used — the same contract
- *  `provider-proxy-operation-activation.ts`'s `buildOperationControl` gives a freshly activated operation,
- *  restated here rather than imported: that module's own dependency shape (a full activation `db`/`setIdentity`)
- *  does not fit an adoption, which has neither.
- *
- *  An adopted operation needs the release capability for the same reason a freshly activated one does. The
- *  guardian's staged membership is what its teardown set is checked against, and it outlives the coordinator
- *  that staged it — so a successor that settles an inherited operation without releasing would leave the
- *  predecessor's membership behind, against a proxy set this coordinator now owns. The two correlation values
- *  come out of the durable row rather than from anything this process minted, which is the only place a
- *  successor could get them: it never saw the reply that created them. */
-function buildAdoptedOperationControl(
-  proxyClient: ControlClient,
-  guardianClient: ControlClient,
-  operation: OperationIdentity,
-  meta: ProviderOperationRuntimeMeta,
-): OperationStopControl {
-  let releaseState: 'ready' | 'unknown' | 'released' = 'ready';
+/** An adopted operation keeps only the live stop capability; durable settlement reconnects by locator. */
+function buildAdoptedOperationControl(proxyClient: ControlClient, operation: OperationIdentity): OperationStopControl {
   return {
     async stop(cause) {
       const params = proxyOperationStopParamsSchema.parse({ operation, cause });
       const raw = await proxyClient.call('operation.stop.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS);
       proxyOperationStopResultSchema.parse(raw);
-    },
-    async releaseMembership() {
-      if (releaseState === 'released') return;
-      const retryingUnknown = releaseState === 'unknown';
-      try {
-        const params = guardianOperationReleaseParamsSchema.parse({
-          operation,
-          reservation: meta.reservation,
-          jointContainmentReceipt: meta.jointContainmentReceipt,
-        });
-        const raw = await guardianClient.call('guardian.operation-release.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS);
-        guardianOperationReleaseResultSchema.parse(raw);
-        releaseState = 'released';
-      } catch (error: unknown) {
-        if (retryingUnknown && protocolCode(error) === 'unauthorized_control') {
-          releaseState = 'released';
-          return;
-        }
-        releaseState = isAmbiguousControlOutcome(error) ? 'unknown' : 'ready';
-        throw error;
-      }
     },
   };
 }
@@ -238,7 +183,6 @@ function buildAdoptedOperationControl(
  */
 async function adoptRedeemedOperations(
   proxyClient: ControlClient,
-  guardianClient: ControlClient,
   operations: readonly OperationIdentity[],
   db: Database,
   operationRegistry: Pick<LocalOperationRegistry, 'adopt'>,
@@ -260,7 +204,7 @@ async function adoptRedeemedOperations(
     } catch {
       continue;
     }
-    operationRegistry.adopt(meta, buildAdoptedOperationControl(proxyClient, guardianClient, operation, meta), () => {});
+    operationRegistry.adopt(meta, buildAdoptedOperationControl(proxyClient, operation), () => {});
     adoptedJobIds.add(operation.jobId);
   }
   return adoptedJobIds;
@@ -427,7 +371,6 @@ async function redeem(
 
     const adoptedJobIds = await adoptRedeemedOperations(
       proxySession.client,
-      guardianSession.client,
       proxySession.opened.operations,
       db,
       deps.operationRegistry,

@@ -12,11 +12,6 @@ import {
   type ProviderEventEffectPort,
   type ProviderOperationEventIdentity,
 } from '../../jobs/provider-event.js';
-import {
-  deleteProviderOperationRuntimeMeta,
-  readProviderOperationRuntimeMeta,
-  writeProviderOperationRuntimeMeta,
-} from '../../jobs/runtime-meta-store.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { ProviderInterruptionCause, ProviderStopCause } from '../../providers/contract.js';
 import { isRecord } from '../../infra/json.js';
@@ -26,6 +21,10 @@ import type { SessionContinuityState } from '../../sessions/fault.js';
 import { appendProviderTerminalInCommit, appendSessionInterruptedTerminalInCommit } from './terminal-materializer.js';
 import type { ProviderEventHandler } from '../../provider-proxy/control-client.js';
 import type { ProviderEventRequest, ProviderEventResult } from '../../provider-proxy/protocol.js';
+import { compareAndSwapProviderOperation, readProviderOperation } from '../../store/provider-operation-journal.js';
+import { providerOperationRecordSchema, type ProviderOperationRecord } from '../../store/provider-operation-record.js';
+import { notifyProviderOperationSettlementPending } from './provider-operation-reconciler.js';
+import { writeProviderOperationCompatibilityMeta } from './provider-proxy-operation-activation.js';
 
 /**
  * The coordinator's real `ProviderEventEffectPort` (W2.3, W2.5): the store-backed implementation of the seam
@@ -82,8 +81,8 @@ export interface ProviderEventApplicationDeps {
    * Where a proxied operation's terminal (or interrupting suspension) reports back once it has durably
    * committed, so whatever registered the operation can let go of the in-process bookkeeping it still holds
    * for that job — its admission slot above all. `settled` receives the full identity, not just `jobId`,
-   * because the registry, the proxy ledger, and the `provider_operation.v1` meta row it releases are all
-   * keyed by the `(jobId, operationId)` pair. Composed in `coordinator/index.ts` beside where this whole
+   * because the registry, the proxy ledger, and the compatibility locator are all keyed by the
+   * `(jobId, operationId)` pair. Composed in `coordinator/index.ts` beside where this whole
    * handler is built, from the same `LocalOperationRegistry` that also answers `recordedStopCauseFor` above.
    */
   readonly operations: { settled(identity: ProviderOperationEventIdentity): void };
@@ -137,8 +136,26 @@ function elapsedDurationMs(deps: ProviderEventApplicationDeps, jobId: string): n
   return Math.max(0, deps.runtime.time.now() - startedAt);
 }
 
-function readMeta(db: Database, identity: ProviderOperationEventIdentity) {
-  return readProviderOperationRuntimeMeta(db, identity.jobId, identity.operationId);
+function readJournalRecord(db: Database, identity: ProviderOperationEventIdentity): ProviderOperationRecord | null {
+  return readProviderOperation(db, identity);
+}
+
+function requireJournalRecord(db: Database, identity: ProviderOperationEventIdentity): ProviderOperationRecord {
+  const record = readJournalRecord(db, identity);
+  if (record === null) {
+    throw new Error(`No committed provider-operation saga for '${identity.jobId}'/'${identity.operationId}'.`);
+  }
+  return record;
+}
+
+function updateJournalRecord(db: Database, expected: ProviderOperationRecord, next: ProviderOperationRecord): void {
+  const updated = compareAndSwapProviderOperation(db, expected, next);
+  if (updated.kind === 'conflict') {
+    throw new Error(
+      `Provider-operation saga changed while applying an event for '${expected.operation.jobId}'/` +
+        `'${expected.operation.operationId}'.`,
+    );
+  }
 }
 
 /**
@@ -216,28 +233,31 @@ export function createStoreProviderEventEffectPort(
     },
 
     verifyIdentity: async (tx, identity) => {
-      const meta = readMeta(tx.db, identity);
-      return (
-        meta !== null && meta.buildSetId === identity.buildSetId && meta.proxyInstanceId === identity.proxyInstanceId
-      );
+      const record = readJournalRecord(tx.db, identity);
+      return record?.phase === 'executing' || record?.phase === 'settlement-pending';
     },
 
     readWatermark: async (tx, identity) => {
-      const meta = readMeta(tx.db, identity);
-      if (meta === null) {
-        // `verifyIdentity` already refused an absent locator before this can be reached in the real
-        // `applyProviderEventAtSeq` sequence; a null read here means the locator vanished mid-transaction.
-        throw new Error(`No committed runtime meta for operation '${identity.jobId}'/'${identity.operationId}'.`);
+      const record = requireJournalRecord(tx.db, identity);
+      if (record.phase !== 'executing' && record.phase !== 'settlement-pending') {
+        throw new Error(`Provider operation '${identity.jobId}'/'${identity.operationId}' is not accepting events.`);
       }
-      return meta.committedThroughProviderSeq;
+      return record.committedThroughProviderSeq;
     },
 
     advanceWatermark: async (tx, identity, seq) => {
-      const meta = readMeta(tx.db, identity);
-      if (meta === null) {
-        throw new Error(`No committed runtime meta for operation '${identity.jobId}'/'${identity.operationId}'.`);
+      const record = requireJournalRecord(tx.db, identity);
+      if (record.phase !== 'executing') {
+        throw new Error(`Provider operation '${identity.jobId}'/'${identity.operationId}' is not executing.`);
       }
-      writeProviderOperationRuntimeMeta(tx.db, { ...meta, committedThroughProviderSeq: seq });
+      const next = providerOperationRecordSchema.parse({
+        ...record,
+        committedThroughProviderSeq: seq,
+        revision: record.revision + 1,
+      });
+      if (next.phase !== 'executing') throw new Error('Provider watermark transition failed validation.');
+      updateJournalRecord(tx.db, record, next);
+      writeProviderOperationCompatibilityMeta(tx.db, next);
     },
 
     appendProgress: async (tx, identity, _seq, body) => {
@@ -372,13 +392,24 @@ export function createStoreProviderEventEffectPort(
       tx.pendingInterruption = undefined;
     },
 
-    // Finding 5: the durable half of ending an operation, in the same transaction `advanceWatermark` just
-    // committed in but never before it — `advanceWatermark` reads and rewrites this exact row, so deleting it
-    // any earlier in the same transaction would make that read fail. `applyProviderEventAtSeq` is the only
-    // caller, and only for `terminal`/`suspended`; a crash before this transaction's `COMMIT` leaves the row
-    // (and the terminal) exactly as if neither had run.
-    releaseOperationLocator: async (tx, identity) => {
-      deleteProviderOperationRuntimeMeta(tx.db, identity.jobId, identity.operationId);
+    markSettlementPending: async (tx, identity, terminalProviderSeq) => {
+      const record = requireJournalRecord(tx.db, identity);
+      if (record.phase !== 'executing' || record.committedThroughProviderSeq !== terminalProviderSeq) {
+        throw new Error(
+          `Provider operation '${identity.jobId}'/'${identity.operationId}' did not commit its terminal watermark.`,
+        );
+      }
+      const next = providerOperationRecordSchema.parse({
+        ...record,
+        phase: 'settlement-pending',
+        terminalProviderSeq,
+        settlementIntent: 'release-after-terminal',
+        revision: record.revision + 1,
+        retryNotBeforeMs: deps.runtime.time.now(),
+        retryCount: 0,
+        lastError: null,
+      });
+      updateJournalRecord(tx.db, record, next);
     },
 
     appendSessionInterrupted: async (tx, _identity, _seq, trigger) => {
@@ -447,7 +478,10 @@ export function createProviderEventHandler(deps: ProviderEventApplicationDeps): 
     // terminal and releases the session claim — so keying on `terminal` alone leaks every aborted and every
     // interrupted proxied operation.
     const endedTheJob = event.kind === 'terminal' || event.kind === 'suspended';
-    if (result.kind === 'ack' && endedTheJob) deps.operations.settled(identity);
+    if (result.kind === 'ack' && endedTheJob) {
+      notifyProviderOperationSettlementPending(identity);
+      deps.operations.settled(identity);
+    }
     return result;
   };
 }

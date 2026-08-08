@@ -6,6 +6,7 @@ import type {
 } from '../../jobs/contracts/app-server-proxy-route.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { buildJobEventRefs } from '../../jobs/refs.js';
+import { deleteProviderOperationRuntimeMeta } from '../../jobs/runtime-meta-store.js';
 import type { ProxyPreparedAppServerOperation } from '../../provider-proxy/protocol.js';
 import {
   compareAndSwapProviderOperation,
@@ -108,6 +109,13 @@ export type BeginProviderOperationPublication = Readonly<{
   authority: DurableProviderProxyOperationAuthority;
 }>;
 
+type ProviderOperationSettlementListener = (identity: ProviderOperationIdentity) => void;
+const settlementListeners = new Set<ProviderOperationSettlementListener>();
+
+export function notifyProviderOperationSettlementPending(identity: ProviderOperationIdentity): void {
+  for (const listener of settlementListeners) listener(identity);
+}
+
 const TIMER_MIN_MS = 25;
 const TIMER_MAX_MS = 2_000;
 
@@ -148,10 +156,13 @@ export class ProviderOperationReconciler {
   readonly #deps: ProviderOperationReconcilerDeps;
   readonly #batchSize: number;
   readonly #publications = new Map<string, ActivePublication>();
+  readonly #settlements = new Map<string, ProviderOperationIdentity>();
   readonly #inFlight = new Map<string, Promise<void>>();
+  #unsubscribeSettlement: (() => void) | null = null;
   #timer: TimerHandle | null = null;
   #started = false;
   #polling = false;
+  #pollRequested = false;
 
   constructor(deps: ProviderOperationReconcilerDeps) {
     const batchSize = deps.batchSize ?? 32;
@@ -165,11 +176,16 @@ export class ProviderOperationReconciler {
   start(): void {
     if (this.#started) return;
     this.#started = true;
+    const listener = (identity: ProviderOperationIdentity): void => this.settlementPending(identity);
+    settlementListeners.add(listener);
+    this.#unsubscribeSettlement = () => settlementListeners.delete(listener);
     this.#schedule(TIMER_MIN_MS);
   }
 
   stop(): void {
     this.#started = false;
+    this.#unsubscribeSettlement?.();
+    this.#unsubscribeSettlement = null;
     if (this.#timer !== null) {
       this.#deps.time.clearTimeout(this.#timer);
       this.#timer = null;
@@ -211,7 +227,16 @@ export class ProviderOperationReconciler {
     });
   }
 
+  settlementPending(identity: ProviderOperationIdentity): void {
+    this.#settlements.set(operationKey(identity), identity);
+    this.wake();
+  }
+
   wake(): void {
+    if (this.#polling) {
+      this.#pollRequested = true;
+      return;
+    }
     void this.#poll();
   }
 
@@ -222,7 +247,10 @@ export class ProviderOperationReconciler {
     const key = operationKey(record.operation);
     const existing = this.#inFlight.get(key);
     if (existing !== undefined) return existing;
-    const running = this.#drive(record, preferredAuthority).finally(() => this.#inFlight.delete(key));
+    const running = this.#drive(record, preferredAuthority).finally(() => {
+      this.#inFlight.delete(key);
+      if (record.phase !== 'settlement-pending' && this.#settlements.has(key)) this.wake();
+    });
     this.#inFlight.set(key, running);
     return running;
   }
@@ -238,7 +266,7 @@ export class ProviderOperationReconciler {
         : this.#deps.authorityFor(initial);
 
     for (let transitionCount = 0; transitionCount < 8 && record !== null; transitionCount += 1) {
-      if (record.phase === 'executing' || record.phase === 'settlement-pending') return;
+      if (record.phase === 'executing') return;
       authority = authority !== null && sameAuthority(record, authority) ? authority : this.#deps.authorityFor(record);
       if (authority === null) {
         await this.#recordRetry(record, new Error('No live control authority is available for this proxy set.'));
@@ -263,6 +291,10 @@ export class ProviderOperationReconciler {
       }
       if (record.phase === 'activation-resolution-pending') {
         record = await this.#driveActivationResolution(record, authority);
+        continue;
+      }
+      if (record.phase === 'settlement-pending') {
+        record = await this.#driveSettlement(record, authority);
         continue;
       }
     }
@@ -505,6 +537,30 @@ export class ProviderOperationReconciler {
     }
   }
 
+  async #driveSettlement(
+    record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>,
+    authority: DurableProviderProxyOperationAuthority,
+  ): Promise<ProviderOperationRecord | null> {
+    try {
+      const released = await authority.settleOperation(record.operation, record.terminalProviderSeq);
+      const verdict = providerOperationTerminationVerdict(record, {
+        kind: 'released-after-terminal',
+        settledThroughProviderSeq: released.settledThroughProviderSeq,
+      });
+      if (verdict.kind !== 'released-after-terminal') {
+        await this.#recordRetry(record, new Error('Settlement acknowledgement did not cover the terminal watermark.'));
+        return null;
+      }
+      const deleted = this.#deleteSettledOperation(record);
+      if (deleted.kind === 'conflict' && deleted.current !== null) return deleted.current;
+      this.#settlements.delete(operationKey(record.operation));
+      return null;
+    } catch (error: unknown) {
+      await this.#recordRetry(record, error);
+      return null;
+    }
+  }
+
   async #commitExecuting(
     record: Extract<ProviderOperationRecord, { phase: 'proxy-activation-pending' | 'activation-resolution-pending' }>,
     activationAck: ProviderOperationActivationAck,
@@ -564,10 +620,7 @@ export class ProviderOperationReconciler {
     }
 
     const meta = providerOperationRuntimeMeta(next);
-    const control = authority.buildOperationControl(record.operation, {
-      reservation: next.reservation,
-      jointContainmentReceipt: next.jointContainmentReceipt,
-    });
+    const control = authority.buildOperationControl(record.operation);
     this.#deps.registry.activate(meta, control, publication.release);
     this.#complete(record.operation, { kind: 'remote-executing' });
   }
@@ -576,6 +629,31 @@ export class ProviderOperationReconciler {
     const result = compareAndSwapProviderOperation(this.#deps.getProgressStore().getDb(), expected, next);
     if (result.kind === 'updated') return result.record;
     return result.current;
+  }
+
+  #deleteSettledOperation(
+    record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>,
+  ): ReturnType<typeof deleteProviderOperation> {
+    const db = this.#deps.getProgressStore().getDb();
+    const ownsTransaction = !db.isTransaction;
+    if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
+    try {
+      const deleted = deleteProviderOperation(db, record);
+      if (deleted.kind === 'deleted' || deleted.current === null) {
+        deleteProviderOperationRuntimeMeta(db, record.operation.jobId, record.operation.operationId);
+      }
+      if (ownsTransaction) db.exec('COMMIT');
+      return deleted;
+    } catch (error: unknown) {
+      if (ownsTransaction) {
+        try {
+          db.exec('ROLLBACK');
+        } catch {
+          // Preserve the deletion failure that determines whether reconciliation retries.
+        }
+      }
+      throw error;
+    }
   }
 
   async #recordRetry(record: ProviderOperationRecord, error: unknown): Promise<void> {
@@ -604,7 +682,10 @@ export class ProviderOperationReconciler {
   }
 
   async #poll(preferredAuthority?: DurableProviderProxyOperationAuthority): Promise<void> {
-    if (this.#polling) return;
+    if (this.#polling) {
+      this.#pollRequested = true;
+      return;
+    }
     this.#polling = true;
     try {
       const progressStore = this.#deps.getProgressStore();
@@ -614,11 +695,27 @@ export class ProviderOperationReconciler {
         if (preferredAuthority !== undefined && !sameAuthority(record, preferredAuthority)) continue;
         await this.reconcile(record, preferredAuthority);
       }
+      for (const [key, identity] of this.#settlements) {
+        const record = readProviderOperation(progressStore.getDb(), identity);
+        if (record === null) {
+          this.#settlements.delete(key);
+          continue;
+        }
+        if (record.phase !== 'settlement-pending' || record.retryNotBeforeMs > this.#deps.time.now()) continue;
+        if (preferredAuthority !== undefined && !sameAuthority(record, preferredAuthority)) continue;
+        await this.reconcile(record, preferredAuthority);
+      }
     } catch (error: unknown) {
       this.#deps.onError?.(`Provider operation reconciliation failed: ${providerOperationErrorReason(error)}`);
     } finally {
       this.#polling = false;
-      if (this.#started) this.#schedule(TIMER_MAX_MS);
+      const pollRequested = this.#pollRequested;
+      this.#pollRequested = false;
+      if (pollRequested) {
+        void this.#poll();
+      } else if (this.#started) {
+        this.#schedule(TIMER_MAX_MS);
+      }
     }
   }
 
@@ -628,6 +725,16 @@ export class ProviderOperationReconciler {
       if (publication.operation.proxyInstanceId !== authority.proxyInstanceId) continue;
       const record = readProviderOperation(db, publication.operation);
       if (record !== null && sameAuthority(record, authority)) await this.reconcile(record, authority);
+    }
+    for (const [key, identity] of this.#settlements) {
+      const record = readProviderOperation(db, identity);
+      if (record === null) {
+        this.#settlements.delete(key);
+        continue;
+      }
+      if (record.phase === 'settlement-pending' && sameAuthority(record, authority)) {
+        await this.reconcile(record, authority);
+      }
     }
   }
 

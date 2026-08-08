@@ -15,6 +15,8 @@ import {
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
+import { compareAndSwapProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
+import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
@@ -115,6 +117,7 @@ async function startProxy(
   const started: Array<Started & { prepared: ProxyPreparedAppServerOperation }> = [];
   const stopped: Array<Started & { cause: string }> = [];
   const released: Started[] = [];
+  const releasedMemberships: Started[] = [];
   let startAttempts = 0;
   const host: SemanticOperationHost = {
     // Recording `prepared` (not just `key`) is what exposes a host that starts with the wrong payload: the
@@ -169,7 +172,10 @@ async function startProxy(
         }
         return Promise.resolve();
       },
-      releaseMembership: () => Promise.resolve(),
+      releaseMembership: ({ key }) => {
+        releasedMemberships.push(key);
+        return Promise.resolve();
+      },
     },
   });
   await proxy.listen();
@@ -221,6 +227,7 @@ async function startProxy(
     started,
     stopped,
     released,
+    releasedMemberships,
     startAttempts: () => startAttempts,
     stageAttempts: () => stageAttempts,
     advanceWithHeartbeat,
@@ -333,20 +340,24 @@ async function launchThroughRoute(
     proxyProcessGroupId: set.identity.processGroupId,
     canonicalEndpoint: set.endpoint,
   } as const;
-  const authority = createProviderProxyOperationAuthority({
-    base: {
-      proxyInstanceId: set.shared.proxyInstanceId,
-      snapshotOperations: async () => [],
-      installHandoffGrant: async () => undefined,
-      stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
-      stopHeartbeats: () => undefined,
-      initiateControlClose: async () => undefined,
-    },
-    setIdentity,
-    proxyClient,
-    guardianClient,
-    mutationRpcTimeoutMs: 5_000,
-  });
+  const base = {
+    proxyInstanceId: set.shared.proxyInstanceId,
+    snapshotOperations: async () => [],
+    installHandoffGrant: async () => undefined,
+    stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
+    stopHeartbeats: () => undefined,
+    initiateControlClose: async () => undefined,
+  } as const;
+  const authorityForClient = (client: { call(method: string, params: unknown, timeoutMs: number): Promise<unknown> }) =>
+    createProviderProxyOperationAuthority({
+      base,
+      setIdentity,
+      proxyClient: client,
+      guardianClient,
+      mutationRpcTimeoutMs: 5_000,
+    });
+  const authority = authorityForClient(proxyClient);
+  let activeAuthority = authority;
   const registry = new LocalOperationRegistry();
   const runtimeStarted: unknown[] = [];
   const commit: JobProgressStore['commit'] = (callback) => {
@@ -370,7 +381,7 @@ async function launchThroughRoute(
   const time = createRealTimePort();
   const reconciler = new ProviderOperationReconciler({
     getProgressStore: () => ({ getDb: () => db, commit, readStatus: () => null }),
-    authorityFor: () => authority,
+    authorityFor: () => activeAuthority,
     registry,
     backendNamespace: 'tests',
     time,
@@ -431,6 +442,13 @@ async function launchThroughRoute(
     placement,
     placementPromise,
     registry,
+    db,
+    reconciler,
+    authority,
+    replaceAuthority: (client: { call(method: string, params: unknown, timeoutMs: number): Promise<unknown> }) => {
+      activeAuthority = authorityForClient(client);
+      return activeAuthority;
+    },
     runtimeStarted,
   };
 }
@@ -460,14 +478,11 @@ async function activate(set: ProxyUnderTest, operation: unknown, reserved: Recor
   );
 }
 
-async function installGrant(set: ProxyUnderTest, operationIds: readonly string[]): Promise<Record<string, unknown>> {
+async function installGrantForOperations(
+  set: ProxyUnderTest,
+  operations: readonly ReturnType<ProxyUnderTest['operationFor']>[],
+): Promise<Record<string, unknown>> {
   const grantId = randomUUID();
-  const operations = [...operationIds].sort().map((operationId) => ({
-    jobId: randomUUID(),
-    operationId,
-    proxyInstanceId: set.shared.proxyInstanceId,
-    buildSetId: set.shared.buildSetId,
-  }));
   const set_ = {
     grantId,
     generation: set.shared.generation,
@@ -488,6 +503,16 @@ async function installGrant(set: ProxyUnderTest, operationIds: readonly string[]
   // A redeemer never names the timeout or the operation set: both are bound where the grant is installed, so
   // the redeem request is the set tuple plus the credential and nothing else.
   return { ...set_, secret: GRANT_SECRET, successor: set.coordinator };
+}
+
+async function installGrant(set: ProxyUnderTest, operationIds: readonly string[]): Promise<Record<string, unknown>> {
+  const operations = [...operationIds].sort().map((operationId) => ({
+    jobId: randomUUID(),
+    operationId: operationId as ReturnType<typeof randomUUID>,
+    proxyInstanceId: set.shared.proxyInstanceId,
+    buildSetId: set.shared.buildSetId,
+  }));
+  return installGrantForOperations(set, operations);
 }
 
 describe('provider-proxy operation lifecycle', () => {
@@ -527,6 +552,59 @@ describe('provider-proxy operation lifecycle', () => {
     expect(launched.activationCalls).toBe(2);
     expect(set.started).toEqual([{ jobId: launched.jobId, operationId: launched.operationId, prepared: PREPARED }]);
     expect(launched.registry.stateForJob(launched.jobId)).toBe('activated');
+  });
+
+  it('reconnects settlement after the activation-time control closed and releases ledger plus membership', async () => {
+    const set = await startProxy();
+    const launched = await launchThroughRoute(set);
+    const operation = {
+      jobId: launched.jobId,
+      operationId: launched.operationId,
+      proxyInstanceId: set.shared.proxyInstanceId,
+      buildSetId: set.shared.buildSetId,
+    };
+    const grant = await installGrantForOperations(set, [operation]);
+    await set.control.call('operation.stop.v1', { operation, cause: 'signal_abort' }, 5_000);
+    await vi.waitFor(() => expect(set.proxy.ledger().get(operation)?.state).toBe('terminal-awaiting-settlement'));
+
+    set.control.close();
+    set.advanceSilently(5_001);
+    const executing = readProviderOperation(launched.db, operation);
+    if (executing?.phase !== 'executing') throw new Error('expected executing journal row');
+    const settlement = providerOperationRecordSchema.parse({
+      ...executing,
+      phase: 'settlement-pending',
+      committedThroughProviderSeq: 0,
+      terminalProviderSeq: 0,
+      settlementIntent: 'release-after-terminal',
+      revision: executing.revision + 1,
+      retryNotBeforeMs: Date.now(),
+    });
+    expect(compareAndSwapProviderOperation(launched.db, executing, settlement).kind).toBe('updated');
+
+    launched.reconciler.settlementPending(operation);
+    await vi.waitFor(() => expect(readProviderOperation(launched.db, operation)?.retryCount).toBeGreaterThan(0));
+    expect(readProviderOperation(launched.db, operation)?.phase).toBe('settlement-pending');
+    expect(set.proxy.ledger().get(operation)).not.toBeNull();
+    expect(set.releasedMemberships).toEqual([]);
+
+    const successor = await connectControlClient(set.endpoint, timer, 5_000);
+    cleanups.push(() => successor.close());
+    const redeemed = (await successor.call('handoff.redeem.v1', grant, 5_000)) as {
+      controlEpoch: number;
+      heartbeatChallenge: string;
+    };
+    await successor.call(
+      'control.heartbeat.v1',
+      { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
+      5_000,
+    );
+    const successorAuthority = launched.replaceAuthority(successor);
+    launched.reconciler.onControlEstablished(successorAuthority);
+
+    await vi.waitFor(() => expect(readProviderOperation(launched.db, operation)).toBeNull());
+    expect(set.proxy.ledger().get(operation)).toBeNull();
+    expect(set.releasedMemberships).toEqual([{ jobId: operation.jobId, operationId: operation.operationId }]);
   });
 
   it('does not fall back locally when both activation attempts lose their replies', async () => {

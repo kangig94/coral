@@ -17,23 +17,8 @@ import type { ProviderStopCause } from '../../providers/contract.js';
  * rule).
  */
 
-/**
- * The live capabilities an entry needs beyond its durable identity: send `operation.stop.v1` for exactly this
- * operation against the exact proxy connection that owns it, and — once its terminal has durably committed —
- * release its guardian-staged membership. Built after the reconciler commits execution
- * (`provider-proxy-operation-activation.ts`), which already holds the `proxyClient`/`guardianClient` and
- * `mutationRpcTimeoutMs` this needs — restated here as a shape rather than imported, the same reason
- * `provider-proxy-operation-activation.ts`'s own `OperationControlClient` exists.
- */
 export interface OperationStopControl {
   stop(cause: ProviderStopCause): Promise<void>;
-  /**
-   * `guardian.operation-release.v1` for exactly this operation, bound at activation to the same
-   * reservation/receipt tuple `guardian.operation-activate.v1` committed. `settled()` retains this capability
-   * until the guardian confirms that the membership is absent, because a transport failure cannot say whether
-   * the first release reached the guardian.
-   */
-  releaseMembership?(): Promise<void>;
 }
 
 interface RegistryEntry {
@@ -45,19 +30,8 @@ interface RegistryEntry {
   stopCause: ProviderStopCause | null;
 }
 
-interface PendingMembershipRelease {
-  readonly identity: ProviderOperationEventIdentity;
-  readonly release: () => Promise<void>;
-}
-
 function registryKey(jobId: string, operationId: string): string {
   return `${jobId}:${operationId}`;
-}
-
-function canRetryMembershipRelease(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const failure = error as { code?: unknown; protocolCode?: unknown };
-  return failure.code === 'control_call_failed' && failure.protocolCode === undefined;
 }
 
 /**
@@ -73,7 +47,6 @@ function canRetryMembershipRelease(error: unknown): boolean {
  */
 export class LocalOperationRegistry {
   private readonly entries = new Map<string, RegistryEntry>();
-  private readonly pendingMembershipReleases = new Map<string, PendingMembershipRelease>();
   // A job carries at most one live operation at a time, so a job id alone finds "whichever operation is
   // currently live for it" — the shape `stop()` needs, since the abort registry only ever knows a job id
   // (registration happens in `activateCommittedProviderLaunch`, before an operation id even exists — see
@@ -128,25 +101,10 @@ export class LocalOperationRegistry {
     this.register(meta, control, release, 'adopted');
   }
 
-  private async releaseMembershipUntilConfirmed(key: string, pending: PendingMembershipRelease): Promise<void> {
-    while (this.pendingMembershipReleases.get(key) === pending) {
-      try {
-        await pending.release();
-      } catch (error: unknown) {
-        backendLog.warn(
-          `guardian.operation-release.v1 failed for job '${pending.identity.jobId}'/'${pending.identity.operationId}': ${errorMessage(error)}`,
-        );
-        if (!canRetryMembershipRelease(error)) return;
-        continue;
-      }
-      if (this.pendingMembershipReleases.get(key) === pending) this.pendingMembershipReleases.delete(key);
-    }
-  }
-
   /**
-   * Ends this coordinator's live tracking of one operation and runs its local `release()` once. Guardian
-   * membership release remains separately owned here until its result is confirmed, so terminal application
-   * stays synchronous without discarding an ambiguous release.
+   * Ends this coordinator's live tracking of one operation and runs its local `release()` once. Remote and
+   * guardian release stay with the durable settlement reconciler, so this method retains no dead control
+   * client after the terminal commit.
    *
    * Idempotent: an identity this registry never activated, or already settled, is a silent no-op rather than
    * a fault, matching a replayed `provider.event.v1` terminal delivering the same settlement twice.
@@ -158,11 +116,6 @@ export class LocalOperationRegistry {
     this.entries.delete(key);
     if (this.liveJobIndex.get(identity.jobId) === key) this.liveJobIndex.delete(identity.jobId);
     entry.release();
-    const releaseMembership = entry.control.releaseMembership;
-    if (releaseMembership === undefined) return;
-    const pending = { identity: entry.identity, release: releaseMembership.bind(entry.control) };
-    this.pendingMembershipReleases.set(key, pending);
-    void this.releaseMembershipUntilConfirmed(key, pending);
   }
 
   /**

@@ -96,8 +96,8 @@ function createFakePort(options: FakePortOptions = {}): FakePort {
     releaseSessionClaim: async () => {
       record('releaseSessionClaim');
     },
-    releaseOperationLocator: async () => {
-      record('releaseOperationLocator');
+    markSettlementPending: async () => {
+      record('markSettlementPending');
     },
   };
 
@@ -212,15 +212,27 @@ describe('applyProviderEventAtSeq', () => {
       'appendJobTerminal:direct',
       'releaseSessionClaim',
       'advanceWatermark',
-      'releaseOperationLocator',
+      'markSettlementPending',
     ]);
     const releaseIndex = calls.indexOf('releaseSessionClaim');
     const advanceIndex = calls.indexOf('advanceWatermark');
     expect(releaseIndex).toBeGreaterThanOrEqual(0);
     expect(releaseIndex).toBeLessThan(advanceIndex);
-    // The locator release comes last: `advanceWatermark` still needs the row it deletes.
-    expect(advanceIndex).toBeLessThan(calls.indexOf('releaseOperationLocator'));
+    expect(advanceIndex).toBeLessThan(calls.indexOf('markSettlementPending'));
     expect(watermark()).toBe(1);
+  });
+
+  it('replays a lost terminal ACK from the settlement watermark without applying terminal effects twice', async () => {
+    const { port, calls } = createFakePort({ initialWatermark: 0 });
+
+    await applyProviderEventAtSeq(port, { identity: IDENTITY, seq: 1, event: TERMINAL_EVENT });
+    const firstCallCount = calls.length;
+    const replayed = await applyProviderEventAtSeq(port, { identity: IDENTITY, seq: 1, event: TERMINAL_EVENT });
+
+    expect(replayed).toEqual<ApplyProviderEventResult>({ kind: 'ack', committedThroughProviderSeq: 1 });
+    expect(calls.slice(firstCallCount)).toEqual(['verifyIdentity', 'readWatermark']);
+    expect(calls.filter((call) => call === 'appendJobTerminal:direct')).toHaveLength(1);
+    expect(calls.filter((call) => call === 'markSettlementPending')).toHaveLength(1);
   });
 
   it('leaves the watermark unmoved, emits no ACK, and releases no claim when the transaction throws', async () => {
@@ -304,7 +316,7 @@ describe('applyProviderEventAtSeq', () => {
         'appendJobTerminal:interrupted',
         'releaseSessionClaim',
         'advanceWatermark',
-        'releaseOperationLocator',
+        'markSettlementPending',
       ]);
     },
   );
@@ -327,17 +339,17 @@ describe('applyProviderEventAtSeq', () => {
         `appendJobTerminal:abort:${cause}`,
         'releaseSessionClaim',
         'advanceWatermark',
-        'releaseOperationLocator',
+        'markSettlementPending',
       ]);
       expect(calls.some((call) => call.startsWith('appendSessionInterrupted'))).toBe(false);
     },
   );
 
-  it('does not release the operation locator for a progress event that does not end the operation', async () => {
+  it('does not mark settlement pending for a progress event that leaves the operation running', async () => {
     const { port, calls } = createFakePort({ initialWatermark: 0 });
 
     await applyProviderEventAtSeq(port, { identity: IDENTITY, seq: 1, event: PROGRESS_EVENT });
 
-    expect(calls).not.toContain('releaseOperationLocator');
+    expect(calls).not.toContain('markSettlementPending');
   });
 });

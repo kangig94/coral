@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import type { AppServerProxyRouteRequest } from '#src/jobs/contracts/app-server-proxy-route.js';
+import { readProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import {
   ProviderOperationReconciler,
@@ -10,8 +11,8 @@ import {
 } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { readProviderOperation } from '#src/store/provider-operation-journal.js';
-import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
+import { compareAndSwapProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
+import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import {
   asJointActivationReceipt,
@@ -105,6 +106,7 @@ function createHarness(
     inspectOperation?: DurableProviderProxyOperationAuthority['inspectOperation'];
     authorizeOperation?: DurableProviderProxyOperationAuthority['authorizeOperation'];
     activatePreparedOperation?: DurableProviderProxyOperationAuthority['activatePreparedOperation'];
+    settleOperation?: DurableProviderProxyOperationAuthority['settleOperation'];
     failCommitOnce?: boolean;
   } = {},
 ) {
@@ -202,6 +204,12 @@ function createHarness(
       state: 'released-never-started',
       prepareAttemptKey,
     }),
+    settleOperation:
+      overrides.settleOperation ??
+      (async (_operation, finalProviderSeq) => ({
+        state: 'released-after-terminal',
+        settledThroughProviderSeq: finalProviderSeq,
+      })),
     buildOperationControl: () => ({ stop: async () => undefined }),
   };
   const registry = { activate: vi.fn() };
@@ -379,5 +387,60 @@ describe('ProviderOperationReconciler publication', () => {
     expect(placement).toBeUndefined();
     expect(harness.appended).toEqual([]);
     expect(harness.registry.activate).not.toHaveBeenCalled();
+  });
+
+  it('retains a settlement tombstone after a lost release reply and deletes it only after the replayed ACK', async () => {
+    let settleCalls = 0;
+    let remoteLedgerPresent = true;
+    let guardianMembershipPresent = true;
+    let replayedAlreadyReleased = false;
+    const harness = createHarness({
+      settleOperation: async (_operation, finalProviderSeq) => {
+        settleCalls += 1;
+        if (settleCalls === 1) {
+          remoteLedgerPresent = false;
+          guardianMembershipPresent = false;
+          throw Object.assign(new Error('settlement reply lost'), { code: 'control_call_failed' });
+        }
+        replayedAlreadyReleased = !remoteLedgerPresent && !guardianMembershipPresent;
+        return { state: 'released-after-terminal', settledThroughProviderSeq: finalProviderSeq };
+      },
+    });
+    await harness.begin();
+    const executing = readProviderOperation(harness.db, harness.record.operation);
+    if (executing?.phase !== 'executing') throw new Error('expected executing journal row');
+    const settlement = providerOperationRecordSchema.parse({
+      ...executing,
+      phase: 'settlement-pending',
+      committedThroughProviderSeq: 1,
+      terminalProviderSeq: 1,
+      settlementIntent: 'release-after-terminal',
+      revision: executing.revision + 1,
+      retryNotBeforeMs: 100,
+    });
+    expect(compareAndSwapProviderOperation(harness.db, executing, settlement).kind).toBe('updated');
+
+    harness.reconciler.settlementPending(settlement.operation);
+    await vi.waitFor(() => expect(settleCalls).toBe(1));
+    await vi.waitFor(() =>
+      expect(readProviderOperation(harness.db, settlement.operation)).toMatchObject({
+        phase: 'settlement-pending',
+        retryCount: 1,
+      }),
+    );
+
+    expect(remoteLedgerPresent).toBe(false);
+    expect(guardianMembershipPresent).toBe(false);
+    expect(
+      readProviderOperationRuntimeMeta(harness.db, settlement.operation.jobId, settlement.operation.operationId),
+    ).not.toBeNull();
+    harness.reconciler.onControlEstablished(harness.authority);
+    await vi.waitFor(() => expect(readProviderOperation(harness.db, settlement.operation)).toBeNull());
+
+    expect(settleCalls).toBe(2);
+    expect(replayedAlreadyReleased).toBe(true);
+    expect(
+      readProviderOperationRuntimeMeta(harness.db, settlement.operation.jobId, settlement.operation.operationId),
+    ).toBeNull();
   });
 });

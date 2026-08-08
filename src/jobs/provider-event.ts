@@ -92,8 +92,7 @@ export interface ProviderEventEffectPort<Tx> {
   readonly readWatermark: (tx: Tx, identity: ProviderOperationEventIdentity) => Promise<number>;
   /**
    * The last write that advances durable *progress* on this operation — every effect above it must already
-   * be durable in the same commit. `releaseOperationLocator` below is the one write allowed to follow it: it
-   * depends on this having already run, since it reads-then-rewrites the same locator row this releases.
+   * be durable in the same commit. A terminal transition follows it only after the final watermark is stored.
    */
   readonly advanceWatermark: (tx: Tx, identity: ProviderOperationEventIdentity, seq: number) => Promise<void>;
   readonly appendProgress: (
@@ -123,14 +122,12 @@ export interface ProviderEventEffectPort<Tx> {
   ) => Promise<void>;
   /** Releases the exact session claim this operation holds. Must run before `advanceWatermark` in the same transaction. */
   readonly releaseSessionClaim: (tx: Tx, identity: ProviderOperationEventIdentity) => Promise<void>;
-  /**
-   * Deletes this operation's durable `provider_operation.v1` locator row, in the same transaction as the
-   * terminal or interrupting-suspension effect that ends it — called only for those two event kinds, and only
-   * after `advanceWatermark`, which still needs the row to exist. A crash before this transaction commits
-   * leaves the row (and the terminal) exactly as if neither had run; a crash after leaves both durable
-   * together. Never called for `progress`/`continuity`/`artifact_handle`, which do not end the operation.
-   */
-  readonly releaseOperationLocator: (tx: Tx, identity: ProviderOperationEventIdentity) => Promise<void>;
+  /** Retains the identity because a lost settlement reply needs a stable replay target. */
+  readonly markSettlementPending: (
+    tx: Tx,
+    identity: ProviderOperationEventIdentity,
+    terminalProviderSeq: number,
+  ) => Promise<void>;
 }
 
 /**
@@ -200,10 +197,8 @@ export async function applyProviderEventAtSeq<Tx>(
 
       await applyEffect(port, tx, identity, seq, event);
       await port.advanceWatermark(tx, identity, seq);
-      // `terminal` and `suspended` both end this operation (`applyEffect`'s own cases above); every other
-      // kind leaves it running, with more events still to apply against the same locator.
       if (event.kind === 'terminal' || event.kind === 'suspended') {
-        await port.releaseOperationLocator(tx, identity);
+        await port.markSettlementPending(tx, identity, seq);
       }
       return { kind: 'ack', committedThroughProviderSeq: seq };
     });

@@ -82,22 +82,15 @@ export function writeProviderOperationRuntimeMeta(db: Database, meta: ProviderOp
   );
 }
 
-/**
- * W2.3's activation-expiry compensation: delete the exact matching locator before
- * `operation.cancel-pending.v1`/`guardian.operation-release.v1` — never the other order, and never a delete
- * keyed on anything looser than the exact `(jobId, operationId)` this reservation named. A key nothing wrote
- * is a no-op, matching `deleteDurableCliProcessRuntimeMeta`: compensation must be safe to run against a
- * locator that a racing durable-effect commit already released past.
- */
 export function deleteProviderOperationRuntimeMeta(db: Database, jobId: string, operationId: string): void {
   db.prepare<[string]>('DELETE FROM meta WHERE key = ?').run(providerOperationRuntimeMetaKey(jobId, operationId));
 }
 
 /**
  * Whether any `provider_operation.v1` row is committed for `jobId`, regardless of which operation id — the
- * durable signal that a job's `leaseState: 'acquired'` `hostRef` names a live provider proxy set rather than
- * a local `ProviderHostManager` entry. Recovery (`interruptAppServerJob`) reads this before treating a
- * recovered app-server job's `hostRef` as local: crash-recovery adoption of a still-live proxied operation is
+ * compatibility signal that a job's `leaseState: 'acquired'` `hostRef` names a provider proxy set that is
+ * still executing or awaiting confirmed release rather than a local `ProviderHostManager` entry. Recovery
+ * reads this before treating a recovered app-server job's `hostRef` as local: crash-recovery adoption is
  * W2.5 territory, not something a fresh coordinator generation with an empty registry can do, so this is only
  * ever used to *not* mistake one for a local host — never to adopt it.
  */
