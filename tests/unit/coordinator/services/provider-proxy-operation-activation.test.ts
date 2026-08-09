@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import type { OperationIdentity, ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
 import {
   activateProviderOperation,
+  attachProviderOperation,
   authorizeProviderOperation,
   buildProviderOperationControl,
   cancelProviderOperation,
@@ -169,6 +170,24 @@ describe('provider proxy operation mutations', () => {
         jointActivationReceipt: 'joint-activation-1',
       },
     });
+  });
+
+  it('strictly validates attachment before and after the wire call', async () => {
+    const proxy = scriptedClient({
+      'operation.attach.v1': { state: 'attached', replayFromProviderSeq: 0 },
+    });
+    const guardian = scriptedClient({});
+    const activationDeps = deps(proxy.client, guardian.client);
+
+    await expect(attachProviderOperation(activationDeps, OPERATION, 4)).rejects.toThrow();
+    await expect(attachProviderOperation(activationDeps, OPERATION, -1)).rejects.toThrow();
+
+    expect(proxy.calls).toEqual([
+      {
+        method: 'operation.attach.v1',
+        params: { operation: OPERATION, committedThroughProviderSeq: 4 },
+      },
+    ]);
   });
 
   it('uses fenced cancel v2 for prestart cleanup while retaining the executing stop capability', async () => {

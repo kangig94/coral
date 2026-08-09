@@ -6,6 +6,8 @@ import {
   guardianOperationActivateResultSchema,
   proxyOperationActivateParamsSchema,
   proxyOperationActivationOutcomeSchema,
+  proxyOperationAttachParamsSchema,
+  proxyOperationAttachResultSchema,
   proxyOperationCancelParamsSchema,
   proxyOperationCancelResultSchema,
   proxyOperationInspectParamsSchema,
@@ -66,6 +68,7 @@ export type AuthorizeProviderOperationResult = z.output<typeof guardianOperation
 export type CancelProviderOperationResult = z.output<typeof proxyOperationCancelResultSchema>;
 export type SettleProviderOperationResult = z.output<typeof proxyOperationSettleResultSchema>;
 export type ActivateProviderOperationResult = z.output<typeof proxyOperationActivationOutcomeSchema>;
+export type AttachProviderOperationResult = z.output<typeof proxyOperationAttachResultSchema>;
 
 async function callStrict<TResult>(
   client: OperationControlClient,
@@ -181,6 +184,21 @@ export async function activateProviderOperation(
     params,
     deps.mutationRpcTimeoutMs,
     proxyOperationActivationOutcomeSchema,
+  );
+}
+
+export async function attachProviderOperation(
+  deps: ProviderProxyOperationActivationDeps,
+  operation: OperationIdentity,
+  committedThroughProviderSeq: number,
+): Promise<AttachProviderOperationResult> {
+  const params = proxyOperationAttachParamsSchema.parse({ operation, committedThroughProviderSeq });
+  return callStrict(
+    deps.proxyClient,
+    'operation.attach.v1',
+    params,
+    deps.mutationRpcTimeoutMs,
+    proxyOperationAttachResultSchema,
   );
 }
 

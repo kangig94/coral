@@ -30,6 +30,8 @@ import {
   PROXY_STATUS_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
   proxyOperationActivateParamsSchema as activateParamsSchema,
+  proxyOperationAttachParamsSchema as attachParamsSchema,
+  proxyOperationAttachResultSchema as attachResultSchema,
   proxyOperationAdoptParamsSchema as adoptParamsSchema,
   proxyOperationPrepareParamsSchema as prepareParamsSchema,
   proxyOperationReservationParamsSchema as reservationParamsSchema,
@@ -258,6 +260,32 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const request = settleParamsSchema.parse(params);
           assertNamedOperation(request.operation);
           return supervisor.settle(request.operation, request.finalProviderSeq);
+        },
+      },
+    ],
+    [
+      'operation.attach.v1',
+      {
+        authority: 'active',
+        handle: async (params) => {
+          const request = attachParamsSchema.parse(params);
+          assertNamedOperation(request.operation);
+          const redemption = grants.redemption();
+          if (
+            redemption !== null &&
+            !redemption.grant.operations.some(
+              (operation) =>
+                operation.jobId === request.operation.jobId &&
+                operation.operationId === request.operation.operationId &&
+                operation.proxyInstanceId === request.operation.proxyInstanceId &&
+                operation.buildSetId === request.operation.buildSetId,
+            )
+          ) {
+            throw new ProxyControlProtocolError('unauthorized_control', 'That operation is outside the redeemed set.');
+          }
+          return attachResultSchema.parse(
+            await supervisor.attach(request.operation, request.committedThroughProviderSeq),
+          );
         },
       },
     ],

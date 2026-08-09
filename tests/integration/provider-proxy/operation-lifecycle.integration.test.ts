@@ -518,7 +518,7 @@ async function prepare(
 }
 
 async function activate(set: ProxyUnderTest, operation: unknown, reserved: Record<string, string>): Promise<unknown> {
-  return set.control.call(
+  const result = await set.control.call(
     'operation.activate.v1',
     {
       operation,
@@ -528,6 +528,8 @@ async function activate(set: ProxyUnderTest, operation: unknown, reserved: Recor
     },
     5_000,
   );
+  await set.control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
+  return result;
 }
 
 async function installGrantForOperations(

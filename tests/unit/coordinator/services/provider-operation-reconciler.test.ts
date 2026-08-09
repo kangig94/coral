@@ -16,6 +16,7 @@ import {
   readProviderOperation,
 } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
+import { proxyOperationAttachResultSchema } from '#src/provider-proxy/protocol.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import {
   asJointActivationReceipt,
@@ -104,6 +105,7 @@ function createHarness(
     inspectOperation?: DurableProviderProxyOperationAuthority['inspectOperation'];
     authorizeOperation?: DurableProviderProxyOperationAuthority['authorizeOperation'];
     activatePreparedOperation?: DurableProviderProxyOperationAuthority['activatePreparedOperation'];
+    attachOperation?: DurableProviderProxyOperationAuthority['attachOperation'];
     settleOperation?: DurableProviderProxyOperationAuthority['settleOperation'];
     cancelOperation?: DurableProviderProxyOperationAuthority['cancelOperation'];
     materializePrepare?: () => typeof PREPARED | Promise<typeof PREPARED>;
@@ -229,6 +231,12 @@ function createHarness(
         phasesBeforeMutation.push(readPhase());
         return activationAck;
       }),
+    attachOperation:
+      overrides.attachOperation ??
+      (async (_operation, committedThroughProviderSeq) => {
+        phasesBeforeMutation.push(readPhase());
+        return { state: 'attached', replayFromProviderSeq: committedThroughProviderSeq + 1 };
+      }),
     cancelOperation:
       overrides.cancelOperation ??
       (async (operation, prepareAttemptNumber, prepareAttemptKey) => ({
@@ -245,7 +253,7 @@ function createHarness(
       })),
     buildOperationControl: () => ({ stop: async () => undefined }),
   };
-  const registry = { activate: vi.fn() };
+  const registry = { activate: vi.fn(), adopt: vi.fn(), settled: vi.fn() };
   let now = 100;
   const reconciler = new ProviderOperationReconciler({
     getProgressStore: () => progressStore,
@@ -294,10 +302,109 @@ describe('ProviderOperationReconciler publication', () => {
       'prepare-pending',
       'guardian-activation-pending',
       'proxy-activation-pending',
+      'executing',
     ]);
     expect(readProviderOperation(harness.db, harness.record.operation)?.phase).toBe('executing');
     expect(harness.appended).toEqual([expect.objectContaining({ type: 'job.runtime.started' })]);
     expect(harness.registry.activate).toHaveBeenCalledOnce();
+  });
+
+  it('retries an executing attachment timeout at control establishment', async () => {
+    let attachCalls = 0;
+    const timeout = Object.assign(new Error('attach timed out'), { code: 'control_call_failed' });
+    const harness = createHarness({
+      attachOperation: async (_operation, committedThroughProviderSeq) => {
+        attachCalls += 1;
+        if (attachCalls === 1) throw timeout;
+        return { state: 'attached', replayFromProviderSeq: committedThroughProviderSeq + 1 };
+      },
+    });
+    const recovered = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, recovered);
+
+    await harness.reconciler.reconcileAtStartup(new AbortController().signal);
+
+    expect(readProviderOperation(harness.db, recovered.operation)).toMatchObject({
+      phase: 'executing',
+      retryCount: 1,
+    });
+    expect(harness.registry.adopt).not.toHaveBeenCalled();
+
+    harness.reconciler.onControlEstablished(harness.authority);
+
+    await vi.waitFor(() => expect(attachCalls).toBe(2));
+    expect(harness.registry.adopt).toHaveBeenCalledOnce();
+    expect(readProviderOperation(harness.db, recovered.operation)?.phase).toBe('executing');
+  });
+
+  it('retries a malformed attachment reply without treating it as absence', async () => {
+    let attachCalls = 0;
+    const harness = createHarness({
+      attachOperation: async (_operation, committedThroughProviderSeq) => {
+        attachCalls += 1;
+        if (attachCalls === 1) {
+          return proxyOperationAttachResultSchema.parse({ state: 'attached', replayFromProviderSeq: 0 });
+        }
+        return { state: 'attached', replayFromProviderSeq: committedThroughProviderSeq + 1 };
+      },
+    });
+    let placement: unknown;
+    const publication = harness.begin().then((result) => {
+      placement = result;
+      return result;
+    });
+    await vi.waitFor(() =>
+      expect(readProviderOperation(harness.db, harness.record.operation)).toMatchObject({
+        phase: 'executing',
+        retryCount: 1,
+      }),
+    );
+
+    expect(placement).toBeUndefined();
+    expect(harness.registry.activate).not.toHaveBeenCalled();
+    const retry = readProviderOperation(harness.db, harness.record.operation);
+    if (retry?.phase !== 'executing') throw new Error('expected retryable executing attachment');
+    await harness.reconciler.reconcile(retry, harness.authority);
+
+    await expect(publication).resolves.toEqual({ kind: 'remote-executing' });
+    expect(attachCalls).toBe(2);
+    expect(harness.registry.activate).toHaveBeenCalledOnce();
+  });
+
+  it('enters placement failure only for an exact typed operation-absent proof', async () => {
+    let attachCalls = 0;
+    const harness = createHarness({
+      attachOperation: async (operation) => {
+        attachCalls += 1;
+        return {
+          state: 'operation-absent',
+          operation: attachCalls === 1 ? { ...operation, operationId: 'wrong-operation' } : operation,
+        };
+      },
+    });
+    let placement: unknown;
+    const publication = harness.begin().then((result) => {
+      placement = result;
+      return result;
+    });
+    await vi.waitFor(() =>
+      expect(readProviderOperation(harness.db, harness.record.operation)).toMatchObject({
+        phase: 'executing',
+        retryCount: 1,
+      }),
+    );
+
+    expect(placement).toBeUndefined();
+    const retry = readProviderOperation(harness.db, harness.record.operation);
+    if (retry?.phase !== 'executing') throw new Error('expected retryable executing attachment');
+    await harness.reconciler.reconcile(retry, harness.authority);
+
+    await expect(publication).resolves.toEqual({
+      kind: 'failed',
+      reason: 'The provider proxy proved that the committed operation is absent.',
+    });
+    expect(readProviderOperation(harness.db, harness.record.operation)).toBeNull();
+    expect(harness.registry.activate).not.toHaveBeenCalled();
   });
 
   it('does not publish execution after two lost guardian activation replies', async () => {
@@ -423,7 +530,7 @@ describe('ProviderOperationReconciler publication', () => {
     const recovered = providerOperationRecord('proxy-activation-pending');
     insertProviderOperation(harness.db, recovered);
     const acquireAuthority = vi.fn(async () => null);
-    const registry = { activate: vi.fn() };
+    const registry = { activate: vi.fn(), adopt: vi.fn(), settled: vi.fn() };
     const reconciler = new ProviderOperationReconciler({
       getProgressStore: () => harness.progressStore,
       authorityFor: () => null,
@@ -595,7 +702,7 @@ describe('ProviderOperationReconciler publication', () => {
         },
       }),
     ]);
-    expect(harness.registry.activate).toHaveBeenCalledWith(expect.any(Object), expect.any(Object), {
+    expect(harness.registry.adopt).toHaveBeenCalledWith(expect.any(Object), expect.any(Object), {
       jobId: recovered.operation.jobId,
       pool: 'curate',
     });
@@ -785,7 +892,13 @@ function expectFaultInvariant(
 async function driveCurrentRecord(harness: ReturnType<typeof createHarness>): Promise<ProviderOperationRecord | null> {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const current = readProviderOperation(harness.db, harness.record.operation);
-    if (current === null || current.phase === 'executing') return current;
+    if (
+      current === null ||
+      (current.phase === 'executing' &&
+        (harness.registry.activate.mock.calls.length > 0 || harness.registry.adopt.mock.calls.length > 0))
+    ) {
+      return current;
+    }
     await harness.reconciler.reconcile(current, harness.authority);
   }
   return readProviderOperation(harness.db, harness.record.operation);

@@ -17,9 +17,6 @@ import {
   controlEpochSchema,
   heartbeatChallengeSchema,
   proxyIdentitySchema,
-  proxyOperationAdoptParamsSchema,
-  proxyOperationStopParamsSchema,
-  proxyOperationStopResultSchema,
   type CoordinatorIdentity,
   type GuardianIdentity,
   type OperationIdentity,
@@ -49,13 +46,12 @@ import {
 } from '../live/provider-proxy/operation-route.js';
 import type { ProviderProxySetAcquisitionIdentity } from '../live/provider-hosts/proxy-set-acquisition.js';
 import type { ProviderProxySetIdentity } from './provider-proxy-operation-activation.js';
-import type { LocalOperationRegistry, OperationStopControl } from './operation-registry.js';
+import type { LocalOperationRegistry } from './operation-registry.js';
 
 /**
  * The branch of proxy-set acquisition that redeems a predecessor's bequeathed set instead of spawning a new
  * one. `installHandoffGrant` (`provider-proxy/set-authority.ts`) is the write half — one grant across
- * guardian, reaper and proxy, plus a durable successor capsule; this file is the read half nothing else in the
- * tree has read before now.
+ * guardian, reaper and proxy, plus a durable successor capsule; this file is the read half.
  *
  * The capsule is addressable, never discovered: `providerHandoffCapsulePath` hashes `flavor`/`generation`
  * (this successor's own — a grant is build-bound) and `buildSetId`/`hostFingerprint`/`proxyInstanceId` (the
@@ -72,8 +68,8 @@ import type { LocalOperationRegistry, OperationStopControl } from './operation-r
  */
 
 /**
- * The one absolute budget one address's whole redemption attempt — guardian, then reaper, then proxy, then
- * adoption — may run before `createProviderProxySetInheritance` gives up on it, combined with the recovery
+ * The one absolute budget one address's whole redemption attempt — guardian, then reaper, then proxy — may run
+ * before `createProviderProxySetInheritance` gives up on it, combined with the recovery
  * walk's own cancellation via `AbortSignal.any` so either one ends the attempt. Three sequential
  * `establishRoleControl` calls each retry up to their own `ESTABLISH_CONTROL_READY_DEADLINE_MS` (10s), so a
  * legitimate attempt against three live-but-slow peers can spend close to three times that — the same
@@ -82,10 +78,6 @@ import type { LocalOperationRegistry, OperationStopControl } from './operation-r
  * attempts (redemption vs. a fresh spawn) that happen to share this shape, not one shared concept.
  */
 const INHERITANCE_REDEMPTION_DEADLINE_MS = 45_000;
-
-const adoptResultSchema = z
-  .object({ state: z.string().min(1), replayFromProviderSeq: z.number().int().positive().safe() })
-  .strict();
 
 export type ProviderProxySetLocator = Readonly<{
   operation: ProviderOperationIdentity;
@@ -128,7 +120,7 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
   /** This successor's own wire identity — `pid`/`processStartedAtSeconds` read fresh, matching
    *  `ensureProviderProxySet`'s own coordinator-identity construction. */
   coordinatorIdentity: CoordinatorIdentity;
-  /** Where executing operations are registered after adoption and where stop-and-reap reads live roots. */
+  /** Compatibility surface for live operation tracking and stop-and-reap root snapshots. */
   operationRegistry: Pick<LocalOperationRegistry, 'adopt' | 'operationsFor' | 'providerRootsFor'>;
   cleanupIdentityFor(jobId: string): ProviderOperationCleanupIdentity;
   /** Reads the journal afresh when this successor later bequeaths the set again. */
@@ -172,68 +164,24 @@ function capsuleMatchesLocator(
   );
 }
 
-/** An adopted operation keeps only the live stop capability; durable settlement reconnects by locator. */
-function buildAdoptedOperationControl(proxyClient: ControlClient, operation: OperationIdentity): OperationStopControl {
-  return {
-    async stop(cause) {
-      const params = proxyOperationStopParamsSchema.parse({ operation, cause });
-      const raw = await proxyClient.call('operation.stop.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS);
-      proxyOperationStopResultSchema.parse(raw);
-    },
-  };
-}
-
-/**
- * Re-establishes proxy ownership for every journal row in the redeemed grant. Only a row whose durable phase
- * is already `executing` enters the live registry; pending publication and cleanup stay under the reconciler.
- */
-async function adoptRedeemedOperations(
-  proxyClient: ControlClient,
-  operations: readonly OperationIdentity[],
-  db: Database,
-  operationRegistry: Pick<LocalOperationRegistry, 'adopt'>,
-  cleanupIdentityFor: (jobId: string) => ProviderOperationCleanupIdentity,
-): Promise<ReadonlySet<string>> {
-  const adoptedJobIds = new Set<string>();
+function executingJobsNamedByGrant(operations: readonly OperationIdentity[], db: Database): ReadonlySet<string> {
+  const executingJobIds = new Set<string>();
   for (const operation of operations) {
     const record = readProviderOperation(db, operation);
-    if (record === null) continue;
-    try {
-      const raw = await proxyClient.call(
-        'operation.adopt.v1',
-        proxyOperationAdoptParamsSchema.parse({
-          operation,
-          committedThroughProviderSeq:
-            record.phase === 'executing' || record.phase === 'settlement-pending'
-              ? record.committedThroughProviderSeq
-              : 0,
-        }),
-        PROXY_CONTROL_RPC_TIMEOUT_MS,
-      );
-      adoptResultSchema.parse(raw);
-    } catch {
-      continue;
-    }
-    if (record.phase !== 'executing') continue;
-    operationRegistry.adopt(
-      record,
-      buildAdoptedOperationControl(proxyClient, operation),
-      cleanupIdentityFor(operation.jobId),
-    );
-    adoptedJobIds.add(operation.jobId);
+    if (record?.phase === 'executing') executingJobIds.add(operation.jobId);
   }
-  return adoptedJobIds;
+  return executingJobIds;
 }
 
 /**
  * The real redemption sequence, throwing freely — `attemptProviderProxySetInheritance` below is the one
  * boundary that converts every failure here into `not-bequeathed`.
  *
- * `signal` is checked between roles and before adoption, not inside `establishRoleControl` itself: the
+ * `signal` is checked between roles and before attachment reconciliation, not inside `establishRoleControl` itself: the
  * connect-retry loop it drives (`connectRoleControlWithRetry`) has no signal awareness of its own, the same
  * granularity `acquireProviderProxySet` already accepts for ordinary acquisition (its own `deadlineSignal` is
  * only ever checked between cuts, never inside one). A dead peer still costs up to one role's own connect
- * budget; what this closes is starting the *next* role, or adopting, once the caller has already given up.
+ * budget; what this closes is starting the *next* role, or reconciling attachment, once the caller has already given up.
  */
 async function redeem(
   reference: ProviderProxySetLocator,
@@ -312,7 +260,7 @@ async function redeem(
     });
     signal.throwIfAborted();
 
-    // Proxy last: the one role whose control this successor actually needs to adopt operations and receive
+    // Proxy last: the one role whose control this successor needs to attach operations and receive
     // `provider.event.v1` on. `onProviderEvent` is wired at connect time here, exactly as ordinary acquisition
     // wires it onto a freshly opened proxy connection.
     const proxySession = await establishRoleControl(opened, timer, retry, {
@@ -385,13 +333,7 @@ async function redeem(
     ];
     signal.throwIfAborted();
 
-    const adoptedJobIds = await adoptRedeemedOperations(
-      proxySession.client,
-      proxySession.opened.operations,
-      db,
-      deps.operationRegistry,
-      deps.cleanupIdentityFor,
-    );
+    const adoptedJobIds = executingJobsNamedByGrant(proxySession.opened.operations, db);
 
     const guardianIdentity: GuardianIdentity = {
       guardianInstanceId: locator.guardian.instanceId,
@@ -485,7 +427,7 @@ async function redeem(
 /**
  * Reads the capsule addressed by `locator`'s own `buildSetId`/`hostFingerprint`/`proxyInstanceId` plus this
  * successor's own `generation`/`flavor`, and — only if it is present, matches, and every redemption step
- * accepts it — redeems the whole grant and adopts every operation it names. Never rejects: absent, stale,
+ * accepts it — redeems the whole grant and hands its executing rows to attachment reconciliation. Never rejects: absent, stale,
  * malformed, or wrong-identity all collapse to `{ kind: 'not-bequeathed' }`; pending saga callers retain
  * their rows, while running-job recovery may continue to carrier-detached handling.
  */

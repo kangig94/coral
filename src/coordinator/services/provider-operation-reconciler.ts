@@ -104,7 +104,7 @@ type ProviderOperationReconcilerDeps = Readonly<{
     record: ProviderOperationRecord,
     signal: AbortSignal,
   ) => Promise<DurableProviderProxyOperationAuthority | null>;
-  registry: Pick<LocalOperationRegistry, 'activate'>;
+  registry: Pick<LocalOperationRegistry, 'activate' | 'adopt' | 'settled'>;
   materializePrepare: (
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
   ) => Promise<ProxyPreparedAppServerOperation> | ProxyPreparedAppServerOperation;
@@ -151,6 +151,7 @@ export class ProviderOperationReconciler {
   readonly #deps: ProviderOperationReconcilerDeps;
   readonly #batchSize: number;
   readonly #publications = new Map<string, ActivePublication>();
+  readonly #attachments = new Map<string, ProviderOperationIdentity>();
   readonly #settlements = new Map<string, ProviderOperationIdentity>();
   readonly #inFlight = new Map<string, Promise<void>>();
   #unsubscribeSettlement: (() => void) | null = null;
@@ -192,7 +193,7 @@ export class ProviderOperationReconciler {
     const records = readProviderOperations(this.#deps.getProgressStore().getDb());
     for (const record of records) {
       signal.throwIfAborted();
-      if (record.phase !== 'executing') await this.reconcile(record, undefined, signal);
+      await this.reconcile(record, undefined, signal);
     }
   }
 
@@ -264,6 +265,9 @@ export class ProviderOperationReconciler {
     signal?: AbortSignal,
   ): Promise<void> {
     let record: ProviderOperationRecord | null = initial;
+    if (initial.phase === 'executing') {
+      this.#attachments.set(operationKey(initial.operation), initial.operation);
+    }
     let authority =
       preferredAuthority !== undefined && sameAuthority(initial, preferredAuthority)
         ? preferredAuthority
@@ -273,7 +277,6 @@ export class ProviderOperationReconciler {
     }
 
     for (let transitionCount = 0; transitionCount < 8 && record !== null; transitionCount += 1) {
-      if (record.phase === 'executing') return;
       authority = authority !== null && sameAuthority(record, authority) ? authority : this.#deps.authorityFor(record);
       if (authority === null && this.#deps.acquireAuthority !== undefined) {
         authority = await this.#deps.acquireAuthority(record, signal ?? NEVER_ABORTS);
@@ -283,6 +286,10 @@ export class ProviderOperationReconciler {
         return;
       }
 
+      if (record.phase === 'executing') {
+        record = await this.#driveExecuting(record, authority);
+        continue;
+      }
       if (record.phase === 'prepare-pending') {
         record = await this.#drivePrepare(record, authority);
         continue;
@@ -586,11 +593,13 @@ export class ProviderOperationReconciler {
       );
     }
     try {
-      await this.#commitExecuting(record, activationOutcome, authority);
+      return await this.#commitExecuting(record, activationOutcome);
     } catch (error: unknown) {
+      const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
+      if (current?.phase === 'executing') return current;
       await this.#recordRetry(record, error);
+      return null;
     }
-    return null;
   }
 
   async #driveActivationResolution(
@@ -669,11 +678,13 @@ export class ProviderOperationReconciler {
         await this.#recordRetry(record, new Error('The proxy released an indeterminate activation.'));
         return null;
       }
-      await this.#commitExecuting(record, activationOutcome, authority);
+      return await this.#commitExecuting(record, activationOutcome);
     } catch (error: unknown) {
+      const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
+      if (current?.phase === 'executing') return current;
       await this.#recordRetry(record, error);
+      return null;
     }
-    return null;
   }
 
   async #drivePrestartCleanup(
@@ -736,8 +747,7 @@ export class ProviderOperationReconciler {
   async #commitExecuting(
     record: Extract<ProviderOperationRecord, { phase: 'proxy-activation-pending' | 'activation-resolution-pending' }>,
     activationAck: ProviderOperationActivationAck,
-    authority: DurableProviderProxyOperationAuthority,
-  ): Promise<void> {
+  ): Promise<Extract<ProviderOperationRecord, { phase: 'executing' }>> {
     if (activationAck.committedThroughProviderSeq !== 0) {
       throw new Error('A fresh activation acknowledgement must begin at provider watermark zero.');
     }
@@ -762,7 +772,6 @@ export class ProviderOperationReconciler {
     if (launch.provider !== activationAck.hostRef.provider) {
       throw new Error('Activation acknowledgement provider does not match the durable job launch.');
     }
-    const cleanup = providerOperationCleanupIdentity(launch);
     let updated = false;
     progressStore.commit((commit) => {
       const result = compareAndSwapProviderOperation(progressStore.getDb(), record, next);
@@ -792,23 +801,82 @@ export class ProviderOperationReconciler {
     if (!updated) {
       const current = readProviderOperation(progressStore.getDb(), record.operation);
       if (current?.phase === 'executing') {
-        this.#registerExecuting(current, authority, cleanup);
-        return;
+        return current;
       }
       throw new Error('Provider operation journal changed before execution could be committed.');
     }
 
-    this.#registerExecuting(next, authority, cleanup);
+    return next;
+  }
+
+  async #driveExecuting(
+    record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
+    authority: DurableProviderProxyOperationAuthority,
+  ): Promise<ProviderOperationRecord | null> {
+    const key = operationKey(record.operation);
+    this.#attachments.set(key, record.operation);
+    try {
+      const result = await authority.attachOperation(record.operation, record.committedThroughProviderSeq);
+      if (result.state === 'operation-absent') {
+        if (operationKey(result.operation) !== key) {
+          throw new Error('Operation-absent proof named a different operation.');
+        }
+        const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+        if (deleted.kind === 'conflict') {
+          if (deleted.current?.phase !== 'executing') {
+            this.#attachments.delete(key);
+            return this.#finishAttached(record, authority, deleted.current);
+          }
+          return deleted.current;
+        }
+        this.#attachments.delete(key);
+        this.#complete(record.operation, {
+          kind: 'failed',
+          reason: 'The provider proxy proved that the committed operation is absent.',
+        });
+        return null;
+      }
+      if (result.replayFromProviderSeq !== record.committedThroughProviderSeq + 1) {
+        throw new Error('Attachment reply named a different replay boundary.');
+      }
+
+      this.#attachments.delete(key);
+      return this.#finishAttached(record, authority);
+    } catch (error: unknown) {
+      const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
+      if (current?.phase !== 'executing') {
+        this.#attachments.delete(key);
+        return this.#finishAttached(record, authority, current);
+      }
+      await this.#recordRetry(current, error);
+      return null;
+    }
+  }
+
+  #finishAttached(
+    record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
+    authority: DurableProviderProxyOperationAuthority,
+    current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation),
+  ): ProviderOperationRecord | null {
+    this.#registerExecuting(record, authority);
     this.#complete(record.operation, { kind: 'remote-executing' });
+    if (current?.phase === 'executing') return null;
+    this.#deps.registry.settled(record.operation);
+    return current;
   }
 
   #registerExecuting(
     record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
     authority: DurableProviderProxyOperationAuthority,
-    cleanup: ReturnType<typeof providerOperationCleanupIdentity>,
   ): void {
+    const launch = readProviderOperationJobLaunch(this.#deps.getProgressStore(), record.operation.jobId);
+    const cleanup = providerOperationCleanupIdentity(launch);
     const control = authority.buildOperationControl(record.operation);
-    this.#deps.registry.activate(record, control, cleanup);
+    if (this.#publications.has(operationKey(record.operation))) {
+      this.#deps.registry.activate(record, control, cleanup);
+    } else {
+      this.#deps.registry.adopt(record, control, cleanup);
+    }
   }
 
   #transition(expected: ProviderOperationRecord, next: ProviderOperationRecord): ProviderOperationRecord | null {
@@ -871,6 +939,16 @@ export class ProviderOperationReconciler {
         if (preferredAuthority !== undefined && !sameAuthority(record, preferredAuthority)) continue;
         await this.reconcile(record, preferredAuthority);
       }
+      for (const [key, identity] of this.#attachments) {
+        const record = readProviderOperation(progressStore.getDb(), identity);
+        if (record === null || record.phase !== 'executing') {
+          this.#attachments.delete(key);
+          continue;
+        }
+        if (record.retryNotBeforeMs > this.#deps.time.now()) continue;
+        if (preferredAuthority !== undefined && !sameAuthority(record, preferredAuthority)) continue;
+        await this.reconcile(record, preferredAuthority);
+      }
     } catch (error: unknown) {
       this.#deps.onError?.(`Provider operation reconciliation failed: ${providerOperationErrorReason(error)}`);
     } finally {
@@ -888,7 +966,7 @@ export class ProviderOperationReconciler {
   async #reconcileActiveForAuthority(authority: DurableProviderProxyOperationAuthority): Promise<void> {
     const db = this.#deps.getProgressStore().getDb();
     for (const record of readProviderOperations(db)) {
-      if (record.phase !== 'executing' && sameAuthority(record, authority)) await this.reconcile(record, authority);
+      if (sameAuthority(record, authority)) await this.reconcile(record, authority);
     }
   }
 

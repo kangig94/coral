@@ -623,7 +623,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
      * or rejected by that same socket's own `close` handler above — so a push issued before a rotation can
      * never land on the successor's connection as though the predecessor's stream continued, and is never
      * silently dropped either: rejection is what lets `proxy.ts`'s drain loop leave the event in the ledger
-     * for the next `operation.adopt.v1` to replay.
+     * for the next `operation.attach.v1` to replay.
      *
      * Never blocks `serveRequest`: this method does not go through `dispatch`, and awaiting its returned
      * promise does not hold up the socket's own `'data'` handler — an inbound `operation.stop.v1` arriving

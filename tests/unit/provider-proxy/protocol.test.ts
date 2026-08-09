@@ -625,7 +625,7 @@ describe('proxy control-method request schemas, shared with their coordinator se
     ).toBe(false);
   });
 
-  it('keeps attach and retained release receipts strict before their cutovers', () => {
+  it('keeps attach and retained release receipts strict', () => {
     const attachRequest = { operation, committedThroughProviderSeq: 3 };
     expect(proxyOperationAttachParamsSchema.safeParse(attachRequest).success).toBe(true);
     expect(proxyOperationAttachParamsSchema.safeParse({ ...attachRequest, unexpected: true }).success).toBe(false);

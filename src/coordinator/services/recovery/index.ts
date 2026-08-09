@@ -635,9 +635,9 @@ export function createRecoveryCoordinator(
     }
 
     // W2.4/W2.5: before any running job below can be decided carrier-detached, give every distinct proxy set
-    // implied by these jobs' committed locators a chance to be inherited from a predecessor's clean handoff-
+    // implied by these jobs' committed locators a chance to inherit control from a predecessor's clean handoff-
     // mode shutdown. This ordering is forced, not chosen: `finalizeInterruptedAppServerJob`'s carrier-detached
-    // arm reaps the exact containment inheritance would otherwise adopt, and a reaped set can never be
+    // arm reaps the exact containment attachment would otherwise retain, and a reaped set can never be
     // redeemed again, so every job whose operation could still be inherited must be given the chance before
     // any job reaches that arm. `providerProxyInheritance` absent (every test, and any build with proxy-set
     // acquisition disabled) makes this a no-op — every job is decided exactly as it was before this capability
@@ -648,11 +648,11 @@ export function createRecoveryCoordinator(
     if (providerProxyInheritance !== undefined) {
       // `RecoveryRegistry`'s own app-server abort handler (`registerRunningRecovery`, `actions.ts`) calls
       // `interruptAppServerJob`, which refuses on purpose once a job's saga record is
-      // committed — adoption is exactly the moment that refusal stops being "not yet this coordinator's to
+      // committed — attachment is exactly the moment that refusal stops being "not yet this coordinator's to
       // interrupt" and becomes permanent, since nothing else was ever going to make `coral-cli abort` reach
       // this operation. Wiring the real, operation-registry-backed `onAbort` onto this project's ordinary
-      // abort registry — and retiring the now-stale `recoveryRegistry` entry — synchronously with the adoption
-      // that makes it correct closes the false-"aborted" window to the width of this one `await` instead of
+      // abort registry — and retiring the now-stale `recoveryRegistry` entry — after attachment reconciliation
+      // closes the false-"aborted" window to the width of this pre-pass instead of
       // leaving it open for the rest of `runningJobs` (built before any settle loop runs) or, worse, for the
       // remainder of this coordinator generation once the settle loop's own cleanup releases the entry.
       const projectRootByJobId = new Map(runningJobs.map((job) => [job.jobId, job.authority.launchRecord.projectRoot]));
@@ -671,6 +671,8 @@ export function createRecoveryCoordinator(
         const outcome = await providerProxyInheritance.inheritProviderProxySet(record, progressStore.getDb(), signal);
         if (outcome.kind === 'inherited') {
           for (const inheritedJobId of outcome.adoptedJobIds) {
+            const attached = readProviderOperationForJob(progressStore.getDb(), inheritedJobId);
+            if (attached?.phase !== 'executing') continue;
             inheritedJobIds.add(inheritedJobId);
             const inheritedProjectRoot = projectRootByJobId.get(inheritedJobId);
             if (inheritedProjectRoot === undefined) continue;

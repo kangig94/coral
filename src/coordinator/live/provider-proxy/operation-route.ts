@@ -1,6 +1,7 @@
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 import {
   activateProviderOperation,
+  attachProviderOperation,
   authorizeProviderOperation,
   buildProviderOperationControl,
   cancelProviderOperation,
@@ -9,6 +10,7 @@ import {
   settleProviderOperation,
   type AuthorizeProviderOperationResult,
   type ActivateProviderOperationResult,
+  type AttachProviderOperationResult,
   type CancelProviderOperationResult,
   type InspectProviderOperationResult,
   type OperationControlClient,
@@ -40,6 +42,10 @@ export interface DurableProviderProxyOperationAuthority extends ProviderProxyOpe
     operation: OperationIdentity,
     evidence: Parameters<typeof activateProviderOperation>[2],
   ): Promise<ActivateProviderOperationResult>;
+  attachOperation(
+    operation: OperationIdentity,
+    committedThroughProviderSeq: number,
+  ): Promise<AttachProviderOperationResult>;
   cancelOperation(
     operation: OperationIdentity,
     prepareAttemptNumber: number,
@@ -73,6 +79,7 @@ export function isProviderProxyOperationAuthority(
     typeof candidate.inspectOperation === 'function' &&
     typeof candidate.authorizeOperation === 'function' &&
     typeof candidate.activatePreparedOperation === 'function' &&
+    typeof candidate.attachOperation === 'function' &&
     typeof candidate.cancelOperation === 'function' &&
     typeof candidate.settleOperation === 'function' &&
     typeof candidate.buildOperationControl === 'function'
@@ -100,6 +107,8 @@ export function createProviderProxyOperationAuthority(deps: {
       inspectProviderOperation(activationDeps, operation, prepareAttemptKey),
     authorizeOperation: (operation, evidence) => authorizeProviderOperation(activationDeps, operation, evidence),
     activatePreparedOperation: (operation, evidence) => activateProviderOperation(activationDeps, operation, evidence),
+    attachOperation: (operation, committedThroughProviderSeq) =>
+      attachProviderOperation(activationDeps, operation, committedThroughProviderSeq),
     cancelOperation: (operation, prepareAttemptNumber, prepareAttemptKey) =>
       cancelProviderOperation(activationDeps, operation, prepareAttemptNumber, prepareAttemptKey),
     settleOperation: (operation, finalProviderSeq) =>

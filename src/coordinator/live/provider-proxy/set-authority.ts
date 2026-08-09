@@ -118,7 +118,7 @@ export function createProviderProxySetAuthority(
       // the one place that assembles the set, so sorting happens here rather than being asked of every caller.
       //
       // A stale member must not deny handoff to every other journal-owned operation in the set. The successor
-      // isolates that disagreement per operation when `operation.adopt.v1` reports `operation_not_found`.
+      // reconciles attachment per operation, so one exact absence does not refuse the set handoff.
       const handoffOperations = [...operations]
         .sort((left, right) =>
           left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,

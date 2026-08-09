@@ -38,7 +38,6 @@ import {
   subscribeProviderProxyControlEstablished,
   type ProviderProxyOperationAuthority,
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
-import { proxyOperationAdoptParamsSchema } from '#src/provider-proxy/protocol.js';
 
 const mockedReadCapsule = vi.mocked(readHandoffCapsuleFile);
 const mockedReadOperation = vi.mocked(readProviderOperation);
@@ -200,8 +199,8 @@ function byteSorted(operations: readonly OperationKey[]): OperationKey[] {
 }
 
 /** Method-dispatched fake `ControlClient`, shared across all three role connects — the wire methods this
- *  redemption calls (`guardian.handoff-redeem.v1`, `reaper.handoff-rotate.v1`, `handoff.redeem.v1`,
- *  `*.heartbeat.v1`, `operation.adopt.v1`, `operation.stop.v1`) never collide across roles, so one responder
+ *  redemption calls (`guardian.handoff-redeem.v1`, `reaper.handoff-rotate.v1`, `handoff.redeem.v1`, and
+ *  `*.heartbeat.v1`) never collide across roles, so one responder
  *  keyed by method name stands in for three distinct sockets. */
 function fakeClient(
   responses: Record<string, unknown | ((params: unknown) => unknown)>,
@@ -316,14 +315,13 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(mockedConnect).not.toHaveBeenCalled();
   });
 
-  it('parses an adopted stop request and rejects a malformed result at the sender', async () => {
+  it('returns the shared operation authority whose stop sender rejects a malformed result', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
     const operations = [operationFor(loc)];
     const calls: { method: string; params: unknown }[] = [];
     const client = fakeClient(
       redemptionResponses(loc, operations, {
-        'operation.adopt.v1': { state: 'executing', replayFromProviderSeq: 1 },
         'operation.stop.v1': { state: 'stopping' },
       }),
       calls,
@@ -333,50 +331,32 @@ describe('attemptProviderProxySetInheritance', () => {
       executingRecord({ operation, locator: loc.locator }, 5),
     );
 
-    // The adopted stop control is handed to the registry and nowhere else, so capturing it here is the only
-    // way to drive the send this file makes. Before this test the send had no coverage at all — which is why
-    // its payload could have gone unvalidated indefinitely without any mutation being observable.
-    let adoptedStop: { stop(cause: string): Promise<void> } | undefined;
-    await attemptProviderProxySetInheritance(
+    const outcome = await attemptProviderProxySetInheritance(
       loc,
       unusedDb,
       {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
-        operationRegistry: {
-          adopt: (_meta, control) => {
-            adoptedStop = control as { stop(cause: string): Promise<void> };
-          },
-          operationsFor: () => [],
-          providerRootsFor: () => [],
-        },
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
         cleanupIdentityFor,
       },
       neverAborts,
     );
 
-    if (adoptedStop === undefined) throw new Error('adoption did not register a stop control');
-    // A JSON-RPC success is not a protocol success when its method result has drifted from the shared schema.
-    await expect(adoptedStop.stop('signal_abort')).rejects.toThrow(/committedThroughProviderSeq/);
+    if (outcome.kind !== 'inherited') throw new Error('inheritance did not return its operation authority');
+    const stop = outcome.set.buildOperationControl(operations[0]);
+    await expect(stop.stop('signal_abort')).rejects.toThrow(/committedThroughProviderSeq/);
     expect(calls.filter((c) => c.method === 'operation.stop.v1')).toHaveLength(1);
 
     // A cause the shared schema has no place for is refused here, at the sender, and the frame is never
     // written — the proxy's own receipt-side `.strict()` parse never gets the chance to refuse it.
-    await expect(adoptedStop.stop('not-a-real-cause')).rejects.toThrow();
+    await expect(stop.stop('not-a-real-cause' as never)).rejects.toThrow();
     expect(calls.filter((c) => c.method === 'operation.stop.v1')).toHaveLength(1);
 
-    // The sibling send in this same file gets the same treatment. Its watermark always comes from an
-    // already-validated durable row, so the runtime path cannot produce a bad one today — which is exactly
-    // why the schema is worth asserting directly rather than trusting the caller to keep being careful.
-    const adopt = calls.find((c) => c.method === 'operation.adopt.v1');
-    expect(adopt).toBeDefined();
-    expect(() => proxyOperationAdoptParamsSchema.parse(adopt?.params)).not.toThrow();
-    expect(() =>
-      proxyOperationAdoptParamsSchema.parse({ ...(adopt?.params as object), committedThroughProviderSeq: -1 }),
-    ).toThrow();
+    expect(calls.some((call) => call.method === 'operation.adopt.v1')).toBe(false);
   });
 
-  it('redeems guardian, then reaper with the guardian’s own receipt, then proxy, adopting every named operation in order', async () => {
+  it('redeems guardian, reaper, and proxy before handing every executing row to the reconciler', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
     const mine = operationFor(loc);
@@ -392,7 +372,6 @@ describe('attemptProviderProxySetInheritance', () => {
             (params as { guardianRedemptionReceipt: string }).guardianRedemptionReceipt === 'guardian-receipt';
           return { ...OPENING, state: 'successor-rotated', reaperRotationReceipt: 'reaper-receipt', operations };
         },
-        'operation.adopt.v1': { state: 'executing', replayFromProviderSeq: 1 },
       }),
       calls,
     );
@@ -401,27 +380,13 @@ describe('attemptProviderProxySetInheritance', () => {
       executingRecord({ operation, locator: loc.locator }, operation.jobId === loc.operation.jobId ? 5 : 9),
     );
 
-    const registered: {
-      jobId: string;
-      committedThroughProviderSeq: number;
-      cleanup: { jobId: string; pool: 'default' | 'discuss' | 'curate' };
-    }[] = [];
     const outcome = await attemptProviderProxySetInheritance(
       loc,
       unusedDb,
       {
         runtime,
         coordinatorIdentity: COORDINATOR_IDENTITY,
-        operationRegistry: {
-          adopt: (meta, _control, cleanup) =>
-            registered.push({
-              jobId: meta.operation.jobId,
-              committedThroughProviderSeq: meta.committedThroughProviderSeq,
-              cleanup,
-            }),
-          operationsFor: () => [],
-          providerRootsFor: () => [],
-        },
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
         cleanupIdentityFor,
       },
       neverAborts,
@@ -432,32 +397,21 @@ describe('attemptProviderProxySetInheritance', () => {
     if (outcome.kind !== 'inherited') throw new Error('unreachable');
     expect(outcome.set.proxyInstanceId).toBe(loc.operation.proxyInstanceId);
     expect([...outcome.adoptedJobIds].sort()).toEqual([mine.jobId, other.jobId].sort());
-    expect(registered).toHaveLength(2);
-    expect(registered.find((r) => r.jobId === loc.operation.jobId)?.committedThroughProviderSeq).toBe(5);
-    expect(registered.find((r) => r.jobId === loc.operation.jobId)?.cleanup).toEqual({
-      jobId: loc.operation.jobId,
-      pool: 'curate',
-    });
 
     const methodOrder = calls.map((c) => c.method);
     expect(methodOrder.indexOf('guardian.handoff-redeem.v1')).toBeLessThan(
       methodOrder.indexOf('reaper.handoff-rotate.v1'),
     );
     expect(methodOrder.indexOf('reaper.handoff-rotate.v1')).toBeLessThan(methodOrder.indexOf('handoff.redeem.v1'));
-    expect(methodOrder.indexOf('handoff.redeem.v1')).toBeLessThan(methodOrder.indexOf('operation.adopt.v1'));
+    expect(methodOrder.some((method) => method.startsWith('operation.'))).toBe(false);
   });
 
-  it('adopts a pending journal row at the proxy without registering it as executing', async () => {
+  it('leaves a pending journal row entirely to the reconciler', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
     const operation = operationFor(loc);
     const calls: { method: string; params: unknown }[] = [];
-    const client = fakeClient(
-      redemptionResponses(loc, [operation], {
-        'operation.adopt.v1': { state: 'prepared', replayFromProviderSeq: 1 },
-      }),
-      calls,
-    );
+    const client = fakeClient(redemptionResponses(loc, [operation]), calls);
     stubConnect(client);
     mockedReadOperation.mockReturnValueOnce(activationPendingRecord(loc));
     const adopt = vi.fn();
@@ -475,14 +429,12 @@ describe('attemptProviderProxySetInheritance', () => {
     );
 
     expect(outcome.kind).toBe('inherited');
-    expect(calls.find((call) => call.method === 'operation.adopt.v1')?.params).toEqual(
-      expect.objectContaining({ committedThroughProviderSeq: 0 }),
-    );
+    expect(calls.some((call) => call.method.startsWith('operation.'))).toBe(false);
     expect(adopt).not.toHaveBeenCalled();
     if (outcome.kind === 'inherited') expect(outcome.adoptedJobIds).toEqual(new Set());
   });
 
-  it('skips a per-operation adopt refusal without failing the whole redeemed set', async () => {
+  it('does not issue inline operation RPCs while collecting executing attachment work', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
     const mine = operationFor(loc);
@@ -490,16 +442,7 @@ describe('attemptProviderProxySetInheritance', () => {
     const operations = byteSorted([mine, refused]);
 
     const calls: { method: string; params: unknown }[] = [];
-    const client = fakeClient(
-      redemptionResponses(loc, operations, {
-        'operation.adopt.v1': (params: unknown) => {
-          const { operation } = params as { operation: { operationId: string } };
-          if (operation.operationId === refused.operationId) throw new Error('operation_not_found');
-          return { state: 'executing', replayFromProviderSeq: 1 };
-        },
-      }),
-      calls,
-    );
+    const client = fakeClient(redemptionResponses(loc, operations), calls);
     stubConnect(client);
     mockedReadOperation.mockImplementation((_db: Database, operation) =>
       executingRecord({ operation, locator: loc.locator }),
@@ -519,7 +462,8 @@ describe('attemptProviderProxySetInheritance', () => {
 
     expect(outcome.kind).toBe('inherited');
     if (outcome.kind !== 'inherited') throw new Error('unreachable');
-    expect([...outcome.adoptedJobIds]).toEqual([mine.jobId]);
+    expect([...outcome.adoptedJobIds].sort()).toEqual([mine.jobId, refused.jobId].sort());
+    expect(calls.some((call) => call.method.startsWith('operation.'))).toBe(false);
   });
 
   it('skips an operation whose committed locator has already vanished', async () => {
@@ -588,8 +532,8 @@ describe('attemptProviderProxySetInheritance', () => {
 
   it('stops every heartbeat loop before closing clients when a later step fails after they start', async () => {
     // Reproduces the exact shape of the leak: all three roles redeem successfully (heartbeats start), then
-    // adoption itself throws (a database failure, not a per-operation refusal `adoptRedeemedOperations`
-    // already tolerates) — the only way to reach `redeem`'s `catch` with `heartbeats` non-empty.
+    // collecting the durable executing rows throws. This reaches `redeem`'s catch only after every heartbeat
+    // exists, so cleanup must stop all three before closing their clients.
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
     const op = operationFor(loc);

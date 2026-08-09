@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   activateProviderOperation,
+  attachProviderOperation,
   authorizeProviderOperation,
   prepareProviderOperation,
   providerOperationPrepareAttempt,
@@ -461,8 +462,17 @@ describe('provider proxy activation against a real guardian', () => {
       jointActivationReceipt: authorized.jointActivationReceipt,
     });
 
+    // The reply says `executing` because the kernel is running — that is what the caller asked and what it
+    // gets. The LEDGER is the part that waits: it stays `started-awaiting-publication` until the coordinator
+    // has durably committed `executing`, because a provider event delivered before that commit would name a
+    // job this coordinator does not yet own, which is the stranded-terminal defect this phase closes.
+    // `operation.attach.v1` reports the commit and is what opens delivery.
     expect(result.state).toBe('executing');
     expect(set.started).toEqual([{ jobId: operation.jobId, operationId: operation.operationId, prepared: PREPARED }]);
+    expect(set.proxy.ledger().get(operation)).toMatchObject({ state: 'started-awaiting-publication' });
+
+    const attached = await attachProviderOperation(deps, operation, 0);
+    expect(attached).toMatchObject({ state: 'attached' });
     expect(set.proxy.ledger().get(operation)).toMatchObject({ state: 'executing' });
     // The same shared schema gates the hand-built payload once before it is written and once in the real
     // proxy handler. Keeping both observations makes bypassing the sender parse fail this test even though a

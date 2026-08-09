@@ -40,7 +40,7 @@ function registryKey(jobId: string, operationId: string): string {
 
 /**
  * One coordinator generation's live app-server operations, keyed exactly like the proxy ledger and the
- * provider-operation saga record each entry is built from. Both live activation and restart adoption already
+ * provider-operation saga record each entry is built from. Both live activation and restart attachment already
  * hold the executing record, so registration does not flatten it into a second locator shape.
  */
 export class LocalOperationRegistry {
@@ -84,9 +84,8 @@ export class LocalOperationRegistry {
 
   /**
    * W2.5's second thin entry point onto the same private builder: registers an operation this coordinator
-   * generation never activated but adopted from a predecessor's bequeathed proxy set, via
-   * `guardian.handoff-redeem.v1` → `reaper.handoff-rotate.v1` → `handoff.redeem.v1` → `operation.adopt.v1`
-   * (`provider-proxy-set-inheritance.ts`, the only production caller).
+   * generation never activated but attached after redeeming a predecessor's bequeathed proxy set. The
+   * provider-operation reconciler is the only production caller.
    *
    * A generation that restored local admission state can resolve the same identity; one that did not has a
    * natural no-op at the jobs-layer cleanup port.

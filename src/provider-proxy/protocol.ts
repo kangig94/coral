@@ -606,8 +606,7 @@ export const proxyOperationActivateParamsSchema = proxyOperationReservationParam
   })
   .strict();
 
-/** `operation.stop.v1`'s request. Two senders: the activation service's stop control and the inheritance
- *  path's adopted stop control. */
+/** `operation.stop.v1`'s request, sent by the operation authority's live stop control. */
 export const proxyOperationStopParamsSchema = z
   .object({ operation: operationIdentitySchema, cause: providerStopCauseSchema })
   .strict();
@@ -616,10 +615,10 @@ const proxyOperationAttachmentParamsSchema = z
   .object({ operation: operationIdentitySchema, committedThroughProviderSeq: nonNegativeSafeIntegerSchema })
   .strict();
 
-/** Sharing the exact shape prevents the compatibility adapter from drifting before attachment cutover. */
+/** Sharing the exact shape prevents the retained compatibility adapter from drifting after attachment cutover. */
 export const proxyOperationAdoptParamsSchema = proxyOperationAttachmentParamsSchema;
 
-/** Sharing the exact shape prevents the future attachment path from drifting from its compatibility input. */
+/** Sharing the exact shape prevents the attachment path from drifting from its compatibility input. */
 export const proxyOperationAttachParamsSchema = proxyOperationAttachmentParamsSchema;
 
 export const proxyOperationInspectParamsSchema = z

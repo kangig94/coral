@@ -19,6 +19,7 @@ import {
   providerEventResultSchema,
   proxyOperationActivationOutcomeSchema,
   proxyOperationActivateResultSchema,
+  proxyOperationAttachResultSchema,
   proxyOperationCancelResultSchema,
   proxyOperationInspectResultSchema,
   proxyOperationPrepareCapacityResultSchema,
@@ -342,15 +343,9 @@ export class OperationSupervisor {
       try {
         this.#ledger.recordStart(record.key, input.activationFingerprint, ack);
         this.#clearDeadline(record);
-        this.#ledger.publishActivation(record.key, input.activationFingerprint);
-        if (record.pendingCompletion !== null) {
-          this.#ledger.transition(record.key, record.pendingCompletion);
-          record.pendingCompletion = null;
-        }
       } catch (error: unknown) {
         asProtocolError(error);
       }
-      void this.#pump(record);
       return proxyOperationActivationOutcomeSchema.parse(ack);
     });
   }
@@ -558,19 +553,83 @@ export class OperationSupervisor {
     });
   }
 
-  adopt(
+  async adopt(
     operation: OperationIdentity,
     committedThroughProviderSeq: number,
-  ): Readonly<{ state: string; replayFromProviderSeq: number }> {
-    const record = this.#requireRecord(operation);
-    const entry = this.#requireLedger(record.key);
-    try {
-      this.#ledger.acknowledge(record.key, committedThroughProviderSeq);
-    } catch (error: unknown) {
-      asProtocolError(error);
+  ): Promise<Readonly<{ state: string; replayFromProviderSeq: number }>> {
+    const result = await this.attach(operation, committedThroughProviderSeq);
+    if (result.state === 'operation-absent') {
+      throw new ProxyControlProtocolError('operation_not_found', 'No such prepared operation.');
     }
-    void this.#pump(record);
-    return { state: legacyState(entry.state), replayFromProviderSeq: committedThroughProviderSeq + 1 };
+    const entry = this.#requireLedger(this.#requireRecord(operation).key);
+    return { state: legacyState(entry.state), replayFromProviderSeq: result.replayFromProviderSeq };
+  }
+
+  attach(
+    operation: OperationIdentity,
+    committedThroughProviderSeq: number,
+  ): Promise<ReturnType<typeof proxyOperationAttachResultSchema.parse>> {
+    const record = this.#operations.get(operationToken(operation));
+    if (record === undefined) {
+      return Promise.resolve(proxyOperationAttachResultSchema.parse({ state: 'operation-absent', operation }));
+    }
+    if (!sameOperation(record.operation, operation)) {
+      throw new ProxyControlProtocolError('identity_mismatch', 'The named operation is not held by this proxy.');
+    }
+    return this.#enqueue(record, () => {
+      const entry = this.#ledger.get(record.key);
+      if (entry === null) {
+        if (
+          record.stage !== null ||
+          record.start !== null ||
+          record.releaseIntent !== null ||
+          record.releaseInFlight !== null ||
+          record.startAbort !== null ||
+          record.stageAbort !== null ||
+          record.deadlineTimer !== null ||
+          record.releaseRetryTimer !== null ||
+          record.pendingCompletion !== null ||
+          record.pumping
+        ) {
+          throw new ProxyControlProtocolError('invalid_state', 'Operation ownership is still being resolved.');
+        }
+        return proxyOperationAttachResultSchema.parse({ state: 'operation-absent', operation });
+      }
+      if (
+        entry.state !== 'started-awaiting-publication' &&
+        entry.state !== 'executing' &&
+        entry.state !== 'terminal-awaiting-settlement' &&
+        entry.state !== 'suspended-awaiting-durable-decision'
+      ) {
+        throw new ProxyControlProtocolError('invalid_state', `Cannot attach an operation from ${entry.state}.`);
+      }
+      if (committedThroughProviderSeq >= this.#ledger.nextProviderSeq(record.key)) {
+        throw new ProxyControlProtocolError(
+          'invalid_state',
+          'Attachment watermark exceeds the produced event sequence.',
+        );
+      }
+      try {
+        this.#ledger.acknowledge(record.key, committedThroughProviderSeq);
+        if (entry.state === 'started-awaiting-publication') {
+          if (entry.activationFingerprint === null) {
+            throw new ProxyControlProtocolError('invalid_state', 'Started operation lacks activation evidence.');
+          }
+          this.#ledger.publishActivation(record.key, entry.activationFingerprint);
+          if (record.pendingCompletion !== null) {
+            this.#ledger.transition(record.key, record.pendingCompletion);
+            record.pendingCompletion = null;
+          }
+        }
+      } catch (error: unknown) {
+        asProtocolError(error);
+      }
+      void this.#pump(record);
+      return proxyOperationAttachResultSchema.parse({
+        state: 'attached',
+        replayFromProviderSeq: committedThroughProviderSeq + 1,
+      });
+    });
   }
 
   reattachControl(): void {

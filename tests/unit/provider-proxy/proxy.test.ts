@@ -23,6 +23,9 @@ import {
 import type { ProxyBootstrapCapsule } from '#src/provider-proxy/bootstrap-capsule.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
+  proxyOperationActivationOutcomeSchema,
+  proxyOperationAttachParamsSchema,
+  proxyOperationAttachResultSchema,
   proxyOperationCancelParamsSchema,
   proxyOperationCancelResultSchema,
   proxyOperationInspectParamsSchema,
@@ -364,9 +367,13 @@ describe('provider-proxy truthful operation authority', () => {
       jointActivationReceipt: asJointActivationReceipt('activation-1'),
     };
 
-    const first = await control.call('operation.activate.v1', activation, 5_000);
+    const first = proxyOperationActivationOutcomeSchema.parse(
+      await control.call('operation.activate.v1', activation, 5_000),
+    );
     const replay = await control.call('operation.activate.v1', activation, 5_000);
-    const inspected = await control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000);
+    const awaitingPublication = await control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000);
+    await control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
+    const attached = await control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000);
 
     expect(first).toEqual({
       state: 'executing',
@@ -376,7 +383,8 @@ describe('provider-proxy truthful operation authority', () => {
       committedThroughProviderSeq: 0,
     });
     expect(replay).toEqual(first);
-    expect(inspected).toEqual(first);
+    expect(awaitingPublication).toEqual({ ...first, state: 'started-awaiting-publication' });
+    expect(attached).toEqual(first);
     expect(host.starts).toBe(1);
   });
 
@@ -470,9 +478,11 @@ describe('provider-proxy truthful operation authority', () => {
     });
   });
 
-  it('inspects starting immediately and buffers provider events until the ACK exists', async () => {
+  it('buffers a terminal through activation and delivers it only after strict attachment', async () => {
     const inspectRequestParses = vi.spyOn(proxyOperationInspectParamsSchema, 'parse');
     const inspectResultParses = vi.spyOn(proxyOperationInspectResultSchema, 'parse');
+    const attachRequestParses = vi.spyOn(proxyOperationAttachParamsSchema, 'parse');
+    const attachResultParses = vi.spyOn(proxyOperationAttachResultSchema, 'parse');
     const host = fakeHost();
     const started = deferred<HostRef>();
     host.start = function start(): SemanticOperationStartHandle {
@@ -505,7 +515,11 @@ describe('provider-proxy truthful operation authority', () => {
 
     proxy.emitProviderEvent(
       operation,
-      { kind: 'progress', message: 'buffered' },
+      {
+        kind: 'terminal',
+        terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
+        diagnostics: {},
+      },
       await proxy.reserveProviderEvent(operation),
     );
     const inspectRequest = proxyOperationInspectParamsSchema.parse({ operation, prepareAttemptKey });
@@ -526,7 +540,21 @@ describe('provider-proxy truthful operation authority', () => {
       hostRef: hostRefFor(operation.jobId),
       committedThroughProviderSeq: 0,
     });
+    expect(proxy.ledger().get(operation)?.state).toBe('started-awaiting-publication');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(received).toEqual([]);
+
+    const attachRequest = proxyOperationAttachParamsSchema.parse({ operation, committedThroughProviderSeq: 0 });
+    const attached = proxyOperationAttachResultSchema.parse(
+      await control.call('operation.attach.v1', attachRequest, 5_000),
+    );
+
+    expect(attached).toEqual({ state: 'attached', replayFromProviderSeq: 1 });
     await vi.waitFor(() => expect(received).toHaveLength(1));
+    expect(received[0]).toMatchObject({ providerSeq: 1, event: { kind: 'terminal' } });
+    expect(proxy.ledger().get(operation)?.state).toBe('terminal-awaiting-settlement');
+    expect(attachRequestParses).toHaveBeenCalledTimes(2);
+    expect(attachResultParses).toHaveBeenCalledTimes(3);
   });
 
   it('actively releases an expired lease without another RPC', async () => {
@@ -829,7 +857,7 @@ describe('provider-proxy truthful operation authority', () => {
 
     await expect(activating).resolves.toMatchObject({ state: 'executing' });
     await expect(cancelling).rejects.toThrow(/Activation has begun/u);
-    expect(proxy.ledger().get(operation)?.state).toBe('executing');
+    expect(proxy.ledger().get(operation)?.state).toBe('started-awaiting-publication');
     expect(host.released).toEqual([]);
   });
 
@@ -854,6 +882,7 @@ describe('provider-proxy truthful operation authority', () => {
       },
       5_000,
     );
+    await control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
     proxy.emitProviderEvent(
       operation,
       { kind: 'progress', message: 'final' },
