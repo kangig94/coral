@@ -541,6 +541,8 @@ async function launchThroughRoute(
     authorityFor: () => activeAuthority,
     registry,
     materializePrepare: () => ({ state: 'prepared', prepared: PREPARED }),
+    recoverLocalJob: async () => undefined,
+    completeLocalRecovery: () => undefined,
     terminalization: {
       terminalize: () => {
         throw new Error('integration publication unexpectedly requested coordinator terminalization');

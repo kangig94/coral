@@ -669,7 +669,9 @@ export type LifecycleDeps = {
   readonly getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   readonly getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   readonly listExecutionServices: () => ProjectRequestPort[];
+  readonly connectProviderOperationRecovery?: (recoveryCoordinator: RecoveryCoordinator) => void;
   readonly reconcileProviderOperationsAtStartup?: (signal: AbortSignal) => Promise<void>;
+  readonly startProviderOperationReconciler?: () => void;
   readonly stopProviderOperationReconciler?: () => void;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
@@ -746,7 +748,9 @@ async function runLifecycleStartup({
     providerRegistry,
     server,
     getRecoveryService,
+    connectProviderOperationRecovery,
     reconcileProviderOperationsAtStartup,
+    startProviderOperationReconciler,
     getDiscussStoreForSource,
     knownDiscussSources,
     getDiscussContext,
@@ -960,6 +964,7 @@ async function runLifecycleStartup({
       bound,
     );
     state.recoveryCoordinator = recoveryCoordinator;
+    connectProviderOperationRecovery?.(recoveryCoordinator);
     signal.throwIfAborted();
 
     // Bind the HTTP listener and signal kernel-ready BEFORE Era II's
@@ -1022,6 +1027,7 @@ async function runLifecycleStartup({
             recoverPersistedDiscussFn,
             interruptedAppServerReason: bound.acquiredViaHandoff ? 'handoff' : 'restart',
           });
+    startProviderOperationReconciler?.();
     await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
     signal.throwIfAborted();
     if (runtimeState.getLaunchFenceActive()) {

@@ -248,6 +248,16 @@ const prestartCleanupPendingSchema = z
   })
   .strict();
 
+// This is not an unknown phase: remote cleanup is complete and generic job recovery is the exact next owner.
+const localRecoveryPendingSchema = z
+  .object({
+    ...commonFields,
+    phase: z.literal('local-recovery-pending'),
+    recoveryIntent: z.literal('recover-local'),
+    reason: directiveReasonSchema,
+  })
+  .strict();
+
 const activationResolutionPendingSchema = z
   .object({
     ...commonFields,
@@ -275,6 +285,7 @@ export const providerOperationRecordSchema = z
     proxyActivationPendingSchema,
     executingSchema,
     prestartCleanupPendingSchema,
+    localRecoveryPendingSchema,
     activationResolutionPendingSchema,
     settlementPendingSchema,
   ])
@@ -344,6 +355,12 @@ export type ProviderOperationTerminalDirective = Extract<
 >;
 export type ProviderOperationRecord = Readonly<z.infer<typeof providerOperationRecordSchema>>;
 export type ProviderOperationPhase = ProviderOperationRecord['phase'];
+
+export function providerOperationJobRecoveryOwner(
+  record: ProviderOperationRecord,
+): 'provider-operation-saga' | 'generic-job-recovery' {
+  return record.phase === 'local-recovery-pending' ? 'generic-job-recovery' : 'provider-operation-saga';
+}
 
 export class ProviderOperationRecordCodecError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {

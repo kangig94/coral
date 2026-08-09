@@ -11,6 +11,7 @@ import {
 import {
   decodeProviderOperationRecord,
   encodeProviderOperationRecord,
+  providerOperationJobRecoveryOwner,
   providerOperationRecordSchema,
   type ProviderOperationPhase,
   type ProviderOperationRecord,
@@ -29,6 +30,7 @@ const PHASES = [
   'proxy-activation-pending',
   'executing',
   'prestart-cleanup-pending',
+  'local-recovery-pending',
   'activation-resolution-pending',
   'settlement-pending',
 ] as const satisfies readonly ProviderOperationPhase[];
@@ -49,6 +51,14 @@ function sagaRows(db: Database): readonly { key: string; value: string }[] {
 }
 
 describe('provider operation journal', () => {
+  it('assigns the durable local handoff only to generic job recovery', () => {
+    for (const phase of PHASES) {
+      expect(providerOperationJobRecoveryOwner(providerOperationRecord(phase))).toBe(
+        phase === 'local-recovery-pending' ? 'generic-job-recovery' : 'provider-operation-saga',
+      );
+    }
+  });
+
   it('isolates a strict, bounded saga keyspace and composes with an open transaction', () => {
     const db = createDb();
     try {
@@ -83,6 +93,15 @@ describe('provider operation journal', () => {
       });
       expect(() => encodeProviderOperationRecord(oversized)).toThrow(/exceeding the 65536-byte limit/);
       expect(() => decodeProviderOperationRecord(JSON.stringify(oversized))).toThrow(/exceeding the 65536-byte limit/);
+
+      const localRecovery = providerOperationRecord('local-recovery-pending');
+      if (localRecovery.phase !== 'local-recovery-pending') throw new Error('expected local recovery fixture');
+      expect(
+        decodeProviderOperationRecord(encodeProviderOperationRecord({ ...localRecovery, reason: 'x'.repeat(4096) })),
+      ).toEqual({ ...localRecovery, reason: 'x'.repeat(4096) });
+      expect(providerOperationRecordSchema.safeParse({ ...localRecovery, reason: 'x'.repeat(4097) }).success).toBe(
+        false,
+      );
 
       const invalid = {
         ...providerOperationRecord('prepare-pending'),
@@ -227,8 +246,12 @@ describe('provider operation journal', () => {
         }),
       );
       const due = providerOperationRecord('prepare-pending', { job: 99, retryNotBeforeMs: 100 });
+      const localRecoveryDue = providerOperationRecord('local-recovery-pending', {
+        job: 97,
+        retryNotBeforeMs: 100,
+      });
       const executing = providerOperationRecord('executing', { job: 98, retryNotBeforeMs: 0 });
-      for (const record of [...scheduled, due, executing]) insertProviderOperation(db, record);
+      for (const record of [...scheduled, due, localRecoveryDue, executing]) insertProviderOperation(db, record);
 
       const naivelyLimited = db
         .prepare<[string, string, number], Pick<{ value: string }, 'value'>>(
@@ -241,7 +264,7 @@ describe('provider operation journal', () => {
         .map(({ value }) => decodeProviderOperationRecord(value))
         .filter((record) => record.phase !== 'executing' && record.retryNotBeforeMs <= 100);
       expect(naivelyLimited).toEqual([]);
-      expect(readProviderOperationsDue(db, 100, 1)).toEqual([due]);
+      expect(readProviderOperationsDue(db, 100, 2)).toEqual([localRecoveryDue, due]);
 
       const plan = db
         .prepare<[string, string, number], { detail: string }>(

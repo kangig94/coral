@@ -143,6 +143,13 @@ export function providerOperationRecord(
           reason: 'The exact proxy attempt was proven never started.',
         },
       });
+    case 'local-recovery-pending':
+      return providerOperationRecordSchema.parse({
+        ...common,
+        phase,
+        recoveryIntent: 'recover-local',
+        reason: 'The exact proxy attempt was proven never started.',
+      });
     case 'settlement-pending':
       return providerOperationRecordSchema.parse({
         ...common,

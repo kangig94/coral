@@ -20,6 +20,7 @@ import { readProviderOperationJobLaunch } from '../../jobs/provider-operation-st
 import { readProjectionProviderSession } from '../../sessions/projections.js';
 import { materializeProviderOperationPrepare } from '../services/provider-operation-prepare.js';
 import { terminalizeProviderOperation } from '../../jobs/provider-operation-terminalization.js';
+import type { RecoveryCoordinator } from '../services/recovery/index.js';
 
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
@@ -43,10 +44,13 @@ export function createExecutionServices({
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];
+  connectProviderOperationRecovery: (recoveryCoordinator: RecoveryCoordinator) => void;
   reconcileProviderOperationsAtStartup: (signal: AbortSignal) => Promise<void>;
+  startProviderOperationReconciler: () => void;
   stopProviderOperationReconciler: () => void;
 } {
   const services = new Map<string, ProjectRequestPort>();
+  let providerOperationRecovery: RecoveryCoordinator | null = null;
   const storeServicesRef = world.storeServicesRef;
   const providerOperationCleanup = new ProviderOperationCleanupRouter();
   world.operationRegistry.connectCleanup(providerOperationCleanup);
@@ -84,6 +88,14 @@ export function createExecutionServices({
         record.operation,
         record.prepareSource,
       ),
+    recoverLocalJob: (record, signal) => {
+      const recoveryCoordinator = providerOperationRecovery;
+      if (recoveryCoordinator === null) {
+        return Promise.reject(new Error('Provider operation recovery is not connected.'));
+      }
+      return recoveryCoordinator.recoverProviderOperationJob(record, signal);
+    },
+    completeLocalRecovery: (jobId) => providerOperationRecovery?.completeProviderOperationJobRecovery(jobId),
     terminalization: {
       terminalize: (record, directive) =>
         terminalizeProviderOperation(getProgressStore(), record, directive, runtime.time.now()),
@@ -156,7 +168,11 @@ export function createExecutionServices({
     getExecutionService,
     getRecoveryService,
     listExecutionServices,
+    connectProviderOperationRecovery: (recoveryCoordinator) => {
+      providerOperationRecovery = recoveryCoordinator;
+    },
     reconcileProviderOperationsAtStartup: (signal) => providerOperationReconciler.reconcileAtStartup(signal),
+    startProviderOperationReconciler: () => providerOperationReconciler.start(),
     stopProviderOperationReconciler: () => {
       unsubscribeProviderProxyControlEstablished();
       providerOperationReconciler.stop();

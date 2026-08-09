@@ -61,6 +61,11 @@ describe('coordinator startup ordering', () => {
       .mockImplementation(async () => {
         order.push('providerOperationReconciler.reconcileAtStartup');
       });
+    const startProviderOperationReconciler = vi
+      .spyOn(ProviderOperationReconciler.prototype, 'start')
+      .mockImplementation(() => {
+        order.push('providerOperationReconciler.start');
+      });
     const waitFreshUntil = vi.spyOn(ConsumerDriver.prototype, 'waitFreshUntil').mockImplementation(async () => {
       order.push('waitFreshUntil:start');
       await Promise.resolve();
@@ -95,6 +100,7 @@ describe('coordinator startup ordering', () => {
       expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'workflow', expect.any(Number));
       expect(runStartup).toHaveBeenCalledTimes(1);
       expect(reconcileProviderOperations).toHaveBeenCalledTimes(1);
+      expect(startProviderOperationReconciler).toHaveBeenCalledTimes(1);
       // Three-era boot: journal `waitFreshUntil` (Era II) resolves BEFORE
       // `jobsReconcile.runStartup`; KB corpus replay no longer waits in boot.
       const firstWaitResolved = order.indexOf('waitFreshUntil:resolved');
@@ -102,6 +108,9 @@ describe('coordinator startup ordering', () => {
       expect(order.indexOf('jobsReconcile.runStartup')).toBeGreaterThan(firstWaitResolved);
       expect(order.indexOf('providerOperationReconciler.reconcileAtStartup')).toBeLessThan(
         order.indexOf('jobsReconcile.runStartup'),
+      );
+      expect(order.indexOf('jobsReconcile.runStartup')).toBeLessThan(
+        order.indexOf('providerOperationReconciler.start'),
       );
     } finally {
       await coordinator.shutdown('test-cleanup');

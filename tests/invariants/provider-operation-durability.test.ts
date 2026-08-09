@@ -13,6 +13,7 @@ const PHASES = [
   'proxy-activation-pending',
   'executing',
   'prestart-cleanup-pending',
+  'local-recovery-pending',
   'activation-resolution-pending',
   'settlement-pending',
 ] as const satisfies readonly ProviderOperationPhase[];

@@ -124,6 +124,11 @@ type ProviderOperationReconcilerDeps = Readonly<{
   materializePrepare: (
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
   ) => Promise<ProviderOperationPrepareMaterializationResult> | ProviderOperationPrepareMaterializationResult;
+  recoverLocalJob(
+    record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
+    signal: AbortSignal,
+  ): Promise<void>;
+  completeLocalRecovery(jobId: string): void;
   terminalization: ProviderOperationTerminalizationPort;
   backendNamespace: string;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
@@ -212,10 +217,10 @@ export class ProviderOperationReconciler {
   }
 
   async reconcileAtStartup(signal: AbortSignal): Promise<void> {
-    this.start();
     const records = readProviderOperations(this.#deps.getProgressStore().getDb());
     for (const record of records) {
       signal.throwIfAborted();
+      if (record.phase === 'local-recovery-pending') continue;
       await this.reconcile(record, undefined, signal);
     }
   }
@@ -325,20 +330,13 @@ export class ProviderOperationReconciler {
       this.#attachments.set(operationKey(initial.operation), initial.operation);
     }
     let authority =
-      preferredAuthority !== undefined && sameAuthority(initial, preferredAuthority)
-        ? preferredAuthority
-        : this.#deps.authorityFor(initial);
-    if (authority === null && this.#deps.acquireAuthority !== undefined) {
-      const acquired = await this.#deps.acquireAuthority(initial, signal ?? NEVER_ABORTS);
-      if (acquired !== null && 'kind' in acquired) {
-        const current = await this.#finishContainmentDisappearance(initial, acquired.disappearanceReceipt);
-        if (current !== null) this.#schedule(TIMER_MIN_MS);
-        return;
-      }
-      authority = acquired;
-    }
+      preferredAuthority !== undefined && sameAuthority(initial, preferredAuthority) ? preferredAuthority : null;
 
     for (let transitionCount = 0; transitionCount < 8 && record !== null; transitionCount += 1) {
+      if (record.phase === 'local-recovery-pending') {
+        record = await this.#driveLocalRecovery(record, signal ?? NEVER_ABORTS);
+        continue;
+      }
       authority = authority !== null && sameAuthority(record, authority) ? authority : this.#deps.authorityFor(record);
       if (authority === null && this.#deps.acquireAuthority !== undefined) {
         const acquired = await this.#deps.acquireAuthority(record, signal ?? NEVER_ABORTS);
@@ -385,6 +383,30 @@ export class ProviderOperationReconciler {
       assertNever(record);
     }
     if (record !== null) this.#schedule(TIMER_MIN_MS);
+  }
+
+  async #driveLocalRecovery(
+    record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
+    signal: AbortSignal,
+  ): Promise<ProviderOperationRecord | null> {
+    const publication = this.#publications.get(operationKey(record.operation));
+    if (publication !== undefined) {
+      const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+      if (deleted.kind === 'conflict') return deleted.current;
+      this.#complete(record.operation, { kind: 'local-authorized', reason: record.reason });
+      return null;
+    }
+
+    try {
+      await this.#deps.recoverLocalJob(record, signal);
+      const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+      if (deleted.kind === 'conflict') return deleted.current;
+      this.#deps.completeLocalRecovery(record.operation.jobId);
+      return null;
+    } catch (error: unknown) {
+      await this.#recordRetry(record, error);
+      return null;
+    }
   }
 
   async #drivePrepare(
@@ -847,15 +869,23 @@ export class ProviderOperationReconciler {
       if (record.afterRelease.kind !== 'local-authorized') {
         return this.#terminalize(record, record.afterRelease);
       }
-      // Finding F replaces this existing local completion with its durable local-recovery handoff. Until that
-      // owner exists, keep the established local-authorized behavior rather than inventing another deletion path.
-      const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
-      if (deleted.kind === 'conflict') return deleted.current;
-      this.#complete(record.operation, {
-        kind: 'local-authorized',
-        reason: record.afterRelease.reason,
-      });
-      return null;
+      return this.#transition(
+        record,
+        providerOperationRecordSchema.parse({
+          version: record.version,
+          operation: record.operation,
+          locator: record.locator,
+          prepareAttemptNumber: record.prepareAttemptNumber,
+          prepareAttemptKey: record.prepareAttemptKey,
+          phase: 'local-recovery-pending',
+          recoveryIntent: 'recover-local',
+          reason: record.afterRelease.reason,
+          revision: record.revision + 1,
+          retryNotBeforeMs: this.#deps.time.now(),
+          retryCount: 0,
+          lastError: null,
+        }),
+      );
     } catch (error: unknown) {
       await this.#recordRetry(record, error);
       return null;
