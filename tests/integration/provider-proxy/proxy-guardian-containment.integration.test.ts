@@ -1008,7 +1008,7 @@ describe('provider proxy cancellation relinquishment against a real guardian pai
         supportsInterrupt: true,
         supportsProbe: false,
         openReplacement: async () => ({ hostRef, close: () => {} }),
-        interrupt: async () => false,
+        interrupt: async () => ({ kind: 'not-accepted' as const, reason: 'test refusal' }),
         probe: async () => {
           throw new Error('unconfirmed interaction unexpectedly probed the provider');
         },

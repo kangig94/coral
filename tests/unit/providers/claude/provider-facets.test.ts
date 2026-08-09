@@ -224,15 +224,21 @@ describe('claudeAppServerLifecycle.interrupt', () => {
     };
   }
 
-  it('confirms interruption only for a positive acknowledgement of the exact broker turn', async () => {
+  it('accepts an interrupt request only for a positive acknowledgement of the exact broker turn', async () => {
     const continuity = { brokerSessionKey: 'session-1', brokerTurnId: 'turn-1' };
     const mismatch = vi.fn(async () => ({ interrupted: true, brokerTurnId: 'turn-other' }));
     const negative = vi.fn(async () => ({ interrupted: false, brokerTurnId: 'turn-1' }));
     const exact = vi.fn(async () => ({ interrupted: true, brokerTurnId: 'turn-1' }));
 
-    await expect(claudeAppServerLifecycle.interrupt?.(transportWithRpc(mismatch), continuity)).resolves.toBe(false);
-    await expect(claudeAppServerLifecycle.interrupt?.(transportWithRpc(negative), continuity)).resolves.toBe(false);
-    await expect(claudeAppServerLifecycle.interrupt?.(transportWithRpc(exact), continuity)).resolves.toBe(true);
+    await expect(claudeAppServerLifecycle.interrupt?.(transportWithRpc(mismatch), continuity)).resolves.toMatchObject({
+      kind: 'not-accepted',
+    });
+    await expect(claudeAppServerLifecycle.interrupt?.(transportWithRpc(negative), continuity)).resolves.toMatchObject({
+      kind: 'not-accepted',
+    });
+    await expect(claudeAppServerLifecycle.interrupt?.(transportWithRpc(exact), continuity)).resolves.toEqual({
+      kind: 'accepted',
+    });
   });
 
   it('rejects incomplete continuity without issuing an interrupt', async () => {

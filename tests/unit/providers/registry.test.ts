@@ -161,7 +161,7 @@ async function invokeInterruptLeaseBoundary(
         name: 'negative-lease-boundary',
         interrupt: async (lease) => {
           await exercise(lease);
-          return true;
+          return { kind: 'accepted' };
         },
       },
       recovery: {

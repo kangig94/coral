@@ -1245,6 +1245,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       jobId,
       persistedContinuity,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,
+      onProviderTurnTerminal: () => {},
       kbRoot: this.deps.runtime.paths.coral.corpus.kbRoot,
       equippedTools,
       // Empty cwd is not a project root: treat it as absent so inject fragment

@@ -189,7 +189,7 @@ export function defineFakeProvider(
         compileStableHost: (host: FixtureExecutionPlan['host']) => host.serverSpec,
         interrupt: async (transport: AppServerTransport, continuity: ProviderContinuityBlob) => {
           await appServerLifecycle.interrupt(transport, continuity);
-          return true;
+          return { kind: 'accepted' as const };
         },
         ...(appServerLifecycle.probe === undefined ? {} : { probe: appServerLifecycle.probe }),
         ...(appServerLifecycle.onNotification === undefined

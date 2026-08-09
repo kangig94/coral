@@ -154,7 +154,9 @@ function providerAppServerSession<Plan extends ProviderExecutionPlan>(
     subscribe: transport.subscribe.bind(transport),
     closed: transport.closed,
     interrupt: async (continuity: NonNullable<ProviderRuntime['persistedContinuity']>) => {
-      if (capability.interrupt === undefined) return false;
+      if (capability.interrupt === undefined) {
+        return { kind: 'not-accepted' as const, reason: 'The provider does not support interruption.' };
+      }
       return capability.interrupt(transport, snapshotBoundaryData(continuity, 'Provider interrupt continuity'));
     },
   });
@@ -314,10 +316,14 @@ async function interruptBoundAppServer<Plan extends ProviderExecutionPlan>(
   hostRef: HostRef,
   continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
   input: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
-): Promise<boolean> {
-  if (tools.capability.interrupt === undefined) return false;
+): ReturnType<BoundProviderAppServerCapability['interrupt']> {
+  if (tools.capability.interrupt === undefined) {
+    return { kind: 'not-accepted', reason: 'The provider does not support interruption.' };
+  }
   const attached = await attachExpectedBoundSession(tools, hostRef, input, 'Provider interrupt host reference');
-  if (attached === null) return false;
+  if (attached === null) {
+    return { kind: 'not-accepted', reason: 'The active provider host could not be attached.' };
+  }
   try {
     return await attached.session.interrupt(continuity);
   } finally {

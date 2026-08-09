@@ -146,7 +146,7 @@ function capability(overrides: Partial<BoundProviderAppServerCapability> = {}): 
     supportsInterrupt: false,
     supportsProbe: true,
     openReplacement: vi.fn(),
-    interrupt: vi.fn(async () => false),
+    interrupt: vi.fn(async () => ({ kind: 'not-accepted' as const, reason: 'test refusal' })),
     probe: vi.fn(async () => ({ kind: 'probed' as const, result: { resumable: true } })),
     ...overrides,
   };

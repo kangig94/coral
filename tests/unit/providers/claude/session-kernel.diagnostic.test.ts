@@ -85,7 +85,8 @@ function makeLease(): MockLease {
       };
     },
     closed: new Promise<Error | void>(() => {}),
-    interrupt: (continuity) => Promise.resolve(rpcMock('turn/interrupt', continuity)).then(() => true),
+    interrupt: (continuity) =>
+      Promise.resolve(rpcMock('turn/interrupt', continuity)).then(() => ({ kind: 'accepted' as const })),
     rpcMock,
     emit(message) {
       notificationHandler?.(message);
@@ -116,6 +117,7 @@ function makeRuntime(controller = new AbortController()): ClaudeRuntime {
       checkpoint: vi.fn(),
       transportClosed: vi.fn(),
     },
+    onProviderTurnTerminal: vi.fn(),
     kbRoot: '/mock/kb',
     executionPlan: TEST_CLAUDE_PLAN,
   };
@@ -311,7 +313,7 @@ describe('Claude session-kernel turn failure diagnostics', () => {
       }) as AppServerSession['rpc'],
       interrupt: async (continuity) => {
         await lease.rpc('turn/interrupt', continuity);
-        return true;
+        return { kind: 'accepted' };
       },
     };
     const runtime = makeRuntime(controller);
@@ -346,6 +348,14 @@ describe('Claude session-kernel turn failure diagnostics', () => {
           brokerTurnId: 'claude-turn-diagnostic',
         });
       });
+      lease.emit({
+        method: brokerNotificationMethods.turnFailed,
+        params: {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          brokerTurnId: 'claude-turn-diagnostic',
+          message: 'Claude child exited after interruption.',
+        },
+      });
 
       const terminal = terminalEvent(await eventsPromise);
       startGate.resolve({
@@ -369,7 +379,10 @@ describe('Claude session-kernel turn failure diagnostics', () => {
   it('waits for delayed turn activation and retries when the first in-flight interrupt reports false', async () => {
     const controller = new AbortController();
     const startGate = createDeferred<Record<string, unknown>>();
-    const interrupt = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const interrupt = vi
+      .fn()
+      .mockResolvedValueOnce({ kind: 'not-accepted', reason: 'turn not active yet' })
+      .mockResolvedValueOnce({ kind: 'accepted' });
     const rpcMock = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'session/ensure') {
         return {
@@ -407,13 +420,21 @@ describe('Claude session-kernel turn failure diagnostics', () => {
         sessionId: 'claude-session-diagnostic',
         conversationRef: 'claude-session-diagnostic',
       });
-      const terminal = terminalEvent(await eventsPromise);
-
-      expect(interrupt).toHaveBeenCalledTimes(2);
+      await vi.waitFor(() => expect(interrupt).toHaveBeenCalledTimes(2));
       expect(interrupt).toHaveBeenNthCalledWith(2, {
         brokerSessionKey: 'broker-claude-diagnostic',
         brokerTurnId: 'claude-turn-diagnostic',
       });
+      lease.emit({
+        method: brokerNotificationMethods.turnFailed,
+        params: {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          brokerTurnId: 'claude-turn-diagnostic',
+          message: 'Claude child exited after interruption.',
+        },
+      });
+      const terminal = terminalEvent(await eventsPromise);
+
       expect(terminal.terminal.outcome).toEqual({ kind: 'aborted', reason: 'signal_abort' });
     } finally {
       clearLease();
@@ -421,7 +442,7 @@ describe('Claude session-kernel turn failure diagnostics', () => {
   });
 
   it.each([
-    ['persistent false', () => Promise.resolve(false)],
+    ['persistent refusal', () => Promise.resolve({ kind: 'not-accepted' as const, reason: 'test refusal' })],
     ['throwing', () => Promise.reject(new Error('interrupt unavailable'))],
   ] as const)(
     'retains the active recovery checkpoint when %s cancellation cannot be confirmed',
@@ -745,7 +766,7 @@ describe('Claude session-kernel turn failure diagnostics', () => {
       ...makeLease(),
       rpc: rpcMock as unknown as AppServerSession['rpc'],
       rpcMock,
-      interrupt: async () => true,
+      interrupt: vi.fn(async () => ({ kind: 'accepted' as const })),
     };
     const runtime = makeRuntime(controller);
     const clearLease = bindSession(runtime, lease);
@@ -771,6 +792,16 @@ describe('Claude session-kernel turn failure diagnostics', () => {
         },
       });
       controller.abort();
+
+      await vi.waitFor(() => expect(lease.interrupt).toHaveBeenCalledOnce());
+      lease.emit({
+        method: brokerNotificationMethods.turnFailed,
+        params: {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          brokerTurnId: 'claude-turn-diagnostic',
+          message: 'Claude child exited after interruption.',
+        },
+      });
 
       const terminal = terminalEvent(await eventsPromise);
 

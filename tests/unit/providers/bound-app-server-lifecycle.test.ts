@@ -95,6 +95,7 @@ function harness(
     kbRoot: '/kb',
     onAppServerWaiting: vi.fn(),
     onHostRef: vi.fn(),
+    onProviderTurnTerminal: vi.fn(),
   };
   if (prepared.kind !== 'app-server') throw new Error('Expected app-server prepared execution.');
   return { bound: result.value, close, closed, prepared, runtime };

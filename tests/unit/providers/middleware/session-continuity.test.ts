@@ -90,6 +90,7 @@ function createAppServerRuntime(
     ...createRuntimeCommon(continuityBridge),
     transport: 'app-server',
     appServerSession,
+    onProviderTurnTerminal: () => {},
   };
 }
 
@@ -506,7 +507,7 @@ describe('sessionContinuity', () => {
       rpc: async <R>() => ({}) as R,
       subscribe: () => () => {},
       closed: closed.promise,
-      interrupt: async () => false,
+      interrupt: async () => ({ kind: 'not-accepted', reason: 'test refusal' }),
     };
     const provider: Provider<CodexExecutionPlan, CodexAppServerRuntime> = async function* blockedProvider() {
       await releaseProvider.promise;

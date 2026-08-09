@@ -172,8 +172,18 @@ export interface AppServerTransport {
   readonly closed: Promise<Error | void>;
 }
 
+export type ProviderInterruptRequestOutcome =
+  | Readonly<{ kind: 'accepted' }>
+  | Readonly<{ kind: 'not-accepted'; reason: string }>;
+
+export type ProviderTurnTerminalEvidence = Readonly<{
+  kind: 'provider-turn-terminal';
+  providerTurnId: string;
+  status: 'interrupted' | 'completed' | 'failed';
+}>;
+
 export interface AppServerSession extends AppServerTransport {
-  interrupt(continuity: ProviderContinuityBlob): Promise<boolean>;
+  interrupt(continuity: ProviderContinuityBlob): Promise<ProviderInterruptRequestOutcome>;
 }
 
 export type ProviderCurationRequest = {
@@ -488,6 +498,7 @@ export type ProviderAppServerRuntime<Plan extends ProviderExecutionPlan = Provid
   ProviderRuntimeCommon<Plan> & {
     readonly transport: 'app-server';
     readonly appServerSession: AppServerSession;
+    onProviderTurnTerminal(evidence: ProviderTurnTerminalEvidence): void;
   };
 
 export type ProviderStandaloneRuntime<Plan extends ProviderExecutionPlan = ProviderExecutionPlan> =
@@ -544,7 +555,7 @@ export interface ProviderAppServerCapability<
   readonly name: string;
   planHost(input: ProviderHostPlanningInput<Access>): Plan['host'];
   compileStableHost(host: Plan['host']): ProviderServerSpec;
-  interrupt?(session: AppServerTransport, continuity: ProviderContinuityBlob): Promise<boolean>;
+  interrupt?(session: AppServerTransport, continuity: ProviderContinuityBlob): Promise<ProviderInterruptRequestOutcome>;
   probe?(
     session: AppServerTransport,
     continuity: ProviderContinuityBlob,

@@ -1,4 +1,10 @@
-import type { AppServerSession, AppServerTransport, ProviderRuntime } from '../contract.js';
+import type {
+  AppServerSession,
+  AppServerTransport,
+  ProviderInterruptRequestOutcome,
+  ProviderRuntime,
+} from '../contract.js';
+import { isRecord } from '../../infra/json.js';
 import { snapshotBoundaryData, snapshotProviderResult } from './snapshot.js';
 
 function dataMember(receiver: object, key: string, label: string): unknown {
@@ -55,9 +61,22 @@ export function wrapAppServerSession(session: AppServerSession, label: string): 
     interrupt: (continuity: NonNullable<ProviderRuntime['persistedContinuity']>) =>
       Promise.resolve(
         interrupt.call(session, snapshotBoundaryData(continuity, `${label} interrupt continuity`)) as unknown,
-      ).then((acted) => {
-        if (typeof acted !== 'boolean') throw new TypeError(`${label}.interrupt must resolve to a boolean.`);
-        return acted;
+      ).then((outcome) => {
+        const canonical = snapshotBoundaryData(outcome, `${label} interrupt outcome`);
+        if (!isRecord(canonical)) {
+          throw new TypeError(`${label}.interrupt must resolve to a ProviderInterruptRequestOutcome.`);
+        }
+        if (canonical.kind === 'accepted' && Object.keys(canonical).length === 1) {
+          return canonical as ProviderInterruptRequestOutcome;
+        }
+        if (
+          canonical.kind === 'not-accepted' &&
+          typeof canonical.reason === 'string' &&
+          Object.keys(canonical).length === 2
+        ) {
+          return canonical as ProviderInterruptRequestOutcome;
+        }
+        throw new TypeError(`${label}.interrupt must resolve to a ProviderInterruptRequestOutcome.`);
       }),
   });
 }

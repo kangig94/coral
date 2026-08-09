@@ -682,6 +682,7 @@ function buildExecutionRuntime(
   prepared: ProxyPreparedAppServerOperation,
   signal: AbortSignal,
   onHostRef: BoundProviderAppServerExecutionRuntime['onHostRef'],
+  onProviderTurnTerminal: BoundProviderAppServerExecutionRuntime['onProviderTurnTerminal'],
 ): BoundProviderAppServerExecutionRuntime {
   return {
     transport: 'app-server',
@@ -708,6 +709,7 @@ function buildExecutionRuntime(
     // proxy has no store to resolve it from independently. Reported gap, not a silent truncation.
     onAppServerWaiting: () => {},
     onHostRef,
+    onProviderTurnTerminal,
   };
 }
 
@@ -1008,9 +1010,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
           }),
         ]);
         if (step.done) throw new Error('Provider event stream ended without terminal or suspension.');
-        if (step.value.kind === 'terminal') {
-          entry.cancellationEvidence = { kind: 'interrupt-confirmed' };
-        } else if (step.value.kind === 'suspended') {
+        if (step.value.kind === 'suspended') {
           entry.cancellationEvidence = { kind: 'interrupt-unconfirmed', reason: step.value.reason };
         }
         const emission = proxy.emitProviderEvent(key, step.value);
@@ -1119,6 +1119,9 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
               entry.abortController.signal.throwIfAborted();
               entry.startCommitted = true;
               settle({ kind: 'started', hostRef });
+            },
+            () => {
+              entry.cancellationEvidence = { kind: 'interrupt-confirmed' };
             },
           );
           const iterable = preparedExecution.execute(executionRuntime);

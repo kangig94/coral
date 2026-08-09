@@ -9,6 +9,8 @@ import type {
   ProviderCurationUsageRuntime,
   ProviderEventBody,
   ProviderPreflightInput,
+  ProviderInterruptRequestOutcome,
+  ProviderTurnTerminalEvidence,
   ProviderRecoveryContract,
   ProviderRequest,
   ProviderRuntime,
@@ -80,7 +82,7 @@ export type BoundProviderHostPreparationInput = Omit<BoundProviderExecutionPrepa
 
 type BoundProviderExecutionRuntimeCommon = Omit<
   ProviderRuntime<never>,
-  'transport' | 'executionPlan' | 'appServerSession' | 'runCli'
+  'transport' | 'executionPlan' | 'appServerSession' | 'runCli' | 'onProviderTurnTerminal'
 > &
   Readonly<{
     jobId: string;
@@ -91,6 +93,7 @@ export type BoundProviderAppServerExecutionRuntime = BoundProviderExecutionRunti
     transport: 'app-server';
     onAppServerWaiting(observation: { provider: string }): void;
     onHostRef(hostRef: HostRef): void;
+    onProviderTurnTerminal(evidence: ProviderTurnTerminalEvidence): void;
   }>;
 
 export type BoundProviderStandaloneExecutionRuntime = BoundProviderExecutionRuntimeCommon &
@@ -107,7 +110,7 @@ export interface BoundProviderAppServerCapability {
     hostRef: HostRef,
     continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
     input: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
-  ): Promise<boolean>;
+  ): Promise<ProviderInterruptRequestOutcome>;
   probe(
     hostRef: HostRef,
     continuity: NonNullable<ProviderRuntime['persistedContinuity']>,

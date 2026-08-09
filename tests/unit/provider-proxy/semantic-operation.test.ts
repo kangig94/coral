@@ -42,7 +42,16 @@ import type {
   BoundProviderAppServerCapability,
   BoundProviderAppServerExecutionRuntime,
 } from '#src/providers/bound-provider-contract.js';
-import type { HostRef, ProviderEventBody, ProviderServerSpec } from '#src/providers/contract.js';
+import type {
+  AppServerSession,
+  HostRef,
+  ProviderAppServerRuntime,
+  ProviderEventBody,
+  ProviderServerSpec,
+} from '#src/providers/contract.js';
+import { codexTurnKernel } from '#src/providers/codex/thread-kernel.js';
+import { codexAppServerLifecycle } from '#src/providers/codex/provider-facets.js';
+import type { CodexExecutionPlan } from '#src/providers/codex/execution-plan.js';
 import {
   MAX_PROVIDER_REPLAY_EVENTS,
   MAX_PROVIDER_REPLAY_BYTES,
@@ -87,6 +96,7 @@ import {
   asJointContainmentReceipt,
   asReservation,
 } from '#tests/helpers/provider-proxy-correlation.js';
+import { TEST_CODEX_PLAN } from '#tests/helpers/provider-credentials.js';
 
 const runtime: Runtime = createRealRuntime('prod');
 
@@ -576,7 +586,7 @@ describe('semantic-operation runtime: stop() racing a still-draining emit', () =
 
 describe('semantic-operation runtime: bounded cancellation', () => {
   it('force-closes the tracked host and lets transport closure settle a pull that ignores abort', async () => {
-    const { proxy, ledger } = createTestProxy();
+    const { proxy, ledger, emittedEvents } = createTestProxy();
     const key = testKey();
     const prepared = preparedFixture();
     prepareAndActivate(ledger, key, prepared);
@@ -730,6 +740,11 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
               if (execRuntime.signal.aborted) resolve();
               else execRuntime.signal.addEventListener('abort', () => resolve(), { once: true });
             });
+            execRuntime.onProviderTurnTerminal({
+              kind: 'provider-turn-terminal',
+              providerTurnId: 'turn-a',
+              status: 'interrupted',
+            });
             yield {
               kind: 'terminal',
               terminal: { content: '', durationMs: 1, outcome: { kind: 'aborted', reason: 'signal_abort' } },
@@ -744,10 +759,15 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
           supportsInterrupt: true,
           executionHostRef: hostRef,
           openReplacement: async () => ({ hostRef, close: vi.fn() }),
-          execute: async function* () {
+          execute: async function* (execRuntime) {
             yield { kind: 'progress', message: 'sibling-ready' };
             await continueB.promise;
             yield { kind: 'progress', message: 'sibling-after-cancel' };
+            execRuntime.onProviderTurnTerminal({
+              kind: 'provider-turn-terminal',
+              providerTurnId: 'turn-b',
+              status: 'completed',
+            });
             yield terminalCompleted;
           },
         }),
@@ -783,6 +803,64 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
     expect(shared.rootAlive(), 'shared sibling root became null after cancelling its peer').toBe(true);
     expect(shared.forceClose).not.toHaveBeenCalled();
     await semantic.host.stop({ key: operationB, cause: 'user_abort' });
+  });
+
+  it('does not authenticate cancellation from a generic provider terminal', async () => {
+    const { proxy, ledger } = createTestProxy();
+    const operationA = testKey('op-a');
+    const prepared = preparedFixture();
+    prepareAndActivate(ledger, operationA, prepared);
+    const hostRef = sharedHostRef();
+    const shared = sharedHostAuthority();
+    const onRelinquish = vi.fn();
+
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        supportsInterrupt: true,
+        executionHostRef: hostRef,
+        openReplacement: async () => ({ hostRef, close: vi.fn() }),
+        execute: async function* (execRuntime) {
+          await new Promise<void>((resolve) => {
+            if (execRuntime.signal.aborted) resolve();
+            else execRuntime.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          yield {
+            kind: 'terminal',
+            terminal: { content: '', durationMs: 1, outcome: { kind: 'aborted', reason: 'signal_abort' } },
+            diagnostics: {},
+          };
+        },
+      }),
+    });
+
+    const semantic = createSemanticOperationRuntime({
+      runtime,
+      hostAuthority: shared.authority,
+      getProxy: () => proxy,
+      onRelinquish,
+    });
+    await semantic.ensureProviderRoot(operationA, prepared);
+    const started = semantic.host.start({ key: operationA, prepared });
+    await expect(started.result).resolves.toEqual({ kind: 'started', hostRef });
+
+    const stopFailure = await Promise.resolve(semantic.host.stop({ key: operationA, cause: 'user_abort' })).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    let siblingAdmissionFailure: unknown = null;
+    try {
+      void semantic.stage(testKey('op-b'), prepared).result.catch(() => {});
+    } catch (error: unknown) {
+      siblingAdmissionFailure = error;
+    }
+
+    expect(siblingAdmissionFailure, 'a generic terminal left the shared root admissible').toMatchObject({
+      code: 'semantic_operation_admission_closed',
+    });
+    expect(stopFailure).toMatchObject({ code: 'semantic_operation_cancellation_unconfirmed' });
+    expect(onRelinquish).toHaveBeenCalledWith(stopFailure);
+    expect(shared.forceClose).not.toHaveBeenCalled();
   });
 
   it('closes admission and requests whole-set relinquishment after an unconfirmed interrupt (C3-M8)', async () => {
@@ -836,6 +914,145 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
     expect(onRelinquish).toHaveBeenCalledOnce();
     expect(onRelinquish).toHaveBeenCalledWith(stopFailure);
     expect(shared.forceClose).not.toHaveBeenCalled();
+  });
+
+  it('does not reuse a Codex root after a wrong-turn terminal and the interrupt deadline', async () => {
+    const { proxy, ledger } = createTestProxy();
+    const operationA = testKey('op-a');
+    const prepared = preparedFixture({
+      provider: 'codex',
+      binding: { provider: 'codex', kind: 'account', binding: {} },
+      request: {
+        action: 'resume',
+        sessionId: 'session-1',
+        conversationRef: 'thread-1',
+        prompt: 'hello',
+        cwd: '/workspace',
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      persistedContinuity: { cwd: '/workspace', threadId: 'thread-1' },
+    });
+    prepareAndActivate(ledger, operationA, prepared);
+    const hostRef: HostRef = {
+      provider: 'codex',
+      fingerprint: 'b'.repeat(64),
+      instanceId: 'shared-codex-instance',
+      leaseMode: 'job-exclusive',
+      ownerJobId: 'job-1',
+    };
+    const shared = sharedHostAuthority();
+    const requestedDelaysMs: number[] = [];
+    const kernelAbortController = new AbortController();
+    const notifications: {
+      handler: ((message: { method: string; params?: Record<string, unknown> }) => void) | null;
+    } = { handler: null };
+    const rpc = vi.fn(async (method: string): Promise<unknown> => {
+      if (method === 'config/read') return { config: {} };
+      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
+      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
+      if (method === 'turn/interrupt') return await new Promise<never>(() => {});
+      throw new Error(`Unexpected Codex RPC: ${method}`);
+    });
+    const lease: AppServerSession = {
+      rpc: rpc as AppServerSession['rpc'],
+      subscribe: (handler) => {
+        notifications.handler = handler;
+        return () => {
+          notifications.handler = null;
+        };
+      },
+      closed: new Promise<Error | void>(() => {}),
+      interrupt: (continuity) => codexAppServerLifecycle.interrupt!(lease, continuity),
+    };
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        name: 'codex',
+        supportsInterrupt: true,
+        executionHostRef: hostRef,
+        openReplacement: async () => ({ hostRef, close: vi.fn() }),
+        execute: async function* (execRuntime) {
+          const codexRuntime: ProviderAppServerRuntime<CodexExecutionPlan> = {
+            transport: 'app-server',
+            signal: kernelAbortController.signal,
+            time: {
+              now: () => Date.now(),
+              setTimeout: (callback, delayMs) => {
+                requestedDelaysMs.push(delayMs);
+                return globalThis.setTimeout(callback, 5);
+              },
+              clearTimeout: (handle) => {
+                if (handle !== null) globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>);
+              },
+            },
+            storage: execRuntime.storage,
+            ...(execRuntime.env === undefined ? {} : { env: execRuntime.env }),
+            ids: execRuntime.ids,
+            persistedContinuity: { cwd: '/workspace', threadId: 'thread-1' },
+            continuityBridge: { checkpoint: () => {}, transportClosed: () => {} },
+            kbRoot: execRuntime.kbRoot,
+            ...(execRuntime.coralProjects === undefined ? {} : { coralProjects: execRuntime.coralProjects }),
+            ...(execRuntime.projectSource === undefined ? {} : { projectSource: execRuntime.projectSource }),
+            appServerSession: lease,
+            onProviderTurnTerminal: execRuntime.onProviderTurnTerminal,
+            executionPlan: TEST_CODEX_PLAN,
+          };
+          for await (const event of codexTurnKernel(prepared.request, codexRuntime)) {
+            if (event.kind === 'terminal' || event.kind === 'suspended') {
+              yield event;
+              return;
+            }
+          }
+          throw new Error('Codex kernel ended without a terminal or suspended event.');
+        },
+      }),
+    });
+    const onRelinquish = vi.fn();
+    const semantic = createSemanticOperationRuntime({
+      runtime,
+      hostAuthority: shared.authority,
+      getProxy: () => proxy,
+      onRelinquish,
+    });
+    await semantic.ensureProviderRoot(operationA, prepared);
+    const started = semantic.host.start({ key: operationA, prepared });
+    await expect(started.result).resolves.toEqual({ kind: 'started', hostRef });
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalledWith('turn/start', expect.any(Object)));
+    const notify = notifications.handler;
+    if (notify === null) throw new Error('Codex notification handler was not installed.');
+    notify({
+      method: 'turn/started',
+      params: { threadId: 'thread-1', turn: { id: 'turn-1' } },
+    });
+    await Promise.resolve();
+
+    notify({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-1',
+        turn: { id: 'turn-other', status: 'interrupted' },
+      },
+    });
+    const stopPromise = Promise.resolve(semantic.host.stop({ key: operationA, cause: 'restart' })).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    kernelAbortController.abort('restart');
+    const stopFailure = await stopPromise;
+    let siblingAdmissionFailure: unknown = null;
+    try {
+      void semantic.stage(testKey('op-b'), prepared).result.catch(() => {});
+    } catch (error: unknown) {
+      siblingAdmissionFailure = error;
+    }
+
+    expect(requestedDelaysMs).toContain(10_000);
+    expect(siblingAdmissionFailure, 'a sibling was admitted after Codex cessation remained unconfirmed').toMatchObject({
+      code: 'semantic_operation_admission_closed',
+    });
+    expect(stopFailure).toMatchObject({ code: 'semantic_operation_cancellation_unconfirmed' });
+    expect(onRelinquish).toHaveBeenCalledOnce();
   });
 });
 

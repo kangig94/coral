@@ -1,11 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { PrintSessionController } from '#src/providers/claude/appserver/print-controller.js';
+import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
+import { claudeSessionKernel } from '#src/providers/claude/session-kernel.js';
 import type {
   ControllerNotification,
   ClaudePrintChild,
   SpawnClaudePrintChildOptions,
 } from '#src/providers/claude/appserver/session-contract.js';
+import type { AppServerSession, ProviderAppServerRuntime, ProviderRequest } from '#src/providers/contract.js';
+import type { ClaudeExecutionPlan } from '#src/providers/claude/execution-plan.js';
+import { collectProviderEvents } from '#src/providers/stream.js';
+import { TEST_CLAUDE_PLAN } from '../../../../helpers/provider-credentials.js';
 
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
 const testControlRequestTimer = {
@@ -262,6 +268,149 @@ describe('PrintSessionController', () => {
     );
 
     await controller.shutdown();
+  });
+
+  it('keeps the controller turn active after interrupt acknowledgement and emits evidence only after result', async () => {
+    const child = new FakeClaudePrintChild();
+    const controller = createController(child);
+    const abortController = new AbortController();
+    const onProviderTurnTerminal = vi.fn();
+    const lifecycleInterrupt = claudeAppServerLifecycle.interrupt;
+    if (lifecycleInterrupt === undefined) {
+      throw new Error('Claude app-server lifecycle does not support interruption.');
+    }
+    let notificationHandler: Parameters<AppServerSession['subscribe']>[0] | null = null;
+    let resolveInterruptAcknowledged!: () => void;
+    const interruptAcknowledged = new Promise<void>((resolve) => {
+      resolveInterruptAcknowledged = resolve;
+    });
+
+    const lease: AppServerSession = {
+      rpc: (async (method: string, params: Record<string, unknown>) => {
+        const { brokerSessionKey: _brokerSessionKey, ...controllerParams } = params;
+        if (method === 'session/ensure') {
+          return {
+            ...(await controller.sessionEnsure(controllerParams as Parameters<typeof controller.sessionEnsure>[0])),
+            brokerSessionKey: 'broker-1',
+          };
+        }
+        if (method === 'turn/start') {
+          return {
+            ...(await controller.turnStart(controllerParams as Parameters<typeof controller.turnStart>[0])),
+            brokerSessionKey: 'broker-1',
+          };
+        }
+        if (method === 'turn/interrupt') {
+          return controller.turnInterrupt(controllerParams as Parameters<typeof controller.turnInterrupt>[0]);
+        }
+        throw new Error(`Unexpected controller-spanning RPC: ${method}`);
+      }) as AppServerSession['rpc'],
+      subscribe(handler) {
+        notificationHandler = handler;
+        return controller.subscribeNotifications((notification) => {
+          notificationHandler?.({
+            method: notification.method,
+            params: { brokerSessionKey: 'broker-1', ...notification.params },
+          });
+        });
+      },
+      closed: new Promise(() => {}),
+      async interrupt(continuity) {
+        const outcome = await lifecycleInterrupt(lease, continuity);
+        resolveInterruptAcknowledged();
+        return outcome;
+      },
+    };
+    const request: ProviderRequest = {
+      action: 'exec',
+      sessionId: TEST_SESSION_ID,
+      name: 'claude',
+      prompt: 'hello',
+      cwd: '/workspace',
+      bypassPermissions: false,
+      coralEnv: {},
+    };
+    const runtime: ProviderAppServerRuntime<ClaudeExecutionPlan> = {
+      transport: 'app-server',
+      signal: abortController.signal,
+      appServerSession: lease,
+      time: {
+        now: () => 1_000,
+        setTimeout: () => ({ unref: () => {} }),
+        clearTimeout: () => {},
+      } as ProviderAppServerRuntime<ClaudeExecutionPlan>['time'],
+      storage: {
+        existsSync: () => false,
+        readFileSync: () => '',
+        statSync: () => ({}),
+        readdirSync: () => [],
+      } as unknown as ProviderAppServerRuntime<ClaudeExecutionPlan>['storage'],
+      ids: { uuid: () => 'turn-1', sha256: () => 'sha256:test' },
+      continuityBridge: { checkpoint: vi.fn(), transportClosed: vi.fn() },
+      onProviderTurnTerminal,
+      kbRoot: '/mock/kb',
+      executionPlan: TEST_CLAUDE_PLAN,
+    };
+
+    try {
+      const eventsPromise = collectProviderEvents(claudeSessionKernel(request, runtime));
+      await waitForWrite(child, 0);
+      const initRequest = parseWrite(child, 0);
+      child.emitStdout({
+        type: 'system',
+        subtype: 'init',
+        session_id: TEST_SESSION_ID,
+        model: 'claude-sonnet-test',
+      });
+      child.emitStdout({
+        type: 'control_response',
+        response: { subtype: 'success', request_id: initRequest.request_id, response: {} },
+      });
+      await waitForWrite(child, 1);
+      expect(controller.hasActiveTurn()).toBe(true);
+
+      abortController.abort();
+      await waitForWrite(child, 2);
+      const interruptRequest = parseWrite(child, 2);
+      expect(interruptRequest).toMatchObject({
+        type: 'control_request',
+        request: { subtype: 'interrupt' },
+      });
+      child.emitStdout({
+        type: 'control_response',
+        response: { subtype: 'success', request_id: interruptRequest.request_id, response: {} },
+      });
+      await interruptAcknowledged;
+
+      expect(controller.hasActiveTurn()).toBe(true);
+      expect(onProviderTurnTerminal).not.toHaveBeenCalled();
+
+      child.emitStdout({
+        type: 'result',
+        subtype: 'success',
+        session_id: TEST_SESSION_ID,
+        result: 'interrupted result',
+        is_error: false,
+      });
+
+      expect(controller.hasActiveTurn()).toBe(false);
+      await expect(eventsPromise).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'terminal',
+            terminal: expect.objectContaining({ outcome: { kind: 'aborted', reason: 'signal_abort' } }),
+          }),
+        ]),
+      );
+      expect(onProviderTurnTerminal).toHaveBeenCalledOnce();
+      expect(onProviderTurnTerminal).toHaveBeenCalledWith({
+        kind: 'provider-turn-terminal',
+        providerTurnId: 'turn-1',
+        status: 'completed',
+      });
+    } finally {
+      await controller.shutdown();
+    }
   });
 
   it('auto-allows print-mode permission requests when permissions are bypassed', async () => {

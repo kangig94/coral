@@ -351,7 +351,7 @@ async function confirmOneShotCancellation(
 ): Promise<void> {
   let interruptError: unknown;
   try {
-    if (await lease.interrupt(exactTurn)) return;
+    if ((await lease.interrupt(exactTurn)).kind === 'accepted') return;
   } catch (error) {
     interruptError = error;
   }
