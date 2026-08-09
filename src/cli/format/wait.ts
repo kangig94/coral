@@ -121,7 +121,7 @@ export function formatWaitCarrierInterrupted(event: WaitCarrierInterruptedEvent)
 export function formatWaitWaiting(
   event: WaitWaitingEvent,
   cursor: string | null,
-  resumeJobIds: readonly string[] = [],
+  resumeJobIds: readonly string[] = event.waitingJobIds,
 ): string {
   const jobs = event.waitingJobIds.length > 0 ? event.waitingJobIds.join(', ') : 'none';
   const waitingCount = event.waitingJobIds.length;
@@ -129,7 +129,8 @@ export function formatWaitWaiting(
     resumeJobIds.length > 0 && waitingCount > 0
       ? `Still waiting on ${waitingCount} ${waitingCount === 1 ? 'job' : 'jobs'}.`
       : `Still waiting; jobs: ${jobs}.`;
-  const resumeArgs = resumeJobIds.length > 0 ? ` ${resumeJobIds.join(' ')}` : '';
+  const continuation =
+    resumeJobIds.length > 0 ? ` Run coral-cli wait jobs ${resumeJobIds.join(' ')} to continue waiting.` : '';
   // Named as unconfirmed rather than folded into the waiting list: these are the jobs nothing could answer
   // for, and a reader deciding whether to keep waiting needs that distinction.
   const unknown =
@@ -137,10 +138,7 @@ export function formatWaitWaiting(
       ? undefined
       : `Carrier unconfirmed for: ${event.carrierUnknownJobIds.join(', ')}.`;
 
-  return appendCursor(
-    joinLines([`${status} Run coral-cli wait jobs${resumeArgs} again to continue waiting.`, unknown]),
-    cursor,
-  );
+  return appendCursor(joinLines([`${status}${continuation}`, unknown]), cursor);
 }
 
 export function renderWaitLine(text: string, ctx: WaitRenderContext): string {

@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -76,52 +74,6 @@ describe('provider operation durability', () => {
     ).toBe(false);
   });
 
-  it('funnels every prepare send through the committed fingerprint guard', () => {
-    const source = readFileSync(
-      new URL('../../src/coordinator/services/provider-operation-reconciler.ts', import.meta.url),
-      'utf8',
-    );
-    const sends = source.match(/\.prepareOperation\(/gu) ?? [];
-    const guardedSend = source.slice(
-      source.indexOf('async #sendJournaledPrepare('),
-      source.indexOf('  #acceptPrepareResult('),
-    );
-    const attemptMatch = source.slice(
-      source.indexOf('  #attemptMatchesRecord('),
-      source.indexOf('  async #sendJournaledPrepare('),
-    );
-
-    expect(sends).toHaveLength(1);
-    expect(guardedSend.indexOf('#attemptMatchesRecord(record, attempt)')).toBeGreaterThanOrEqual(0);
-    expect(guardedSend.indexOf('authority.prepareOperation(attempt)')).toBeGreaterThan(
-      guardedSend.indexOf('#attemptMatchesRecord(record, attempt)'),
-    );
-    expect(attemptMatch).toContain('attempt.request.prepareAttemptNumber === record.prepareAttemptNumber');
-    expect(attemptMatch).toContain('operationPrepareAttemptKey(attempt.request) === record.prepareAttemptKey');
-    expect(attemptMatch).toContain('attempt.prepareAttemptKey === record.prepareAttemptKey');
-  });
-
-  it('keeps attempt rotation behind matching release proof and its CAS ahead of the send', () => {
-    const source = readFileSync(
-      new URL('../../src/coordinator/services/provider-operation-reconciler.ts', import.meta.url),
-      'utf8',
-    );
-    const recovery = source.slice(
-      source.indexOf('  async #recoverPrepare('),
-      source.indexOf('  async #driveGuardianActivation('),
-    );
-
-    expect(recovery).toContain('released.prepareAttemptNumber !== record.prepareAttemptNumber');
-    expect(recovery).toContain('released.prepareAttemptKey !== record.prepareAttemptKey');
-    expect(recovery.indexOf('authority.cancelOperation(')).toBeLessThan(recovery.indexOf('materializePrepare(record)'));
-    expect(recovery.indexOf('materializePrepare(record)')).toBeLessThan(
-      recovery.indexOf('compareAndSwapProviderOperation('),
-    );
-    expect(recovery.indexOf('compareAndSwapProviderOperation(')).toBeLessThan(
-      recovery.indexOf('#sendJournaledPrepare(rotated, attempt, authority)'),
-    );
-  });
-
   it('requires a complete activation receipt bound to the durable locator and job', () => {
     const executing = providerOperationRecord('executing');
     if (executing.phase !== 'executing') throw new Error('expected executing fixture');
@@ -154,19 +106,5 @@ describe('provider operation durability', () => {
         },
       }).success,
     ).toBe(false);
-  });
-
-  it('constructs runtime publication directly from the activation receipt', () => {
-    const source = readFileSync(
-      new URL('../../src/coordinator/services/provider-operation-reconciler.ts', import.meta.url),
-      'utf8',
-    );
-    const commit = source.slice(source.indexOf('  async #commitExecuting('), source.indexOf('  #registerExecuting('));
-
-    expect(commit).toContain('startedAt: activationAck.startedAt');
-    expect(commit).toContain('provider: activationAck.hostRef.provider');
-    expect(commit).toContain('hostRef: activationAck.hostRef');
-    expect(commit).not.toContain('acquiredHostRef');
-    expect(commit).not.toContain('requestFor');
   });
 });

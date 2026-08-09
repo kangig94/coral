@@ -555,7 +555,8 @@ describe('provider-proxy truthful operation authority', () => {
       providerRoot: { pid: number; processStartedAtSeconds: number };
       receipt: JointContainmentReceipt;
     }>();
-    const releaseMembership = vi.fn(async () => {});
+    const membershipRelease = deferred();
+    const releaseMembership = vi.fn(() => membershipRelease.promise);
     const host = fakeHost();
     const { control, operation, proxy } = await startProxy(host, timer, {
       stageProviderRoot: () => staging.promise,
@@ -573,7 +574,10 @@ describe('provider-proxy truthful operation authority', () => {
       { operation, prepareAttemptNumber: 1, prepareAttemptKey },
       5_000,
     );
+    const cancellationSettled = vi.fn();
+    void cancelling.then(cancellationSettled, cancellationSettled);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('releasing'));
+    expect(cancellationSettled).not.toHaveBeenCalled();
 
     staging.resolve({
       providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
@@ -581,15 +585,22 @@ describe('provider-proxy truthful operation authority', () => {
     });
 
     await expect(preparing).rejects.toThrow(/lease expired/u);
+    await vi.waitFor(() => {
+      expect(host.released).toHaveLength(1);
+      expect(releaseMembership).toHaveBeenCalledOnce();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(cancellationSettled).not.toHaveBeenCalled();
+
+    membershipRelease.resolve();
     await expect(cancelling).resolves.toEqual({
       state: 'released-never-started',
       operation,
       prepareAttemptNumber: 1,
       prepareAttemptKey,
     });
+    expect(cancellationSettled).toHaveBeenCalledOnce();
     expect(host.starts).toBe(0);
-    expect(host.released).toHaveLength(1);
-    expect(releaseMembership).toHaveBeenCalledOnce();
   });
 
   it('joins cancellation to an in-flight start and refuses never-started proof after the ACK', async () => {

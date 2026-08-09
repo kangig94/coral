@@ -281,7 +281,9 @@ describe('mutating commands via IPC', () => {
       expect(result.stderr).toBe('');
       expect(result.stdout).toContain('Thread ready (scripted-codex-session).');
 
-      const launchMatch = result.stdout.match(/^Provider job (\S+) (running|queued) \(provider session (\S+)\)$/m);
+      const launchMatch = result.stdout.match(
+        /^Provider job (\S+) (launch accepted|queued) \(provider session (\S+)\)$/m,
+      );
       expect(launchMatch).not.toBeNull();
 
       const terminalMatch = result.stdout.match(/^Job (\S+) completed$/m);

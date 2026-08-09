@@ -232,8 +232,8 @@ const jobDetailResponse = {
 
 describe('cli format', () => {
   describe('formatLaunch', () => {
-    it('formats a running decision', () => {
-      expect(formatLaunch(runningDecision)).toBe('Provider job job-1 running (provider session session-1)');
+    it('formats an admitted launch without claiming that execution started', () => {
+      expect(formatLaunch(runningDecision)).toBe('Provider job job-1 launch accepted (provider session session-1)');
     });
 
     it('formats a queued decision', () => {
@@ -241,7 +241,7 @@ describe('cli format', () => {
     });
 
     it('distinguishes a workflow aggregate from its observable job', () => {
-      expect(formatLaunch(workflowDecision)).toBe('Workflow workflow-1 running (job workflow-1)');
+      expect(formatLaunch(workflowDecision)).toBe('Workflow workflow-1 launch accepted (job workflow-1)');
     });
   });
 
@@ -1462,26 +1462,24 @@ describe('cli format', () => {
 
     it('formats waiting output with pending jobs', () => {
       expect(formatWaitWaiting(waitWaitingEvent, 'cursor-4')).toBe(
-        'Still waiting; jobs: job-1, job-2. Run coral-cli wait jobs again to continue waiting. (cursor: cursor-4)',
+        'Still waiting on 2 jobs. Run coral-cli wait jobs job-1 job-2 to continue waiting. (cursor: cursor-4)',
       );
     });
 
     it('formats waiting output with resume args without repeating job ids', () => {
       expect(formatWaitWaiting(waitWaitingEvent, 'cursor-4', ['job-1', 'job-2'])).toBe(
-        'Still waiting on 2 jobs. Run coral-cli wait jobs job-1 job-2 again to continue waiting. (cursor: cursor-4)',
+        'Still waiting on 2 jobs. Run coral-cli wait jobs job-1 job-2 to continue waiting. (cursor: cursor-4)',
       );
     });
 
     it('formats singular waiting output with resume args', () => {
       expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: ['job-1'] }, null, ['job-1'])).toBe(
-        'Still waiting on 1 job. Run coral-cli wait jobs job-1 again to continue waiting.',
+        'Still waiting on 1 job. Run coral-cli wait jobs job-1 to continue waiting.',
       );
     });
 
     it('formats waiting output without pending jobs', () => {
-      expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: [] }, null)).toBe(
-        'Still waiting; jobs: none. Run coral-cli wait jobs again to continue waiting.',
-      );
+      expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: [] }, null)).toBe('Still waiting; jobs: none.');
     });
 
     it('renders TTY wait lines with carriage return and padding', () => {

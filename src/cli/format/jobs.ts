@@ -104,9 +104,10 @@ function describeJobsMatch(filters: JobsListDisplayFilters): string {
 }
 
 export function formatLaunch(result: AcceptedLaunchResponse): string {
+  const launchState = result.launchState === 'running' ? 'launch accepted' : result.launchState;
   return result.kind === 'provider-session'
-    ? `Provider job ${result.jobId} ${result.launchState} (provider session ${result.sessionId})`
-    : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId})`;
+    ? `Provider job ${result.jobId} ${launchState} (provider session ${result.sessionId})`
+    : `Workflow ${result.workflowId} ${launchState} (job ${result.jobId})`;
 }
 
 export function formatDetachedLaunchStatus(result: AcceptedLaunchResponse): string {

@@ -8,7 +8,7 @@ import type { JobTerminal } from '../jobs/records.js';
 import { parseSerializedWaitCursor, serializeWaitCursor, type WaitCursor, type WaitStreamEvent } from '../jobs/wait.js';
 import { advanceWaitRenderCursor, parseWaitStreamEventValue } from '../jobs/wait-stream-event.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/http/sse.js';
-import { isTransientStreamError } from '../infra/http-errors.js';
+import { isTransientStreamError, TransientHttpError } from '../infra/http-errors.js';
 import { assertNever } from '../infra/error-format.js';
 import { ensure } from '../transport/ipc/ensure.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
@@ -306,9 +306,13 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
           return fallbackExitCode();
         }
         if (retriesLeft === 0) {
-          if (hasOpenedSubscription) {
+          if (hasOpenedSubscription || handledError instanceof TransientHttpError) {
             options.emitError(
-              new WaitResumeError(handledError.message, remainingJobIds, serializeWaitCursor(currentCursor)),
+              new WaitResumeError(
+                handledError.message,
+                remainingJobIds,
+                hasOpenedSubscription ? serializeWaitCursor(currentCursor) : undefined,
+              ),
             );
             return errorCodeToExit('transient');
           }
@@ -384,7 +388,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
               event,
               cursor,
               jobLabels,
-              event.type === 'waiting' ? (options.start.kind === 'jobs' ? event.waitingJobIds : []) : remainingJobIds,
+              event.type === 'waiting' ? event.waitingJobIds : remainingJobIds,
               options.render,
               causeRenderer.render,
             );

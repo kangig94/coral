@@ -1,7 +1,7 @@
 ---
 name: plan
 description: 'Use when a task needs structured planning before implementation. Supports --delegate and round=N[,M].'
-argument-hint: '[--delegate] [round=N[,M]] [task description]'
+argument-hint: '[--delegate] [--no-handoff] [round=N[,M]] [task description]'
 ---
 
 # Planning
@@ -142,7 +142,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     launch = Bash(`coral-cli workflow -e "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d`)
     ```
     Reviewers always run in `--deep` methodology and the resolver always runs — both are independent of the round budget.
-    `coral-cli wait jobs <job>` → the terminal output prints `Result path: <path>`; read that artifact for the full workflow result and locate the resolver's synthesis section there. Exit `0` means every job succeeded (`completed`, or `provider_exit` whose child exited `0`); `1` means a failed, aborted, or faulted job; `75` means work is still running — resume with `--cursor <cursor>` using the printed cursor, and keep looping until a non-`75` result before moving to 4b. A non-zero `provider_exit` code is the provider's own, passed through unchanged (0–255).
+    Run `coral-cli wait jobs <job>` and classify the result from its rendered output, not exit code `75` alone. `Result path: <path>` marks a terminal result; read that artifact for the full workflow result and locate the resolver's synthesis section there, even when a terminal `provider_exit` propagated code `75`. A status beginning `Still waiting` with `(cursor: <cursor>)` means the workflow is still live; only then resume with `coral-cli wait jobs <job> --cursor <cursor>`. If a transient error instead prints `remediation:`, follow that exact command. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
 
     **4b. Post-Round Processing**
 

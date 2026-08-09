@@ -98,10 +98,11 @@ export class WaitResumeError extends Error {
   readonly exitCode = 75;
   readonly remediation: string;
 
-  constructor(message: string, jobIds: readonly string[], serializedCursor: string) {
+  constructor(message: string, jobIds: readonly string[], serializedCursor?: string) {
     super(message);
     this.name = 'WaitResumeError';
-    this.remediation = `Rerun \`coral-cli wait jobs ${jobIds.join(' ')} --cursor ${serializedCursor}\` to continue waiting.`;
+    const cursorArg = serializedCursor === undefined ? '' : ` --cursor ${serializedCursor}`;
+    this.remediation = `Rerun \`coral-cli wait jobs ${jobIds.join(' ')}${cursorArg}\` to continue waiting.`;
   }
 }
 

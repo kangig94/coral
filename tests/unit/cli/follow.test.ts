@@ -15,7 +15,7 @@ import { storePaths } from '#src/infra/path/store.js';
 import type * as FollowMod from '#src/cli/follow.js';
 import { buildErrorEnvelope } from '#src/cli/errors.js';
 import { formatLaunch } from '#src/cli/format/jobs.js';
-import { formatWaitProgress, formatWaitQueued, formatWaitTerminal, formatWaitWaiting } from '#src/cli/format/wait.js';
+import { formatWaitProgress, formatWaitQueued, formatWaitTerminal } from '#src/cli/format/wait.js';
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
@@ -375,7 +375,7 @@ describe('cli follow', () => {
       `${formatLaunch(launchResult)}\n` +
         `${formatWaitQueued(queuedEvent)}\n` +
         `${formatWaitProgress(progressEvent)}\n` +
-        `${formatWaitWaiting(waitingEvent, cursorAfterProgress)}\n` +
+        `Still waiting on 1 job. Run coral-cli wait jobs job-1 to continue waiting. (cursor: ${cursorAfterProgress})\n` +
         `${formatWaitTerminal(terminalEvent, cursorAfterTerminal, false)}\n`,
     );
     expect(mockState.ensure).toHaveBeenCalledTimes(2);
@@ -718,7 +718,7 @@ describe('cli follow', () => {
 
     await expect(launchAndFollow(makeOptions())).resolves.toBe(70);
 
-    expect(stdout).toBe('Provider job job-1 running (provider session session-1)\n');
+    expect(stdout).toBe('Provider job job-1 launch accepted (provider session session-1)\n');
     expect(stderr).toBe('fatal wait failure\n');
     expect(process.exitCode).toBe(70);
     expect(mockState.ensure).toHaveBeenCalledTimes(1);
@@ -768,6 +768,35 @@ describe('cli follow', () => {
     expect(mockState.ensure).toHaveBeenCalledTimes(4);
     expect(mockState.subscribe).toHaveBeenCalledTimes(4);
   });
+
+  it.each(['backend_recovering', 'backend_shutting_down'])(
+    'prints a cursor-free resume command when initial %s retries are exhausted',
+    async (code) => {
+      const { launchAndFollow } = await loadFollowModule();
+      const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
+      const emitError = vi.fn();
+      const subscriptionError = new Error('Backend is not accepting wait subscriptions.', {
+        cause: { code, message: 'Backend is not accepting wait subscriptions.' },
+      });
+
+      mockState.ensure.mockResolvedValue(makeBackend());
+      mockState.subscribe.mockRejectedValue(subscriptionError);
+
+      await expect(launchAndFollow(makeOptions({ emitError, backoffScheduler }))).resolves.toBe(75);
+
+      expect(buildErrorEnvelope(emitError.mock.calls[0]?.[0])).toEqual({
+        envelope: {
+          error: true,
+          code: 'transient',
+          message: 'Backend is not accepting wait subscriptions.',
+          remediation: 'Rerun `coral-cli wait jobs job-1` to continue waiting.',
+        },
+        exitCode: 75,
+      });
+      expect(backoffScheduler).toHaveBeenCalledTimes(2);
+      expect(mockState.subscribe).toHaveBeenCalledTimes(3);
+    },
+  );
 
   it('keeps BackendUnreachableError when every initial connection attempt fails', async () => {
     const { launchAndFollow } = await loadFollowModule();
@@ -820,7 +849,7 @@ describe('cli follow', () => {
 
     await expect(followPromise).resolves.toBe(1);
 
-    expect(stdout).toBe('Provider job job-1 running (provider session session-1)\n');
+    expect(stdout).toBe('Provider job job-1 launch accepted (provider session session-1)\n');
     expect(stderr).toBe('\nPress Ctrl+C again to abort the job.\n');
     expect(abortJob).toHaveBeenCalledTimes(1);
     expect(abortJob).toHaveBeenCalledWith('job-1');
