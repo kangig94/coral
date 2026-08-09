@@ -40,6 +40,7 @@ import { createOperationLedger, type OperationLedger, type ProviderOperationKey 
 import type { Proxy } from '#src/provider-proxy/proxy.js';
 import type { ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
 import {
+  SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS,
   createSemanticOperationRuntime,
   type ProxyAppServerHostAuthority,
 } from '#src/provider-proxy/semantic-operation.js';
@@ -53,6 +54,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 function testKey(operationId = 'op-1'): ProviderOperationKey {
@@ -104,6 +106,8 @@ function fakeHostAuthority(): ProxyAppServerHostAuthority {
     openSession: unreachable('hostAuthority.openSession') as unknown as ProxyAppServerHostAuthority['openSession'],
     attachSession: async () => null,
     rootIdentity: () => ({ pid: 4_242, processStartedAtSeconds: 1_700_000_000 }),
+    closed: () => new Promise<Error | void>(() => {}),
+    forceClose: async () => {},
   };
 }
 
@@ -186,6 +190,20 @@ function fakeBoundProviderStuckUntilAborted(closeStaged: () => void): BoundProvi
   };
 }
 
+function fakeBoundProviderIgnoringAbort(closeStaged: () => void): BoundProvider {
+  return {
+    ...fakeBoundProviderStuckUntilAborted(closeStaged),
+    prepareExecution: () => ({
+      kind: 'app-server',
+      hostSpec: fakeHostSpec(),
+      execute: async function* (execRuntime: BoundProviderAppServerExecutionRuntime): AsyncIterable<ProviderEventBody> {
+        execRuntime.onHostRef(fakeHostRef());
+        await new Promise<never>(() => {});
+      },
+    }),
+  };
+}
+
 describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
   it('stops an executing kernel and releases its staged provider root', async () => {
     const { proxy, ledger } = createTestProxy();
@@ -256,6 +274,40 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
     expect(closeStaged).toHaveBeenCalledOnce();
     // Untouched: shutdown of a never-started operation must not fabricate ledger activity for it.
     expect(ledger.get(key)).toBeNull();
+  });
+
+  it('settles by the cancellation bound when an executing kernel and force-close both ignore abort', async () => {
+    vi.useFakeTimers();
+    const { proxy, ledger } = createTestProxy();
+    const key = testKey();
+    const prepared = preparedFixture();
+    prepareAndActivate(ledger, key, prepared);
+    const closeStaged = vi.fn();
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProviderIgnoringAbort(closeStaged),
+    });
+    const hostAuthority = {
+      openSession: unreachable('hostAuthority.openSession'),
+      attachSession: async () => null,
+      rootIdentity: () => ({ pid: 4_242, processStartedAtSeconds: 1_700_000_000 }),
+      closed: () => new Promise<Error | void>(() => {}),
+      forceClose: () => new Promise<void>(() => {}),
+    } as ProxyAppServerHostAuthority;
+    const host = createSemanticOperationRuntime({ runtime, hostAuthority, getProxy: () => proxy });
+    await host.ensureProviderRoot(key, prepared);
+    const start = host.host.start({ key, prepared });
+    await expect(start.result).resolves.toEqual({ kind: 'started', hostRef: fakeHostRef() });
+
+    let shutdownSettled = false;
+    void host.shutdown('signal_abort').then(() => {
+      shutdownSettled = true;
+    });
+    await vi.advanceTimersByTimeAsync(SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS - 1);
+    expect(shutdownSettled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(shutdownSettled).toBe(true);
   });
 
   it('is a safe no-op when nothing is staged', async () => {

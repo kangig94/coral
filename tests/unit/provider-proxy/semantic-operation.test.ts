@@ -66,6 +66,7 @@ import {
   type SemanticOperationHost,
 } from '#src/provider-proxy/operation-supervisor.js';
 import {
+  SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS,
   createProxyAppServerHostAuthority,
   createSemanticOperationRuntime,
   specFingerprint,
@@ -131,6 +132,14 @@ function unreachable(label: string): () => never {
   };
 }
 
+function deferred<T = void>(): { promise: Promise<T>; resolve(value?: T): void } {
+  let resolve!: (value?: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = (value) => settle(value as T);
+  });
+  return { promise, resolve };
+}
+
 /** A `BoundProvider` test double whose only live behavior is the kernel (`execute`) and staging
  *  (`openReplacement`) the test supplies. Every other member throws if touched — none of them are this
  *  module's concern, and a silent stub would hide a real bug if the implementation ever started calling one. */
@@ -189,6 +198,8 @@ function fakeHostAuthority(): ProxyAppServerHostAuthority {
     openSession: unreachable('hostAuthority.openSession') as unknown as ProxyAppServerHostAuthority['openSession'],
     attachSession: async () => null,
     rootIdentity: () => ({ pid: 4242, processStartedAtSeconds: 1_700_000_000 }),
+    closed: () => new Promise<Error | void>(() => {}),
+    forceClose: async () => {},
   };
 }
 
@@ -528,6 +539,100 @@ describe('semantic-operation runtime: stop() racing a still-draining emit', () =
     // The synthesized abort already carried this operation to `terminal-awaiting-settlement`; the control
     // handler racing the same stop must be refused rather than silently reapplying the transition.
     expect(() => ledger.transition(key, 'terminal-awaiting-settlement')).toThrow(/does not reach/u);
+  });
+});
+
+describe('semantic-operation runtime: bounded cancellation', () => {
+  it('force-closes the tracked host and lets transport closure settle a pull that ignores abort', async () => {
+    const { proxy, ledger } = createTestProxy();
+    const key = testKey();
+    const prepared = preparedFixture();
+    prepareAndActivate(ledger, key, prepared);
+    const closeStaged = vi.fn();
+    const transportClosed = deferred<Error | void>();
+    const forceClose = vi.fn(async () => {
+      transportClosed.resolve();
+    });
+    const hostAuthority = {
+      openSession: unreachable('hostAuthority.openSession'),
+      attachSession: async () => null,
+      rootIdentity: () => ({ pid: 4242, processStartedAtSeconds: 1_700_000_000 }),
+      closed: () => transportClosed.promise,
+      forceClose,
+    } as ProxyAppServerHostAuthority;
+
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        execute: () => ({
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise<IteratorResult<ProviderEventBody>>(() => {}),
+          }),
+        }),
+        openReplacement: async () => ({ hostRef: fakeHostRef(), close: closeStaged }),
+      }),
+    });
+
+    const semantic = createSemanticOperationRuntime({ runtime, hostAuthority, getProxy: () => proxy });
+    await semantic.ensureProviderRoot(key, prepared);
+    const start = semantic.host.start({ key, prepared });
+    await expect(start.result).resolves.toEqual({ kind: 'started', hostRef: fakeHostRef() });
+
+    let stopSettled = false;
+    void Promise.resolve(semantic.host.stop({ key, cause: 'user_abort' })).then(() => {
+      stopSettled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect.soft(forceClose).toHaveBeenCalledOnce();
+    expect.soft(stopSettled).toBe(true);
+    expect(closeStaged).toHaveBeenCalledOnce();
+  });
+
+  it('times out release when staging ignores abort before exposing a host', async () => {
+    vi.useFakeTimers();
+    const { proxy } = createTestProxy();
+    const neverOpened = deferred<Readonly<{ hostRef: HostRef; close(): void }>>();
+    const openReplacement = vi.fn(() => neverOpened.promise);
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        execute: unreachable('execute') as unknown as (
+          runtime: BoundProviderAppServerExecutionRuntime,
+        ) => AsyncIterable<ProviderEventBody>,
+        openReplacement,
+      }),
+    });
+
+    const semantic = createSemanticOperationRuntime({
+      runtime,
+      hostAuthority: fakeHostAuthority(),
+      getProxy: () => proxy,
+    });
+    const stage = semantic.stage(testKey(), preparedFixture());
+    await Promise.resolve();
+    expect(openReplacement).toHaveBeenCalledOnce();
+
+    let releaseSettled = false;
+    let releaseError: unknown;
+    void stage.abortAndRelease().then(
+      () => {
+        releaseSettled = true;
+      },
+      (error: unknown) => {
+        releaseSettled = true;
+        releaseError = error;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS);
+
+    expect.soft(releaseSettled).toBe(true);
+    expect(releaseError).toMatchObject({
+      name: 'SemanticOperationCancellationTimeoutError',
+      code: 'semantic_operation_cancellation_timeout',
+      timeoutMs: SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS,
+      message: 'Provider operation cancellation did not settle within 10000ms.',
+    });
   });
 });
 
@@ -927,6 +1032,29 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
 
     opened.close();
     expect(authority.rootIdentity(opened.hostRef)).toBeNull();
+  });
+
+  it('force-closes a matching entry immediately without waiting for its references', async () => {
+    const server = fakeProviderServerHandle();
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const opened = await authority.openSession(sharedSpec());
+    const attached = await authority.attachSession(opened.hostRef, {
+      spec: sharedSpec(),
+      jobId: 'shared-attachment',
+    });
+    expect(attached).not.toBeNull();
+    expect(authority.closed(opened.hostRef)).toBe(server.handle.closePromise);
+
+    const closing = authority.forceClose(opened.hostRef);
+
+    expect(authority.rootIdentity(opened.hostRef)).toBeNull();
+    expect(authority.closed(opened.hostRef)).toBeNull();
+    await closing;
+    await authority.forceClose(opened.hostRef);
+    opened.close();
+    attached?.close();
+    expect(server.closeMock).toHaveBeenCalledOnce();
   });
 });
 

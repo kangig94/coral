@@ -2,6 +2,7 @@ import { backendLog } from '../infra/backend-log.js';
 import { errorMessage } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
+import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import type { Runtime } from '../runtime/ports.js';
 import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
 import { providerRequestFailed } from '../providers/fault.js';
@@ -53,6 +54,19 @@ import type { ProxyPreparedAppServerOperation } from './protocol.js';
  * `src/providers/app-server-transport.ts`, legal for this domain to import, so this file builds its pool on
  * that shared transport rather than a second implementation of it.
  */
+
+export const SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS = SIGTERM_GRACE_MS + SIGKILL_GRACE_MS;
+
+export class SemanticOperationCancellationTimeoutError extends Error {
+  readonly code = 'semantic_operation_cancellation_timeout';
+  readonly timeoutMs = SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS;
+
+  constructor() {
+    super(`Provider operation cancellation did not settle within ${SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS}ms.`);
+    this.name = 'SemanticOperationCancellationTimeoutError';
+    Object.setPrototypeOf(this, SemanticOperationCancellationTimeoutError.prototype);
+  }
+}
 
 // --- proxy-owned app-server host authority: pool over the shared transport -------------------------------
 
@@ -186,6 +200,7 @@ type HostPoolEntry = {
   readonly processStartedAtSeconds: number;
   readonly jobId: string | undefined;
   refCount: number;
+  closePromise: Promise<void> | null;
 };
 
 function hostKeyFor(spec: ProviderServerSpec, jobId: string | undefined): string {
@@ -218,10 +233,23 @@ function isMatchingHostRef(hostRef: HostRef, entry: HostPoolEntry, runtime: Runt
   return hostRef.leaseMode !== 'job-exclusive' || hostRef.ownerJobId === entry.jobId;
 }
 
+function isSameHostRef(left: HostRef, right: HostRef): boolean {
+  if (left.provider !== right.provider) return false;
+  if (left.fingerprint !== right.fingerprint) return false;
+  if (left.instanceId !== right.instanceId) return false;
+  if (left.leaseMode !== right.leaseMode) return false;
+  if (left.leaseMode === 'shared' && right.leaseMode === 'shared') return true;
+  return left.leaseMode === 'job-exclusive' && right.leaseMode === 'job-exclusive'
+    ? left.ownerJobId === right.ownerJobId
+    : false;
+}
+
 export interface ProxyAppServerHostAuthority extends AppServerHostAuthority {
   /** The raw process identity behind an already-open `HostRef`, for the guardian containment report. `null`
    *  when the reference no longer names a live entry this authority holds. */
   rootIdentity(hostRef: HostRef): Readonly<{ pid: number; processStartedAtSeconds: number }> | null;
+  closed(hostRef: HostRef): Promise<Error | void> | null;
+  forceClose(hostRef: HostRef): Promise<void>;
 }
 
 /**
@@ -235,9 +263,26 @@ export interface ProxyAppServerHostAuthority extends AppServerHostAuthority {
  */
 export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppServerHostAuthority {
   const entries = new Map<string, HostPoolEntry>();
+  const closingEntries = new Set<HostPoolEntry>();
   // Purely informational (mirrors `DefaultProviderHostManager`'s own per-acquisition counter,
   // `src/coordinator/live/admission.ts`); nothing in this pool reads it back.
   let nextGeneration = 0;
+
+  const closeEntry = (entry: HostPoolEntry): Promise<void> => {
+    closingEntries.add(entry);
+    if (entry.closePromise !== null) return entry.closePromise;
+    const closePromise = closeSpawnedHandle(entry.handle, entry.spec, runtime);
+    entry.closePromise = closePromise;
+    void closePromise.then(
+      () => {
+        if (entry.closePromise === closePromise) closingEntries.delete(entry);
+      },
+      () => {
+        if (entry.closePromise === closePromise) entry.closePromise = null;
+      },
+    );
+    return closePromise;
+  };
 
   const managedSessionFor = (entry: HostPoolEntry): ManagedHostSession => {
     let released = false;
@@ -250,8 +295,13 @@ export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppSer
         released = true;
         entry.refCount -= 1;
         if (entry.refCount > 0) return;
-        entries.delete(entry.hostKey);
-        void closeSpawnedHandle(entry.handle, entry.spec, runtime);
+        if (entries.get(entry.hostKey) === entry) entries.delete(entry.hostKey);
+        void closeEntry(entry).catch((error: unknown) => {
+          backendLog.error(
+            `semantic operation runtime: app-server host close failed for ${entry.spec.provider}`,
+            error,
+          );
+        });
       },
     });
   };
@@ -285,6 +335,7 @@ export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppSer
         processStartedAtSeconds,
         jobId: options?.jobId,
         refCount: 0,
+        closePromise: null,
       };
       entries.set(hostKey, entry);
       return managedSessionFor(entry);
@@ -304,6 +355,34 @@ export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppSer
         }
       }
       return null;
+    },
+
+    closed(hostRef) {
+      for (const entry of entries.values()) {
+        if (isMatchingHostRef(hostRef, entry, runtime)) return entry.transport.closed;
+      }
+      return null;
+    },
+
+    async forceClose(hostRef) {
+      let matched: HostPoolEntry | undefined;
+      for (const entry of entries.values()) {
+        if (isMatchingHostRef(hostRef, entry, runtime)) {
+          matched = entry;
+          entries.delete(entry.hostKey);
+          closingEntries.add(entry);
+          break;
+        }
+      }
+      if (matched === undefined) {
+        for (const entry of closingEntries) {
+          if (isMatchingHostRef(hostRef, entry, runtime)) {
+            matched = entry;
+            break;
+          }
+        }
+      }
+      if (matched !== undefined) await closeEntry(matched);
     },
   };
 }
@@ -455,6 +534,9 @@ type StagedOperation = {
   startCommitted: boolean;
   releaseRequested: boolean;
   closed: boolean;
+  hostRef: HostRef | null;
+  transportClosed: Promise<Error | void>;
+  resolveTransportClosed(error?: Error | void): void;
   /** Set once `stop()` is in flight, so the pump loop's catch-all can tell a deliberate stop from a genuine
    *  unprompted kernel failure and choose the right synthesized outcome (or none, for an interruption). */
   pendingStopCause: ProviderStopCause | null;
@@ -525,6 +607,59 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     entry.staged?.close();
   };
 
+  const trackHostRef = (entry: StagedOperation, hostRef: HostRef): void => {
+    if (entry.hostRef !== null) {
+      if (isSameHostRef(entry.hostRef, hostRef)) return;
+      throw new Error(`Provider operation ${operationKeyString(entry.key)} reported more than one host reference.`);
+    }
+    entry.hostRef = hostRef;
+    const closed = hostAuthority.closed(hostRef);
+    if (closed === null) {
+      entry.resolveTransportClosed(new Error('Provider transport closed before a completion event.'));
+      return;
+    }
+    void closed.then(entry.resolveTransportClosed, (error: unknown) => {
+      entry.resolveTransportClosed(error instanceof Error ? error : new Error(errorMessage(error)));
+    });
+  };
+
+  const cancelAndAwait = async (
+    entry: StagedOperation,
+    reason: Readonly<{ kind: 'release'; cause: Error }> | Readonly<{ kind: 'stop'; cause: ProviderStopCause }>,
+  ): Promise<void> => {
+    if (reason.kind === 'release') entry.releaseRequested = true;
+    else entry.pendingStopCause = reason.cause;
+    entry.abortController.abort(reason.cause);
+
+    const completion =
+      entry.done ??
+      entry.stageHandle?.result.then(
+        () => undefined,
+        () => undefined,
+      ) ??
+      Promise.resolve();
+    const initialHostRef = entry.hostRef;
+    const initialForceClose = initialHostRef === null ? Promise.resolve() : hostAuthority.forceClose(initialHostRef);
+    const cancellation = Promise.all([completion, initialForceClose]).then(async () => {
+      if (initialHostRef === null && entry.hostRef !== null) await hostAuthority.forceClose(entry.hostRef);
+    });
+    const deadlineController = new AbortController();
+    const deadline = runtime.time
+      .sleep(SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS, { signal: deadlineController.signal })
+      .then(() => {
+        if (!deadlineController.signal.aborted) throw new SemanticOperationCancellationTimeoutError();
+      });
+
+    try {
+      await Promise.race([cancellation, deadline]);
+    } finally {
+      deadlineController.abort();
+    }
+    closeStaged(entry);
+    const key = operationKeyString(entry.key);
+    if (staged.get(key) === entry) staged.delete(key);
+  };
+
   const synthesizeAndEmitFailure = async (
     key: ProviderOperationKey,
     provider: string,
@@ -577,7 +712,12 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       // single call ever resolves `entry.done` concurrently with it.
       while (true) {
         entry.abortController.signal.throwIfAborted();
-        const step = await iterator.next();
+        const step = await Promise.race([
+          iterator.next(),
+          entry.transportClosed.then((error) => {
+            throw error ?? new Error('Provider transport closed before a completion event.');
+          }),
+        ]);
         if (step.done) throw new Error('Provider event stream ended without terminal or suspension.');
         await proxy.emitProviderEvent(key, step.value, entry.abortController.signal);
 
@@ -629,7 +769,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       if (!entry.startCommitted) {
         settleStart({ kind: 'never-started', reason: 'The provider ended before its start boundary.' });
       }
-      closeStaged(entry);
+      if (!entry.releaseRequested && entry.pendingStopCause === null) closeStaged(entry);
     }
   };
 
@@ -665,6 +805,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
             prepared,
             entry.abortController.signal,
             (hostRef) => {
+              trackHostRef(entry, hostRef);
               entry.abortController.signal.throwIfAborted();
               entry.startCommitted = true;
               settle({ kind: 'started', hostRef });
@@ -677,13 +818,11 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
           else if (!entry.releaseRequested) await synthesizeAndEmitFailure(key, bound.name, error);
         }
       });
-      const abortAndRelease = async (): Promise<void> => {
-        entry.releaseRequested = true;
-        entry.abortController.abort(new Error('Provider operation activation was released.'));
-        await entry.done;
-        closeStaged(entry);
-        if (staged.get(operationKeyString(key)) === entry) staged.delete(operationKeyString(key));
-      };
+      const abortAndRelease = (): Promise<void> =>
+        cancelAndAwait(entry, {
+          kind: 'release',
+          cause: new Error('Provider operation activation was released.'),
+        });
       const handle: SemanticOperationStartHandle = Object.freeze({ result, abortAndRelease });
       entry.startHandle = handle;
       return handle;
@@ -691,10 +830,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
 
     stop: async ({ key, cause }) => {
       const entry = requireStaged(key);
-      entry.pendingStopCause = cause;
-      entry.abortController.abort(cause);
-      await (entry.done ?? Promise.resolve());
-      staged.delete(operationKeyString(key));
+      await cancelAndAwait(entry, { kind: 'stop', cause });
     },
   };
 
@@ -707,6 +843,10 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     if (existing?.stageHandle !== null && existing?.stageHandle !== undefined) return existing.stageHandle;
 
     const abortController = new AbortController();
+    let resolveTransportClosed!: (error?: Error | void) => void;
+    const transportClosed = new Promise<Error | void>((resolve) => {
+      resolveTransportClosed = resolve;
+    });
     const entry: StagedOperation = {
       key,
       abortController,
@@ -718,6 +858,9 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       startCommitted: false,
       releaseRequested: false,
       closed: false,
+      hostRef: null,
+      transportClosed,
+      resolveTransportClosed,
       pendingStopCause: null,
       done: null,
     };
@@ -732,6 +875,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         signal: abortController.signal,
       });
       entry.staged = openedStaging;
+      trackHostRef(entry, openedStaging.hostRef);
       abortController.signal.throwIfAborted();
       const root = hostAuthority.rootIdentity(openedStaging.hostRef);
       if (root === null) {
@@ -743,18 +887,8 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       entry.root = root;
       return root;
     });
-    const abortAndRelease = async (): Promise<void> => {
-      entry.releaseRequested = true;
-      abortController.abort(new Error('Provider operation stage was released.'));
-      try {
-        await result;
-      } catch {
-        // The stage result is reported to its caller; release only waits until no late child can escape.
-      }
-      await (entry.done ?? Promise.resolve());
-      closeStaged(entry);
-      if (staged.get(keyStr) === entry) staged.delete(keyStr);
-    };
+    const abortAndRelease = (): Promise<void> =>
+      cancelAndAwait(entry, { kind: 'release', cause: new Error('Provider operation stage was released.') });
     const handle: SemanticOperationStageHandle = Object.freeze({ result, abortAndRelease });
     entry.stageHandle = handle;
     return handle;
@@ -775,13 +909,12 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       await Promise.all(
         entries.map(async (entry) => {
           try {
-            if (entry.done !== null) {
-              // Executing: the same stop `operation.stop.v1`'s own `executing` branch performs — abort,
-              // await the kernel's own unwind, and let the pump loop's `finally` release the staged session.
-              await host.stop({ key: entry.key, cause });
-            } else {
-              await entry.stageHandle?.abortAndRelease();
-            }
+            await cancelAndAwait(
+              entry,
+              entry.done === null
+                ? { kind: 'release', cause: new Error('Provider operation shutdown released its stage.') }
+                : { kind: 'stop', cause },
+            );
           } catch (error: unknown) {
             backendLog.error(
               `semantic operation runtime: shutdown could not stop ${operationKeyString(entry.key)}`,

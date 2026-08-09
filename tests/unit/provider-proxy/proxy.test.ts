@@ -9,6 +9,7 @@ import type { HostRef } from '#src/providers/contract.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
+import { SemanticOperationCancellationTimeoutError } from '#src/provider-proxy/semantic-operation.js';
 import {
   OperationSupervisor,
   OPERATION_RELEASE_RETRY_MS,
@@ -199,6 +200,7 @@ async function startProxy(
       providerRoot: { pid: number; processStartedAtSeconds: number };
       receipt: JointContainmentReceipt;
     }>;
+    stageAbortAndRelease?: () => Promise<void>;
     confirmActivation?: () => Promise<void>;
     releaseMembership?: (input: Readonly<{ key: ProviderOperationKey; reservation: Reservation }>) => Promise<void>;
     wallClockNow?: () => number;
@@ -267,6 +269,7 @@ async function startProxy(
           confirmActivation: options.confirmActivation ?? (async () => {}),
           abortAndRelease: async () => {
             abortController.abort();
+            await options.stageAbortAndRelease?.();
             try {
               await result;
             } catch {
@@ -698,6 +701,37 @@ describe('provider-proxy truthful operation authority', () => {
     await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
       state: 'released-never-started',
     });
+  });
+
+  it('retries a semantic cancellation timeout and releases the same staged attempt', async () => {
+    const controlled = controlledTimer();
+    const stageAbortAndRelease = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new SemanticOperationCancellationTimeoutError())
+      .mockResolvedValue(undefined);
+    const { control, operation, proxy } = await startProxy(fakeHost(), controlled.timer, {
+      readMilliseconds: controlled.readMilliseconds,
+      stageAbortAndRelease,
+    });
+    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
+    const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
+    await control.call('operation.prepare.v1', prepareRequest, 5_000);
+
+    await expect(
+      control.call('operation.cancel.v2', { operation, prepareAttemptNumber: 1, prepareAttemptKey }, 5_000),
+    ).rejects.toThrow('Provider operation cancellation did not settle within 10000ms.');
+    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+      state: 'releasing',
+      releaseKind: 'never-started',
+    });
+
+    controlled.advance(OPERATION_RELEASE_RETRY_MS);
+
+    await vi.waitFor(() => expect(stageAbortAndRelease).toHaveBeenCalledTimes(2));
+    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+      state: 'released-never-started',
+    });
+    expect(proxy.ledger().get(operation)).toBeNull();
   });
 
   it('fences an attempt that never entered preparation and refuses its delayed prepare', async () => {
