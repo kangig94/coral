@@ -20,6 +20,10 @@ const canonicalEndpointSchema = z
   .describe('absolute normalized filesystem path');
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
 const receiptSchema = z.string().min(1).max(4096);
+const directiveReasonSchema = z.string().min(1).max(4096);
+const directiveCodeSchema = z.string().min(1).max(128);
+const providerAbortCauseSchema = z.enum(['signal_abort', 'user_abort', 'queue_shutdown']);
+const providerStopCauseSchema = z.enum(['restart', 'handoff', 'signal_abort', 'user_abort', 'queue_shutdown']);
 const MAX_PROVIDER_OPERATION_RECORD_BYTES = 64 * 1024;
 const MAX_PRINCIPAL_WIRE_BYTES = 64 * 1024;
 
@@ -133,6 +137,36 @@ export const providerOperationPrepareSourceSchema = z
   })
   .strict();
 
+const localAuthorizedDirectiveSchema = z
+  .object({ kind: z.literal('local-authorized'), reason: directiveReasonSchema })
+  .strict();
+export const providerOperationTerminalFailedDirectiveSchema = z
+  .object({ kind: z.literal('terminal-failed'), code: directiveCodeSchema, reason: directiveReasonSchema })
+  .strict();
+const terminalAbortedDirectiveSchema = z
+  .object({
+    kind: z.literal('terminal-aborted'),
+    cause: providerAbortCauseSchema,
+    requestedAt: z.string().datetime(),
+  })
+  .strict();
+
+export const providerOperationAfterReleaseDirectiveSchema = z.discriminatedUnion('kind', [
+  localAuthorizedDirectiveSchema,
+  providerOperationTerminalFailedDirectiveSchema,
+  terminalAbortedDirectiveSchema,
+]);
+
+export const providerOperationNeverStartedDirectiveSchema = z.discriminatedUnion('kind', [
+  localAuthorizedDirectiveSchema,
+  terminalAbortedDirectiveSchema,
+]);
+
+export const providerOperationControlIntentSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('run') }).strict(),
+  z.object({ kind: z.literal('stop'), cause: providerStopCauseSchema, requestedAt: z.string().datetime() }).strict(),
+]);
+
 const lastErrorSchema = z
   .object({
     observedAtMs: nonNegativeSafeIntegerSchema,
@@ -200,6 +234,7 @@ const executingSchema = z
     ...commonFields,
     ...executingFields,
     phase: z.literal('executing'),
+    controlIntent: providerOperationControlIntentSchema.optional(),
   })
   .strict();
 
@@ -208,6 +243,7 @@ const prestartCleanupPendingSchema = z
     ...commonFields,
     phase: z.literal('prestart-cleanup-pending'),
     cleanupIntent: z.literal('release-never-started'),
+    afterRelease: providerOperationAfterReleaseDirectiveSchema.optional(),
   })
   .strict();
 
@@ -216,6 +252,8 @@ const activationResolutionPendingSchema = z
     ...commonFields,
     ...authorizedFields,
     phase: z.literal('activation-resolution-pending'),
+    onNeverStarted: providerOperationNeverStartedDirectiveSchema.optional(),
+    activationIndeterminate: providerOperationTerminalFailedDirectiveSchema.optional(),
   })
   .strict();
 

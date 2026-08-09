@@ -30,11 +30,14 @@ import {
   proxyOperationActivateParamsSchema,
   proxyOperationActivateResultSchema,
   proxyOperationAdoptParamsSchema,
+  proxyOperationAttachParamsSchema,
+  proxyOperationAttachResultSchema,
   proxyOperationCancelParamsSchema,
   proxyOperationCancelResultSchema,
   proxyOperationInspectParamsSchema,
   proxyOperationInspectResultSchema,
   proxyOperationPrepareParamsSchema,
+  proxyOperationReleaseReceiptSchema,
   proxyOperationReservationParamsSchema,
   proxyOperationStopParamsSchema,
   proxyOperationSettleParamsSchema,
@@ -620,5 +623,33 @@ describe('proxy control-method request schemas, shared with their coordinator se
       proxyOperationAdoptParamsSchema.safeParse({ operation, committedThroughProviderSeq: 3, unexpected: true })
         .success,
     ).toBe(false);
+  });
+
+  it('keeps attach and retained release receipts strict before their cutovers', () => {
+    const attachRequest = { operation, committedThroughProviderSeq: 3 };
+    expect(proxyOperationAttachParamsSchema.safeParse(attachRequest).success).toBe(true);
+    expect(proxyOperationAttachParamsSchema.safeParse({ ...attachRequest, unexpected: true }).success).toBe(false);
+
+    const attached = { state: 'attached', replayFromProviderSeq: 4 };
+    const absent = { state: 'operation-absent', operation };
+    expect(proxyOperationAttachResultSchema.safeParse(attached).success).toBe(true);
+    expect(proxyOperationAttachResultSchema.safeParse(absent).success).toBe(true);
+    expect(proxyOperationAttachResultSchema.safeParse({ ...attached, unexpected: true }).success).toBe(false);
+    expect(proxyOperationAttachResultSchema.safeParse({ state: 'operation-absent' }).success).toBe(false);
+
+    const attempt = {
+      operation,
+      prepareAttemptNumber: 1,
+      prepareAttemptKey: 'f'.repeat(64),
+    };
+    const receipts = [
+      { state: 'released-never-started', ...attempt },
+      { state: 'released-activation-indeterminate', ...attempt },
+      { state: 'released-after-terminal', settledThroughProviderSeq: 7 },
+    ];
+    for (const receipt of receipts) {
+      expect(proxyOperationReleaseReceiptSchema.safeParse(receipt).success).toBe(true);
+      expect(proxyOperationReleaseReceiptSchema.safeParse({ ...receipt, unexpected: true }).success).toBe(false);
+    }
   });
 });

@@ -34,6 +34,7 @@ import {
   type ProviderOperationState,
   type ProviderRootIdentity,
 } from './ledger.js';
+import type { ReplayCapacityReservation } from './replay-budget.js';
 import { PROXY_CONTROL_LEASE_MS } from './orphan-deadline.js';
 import {
   PROVIDER_EVENT_METHOD,
@@ -136,21 +137,8 @@ export interface Proxy {
   listen(): Promise<void>;
   close(): Promise<void>;
   ledger(): OperationLedger<ProxyPreparedAppServerOperation>;
-  /**
-   * The one seam a semantic operation host uses to hand this proxy one provider event for one operation. A
-   * plain, narrow, synchronous buffering call, not a round trip: the caller is a live async generator pulling
-   * from a running kernel, and making it await network delivery would tie kernel progress to coordinator
-   * reachability — exactly what the ledger's replay buffer exists to decouple. It may throw a `LedgerError`
-   * synchronously: `operation_not_found` if `key` names no live entry, or `replay_capacity_exhausted` if this
-   * one event alone exceeds `MAX_PROVIDER_REPLAY_BYTES` and could never be fully buffered — the caller routes
-   * that into its own failed-terminal path, which this proxy does not own.
-   *
-   * The one thing a well-behaved caller must honour is the returned `paused` flag: `false` means keep
-   * pulling from the kernel, `true` means stop until a later call (after an ACK frees capacity) reports
-   * `false` again. Nothing else here enforces the replay-buffer bound — a caller that ignores `paused` is the
-   * one way this bound stops being real.
-   */
-  emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody): { paused: boolean };
+  reserveProviderEvent(key: ProviderOperationKey, signal?: AbortSignal): Promise<ReplayCapacityReservation>;
+  emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody, reservation: ReplayCapacityReservation): void;
 }
 
 /** A ledger refusal is a protocol refusal; this is the one place the two vocabularies meet. */
@@ -573,29 +561,38 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     }
   };
 
-  /** See the `Proxy.emitProviderEvent` interface doc for this seam's full contract. */
-  const emitProviderEvent = (key: ProviderOperationKey, event: ProviderEventBody): { paused: boolean } => {
-    const providerSeq = ledger.nextProviderSeq(key);
-    const request = providerEventRequestSchema.parse({
-      operation: {
-        jobId: key.jobId,
-        operationId: key.operationId,
-        proxyInstanceId: identity.proxyInstanceId,
-        buildSetId: capsule.buildSetId,
-      },
-      providerSeq,
-      event,
-    });
-    const frame = encodeProxyControlFrame({
-      jsonrpc: '2.0',
-      id: nextProviderEventFrameId,
-      method: PROVIDER_EVENT_METHOD,
-      params: request,
-    });
-    nextProviderEventFrameId += 1;
-    const { paused } = ledger.recordEvent(key, { providerSeq, frame });
-    void pump(key);
-    return { paused };
+  const reserveProviderEvent = (key: ProviderOperationKey, signal?: AbortSignal) => ledger.reserveEvent(key, signal);
+
+  const emitProviderEvent = (
+    key: ProviderOperationKey,
+    event: ProviderEventBody,
+    reservation: ReplayCapacityReservation,
+  ): void => {
+    try {
+      const providerSeq = ledger.nextProviderSeq(key);
+      const request = providerEventRequestSchema.parse({
+        operation: {
+          jobId: key.jobId,
+          operationId: key.operationId,
+          proxyInstanceId: identity.proxyInstanceId,
+          buildSetId: capsule.buildSetId,
+        },
+        providerSeq,
+        event,
+      });
+      const frame = encodeProxyControlFrame({
+        jsonrpc: '2.0',
+        id: nextProviderEventFrameId,
+        method: PROVIDER_EVENT_METHOD,
+        params: request,
+      });
+      nextProviderEventFrameId += 1;
+      ledger.recordEvent(key, { providerSeq, frame }, reservation);
+      void pump(key);
+    } catch (error: unknown) {
+      reservation.release();
+      throw error;
+    }
   };
 
   const challenges: ControlChallengeAuthority = {
@@ -1213,6 +1210,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       return endpoint.close();
     },
     ledger: () => ledger,
+    reserveProviderEvent,
     emitProviderEvent,
   };
 }

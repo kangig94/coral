@@ -1034,8 +1034,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
-    const emitted = set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' });
-    expect(emitted).toEqual({ paused: false });
+    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' }, await set.proxy.reserveProviderEvent(key));
 
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.committedThroughProviderSeq).toBe(1));
     expect(received).toEqual([
@@ -1069,25 +1068,37 @@ describe('provider-proxy provider.event.v1 emission', () => {
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
-    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' });
+    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' }, await set.proxy.reserveProviderEvent(key));
 
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.committedThroughProviderSeq).toBe(1));
     // The same event, sent twice — a `replay` reply does not advance providerSeq allocation.
     expect(receivedSeqs).toEqual([1, 1]);
   });
 
-  it('pauses once the per-operation event ceiling is crossed', async () => {
+  it('queues production once the per-operation event ceiling is reached', async () => {
     const set = await startProxy();
     const { operation, reserved } = await prepare(set);
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
-    let paused = false;
     for (let index = 0; index < MAX_PROVIDER_REPLAY_EVENTS; index += 1) {
-      paused = set.proxy.emitProviderEvent(key, { kind: 'progress', message: `tick-${index}` }).paused;
+      set.proxy.emitProviderEvent(
+        key,
+        { kind: 'progress', message: `tick-${index}` },
+        await set.proxy.reserveProviderEvent(key),
+      );
     }
 
-    expect(paused).toBe(true);
+    const controller = new AbortController();
+    let admitted = false;
+    const waiting = set.proxy.reserveProviderEvent(key, controller.signal).then((reservation) => {
+      admitted = true;
+      return reservation;
+    });
+    await Promise.resolve();
+    expect(admitted).toBe(false);
+    controller.abort();
+    await expect(waiting).rejects.toMatchObject({ name: 'AbortError' });
   });
 
   it('throws replay_capacity_exhausted for a single event too large to ever buffer, and buffers nothing', async () => {
@@ -1098,7 +1109,11 @@ describe('provider-proxy provider.event.v1 emission', () => {
 
     let caught: unknown;
     try {
-      set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES) });
+      set.proxy.emitProviderEvent(
+        key,
+        { kind: 'progress', message: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES) },
+        await set.proxy.reserveProviderEvent(key),
+      );
     } catch (error: unknown) {
       caught = error;
     }
@@ -1116,7 +1131,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
-    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' });
+    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' }, await set.proxy.reserveProviderEvent(key));
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.bufferedEvents).toHaveLength(1));
 
     const redeem = await installGrant(set, [operation.operationId]);
@@ -1160,7 +1175,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     const { operation, reserved } = await prepare(set);
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
-    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' });
+    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' }, await set.proxy.reserveProviderEvent(key));
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.bufferedEvents).toHaveLength(1));
 
     const redeem = await installGrant(set, [operation.operationId]);

@@ -5,6 +5,7 @@ import { z } from 'zod';
 // Type-only, so no runtime edge and no cycle with `protocol.ts` (which imports this file's ledger bound).
 // `production-import-graph.test.ts` walks runtime edges alone, for exactly this reason.
 import type { JointContainmentReceipt, ProxyOperationActivationReceipt, Reservation } from './protocol.js';
+import { ReplayBudget, type ReplayCapacityReservation } from './replay-budget.js';
 
 /**
  * How many operations one proxy may carry at once. It lives here because it is a ledger bound; the
@@ -155,10 +156,9 @@ export interface OperationLedger<Prepared = unknown> {
   completeActivation(key: ProviderOperationKey, fingerprint: string, ack: ProxyOperationActivationReceipt): void;
   beginRelease(key: ProviderOperationKey): void;
   transition(key: ProviderOperationKey, next: ProviderOperationState | 'released'): void;
-  /** Buffers one provider event, returning whether the producer must pause before sending more. */
-  recordEvent(key: ProviderOperationKey, event: ReplayEvent): { paused: boolean };
-  /** Acknowledges through a sequence, freeing the buffer it covers and resuming the producer. */
-  acknowledge(key: ProviderOperationKey, committedThroughProviderSeq: number): { resumed: boolean };
+  reserveEvent(key: ProviderOperationKey, signal?: AbortSignal): Promise<ReplayCapacityReservation>;
+  recordEvent(key: ProviderOperationKey, event: ReplayEvent, reservation: ReplayCapacityReservation): void;
+  acknowledge(key: ProviderOperationKey, committedThroughProviderSeq: number): void;
   /**
    * The `providerSeq` the next `recordEvent` call for this operation must use: one past whatever is
    * currently the newest buffered event, or one past the last acknowledged point once the buffer is empty.
@@ -189,7 +189,6 @@ type MutableEntry<Prepared> = {
   committedThroughProviderSeq: number;
   buffered: ReplayEvent[];
   bufferedBytes: number;
-  paused: boolean;
 };
 
 function keyOf(key: ProviderOperationKey): string {
@@ -223,7 +222,7 @@ function requireLeaseCurrent(entry: MutableEntry<unknown>, nowMs: number): void 
 
 export function createOperationLedger<Prepared = unknown>(): OperationLedger<Prepared> {
   const entries = new Map<string, MutableEntry<Prepared>>();
-  let proxyBufferedBytes = 0;
+  const replayBudget = new ReplayBudget(MAX_PROXY_REPLAY_BYTES, MAX_PROVIDER_REPLAY_BYTES);
 
   const require = (key: ProviderOperationKey): MutableEntry<Prepared> => {
     const entry = entries.get(keyOf(key));
@@ -233,13 +232,18 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
     return entry;
   };
 
-  // Both the per-operation ceilings and the proxy-wide one can trip a pause; recomputed identically wherever
-  // the buffer changes, since `recordEvent` and `acknowledge` are the two places it can cross a bound in
-  // either direction.
-  const bufferAtCapacity = (entry: MutableEntry<Prepared>): boolean =>
-    entry.buffered.length >= MAX_PROVIDER_REPLAY_EVENTS ||
-    entry.bufferedBytes >= MAX_PROVIDER_REPLAY_BYTES ||
-    proxyBufferedBytes >= MAX_PROXY_REPLAY_BYTES;
+  const eventMayBeProduced = (key: ProviderOperationKey): boolean => {
+    const entry = entries.get(keyOf(key));
+    return (
+      entry !== undefined &&
+      (entry.state === 'starting' ||
+        entry.state === 'executing' ||
+        entry.state === 'terminal-awaiting-settlement' ||
+        entry.state === 'suspended-awaiting-durable-decision') &&
+      entry.buffered.length < MAX_PROVIDER_REPLAY_EVENTS &&
+      entry.bufferedBytes < MAX_PROVIDER_REPLAY_BYTES
+    );
+  };
 
   return {
     prepare({
@@ -262,7 +266,7 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
       if (entries.size >= MAX_PROXY_OPERATION_LEDGERS) {
         return { kind: 'capacity', retryable: true, reason: 'operation-ledgers' };
       }
-      if (proxyBufferedBytes >= MAX_PROXY_REPLAY_BYTES) {
+      if (replayBudget.isExhausted()) {
         return { kind: 'capacity', retryable: true, reason: 'replay-bytes' };
       }
       const entry: MutableEntry<Prepared> = {
@@ -280,7 +284,6 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
         committedThroughProviderSeq: 0,
         buffered: [],
         bufferedBytes: 0,
-        paused: false,
       };
       entries.set(keyOf(key), entry);
       return { kind: 'reserved', entry: snapshot(entry) };
@@ -351,47 +354,55 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
         throw new LedgerError('operation_invalid_transition', `${entry.state} does not reach ${next}.`);
       }
       if (next === 'released') {
-        proxyBufferedBytes -= entry.bufferedBytes;
+        replayBudget.cancel(keyOf(key), new LedgerError('operation_not_found', 'The operation was released.'));
+        replayBudget.releaseBuffered(entry.bufferedBytes);
         entries.delete(keyOf(key));
         return;
       }
       entry.state = next;
     },
 
-    recordEvent(key, event): { paused: boolean } {
-      const entry = require(key);
-      if (
-        entry.state !== 'starting' &&
-        entry.state !== 'executing' &&
-        entry.state !== 'terminal-awaiting-settlement' &&
-        entry.state !== 'suspended-awaiting-durable-decision'
-      ) {
-        throw new LedgerError('operation_invalid_transition', `Cannot record an event from ${entry.state}.`);
-      }
-      const last = entry.buffered.at(-1);
-      const floor = last?.providerSeq ?? entry.committedThroughProviderSeq;
-      if (event.providerSeq <= floor) {
-        throw new LedgerError('operation_invalid_transition', 'Provider sequence must increase monotonically.');
-      }
-      const cost = frameBytes(event);
-      // A frame that alone exceeds the per-operation budget could never be fully buffered no matter how much
-      // capacity later frees up elsewhere — pausing for room that can never open would wait forever. Refusing
-      // to buffer it at all is what lets the caller route it into its own failed-terminal path instead.
-      if (cost > MAX_PROVIDER_REPLAY_BYTES) {
-        throw new LedgerError(
-          'replay_capacity_exhausted',
-          `A single provider event was ${cost} bytes, over the ${MAX_PROVIDER_REPLAY_BYTES}-byte per-operation limit.`,
-        );
-      }
-      entry.buffered.push(event);
-      entry.bufferedBytes += cost;
-      proxyBufferedBytes += cost;
-      // Pausing before a crossing is what keeps the buffer bounded; the ACK that frees capacity resumes it.
-      entry.paused = bufferAtCapacity(entry);
-      return { paused: entry.paused };
+    reserveEvent(key, signal): Promise<ReplayCapacityReservation> {
+      require(key);
+      return replayBudget.reserve(keyOf(key), () => eventMayBeProduced(key), signal);
     },
 
-    acknowledge(key, committedThroughProviderSeq): { resumed: boolean } {
+    recordEvent(key, event, reservation): void {
+      try {
+        const entry = require(key);
+        if (reservation.identity !== keyOf(key)) {
+          throw new LedgerError('operation_invalid_transition', 'Replay reservation belongs to another operation.');
+        }
+        if (
+          entry.state !== 'starting' &&
+          entry.state !== 'executing' &&
+          entry.state !== 'terminal-awaiting-settlement' &&
+          entry.state !== 'suspended-awaiting-durable-decision'
+        ) {
+          throw new LedgerError('operation_invalid_transition', `Cannot record an event from ${entry.state}.`);
+        }
+        const last = entry.buffered.at(-1);
+        const floor = last?.providerSeq ?? entry.committedThroughProviderSeq;
+        if (event.providerSeq <= floor) {
+          throw new LedgerError('operation_invalid_transition', 'Provider sequence must increase monotonically.');
+        }
+        const cost = frameBytes(event);
+        if (cost > MAX_PROVIDER_REPLAY_BYTES) {
+          throw new LedgerError(
+            'replay_capacity_exhausted',
+            `A single provider event was ${cost} bytes, over the ${MAX_PROVIDER_REPLAY_BYTES}-byte per-operation limit.`,
+          );
+        }
+        replayBudget.commit(reservation, cost);
+        entry.buffered.push(event);
+        entry.bufferedBytes += cost;
+      } catch (error: unknown) {
+        reservation.release();
+        throw error;
+      }
+    },
+
+    acknowledge(key, committedThroughProviderSeq): void {
       const entry = require(key);
       if (committedThroughProviderSeq < entry.committedThroughProviderSeq) {
         throw new LedgerError('operation_invalid_transition', 'Acknowledgement moved backwards.');
@@ -404,11 +415,8 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
       }
       entry.buffered = retained;
       entry.bufferedBytes -= freed;
-      proxyBufferedBytes -= freed;
       entry.committedThroughProviderSeq = committedThroughProviderSeq;
-      const wasPaused = entry.paused;
-      entry.paused = bufferAtCapacity(entry);
-      return { resumed: wasPaused && !entry.paused };
+      replayBudget.releaseBuffered(freed);
     },
 
     nextProviderSeq(key): number {

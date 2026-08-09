@@ -66,11 +66,6 @@ import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provide
 
 const runtime: Runtime = createRealRuntime('prod');
 
-// Matches `PAUSED_POLL_INTERVAL_MS` in semantic-operation.ts, which is not exported: it is an internal timing
-// constant, not part of this module's public contract, so the tests below name their own copy rather than
-// reach into the module for it.
-const POLL_INTERVAL_MS = 50;
-
 beforeEach(() => {
   // `spawnProviderServerTransport` and `rehydrateBinding` are plain `vi.fn()`s created inside a `vi.mock()`
   // factory, not `vi.spyOn` spies — `vi.restoreAllMocks()` below does not touch them, so each test resets its
@@ -175,9 +170,7 @@ function fakeHostAuthority(): ProxyAppServerHostAuthority {
   };
 }
 
-/** A real `OperationLedger` behind the `Proxy` seam, wired exactly as `proxy.ts`'s own `emitProviderEvent`
- *  is: recording into the ledger and reporting its real `paused` verdict. Real objects over mocks — the
- *  ledger's own transition/capacity rules are what several of these tests are ultimately proving hold. */
+/** A real `OperationLedger` behind the `Proxy` seam keeps these tests on production admission/accounting. */
 function createTestProxy(): {
   proxy: Proxy;
   ledger: OperationLedger<ProxyPreparedAppServerOperation>;
@@ -189,10 +182,11 @@ function createTestProxy(): {
     listen: async () => {},
     close: async () => {},
     ledger: () => ledger,
-    emitProviderEvent: (key, event) => {
-      emittedEvents.push({ key, event });
+    reserveProviderEvent: (key, signal) => ledger.reserveEvent(key, signal),
+    emitProviderEvent: (key, event, reservation) => {
       const providerSeq = ledger.nextProviderSeq(key);
-      return ledger.recordEvent(key, { providerSeq, frame: JSON.stringify(event) });
+      ledger.recordEvent(key, { providerSeq, frame: JSON.stringify(event) }, reservation);
+      emittedEvents.push({ key, event });
     },
   };
   return { proxy, ledger, emittedEvents };
@@ -225,12 +219,13 @@ function prepareAndActivate(
   });
 }
 
-/** Seeds the ledger to one event short of its per-operation ceiling, so the very next `recordEvent` call
- *  tips it into `paused: true` — cheap (tiny frames) and exercises the real ledger math rather than asserting
- *  against a hand-picked byte count. */
-function fillToEventCeiling(ledger: OperationLedger<ProxyPreparedAppServerOperation>, key: ProviderOperationKey): void {
+async function fillToOneBeforeEventCeiling(
+  ledger: OperationLedger<ProxyPreparedAppServerOperation>,
+  key: ProviderOperationKey,
+): Promise<void> {
   for (let seq = 1; seq <= MAX_PROVIDER_REPLAY_EVENTS - 1; seq += 1) {
-    ledger.recordEvent(key, { providerSeq: seq, frame: 'x' });
+    const reservation = await ledger.reserveEvent(key);
+    ledger.recordEvent(key, { providerSeq: seq, frame: 'x' }, reservation);
   }
 }
 
@@ -375,19 +370,24 @@ describe('semantic-operation runtime: stop() racing a still-draining emit', () =
     const key = testKey();
     const prepared = preparedFixture();
     prepareAndActivate(ledger, key, prepared);
-    // One event short of the ceiling: the kernel's own terminal event below is what tips the buffer over,
-    // so `emitProviderEvent` reports `paused: true` on the very event `stop()` will race against.
-    fillToEventCeiling(ledger, key);
 
     const order: string[] = [];
+    const progressEvent: ProviderEventBody = { kind: 'progress', message: 'before stop' };
     const closeStaged = vi.fn(() => {
       order.push('closed');
     });
     providerRegistryDouble.rehydrateBinding.mockReturnValue({
       ok: true,
       value: fakeBoundProvider({
-        execute: async function* () {
-          yield terminalCompleted;
+        execute: async function* (execRuntime) {
+          yield progressEvent;
+          await new Promise<void>((_resolve, reject) => {
+            if (execRuntime.signal.aborted) {
+              reject(new Error('aborted'));
+              return;
+            }
+            execRuntime.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+          });
         },
         openReplacement: async () => ({ hostRef: fakeHostRef(), close: closeStaged }),
       }),
@@ -397,8 +397,7 @@ describe('semantic-operation runtime: stop() racing a still-draining emit', () =
     await host.ensureProviderRoot(key, prepared);
     host.host.start({ key, prepared });
 
-    // Give the pump exactly enough of a turn to emit the terminal and enter its paused wait, but no more —
-    // proving the straggler was already emitted *before* stop() was ever called, not caused by it.
+    // The first event must already be emitted before stop is called, rather than being caused by the stop.
     await vi.waitFor(() => expect(emittedEvents).toHaveLength(1));
 
     order.push('stop-called');
@@ -408,29 +407,31 @@ describe('semantic-operation runtime: stop() racing a still-draining emit', () =
     // If stop() returned before the pump's own finally-block cleanup ran, 'closed' would land after
     // 'stop-resolved' instead of before it — this is the ordering guarantee the doc comment promises.
     expect(order).toEqual(['stop-called', 'closed', 'stop-resolved']);
-    expect(emittedEvents).toEqual([{ key, event: terminalCompleted }]);
+    expect(emittedEvents[0]).toEqual({ key, event: progressEvent });
+    expect(emittedEvents[1]?.event).toMatchObject({
+      kind: 'terminal',
+      terminal: { outcome: { kind: 'aborted', reason: 'user_abort' } },
+    });
     expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement');
 
     // No event was emitted after stop() resolved.
-    expect(emittedEvents).toHaveLength(1);
+    expect(emittedEvents).toHaveLength(2);
 
-    // The one-event straggler already carried this operation to `terminal-awaiting-settlement` via this
-    // module's own `safeTransition`. A second actor (proxy.ts's `operation.stop.v1`, racing the same natural
-    // completion) attempting the very same transition afterwards is refused, not silently reapplied.
+    // The synthesized abort already carried this operation to `terminal-awaiting-settlement`; the control
+    // handler racing the same stop must be refused rather than silently reapplying the transition.
     expect(() => ledger.transition(key, 'terminal-awaiting-settlement')).toThrow(/does not reach/u);
   });
 });
 
-// --- paused back-pressure ------------------------------------------------------------------------------------
+// --- pre-consumption replay admission ------------------------------------------------------------------------
 
-describe('semantic-operation runtime: paused back-pressure', () => {
-  it('stops pulling from the kernel while the ledger reports paused, and resumes exactly when capacity frees', async () => {
-    vi.useFakeTimers();
+describe('semantic-operation runtime: replay admission', () => {
+  it('does not advance the provider iterator until a permit is available', async () => {
     const { proxy, ledger, emittedEvents } = createTestProxy();
     const key = testKey();
     const prepared = preparedFixture();
     prepareAndActivate(ledger, key, prepared);
-    fillToEventCeiling(ledger, key);
+    await fillToOneBeforeEventCeiling(ledger, key);
 
     let pullCount = 0;
     const progressEvent: ProviderEventBody = { kind: 'progress', message: 'first' };
@@ -450,24 +451,15 @@ describe('semantic-operation runtime: paused back-pressure', () => {
     await host.ensureProviderRoot(key, prepared);
     host.host.start({ key, prepared });
 
-    // Flush the first pull, the tipping emit (paused: true), and entry into the capacity-polling wait.
-    await vi.advanceTimersByTimeAsync(0);
-    expect(pullCount).toBe(1);
-    expect(emittedEvents).toHaveLength(1);
-
-    // One full poll tick while the ledger is still over capacity: still not pulled further.
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    await vi.waitFor(() => expect(emittedEvents).toHaveLength(1));
     expect(pullCount).toBe(1);
 
-    // Exactly what frees capacity in production: a coordinator ack (`operation.adopt.v1` / a committed
-    // `provider.event.v1` ack), acknowledging the seeded backlog.
+    await Promise.resolve();
+    expect(pullCount).toBe(1);
+
     ledger.acknowledge(key, MAX_PROVIDER_REPLAY_EVENTS - 1);
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
-
-    expect(pullCount).toBe(2);
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => expect(pullCount).toBe(2));
     expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement');
-    // The terminal's own emitProviderEvent call, made once capacity was well clear, reported not-paused.
     expect(emittedEvents.at(-1)).toEqual({ key, event: terminalCompleted });
   });
 });

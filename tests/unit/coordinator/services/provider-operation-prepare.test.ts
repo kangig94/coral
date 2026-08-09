@@ -4,6 +4,7 @@ import type { ProviderJobLaunch } from '#src/jobs/records.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import {
   materializeProviderOperationPrepare,
+  providerOperationPrepareMaterializationResultSchema,
   type ProviderOperationPrepareMaterializerDeps,
 } from '#src/coordinator/services/provider-operation-prepare.js';
 import type { ProviderOperationPrepareSource } from '#src/store/provider-operation-record.js';
@@ -11,6 +12,48 @@ import type { ProviderOperationPrepareSource } from '#src/store/provider-operati
 import { providerOperationRecord } from '../../store/provider-operation-fixtures.js';
 
 describe('materializeProviderOperationPrepare', () => {
+  it('defines strict prepared and permanent-refusal materialization outcomes before cutover', () => {
+    const prepared = {
+      version: 1,
+      provider: 'codex',
+      binding: { provider: 'codex', kind: 'account', binding: { account: 'acct-1' } },
+      request: {
+        action: 'exec',
+        sessionId: 'session-1',
+        prompt: 'do the thing',
+        cwd: '/workspace',
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      persistedContinuity: null,
+      baseEnv: { PATH: '/usr/bin' },
+      protectedEnv: {},
+      platform: 'linux',
+    };
+    const refusal = {
+      kind: 'permanent-refusal',
+      code: 'authorization_expired',
+      reason: 'Provider operation child authorization has expired.',
+    };
+
+    expect(providerOperationPrepareMaterializationResultSchema.safeParse({ kind: 'prepared', prepared }).success).toBe(
+      true,
+    );
+    expect(providerOperationPrepareMaterializationResultSchema.safeParse(refusal).success).toBe(true);
+    expect(
+      providerOperationPrepareMaterializationResultSchema.safeParse({ ...refusal, unexpected: true }).success,
+    ).toBe(false);
+    expect(
+      providerOperationPrepareMaterializationResultSchema.safeParse({ ...refusal, code: 'retry_later' }).success,
+    ).toBe(false);
+    expect(
+      providerOperationPrepareMaterializationResultSchema.safeParse({
+        kind: 'permanent-refusal',
+        code: 'authorization_expired',
+      }).success,
+    ).toBe(false);
+  });
+
   it('refuses an expired child authorization before reminting a bearer handle', () => {
     const record = providerOperationRecord('prepare-pending');
     if (record.phase !== 'prepare-pending') throw new Error('expected prepare-pending fixture');

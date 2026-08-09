@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   LedgerError,
@@ -41,6 +41,15 @@ function activate(ledger: OperationLedger, key = KEY, nowMs = 0): void {
     },
     committedThroughProviderSeq: 0,
   });
+}
+
+async function recordEvent(
+  ledger: OperationLedger,
+  event: Readonly<{ providerSeq: number; frame: string }>,
+  key = KEY,
+): Promise<void> {
+  const reservation = await ledger.reserveEvent(key);
+  ledger.recordEvent(key, event, reservation);
 }
 
 describe('provider-proxy operation ledger', () => {
@@ -136,52 +145,66 @@ describe('provider-proxy operation ledger', () => {
     expect(ledger.get({ jobId: 'job-1', operationId: 'op-128' })).toBeNull();
   });
 
-  it('requires provider sequences to increase', () => {
+  it('requires provider sequences to increase', async () => {
     const ledger = createOperationLedger();
     executing(ledger);
-    ledger.recordEvent(KEY, { providerSeq: 1, frame: 'x'.repeat(10) });
+    await recordEvent(ledger, { providerSeq: 1, frame: 'x'.repeat(10) });
 
-    expect(() => ledger.recordEvent(KEY, { providerSeq: 1, frame: 'x'.repeat(10) })).toThrow(/monotonically/u);
+    await expect(recordEvent(ledger, { providerSeq: 1, frame: 'x'.repeat(10) })).rejects.toThrow(/monotonically/u);
   });
 
-  it('pauses at the per-operation event ceiling and resumes on the acknowledgement that frees it', () => {
+  it('admits the next event when an acknowledgement frees the per-operation event ceiling', async () => {
     const ledger = createOperationLedger();
     executing(ledger);
-    let paused = false;
     for (let seq = 1; seq <= MAX_PROVIDER_REPLAY_EVENTS; seq += 1) {
-      paused = ledger.recordEvent(KEY, { providerSeq: seq, frame: 'x' }).paused;
+      await recordEvent(ledger, { providerSeq: seq, frame: 'x' });
     }
 
-    expect(paused).toBe(true);
-    expect(ledger.acknowledge(KEY, MAX_PROVIDER_REPLAY_EVENTS).resumed).toBe(true);
+    let wasAdmitted = false;
+    const admitted = ledger.reserveEvent(KEY).then((reservation) => {
+      wasAdmitted = true;
+      return reservation;
+    });
+    await Promise.resolve();
+    expect(wasAdmitted).toBe(false);
+    ledger.acknowledge(KEY, MAX_PROVIDER_REPLAY_EVENTS);
+    (await admitted).release();
+    expect(wasAdmitted).toBe(true);
     expect(ledger.get(KEY)?.bufferedBytes).toBe(0);
   });
 
-  it('refuses an acknowledgement that moves backwards', () => {
+  it('refuses an acknowledgement that moves backwards', async () => {
     const ledger = createOperationLedger();
     executing(ledger);
-    ledger.recordEvent(KEY, { providerSeq: 1, frame: 'x'.repeat(5) });
+    await recordEvent(ledger, { providerSeq: 1, frame: 'x'.repeat(5) });
     ledger.acknowledge(KEY, 1);
 
     expect(() => ledger.acknowledge(KEY, 0)).toThrow(/backwards/u);
   });
 
-  it('returns released capacity to the proxy-wide budget', () => {
+  it('returns released capacity to the proxy-wide budget', async () => {
     const ledger = createOperationLedger();
-    executing(ledger);
-    ledger.recordEvent(KEY, { providerSeq: 1, frame: 'x'.repeat(1_024) });
-
-    ledger.transition(KEY, 'terminal-awaiting-settlement');
-    ledger.beginRelease(KEY);
-    ledger.transition(KEY, 'released');
-
-    // A second operation of the same size proves the released bytes were returned, not leaked.
-    executing(ledger, { jobId: 'job-1', operationId: 'op-2' });
-    expect(
-      ledger.recordEvent({ jobId: 'job-1', operationId: 'op-2' }, { providerSeq: 1, frame: 'x'.repeat(1_024) }),
-    ).toEqual({
-      paused: false,
+    const keys = Array.from({ length: 5 }, (_, index) => ({ jobId: 'job-1', operationId: `op-${index}` }));
+    for (const key of keys) executing(ledger, key);
+    const reservations = await Promise.all(keys.slice(0, 4).map((key) => ledger.reserveEvent(key)));
+    const waitingKey = keys[4];
+    if (waitingKey === undefined) throw new Error('Expected a fifth operation.');
+    let wasAdmitted = false;
+    const waiting = ledger.reserveEvent(waitingKey).then((reservation) => {
+      wasAdmitted = true;
+      return reservation;
     });
+    await Promise.resolve();
+    expect(wasAdmitted).toBe(false);
+
+    const releasedKey = keys[0];
+    if (releasedKey === undefined) throw new Error('Expected a reserved operation.');
+    ledger.transition(releasedKey, 'terminal-awaiting-settlement');
+    ledger.beginRelease(releasedKey);
+    ledger.transition(releasedKey, 'released');
+
+    await vi.waitFor(() => expect(wasAdmitted).toBe(true));
+    for (const reservation of [...reservations.slice(1), await waiting]) reservation.release();
   });
 
   it('returns the existing reservation for a repeated prepare and refuses a conflicting one', () => {
@@ -197,39 +220,42 @@ describe('provider-proxy operation ledger', () => {
     );
   });
 
-  it('pauses on the per-operation byte ceiling with far fewer than the event ceiling', () => {
+  it('holds production at the per-operation byte ceiling with far fewer than the event ceiling', async () => {
     const ledger = createOperationLedger();
     executing(ledger);
     const chunk = 'x'.repeat(1024 * 1024);
 
-    let paused = false;
     let seq = 0;
-    while (!paused) {
+    while ((ledger.get(KEY)?.bufferedBytes ?? 0) < MAX_PROVIDER_REPLAY_BYTES) {
       seq += 1;
-      paused = ledger.recordEvent(KEY, { providerSeq: seq, frame: chunk }).paused;
+      await recordEvent(ledger, { providerSeq: seq, frame: chunk });
     }
 
     // Byte pressure must bite on its own; the count ceiling is nowhere near reached here.
     expect(seq).toBeLessThan(MAX_PROVIDER_REPLAY_EVENTS);
     expect(ledger.get(KEY)?.bufferedBytes).toBeGreaterThanOrEqual(MAX_PROVIDER_REPLAY_BYTES);
+    const controller = new AbortController();
+    let wasAdmitted = false;
+    const waiting = ledger.reserveEvent(KEY, controller.signal).then((reservation) => {
+      wasAdmitted = true;
+      return reservation;
+    });
+    await Promise.resolve();
+    expect(wasAdmitted).toBe(false);
+    controller.abort();
+    await expect(waiting).rejects.toMatchObject({ name: 'AbortError' });
   });
 
-  it('refuses a new reservation once the proxy-wide byte budget is spent', () => {
+  it('refuses a new operation while production reservations exhaust the proxy-wide byte budget', async () => {
     const ledger = createOperationLedger();
-    const chunk = 'x'.repeat(1024 * 1024);
-    let seq = 0;
-
-    // Each operation stops at its own ceiling, so several together are what reach the proxy-wide budget.
-    const perOperation = MAX_PROVIDER_REPLAY_BYTES / chunk.length;
     const operations = MAX_PROXY_REPLAY_BYTES / MAX_PROVIDER_REPLAY_BYTES;
+    const keys: ProviderOperationKey[] = [];
     for (let index = 0; index < operations; index += 1) {
       const key = { jobId: 'job-1', operationId: `op-${index}` };
       executing(ledger, key);
-      for (let event = 0; event < perOperation; event += 1) {
-        seq += 1;
-        ledger.recordEvent(key, { providerSeq: seq, frame: chunk });
-      }
+      keys.push(key);
     }
+    const reservations = await Promise.all(keys.map((key) => ledger.reserveEvent(key)));
 
     const refused = ledger.prepare({
       key: { jobId: 'job-1', operationId: 'late' },
@@ -239,6 +265,7 @@ describe('provider-proxy operation ledger', () => {
     });
 
     expect(refused).toEqual({ kind: 'capacity', retryable: true, reason: 'replay-bytes' });
+    for (const reservation of reservations) reservation.release();
   });
 
   it('reaches released only through the suspend arm once suspended', () => {
@@ -256,27 +283,27 @@ describe('provider-proxy operation ledger', () => {
     expect(ledger.get(KEY)).toBeNull();
   });
 
-  it('computes the next providerSeq from the newest buffered event, or the acknowledged floor once empty', () => {
+  it('computes the next providerSeq from the newest buffered event, or the acknowledged floor once empty', async () => {
     const ledger = createOperationLedger();
     executing(ledger);
 
     expect(ledger.nextProviderSeq(KEY)).toBe(1);
 
-    ledger.recordEvent(KEY, { providerSeq: 1, frame: 'first' });
-    ledger.recordEvent(KEY, { providerSeq: 2, frame: 'second' });
+    await recordEvent(ledger, { providerSeq: 1, frame: 'first' });
+    await recordEvent(ledger, { providerSeq: 2, frame: 'second' });
     expect(ledger.nextProviderSeq(KEY)).toBe(3);
 
     ledger.acknowledge(KEY, 2);
     expect(ledger.nextProviderSeq(KEY)).toBe(3);
   });
 
-  it('refuses to buffer a single event that alone exceeds the per-operation byte budget', () => {
+  it('refuses to buffer a single event that alone exceeds the per-operation byte budget', async () => {
     const ledger = createOperationLedger();
     executing(ledger);
 
     let caught: unknown;
     try {
-      ledger.recordEvent(KEY, { providerSeq: 1, frame: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES + 1) });
+      await recordEvent(ledger, { providerSeq: 1, frame: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES + 1) });
     } catch (error: unknown) {
       caught = error;
     }

@@ -417,7 +417,11 @@ describe('provider-proxy truthful operation authority', () => {
     const activating = control.call('operation.activate.v1', activation, 5_000);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('starting'));
 
-    proxy.emitProviderEvent(operation, { kind: 'progress', message: 'buffered' });
+    proxy.emitProviderEvent(
+      operation,
+      { kind: 'progress', message: 'buffered' },
+      await proxy.reserveProviderEvent(operation),
+    );
     const inspectRequest = proxyOperationInspectParamsSchema.parse({ operation, prepareAttemptKey });
     const inspectResult = proxyOperationInspectResultSchema.parse(
       await control.call('operation.inspect.v2', inspectRequest, 5_000),
@@ -663,7 +667,11 @@ describe('provider-proxy truthful operation authority', () => {
       },
       5_000,
     );
-    proxy.emitProviderEvent(operation, { kind: 'progress', message: 'final' });
+    proxy.emitProviderEvent(
+      operation,
+      { kind: 'progress', message: 'final' },
+      await proxy.reserveProviderEvent(operation),
+    );
     await control.call('operation.stop.v1', { operation, cause: 'signal_abort' }, 5_000);
 
     const settleRequest = proxyOperationSettleParamsSchema.parse({ operation, finalProviderSeq: 1 });

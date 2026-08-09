@@ -113,9 +113,10 @@ function createTestProxy(): { proxy: Proxy; ledger: OperationLedger<ProxyPrepare
     listen: async () => {},
     close: async () => {},
     ledger: () => ledger,
-    emitProviderEvent: (key, event) => {
+    reserveProviderEvent: (key, signal) => ledger.reserveEvent(key, signal),
+    emitProviderEvent: (key, event, reservation) => {
       const providerSeq = ledger.nextProviderSeq(key);
-      return ledger.recordEvent(key, { providerSeq, frame: JSON.stringify(event) });
+      ledger.recordEvent(key, { providerSeq, frame: JSON.stringify(event) }, reservation);
     },
   };
   return { proxy, ledger };

@@ -116,6 +116,43 @@ describe('provider operation journal', () => {
     }
   });
 
+  it('accepts resolution directives only on the phase that will consume them', () => {
+    const requestedAt = '2026-08-09T12:34:56.000Z';
+    const prestart = providerOperationRecordSchema.parse({
+      ...providerOperationRecord('prestart-cleanup-pending'),
+      afterRelease: { kind: 'terminal-aborted', cause: 'user_abort', requestedAt },
+    });
+    const resolving = providerOperationRecordSchema.parse({
+      ...providerOperationRecord('activation-resolution-pending'),
+      onNeverStarted: { kind: 'local-authorized', reason: 'The exact attempt never started.' },
+      activationIndeterminate: {
+        kind: 'terminal-failed',
+        code: 'activation_indeterminate',
+        reason: 'The start boundary cannot be resolved.',
+      },
+    });
+    const executing = providerOperationRecordSchema.parse({
+      ...providerOperationRecord('executing'),
+      controlIntent: { kind: 'stop', cause: 'signal_abort', requestedAt },
+    });
+
+    for (const record of [prestart, resolving, executing]) {
+      expect(decodeProviderOperationRecord(encodeProviderOperationRecord(record))).toEqual(record);
+    }
+    expect(
+      providerOperationRecordSchema.safeParse({
+        ...providerOperationRecord('prestart-cleanup-pending'),
+        controlIntent: { kind: 'run' },
+      }).success,
+    ).toBe(false);
+    expect(
+      providerOperationRecordSchema.safeParse({
+        ...providerOperationRecord('executing'),
+        controlIntent: { kind: 'stop', cause: 'signal_abort' },
+      }).success,
+    ).toBe(false);
+  });
+
   it('uses exact-value compare-and-swap and makes stale revisions lose without changing the winner', () => {
     const db = createDb();
     try {

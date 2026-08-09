@@ -612,10 +612,15 @@ export const proxyOperationStopParamsSchema = z
   .object({ operation: operationIdentitySchema, cause: providerStopCauseSchema })
   .strict();
 
-/** `operation.adopt.v1`'s request. */
-export const proxyOperationAdoptParamsSchema = z
+const proxyOperationAttachmentParamsSchema = z
   .object({ operation: operationIdentitySchema, committedThroughProviderSeq: nonNegativeSafeIntegerSchema })
   .strict();
+
+/** Sharing the exact shape prevents the compatibility adapter from drifting before attachment cutover. */
+export const proxyOperationAdoptParamsSchema = proxyOperationAttachmentParamsSchema;
+
+/** Sharing the exact shape prevents the future attachment path from drifting from its compatibility input. */
+export const proxyOperationAttachParamsSchema = proxyOperationAttachmentParamsSchema;
 
 export const proxyOperationInspectParamsSchema = z
   .object({ operation: operationIdentitySchema, prepareAttemptKey: operationPrepareAttemptKeySchema })
@@ -708,6 +713,12 @@ export const proxyOperationActivateResultSchema = z
 
 export type ProxyOperationActivationReceipt = z.output<typeof proxyOperationActivateResultSchema>;
 
+/** Transport failure remains outside this result so ambiguity cannot decode as operation absence. */
+export const proxyOperationAttachResultSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('attached'), replayFromProviderSeq: z.number().int().positive().safe() }).strict(),
+  z.object({ state: z.literal('operation-absent'), operation: operationIdentitySchema }).strict(),
+]);
+
 const proxyOperationInspectPreExecutionBaseSchema = z.object({
   reservation: reservationSchema,
   leaseExpiresInMs: z.number(),
@@ -766,6 +777,20 @@ export const proxyOperationCancelResultSchema = z
 export const proxyOperationSettleResultSchema = z
   .object({ state: z.literal('released-after-terminal'), settledThroughProviderSeq: nonNegativeSafeIntegerSchema })
   .strict();
+
+/** Reusing the live cancel and settle schemas prevents this inert aggregate from drifting before cutover. */
+export const proxyOperationReleaseReceiptSchema = z.discriminatedUnion('state', [
+  proxyOperationCancelResultSchema,
+  z
+    .object({
+      state: z.literal('released-activation-indeterminate'),
+      operation: operationIdentitySchema,
+      prepareAttemptNumber: operationPrepareAttemptNumberSchema,
+      prepareAttemptKey: operationPrepareAttemptKeySchema,
+    })
+    .strict(),
+  proxyOperationSettleResultSchema,
+]);
 
 /** `operation.stop.v1`'s result. `state` is the ledger's own state rather than a closed set: the proxy reports
  *  where the operation actually landed, and enumerating that here would be a second copy of the ledger's

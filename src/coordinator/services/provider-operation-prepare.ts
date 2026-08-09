@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import { resolveEquippedTools } from '../../expansion/equipped-tools.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import { applyInjectBundle } from '../../providers/inject.js';
@@ -15,6 +17,26 @@ import type {
   ProviderOperationIdentity,
   ProviderOperationPrepareSource,
 } from '../../store/provider-operation-record.js';
+
+/**
+ * What materializing a journaled prepare can conclude. Two outcomes, both strict, so the stage that cuts this
+ * over cannot quietly grow a third: either the request was rebuilt and may be sent, or it can never be — an
+ * authorization that has expired cannot be renewed from a durable recipe, because the absolute expiry a
+ * restart inherits is exactly what a restart must not extend. A retryable failure is not a result here; it
+ * throws, and the reconciler's existing retry owns it.
+ */
+export const providerOperationPrepareMaterializationResultSchema = z
+  .discriminatedUnion('kind', [
+    z.object({ kind: z.literal('prepared'), prepared: proxyPreparedAppServerOperationSchema }).strict(),
+    z
+      .object({
+        kind: z.literal('permanent-refusal'),
+        code: z.literal('authorization_expired'),
+        reason: z.string().min(1),
+      })
+      .strict(),
+  ])
+  .describe('provider operation prepare materialization outcome');
 
 export type ProviderOperationPrepareMaterializerDeps = Readonly<{
   runtime: Pick<Runtime, 'time' | 'env' | 'storage' | 'paths'>;

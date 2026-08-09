@@ -25,7 +25,8 @@ import type {
   BoundProviderExecutionPreparationInput,
   BoundProviderHostPreparationInput,
 } from '../providers/bound-provider-contract.js';
-import { MAX_PROVIDER_REPLAY_BYTES, MAX_PROVIDER_REPLAY_EVENTS, type ProviderOperationKey } from './ledger.js';
+import type { ProviderOperationKey } from './ledger.js';
+import type { ReplayCapacityReservation } from './replay-budget.js';
 import type { Proxy, SemanticOperationHost } from './proxy.js';
 import type { ProxyPreparedAppServerOperation } from './protocol.js';
 
@@ -434,8 +435,6 @@ function buildExecutionRuntime(
 
 // --- per-operation kernel execution and event pumping ----------------------------------------------------
 
-const PAUSED_POLL_INTERVAL_MS = 50;
-
 function operationKeyString(key: ProviderOperationKey): string {
   return `${key.jobId} ${key.operationId}`;
 }
@@ -506,23 +505,6 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     return entry;
   };
 
-  /** Waits until this operation's own buffered-replay usage is back under both per-operation caps. An
-   *  imprecise but bounded proxy for "capacity freed": `Proxy.emitProviderEvent`'s only feedback is the
-   *  `paused` flag on the call that produced the event, with no push-based "resumed" signal and no proxy-wide
-   *  buffer total exposed to a host — see the task report for why a proxy-wide-pressure case can wait slightly
-   *  past what is strictly necessary, and why that is bounded rather than unsound. */
-  const awaitEmitCapacity = async (key: ProviderOperationKey, signal: AbortSignal): Promise<void> => {
-    const proxy = getProxy();
-    while (!signal.aborted) {
-      const entry = proxy.ledger().get(key);
-      if (entry === null) return;
-      if (entry.bufferedEvents.length < MAX_PROVIDER_REPLAY_EVENTS && entry.bufferedBytes < MAX_PROVIDER_REPLAY_BYTES) {
-        return;
-      }
-      await runtime.time.sleep(PAUSED_POLL_INTERVAL_MS, { signal });
-    }
-  };
-
   const safeTransition = (
     key: ProviderOperationKey,
     next: 'terminal-awaiting-settlement' | 'suspended-awaiting-durable-decision',
@@ -536,7 +518,11 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     }
   };
 
-  const synthesizeAndEmitFailure = (key: ProviderOperationKey, provider: string, error: unknown): void => {
+  const synthesizeAndEmitFailure = async (
+    key: ProviderOperationKey,
+    provider: string,
+    error: unknown,
+  ): Promise<void> => {
     const proxy = getProxy();
     const event: ProviderEventBody = {
       kind: 'terminal',
@@ -548,15 +534,19 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       diagnostics: {},
       failureCause: providerRequestFailed({ provider, message: errorMessage(error) }),
     };
+    let reservation: ReplayCapacityReservation | undefined;
     try {
-      proxy.emitProviderEvent(key, event);
+      reservation = await proxy.reserveProviderEvent(key);
+      proxy.emitProviderEvent(key, event, reservation);
     } catch {
       /* the ledger entry is gone (already released); nothing left to notify */
+    } finally {
+      reservation?.release();
     }
     safeTransition(key, 'terminal-awaiting-settlement');
   };
 
-  const emitAbortedTerminal = (key: ProviderOperationKey, cause: ProviderStopCause): void => {
+  const emitAbortedTerminal = async (key: ProviderOperationKey, cause: ProviderStopCause): Promise<void> => {
     if (!isAbortStopCause(cause)) return;
     const proxy = getProxy();
     const event: ProviderEventBody = {
@@ -564,10 +554,14 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       terminal: { content: '', durationMs: 0, outcome: { kind: 'aborted', reason: cause } },
       diagnostics: {},
     };
+    let reservation: ReplayCapacityReservation | undefined;
     try {
-      proxy.emitProviderEvent(key, event);
+      reservation = await proxy.reserveProviderEvent(key);
+      proxy.emitProviderEvent(key, event, reservation);
     } catch {
       /* ledger entry already gone */
+    } finally {
+      reservation?.release();
     }
     safeTransition(key, 'terminal-awaiting-settlement');
   };
@@ -578,19 +572,50 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     iterable: AsyncIterable<ProviderEventBody>,
   ): Promise<void> => {
     const proxy = getProxy();
+    const iterator = iterable[Symbol.asyncIterator]();
     try {
       // The stored activation ACK makes a retry return before reaching `host.start`, so nothing outside this
       // single call ever resolves `entry.done` concurrently with it.
-      for await (const event of iterable) {
-        const { paused } = proxy.emitProviderEvent(key, event);
-        if (paused) await awaitEmitCapacity(key, entry.abortController.signal);
+      while (true) {
+        const reservation = await proxy.reserveProviderEvent(key, entry.abortController.signal);
+        let step: IteratorResult<ProviderEventBody>;
+        try {
+          entry.abortController.signal.throwIfAborted();
+          step = await iterator.next();
+          if (step.done) {
+            reservation.release();
+            break;
+          }
+          proxy.emitProviderEvent(key, step.value, reservation);
+        } catch (error: unknown) {
+          reservation.release();
+          throw error;
+        }
 
-        if (event.kind === 'terminal') {
+        if (step.value.kind === 'terminal') {
           safeTransition(key, 'terminal-awaiting-settlement');
+          try {
+            await iterator.return?.();
+          } catch (error: unknown) {
+            // The terminal already names the outcome; iterator cleanup cannot replace it with another one.
+            backendLog.error(
+              `semantic operation runtime: terminal iterator cleanup failed for ${operationKeyString(key)}`,
+              error,
+            );
+          }
           break;
         }
-        if (event.kind === 'suspended') {
+        if (step.value.kind === 'suspended') {
           safeTransition(key, 'suspended-awaiting-durable-decision');
+          try {
+            await iterator.return?.();
+          } catch (error: unknown) {
+            // Suspension is already durable work; iterator cleanup cannot turn it into a terminal.
+            backendLog.error(
+              `semantic operation runtime: suspended iterator cleanup failed for ${operationKeyString(key)}`,
+              error,
+            );
+          }
           break;
         }
       }
@@ -601,13 +626,13 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         // than the shape of what it threw. Interruption causes (restart/handoff) emit nothing: the coordinator
         // synthesizes `session.interrupted` itself from `operation.stop.v1`'s own `suspended-awaiting-durable-
         // decision` reply, not from a provider event this proxy would have to invent.
-        if (isAbortStopCause(cause)) emitAbortedTerminal(key, cause);
+        if (isAbortStopCause(cause)) await emitAbortedTerminal(key, cause);
         return;
       }
       // Nobody asked this operation to stop; the kernel unwound on its own. A terminal must still reach the
       // coordinator (see the task report's "kernel throws mid-stream" judgement) — synthesize one rather than
       // leaving the ledger entry executing forever with nothing to end it.
-      synthesizeAndEmitFailure(key, entry.bound.name, error);
+      await synthesizeAndEmitFailure(key, entry.bound.name, error);
     } finally {
       entry.staged.close();
     }
