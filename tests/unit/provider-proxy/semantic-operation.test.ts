@@ -149,6 +149,8 @@ function deferred<T = void>(): { promise: Promise<T>; resolve(value?: T): void }
  *  module's concern, and a silent stub would hide a real bug if the implementation ever started calling one. */
 function fakeBoundProvider(options: {
   name?: string;
+  supportsInterrupt?: boolean;
+  executionHostRef?: HostRef;
   openReplacement?: BoundProviderAppServerCapability['openReplacement'];
   execute: (runtime: BoundProviderAppServerExecutionRuntime) => AsyncIterable<ProviderEventBody>;
 }): BoundProvider {
@@ -165,12 +167,12 @@ function fakeBoundProvider(options: {
       kind: 'app-server',
       hostSpec: fakeHostSpec(name),
       execute: (executionRuntime) => {
-        executionRuntime.onHostRef(fakeHostRef(name));
+        executionRuntime.onHostRef(options.executionHostRef ?? fakeHostRef(name));
         return options.execute(executionRuntime);
       },
     }),
     appServer: {
-      supportsInterrupt: false,
+      supportsInterrupt: options.supportsInterrupt ?? false,
       supportsProbe: false,
       openReplacement: options.openReplacement ?? (async () => ({ hostRef: fakeHostRef(name), close: vi.fn() })),
       interrupt: unreachable('appServer.interrupt') as unknown as BoundProviderAppServerCapability['interrupt'],
@@ -199,8 +201,11 @@ function fakeHostRef(provider = 'claude'): HostRef {
  *  callers into the host pool proper, exercised separately below — are never reached from here. */
 function fakeHostAuthority(): ProxyAppServerHostAuthority {
   return {
-    openSession: unreachable('hostAuthority.openSession') as unknown as ProxyAppServerHostAuthority['openSession'],
-    attachSession: async () => null,
+    beginOperation: () => ({
+      selectCancellationMode: () => {},
+      openSession: unreachable('hostAuthority.openSession') as never,
+      attachSession: async () => null,
+    }),
     rootIdentity: () => ({ pid: 4242, processStartedAtSeconds: 1_700_000_000 }),
     closed: () => new Promise<Error | void>(() => {}),
     forceClose: async () => {},
@@ -581,8 +586,11 @@ describe('semantic-operation runtime: bounded cancellation', () => {
       transportClosed.resolve();
     });
     const hostAuthority = {
-      openSession: unreachable('hostAuthority.openSession'),
-      attachSession: async () => null,
+      beginOperation: () => ({
+        selectCancellationMode: () => {},
+        openSession: unreachable('hostAuthority.openSession'),
+        attachSession: async () => null,
+      }),
       rootIdentity: () => ({ pid: 4242, processStartedAtSeconds: 1_700_000_000 }),
       closed: () => transportClosed.promise,
       forceClose,
@@ -655,124 +663,311 @@ describe('semantic-operation runtime: bounded cancellation', () => {
 
     expect.soft(releaseSettled).toBe(true);
     expect(releaseError).toMatchObject({
-      name: 'SemanticOperationCancellationTimeoutError',
-      code: 'semantic_operation_cancellation_timeout',
-      timeoutMs: SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS,
-      message: 'Provider operation cancellation did not settle within 10000ms.',
+      name: 'SemanticOperationCancellationUnconfirmedError',
+      code: 'semantic_operation_cancellation_unconfirmed',
+      message: expect.stringContaining('Provider operation cancellation did not settle within 10000ms.'),
     });
+  });
+});
+
+describe('semantic-operation runtime: capability-directed cancellation', () => {
+  function sharedHostRef(): HostRef {
+    return {
+      provider: 'claude',
+      fingerprint: 'b'.repeat(64),
+      instanceId: 'shared-instance',
+      leaseMode: 'job-exclusive',
+      ownerJobId: 'job-1',
+    };
+  }
+
+  function sharedHostAuthority() {
+    const transportClosed = deferred<Error | void>();
+    let rootAlive = true;
+    const forceClose = vi.fn(async () => {
+      rootAlive = false;
+      transportClosed.resolve(new Error('shared provider root was force-closed'));
+    });
+    const authority: ProxyAppServerHostAuthority = {
+      beginOperation: () => {
+        let selected = false;
+        return {
+          selectCancellationMode: () => {
+            if (selected) throw new Error('cancellation mode selected twice');
+            selected = true;
+          },
+          openSession: unreachable('scope.openSession') as never,
+          attachSession: async () => null,
+        };
+      },
+      rootIdentity: () => (rootAlive ? { pid: 4_242, processStartedAtSeconds: 1_700_000_000 } : null),
+      closed: () => transportClosed.promise,
+      forceClose,
+    };
+    return { authority, forceClose, rootAlive: () => rootAlive };
+  }
+
+  it('keeps a same-host sibling usable after exact interrupt confirmation (C3-M1)', async () => {
+    const { proxy, ledger, emittedEvents } = createTestProxy();
+    const operationA = testKey('op-a');
+    const operationB = testKey('op-b');
+    const prepared = preparedFixture();
+    prepareAndActivate(ledger, operationA, prepared);
+    prepareAndActivate(ledger, operationB, prepared);
+    const hostRef = sharedHostRef();
+    const continueB = deferred();
+    const shared = sharedHostAuthority();
+
+    providerRegistryDouble.rehydrateBinding
+      .mockReturnValueOnce({
+        ok: true,
+        value: fakeBoundProvider({
+          supportsInterrupt: true,
+          executionHostRef: hostRef,
+          openReplacement: async () => ({ hostRef, close: vi.fn() }),
+          execute: async function* (execRuntime) {
+            await new Promise<void>((resolve) => {
+              if (execRuntime.signal.aborted) resolve();
+              else execRuntime.signal.addEventListener('abort', () => resolve(), { once: true });
+            });
+            yield {
+              kind: 'terminal',
+              terminal: { content: '', durationMs: 1, outcome: { kind: 'aborted', reason: 'signal_abort' } },
+              diagnostics: {},
+            };
+          },
+        }),
+      })
+      .mockReturnValueOnce({
+        ok: true,
+        value: fakeBoundProvider({
+          supportsInterrupt: true,
+          executionHostRef: hostRef,
+          openReplacement: async () => ({ hostRef, close: vi.fn() }),
+          execute: async function* () {
+            yield { kind: 'progress', message: 'sibling-ready' };
+            await continueB.promise;
+            yield { kind: 'progress', message: 'sibling-after-cancel' };
+            yield terminalCompleted;
+          },
+        }),
+      });
+
+    const semantic = createSemanticOperationRuntime({
+      runtime,
+      hostAuthority: shared.authority,
+      getProxy: () => proxy,
+    });
+    await semantic.ensureProviderRoot(operationA, prepared);
+    await semantic.ensureProviderRoot(operationB, prepared);
+    const startedA = semantic.host.start({ key: operationA, prepared });
+    const startedB = semantic.host.start({ key: operationB, prepared });
+    await expect(startedA.result).resolves.toEqual({ kind: 'started', hostRef });
+    await expect(startedB.result).resolves.toEqual({ kind: 'started', hostRef });
+    await vi.waitFor(() =>
+      expect(emittedEvents.some(({ key, event }) => key === operationB && event.kind === 'progress')).toBe(true),
+    );
+
+    await semantic.host.stop({ key: operationA, cause: 'user_abort' });
+    continueB.resolve();
+    await vi.waitFor(() =>
+      expect(
+        emittedEvents.some(
+          ({ key, event }) =>
+            key === operationB && event.kind === 'progress' && event.message === 'sibling-after-cancel',
+        ),
+        'shared sibling could not complete a post-cancel operation',
+      ).toBe(true),
+    );
+
+    expect(shared.rootAlive(), 'shared sibling root became null after cancelling its peer').toBe(true);
+    expect(shared.forceClose).not.toHaveBeenCalled();
+    await semantic.host.stop({ key: operationB, cause: 'user_abort' });
+  });
+
+  it('closes admission and requests whole-set relinquishment after an unconfirmed interrupt (C3-M8)', async () => {
+    const { proxy, ledger } = createTestProxy();
+    const operationA = testKey('op-a');
+    const prepared = preparedFixture();
+    prepareAndActivate(ledger, operationA, prepared);
+    const hostRef = sharedHostRef();
+    const shared = sharedHostAuthority();
+    const onRelinquish = vi.fn();
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        supportsInterrupt: true,
+        executionHostRef: hostRef,
+        openReplacement: async () => ({ hostRef, close: vi.fn() }),
+        execute: async function* (execRuntime) {
+          await new Promise<void>((resolve) => {
+            if (execRuntime.signal.aborted) resolve();
+            else execRuntime.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          yield { kind: 'suspended', reason: 'interrupt_unconfirmed' };
+        },
+      }),
+    });
+    const semantic = createSemanticOperationRuntime({
+      runtime,
+      hostAuthority: shared.authority,
+      getProxy: () => proxy,
+      onRelinquish,
+    });
+    await semantic.ensureProviderRoot(operationA, prepared);
+    const started = semantic.host.start({ key: operationA, prepared });
+    await expect(started.result).resolves.toEqual({ kind: 'started', hostRef });
+
+    const stopFailure = await Promise.resolve(semantic.host.stop({ key: operationA, cause: 'restart' })).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    let siblingAdmissionFailure: unknown = null;
+    try {
+      void semantic.stage(testKey('op-b'), prepared).result.catch(() => {});
+    } catch (error: unknown) {
+      siblingAdmissionFailure = error;
+    }
+
+    expect(siblingAdmissionFailure, 'a sibling was admitted/reused on the tainted host').toMatchObject({
+      code: 'semantic_operation_admission_closed',
+    });
+    expect(stopFailure).toMatchObject({ code: 'semantic_operation_cancellation_unconfirmed' });
+    expect(onRelinquish).toHaveBeenCalledOnce();
+    expect(onRelinquish).toHaveBeenCalledWith(stopFailure);
+    expect(shared.forceClose).not.toHaveBeenCalled();
   });
 });
 
 // --- pre-consumption replay admission ------------------------------------------------------------------------
 
 describe('semantic-operation runtime: replay admission', () => {
-  it('turns event-count refusal into a proxy-origin terminal without pulling the provider terminal', async () => {
-    const operation = supervisedOperation(99);
-    const key = { jobId: operation.jobId, operationId: operation.operationId };
-    const prepared = preparedFixture();
-    const gate = deferred();
-    let pullCount = 0;
-    const progressEvent: ProviderEventBody = { kind: 'progress', message: 'first' };
-    providerRegistryDouble.rehydrateBinding.mockReturnValue({
-      ok: true,
-      value: fakeBoundProvider({
-        execute: async function* () {
-          await gate.promise;
-          pullCount += 1;
-          yield progressEvent;
-          pullCount += 1;
-          yield terminalCompleted;
+  it.each([
+    ['ordinary execution', false],
+    ['shutdown race', true],
+  ] as const)(
+    'turns event-count refusal into exactly one proxy-origin terminal without pulling the provider terminal (%s)',
+    async (_schedule, shutdownRace) => {
+      const operation = supervisedOperation(99);
+      const key = { jobId: operation.jobId, operationId: operation.operationId };
+      const prepared = preparedFixture();
+      const gate = deferred();
+      let pullCount = 0;
+      const progressEvent: ProviderEventBody = { kind: 'progress', message: 'first' };
+      providerRegistryDouble.rehydrateBinding.mockReturnValue({
+        ok: true,
+        value: fakeBoundProvider({
+          execute: async function* () {
+            await gate.promise;
+            pullCount += 1;
+            yield progressEvent;
+            pullCount += 1;
+            yield terminalCompleted;
+          },
+        }),
+      });
+
+      const proxy = {} as Proxy;
+      const semantic = createSemanticOperationRuntime({
+        runtime,
+        hostAuthority: fakeHostAuthority(),
+        getProxy: () => proxy,
+      });
+      const containmentReceipt = asJointContainmentReceipt('contained');
+      const supervisor = new OperationSupervisor({
+        host: semantic.host,
+        timer: supervisorTimer,
+        mintReservation: () => asReservation('40000000-0000-4000-8000-000000000001'),
+        wallClockNow: () => 0,
+        nowMs: () => 0,
+        proxyInstanceId: operation.proxyInstanceId,
+        buildSetId: operation.buildSetId,
+        stageProviderRoot: (stagedKey, reserved) => ({
+          result: semantic
+            .ensureProviderRoot(stagedKey, reserved.prepared)
+            .then((staged) =>
+              staged.state !== 'staged'
+                ? staged
+                : { state: 'staged' as const, providerRoot: staged.providerRoot, receipt: containmentReceipt },
+            ),
+          confirmActivation: async () => {},
+          abortAndRelease: async () => {},
+        }),
+        pushProviderEvent: async () => {
+          throw new Error('control is deliberately offline');
         },
-      }),
-    });
+      });
+      Object.assign(proxy, {
+        listen: async () => {},
+        close: async () => {},
+        ledger: () => supervisor.ledger(),
+        emitProviderEvent: (emittedKey: ProviderOperationKey, event: ProviderEventBody) =>
+          supervisor.emitProviderEvent(emittedKey, event),
+      });
 
-    const proxy = {} as Proxy;
-    const semantic = createSemanticOperationRuntime({
-      runtime,
-      hostAuthority: fakeHostAuthority(),
-      getProxy: () => proxy,
-    });
-    const containmentReceipt = asJointContainmentReceipt('contained');
-    const supervisor = new OperationSupervisor({
-      host: semantic.host,
-      timer: supervisorTimer,
-      mintReservation: () => asReservation('40000000-0000-4000-8000-000000000001'),
-      wallClockNow: () => 0,
-      nowMs: () => 0,
-      proxyInstanceId: operation.proxyInstanceId,
-      buildSetId: operation.buildSetId,
-      stageProviderRoot: (stagedKey, reserved) => ({
-        result: semantic
-          .ensureProviderRoot(stagedKey, reserved.prepared)
-          .then((staged) =>
-            staged.state === 'permanent-refusal'
-              ? staged
-              : { state: 'staged' as const, providerRoot: staged.providerRoot, receipt: containmentReceipt },
-          ),
-        confirmActivation: async () => {},
-        abortAndRelease: async () => {},
-      }),
-      pushProviderEvent: async () => {
-        throw new Error('control is deliberately offline');
-      },
-    });
-    Object.assign(proxy, {
-      listen: async () => {},
-      close: async () => {},
-      ledger: () => supervisor.ledger(),
-      emitProviderEvent: (emittedKey: ProviderOperationKey, event: ProviderEventBody) =>
-        supervisor.emitProviderEvent(emittedKey, event),
-    });
-
-    const prepareRequest = {
-      operation,
-      hostFingerprint: 'a'.repeat(64),
-      prepareAttemptNumber: 1,
-      prepared,
-    };
-    const reservation = proxyOperationPreparePendingResultSchema.parse(
-      await supervisor.prepare(operation, {
+      const prepareRequest = {
+        operation,
+        hostFingerprint: 'a'.repeat(64),
         prepareAttemptNumber: 1,
-        prepareAttemptKey: operationPrepareAttemptKey(prepareRequest),
         prepared,
-      }),
-    );
-    await supervisor.activate(operation, {
-      reservation: reservation.reservation,
-      jointContainmentReceipt: reservation.jointContainmentReceipt,
-      jointActivationReceipt: asJointActivationReceipt('activated'),
-      activationFingerprint: 'f'.repeat(64),
-    });
-    await supervisor.attach(operation, 0);
-    await fillToEventCeiling(supervisor.ledger(), key);
-    gate.resolve();
+      };
+      const reservation = proxyOperationPreparePendingResultSchema.parse(
+        await supervisor.prepare(operation, {
+          prepareAttemptNumber: 1,
+          prepareAttemptKey: operationPrepareAttemptKey(prepareRequest),
+          prepared,
+        }),
+      );
+      await supervisor.activate(operation, {
+        reservation: reservation.reservation,
+        jointContainmentReceipt: reservation.jointContainmentReceipt,
+        jointActivationReceipt: asJointActivationReceipt('activated'),
+        activationFingerprint: 'f'.repeat(64),
+      });
+      await supervisor.attach(operation, 0);
+      await fillToEventCeiling(supervisor.ledger(), key);
+      const shutdown = shutdownRace ? semantic.shutdown('queue_shutdown') : null;
+      gate.resolve();
 
-    await vi.waitFor(() => expect(pullCount).toBe(1));
-    await new Promise<void>((resolve) => setImmediate(resolve));
+      await vi.waitFor(() => expect(pullCount).toBe(1));
+      if (shutdown !== null) await expect(shutdown).resolves.toBeUndefined();
+      await new Promise<void>((resolve) => setImmediate(resolve));
 
-    const entry = supervisor.ledger().get(key);
-    expect({
-      state: entry?.state,
-      eventCount: entry?.bufferedEvents.length,
-      pullCount,
-    }).toEqual({
-      state: 'terminal-awaiting-settlement',
-      eventCount: MAX_PROVIDER_REPLAY_EVENTS + 1,
-      pullCount: 1,
-    });
-    const emergency = entry?.bufferedEvents.at(-1);
-    if (emergency === undefined) throw new Error('Expected a proxy-emergency terminal.');
-    const decoded = decodeProxyControlFrame(emergency.frame);
-    if (!('params' in decoded)) throw new Error('Expected a provider event request.');
-    expect(providerEventRequestSchema.parse(decoded.params)).toMatchObject({
-      providerSeq: MAX_PROVIDER_REPLAY_EVENTS + 1,
-      event: {
-        kind: 'terminal',
-        failureCause: { body: { provider: '@coral/provider-proxy' } },
-      },
-    });
-    supervisor.close();
-  });
+      const entry = supervisor.ledger().get(key);
+      expect({
+        state: entry?.state,
+        eventCount: entry?.bufferedEvents.length,
+        pullCount,
+      }).toEqual({
+        state: 'terminal-awaiting-settlement',
+        eventCount: MAX_PROVIDER_REPLAY_EVENTS + 1,
+        pullCount: 1,
+      });
+      const emergency = entry?.bufferedEvents.at(-1);
+      if (emergency === undefined) throw new Error('Expected a proxy-emergency terminal.');
+      const decoded = decodeProxyControlFrame(emergency.frame);
+      if (!('params' in decoded)) throw new Error('Expected a provider event request.');
+      expect(providerEventRequestSchema.parse(decoded.params)).toMatchObject({
+        providerSeq: MAX_PROVIDER_REPLAY_EVENTS + 1,
+        event: {
+          kind: 'terminal',
+          failureCause: { body: { provider: '@coral/provider-proxy' } },
+        },
+      });
+      const terminalEvents = (entry?.bufferedEvents ?? []).filter(({ frame }) => {
+        try {
+          const decodedFrame = decodeProxyControlFrame(frame);
+          return (
+            'params' in decodedFrame && providerEventRequestSchema.parse(decodedFrame.params).event.kind === 'terminal'
+          );
+        } catch {
+          return false;
+        }
+      });
+      expect(terminalEvents).toHaveLength(1);
+      supervisor.close();
+    },
+  );
 
   it.each([
     ['terminal', 'terminal-awaiting-settlement'],
@@ -826,7 +1021,7 @@ describe('semantic-operation runtime: replay admission', () => {
             ? semantic
                 .ensureProviderRoot(key, reserved.prepared)
                 .then((staged) =>
-                  staged.state === 'permanent-refusal'
+                  staged.state !== 'staged'
                     ? staged
                     : { state: 'staged' as const, providerRoot: staged.providerRoot, receipt: containmentReceipt },
                 )
@@ -1077,15 +1272,35 @@ function exclusiveSpec(overrides: Partial<ProviderServerSpec> = {}): ProviderSer
   } as ProviderServerSpec;
 }
 
+function selectedHostScope(
+  authority: ProxyAppServerHostAuthority,
+  key: ProviderOperationKey,
+  mode: 'shared-acknowledged-interrupt' | 'operation-isolated',
+) {
+  const scope = authority.beginOperation(key);
+  scope.selectCancellationMode(mode);
+  return scope;
+}
+
 describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', () => {
   it('pools a shared spec by executable identity alone, spawning once and reusing it', async () => {
     const server = fakeProviderServerHandle();
     vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
     const authority = createProxyAppServerHostAuthority(runtime);
     const spec = sharedSpec();
+    const firstScope = selectedHostScope(
+      authority,
+      { jobId: 'job-a', operationId: 'op-a' },
+      'shared-acknowledged-interrupt',
+    );
+    const secondScope = selectedHostScope(
+      authority,
+      { jobId: 'job-b', operationId: 'op-b' },
+      'shared-acknowledged-interrupt',
+    );
 
-    const first = await authority.openSession(spec);
-    const second = await authority.openSession(spec);
+    const first = await firstScope.openSession(spec);
+    const second = await secondScope.openSession(spec);
 
     expect(spawnProviderServerTransport).toHaveBeenCalledTimes(1);
     expect(first.hostRef.instanceId).toBe(second.hostRef.instanceId);
@@ -1093,19 +1308,33 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     second.close();
   });
 
-  it('pools a job-exclusive spec by identity and job id, spawning a separate process per job', async () => {
+  it('refuses a concurrent second isolated root and reuses the token after the first closes (C3-M7)', async () => {
     const jobA = fakeProviderServerHandle();
     const jobB = fakeProviderServerHandle();
     vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(jobA.handle).mockResolvedValueOnce(jobB.handle);
     const authority = createProxyAppServerHostAuthority(runtime);
     const spec = exclusiveSpec();
 
-    const forJobA = await authority.openSession(spec, { jobId: 'job-a' });
-    const forJobB = await authority.openSession(spec, { jobId: 'job-b' });
+    const forJobA = await selectedHostScope(
+      authority,
+      { jobId: 'job-a', operationId: 'op-a' },
+      'operation-isolated',
+    ).openSession(spec, { jobId: 'job-a' });
+    const jobBScope = selectedHostScope(authority, { jobId: 'job-b', operationId: 'op-b' }, 'operation-isolated');
+    const concurrentFailure = await jobBScope.openSession(spec, { jobId: 'job-b' }).then(
+      () => null,
+      (error: unknown) => error,
+    );
 
-    expect(spawnProviderServerTransport).toHaveBeenCalledTimes(2);
-    expect(forJobA.hostRef.instanceId).not.toBe(forJobB.hostRef.instanceId);
+    expect(concurrentFailure, 'a second isolated root spawned while set A already held one').toMatchObject({
+      code: 'provider_root_live_capacity',
+    });
+    expect(spawnProviderServerTransport).toHaveBeenCalledOnce();
     forJobA.close();
+    await vi.waitFor(() => expect(jobA.closeMock).toHaveBeenCalledOnce());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const forJobB = await jobBScope.openSession(spec, { jobId: 'job-b' });
+    expect(spawnProviderServerTransport).toHaveBeenCalledTimes(2);
     forJobB.close();
   });
 
@@ -1114,9 +1343,14 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
     const authority = createProxyAppServerHostAuthority(runtime);
     const spec = exclusiveSpec();
+    const scope = selectedHostScope(
+      authority,
+      { jobId: 'job-a', operationId: 'op-a' },
+      'shared-acknowledged-interrupt',
+    );
 
-    const first = await authority.openSession(spec, { jobId: 'job-a' });
-    const second = await authority.openSession(spec, { jobId: 'job-a' });
+    const first = await scope.openSession(spec, { jobId: 'job-a' });
+    const second = await scope.openSession(spec, { jobId: 'job-a' });
 
     expect(spawnProviderServerTransport).toHaveBeenCalledTimes(1);
     expect(first.hostRef.instanceId).toBe(second.hostRef.instanceId);
@@ -1126,8 +1360,9 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
 
   it('refuses a job-exclusive acquisition with no job id before ever spawning', async () => {
     const authority = createProxyAppServerHostAuthority(runtime);
+    const scope = selectedHostScope(authority, testKey(), 'shared-acknowledged-interrupt');
 
-    await expect(authority.openSession(exclusiveSpec())).rejects.toThrow('provider_host_policy_invalid');
+    await expect(scope.openSession(exclusiveSpec())).rejects.toThrow('provider_host_policy_invalid');
     expect(spawnProviderServerTransport).not.toHaveBeenCalled();
   });
 
@@ -1136,9 +1371,19 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
     const authority = createProxyAppServerHostAuthority(runtime);
     const spec = sharedSpec();
+    const firstScope = selectedHostScope(
+      authority,
+      { jobId: 'job-a', operationId: 'op-a' },
+      'shared-acknowledged-interrupt',
+    );
+    const secondScope = selectedHostScope(
+      authority,
+      { jobId: 'job-b', operationId: 'op-b' },
+      'shared-acknowledged-interrupt',
+    );
 
-    const first = await authority.openSession(spec);
-    const second = await authority.openSession(spec);
+    const first = await firstScope.openSession(spec);
+    const second = await secondScope.openSession(spec);
 
     first.close();
     expect(server.closeMock).not.toHaveBeenCalled();
@@ -1151,13 +1396,14 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
     const authority = createProxyAppServerHostAuthority(runtime);
     const spec = sharedSpec();
-    const opened = await authority.openSession(spec);
+    const scope = selectedHostScope(authority, testKey(), 'shared-acknowledged-interrupt');
+    const opened = await scope.openSession(spec);
 
-    const attached = await authority.attachSession(opened.hostRef, { spec, jobId: 'shared-attachment' });
+    const attached = await scope.attachSession(opened.hostRef, { spec, jobId: 'shared-attachment' });
     expect(attached).not.toBeNull();
     attached?.close();
 
-    const wrongFingerprint = await authority.attachSession(
+    const wrongFingerprint = await scope.attachSession(
       { ...opened.hostRef, fingerprint: '0'.repeat(64) },
       { spec, jobId: 'shared-attachment' },
     );
@@ -1170,7 +1416,9 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     const server = fakeProviderServerHandle({ pid: 4_242 });
     vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
     const authority = createProxyAppServerHostAuthority(runtime);
-    const opened = await authority.openSession(sharedSpec());
+    const opened = await selectedHostScope(authority, testKey(), 'shared-acknowledged-interrupt').openSession(
+      sharedSpec(),
+    );
 
     expect(authority.rootIdentity(opened.hostRef)).toEqual({ pid: 4_242, processStartedAtSeconds: 1_700_000_000 });
 
@@ -1178,12 +1426,13 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     expect(authority.rootIdentity(opened.hostRef)).toBeNull();
   });
 
-  it('force-closes a matching entry immediately without waiting for its references', async () => {
+  it('force-closes an isolated matching entry immediately without waiting for its references', async () => {
     const server = fakeProviderServerHandle();
     vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
     const authority = createProxyAppServerHostAuthority(runtime);
-    const opened = await authority.openSession(sharedSpec());
-    const attached = await authority.attachSession(opened.hostRef, {
+    const scope = selectedHostScope(authority, testKey(), 'operation-isolated');
+    const opened = await scope.openSession(sharedSpec());
+    const attached = await scope.attachSession(opened.hostRef, {
       spec: sharedSpec(),
       jobId: 'shared-attachment',
     });
@@ -1199,6 +1448,72 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     opened.close();
     attached?.close();
     expect(server.closeMock).toHaveBeenCalledOnce();
+  });
+
+  it('prohibits force-closing a shared operation scope', async () => {
+    const server = fakeProviderServerHandle();
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const opened = await selectedHostScope(authority, testKey(), 'shared-acknowledged-interrupt').openSession(
+      sharedSpec(),
+    );
+
+    await expect(authority.forceClose(opened.hostRef)).rejects.toThrow(
+      'provider_host_scope_shared_force_close_forbidden',
+    );
+    expect(authority.rootIdentity(opened.hostRef)).not.toBeNull();
+    expect(server.closeMock).not.toHaveBeenCalled();
+    opened.close();
+  });
+
+  it('requires one cancellation-mode selection before acquisition', async () => {
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const scope = authority.beginOperation(testKey());
+
+    expect(() => scope.openSession(sharedSpec())).toThrow('provider_host_scope_unselected');
+    scope.selectCancellationMode('shared-acknowledged-interrupt');
+    expect(() => scope.selectCancellationMode('operation-isolated')).toThrow('provider_host_scope_already_selected');
+    expect(spawnProviderServerTransport).not.toHaveBeenCalled();
+  });
+
+  it('latches generation draining after 127 sequential distinct isolated roots', async () => {
+    let nextPid = 10_000;
+    const closeMocks: Array<ReturnType<typeof vi.fn>> = [];
+    vi.mocked(spawnProviderServerTransport).mockImplementation(async () => {
+      const server = fakeProviderServerHandle({ pid: nextPid++ });
+      closeMocks.push(server.closeMock);
+      return server.handle;
+    });
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const spec = exclusiveSpec();
+    const roots = new Set<string>();
+
+    for (let index = 0; index < 127; index += 1) {
+      const key = { jobId: `job-${index}`, operationId: `op-${index}` };
+      const scope = selectedHostScope(authority, key, 'operation-isolated');
+      const opened = await scope.openSession(spec, { jobId: key.jobId });
+      const root = authority.rootIdentity(opened.hostRef);
+      if (root === null) throw new Error('new isolated root was not live');
+      roots.add(`${root.pid}@${root.processStartedAtSeconds}`);
+      opened.close();
+      await vi.waitFor(() => expect(closeMocks[index]).toHaveBeenCalledOnce());
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    const refused = await selectedHostScope(
+      authority,
+      { jobId: 'job-127', operationId: 'op-127' },
+      'operation-isolated',
+    )
+      .openSession(spec, { jobId: 'job-127' })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(roots.size).toBe(127);
+    expect(refused).toMatchObject({ code: 'provider_root_generation_draining' });
+    expect(spawnProviderServerTransport).toHaveBeenCalledTimes(127);
   });
 });
 

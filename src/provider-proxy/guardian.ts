@@ -613,6 +613,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
     challenges: deadlines,
     observer: {
       onControlLost: () => deadlines.observeEof(),
+      onPairingLost: () => deadlines.observePairingLoss(),
     },
     timer,
     requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,

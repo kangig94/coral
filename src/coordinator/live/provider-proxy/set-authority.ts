@@ -19,6 +19,8 @@ import {
   canonicalUuidSchema,
   guardianStopAndReapParamsSchema,
   guardianStopAndReapResultSchema,
+  reaperStopAndReapParamsSchema,
+  reaperStopAndReapResultSchema,
   type CoordinatorIdentity,
   type GuardianIdentity,
   type OperationIdentity,
@@ -206,30 +208,37 @@ export function createProviderProxySetAuthority(
         // payload fails at this sender rather than at the guardian's own `.strict()` refusal. It does not
         // check the set itself — an undershooting claim is legitimate, and only the enforcer holds what it
         // would have to be checked against.
-        const stopAndReapPayload = guardianStopAndReapParamsSchema.parse({
+        const guardianStopAndReapPayload = guardianStopAndReapParamsSchema.parse({
           guardian: guardianIdentity,
           reaper: reaperIdentity,
           proxy: proxyIdentityFields,
           providerRoots,
         });
-        const raw = await raceAgainstAbort(
-          guardianClient.call(
-            'guardian.stop-and-reap.v1',
-            stopAndReapPayload,
-            // `guardian.stop-and-reap.v1` is declared `budgetMs: 'caller-deadline'` on the server precisely
-            // so it is not cut off there: a legitimate reap can spend the SIGTERM grace, the SIGKILL grace,
-            // and the disappearance confirmation — an 11s floor inside `PROXY_TEARDOWN_RESERVE_MS`'s 14s,
-            // and the SIGTERM grace alone already exceeds `PROXY_CONTROL_RPC_TIMEOUT_MS`. Budgeting this call
-            // from the ordinary mutation-RPC timeout — the constant every other `client.call` in this file
-            // correctly uses, because the server enforces that same value as its default for those methods —
-            // would defeat the server's own carve-out and turn a legitimate hard reap into a guaranteed
-            // `{ unconfirmed }`. `PROXY_TEARDOWN_RESERVE_MS` is that floor with margin, so it is the ceiling
-            // here instead; the caller's own `signal` (raced below) is what actually bounds this in practice.
-            PROXY_TEARDOWN_RESERVE_MS,
+        const reaperStopAndReapPayload = reaperStopAndReapParamsSchema.parse({
+          reaper: reaperIdentity,
+          proxy: proxyIdentityFields,
+          providerRoots,
+        });
+        const [rawGuardian, rawReaper] = await Promise.all([
+          raceAgainstAbort(
+            guardianClient.call(
+              'guardian.stop-and-reap.v1',
+              guardianStopAndReapPayload,
+              // Both role methods are declared `budgetMs: 'caller-deadline'`: a legitimate hard reap can
+              // spend the TERM and KILL graces plus disappearance confirmation. The caller signal remains
+              // the actual bound on the joined proof.
+              PROXY_TEARDOWN_RESERVE_MS,
+            ),
+            signal,
           ),
-          signal,
-        );
-        return { disappearanceReceipt: guardianStopAndReapResultSchema.parse(raw).disappearanceReceipt };
+          raceAgainstAbort(
+            reaperClient.call('reaper.stop-and-reap.v1', reaperStopAndReapPayload, PROXY_TEARDOWN_RESERVE_MS),
+            signal,
+          ),
+        ]);
+        const guardianReceipt = guardianStopAndReapResultSchema.parse(rawGuardian).disappearanceReceipt;
+        const reaperReceipt = reaperStopAndReapResultSchema.parse(rawReaper).disappearanceReceipt;
+        return { disappearanceReceipt: `guardian:${guardianReceipt};reaper:${reaperReceipt}` };
       } catch (error: unknown) {
         return { unconfirmed: error instanceof Error ? error.message : 'stop-and-reap did not confirm absence' };
       }

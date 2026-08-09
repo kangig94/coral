@@ -2,13 +2,17 @@ import { describe, expect, it, vi } from 'vitest';
 import { TEST_CLAUDE_ACCESS } from '../../../helpers/provider-credentials.js';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
-import { claudePreflight, claudeRecoveryLifecycle } from '#src/providers/claude/provider-facets.js';
+import {
+  claudeAppServerLifecycle,
+  claudePreflight,
+  claudeRecoveryLifecycle,
+} from '#src/providers/claude/provider-facets.js';
 import {
   claudeArtifactCapability,
   deleteClaudeJsonlArtifactsForConversation,
   locateClaudeJsonlArtifact,
 } from '#src/providers/claude/artifacts.js';
-import type { ArtifactCleanupRuntime, ProviderPreflightRuntime } from '#src/providers/contract.js';
+import type { AppServerTransport, ArtifactCleanupRuntime, ProviderPreflightRuntime } from '#src/providers/contract.js';
 import type { ClaudeProviderAccess } from '#src/providers/claude/execution-plan.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -208,6 +212,41 @@ describe('claudeRecoveryLifecycle.finalizeInterrupted', () => {
     expect(mutation).toEqual({
       kind: 'preserve',
     });
+  });
+});
+
+describe('claudeAppServerLifecycle.interrupt', () => {
+  function transportWithRpc(rpc: ReturnType<typeof vi.fn>): AppServerTransport {
+    return {
+      rpc: rpc as AppServerTransport['rpc'],
+      subscribe: () => () => {},
+      closed: Promise.resolve(),
+    };
+  }
+
+  it('confirms interruption only for a positive acknowledgement of the exact broker turn', async () => {
+    const continuity = { brokerSessionKey: 'session-1', brokerTurnId: 'turn-1' };
+    const mismatch = vi.fn(async () => ({ interrupted: true, brokerTurnId: 'turn-other' }));
+    const negative = vi.fn(async () => ({ interrupted: false, brokerTurnId: 'turn-1' }));
+    const exact = vi.fn(async () => ({ interrupted: true, brokerTurnId: 'turn-1' }));
+
+    await expect(claudeAppServerLifecycle.interrupt?.(transportWithRpc(mismatch), continuity)).resolves.toBe(false);
+    await expect(claudeAppServerLifecycle.interrupt?.(transportWithRpc(negative), continuity)).resolves.toBe(false);
+    await expect(claudeAppServerLifecycle.interrupt?.(transportWithRpc(exact), continuity)).resolves.toBe(true);
+  });
+
+  it('rejects incomplete continuity without issuing an interrupt', async () => {
+    const rpc = vi.fn(async () => ({ interrupted: true, brokerTurnId: 'turn-1' }));
+    const transport = transportWithRpc(rpc);
+
+    await expect(claudeAppServerLifecycle.interrupt?.(transport, { brokerSessionKey: 'session-1' })).rejects.toThrow(
+      'Invalid persisted Claude continuity.',
+    );
+    await expect(claudeAppServerLifecycle.interrupt?.(transport, { brokerTurnId: 'turn-1' })).rejects.toThrow(
+      'Invalid persisted Claude continuity.',
+    );
+
+    expect(rpc).not.toHaveBeenCalled();
   });
 });
 

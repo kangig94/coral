@@ -20,6 +20,7 @@ import {
 import { MAX_PROXY_OPERATION_LEDGERS } from '#src/provider-proxy/ledger.js';
 import {
   createEnforcerDeadlineStateMachine,
+  PROXY_ENFORCER_MAX_WAKE_LATENCY_MS,
   resolveProviderProxyDeadlineConfiguration,
   type EnforcerDeadlineStateMachine,
 } from '#src/provider-proxy/orphan-deadline.js';
@@ -1937,6 +1938,208 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toThrow(/does not match this reaper/u);
   });
 
+  it('reaps guardian containment when only proxy pairing is lost while coordinator heartbeats remain live', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'coral-guardian-pairing-loss-'));
+    cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+    const shared = bareSharedIdentity();
+    const guardianEndpoint = join(directory, 'g.sock');
+    const reaperEndpoint = join(directory, 'r.sock');
+    const proxyEndpoint = join(directory, 'p.sock');
+    let elapsed = 0n;
+    const clock = createMonotonicClock(Symbol('guardian-pairing-loss'), {
+      readMilliseconds: () => elapsed,
+      sleep: (milliseconds) => {
+        elapsed += BigInt(milliseconds);
+        return Promise.resolve();
+      },
+    });
+    const configuration = resolveProviderProxyDeadlineConfiguration({ get: () => undefined });
+    const deadlines = createEnforcerDeadlineStateMachine(clock, configuration, {
+      mintChallenge: () => randomUUID(),
+    });
+    let teardownLatchedAt: bigint | null = null;
+    const watchedDeadlines = {
+      ...deadlines,
+      latchTeardown: (): void => {
+        teardownLatchedAt ??= elapsed;
+        deadlines.latchTeardown();
+      },
+    };
+    const scheduled: Array<{
+      callback: () => void;
+      cancelled: boolean;
+      dueAt: bigint;
+      unref(): void;
+    }> = [];
+    const scheduler: EnforcementScheduler = {
+      schedule: (callback, delayMs) => {
+        const entry = { callback, cancelled: false, dueAt: elapsed + BigInt(delayMs), unref: () => {} };
+        scheduled.push(entry);
+        return entry;
+      },
+      cancel: (handle) => {
+        (handle as (typeof scheduled)[number]).cancelled = true;
+      },
+    };
+    const runDue = (): void => {
+      while (true) {
+        const index = scheduled.findIndex((entry) => !entry.cancelled && entry.dueAt <= elapsed);
+        if (index < 0) return;
+        const [entry] = scheduled.splice(index, 1);
+        entry?.callback();
+      }
+    };
+
+    const alive = new Set([CONTAINMENT.pid]);
+    const containmentEnvironment = {
+      clock,
+      process: {
+        kill: (pid: number) => {
+          for (const target of pid < 0 ? [...alive] : [pid]) alive.delete(target);
+          return true;
+        },
+        isAlive: (pid: number) => (pid < 0 ? alive.has(-pid) : alive.has(pid)),
+      },
+      platform: 'linux' as const,
+      maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
+      readProcessStartedAtSeconds: (pid: number) => (alive.has(pid) ? CONTAINMENT.processStartedAtSeconds : null),
+    };
+    const reaperIdentity = {
+      reaperInstanceId: shared.reaperInstanceId,
+      pid: 5_101,
+      processStartedAtSeconds: 901,
+      guardianInstanceId: shared.guardianInstanceId,
+      generation: shared.generation,
+      flavor: shared.flavor,
+      buildSetId: shared.buildSetId,
+      hostFingerprint: FINGERPRINT,
+      canonicalControlEndpoint: reaperEndpoint,
+      containmentKind: CONTAINMENT.containmentKind,
+    };
+    const guardian = createGuardian({
+      capsule: {
+        role: 'guardian',
+        ...shared,
+        canonicalControlEndpoint: guardianEndpoint,
+        reaperControlEndpoint: reaperEndpoint,
+        proxyEndpoint,
+        guardianReaperAuthSecret: PAIR_SECRET,
+        proxyGuardianAuthSecret: PAIR_SECRET,
+      },
+      clock,
+      deadlines: watchedDeadlines,
+      containmentEnvironment,
+      scheduler,
+      timer,
+      mintReceipt: () => randomUUID(),
+      reaperChannel: {
+        call: (method) =>
+          method === 'reaper.record-containment.v1'
+            ? Promise.resolve({ state: 'containment-recorded', reaper: reaperIdentity })
+            : Promise.reject(new Error(`Unexpected reaper call: ${method}`)),
+        close: () => {},
+      },
+      self: { pid: 5_102, processStartedAtSeconds: 902 },
+      reaperSelf: { pid: reaperIdentity.pid, processStartedAtSeconds: reaperIdentity.processStartedAtSeconds },
+      onOutcome: () => {},
+      onProgressViolation: () => {},
+    });
+    await guardian.listen();
+    cleanups.push(() => guardian.close());
+    await guardian.recordContainment(CONTAINMENT);
+
+    const proxyIdentity = {
+      proxyInstanceId: shared.proxyInstanceId,
+      pid: 6_000,
+      processStartedAtSeconds: 850,
+      processGroupId: CONTAINMENT.processGroupId,
+      guardianInstanceId: shared.guardianInstanceId,
+      reaperInstanceId: shared.reaperInstanceId,
+      generation: shared.generation,
+      flavor: shared.flavor,
+      buildSetId: shared.buildSetId,
+      hostFingerprint: FINGERPRINT,
+      canonicalEndpoint: proxyEndpoint,
+    };
+    const coordinatorIdentity = {
+      instanceId: randomUUID(),
+      pid: 4_000,
+      processStartedAtSeconds: 700,
+      generation: shared.generation,
+      flavor: shared.flavor,
+      buildSetId: shared.buildSetId,
+    };
+    const control = await connectControlClient(guardianEndpoint, timer, 5_000);
+    cleanups.push(() => control.close());
+    const opened = (await control.call(
+      'guardian.open.v1',
+      { bootstrapNonce: NONCE, coordinator: coordinatorIdentity, proxy: proxyIdentity },
+      5_000,
+    )) as { controlEpoch: number; heartbeatChallenge: string };
+    let heartbeatChallenge = opened.heartbeatChallenge;
+    let lastAcceptedHeartbeatAt = clock.now();
+    const sendHeartbeat = async (): Promise<void> => {
+      const response = (await control.call(
+        'guardian.heartbeat.v1',
+        { controlEpoch: opened.controlEpoch, heartbeatChallenge },
+        5_000,
+      )) as { state: string; nextHeartbeatChallenge: string };
+      expect(response.state).toBe('active');
+      heartbeatChallenge = response.nextHeartbeatChallenge;
+      lastAcceptedHeartbeatAt = clock.now();
+    };
+    await sendHeartbeat();
+
+    const pairing = await connectControlClient(guardianEndpoint, timer, 5_000);
+    cleanups.push(() => pairing.close());
+    await pairing.call('guardian.pair.v1', { pairingSecret: PAIR_SECRET }, 5_000);
+
+    // The lease records the challenge's issuance time rather than its echo time, so stay one millisecond
+    // inside half a lease: two consecutive in-flight round trips can never land exactly on expiry.
+    const heartbeatIntervalMs = configuration.leaseMs / 2 - 1;
+    for (let nextHeartbeatAt = heartbeatIntervalMs; nextHeartbeatAt < configuration.leaseMs; ) {
+      elapsed = BigInt(nextHeartbeatAt);
+      runDue();
+      await Promise.resolve();
+      await sendHeartbeat();
+      nextHeartbeatAt += heartbeatIntervalMs;
+    }
+    const pairingLostAtMs = elapsed;
+    const pairingLostAt = clock.now();
+    pairing.close();
+    // Let the endpoint consume the peer EOF while fake monotonic time remains pinned at `pairingLostAt`.
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+    expect(clock.millisecondsBetween(lastAcceptedHeartbeatAt, pairingLostAt)).toBeLessThanOrEqual(heartbeatIntervalMs);
+    const absoluteExitAt = pairingLostAtMs + BigInt(configuration.orphanTimeoutMs);
+    let nextHeartbeatAt = elapsed + BigInt(heartbeatIntervalMs);
+    while (elapsed < absoluteExitAt) {
+      const nextTickAt = elapsed + 500n;
+      elapsed = [nextTickAt, nextHeartbeatAt, absoluteExitAt]
+        .filter((candidate) => candidate > elapsed)
+        .reduce((earliest, candidate) => (candidate < earliest ? candidate : earliest));
+      runDue();
+      await Promise.resolve();
+      if (elapsed < nextHeartbeatAt) continue;
+      try {
+        await sendHeartbeat();
+      } catch (error: unknown) {
+        // Once pairing loss latches teardown, the still-open coordinator socket correctly refuses heartbeats.
+        if (deadlines.state() === 'accepting-control') {
+          throw new Error(`heartbeat failed at ${elapsed}ms while control was live`, { cause: error });
+        }
+      }
+      nextHeartbeatAt += BigInt(heartbeatIntervalMs);
+    }
+    await Promise.resolve();
+
+    expect(alive.has(CONTAINMENT.pid), 'contained child survived the pairing-loss exit deadline').toBe(false);
+    expect(teardownLatchedAt).not.toBeNull();
+    expect(Number((teardownLatchedAt ?? absoluteExitAt) - pairingLostAtMs)).toBeLessThanOrEqual(
+      PROXY_ENFORCER_MAX_WAKE_LATENCY_MS,
+    );
+  });
+
   it('keeps the coordinator’s earned control evidence intact when its pairing peer disconnects', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'coral-pairing-loss-'));
     cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
@@ -2072,6 +2275,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
 
   it('supplies the coordinator’s own recorded provider roots, not the empty claim the guardian refuses', async () => {
     const set = await startSet();
+    const reaperControl = await openReaperControl(set);
     // Stages ROOT with the real guardian's own enforcer (`guardian.register-provider-root.v1`), exactly as
     // `operation.prepare.v1` does in production — this is the fact `providerRoots: []` disagreed with.
     await stage(set);
@@ -2080,7 +2284,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
       proxyInstanceId: set.proxyIdentity.proxyInstanceId,
       guardianClient: set.control,
       proxyClient: unreachableClient(),
-      reaperClient: unreachableClient(),
+      reaperClient: reaperControl,
       guardianIdentity: set.guardianIdentity,
       reaperIdentity: set.reaperIdentity,
       proxyIdentityFields: set.proxyIdentity,
@@ -2100,13 +2304,19 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
     // call and reaped for real — a hardcoded `providerRoots: []` would instead have come back `unconfirmed`
     // with "different provider-root set" (see the raw-wire coverage above proving that refusal directly).
     expect(result).toEqual({
-      disappearanceReceipt: expect.stringContaining(`root:${ROOT.pid}@${ROOT.processStartedAtSeconds}`),
+      disappearanceReceipt: expect.stringMatching(
+        new RegExp(
+          `guardian:.*root:${ROOT.pid}@${ROOT.processStartedAtSeconds}.*reaper:.*root:${ROOT.pid}@${ROOT.processStartedAtSeconds}`,
+          'u',
+        ),
+      ),
     });
     expect(set.alive.has(CONTAINMENT.pid)).toBe(false);
   });
 
   it('threads an attached operation’s real provider root through stopAndReap on the recovery registry shape', async () => {
     const set = await startSet();
+    const reaperControl = await openReaperControl(set);
     await stage(set);
 
     // Use a real `LocalOperationRegistry`, because a successor's attachment must retain the provider root
@@ -2157,7 +2367,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
       proxyInstanceId: set.proxyIdentity.proxyInstanceId,
       guardianClient: set.control,
       proxyClient: unreachableClient(),
-      reaperClient: unreachableClient(),
+      reaperClient: reaperControl,
       guardianIdentity: set.guardianIdentity,
       reaperIdentity: set.reaperIdentity,
       proxyIdentityFields: set.proxyIdentity,
@@ -2177,7 +2387,12 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
     // own write instead of a hand-supplied closure: the guardian's `assertRecordedSetAgreement` accepted
     // this call and reaped for real.
     expect(result).toEqual({
-      disappearanceReceipt: expect.stringContaining(`root:${ROOT.pid}@${ROOT.processStartedAtSeconds}`),
+      disappearanceReceipt: expect.stringMatching(
+        new RegExp(
+          `guardian:.*root:${ROOT.pid}@${ROOT.processStartedAtSeconds}.*reaper:.*root:${ROOT.pid}@${ROOT.processStartedAtSeconds}`,
+          'u',
+        ),
+      ),
     });
     expect(set.alive.has(CONTAINMENT.pid)).toBe(false);
   });

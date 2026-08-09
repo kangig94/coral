@@ -103,8 +103,11 @@ function fakeHostRef(provider = 'claude'): HostRef {
 
 function fakeHostAuthority(): ProxyAppServerHostAuthority {
   return {
-    openSession: unreachable('hostAuthority.openSession') as unknown as ProxyAppServerHostAuthority['openSession'],
-    attachSession: async () => null,
+    beginOperation: () => ({
+      selectCancellationMode: () => {},
+      openSession: unreachable('hostAuthority.openSession') as never,
+      attachSession: async () => null,
+    }),
     rootIdentity: () => ({ pid: 4_242, processStartedAtSeconds: 1_700_000_000 }),
     closed: () => new Promise<Error | void>(() => {}),
     forceClose: async () => {},
@@ -275,7 +278,7 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
     expect(ledger.get(key)).toBeNull();
   });
 
-  it('settles by the cancellation bound when an executing kernel and force-close both ignore abort', async () => {
+  it('rejects at the cancellation bound and retains the unresolved operation', async () => {
     vi.useFakeTimers();
     const { proxy, ledger } = createTestProxy();
     const key = testKey();
@@ -287,8 +290,11 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
       value: fakeBoundProviderIgnoringAbort(closeStaged),
     });
     const hostAuthority = {
-      openSession: unreachable('hostAuthority.openSession'),
-      attachSession: async () => null,
+      beginOperation: () => ({
+        selectCancellationMode: () => {},
+        openSession: unreachable('hostAuthority.openSession'),
+        attachSession: async () => null,
+      }),
       rootIdentity: () => ({ pid: 4_242, processStartedAtSeconds: 1_700_000_000 }),
       closed: () => new Promise<Error | void>(() => {}),
       forceClose: () => new Promise<void>(() => {}),
@@ -298,21 +304,42 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
     const start = host.host.start({ key, prepared });
     await expect(start.result).resolves.toEqual({ kind: 'started', hostRef: fakeHostRef() });
 
+    const shutdown = host.shutdown('signal_abort');
     let shutdownSettled = false;
-    void host.shutdown('signal_abort').then(() => {
-      shutdownSettled = true;
-    });
+    void shutdown.then(
+      () => {
+        shutdownSettled = true;
+      },
+      () => {
+        shutdownSettled = true;
+      },
+    );
     await vi.advanceTimersByTimeAsync(SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS - 1);
     expect(shutdownSettled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
 
     expect(shutdownSettled).toBe(true);
+    await expect(shutdown).rejects.toMatchObject({
+      code: 'semantic_operation_shutdown_incomplete',
+      failures: [
+        {
+          key,
+          kind: 'cancellation-failed',
+          reason: expect.stringContaining('did not settle'),
+        },
+      ],
+    });
+    expect(closeStaged).not.toHaveBeenCalled();
   });
 
   it('is a safe no-op when nothing is staged', async () => {
     const { proxy } = createTestProxy();
     const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
 
-    await expect(host.shutdown('signal_abort')).resolves.toBeUndefined();
+    const first = host.shutdown('signal_abort');
+    const repeated = host.shutdown('queue_shutdown');
+
+    expect(repeated).toBe(first);
+    await expect(first).resolves.toBeUndefined();
   });
 });

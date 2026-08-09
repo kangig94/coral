@@ -94,6 +94,19 @@ describe('codexAppServerLifecycle.interrupt', () => {
     await expect(codexAppServerLifecycle.interrupt?.(leaseWithRpc(mismatch), continuity)).resolves.toBe(false);
     await expect(codexAppServerLifecycle.interrupt?.(leaseWithRpc(exact), continuity)).resolves.toBe(true);
   });
+
+  it('does not issue an interrupt without both exact continuity identifiers', async () => {
+    const rpc = vi.fn(async () => ({ threadId: 'thread-1', turnId: 'turn-1' }));
+
+    await expect(
+      codexAppServerLifecycle.interrupt?.(leaseWithRpc(rpc), { cwd: '/workspace', threadId: 'thread-1' }),
+    ).resolves.toBe(false);
+    await expect(
+      codexAppServerLifecycle.interrupt?.(leaseWithRpc(rpc), { cwd: '/workspace', turnId: 'turn-1' }),
+    ).resolves.toBe(false);
+
+    expect(rpc).not.toHaveBeenCalled();
+  });
 });
 
 describe('codexAppServerLifecycle.probe', () => {

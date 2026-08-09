@@ -8,11 +8,18 @@ vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', () => (
   ensureProviderProxySet: vi.fn(),
 }));
 
-import { DefaultProviderHostManager, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/index.js';
+import {
+  MAX_COORDINATOR_PROXY_SET_SLOTS,
+  DefaultProviderHostManager,
+  hostKeyFromSpec,
+} from '#src/coordinator/live/provider-hosts/index.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
 import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
-import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import type {
+  DurableProviderProxyOperationAuthority,
+  ProviderProxyOperationAuthority,
+} from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
 import {
   createExclusiveSpec,
@@ -58,6 +65,48 @@ function fakeInheritedProxySet(proxyInstanceId: string): ProviderProxyOperationA
       proxyProcessGroupId: 200,
       canonicalEndpoint: '/tmp/proxy.sock',
     },
+  };
+}
+
+function fakeDurableProxySet(
+  proxyInstanceId: string,
+  options: {
+    prepareOperation?: DurableProviderProxyOperationAuthority['prepareOperation'];
+    stopAndReap?: DurableProviderProxyOperationAuthority['stopAndReap'];
+    stopHeartbeats?: DurableProviderProxyOperationAuthority['stopHeartbeats'];
+    initiateControlClose?: DurableProviderProxyOperationAuthority['initiateControlClose'];
+  } = {},
+): DurableProviderProxyOperationAuthority {
+  const inherited = fakeInheritedProxySet(proxyInstanceId);
+  return {
+    ...inherited,
+    prepareOperation:
+      options.prepareOperation ??
+      (async () => {
+        throw new Error('unused prepareOperation');
+      }),
+    inspectOperation: async () => {
+      throw new Error('unused inspectOperation');
+    },
+    authorizeOperation: async () => {
+      throw new Error('unused authorizeOperation');
+    },
+    activatePreparedOperation: async () => {
+      throw new Error('unused activatePreparedOperation');
+    },
+    attachOperation: async () => {
+      throw new Error('unused attachOperation');
+    },
+    cancelOperation: async () => {
+      throw new Error('unused cancelOperation');
+    },
+    settleOperation: async () => {
+      throw new Error('unused settleOperation');
+    },
+    buildOperationControl: () => ({ stop: async () => {} }),
+    stopAndReap: options.stopAndReap ?? inherited.stopAndReap,
+    stopHeartbeats: options.stopHeartbeats ?? inherited.stopHeartbeats,
+    initiateControlClose: options.initiateControlClose ?? inherited.initiateControlClose,
   };
 }
 
@@ -930,6 +979,95 @@ describe('provider host pool proxy set registry', () => {
 
     first.close();
     second.close();
+    await manager.shutdown();
+  });
+
+  it('reserves at most four set slots across pending acquisitions (C3-M7)', async () => {
+    const servers = Array.from({ length: 5 }, (_, index) => createFakeProviderServerHandle({ generation: index + 1 }));
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(...servers.map(({ handle }) => handle)),
+      proxySetAcquisition,
+    });
+    mockedEnsureProxySet.mockImplementation(() => {
+      // Every reserved slot remains pending while the fifth identity reaches the admission gate.
+    });
+    const specs = servers.map((_, index) => createSharedSpec({ env: { CORAL_SET_ID: String(index) } }));
+    const leases = [];
+    for (const [index, spec] of specs.entries()) {
+      leases.push(await manager.openSession(createLaunch(spec), { jobId: `job-${index}` }));
+    }
+
+    expect(
+      mockedEnsureProxySet.mock.calls.length,
+      'five live/acquiring/uncontained proxy set slots were admitted',
+    ).toBe(4);
+    expect(manager.routeAppServerOperation(specs.at(-1) as ProviderServerSpec)).toBeNull();
+
+    for (const lease of leases) lease.close();
+    await manager.shutdown();
+  });
+
+  it('holds a retiring slot until absence, then rotates to a fresh set before routing new work', async () => {
+    const absence = createDeferred<Readonly<{ disappearanceReceipt: string } | { unconfirmed: string }>>();
+    const stopAndReap = vi.fn(() => absence.promise);
+    const stopHeartbeats = vi.fn();
+    const initiateControlClose = vi.fn(async () => {});
+    const firstSet = fakeDurableProxySet('proxy-a', {
+      prepareOperation: async () => ({
+        state: 'capacity',
+        retryable: true,
+        code: 'provider_root_generation_draining',
+        reason: 'generation reached 127 recorded roots',
+      }),
+      stopAndReap,
+      stopHeartbeats,
+      initiateControlClose,
+    });
+    const sets = [
+      firstSet,
+      fakeDurableProxySet('proxy-b'),
+      fakeDurableProxySet('proxy-c'),
+      fakeDurableProxySet('proxy-d'),
+      fakeDurableProxySet('proxy-a-fresh'),
+    ];
+    let nextSet = 0;
+    mockedEnsureProxySet.mockImplementation((_entry, _env, onSettled) => {
+      const set = sets[nextSet++];
+      if (set === undefined) throw new Error('unexpected extra proxy set acquisition');
+      onSettled({ kind: 'acquired', set });
+    });
+    const servers = Array.from({ length: 5 }, (_, index) => createFakeProviderServerHandle({ generation: index + 1 }));
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(...servers.map(({ handle }) => handle)),
+      proxySetAcquisition,
+    });
+    const specs = servers.map((_, index) => createSharedSpec({ env: { CORAL_ROTATION_SET: String(index) } }));
+    const leases = [];
+    for (let index = 0; index < MAX_COORDINATOR_PROXY_SET_SLOTS; index += 1) {
+      leases.push(await manager.openSession(specs[index] as ProviderServerSpec, { jobId: `job-${index}` }));
+    }
+    const routed = manager.routeAppServerOperation(specs[0] as ProviderServerSpec);
+    if (routed === null || !('prepareOperation' in routed)) throw new Error('expected a durable routed set');
+
+    await (routed as DurableProviderProxyOperationAuthority).prepareOperation({} as never);
+    expect(stopAndReap).toHaveBeenCalledOnce();
+    expect(manager.routeAppServerOperation(specs[0] as ProviderServerSpec)).toBeNull();
+    leases.push(await manager.openSession(specs[4] as ProviderServerSpec, { jobId: 'job-4' }));
+    expect(
+      mockedEnsureProxySet.mock.calls.length,
+      'a fifth set was acquired before the retiring set proved joint absence',
+    ).toBe(MAX_COORDINATOR_PROXY_SET_SLOTS);
+
+    absence.resolve({ disappearanceReceipt: 'joint-absence' });
+    await vi.waitFor(() => expect(mockedEnsureProxySet).toHaveBeenCalledTimes(5));
+    expect(stopHeartbeats).toHaveBeenCalledOnce();
+    expect(initiateControlClose).toHaveBeenCalledOnce();
+    expect(manager.routeAppServerOperation(specs[0] as ProviderServerSpec)?.proxyInstanceId).toBe('proxy-a-fresh');
+    expect(manager.liveSets()).toHaveLength(MAX_COORDINATOR_PROXY_SET_SLOTS);
+
+    for (const lease of leases) lease.close();
     await manager.shutdown();
   });
 

@@ -716,7 +716,7 @@ export function createProxyGuardianContainment(
       let guardianReleased = false;
       let recognisedReceipt: JointContainmentReceipt | null = null;
       const result = semanticStage.result.then(async (staged) => {
-        if (staged.state === 'permanent-refusal') return staged;
+        if (staged.state === 'permanent-refusal' || staged.state === 'capacity') return staged;
         const root = staged.providerRoot;
         const params = guardianRegisterProviderRootParamsSchema.parse({
           proxy: deps.identity,
@@ -840,6 +840,9 @@ export async function startProviderProxyRole(
   controlPairResultSchema.parse(pairingResult);
 
   const hostAuthority = createProxyAppServerHostAuthority(ports.runtime);
+  const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
+  let closePromise: Promise<void> | null = null;
+  let relinquishmentStarted = false;
   // Forward-referenced: `createSemanticOperationRuntime`'s host needs the `Proxy` this call is itself building
   // (to pump events and read ledger state), and `createProxy` needs that host before the `Proxy` it returns
   // can exist — the same shape `guardianRef`/`reaperRef` already use above for their own peer/self references.
@@ -849,6 +852,22 @@ export async function startProviderProxyRole(
     runtime: ports.runtime,
     hostAuthority,
     getProxy: () => proxyRef,
+    onRelinquish: (failure) => {
+      if (relinquishmentStarted) return;
+      relinquishmentStarted = true;
+      queueMicrotask(() => {
+        void closeRole().then(
+          () => {
+            backendLog.error('proxy: cancellation was unconfirmed; relinquishing provider set', failure);
+            exitProcess(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
+          },
+          (error: unknown) => {
+            backendLog.error('proxy: set relinquishment after unconfirmed cancellation failed', error);
+            exitProcess(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
+          },
+        );
+      });
+    },
   });
 
   const proxy = createProxy({
@@ -873,20 +892,45 @@ export async function startProviderProxyRole(
   proxyRef = proxy;
   await proxy.listen();
 
+  const closeRole = (): Promise<void> => {
+    if (closePromise !== null) return closePromise;
+    closePromise = (async () => {
+      let semanticFailure: unknown;
+      let closeFailures: unknown[];
+      try {
+        await semantic.shutdown('signal_abort');
+      } catch (error: unknown) {
+        semanticFailure = error;
+      } finally {
+        const results = await Promise.allSettled([
+          Promise.resolve().then(() => guardianChannel.close()),
+          proxy.close(),
+        ]);
+        closeFailures = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+      }
+      if (semanticFailure !== undefined) {
+        if (closeFailures.length > 0) {
+          backendLog.error(
+            'proxy: pairing/control closure also failed after semantic shutdown failure',
+            new AggregateError(closeFailures),
+          );
+        }
+        if (semanticFailure instanceof Error) throw semanticFailure;
+        throw new Error('Proxy semantic shutdown failed.', { cause: semanticFailure });
+      }
+      if (closeFailures.length > 0) {
+        throw new AggregateError(closeFailures, 'Proxy role pairing/control closure failed.');
+      }
+    })();
+    return closePromise;
+  };
+
   return {
     role: 'proxy',
     proxy,
-    close: async () => {
-      // Give every provider its own chance at a graceful stop, and release every staged-but-never-started
-      // one, before this role's own control goes away: this role's control "bounds nothing" of its own
-      // (`proxy.ts`'s own doc), so nothing else here ever drains what `ensureProviderRoot`/`host.start`
-      // accumulated. Without this, closing only the control endpoint left every kernel running and every
-      // app-server child alive until the enforcers escalated to a hard kill, and no provider ever received
-      // its own graceful-shutdown RPC.
-      await semantic.shutdown('signal_abort');
-      guardianChannel.close();
-      await proxy.close();
-    },
+    // Give every provider its own chance at a graceful stop, then always relinquish pairing and proxy
+    // control. The joined promise makes a second signal observe the same drain and the same failure.
+    close: closeRole,
   };
 }
 
@@ -922,6 +966,7 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
         : await startProviderProxyRole(mode.capsulePath, ports);
 
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
+  let proxyShutdownStarted = false;
 
   const shutdown = (): void => {
     // SIGTERM/SIGINT here means give up entirely — `buildGuardianSpawnUndo`'s acquisition-cleanup path is
@@ -937,6 +982,8 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
     // handler overrides SIGTERM's own default terminate, so without an explicit exit here this process would
     // sit alive with no way to end itself once `close()` resolves.
     if (handle.role === 'proxy') {
+      if (proxyShutdownStarted) return;
+      proxyShutdownStarted = true;
       void handle.close().then(
         () => exitProcess(0),
         (error: unknown) => {

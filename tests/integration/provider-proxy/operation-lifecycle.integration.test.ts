@@ -112,6 +112,7 @@ async function startProxy(
       disposition: 'local-fallback';
       reason: string;
     }>;
+    blockFirstProviderCreation?: boolean;
     failProviderCreation?: boolean;
     failConfirmActivation?: boolean;
     failStart?: boolean;
@@ -188,29 +189,50 @@ async function startProxy(
   let receipts = 0;
   let stageAttempts = 0;
   let providerCreationAttempts = 0;
+  const providerCreationJobs: string[] = [];
+  let releaseFirstProviderCreation: () => void = () => undefined;
+  const firstProviderCreationReleased = new Promise<void>((resolve) => {
+    releaseFirstProviderCreation = resolve;
+  });
+  let observeFirstProviderCreation: () => void = () => undefined;
+  const firstProviderCreationEntered = new Promise<void>((resolve) => {
+    observeFirstProviderCreation = resolve;
+  });
   const proxyRef: { current: Proxy | null } = { current: null };
   const semantic =
-    options.failProviderCreation === true
+    options.failProviderCreation === true || options.blockFirstProviderCreation === true
       ? (() => {
           providerRegistryDouble.rehydrateBinding.mockReturnValue({
             ok: true,
             value: {
               name: PREPARED.provider,
               appServer: {
-                openReplacement: async () => {
+                openReplacement: async (_input: unknown, hostOptions: { jobId?: string }) => {
                   providerCreationAttempts += 1;
-                  throw new Error('the provider root could not be created');
+                  const jobId = hostOptions.jobId ?? 'unknown-job';
+                  providerCreationJobs.push(jobId);
+                  if (options.blockFirstProviderCreation === true && providerCreationAttempts === 1) {
+                    observeFirstProviderCreation();
+                    await firstProviderCreationReleased;
+                  }
+                  if (options.failProviderCreation === true) {
+                    throw new Error('the provider root could not be created');
+                  }
+                  return { hostRef: hostRefFor(jobId), close: () => {} };
                 },
               },
             },
           });
           const hostAuthority = {
-            openSession: () => {
-              throw new Error('provider creation refusal must not open a host session');
-            },
-            attachSession: async () => null,
-            rootIdentity: () => null,
-            closed: () => null,
+            beginOperation: () => ({
+              selectCancellationMode: () => {},
+              openSession: () => {
+                throw new Error('provider creation refusal must not open a host session');
+              },
+              attachSession: async () => null,
+            }),
+            rootIdentity: () => ({ pid: 7_001, processStartedAtSeconds: 800 }),
+            closed: () => new Promise<Error | void>(() => {}),
             forceClose: async () => {},
           } as unknown as ProxyAppServerHostAuthority;
           return createSemanticOperationRuntime({
@@ -229,8 +251,22 @@ async function startProxy(
       : createProxyGuardianContainment({
           identity,
           guardianChannel: {
-            call: async () => {
-              throw new Error('provider creation refusal must not register guardian membership');
+            call: async (method, params) => {
+              if (options.failProviderCreation === true) {
+                throw new Error('provider creation refusal must not register guardian membership');
+              }
+              if (method === 'guardian.register-provider-root.v1') {
+                const root = params as { providerPid: number; providerProcessStartedAtSeconds: number };
+                return {
+                  state: 'staged-contained',
+                  providerRoot: {
+                    pid: root.providerPid,
+                    processStartedAtSeconds: root.providerProcessStartedAtSeconds,
+                  },
+                  jointContainmentReceipt: 'joint-1',
+                };
+              }
+              return { state: 'membership-released' };
             },
           },
           stageProviderRoot: semantic.stage,
@@ -339,6 +375,10 @@ async function startProxy(
     releasedMemberships,
     startAttempts: () => startAttempts,
     stageAttempts: () => (semantic === null ? stageAttempts : providerCreationAttempts),
+    providerCreationJobs,
+    firstProviderCreationEntered,
+    releaseFirstProviderCreation,
+    semantic,
     advanceWithHeartbeat,
     advanceSilently,
   };
@@ -716,6 +756,48 @@ async function installGrantForOperations(
 }
 
 describe('provider-proxy operation lifecycle', () => {
+  it('rejects a real prepare that crosses the semantic shutdown gate without staging or spawning a root', async () => {
+    const set = await startProxy({ blockFirstProviderCreation: true });
+    if (set.semantic === null) throw new Error('expected the semantic runtime');
+    const first = set.operationFor();
+    const firstPrepare = set.control.call(
+      'operation.prepare.v1',
+      { operation: first, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
+      5_000,
+    );
+    await set.firstProviderCreationEntered;
+
+    const shutdown = set.semantic.shutdown('signal_abort');
+    const postGate = set.operationFor();
+    let postGateResult: unknown;
+    let postGateError: unknown;
+    try {
+      postGateResult = await set.control.call(
+        'operation.prepare.v1',
+        { operation: postGate, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
+        5_000,
+      );
+    } catch (error: unknown) {
+      postGateError = error;
+    } finally {
+      set.releaseFirstProviderCreation();
+    }
+    await Promise.allSettled([firstPrepare, shutdown]);
+
+    expect(postGateResult, 'post-gate prepare was accepted after the shutdown snapshot').toBeUndefined();
+    expect(postGateError).toMatchObject({
+      message: expect.stringContaining('semantic_operation_admission_closed'),
+    });
+    expect(set.providerCreationJobs).toEqual([first.jobId]);
+    await expect(shutdown).resolves.toBeUndefined();
+    await expect(
+      set.semantic.host.stop({
+        key: { jobId: postGate.jobId, operationId: postGate.operationId },
+        cause: 'signal_abort',
+      }),
+    ).rejects.toThrow(/No staged provider root/u);
+  });
+
   it('reserves, stages the root with both authorities, and starts the kernel exactly once', async () => {
     const set = await startProxy();
     const { operation, reserved } = await prepare(set);
@@ -1020,7 +1102,12 @@ describe('provider-proxy operation lifecycle', () => {
 
     // Admission stays with the coordinator: the proxy reports it cannot take the work instead of queueing
     // it, and writes nothing it would then have to unwind.
-    expect(reserved).toEqual({ state: 'capacity', retryable: true, reason: 'operation-ledgers' });
+    expect(reserved).toEqual({
+      state: 'capacity',
+      retryable: true,
+      code: 'operation_ledger_capacity',
+      reason: 'operation-ledgers',
+    });
   });
 
   it('renews a pending-activation reservation, extending its lease from the call’s own now', async () => {

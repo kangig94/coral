@@ -36,6 +36,7 @@ import {
   type ProviderOperationPreparePermanentRefusal,
   type ProviderEventResult,
   type ProxyOperationActivationOutcome,
+  type ProxyOperationPrepareCapacityResult,
   type ProxyOperationReleaseReceipt,
   type ProxyPreparedAppServerOperation,
   type Reservation,
@@ -68,7 +69,8 @@ export type OperationStageResult =
       providerRoot: ProviderRootIdentity;
       receipt: JointContainmentReceipt;
     }>
-  | ProviderOperationPreparePermanentRefusal;
+  | ProviderOperationPreparePermanentRefusal
+  | ProxyOperationPrepareCapacityResult;
 
 export interface OperationStageHandle {
   readonly result: Promise<OperationStageResult>;
@@ -238,6 +240,7 @@ export class OperationSupervisor {
         return proxyOperationPrepareCapacityResultSchema.parse({
           state: 'capacity',
           retryable: true,
+          code: 'operation_ledger_capacity',
           reason: reserved.reason,
         });
       }
@@ -262,6 +265,15 @@ export class OperationSupervisor {
 
       try {
         const staged = await record.stage.result;
+        if (staged.state === 'capacity') {
+          record.fenced = true;
+          this.#beginRelease(record, { kind: 'never-started' });
+          const released = await this.#driveRelease(record, true);
+          if (released?.state !== 'released-never-started') {
+            throw new ProxyControlProtocolError('invalid_state', 'Root-capacity refusal did not release its stage.');
+          }
+          return proxyOperationPrepareCapacityResultSchema.parse(staged);
+        }
         if (staged.state === 'permanent-refusal') {
           record.prepareRefusal = staged;
           this.#beginRelease(record, { kind: 'never-started' });

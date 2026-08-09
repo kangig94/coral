@@ -128,7 +128,7 @@ function authorityWithGuardianClient(
     proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
     guardianClient,
     proxyClient: unreachableClient(),
-    reaperClient: unreachableClient(),
+    reaperClient: guardianClient,
     guardianIdentity: GUARDIAN_IDENTITY,
     reaperIdentity: REAPER_IDENTITY,
     proxyIdentityFields: PROXY_IDENTITY,
@@ -163,7 +163,7 @@ describe('createProviderProxySetAuthority: stopAndReap budget', () => {
     const pending = authority.stopAndReap(new AbortController().signal);
     time.tick(stubbornReapFloorMs);
 
-    await expect(pending).resolves.toEqual({ disappearanceReceipt: 'gone' });
+    await expect(pending).resolves.toEqual({ disappearanceReceipt: 'guardian:gone;reaper:gone' });
   });
 
   it('still reports unconfirmed when the caller signal aborts before the reap answers', async () => {
@@ -217,8 +217,11 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
     // Hardcoding `providerRoots: []` here is exactly the defect: both enforcers refuse a teardown that
     // disagrees with what they actually recorded, so an empty claim against a set with a real staged root
     // always fails — this asserts the actual wire params carried the registry's own roots instead.
-    expect(calls).toEqual([expect.objectContaining({ providerRoots: [root] })]);
-    expect(result).toEqual({ disappearanceReceipt: 'gone' });
+    expect(calls).toEqual([
+      expect.objectContaining({ providerRoots: [root], guardian: GUARDIAN_IDENTITY }),
+      expect.objectContaining({ providerRoots: [root], reaper: REAPER_IDENTITY }),
+    ]);
+    expect(result).toEqual({ disappearanceReceipt: 'guardian:gone;reaper:gone' });
   });
 
   it('names an empty set when this coordinator holds no live operations against the proxy', async () => {
@@ -234,7 +237,10 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
 
     await authority.stopAndReap(new AbortController().signal);
 
-    expect(calls).toEqual([expect.objectContaining({ providerRoots: [] })]);
+    expect(calls).toEqual([
+      expect.objectContaining({ providerRoots: [], guardian: GUARDIAN_IDENTITY }),
+      expect.objectContaining({ providerRoots: [], reaper: REAPER_IDENTITY }),
+    ]);
   });
 });
 

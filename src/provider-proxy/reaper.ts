@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import type { z } from 'zod';
 
 import type { MonotonicClock } from '../infra/monotonic-clock.js';
 import type { ProcessContainmentEnvironment, RecordedContainmentIdentity } from '../infra/process-containment.js';
@@ -36,31 +36,22 @@ import {
   assertNamedTeardownReserve,
   assertRecordedSetAgreement,
   type guardianIdentitySchema,
-  proxyIdentitySchema,
-  providerRootSchema,
   reaperConfirmProviderRootParamsSchema,
   reaperConfirmProviderRootResultSchema,
-  reaperIdentitySchema,
+  type reaperIdentitySchema,
   recordedContainmentSchema,
   reaperRecordContainmentResultSchema,
   reaperRecordRedemptionResultSchema,
   reaperRegisterProviderRootParamsSchema,
   reaperRegisterProviderRootResultSchema,
+  reaperStopAndReapParamsSchema as stopAndReapParamsSchema,
+  reaperStopAndReapResultSchema,
   sameRecordedContainment,
   type OperationIdentity,
   reaperHandoffRotateParamsSchema,
   reaperOpenParamsSchema as openParamsSchema,
 } from './protocol.js';
 import { PROXY_TEARDOWN_RESERVE_MS, type EnforcerDeadlineStateMachine } from './orphan-deadline.js';
-import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
-
-const stopAndReapParamsSchema = z
-  .object({
-    reaper: reaperIdentitySchema,
-    proxy: proxyIdentitySchema,
-    providerRoots: z.array(providerRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
-  })
-  .strict();
 
 /**
  * `reaper.handoff-rotate.v1`'s request: no secret, because this reaper trusts the receipt
@@ -428,7 +419,10 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           if (outcome.kind !== 'containment-absent') {
             throw new ProxyControlProtocolError('invalid_state', `Reaper teardown did not complete: ${outcome.kind}.`);
           }
-          return { state: 'containment-absent', disappearanceReceipt: outcome.disappearanceReceipt };
+          return reaperStopAndReapResultSchema.parse({
+            state: 'containment-absent',
+            disappearanceReceipt: outcome.disappearanceReceipt,
+          });
         },
       },
     ],

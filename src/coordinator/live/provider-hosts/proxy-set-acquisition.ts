@@ -68,7 +68,13 @@ export type ProviderProxySetAcquisitionEnvironment = ProviderProxySetAcquisition
 
 export type ProviderProxySetAcquisitionOutcome =
   | Readonly<{ kind: 'acquired'; set: ProviderProxyOperationAuthority }>
+  | ProviderProxySetCapacity
   | Readonly<{ kind: 'failed'; reason: string }>;
+
+export type ProviderProxySetCapacity = Readonly<{
+  kind: 'capacity';
+  code: 'provider_proxy_set_capacity';
+}>;
 
 /**
  * Starts one acquisition attempt for `entry`'s guardian/reaper/proxy set and reports how it settled.

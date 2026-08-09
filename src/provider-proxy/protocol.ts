@@ -49,6 +49,8 @@ export const PROXY_CONTROL_PROTOCOL_ERROR_CODES = [
   'grant_replayed',
   'reservation_expired',
   'operation_not_found',
+  'semantic_operation_admission_closed',
+  'semantic_operation_cancellation_unconfirmed',
   'protocol_violation',
   // A peer does not implement this method at all — distinct from every other code above, all of which mean
   // "the method exists and refused this call." The N±1 cross-version premise depends on a caller being able
@@ -480,6 +482,16 @@ export const guardianStopAndReapParamsSchema = z
   })
   .strict();
 
+/** `reaper.stop-and-reap.v1`'s request. The coordinator sends this beside the guardian request and requires
+ *  both replies before it may release the set slot. */
+export const reaperStopAndReapParamsSchema = z
+  .object({
+    reaper: reaperIdentitySchema,
+    proxy: proxyIdentitySchema,
+    providerRoots: z.array(providerRootSchema).max(MAX_PROXY_OPERATION_LEDGERS),
+  })
+  .strict();
+
 /**
  * The request schemas above close one direction of this bug class; a hand-assembled *result* built by
  * `guardian.ts`'s own handler and never checked against anything until its one coordinator caller parses a
@@ -499,6 +511,10 @@ export const guardianProxyOperationReleaseResultSchema = z
 
 /** `guardian.stop-and-reap.v1`'s result. */
 export const guardianStopAndReapResultSchema = z
+  .object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) })
+  .strict();
+
+export const reaperStopAndReapResultSchema = z
   .object({ state: z.literal('containment-absent'), disappearanceReceipt: z.string().min(1) })
   .strict();
 
@@ -668,9 +684,22 @@ export const proxyOperationPreparePendingResultSchema = z
 
 /** `operation.prepare.v1`'s capacity result — a typed retryable answer rather than an error, because
  *  admission stays with the coordinator and a refused reservation writes nothing to unwind. */
+export const proxyPrepareCapacityCodeSchema = z.enum([
+  'operation_ledger_capacity',
+  'provider_root_live_capacity',
+  'provider_root_generation_draining',
+]);
+export type ProxyPrepareCapacityCode = z.output<typeof proxyPrepareCapacityCodeSchema>;
+
 export const proxyOperationPrepareCapacityResultSchema = z
-  .object({ state: z.literal('capacity'), retryable: z.boolean(), reason: z.string() })
+  .object({
+    state: z.literal('capacity'),
+    retryable: z.literal(true),
+    code: proxyPrepareCapacityCodeSchema,
+    reason: z.string().min(1).max(4096),
+  })
   .strict();
+export type ProxyOperationPrepareCapacityResult = z.output<typeof proxyOperationPrepareCapacityResultSchema>;
 
 export const providerOperationPrepareRefusalCodeSchema = z.enum([
   'authorization_expired',

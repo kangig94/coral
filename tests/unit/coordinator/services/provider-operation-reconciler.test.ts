@@ -1030,7 +1030,12 @@ describe('ProviderOperationReconciler publication', () => {
     });
     const completeLocalRecovery = vi.fn();
     const harness = createHarness({
-      prepareOperation: async () => ({ state: 'capacity', retryable: true, reason: 'operation-ledgers' }),
+      prepareOperation: async () => ({
+        state: 'capacity',
+        retryable: true,
+        code: 'operation_ledger_capacity',
+        reason: 'operation-ledgers',
+      }),
       recoverLocalJob,
       completeLocalRecovery,
     });

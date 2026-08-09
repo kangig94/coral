@@ -16,8 +16,16 @@ import { ensureProviderProxySet, type ProviderProxySetAcquisitionConfig } from '
 import { hostFingerprintFromSpec, hostKeyFromSpec, hostRefFromEntry, type ProviderHostEntry } from './state.js';
 import { AbortError, throwIfAborted } from '../../../runtime/abort.js';
 import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from '../provider-proxy/authority.js';
-import type { ProviderProxyOperationAuthority } from '../provider-proxy/operation-route.js';
+import {
+  isProviderProxyOperationAuthority,
+  type DurableProviderProxyOperationAuthority,
+  type ProviderProxyOperationAuthority,
+} from '../provider-proxy/operation-route.js';
 export type { ProviderHostEntry } from './state.js';
+
+export const MAX_COORDINATOR_PROXY_SET_SLOTS = 4;
+const PROXY_SET_RETIREMENT_IDLE_POLL_MS = 50;
+const PROXY_SET_RETIREMENT_DEADLINE_MS = 30_000;
 
 export interface ProviderHostManager {
   openSession(
@@ -171,6 +179,14 @@ export class DefaultProviderHostManager
   // and stable, so outliving entries costs a fixed amount rather than a growing one.
   private readonly pendingProxySetAcquisitions = new Set<string>();
   private readonly liveProxySets = new Map<string, ProviderProxyOperationAuthority>();
+  private readonly retiringProxySets = new Map<
+    string,
+    Readonly<{
+      entry: ProviderHostEntry;
+      set: ProviderProxyOperationAuthority;
+    }>
+  >();
+  private occupiedProxySetSlots = 0;
   /**
    * Aborted by `stopAndClose` the instant it runs, before anything in it is awaited. Threaded into every
    * acquisition attempt (`ensureProxySetFor`) alongside that attempt's own internal deadline
@@ -204,11 +220,16 @@ export class DefaultProviderHostManager
   /** Every set acquired so far and not yet reaped, acquired or inherited alike — see
    *  `ProviderProxyAuthorityRegistry.liveSets()`'s own doc for what this snapshot does and does not promise. */
   liveSets(): readonly ProviderProxySetAuthority[] {
-    return [...this.liveProxySets.values(), ...this.inheritedProxySets.values()];
+    return [
+      ...this.liveProxySets.values(),
+      ...this.inheritedProxySets.values(),
+      ...[...this.retiringProxySets.values()].map(({ set }) => set),
+    ];
   }
 
   /** See `ProviderProxySetRegistration.registerInheritedSet()`'s interface doc for this seam's full contract. */
   registerInheritedSet(set: ProviderProxyOperationAuthority): void {
+    if (!this.inheritedProxySets.has(set.proxyInstanceId)) this.occupiedProxySetSlots += 1;
     this.inheritedProxySets.set(set.proxyInstanceId, set);
   }
 
@@ -230,7 +251,21 @@ export class DefaultProviderHostManager
     // The executable identity, so every job-exclusive entry of the same spec shares one set. See the
     // `liveProxySets` field comment for why a per-entry key would be both wrong and unbounded.
     const identityKey = entry.identityKey;
-    if (this.liveProxySets.has(identityKey) || this.pendingProxySetAcquisitions.has(identityKey)) return;
+    if (
+      this.liveProxySets.has(identityKey) ||
+      this.pendingProxySetAcquisitions.has(identityKey) ||
+      this.retiringProxySets.has(identityKey)
+    ) {
+      return;
+    }
+    if (this.occupiedProxySetSlots >= MAX_COORDINATOR_PROXY_SET_SLOTS) {
+      const capacity = { kind: 'capacity', code: 'provider_proxy_set_capacity' } as const;
+      backendLog.warn(
+        `Provider proxy set acquisition refused for ${entry.spec.provider} (${identityKey}): ${capacity.code}`,
+      );
+      return;
+    }
+    this.occupiedProxySetSlots += 1;
     this.pendingProxySetAcquisitions.add(identityKey);
     ensureProviderProxySet(
       entry,
@@ -238,14 +273,94 @@ export class DefaultProviderHostManager
       (outcome) => {
         this.pendingProxySetAcquisitions.delete(identityKey);
         if (outcome.kind === 'acquired') {
-          this.liveProxySets.set(identityKey, outcome.set);
+          this.liveProxySets.set(identityKey, this.observeGenerationCapacity(identityKey, entry, outcome.set));
           return;
         }
+        this.occupiedProxySetSlots -= 1;
+        if (outcome.kind === 'capacity') return;
         backendLog.warn(
           `Provider proxy set acquisition failed for ${entry.spec.provider} (${identityKey}): ${outcome.reason}`,
         );
       },
     );
+  }
+
+  private observeGenerationCapacity(
+    identityKey: string,
+    entry: ProviderHostEntry,
+    set: ProviderProxyOperationAuthority,
+  ): ProviderProxyOperationAuthority {
+    if (!isProviderProxyOperationAuthority(set)) return set;
+    const observed: DurableProviderProxyOperationAuthority = {
+      ...set,
+      prepareOperation: async (attempt) => {
+        const result = await set.prepareOperation(attempt);
+        if (result.state === 'capacity' && result.code === 'provider_root_generation_draining') {
+          this.beginProxySetRetirement(identityKey, entry, observed);
+        }
+        return result;
+      },
+    };
+    return observed;
+  }
+
+  private beginProxySetRetirement(
+    identityKey: string,
+    entry: ProviderHostEntry,
+    set: ProviderProxyOperationAuthority,
+  ): void {
+    if (this.liveProxySets.get(identityKey) !== set || this.retiringProxySets.has(identityKey)) return;
+    this.liveProxySets.delete(identityKey);
+    this.retiringProxySets.set(identityKey, { entry, set });
+    void this.retireProxySetWhenIdle(identityKey, entry, set);
+  }
+
+  private async retireProxySetWhenIdle(
+    identityKey: string,
+    entry: ProviderHostEntry,
+    set: ProviderProxyOperationAuthority,
+  ): Promise<void> {
+    const operationRegistry = this.proxySetAcquisitionConfig?.operationRegistry;
+    while (
+      this.acceptingAcquisitions &&
+      this.retiringProxySets.get(identityKey)?.set === set &&
+      (operationRegistry?.operationsFor?.(set.proxyInstanceId).length ??
+        operationRegistry?.providerRootsFor(set.proxyInstanceId).length ??
+        0) > 0
+    ) {
+      try {
+        await this.runtime.time.sleep(PROXY_SET_RETIREMENT_IDLE_POLL_MS, {
+          signal: this.proxySetAcquisitionStop.signal,
+        });
+      } catch {
+        return;
+      }
+    }
+    if (!this.acceptingAcquisitions || this.retiringProxySets.get(identityKey)?.set !== set) return;
+
+    const outcome = await set.stopAndReap(
+      AbortSignal.any([AbortSignal.timeout(PROXY_SET_RETIREMENT_DEADLINE_MS), this.proxySetAcquisitionStop.signal]),
+    );
+    if ('unconfirmed' in outcome) {
+      backendLog.warn(
+        `Provider proxy set rotation could not confirm absence for ${identityKey}: ${outcome.unconfirmed}`,
+      );
+      return;
+    }
+    set.stopHeartbeats();
+    try {
+      await set.initiateControlClose();
+    } catch (error: unknown) {
+      backendLog.warn(
+        `Provider proxy set rotation control close failed for ${identityKey}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    if (this.retiringProxySets.get(identityKey)?.set !== set) return;
+    this.retiringProxySets.delete(identityKey);
+    this.occupiedProxySetSlots -= 1;
+    if (this.acceptingAcquisitions) this.ensureProxySetFor(entry);
   }
 
   private async acquireHostLease(

@@ -24,6 +24,8 @@ import type {
   connectRoleControlWithRetry as connectRoleControlWithRetryType,
   spawnRoleProcess as spawnRoleProcessType,
 } from '#src/provider-proxy/role-spawn.js';
+import type * as ProxyMod from '#src/provider-proxy/proxy.js';
+import type * as SemanticOperationMod from '#src/provider-proxy/semantic-operation.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
 const roleSenderHarness = vi.hoisted(() => ({
@@ -31,6 +33,14 @@ const roleSenderHarness = vi.hoisted(() => ({
   capsule: undefined as unknown,
   channel: undefined as unknown,
   spawnRoleProcess: undefined as unknown,
+}));
+
+const proxyRoleCloseHarness = vi.hoisted(() => ({
+  enabled: false,
+  proxyClose: vi.fn<() => Promise<void>>(),
+  proxyListen: vi.fn<() => Promise<void>>(),
+  semanticShutdown: vi.fn<() => Promise<void>>(),
+  onRelinquish: undefined as unknown,
 }));
 
 vi.mock('#src/provider-proxy/bootstrap-capsule.js', async (importOriginal) => {
@@ -64,6 +74,69 @@ vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
   };
 });
 
+vi.mock('#src/provider-proxy/semantic-operation.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof SemanticOperationMod>();
+  return {
+    ...actual,
+    createProxyAppServerHostAuthority: (...args: Parameters<typeof actual.createProxyAppServerHostAuthority>) =>
+      proxyRoleCloseHarness.enabled
+        ? ({
+            beginOperation: () => ({
+              selectCancellationMode: () => {},
+              openSession: async () => {
+                throw new Error('unused proxy role host authority');
+              },
+              attachSession: async () => null,
+            }),
+            rootIdentity: () => null,
+            closed: () => null,
+            forceClose: async () => {},
+          } satisfies ReturnType<typeof actual.createProxyAppServerHostAuthority>)
+        : actual.createProxyAppServerHostAuthority(...args),
+    createSemanticOperationRuntime: (...args: Parameters<typeof actual.createSemanticOperationRuntime>) => {
+      if (proxyRoleCloseHarness.enabled) {
+        proxyRoleCloseHarness.onRelinquish = args[0].onRelinquish;
+        return {
+          host: {
+            start: () => {
+              throw new Error('unused proxy role semantic start');
+            },
+            stop: async () => {},
+          },
+          stage: () => {
+            throw new Error('unused proxy role semantic stage');
+          },
+          ensureProviderRoot: async () => {
+            throw new Error('unused proxy role semantic root acquisition');
+          },
+          shutdown: () => proxyRoleCloseHarness.semanticShutdown(),
+        } satisfies ReturnType<typeof actual.createSemanticOperationRuntime>;
+      }
+      return actual.createSemanticOperationRuntime(...args);
+    },
+  };
+});
+
+vi.mock('#src/provider-proxy/proxy.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof ProxyMod>();
+  return {
+    ...actual,
+    createProxy: (...args: Parameters<typeof actual.createProxy>) =>
+      proxyRoleCloseHarness.enabled
+        ? ({
+            listen: proxyRoleCloseHarness.proxyListen,
+            close: proxyRoleCloseHarness.proxyClose,
+            ledger: () => {
+              throw new Error('unused proxy role ledger');
+            },
+            emitProviderEvent: () => {
+              throw new Error('unused proxy role provider event');
+            },
+          } satisfies ReturnType<typeof actual.createProxy>)
+        : actual.createProxy(...args),
+  };
+});
+
 /**
  * `runProviderRoleMain`'s dispatch has no test anywhere: `process-topology.integration.test.ts` drives
  * `startProviderGuardianRole`/`startProviderReaperRole`/`startProviderProxyRole` directly, never through this
@@ -79,6 +152,11 @@ afterEach(() => {
   roleSenderHarness.capsule = undefined;
   roleSenderHarness.channel = undefined;
   roleSenderHarness.spawnRoleProcess = undefined;
+  proxyRoleCloseHarness.enabled = false;
+  proxyRoleCloseHarness.proxyClose.mockReset();
+  proxyRoleCloseHarness.proxyListen.mockReset();
+  proxyRoleCloseHarness.semanticShutdown.mockReset();
+  proxyRoleCloseHarness.onRelinquish = undefined;
 });
 
 function scopedTempDir(prefix: string): string {
@@ -256,6 +334,83 @@ describe('runProviderRoleMain', () => {
     await expect(runProviderRoleMain({ role: mode, capsulePath }, { pluginRoot: dir })).rejects.toMatchObject({
       code: 'bootstrap_capsule_role_mismatch',
     });
+  });
+
+  it('closes an armed proxy pairing and proxy control before exiting on semantic shutdown failure', async () => {
+    const directory = scopedTempDir('coral-proxy-role-close-');
+    let guardianArmed = false;
+    const pairingClose = vi.fn();
+    const pairingCall = vi.fn(async (method: string) => {
+      if (method !== 'guardian.pair.v1') throw new Error(`unexpected guardian method: ${method}`);
+      guardianArmed = true;
+      return { state: 'paired' };
+    });
+    enableRoleSender(pairingCapsule('proxy', directory, randomBytes(32).toString('hex')), {
+      call: pairingCall,
+      close: pairingClose,
+    });
+    proxyRoleCloseHarness.enabled = true;
+    proxyRoleCloseHarness.proxyListen.mockResolvedValue();
+    proxyRoleCloseHarness.proxyClose.mockResolvedValue();
+    const semanticFailure = Object.assign(new Error('one semantic operation remained staged'), {
+      code: 'semantic_operation_shutdown_incomplete',
+      failures: [{ key: { jobId: 'job-1', operationId: 'op-1' }, kind: 'cancellation-failed' }],
+    });
+    proxyRoleCloseHarness.semanticShutdown.mockRejectedValue(semanticFailure);
+
+    let shutdown: (() => void) | null = null;
+    let interrupt: (() => void) | null = null;
+    vi.spyOn(process, 'on').mockImplementation((event, listener) => {
+      if (event === 'SIGTERM') shutdown = listener as () => void;
+      if (event === 'SIGINT') interrupt = listener as () => void;
+      return process;
+    });
+    const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    await expect(
+      runProviderRoleMain({ role: 'proxy', capsulePath: '/unused' }, { pluginRoot: directory }),
+    ).resolves.toBe(0);
+    expect(guardianArmed).toBe(true);
+    expect(shutdown).not.toBeNull();
+    expect(interrupt).not.toBeNull();
+
+    (shutdown as (() => void) | null)?.();
+    (interrupt as (() => void) | null)?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(proxyRoleCloseHarness.semanticShutdown).toHaveBeenCalledOnce();
+    expect(pairingClose, 'armed guardian pairing was not closed').toHaveBeenCalledOnce();
+    expect(proxyRoleCloseHarness.proxyClose).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(1);
+  });
+
+  it('relinquishes pairing and proxy control when semantic cancellation is unconfirmed', async () => {
+    const directory = scopedTempDir('coral-proxy-role-relinquish-');
+    const pairingClose = vi.fn();
+    enableRoleSender(pairingCapsule('proxy', directory, randomBytes(32).toString('hex')), {
+      call: vi.fn(async () => ({ state: 'paired' })),
+      close: pairingClose,
+    });
+    proxyRoleCloseHarness.enabled = true;
+    proxyRoleCloseHarness.proxyListen.mockResolvedValue();
+    proxyRoleCloseHarness.proxyClose.mockResolvedValue();
+    const cancellationFailure = Object.assign(new Error('provider did not acknowledge the exact turn'), {
+      code: 'semantic_operation_cancellation_unconfirmed',
+    });
+    proxyRoleCloseHarness.semanticShutdown.mockRejectedValue(cancellationFailure);
+    const exitProcess = vi.fn();
+
+    await startProviderProxyRole('/unused', { ...roleSenderPorts(directory), exitProcess });
+    const onRelinquish = proxyRoleCloseHarness.onRelinquish as (error: Error) => void;
+    onRelinquish(cancellationFailure);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(proxyRoleCloseHarness.semanticShutdown).toHaveBeenCalledOnce();
+    expect(pairingClose, 'unconfirmed cancellation did not close the guardian pairing').toHaveBeenCalledOnce();
+    expect(proxyRoleCloseHarness.proxyClose).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(1);
   });
 });
 
