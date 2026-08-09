@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import type { z } from 'zod';
 
 import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
@@ -12,9 +12,8 @@ import {
   proxyOperationCancelResultSchema,
   proxyOperationInspectParamsSchema,
   proxyOperationInspectResultSchema,
-  proxyOperationPrepareCapacityResultSchema,
   proxyOperationPrepareParamsSchema,
-  proxyOperationPreparePendingResultSchema,
+  proxyOperationPrepareResultSchema,
   proxyOperationSettleParamsSchema,
   proxyOperationSettleResultSchema,
   proxyOperationStopParamsSchema,
@@ -57,12 +56,7 @@ export interface ProviderProxyOperationActivationDeps {
   readonly mutationRpcTimeoutMs: number;
 }
 
-const prepareResultSchema = z.union([
-  proxyOperationPreparePendingResultSchema,
-  proxyOperationPrepareCapacityResultSchema,
-]);
-
-export type PrepareProviderOperationResult = z.output<typeof prepareResultSchema>;
+export type PrepareProviderOperationResult = z.output<typeof proxyOperationPrepareResultSchema>;
 export type InspectProviderOperationResult = z.output<typeof proxyOperationInspectResultSchema>;
 export type AuthorizeProviderOperationResult = z.output<typeof guardianOperationActivateResultSchema>;
 export type CancelProviderOperationResult = z.output<typeof proxyOperationCancelResultSchema>;
@@ -131,7 +125,13 @@ export async function prepareProviderOperation(
   if (operationPrepareAttemptKey(request) !== attempt.prepareAttemptKey) {
     throw new Error('Provider operation prepare attempt fingerprint does not match its exact request.');
   }
-  return callStrict(deps.proxyClient, 'operation.prepare.v1', request, deps.mutationRpcTimeoutMs, prepareResultSchema);
+  return callStrict(
+    deps.proxyClient,
+    'operation.prepare.v1',
+    request,
+    deps.mutationRpcTimeoutMs,
+    proxyOperationPrepareResultSchema,
+  );
 }
 
 export async function inspectProviderOperation(

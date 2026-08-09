@@ -13,6 +13,7 @@ import { SemanticOperationCancellationTimeoutError } from '#src/provider-proxy/s
 import {
   OperationSupervisor,
   OPERATION_RELEASE_RETRY_MS,
+  type OperationStageResult,
   type SemanticOperationHost,
   type SemanticOperationStartHandle,
 } from '#src/provider-proxy/operation-supervisor.js';
@@ -196,10 +197,7 @@ async function startProxy(
   options: {
     readMilliseconds?: () => bigint;
     onProviderEvent?: Parameters<typeof connectControlClient>[3];
-    stageProviderRoot?: (signal: AbortSignal) => Promise<{
-      providerRoot: { pid: number; processStartedAtSeconds: number };
-      receipt: JointContainmentReceipt;
-    }>;
+    stageProviderRoot?: (signal: AbortSignal) => Promise<OperationStageResult>;
     stageAbortAndRelease?: () => Promise<void>;
     confirmActivation?: () => Promise<void>;
     releaseMembership?: (input: Readonly<{ key: ProviderOperationKey; reservation: Reservation }>) => Promise<void>;
@@ -258,6 +256,7 @@ async function startProxy(
         const result = (
           options.stageProviderRoot ??
           (async () => ({
+            state: 'staged' as const,
             providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
             receipt: asJointContainmentReceipt('joint-1'),
           }))
@@ -366,10 +365,42 @@ describe('provider-proxy proxy: prepare result sender validation', () => {
           { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
           5_000,
         ),
-      ).rejects.toThrow(/invalid_union/u);
+      ).rejects.toThrow(/providerRoot/u);
     } finally {
       prepare.mockRestore();
     }
+  });
+
+  it('publishes a prepare refusal only after its staged containment is released', async () => {
+    const release = deferred();
+    const refusal = {
+      state: 'permanent-refusal',
+      code: 'provider_creation_refused',
+      disposition: 'local-fallback',
+      reason: 'The provider root could not be created.',
+    } as const;
+    const { control, operation, proxy } = await startProxy(fakeHost(), timer, {
+      stageProviderRoot: async () => refusal,
+      stageAbortAndRelease: () => release.promise,
+    });
+    const request = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
+    const prepareAttemptKey = operationPrepareAttemptKey(request);
+    const preparing = control.call('operation.prepare.v1', request, 5_000);
+    const prepareSettled = vi.fn();
+    void preparing.then(prepareSettled, prepareSettled);
+
+    await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('releasing'));
+    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+      state: 'releasing',
+      releaseKind: 'never-started',
+    });
+    expect(prepareSettled).not.toHaveBeenCalled();
+
+    release.resolve();
+    await expect(preparing).resolves.toEqual(refusal);
+    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toEqual(
+      refusal,
+    );
   });
 });
 
@@ -605,6 +636,7 @@ describe('provider-proxy truthful operation authority', () => {
   it('aborts unresolved staging as soon as its activation lease expires', async () => {
     const controlled = controlledTimer();
     const staging = deferred<{
+      state: 'staged';
       providerRoot: { pid: number; processStartedAtSeconds: number };
       receipt: JointContainmentReceipt;
     }>();
@@ -632,6 +664,7 @@ describe('provider-proxy truthful operation authority', () => {
     });
 
     staging.resolve({
+      state: 'staged',
       providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
       receipt: asJointContainmentReceipt('joint-late'),
     });
@@ -641,6 +674,7 @@ describe('provider-proxy truthful operation authority', () => {
 
   it('turns a late staging completion into release instead of publishing prepared', async () => {
     const staging = deferred<{
+      state: 'staged';
       providerRoot: { pid: number; processStartedAtSeconds: number };
       receipt: JointContainmentReceipt;
     }>();
@@ -660,6 +694,7 @@ describe('provider-proxy truthful operation authority', () => {
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('releasing'));
 
     staging.resolve({
+      state: 'staged',
       providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
       receipt: asJointContainmentReceipt('joint-late'),
     });
@@ -826,6 +861,7 @@ describe('provider-proxy truthful operation authority', () => {
 
   it('joins cancellation to in-flight staging before certifying never-started', async () => {
     const staging = deferred<{
+      state: 'staged';
       providerRoot: { pid: number; processStartedAtSeconds: number };
       receipt: JointContainmentReceipt;
     }>();
@@ -854,6 +890,7 @@ describe('provider-proxy truthful operation authority', () => {
     expect(cancellationSettled).not.toHaveBeenCalled();
 
     staging.resolve({
+      state: 'staged',
       providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
       receipt: asJointContainmentReceipt('joint-1'),
     });

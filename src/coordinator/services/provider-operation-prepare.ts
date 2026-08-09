@@ -3,7 +3,11 @@ import { z } from 'zod';
 import { resolveEquippedTools } from '../../expansion/equipped-tools.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import { applyInjectBundle } from '../../providers/inject.js';
-import { proxyPreparedAppServerOperationSchema } from '../../provider-proxy/protocol.js';
+import {
+  providerOperationPreparePermanentRefusalSchema,
+  proxyPreparedAppServerOperationSchema,
+  type ProviderOperationPreparePermanentRefusal,
+} from '../../provider-proxy/protocol.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderJobLaunch } from '../../jobs/records.js';
 import { toProviderRequest } from '../../jobs/provider-request.js';
@@ -18,20 +22,15 @@ import type {
 /**
  * What materializing a journaled prepare can conclude. Two outcomes, both strict, so the stage that cuts this
  * over cannot quietly grow a third: either the request was rebuilt and may be sent, or it can never be — an
- * authorization that has expired cannot be renewed from a durable recipe, because the absolute expiry a
- * restart inherits is exactly what a restart must not extend. A retryable failure is not a result here; it
- * throws, and the reconciler's existing retry owns it.
+ * deterministic reconstruction failure is a canonical terminal refusal. In particular, an authorization
+ * that has expired cannot be renewed from a durable recipe, because the absolute expiry a restart inherits is
+ * exactly what a restart must not extend. Unexpected dependency failures remain exceptional for the
+ * reconciler to classify; they are not silently relabeled as transient here.
  */
 export const providerOperationPrepareMaterializationResultSchema = z
-  .discriminatedUnion('kind', [
-    z.object({ kind: z.literal('prepared'), prepared: proxyPreparedAppServerOperationSchema }).strict(),
-    z
-      .object({
-        kind: z.literal('permanent-refusal'),
-        code: z.literal('authorization_expired'),
-        reason: z.string().min(1),
-      })
-      .strict(),
+  .discriminatedUnion('state', [
+    z.object({ state: z.literal('prepared'), prepared: proxyPreparedAppServerOperationSchema }).strict(),
+    providerOperationPreparePermanentRefusalSchema,
   ])
   .describe('provider operation prepare materialization outcome');
 
@@ -47,6 +46,21 @@ export type ProviderOperationPrepareMaterializerDeps = Readonly<{
   readSession(sessionId: string): ProviderSession | null;
 }>;
 
+function materializationRefusal(
+  code: Extract<
+    ProviderOperationPreparePermanentRefusal['code'],
+    'authorization_expired' | 'prepare_materialization_refused'
+  >,
+  reason: string,
+): ProviderOperationPreparePermanentRefusal {
+  return providerOperationPreparePermanentRefusalSchema.parse({
+    state: 'permanent-refusal',
+    code,
+    disposition: 'terminal-failure',
+    reason,
+  });
+}
+
 export function materializeProviderOperationPrepare(
   deps: ProviderOperationPrepareMaterializerDeps,
   operation: ProviderOperationIdentity,
@@ -54,34 +68,48 @@ export function materializeProviderOperationPrepare(
 ): ProviderOperationPrepareMaterializationResult {
   const launch = deps.readJobLaunch(operation.jobId, source.jobLaunchEventSeq);
   if (launch.jobId !== operation.jobId || launch.sessionId !== source.sessionId) {
-    throw new Error('Provider operation prepare source does not match its durable job launch.');
+    return materializationRefusal(
+      'prepare_materialization_refused',
+      'Provider operation prepare source does not match its durable job launch.',
+    );
   }
   if (launch.backendNamespace !== source.childAuthorization.namespace) {
-    throw new Error('Provider operation child authorization namespace does not match its durable job launch.');
+    return materializationRefusal(
+      'prepare_materialization_refused',
+      'Provider operation child authorization namespace does not match its durable job launch.',
+    );
   }
 
   const session = deps.readSession(source.sessionId);
   if (session === null || session.version !== source.sessionVersion || session.activeJobId !== operation.jobId) {
-    throw new Error('Provider operation session snapshot is unavailable at its journaled version.');
+    return materializationRefusal(
+      'prepare_materialization_refused',
+      'Provider operation session snapshot is unavailable at its journaled version.',
+    );
   }
   if (source.platform !== deps.runtime.env.platform()) {
-    throw new Error('Provider operation platform no longer matches the coordinator runtime.');
+    return materializationRefusal(
+      'prepare_materialization_refused',
+      'Provider operation platform no longer matches the coordinator runtime.',
+    );
   }
   if (source.childAuthorization.expiresAtMs <= deps.runtime.time.now()) {
-    return {
-      kind: 'permanent-refusal',
-      code: 'authorization_expired',
-      reason: 'Provider operation child authorization has expired.',
-    };
+    return materializationRefusal('authorization_expired', 'Provider operation child authorization has expired.');
   }
 
   const bound = deps.providerRegistry.rehydrateBinding(session.binding);
   if (!bound.ok || bound.value.name !== launch.provider) {
-    throw new Error('Provider operation binding no longer matches its durable job launch.');
+    return materializationRefusal(
+      'prepare_materialization_refused',
+      'Provider operation binding no longer matches its durable job launch.',
+    );
   }
   const continuity = bound.value.decodeContinuity(session.providerContinuity);
   if (!continuity.ok) {
-    throw new Error('Provider operation continuity cannot be decoded from its durable session snapshot.');
+    return materializationRefusal(
+      'prepare_materialization_refused',
+      'Provider operation continuity cannot be decoded from its durable session snapshot.',
+    );
   }
 
   const request = toProviderRequest(launch, session.conversationRef);
@@ -105,7 +133,7 @@ export function materializeProviderOperationPrepare(
   });
 
   return {
-    kind: 'prepared',
+    state: 'prepared',
     prepared: proxyPreparedAppServerOperationSchema.parse({
       version: 1,
       provider: launch.provider,

@@ -34,8 +34,7 @@ import {
   proxyOperationAttachParamsSchema as attachParamsSchema,
   proxyOperationAttachResultSchema as attachResultSchema,
   proxyOperationPrepareParamsSchema as prepareParamsSchema,
-  proxyOperationPrepareCapacityResultSchema,
-  proxyOperationPreparePendingResultSchema,
+  proxyOperationPrepareResultSchema,
   proxyOperationReservationParamsSchema as reservationParamsSchema,
   proxyControlOpenParamsSchema as openParamsSchema,
   proxyOperationInspectParamsSchema as inspectParamsSchema,
@@ -196,7 +195,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           if (request.hostFingerprint !== capsule.hostFingerprint) {
             throw new ProxyControlProtocolError('identity_mismatch', 'Prepare named a different host fingerprint.');
           }
-          return proxyOperationPreparePendingResultSchema.or(proxyOperationPrepareCapacityResultSchema).parse(
+          return proxyOperationPrepareResultSchema.parse(
             await supervisor.prepare(request.operation, {
               prepareAttemptNumber: request.prepareAttemptNumber,
               prepareAttemptKey: operationPrepareAttemptKey(request),

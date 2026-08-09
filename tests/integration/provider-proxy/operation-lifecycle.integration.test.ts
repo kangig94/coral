@@ -4,8 +4,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type * as ProviderBootstrapMod from '#src/providers/bootstrap.js';
+
+const providerRegistryDouble = vi.hoisted(() => ({
+  rehydrateBinding: vi.fn(),
+}));
+vi.mock('#src/providers/bootstrap.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof ProviderBootstrapMod>();
+  return {
+    ...actual,
+    createBuiltInProviderRegistry: () => {
+      const registry = actual.createBuiltInProviderRegistry();
+      return {
+        ...registry,
+        connectAppServerHost: registry.connectAppServerHost.bind(registry),
+        sealPersistedCodecComponents: registry.sealPersistedCodecComponents.bind(registry),
+        rehydrateBinding: (binding: unknown) => providerRegistryDouble.rehydrateBinding(binding),
+      };
+    },
+  };
+});
+
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { createRealTimePort } from '#src/infra/time.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import type { HostRef } from '#src/providers/contract.js';
 import { heartbeatOnce } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import {
@@ -23,6 +45,12 @@ import { ProviderOperationReconciler } from '#src/coordinator/services/provider-
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import { createProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import {
+  inspectProviderOperation,
+  prepareProviderOperation,
+  providerOperationPrepareAttempt,
+  type ProviderProxyOperationActivationDeps,
+} from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import {
   MAX_PROXY_OPERATION_LEDGERS,
@@ -31,8 +59,17 @@ import {
 } from '#src/provider-proxy/ledger.js';
 import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import type { ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
-import { createProxy } from '#src/provider-proxy/proxy.js';
-import type { SemanticOperationHost, SemanticOperationStartHandle } from '#src/provider-proxy/operation-supervisor.js';
+import { createProxyGuardianContainment } from '#src/provider-proxy/role-main.js';
+import { createProxy, type Proxy } from '#src/provider-proxy/proxy.js';
+import type {
+  OperationStageHandle,
+  SemanticOperationHost,
+  SemanticOperationStartHandle,
+} from '#src/provider-proxy/operation-supervisor.js';
+import {
+  createSemanticOperationRuntime,
+  type ProxyAppServerHostAuthority,
+} from '#src/provider-proxy/semantic-operation.js';
 import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 const NONCE = 'a'.repeat(64);
@@ -53,6 +90,7 @@ function hostRefFor(jobId: string): HostRef {
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  providerRegistryDouble.rehydrateBinding.mockReset();
 });
 
 const timer: ControlEndpointTimer = {
@@ -64,8 +102,13 @@ type Started = { jobId: string; operationId: string };
 
 async function startProxy(
   options: {
-    failStage?: boolean;
-    failStageOnce?: boolean;
+    prepareRefusal?: Readonly<{
+      state: 'permanent-refusal';
+      code: 'provider_creation_refused';
+      disposition: 'local-fallback';
+      reason: string;
+    }>;
+    failProviderCreation?: boolean;
     failConfirmActivation?: boolean;
     failStart?: boolean;
     timer?: ControlEndpointTimer;
@@ -140,6 +183,54 @@ async function startProxy(
 
   let receipts = 0;
   let stageAttempts = 0;
+  let providerCreationAttempts = 0;
+  const proxyRef: { current: Proxy | null } = { current: null };
+  const semantic =
+    options.failProviderCreation === true
+      ? (() => {
+          providerRegistryDouble.rehydrateBinding.mockReturnValue({
+            ok: true,
+            value: {
+              name: PREPARED.provider,
+              appServer: {
+                openReplacement: async () => {
+                  providerCreationAttempts += 1;
+                  throw new Error('the provider root could not be created');
+                },
+              },
+            },
+          });
+          const hostAuthority = {
+            openSession: () => {
+              throw new Error('provider creation refusal must not open a host session');
+            },
+            attachSession: async () => null,
+            rootIdentity: () => null,
+            closed: () => null,
+            forceClose: async () => {},
+          } as unknown as ProxyAppServerHostAuthority;
+          return createSemanticOperationRuntime({
+            runtime: createRealRuntime('prod'),
+            hostAuthority,
+            getProxy: () => {
+              if (proxyRef.current === null) throw new Error('Proxy is not ready.');
+              return proxyRef.current;
+            },
+          });
+        })()
+      : null;
+  const semanticContainment =
+    semantic === null
+      ? null
+      : createProxyGuardianContainment({
+          identity,
+          guardianChannel: {
+            call: async () => {
+              throw new Error('provider creation refusal must not register guardian membership');
+            },
+          },
+          stageProviderRoot: semantic.stage,
+        });
   const proxy = createProxy({
     capsule: {
       role: 'proxy',
@@ -150,7 +241,7 @@ async function startProxy(
     },
     clock,
     identity,
-    host,
+    host: semantic?.host ?? host,
     timer: options.timer ?? timer,
     mintChallenge: () => randomUUID(),
     mintReceipt: () => {
@@ -159,17 +250,19 @@ async function startProxy(
     },
     mintReservation: () => asReservation(randomUUID()),
     wallClockNow: () => WALL_CLOCK_EPOCH_MS + Number(elapsed),
-    containment: {
+    containment: semanticContainment ?? {
       stageProviderRoot: (key) => {
         stageAttempts += 1;
-        const guardianRegistered =
-          options.failStage !== true && !(options.failStageOnce === true && stageAttempts === 1);
-        const result = !guardianRegistered
-          ? Promise.reject(new Error('the guardian refused to stage this root'))
-          : Promise.resolve({
-              providerRoot: { pid: 7_001, processStartedAtSeconds: 800 },
-              receipt: asJointContainmentReceipt('joint-1'),
-            });
+        const guardianRegistered = options.prepareRefusal === undefined;
+        const result = (
+          options.prepareRefusal !== undefined
+            ? Promise.resolve(options.prepareRefusal)
+            : Promise.resolve({
+                state: 'staged' as const,
+                providerRoot: { pid: 7_001, processStartedAtSeconds: 800 },
+                receipt: asJointContainmentReceipt('joint-1'),
+              })
+        ) as OperationStageHandle['result'];
         let releasedStage = false;
         return {
           result,
@@ -189,6 +282,7 @@ async function startProxy(
       },
     },
   });
+  proxyRef.current = proxy;
   await proxy.listen();
   cleanups.push(() => proxy.close());
 
@@ -240,7 +334,7 @@ async function startProxy(
     released,
     releasedMemberships,
     startAttempts: () => startAttempts,
-    stageAttempts: () => stageAttempts,
+    stageAttempts: () => (semantic === null ? stageAttempts : providerCreationAttempts),
     advanceWithHeartbeat,
     advanceSilently,
   };
@@ -275,11 +369,13 @@ async function launchThroughRoute(
   set: ProxyUnderTest,
   options: {
     dropPrepareReplies?: number;
+    ambiguatePrepareRejections?: boolean;
     dropPrepareInspectReplies?: number;
     preparingInspectReplies?: number;
     dropGuardianActivationReplies?: number;
     dropActivationReplies?: number;
     leavePlacementPending?: boolean;
+    blockCancel?: boolean;
   } = {},
 ) {
   const db = newRawDatabase(':memory:');
@@ -290,6 +386,14 @@ async function launchThroughRoute(
   let prepareInspectCalls = 0;
   let guardianActivationCalls = 0;
   let activationCalls = 0;
+  let cancelCalls = 0;
+  let allowCancel!: () => void;
+  const cancelGate =
+    options.blockCancel === true
+      ? new Promise<void>((resolve) => {
+          allowCancel = resolve;
+        })
+      : null;
   const proxyClient = {
     call: async (method: string, params: unknown, timeoutMs: number): Promise<unknown> => {
       if (method === 'operation.prepare.v1') prepareCalls += 1;
@@ -309,7 +413,19 @@ async function launchThroughRoute(
         }
       }
       if (method === 'operation.activate.v1') activationCalls += 1;
-      const result = await set.control.call(method, params, timeoutMs);
+      if (method === 'operation.cancel.v2') {
+        cancelCalls += 1;
+        await cancelGate;
+      }
+      let result: unknown;
+      try {
+        result = await set.control.call(method, params, timeoutMs);
+      } catch (error: unknown) {
+        if (method === 'operation.prepare.v1' && options.ambiguatePrepareRejections === true) {
+          throw new ControlClientError('control_call_failed', 'The rejected prepare reply was transport-ambiguous.');
+        }
+        throw error;
+      }
       if (method === 'operation.prepare.v1' && prepareCalls <= (options.dropPrepareReplies ?? 0)) {
         throw new ControlClientError('control_call_failed', 'The prepare reply was dropped.');
       }
@@ -424,7 +540,7 @@ async function launchThroughRoute(
     }),
     authorityFor: () => activeAuthority,
     registry,
-    materializePrepare: () => ({ kind: 'prepared', prepared: PREPARED }),
+    materializePrepare: () => ({ state: 'prepared', prepared: PREPARED }),
     terminalization: {
       terminalize: () => {
         throw new Error('integration publication unexpectedly requested coordinator terminalization');
@@ -491,6 +607,9 @@ async function launchThroughRoute(
     get activationCalls() {
       return activationCalls;
     },
+    get cancelCalls() {
+      return cancelCalls;
+    },
     guardianCalls,
     jobId,
     operationId,
@@ -505,7 +624,34 @@ async function launchThroughRoute(
       activeAuthority = authorityForClient(client);
       return activeAuthority;
     },
+    allowCancel: () => allowCancel?.(),
     runtimeStarted,
+  };
+}
+
+function activationDepsFor(set: ProxyUnderTest): ProviderProxyOperationActivationDeps {
+  return {
+    proxyClient: set.control,
+    guardianClient: set.control,
+    setIdentity: {
+      buildSetId: set.shared.buildSetId,
+      hostFingerprint: FINGERPRINT,
+      guardianInstanceId: set.shared.guardianInstanceId,
+      guardianPid: 5_000,
+      guardianProcessStartedAtSeconds: 700,
+      guardianControlEndpoint: '/tmp/guardian.sock',
+      proxyInstanceId: set.shared.proxyInstanceId,
+      proxyPid: set.identity.pid,
+      reaperInstanceId: set.shared.reaperInstanceId,
+      reaperPid: 5_500,
+      reaperProcessStartedAtSeconds: 750,
+      reaperControlEndpoint: '/tmp/reaper.sock',
+      containmentKind: 'detached-group',
+      proxyProcessStartedAtSeconds: set.identity.processStartedAtSeconds,
+      proxyProcessGroupId: set.identity.processGroupId,
+      canonicalEndpoint: set.endpoint,
+    },
+    mutationRpcTimeoutMs: 5_000,
   };
 }
 
@@ -782,36 +928,68 @@ describe('provider-proxy operation lifecycle', () => {
     ).rejects.toThrow(/different host fingerprint/u);
   });
 
-  it('fences a failed prepare so only a higher explicit attempt can retry', async () => {
-    const set = await startProxy({ failStageOnce: true });
+  it('returns one canonical refusal through prepare, inspect, and an exact same-attempt retry', async () => {
+    const refusal = {
+      state: 'permanent-refusal',
+      code: 'provider_creation_refused',
+      disposition: 'local-fallback',
+      reason: 'The provider root could not be created.',
+    } as const;
+    const set = await startProxy({ prepareRefusal: refusal });
     const operation = set.operationFor();
+    const deps = activationDepsFor(set);
+    const attempt = providerOperationPrepareAttempt(deps, operation, PREPARED);
 
-    await expect(
-      set.control.call(
-        'operation.prepare.v1',
-        { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
-        5_000,
-      ),
-    ).rejects.toThrow(/the guardian refused to stage this root/u);
+    const direct = await prepareProviderOperation(deps, attempt);
+    const inspected = await inspectProviderOperation(deps, operation, attempt.prepareAttemptKey);
+    const retry = await prepareProviderOperation(deps, attempt);
 
     const key = { jobId: operation.jobId, operationId: operation.operationId };
+    expect(JSON.stringify(direct)).toBe(JSON.stringify(refusal));
+    expect(JSON.stringify(inspected)).toBe(JSON.stringify(refusal));
+    expect(JSON.stringify(retry)).toBe(JSON.stringify(refusal));
+    expect(set.stageAttempts()).toBe(1);
     expect(set.proxy.ledger().get(key)).toBeNull();
     expect(set.released).toEqual([key]);
+    expect(set.releasedMemberships).toEqual([]);
+  });
 
-    await expect(
-      set.control.call(
-        'operation.prepare.v1',
-        { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
-        5_000,
-      ),
-    ).rejects.toThrow(/attempt is fenced/u);
-    await expect(
-      set.control.call(
-        'operation.prepare.v1',
-        { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 2, prepared: PREPARED },
-        5_000,
-      ),
-    ).resolves.toMatchObject({ state: 'pending-activation' });
+  it('persists a deterministic provider-creation refusal before cancellation and never rotates the attempt', async () => {
+    const set = await startProxy({ failProviderCreation: true });
+    const launched = await launchThroughRoute(set, {
+      ambiguatePrepareRejections: true,
+      blockCancel: true,
+      leavePlacementPending: true,
+    });
+
+    await vi.waitFor(() => {
+      const record = readProviderOperation(launched.db, {
+        jobId: launched.jobId,
+        operationId: launched.operationId,
+        proxyInstanceId: set.shared.proxyInstanceId,
+        buildSetId: set.shared.buildSetId,
+      });
+      expect(record).toMatchObject({
+        prepareAttemptNumber: 1,
+        phase: 'prestart-cleanup-pending',
+      });
+    });
+    expect(launched.prepareCalls).toBe(1);
+    expect(launched.cancelCalls).toBe(1);
+    expect(set.stageAttempts()).toBe(1);
+
+    launched.allowCancel();
+    await expect(launched.placementPromise).resolves.toMatchObject({ kind: 'local-authorized' });
+    await vi.waitFor(() =>
+      expect(
+        readProviderOperation(launched.db, {
+          jobId: launched.jobId,
+          operationId: launched.operationId,
+          proxyInstanceId: set.shared.proxyInstanceId,
+          buildSetId: set.shared.buildSetId,
+        }),
+      ).toBeNull(),
+    );
   });
 
   it('returns the original prepare result when its successful reply is retried', async () => {

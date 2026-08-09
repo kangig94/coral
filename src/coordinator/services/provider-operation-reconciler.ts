@@ -7,6 +7,10 @@ import type { ProviderOperationTerminalizationPort } from '../../jobs/provider-o
 import { isAbortStopCause, type ProviderStopCause } from '../../providers/contract.js';
 import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
+  providerOperationPreparePermanentRefusalSchema,
+  type ProviderOperationPreparePermanentRefusal,
+} from '../../provider-proxy/protocol.js';
+import {
   providerOperationCleanupIdentity,
   readProviderOperationJobLaunch,
 } from '../../jobs/provider-operation-state.js';
@@ -159,6 +163,11 @@ function sameAuthority(record: ProviderOperationRecord, authority: DurableProvid
 
 function retryDelayMs(retryCount: number): number {
   return Math.min(TIMER_MIN_MS * 2 ** Math.min(retryCount, 6), TIMER_MAX_MS);
+}
+
+function boundedPrepareRefusalReason(error: unknown): string {
+  const reason = providerOperationErrorReason(error).trim();
+  return (reason.length === 0 ? 'Provider operation prepare was refused.' : reason).slice(0, 4096);
 }
 
 export class ProviderOperationReconciler {
@@ -387,23 +396,54 @@ export class ProviderOperationReconciler {
       return this.#recoverPrepare(record, authority);
     }
 
+    let result: Awaited<ReturnType<DurableProviderProxyOperationAuthority['prepareOperation']>>;
     try {
-      const result = await this.#sendJournaledPrepare(record, publication.attempt, authority);
-      return this.#acceptPrepareResult(record, result);
+      result = await this.#sendJournaledPrepare(record, publication.attempt, authority);
     } catch (error: unknown) {
-      let retryError = error;
+      if (!providerOperationErrorIsAmbiguous(error)) {
+        return this.#transition(
+          record,
+          this.#prepareRefusalRecord(
+            record,
+            providerOperationPreparePermanentRefusalSchema.parse({
+              state: 'permanent-refusal',
+              code: 'proxy_prepare_refused',
+              disposition: 'local-fallback',
+              reason: boundedPrepareRefusalReason(error),
+            }),
+          ),
+        );
+      }
       try {
         const inspected = await authority.inspectOperation(record.operation, record.prepareAttemptKey);
         if (inspected.state === 'prepared') {
           return this.#acceptPreparedEvidence(record, inspected);
         }
-        if (inspected.state === 'released-never-started') return this.#recoverPrepare(record, authority);
-      } catch (inspectionError: unknown) {
-        retryError = new Error(
-          `${providerOperationErrorReason(error)}; inspect failed: ${providerOperationErrorReason(inspectionError)}`,
+        if (inspected.state === 'permanent-refusal') return this.#acceptPrepareResult(record, inspected);
+        if (inspected.state === 'absent' || inspected.state === 'released-never-started') {
+          return this.#recoverPrepare(record, authority, inspected);
+        }
+        await this.#recordRetry(
+          record,
+          new Error(
+            `${providerOperationErrorReason(error)}; proxy reports '${inspected.state}' for the ambiguous prepare.`,
+          ),
         );
+        return null;
+      } catch (inspectionError: unknown) {
+        await this.#recordRetry(
+          record,
+          new Error(
+            `${providerOperationErrorReason(error)}; inspect failed: ${providerOperationErrorReason(inspectionError)}`,
+          ),
+        );
+        return null;
       }
-      await this.#recordRetry(record, retryError);
+    }
+    try {
+      return this.#acceptPrepareResult(record, result);
+    } catch (error: unknown) {
+      await this.#recordRetry(record, error);
       return null;
     }
   }
@@ -436,6 +476,9 @@ export class ProviderOperationReconciler {
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
     result: Awaited<ReturnType<DurableProviderProxyOperationAuthority['prepareOperation']>>,
   ): ProviderOperationRecord | null {
+    if (result.state === 'permanent-refusal') {
+      return this.#transition(record, this.#prepareRefusalRecord(record, result));
+    }
     if (result.state === 'capacity') {
       const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
       if (deleted.kind === 'conflict') return deleted.current;
@@ -476,10 +519,16 @@ export class ProviderOperationReconciler {
   async #recoverPrepare(
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
     authority: DurableProviderProxyOperationAuthority,
+    knownInspection?: Extract<
+      Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>,
+      { state: 'absent' | 'released-never-started' }
+    >,
   ): Promise<ProviderOperationRecord | null> {
     try {
-      const inspected = await authority.inspectOperation(record.operation, record.prepareAttemptKey);
+      const inspected =
+        knownInspection ?? (await authority.inspectOperation(record.operation, record.prepareAttemptKey));
       if (inspected.state === 'prepared') return this.#acceptPreparedEvidence(record, inspected);
+      if (inspected.state === 'permanent-refusal') return this.#acceptPrepareResult(record, inspected);
       if (inspected.state === 'preparing') {
         await this.#recordRetry(record, new Error('Proxy still reports the journaled prepare attempt as preparing.'));
         return null;
@@ -504,16 +553,19 @@ export class ProviderOperationReconciler {
         throw new Error('Cancellation acknowledgement did not fence the journaled prepare attempt.');
       }
 
-      const materialized = await this.#deps.materializePrepare(record);
-      if (materialized.kind === 'permanent-refusal') {
-        return this.#transition(
-          record,
-          this.#prestartCleanupRecord(record, {
-            kind: 'terminal-failed',
-            code: materialized.code,
-            reason: materialized.reason,
-          }),
-        );
+      let materialized: ProviderOperationPrepareMaterializationResult;
+      try {
+        materialized = await this.#deps.materializePrepare(record);
+      } catch (error: unknown) {
+        materialized = providerOperationPreparePermanentRefusalSchema.parse({
+          state: 'permanent-refusal',
+          code: 'prepare_materialization_refused',
+          disposition: 'terminal-failure',
+          reason: boundedPrepareRefusalReason(error),
+        });
+      }
+      if (materialized.state === 'permanent-refusal') {
+        return this.#transition(record, this.#prepareRefusalRecord(record, materialized));
       }
       const nextAttemptNumber = record.prepareAttemptNumber + 1;
       if (!Number.isSafeInteger(nextAttemptNumber))
@@ -542,6 +594,20 @@ export class ProviderOperationReconciler {
         const result = await this.#sendJournaledPrepare(rotated, attempt, authority);
         return this.#acceptPrepareResult(rotated, result);
       } catch (error: unknown) {
+        if (!providerOperationErrorIsAmbiguous(error)) {
+          return this.#transition(
+            rotated,
+            this.#prepareRefusalRecord(
+              rotated,
+              providerOperationPreparePermanentRefusalSchema.parse({
+                state: 'permanent-refusal',
+                code: 'proxy_prepare_refused',
+                disposition: 'local-fallback',
+                reason: boundedPrepareRefusalReason(error),
+              }),
+            ),
+          );
+        }
         await this.#recordRetry(rotated, error);
         return null;
       }
@@ -549,6 +615,18 @@ export class ProviderOperationReconciler {
       await this.#recordRetry(record, error);
       return null;
     }
+  }
+
+  #prepareRefusalRecord(
+    record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
+    refusal: ProviderOperationPreparePermanentRefusal,
+  ): Extract<ProviderOperationRecord, { phase: 'prestart-cleanup-pending' }> {
+    return this.#prestartCleanupRecord(
+      record,
+      refusal.disposition === 'terminal-failure'
+        ? { kind: 'terminal-failed', code: refusal.code, reason: refusal.reason }
+        : { kind: 'local-authorized', reason: refusal.reason },
+    );
   }
 
   async #driveGuardianActivation(
@@ -769,6 +847,8 @@ export class ProviderOperationReconciler {
       if (record.afterRelease.kind !== 'local-authorized') {
         return this.#terminalize(record, record.afterRelease);
       }
+      // Finding F replaces this existing local completion with its durable local-recovery handoff. Until that
+      // owner exists, keep the established local-authorized behavior rather than inventing another deletion path.
       const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
       if (deleted.kind === 'conflict') return deleted.current;
       this.#complete(record.operation, {

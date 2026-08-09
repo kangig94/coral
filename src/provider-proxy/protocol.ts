@@ -672,6 +672,33 @@ export const proxyOperationPrepareCapacityResultSchema = z
   .object({ state: z.literal('capacity'), retryable: z.boolean(), reason: z.string() })
   .strict();
 
+export const providerOperationPrepareRefusalCodeSchema = z.enum([
+  'authorization_expired',
+  'prepare_materialization_refused',
+  'provider_reconstruction_refused',
+  'provider_creation_refused',
+  'proxy_prepare_refused',
+]);
+
+export const providerOperationPreparePermanentRefusalSchema = z
+  .object({
+    state: z.literal('permanent-refusal'),
+    code: providerOperationPrepareRefusalCodeSchema,
+    disposition: z.enum(['terminal-failure', 'local-fallback']),
+    reason: z.string().min(1).max(4096),
+  })
+  .strict();
+
+export type ProviderOperationPreparePermanentRefusal = Readonly<
+  z.output<typeof providerOperationPreparePermanentRefusalSchema>
+>;
+
+export const proxyOperationPrepareResultSchema = z.discriminatedUnion('state', [
+  proxyOperationPreparePendingResultSchema,
+  proxyOperationPrepareCapacityResultSchema,
+  providerOperationPreparePermanentRefusalSchema,
+]);
+
 /** `operation.renew-activation.v1`'s result. */
 export const proxyOperationRenewResultSchema = z
   .object({ state: z.literal('pending-activation'), leaseExpiresInMs: z.number() })
@@ -753,6 +780,7 @@ const proxyOperationInspectPreExecutionBaseSchema = z.object({
 
 export const proxyOperationInspectResultSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('absent') }).strict(),
+  providerOperationPreparePermanentRefusalSchema,
   proxyOperationInspectPreExecutionBaseSchema.extend({ state: z.literal('preparing') }).strict(),
   proxyOperationInspectPreExecutionBaseSchema
     .extend({

@@ -329,7 +329,10 @@ async function startCoordinatorActivationSet() {
     containment: createProxyGuardianContainment({
       identity: set.proxyIdentity,
       guardianChannel: set.guardianChannel,
-      stageProviderRoot: () => ({ result: Promise.resolve(ROOT), abortAndRelease: async () => {} }),
+      stageProviderRoot: () => ({
+        result: Promise.resolve({ state: 'staged', providerRoot: ROOT }),
+        abortAndRelease: async () => {},
+      }),
     }),
   });
   await proxy.listen();
@@ -497,7 +500,10 @@ describe('provider proxy activation against a real guardian', () => {
       identity: proxyIdentity,
       guardianChannel,
       // The one dependency replaced: a canned root instead of spawning a real provider process.
-      stageProviderRoot: () => ({ result: Promise.resolve(ROOT), abortAndRelease: async () => {} }),
+      stageProviderRoot: () => ({
+        result: Promise.resolve({ state: 'staged', providerRoot: ROOT }),
+        abortAndRelease: async () => {},
+      }),
     });
 
     const stage = containment.stageProviderRoot(key, {
@@ -505,6 +511,7 @@ describe('provider proxy activation against a real guardian', () => {
       prepared: reserved.entry.prepared,
     });
     const staged = await stage.result;
+    if (staged.state !== 'staged') throw new Error('expected staged containment');
     expect(staged.providerRoot).toEqual(ROOT);
 
     // The coordinator's own reservation: exactly the value `operation.prepare.v1` would have echoed back from

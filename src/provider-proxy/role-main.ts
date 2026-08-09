@@ -715,7 +715,9 @@ export function createProxyGuardianContainment(
       let guardianMayHoldMembership = false;
       let guardianReleased = false;
       let recognisedReceipt: JointContainmentReceipt | null = null;
-      const result = semanticStage.result.then(async (root) => {
+      const result = semanticStage.result.then(async (staged) => {
+        if (staged.state === 'permanent-refusal') return staged;
+        const root = staged.providerRoot;
         const params = guardianRegisterProviderRootParamsSchema.parse({
           proxy: deps.identity,
           operation: {
@@ -736,7 +738,11 @@ export function createProxyGuardianContainment(
         );
         const parsed = registerProviderRootResultSchema.parse(response);
         recognisedReceipt = parsed.jointContainmentReceipt;
-        return { providerRoot: parsed.providerRoot, receipt: parsed.jointContainmentReceipt };
+        return {
+          state: 'staged' as const,
+          providerRoot: parsed.providerRoot,
+          receipt: parsed.jointContainmentReceipt,
+        };
       });
 
       const handle: OperationStageHandle = Object.freeze({

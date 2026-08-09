@@ -12,7 +12,7 @@ import type { ProviderOperationPrepareSource } from '#src/store/provider-operati
 import { providerOperationRecord } from '../../store/provider-operation-fixtures.js';
 
 describe('materializeProviderOperationPrepare', () => {
-  it('defines strict prepared and permanent-refusal materialization outcomes before cutover', () => {
+  it('derives its strict materialization outcomes from the complete canonical refusal shape', () => {
     const prepared = {
       version: 1,
       provider: 'codex',
@@ -31,15 +31,31 @@ describe('materializeProviderOperationPrepare', () => {
       platform: 'linux',
     };
     const refusal = {
-      kind: 'permanent-refusal',
+      state: 'permanent-refusal',
       code: 'authorization_expired',
+      disposition: 'terminal-failure',
       reason: 'Provider operation child authorization has expired.',
     };
 
-    expect(providerOperationPrepareMaterializationResultSchema.safeParse({ kind: 'prepared', prepared }).success).toBe(
+    expect(providerOperationPrepareMaterializationResultSchema.safeParse({ state: 'prepared', prepared }).success).toBe(
       true,
     );
     expect(providerOperationPrepareMaterializationResultSchema.safeParse(refusal).success).toBe(true);
+    for (const code of [
+      'authorization_expired',
+      'prepare_materialization_refused',
+      'provider_reconstruction_refused',
+      'provider_creation_refused',
+      'proxy_prepare_refused',
+    ] as const) {
+      expect(providerOperationPrepareMaterializationResultSchema.safeParse({ ...refusal, code }).success).toBe(true);
+    }
+    expect(
+      providerOperationPrepareMaterializationResultSchema.safeParse({
+        ...refusal,
+        disposition: 'local-fallback',
+      }).success,
+    ).toBe(true);
     expect(
       providerOperationPrepareMaterializationResultSchema.safeParse({ ...refusal, unexpected: true }).success,
     ).toBe(false);
@@ -48,10 +64,20 @@ describe('materializeProviderOperationPrepare', () => {
     ).toBe(false);
     expect(
       providerOperationPrepareMaterializationResultSchema.safeParse({
-        kind: 'permanent-refusal',
+        state: 'permanent-refusal',
         code: 'authorization_expired',
+        disposition: 'terminal-failure',
       }).success,
     ).toBe(false);
+    expect(providerOperationPrepareMaterializationResultSchema.safeParse({ ...refusal, reason: '' }).success).toBe(
+      false,
+    );
+    expect(
+      providerOperationPrepareMaterializationResultSchema.safeParse({ ...refusal, reason: 'x'.repeat(4097) }).success,
+    ).toBe(false);
+    expect(providerOperationPrepareMaterializationResultSchema.safeParse({ kind: 'prepared', prepared }).success).toBe(
+      false,
+    );
   });
 
   it('refuses an expired child authorization before reminting a bearer handle', () => {
@@ -106,8 +132,9 @@ describe('materializeProviderOperationPrepare', () => {
         source,
       ),
     ).toEqual({
-      kind: 'permanent-refusal',
+      state: 'permanent-refusal',
       code: 'authorization_expired',
+      disposition: 'terminal-failure',
       reason: 'Provider operation child authorization has expired.',
     });
     expect(registerPersistedAuthorization).not.toHaveBeenCalled();
@@ -189,7 +216,7 @@ describe('materializeProviderOperationPrepare', () => {
     );
 
     expect(prepared).toMatchObject({
-      kind: 'prepared',
+      state: 'prepared',
       prepared: {
         provider: 'codex',
         binding,

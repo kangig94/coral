@@ -29,6 +29,7 @@ import {
   type JointActivationReceipt,
   type JointContainmentReceipt,
   type OperationIdentity,
+  type ProviderOperationPreparePermanentRefusal,
   type ProviderEventResult,
   type ProxyOperationActivationOutcome,
   type ProxyOperationReleaseReceipt,
@@ -55,8 +56,16 @@ export interface SemanticOperationHost {
   stop(input: Readonly<{ key: ProviderOperationKey; cause: ProviderStopCause }>): Promise<void> | void;
 }
 
+export type OperationStageResult =
+  | Readonly<{
+      state: 'staged';
+      providerRoot: ProviderRootIdentity;
+      receipt: JointContainmentReceipt;
+    }>
+  | ProviderOperationPreparePermanentRefusal;
+
 export interface OperationStageHandle {
-  readonly result: Promise<Readonly<{ providerRoot: ProviderRootIdentity; receipt: JointContainmentReceipt }>>;
+  readonly result: Promise<OperationStageResult>;
   confirmActivation(
     input: Readonly<{
       jointContainmentReceipt: JointContainmentReceipt;
@@ -81,6 +90,7 @@ type SupervisedOperation = {
   fenced: boolean;
   tail: Promise<void>;
   stage: OperationStageHandle | null;
+  prepareRefusal: ProviderOperationPreparePermanentRefusal | null;
   start: SemanticOperationStartHandle | null;
   releaseIntent: ReleaseIntent | null;
   releaseReceipt: ProxyOperationReleaseReceipt | null;
@@ -172,6 +182,14 @@ export class OperationSupervisor {
   ): Promise<unknown> {
     const record = this.#registerAttempt(operation, input.prepareAttemptNumber, input.prepareAttemptKey);
     return this.#enqueue(record, async () => {
+      if (
+        record.prepareRefusal !== null &&
+        record.prepareAttemptNumber === input.prepareAttemptNumber &&
+        record.prepareAttemptKey === input.prepareAttemptKey &&
+        record.releaseReceipt?.state === 'released-never-started'
+      ) {
+        return record.prepareRefusal;
+      }
       this.#assertAttemptOpen(record, input.prepareAttemptNumber, input.prepareAttemptKey);
       let reserved: PrepareResult<ProxyPreparedAppServerOperation>;
       try {
@@ -215,6 +233,15 @@ export class OperationSupervisor {
 
       try {
         const staged = await record.stage.result;
+        if (staged.state === 'permanent-refusal') {
+          record.prepareRefusal = staged;
+          this.#beginRelease(record, { kind: 'never-started' });
+          const released = await this.#driveRelease(record, true);
+          if (released?.state !== 'released-never-started') {
+            throw new ProxyControlProtocolError('invalid_state', 'Prepare refusal did not release its containment.');
+          }
+          return staged;
+        }
         const current = this.#ledger.get(record.key);
         if (record.fenced || current?.state === 'releasing') {
           await this.#driveRelease(record, false);
@@ -474,10 +501,18 @@ export class OperationSupervisor {
     if (record.prepareAttemptKey !== prepareAttemptKey) {
       throw new ProxyControlProtocolError('invalid_state', 'Inspect does not match the prepared operation.');
     }
+    if (record.prepareRefusal !== null && record.releaseReceipt?.state === 'released-never-started') {
+      return proxyOperationInspectResultSchema.parse(record.prepareRefusal);
+    }
     if (record.releaseReceipt !== null) return proxyOperationInspectResultSchema.parse(record.releaseReceipt);
     if (record.releaseIntent !== null) {
       const receipt = await this.#driveRelease(record, false);
-      if (receipt !== null) return proxyOperationInspectResultSchema.parse(receipt);
+      if (receipt !== null) {
+        if (record.prepareRefusal !== null && receipt.state === 'released-never-started') {
+          return proxyOperationInspectResultSchema.parse(record.prepareRefusal);
+        }
+        return proxyOperationInspectResultSchema.parse(receipt);
+      }
     }
 
     const entry = this.#ledger.get(record.key);
@@ -703,6 +738,7 @@ export class OperationSupervisor {
     current.fenced = false;
     current.stage = null;
     current.start = null;
+    current.prepareRefusal = null;
     current.releaseReceipt = null;
     current.pendingCompletion = null;
     return current;
@@ -744,6 +780,7 @@ export class OperationSupervisor {
       fenced: false,
       tail: Promise.resolve(),
       stage: null,
+      prepareRefusal: null,
       start: null,
       releaseIntent: null,
       releaseReceipt: null,

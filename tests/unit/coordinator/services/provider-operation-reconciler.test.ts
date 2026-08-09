@@ -102,7 +102,7 @@ const PREPARED = {
   protectedEnv: {},
   platform: 'linux',
 } as const;
-const MATERIALIZED_PREPARED = { kind: 'prepared', prepared: PREPARED } as const;
+const MATERIALIZED_PREPARED = { state: 'prepared', prepared: PREPARED } as const;
 
 function preparedFor(provider: string) {
   return {
@@ -144,6 +144,7 @@ async function activationAckFromRealProxy(provider: string, operation: ProviderO
     buildSetId: operation.buildSetId,
     stageProviderRoot: () => ({
       result: Promise.resolve({
+        state: 'staged',
         providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
         receipt: jointContainmentReceipt,
       }),
@@ -346,7 +347,7 @@ function createHarness(
     getProgressStore: () => progressStore,
     authorityFor: () => authority,
     registry,
-    materializePrepare: overrides.materializePrepare ?? (() => ({ kind: 'prepared', prepared })),
+    materializePrepare: overrides.materializePrepare ?? (() => ({ state: 'prepared', prepared })),
     terminalization,
     backendNamespace: 'tests',
     time: {
@@ -1048,8 +1049,9 @@ describe('ProviderOperationReconciler publication', () => {
       inspectOperation: async () => ({ state: 'absent' }),
       cancelOperation,
       materializePrepare: async () => ({
-        kind: 'permanent-refusal',
+        state: 'permanent-refusal',
         code: 'authorization_expired',
+        disposition: 'terminal-failure',
         reason: 'Provider operation child authorization has expired.',
       }),
     });
@@ -1287,21 +1289,32 @@ async function callAcrossFaultBoundary<T>(
   observe: (point: FaultBoundary) => void,
   applyRemoteEffect: () => void,
   reply: () => T,
+  onFault: () => void = () => {},
 ): Promise<T> {
   const { boundary } = scenario;
   observe('before-send');
-  if (boundary === 'before-send') throw injectedTransportError(boundary);
+  if (boundary === 'before-send') {
+    onFault();
+    throw injectedTransportError(boundary);
+  }
   observe('after-send');
   if (boundary === 'after-send') {
     if (scenario.afterSendEffect === 'applied') applyRemoteEffect();
+    onFault();
     throw injectedTransportError(boundary);
   }
   applyRemoteEffect();
   observe('before-reply');
-  if (boundary === 'before-reply') throw injectedTransportError(boundary);
+  if (boundary === 'before-reply') {
+    onFault();
+    throw injectedTransportError(boundary);
+  }
   const result = reply();
   observe('after-reply');
-  if (boundary === 'after-reply') throw injectedTransportError(boundary);
+  if (boundary === 'after-reply') {
+    onFault();
+    throw injectedTransportError(boundary);
+  }
   return result;
 }
 
@@ -1398,6 +1411,8 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
     let faulted = false;
     let prepareCalls = 0;
     let prepareEffects = 0;
+    let preparedAtFault = false;
+    let prepareEffectsAtFault = 0;
     const applyPrepare = (): void => {
       prepareEffects += 1;
       state.prepared = true;
@@ -1408,13 +1423,22 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
         prepareCalls += 1;
         if (!faulted && !boundary.includes('sqlite')) {
           faulted = true;
-          return callAcrossFaultBoundary(scenario, observe, applyPrepare, () => ({
-            state: 'pending-activation' as const,
-            reservation: asReservation('00000000-0000-4000-8000-000000000007'),
-            leaseExpiresInMs: 15_000,
-            providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
-            jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
-          }));
+          return callAcrossFaultBoundary(
+            scenario,
+            observe,
+            applyPrepare,
+            () => ({
+              state: 'pending-activation' as const,
+              reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+              leaseExpiresInMs: 15_000,
+              providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+              jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+            }),
+            () => {
+              preparedAtFault = state.prepared;
+              prepareEffectsAtFault = prepareEffects;
+            },
+          );
         }
         if (!state.prepared) applyPrepare();
         return {
@@ -1476,8 +1500,10 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
     restoreCommitFault();
     if (boundary === 'after-send') {
       const effectWasApplied = scenario.afterSendEffect === 'applied';
-      expect(state.prepared, `prepare/${fault}: remote state did not distinguish the lost send`).toBe(effectWasApplied);
-      expect(prepareEffects, `prepare/${fault}: unexpected prepare effect before recovery`).toBe(
+      expect(preparedAtFault, `prepare/${fault}: remote state did not distinguish the lost send`).toBe(
+        effectWasApplied,
+      );
+      expect(prepareEffectsAtFault, `prepare/${fault}: unexpected prepare effect before recovery`).toBe(
         effectWasApplied ? 1 : 0,
       );
     }

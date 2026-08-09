@@ -726,8 +726,13 @@ describe('semantic-operation runtime: replay admission', () => {
           key.operationId === target.operationId
             ? semantic
                 .ensureProviderRoot(key, reserved.prepared)
-                .then((providerRoot) => ({ providerRoot, receipt: containmentReceipt }))
+                .then((staged) =>
+                  staged.state === 'permanent-refusal'
+                    ? staged
+                    : { state: 'staged' as const, providerRoot: staged.providerRoot, receipt: containmentReceipt },
+                )
             : Promise.resolve({
+                state: 'staged' as const,
                 providerRoot: { pid: 4242, processStartedAtSeconds: 1_700_000_000 },
                 receipt: containmentReceipt,
               }),
@@ -814,10 +819,10 @@ describe('semantic-operation runtime: replay admission', () => {
   );
 });
 
-// --- rebuildBoundProvider failure branches ------------------------------------------------------------------
+// --- prepare refusal classification -------------------------------------------------------------------------
 
-describe('semantic-operation runtime: rebuildBoundProvider failure branches', () => {
-  it('rejects ensureProviderRoot when the binding cannot be rehydrated', async () => {
+describe('semantic-operation runtime: prepare refusal classification', () => {
+  it('returns a reconstruction refusal when the binding cannot be rehydrated', async () => {
     const { proxy } = createTestProxy();
     providerRegistryDouble.rehydrateBinding.mockReturnValue({
       ok: false,
@@ -826,10 +831,15 @@ describe('semantic-operation runtime: rebuildBoundProvider failure branches', ()
 
     const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
 
-    await expect(host.ensureProviderRoot(testKey(), preparedFixture())).rejects.toThrow(/unrehydratable binding/u);
+    await expect(host.ensureProviderRoot(testKey(), preparedFixture())).resolves.toEqual({
+      state: 'permanent-refusal',
+      code: 'provider_reconstruction_refused',
+      disposition: 'local-fallback',
+      reason: "Prepared operation named provider 'claude' with an unrehydratable binding (invalid-persisted-binding).",
+    });
   });
 
-  it('rejects ensureProviderRoot when persisted continuity is not a record', async () => {
+  it('returns a reconstruction refusal when persisted continuity is not a record', async () => {
     const { proxy } = createTestProxy();
     providerRegistryDouble.rehydrateBinding.mockReturnValue({
       ok: true,
@@ -843,13 +853,15 @@ describe('semantic-operation runtime: rebuildBoundProvider failure branches', ()
     const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
     const prepared = preparedFixture({ persistedContinuity: 'not-a-record' });
 
-    await expect(host.ensureProviderRoot(testKey(), prepared)).rejects.toThrow(TypeError);
-    await expect(host.ensureProviderRoot(testKey('op-2'), prepared)).rejects.toThrow(
-      /non-record persisted continuity/u,
-    );
+    await expect(host.ensureProviderRoot(testKey(), prepared)).resolves.toEqual({
+      state: 'permanent-refusal',
+      code: 'provider_reconstruction_refused',
+      disposition: 'local-fallback',
+      reason: "Prepared operation for provider 'claude' carried non-record persisted continuity.",
+    });
   });
 
-  it('rejects ensureProviderRoot when the rehydrated binding names a different provider than requested', async () => {
+  it('returns a reconstruction refusal when the rehydrated binding names a different provider', async () => {
     const { proxy } = createTestProxy();
     providerRegistryDouble.rehydrateBinding.mockReturnValue({
       ok: true,
@@ -863,12 +875,15 @@ describe('semantic-operation runtime: rebuildBoundProvider failure branches', ()
 
     const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
 
-    await expect(host.ensureProviderRoot(testKey(), preparedFixture({ provider: 'claude' }))).rejects.toThrow(
-      /rehydrated to 'codex'/u,
-    );
+    await expect(host.ensureProviderRoot(testKey(), preparedFixture({ provider: 'claude' }))).resolves.toEqual({
+      state: 'permanent-refusal',
+      code: 'provider_reconstruction_refused',
+      disposition: 'local-fallback',
+      reason: "Prepared operation named provider 'claude' but its binding rehydrated to 'codex'.",
+    });
   });
 
-  it('rejects ensureProviderRoot when the rehydrated binding has no app-server capability', async () => {
+  it('returns a reconstruction refusal when the binding has no app-server capability', async () => {
     const { proxy } = createTestProxy();
     const withoutAppServer = fakeBoundProvider({
       execute: unreachable('execute') as unknown as (
@@ -882,7 +897,36 @@ describe('semantic-operation runtime: rebuildBoundProvider failure branches', ()
 
     const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
 
-    await expect(host.ensureProviderRoot(testKey(), preparedFixture())).rejects.toThrow(/no app-server capability/u);
+    await expect(host.ensureProviderRoot(testKey(), preparedFixture())).resolves.toEqual({
+      state: 'permanent-refusal',
+      code: 'provider_reconstruction_refused',
+      disposition: 'local-fallback',
+      reason: "Provider 'claude' has no app-server capability; this proxy runs app-server operations only.",
+    });
+  });
+
+  it('returns a provider-creation refusal when openReplacement rejects before exposing a root', async () => {
+    const { proxy } = createTestProxy();
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        execute: unreachable('execute') as unknown as (
+          runtime: BoundProviderAppServerExecutionRuntime,
+        ) => AsyncIterable<ProviderEventBody>,
+        openReplacement: async () => {
+          throw new Error('provider creation failed');
+        },
+      }),
+    });
+
+    const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
+
+    await expect(host.ensureProviderRoot(testKey(), preparedFixture())).resolves.toEqual({
+      state: 'permanent-refusal',
+      code: 'provider_creation_refused',
+      disposition: 'local-fallback',
+      reason: 'provider creation failed',
+    });
   });
 });
 

@@ -26,14 +26,18 @@ import type {
   BoundProviderExecutionPreparationInput,
   BoundProviderHostPreparationInput,
 } from '../providers/bound-provider-contract.js';
-import type { ProviderOperationKey } from './ledger.js';
+import type { ProviderOperationKey, ProviderRootIdentity } from './ledger.js';
 import type {
   SemanticOperationHost,
   SemanticOperationStartHandle,
   SemanticOperationStartResult,
 } from './operation-supervisor.js';
 import type { Proxy } from './proxy.js';
-import type { ProxyPreparedAppServerOperation } from './protocol.js';
+import {
+  providerOperationPreparePermanentRefusalSchema,
+  type ProviderOperationPreparePermanentRefusal,
+  type ProxyPreparedAppServerOperation,
+} from './protocol.js';
 
 /**
  * Reconstructs and runs the live Claude/Codex kernel inside the proxy process.
@@ -416,30 +420,59 @@ function derivePersistedContinuity(prepared: ProxyPreparedAppServerOperation): D
  * call is cheap (pure registration, no I/O) and keeps this function free of shared mutable module state; the
  * host authority it connects is the one live thing every call shares.
  */
+type BoundProviderReconstruction =
+  | Readonly<{ state: 'reconstructed'; bound: BoundProvider }>
+  | ProviderOperationPreparePermanentRefusal;
+
+function prepareRefusal(
+  code: ProviderOperationPreparePermanentRefusal['code'],
+  disposition: ProviderOperationPreparePermanentRefusal['disposition'],
+  reason: string,
+): ProviderOperationPreparePermanentRefusal {
+  const diagnostic = reason.trim();
+  return providerOperationPreparePermanentRefusalSchema.parse({
+    state: 'permanent-refusal',
+    code,
+    disposition,
+    reason: (diagnostic.length === 0 ? 'Provider operation prepare was refused.' : diagnostic).slice(0, 4096),
+  });
+}
+
+function boundedRefusalReason(error: unknown, fallback: string): string {
+  const reason = errorMessage(error).trim();
+  return (reason.length === 0 ? fallback : reason).slice(0, 4096);
+}
+
 function rebuildBoundProvider(
   prepared: ProxyPreparedAppServerOperation,
   authority: AppServerHostAuthority,
-): BoundProvider {
+): BoundProviderReconstruction {
   const registry = createBuiltInProviderRegistry();
   registry.connectAppServerHost(authority);
   const rehydrated = registry.rehydrateBinding(prepared.binding);
   if (!rehydrated.ok) {
-    throw new Error(
+    return prepareRefusal(
+      'provider_reconstruction_refused',
+      'local-fallback',
       `Prepared operation named provider '${prepared.provider}' with an unrehydratable binding (${rehydrated.failure.reason}).`,
     );
   }
   const bound = rehydrated.value;
   if (bound.name !== prepared.provider) {
-    throw new Error(
+    return prepareRefusal(
+      'provider_reconstruction_refused',
+      'local-fallback',
       `Prepared operation named provider '${prepared.provider}' but its binding rehydrated to '${bound.name}'.`,
     );
   }
   if (bound.appServer === undefined) {
-    throw new Error(
+    return prepareRefusal(
+      'provider_reconstruction_refused',
+      'local-fallback',
       `Provider '${bound.name}' has no app-server capability; this proxy runs app-server operations only.`,
     );
   }
-  return bound;
+  return { state: 'reconstructed', bound };
 }
 
 function stagingInput(runtime: Runtime, prepared: ProxyPreparedAppServerOperation): BoundProviderHostPreparationInput {
@@ -548,8 +581,12 @@ type StagedOperation = {
   done: Promise<void> | null;
 };
 
+export type SemanticOperationStageResult =
+  | Readonly<{ state: 'staged'; providerRoot: ProviderRootIdentity }>
+  | ProviderOperationPreparePermanentRefusal;
+
 export interface SemanticOperationStageHandle {
-  readonly result: Promise<Readonly<{ pid: number; processStartedAtSeconds: number }>>;
+  readonly result: Promise<SemanticOperationStageResult>;
   abortAndRelease(): Promise<void>;
 }
 
@@ -576,7 +613,7 @@ export interface SemanticOperationRuntime {
   ensureProviderRoot(
     key: ProviderOperationKey,
     prepared: ProxyPreparedAppServerOperation,
-  ): Promise<Readonly<{ pid: number; processStartedAtSeconds: number }>>;
+  ): Promise<SemanticOperationStageResult>;
   /**
    * Stops every kernel this runtime is running and releases every staged-but-never-started provider root —
    * this runtime's own half of a graceful proxy shutdown (`role-main.ts`'s SIGTERM handler). Nothing else
@@ -866,26 +903,56 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     };
     staged.set(keyStr, entry);
     const result = Promise.resolve().then(async () => {
-      const bound = rebuildBoundProvider(prepared, hostAuthority);
+      const rebuilt = rebuildBoundProvider(prepared, hostAuthority);
+      if (rebuilt.state === 'permanent-refusal') return rebuilt;
+      const bound = rebuilt.bound;
       entry.bound = bound;
       const appServer = bound.appServer;
-      if (appServer === undefined) throw new Error(`Provider '${bound.name}' has no app-server capability.`);
-      const openedStaging = await appServer.openReplacement(stagingInput(runtime, prepared), {
-        jobId: key.jobId,
-        signal: abortController.signal,
-      });
+      if (appServer === undefined) {
+        return prepareRefusal(
+          'provider_reconstruction_refused',
+          'local-fallback',
+          `Provider '${bound.name}' has no app-server capability; this proxy runs app-server operations only.`,
+        );
+      }
+      let input: BoundProviderHostPreparationInput;
+      try {
+        input = stagingInput(runtime, prepared);
+      } catch (error: unknown) {
+        return prepareRefusal(
+          'provider_reconstruction_refused',
+          'local-fallback',
+          boundedRefusalReason(error, 'The provider operation could not be reconstructed.'),
+        );
+      }
+      let openedStaging: Awaited<ReturnType<typeof appServer.openReplacement>>;
+      try {
+        openedStaging = await appServer.openReplacement(input, {
+          jobId: key.jobId,
+          signal: abortController.signal,
+        });
+      } catch (error: unknown) {
+        if (abortController.signal.aborted) throw error;
+        return prepareRefusal(
+          'provider_creation_refused',
+          'local-fallback',
+          boundedRefusalReason(error, 'The provider root could not be created.'),
+        );
+      }
       entry.staged = openedStaging;
       trackHostRef(entry, openedStaging.hostRef);
       abortController.signal.throwIfAborted();
       const root = hostAuthority.rootIdentity(openedStaging.hostRef);
       if (root === null) {
         closeStaged(entry);
-        throw new Error(
+        return prepareRefusal(
+          'provider_creation_refused',
+          'local-fallback',
           `Staged provider root for ${key.jobId}/${key.operationId} vanished before it could be reported.`,
         );
       }
       entry.root = root;
-      return root;
+      return { state: 'staged' as const, providerRoot: root };
     });
     const abortAndRelease = (): Promise<void> =>
       cancelAndAwait(entry, { kind: 'release', cause: new Error('Provider operation stage was released.') });
