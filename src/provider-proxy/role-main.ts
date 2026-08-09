@@ -50,11 +50,8 @@ import {
 } from './protocol.js';
 import { createProxy, type Proxy, type ProxyOptions } from './proxy.js';
 import { createReaper, type Reaper } from './reaper.js';
-import {
-  createProxyAppServerHostAuthority,
-  createSemanticOperationRuntime,
-  type SemanticOperationStageHandle,
-} from './semantic-operation.js';
+import { createProxyAppServerHostAuthority } from './provider-root-authority.js';
+import { createSemanticOperationRuntime, type SemanticOperationStageHandle } from './semantic-operation-runner.js';
 import {
   connectRoleControlWithRetry,
   runtimeControlTimer,

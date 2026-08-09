@@ -11,6 +11,7 @@ import {
 } from './control-endpoint.js';
 import {
   createGrantRegistry,
+  proxyHandoffRedeemFieldsSchema,
   successionOperationRegisterParamsSchema,
   successionOperationRegisterResultSchema,
   type GrantBinding,
@@ -354,12 +355,12 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           });
           return {
             holder: request.successor.instanceId,
-            fields: {
+            fields: proxyHandoffRedeemFieldsSchema.parse({
               state: 'redeemed-provisional',
               redemptionReceipt: redemption.redemptionReceipt,
               proxy: identity,
               operations: redemption.grant.operations,
-            },
+            }),
           };
         },
       },

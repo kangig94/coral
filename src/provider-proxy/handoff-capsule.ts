@@ -13,8 +13,12 @@ import {
   coordinatorIdentitySchema,
   flavorSchema,
   generationSchema,
+  guardianIdentitySchema,
   hostFingerprintSchema,
   operationIdentitySchema,
+  proxyIdentitySchema,
+  reaperIdentitySchema,
+  recordedContainmentSchema,
   type OperationIdentity,
 } from './protocol.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from './ledger.js';
@@ -129,6 +133,37 @@ export const successionOperationRegisterParamsSchema = z.object({ operation: ope
 
 export const successionOperationRegisterResultSchema = z
   .object({ state: z.literal('succession-registered'), operation: operationIdentitySchema })
+  .strict();
+
+const redeemedOperationSetSchema = z.array(operationIdentitySchema).max(MAX_PROXY_OPERATION_LEDGERS);
+
+export const guardianHandoffRedeemFieldsSchema = z
+  .object({
+    state: z.literal('redeemed-provisional'),
+    redemptionReceipt: z.string().min(1),
+    operations: redeemedOperationSetSchema,
+    guardian: guardianIdentitySchema,
+    reaper: reaperIdentitySchema,
+    containment: recordedContainmentSchema,
+  })
+  .strict();
+
+export const reaperHandoffRotateFieldsSchema = z
+  .object({
+    state: z.literal('successor-rotated'),
+    reaperRotationReceipt: z.string().min(1),
+    operations: redeemedOperationSetSchema,
+    reaper: reaperIdentitySchema,
+  })
+  .strict();
+
+export const proxyHandoffRedeemFieldsSchema = z
+  .object({
+    state: z.literal('redeemed-provisional'),
+    redemptionReceipt: z.string().min(1),
+    proxy: proxyIdentitySchema,
+    operations: redeemedOperationSetSchema,
+  })
   .strict();
 
 /** `guardian.handoff-redeem.v1`'s request. The guardian is the sole linearization point for the plaintext

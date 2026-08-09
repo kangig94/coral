@@ -20,6 +20,7 @@ import {
 import {
   createGrantRegistry,
   grantBindingFromCapsule,
+  guardianHandoffRedeemFieldsSchema,
   guardianReaperHandoffInstallParamsSchema,
   guardianHandoffRedeemParamsSchema as handoffRedeemParamsSchema,
   reaperRecordRedemptionParamsSchema,
@@ -385,11 +386,14 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           reaperRecordRedemptionResultSchema.parse(reaperResult);
           return {
             holder: request.successor.instanceId,
-            fields: {
+            fields: guardianHandoffRedeemFieldsSchema.parse({
               state: 'redeemed-provisional',
               redemptionReceipt: redemption.redemptionReceipt,
               operations: redemption.grant.operations,
-            },
+              guardian: identity,
+              reaper: reaperSelfIdentity,
+              containment: recordedContainment,
+            }),
           };
         },
       },

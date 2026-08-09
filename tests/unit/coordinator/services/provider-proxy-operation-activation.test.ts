@@ -15,8 +15,8 @@ import {
   settleProviderOperation,
   type OperationControlClient,
   type ProviderProxyOperationActivationDeps,
-  type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-operation-activation.js';
+import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set-identity.js';
 
 const SET_IDENTITY: ProviderProxySetIdentity = {
   buildSetId: randomUUID(),
@@ -91,7 +91,13 @@ function scriptedClient(answers: Record<string, unknown>): {
 }
 
 function deps(proxy: OperationControlClient, guardian: OperationControlClient): ProviderProxyOperationActivationDeps {
-  return { proxyClient: proxy, guardianClient: guardian, setIdentity: SET_IDENTITY, mutationRpcTimeoutMs: 5_000 };
+  return {
+    proxyClient: proxy,
+    guardianClient: guardian,
+    setIdentity: SET_IDENTITY,
+    mutationRpcTimeoutMs: 5_000,
+    faultAuthority: () => {},
+  };
 }
 
 describe('provider proxy operation mutations', () => {
@@ -170,6 +176,59 @@ describe('provider proxy operation mutations', () => {
         jointActivationReceipt: 'joint-activation-1',
       },
     });
+  });
+
+  it('faults authority when activation returns a schema-invalid acknowledgement after semantic start', async () => {
+    const proxy = scriptedClient({
+      'operation.activate.v1': { state: 'executing' },
+    });
+    const guardian = scriptedClient({});
+    const faults: unknown[] = [];
+    const activationDeps: ProviderProxyOperationActivationDeps = {
+      ...deps(proxy.client, guardian.client),
+      faultAuthority: (fault) => faults.push(fault),
+    };
+
+    await expect(
+      activateProviderOperation(activationDeps, OPERATION, {
+        reservation: randomUUID(),
+        jointContainmentReceipt: 'joint-1',
+        jointActivationReceipt: 'joint-activation-1',
+      }),
+    ).rejects.toThrow();
+
+    expect(faults).toEqual([
+      expect.objectContaining({
+        policy: expect.objectContaining({ method: 'operation.activate.v1', phase: 'proxy-activation-pending' }),
+      }),
+    ]);
+  });
+
+  it('faults protocol_violation but preserves the audited pre-effect activation refusals', async () => {
+    const failure = (protocolCode: string): Error & { code: string; protocolCode: string } =>
+      Object.assign(new Error(protocolCode), { code: 'control_call_failed', protocolCode });
+    const faults: unknown[] = [];
+    const activate = async (protocolCode: string): Promise<void> => {
+      const proxy: OperationControlClient = {
+        call: () => Promise.reject(failure(protocolCode)),
+      };
+      const activationDeps: ProviderProxyOperationActivationDeps = {
+        ...deps(proxy, scriptedClient({}).client),
+        faultAuthority: (fault) => faults.push(fault),
+      };
+      await expect(
+        activateProviderOperation(activationDeps, OPERATION, {
+          reservation: randomUUID(),
+          jointContainmentReceipt: 'joint-1',
+          jointActivationReceipt: 'joint-activation-1',
+        }),
+      ).rejects.toThrow(protocolCode);
+    };
+
+    await activate('identity_mismatch');
+    expect(faults).toEqual([]);
+    await activate('protocol_violation');
+    expect(faults).toHaveLength(1);
   });
 
   it('strictly validates attachment before and after the wire call', async () => {

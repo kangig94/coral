@@ -17,6 +17,28 @@ export type ProviderOperationDeleteResult =
   | Readonly<{ kind: 'deleted' }>
   | Readonly<{ kind: 'conflict'; current: ProviderOperationRecord | null }>;
 
+export type ProviderOperationMutation =
+  | Readonly<{ kind: 'upserted'; record: ProviderOperationRecord }>
+  | Readonly<{ kind: 'deleted'; record: ProviderOperationRecord }>;
+
+export type ProviderOperationMutationObserver = (mutation: ProviderOperationMutation) => void;
+
+const mutationObservers = new WeakMap<Database, Set<ProviderOperationMutationObserver>>();
+
+export function subscribeProviderOperationMutations(
+  db: Database,
+  observer: ProviderOperationMutationObserver,
+): () => void {
+  const observers = mutationObservers.get(db) ?? new Set<ProviderOperationMutationObserver>();
+  mutationObservers.set(db, observers);
+  observers.add(observer);
+  return () => observers.delete(observer);
+}
+
+function notifyProviderOperationMutation(db: Database, mutation: ProviderOperationMutation): void {
+  for (const observer of mutationObservers.get(db) ?? []) observer(mutation);
+}
+
 type MetaRow = Readonly<{ key: string; value: string }>;
 type ProviderOperationDueEntry = Readonly<{
   key: string;
@@ -248,6 +270,7 @@ export function insertProviderOperation(db: Database, record: ProviderOperationR
     );
     insertDueEntry(db, record);
   });
+  notifyProviderOperationMutation(db, { kind: 'upserted', record });
 }
 
 export function readProviderOperation(
@@ -344,7 +367,7 @@ export function compareAndSwapProviderOperation(
   if (next.revision !== expected.revision + 1) {
     throw new ProviderOperationJournalError('Compare-and-swap must advance the provider operation revision by one.');
   }
-  return inWriteTransaction(db, () => {
+  const result: ProviderOperationCompareAndSwapResult = inWriteTransaction(db, () => {
     const key = canonicalRecordKey(expected.operation);
     const result = db
       .prepare<[string, string, string]>('UPDATE meta SET value = ? WHERE key = ? AND value = ?')
@@ -356,6 +379,8 @@ export function compareAndSwapProviderOperation(
     insertDueEntry(db, next);
     return { kind: 'updated', record: next };
   });
+  if (result.kind === 'updated') notifyProviderOperationMutation(db, { kind: 'upserted', record: result.record });
+  return result;
 }
 
 export function deleteProviderOperation(
@@ -363,7 +388,7 @@ export function deleteProviderOperation(
   expected: ProviderOperationRecord,
 ): ProviderOperationDeleteResult {
   const expectedEncoded = encodeProviderOperationRecord(expected);
-  return inWriteTransaction(db, () => {
+  const result: ProviderOperationDeleteResult = inWriteTransaction(db, () => {
     const key = canonicalRecordKey(expected.operation);
     const result = db
       .prepare<[string, string]>('DELETE FROM meta WHERE key = ? AND value = ?')
@@ -374,4 +399,6 @@ export function deleteProviderOperation(
     deleteDueEntry(db, expected);
     return { kind: 'deleted' };
   });
+  if (result.kind === 'deleted') notifyProviderOperationMutation(db, { kind: 'deleted', record: expected });
+  return result;
 }

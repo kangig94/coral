@@ -19,6 +19,10 @@ import {
 } from '#src/provider-proxy/enforcement.js';
 import { MAX_PROXY_OPERATION_LEDGERS } from '#src/provider-proxy/ledger.js';
 import {
+  guardianHandoffRedeemResultSchema,
+  reaperHandoffRotateResultSchema,
+} from '#src/coordinator/services/provider-proxy-set-inheritance.js';
+import {
   createEnforcerDeadlineStateMachine,
   PROXY_ENFORCER_MAX_WAKE_LATENCY_MS,
   resolveProviderProxyDeadlineConfiguration,
@@ -1374,6 +1378,10 @@ describe('provider-proxy guardian and reaper', () => {
     };
 
     expect(redeemed.state).toBe('redeemed-provisional');
+    const redeemedFields = guardianHandoffRedeemResultSchema.parse(redeemed);
+    expect(redeemedFields.guardian).toEqual(set.guardianIdentity);
+    expect(redeemedFields.reaper).toEqual(set.reaperIdentity);
+    expect(redeemedFields.containment).toEqual(CONTAINMENT);
     // Nowhere in `request` above did this successor name an operation set — it was never asked to. This is
     // the installed set coming back from the guardian's own authoritative record, not an echo.
     expect(redeemed.operations).toEqual([operation]);
@@ -1612,6 +1620,7 @@ describe('provider-proxy guardian and reaper', () => {
     };
 
     expect(rotated.state).toBe('successor-rotated');
+    expect(reaperHandoffRotateResultSchema.parse(rotated).reaper).toEqual(set.reaperIdentity);
     // This reaper never received the set from the rotation request (there is no `operations` field to send)
     // — it comes back from the guardian's own authoritative forward, recorded earlier by
     // `reaper.record-redemption.v1`.

@@ -9,7 +9,7 @@ import type { HostRef } from '#src/providers/contract.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
-import { SemanticOperationCancellationTimeoutError } from '#src/provider-proxy/semantic-operation.js';
+import { SemanticOperationCancellationTimeoutError } from '#src/provider-proxy/semantic-operation-runner.js';
 import {
   OperationSupervisor,
   OPERATION_RELEASE_RETRY_MS,

@@ -64,6 +64,7 @@ function protocolCodeFrom(data: unknown): ProxyControlProtocolErrorCode | undefi
 
 export interface ControlClient {
   call(method: string, params: unknown, timeoutMs: number): Promise<unknown>;
+  readonly faulted?: Promise<ControlClientError>;
   close(): void;
 }
 
@@ -110,6 +111,16 @@ export async function connectControlClient(
   const pending = new Map<number, Pending>();
   let nextId = 1;
   let closed = false;
+  let resolveFault!: (error: ControlClientError) => void;
+  let faultLatched = false;
+  const faulted = new Promise<ControlClientError>((resolve) => {
+    resolveFault = resolve;
+  });
+  const latchFault = (error: ControlClientError): void => {
+    if (faultLatched) return;
+    faultLatched = true;
+    resolveFault(error);
+  };
 
   const failAll = (error: Error): void => {
     for (const [id, waiter] of pending) {
@@ -213,10 +224,13 @@ export async function connectControlClient(
   socket.on('error', () => socket.destroy());
   socket.on('close', () => {
     closed = true;
-    failAll(new ControlClientError('control_client_closed', 'The control channel closed.'));
+    const error = new ControlClientError('control_client_closed', 'The control channel closed.');
+    latchFault(error);
+    failAll(error);
   });
 
   return {
+    faulted,
     call(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
       if (closed) {
         return Promise.reject(new ControlClientError('control_client_closed', 'The control channel closed.'));

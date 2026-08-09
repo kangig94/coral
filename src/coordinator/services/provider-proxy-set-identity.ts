@@ -1,0 +1,153 @@
+import { z } from 'zod';
+
+import { canonicalEndpointSchema, canonicalUuidSchema, hostFingerprintSchema } from '../../provider-proxy/protocol.js';
+import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
+
+const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
+
+export const providerProxySetIdentitySchema = z
+  .object({
+    buildSetId: canonicalUuidSchema,
+    hostFingerprint: hostFingerprintSchema,
+    guardianInstanceId: canonicalUuidSchema,
+    guardianPid: nonNegativeSafeIntegerSchema,
+    guardianProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    guardianControlEndpoint: canonicalEndpointSchema,
+    proxyInstanceId: canonicalUuidSchema,
+    proxyPid: nonNegativeSafeIntegerSchema,
+    reaperInstanceId: canonicalUuidSchema,
+    reaperPid: nonNegativeSafeIntegerSchema,
+    reaperProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    reaperControlEndpoint: canonicalEndpointSchema,
+    containmentKind: z.string().min(1).max(64),
+    proxyProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    proxyProcessGroupId: nonNegativeSafeIntegerSchema,
+    canonicalEndpoint: canonicalEndpointSchema,
+  })
+  .strict();
+
+export type ProviderProxySetIdentity = z.output<typeof providerProxySetIdentitySchema>;
+export type ProviderProxySetKey = string & { readonly __providerProxySetKey: unique symbol };
+
+export const providerProxySetAddressSchema = z
+  .object({
+    buildSetId: canonicalUuidSchema,
+    hostFingerprint: hostFingerprintSchema,
+    proxyInstanceId: canonicalUuidSchema,
+  })
+  .strict();
+
+export type ProviderProxySetAddress = z.output<typeof providerProxySetAddressSchema>;
+export type ProviderProxySetAddressKey = string & { readonly __providerProxySetAddressKey: unique symbol };
+
+const IDENTITY_FIELDS = [
+  'buildSetId',
+  'hostFingerprint',
+  'guardianInstanceId',
+  'guardianPid',
+  'guardianProcessStartedAtSeconds',
+  'guardianControlEndpoint',
+  'proxyInstanceId',
+  'proxyPid',
+  'reaperInstanceId',
+  'reaperPid',
+  'reaperProcessStartedAtSeconds',
+  'reaperControlEndpoint',
+  'containmentKind',
+  'proxyProcessStartedAtSeconds',
+  'proxyProcessGroupId',
+  'canonicalEndpoint',
+] as const satisfies readonly (keyof ProviderProxySetIdentity)[];
+
+export function providerProxySetKey(identity: ProviderProxySetIdentity): ProviderProxySetKey {
+  const parsed = providerProxySetIdentitySchema.parse(identity);
+  return JSON.stringify(IDENTITY_FIELDS.map((field) => parsed[field])) as ProviderProxySetKey;
+}
+
+export function providerProxySetIdentitiesEqual(
+  left: ProviderProxySetIdentity,
+  right: ProviderProxySetIdentity,
+): boolean {
+  return IDENTITY_FIELDS.every((field) => left[field] === right[field]);
+}
+
+export function providerProxySetAddress(identity: ProviderProxySetIdentity): ProviderProxySetAddress {
+  return Object.freeze({
+    buildSetId: identity.buildSetId,
+    hostFingerprint: identity.hostFingerprint,
+    proxyInstanceId: identity.proxyInstanceId,
+  });
+}
+
+export function providerProxySetAddressKey(address: ProviderProxySetAddress): ProviderProxySetAddressKey {
+  const parsed = providerProxySetAddressSchema.parse(address);
+  return JSON.stringify([
+    parsed.buildSetId,
+    parsed.hostFingerprint,
+    parsed.proxyInstanceId,
+  ]) as ProviderProxySetAddressKey;
+}
+
+export function providerProxySetIdentityFromRecord(
+  record: Pick<ProviderOperationRecord, 'operation' | 'locator'>,
+): ProviderProxySetIdentity {
+  return providerProxySetIdentitySchema.parse({
+    buildSetId: record.operation.buildSetId,
+    hostFingerprint: record.locator.hostFingerprint,
+    guardianInstanceId: record.locator.guardian.instanceId,
+    guardianPid: record.locator.guardian.pid,
+    guardianProcessStartedAtSeconds: record.locator.guardian.processStartedAtSeconds,
+    guardianControlEndpoint: record.locator.guardian.controlEndpoint,
+    proxyInstanceId: record.operation.proxyInstanceId,
+    proxyPid: record.locator.proxy.pid,
+    reaperInstanceId: record.locator.reaper.instanceId,
+    reaperPid: record.locator.reaper.pid,
+    reaperProcessStartedAtSeconds: record.locator.reaper.processStartedAtSeconds,
+    reaperControlEndpoint: record.locator.reaper.controlEndpoint,
+    containmentKind: record.locator.containment.kind,
+    proxyProcessStartedAtSeconds: record.locator.proxy.processStartedAtSeconds,
+    proxyProcessGroupId: record.locator.containment.processGroupId,
+    canonicalEndpoint: record.locator.proxy.controlEndpoint,
+  });
+}
+
+export class ProviderProxySetIdentityIndex {
+  readonly #identities = new Map<ProviderProxySetKey, ProviderProxySetIdentity>();
+  readonly #addressIndex = new Map<ProviderProxySetAddressKey, ProviderProxySetKey>();
+
+  add(identity: ProviderProxySetIdentity): ProviderProxySetKey {
+    const parsed = providerProxySetIdentitySchema.parse(identity);
+    const key = providerProxySetKey(parsed);
+    const addressKey = providerProxySetAddressKey(providerProxySetAddress(parsed));
+    const indexedKey = this.#addressIndex.get(addressKey);
+    if (indexedKey !== undefined && indexedKey !== key) {
+      throw new Error(`provider_proxy_set_identity_alias: address ${addressKey} names two complete identities`);
+    }
+    const existing = this.#identities.get(key);
+    if (existing !== undefined && !providerProxySetIdentitiesEqual(existing, parsed)) {
+      throw new Error('provider_proxy_set_key_collision: canonical serialization names two complete identities');
+    }
+    this.#identities.set(key, parsed);
+    this.#addressIndex.set(addressKey, key);
+    return key;
+  }
+
+  delete(identity: ProviderProxySetIdentity): void {
+    const key = providerProxySetKey(identity);
+    if (!this.#identities.delete(key)) return;
+    const addressKey = providerProxySetAddressKey(providerProxySetAddress(identity));
+    if (this.#addressIndex.get(addressKey) === key) this.#addressIndex.delete(addressKey);
+  }
+
+  keyForAddress(address: ProviderProxySetAddress): ProviderProxySetKey | null {
+    return this.#addressIndex.get(providerProxySetAddressKey(address)) ?? null;
+  }
+
+  identityForKey(key: ProviderProxySetKey): ProviderProxySetIdentity | null {
+    return this.#identities.get(key) ?? null;
+  }
+
+  get size(): number {
+    return this.#identities.size;
+  }
+}

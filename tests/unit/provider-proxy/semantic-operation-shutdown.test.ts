@@ -39,11 +39,11 @@ import type { HostRef, ProviderEventBody, ProviderServerSpec } from '#src/provid
 import { createOperationLedger, type OperationLedger, type ProviderOperationKey } from '#src/provider-proxy/ledger.js';
 import type { Proxy } from '#src/provider-proxy/proxy.js';
 import type { ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
+import type { ProxyAppServerHostAuthority } from '#src/provider-proxy/provider-root-authority.js';
 import {
   SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS,
   createSemanticOperationRuntime,
-  type ProxyAppServerHostAuthority,
-} from '#src/provider-proxy/semantic-operation.js';
+} from '#src/provider-proxy/semantic-operation-runner.js';
 import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 const runtime: Runtime = createRealRuntime('prod');

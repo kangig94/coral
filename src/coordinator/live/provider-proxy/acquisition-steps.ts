@@ -55,7 +55,7 @@ import {
   notifyProviderProxyControlEstablished,
   type ProviderProxyOperationAuthority,
 } from './operation-route.js';
-import type { ProviderProxySetIdentity } from '../../services/provider-proxy-operation-activation.js';
+import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set-identity.js';
 
 /**
  * The production implementation of `ProviderProxyAcquisitionSteps`: mints one guardian/reaper/proxy set's

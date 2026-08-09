@@ -9,10 +9,7 @@ import { aggregateWorkflowUsage } from '../../jobs/workflow-usage.js';
 import { admittedByThisCoordinator, createObserveCarriers } from './carrier-observation.js';
 import { createAppServerProxyRoute } from '../services/provider-proxy-launch-route.js';
 import { ProviderOperationReconciler } from '../services/provider-operation-reconciler.js';
-import {
-  isProviderProxyOperationAuthority,
-  subscribeProviderProxyControlEstablished,
-} from '../live/provider-proxy/operation-route.js';
+import { subscribeProviderProxyControlEstablished } from '../live/provider-proxy/operation-route.js';
 import { backendLog } from '../../infra/backend-log.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
 import { ProviderOperationCleanupRouter } from '../../jobs/provider-operation-cleanup.js';
@@ -21,6 +18,13 @@ import { readProjectionProviderSession } from '../../sessions/projections.js';
 import { materializeProviderOperationPrepare } from '../services/provider-operation-prepare.js';
 import { terminalizeProviderOperation } from '../../jobs/provider-operation-terminalization.js';
 import type { RecoveryCoordinator } from '../services/recovery/index.js';
+import { readProviderOperations, subscribeProviderOperationMutations } from '../../store/provider-operation-journal.js';
+import { providerProxySetIdentityFromRecord } from '../services/provider-proxy-set-identity.js';
+import { ProviderProxySetLifecycle } from '../services/provider-proxy-set-lifecycle.js';
+import {
+  discoverProviderHandoffCapsules,
+  retireProviderHandoffCapsule,
+} from '../services/provider-proxy-capsule-discovery.js';
 
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
@@ -54,20 +58,21 @@ export function createExecutionServices({
   const storeServicesRef = world.storeServicesRef;
   const providerOperationCleanup = new ProviderOperationCleanupRouter();
   world.operationRegistry.connectCleanup(providerOperationCleanup);
-  const getProgressStore = () => storeServicesRef.get().progressStore;
-  const authorityFor = (record: ProviderOperationRecord) => {
-    const set = world.providerProxyAuthority
-      ?.liveSets()
-      .find((candidate) => candidate.proxyInstanceId === record.operation.proxyInstanceId);
-    return set !== undefined && isProviderProxyOperationAuthority(set) ? set : null;
+  const getProgressStore = () => {
+    const storeServices = storeServicesRef.tryGet();
+    if (storeServices === null) throw new Error('Coordinator store services are not connected.');
+    return storeServices.progressStore;
   };
+  const providerProxyInheritance = world.providerProxyInheritance;
+  const authorityFor = (record: ProviderOperationRecord) =>
+    providerProxyLifecycle.authorityFor(providerProxySetIdentityFromRecord(record));
   const providerOperationReconciler = new ProviderOperationReconciler({
     getProgressStore,
     authorityFor,
     acquireAuthority: async (record, signal) => {
       const live = authorityFor(record);
-      if (live !== null || world.providerProxyInheritance === undefined) return live;
-      const outcome = await world.providerProxyInheritance.inheritProviderProxySet(
+      if (live !== null || providerProxyInheritance === undefined) return live;
+      const outcome = await providerProxyInheritance.inheritProviderProxySet(
         record,
         getProgressStore().getDb(),
         signal,
@@ -104,9 +109,60 @@ export function createExecutionServices({
     time: runtime.time,
     onError: (message) => backendLog.warn(message),
   });
+  const providerProxyLifecycle: ProviderProxySetLifecycle = new ProviderProxySetLifecycle({
+    claims: world.providerProxyClaims,
+    disappearanceConsumer: providerOperationReconciler,
+    time: runtime.time,
+    retireCapsule: (path) => retireProviderHandoffCapsule(runtime.storage, path),
+    ...(providerProxyInheritance === undefined
+      ? {}
+      : {
+          redeemCapsule: (capsule, path, signal) =>
+            providerProxyInheritance.redeemDiscoveredCapsule(capsule, path, signal),
+        }),
+    onProgressPremiseViolation: (violation) =>
+      backendLog.warn(
+        `Provider proxy lifecycle ${violation.stage} woke ${violation.latenessMs}ms after its requested time.`,
+      ),
+    onError: (message) => backendLog.warn(message),
+    onSlotReleased: (routeKey) => world.providerHostManager.providerProxySlotReleased?.(routeKey),
+  });
+  world.providerProxyLifecycleRef.connect(providerProxyLifecycle);
   const unsubscribeProviderProxyControlEstablished = subscribeProviderProxyControlEstablished((authority) =>
     providerOperationReconciler.onControlEstablished(authority),
   );
+  let unsubscribeProviderOperationMutations: (() => void) | null = null;
+  let providerProxyClaimsInitialized = false;
+  let providerProxyLifecycleInitialized = false;
+
+  const initializeProviderProxyClaims = (): void => {
+    if (providerProxyClaimsInitialized) return;
+    const db = getProgressStore().getDb();
+    world.providerProxyClaims.initialize(readProviderOperations(db));
+    providerProxyClaimsInitialized = true;
+    unsubscribeProviderOperationMutations = subscribeProviderOperationMutations(db, (mutation) => {
+      world.providerProxyClaims.applyMutation(mutation);
+      providerProxyLifecycle.claimsChanged(providerProxySetIdentityFromRecord(mutation.record));
+    });
+  };
+
+  const initializeProviderProxyLifecycle = (): void => {
+    if (providerProxyLifecycleInitialized) return;
+    providerProxyLifecycle.initializeClaimSlots();
+    if (world.providerProxyInheritance === undefined) {
+      providerProxyLifecycle.completeStartupDiscovery();
+    } else {
+      providerProxyLifecycle.installDiscoveredCapsules(
+        discoverProviderHandoffCapsules({
+          runDir: runtime.paths.coral.coordinator.runDir,
+          generationRoot: runtime.paths.coral.generation.root,
+          storage: runtime.storage,
+          uid: process.getuid?.() ?? 0,
+        }),
+      );
+    }
+    providerProxyLifecycleInitialized = true;
+  };
 
   function getExecutionService(ctx: InvocationContext): ProjectRequestPort {
     const key = ctx.projectRoot;
@@ -171,10 +227,16 @@ export function createExecutionServices({
     connectProviderOperationRecovery: (recoveryCoordinator) => {
       providerOperationRecovery = recoveryCoordinator;
     },
-    reconcileProviderOperationsAtStartup: (signal) => providerOperationReconciler.reconcileAtStartup(signal),
+    reconcileProviderOperationsAtStartup: (signal) => {
+      initializeProviderProxyClaims();
+      initializeProviderProxyLifecycle();
+      return providerOperationReconciler.reconcileAtStartup(signal);
+    },
     startProviderOperationReconciler: () => providerOperationReconciler.start(),
     stopProviderOperationReconciler: () => {
       unsubscribeProviderProxyControlEstablished();
+      unsubscribeProviderOperationMutations?.();
+      unsubscribeProviderOperationMutations = null;
       providerOperationReconciler.stop();
     },
   };

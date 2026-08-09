@@ -67,11 +67,14 @@ import {
   authorizeProviderOperation,
   prepareProviderOperation,
   providerOperationPrepareAttempt,
-  type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-operation-activation.js';
+import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set-identity.js';
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import {
   createProviderProxyOperationAuthority,
@@ -109,9 +112,9 @@ import { createReaper } from '#src/provider-proxy/reaper.js';
 import { createProxyGuardianContainment } from '#src/provider-proxy/role-main.js';
 import {
   createProxyAppServerHostAuthority,
-  createSemanticOperationRuntime,
   type ProxyAppServerHostAuthority,
-} from '#src/provider-proxy/semantic-operation.js';
+} from '#src/provider-proxy/provider-root-authority.js';
+import { createSemanticOperationRuntime } from '#src/provider-proxy/semantic-operation-runner.js';
 import {
   asJointActivationReceipt,
   asJointContainmentReceipt,
@@ -869,6 +872,7 @@ describe('provider proxy activation against a real guardian', () => {
       guardianClient: set.control,
       setIdentity: set.setIdentity,
       mutationRpcTimeoutMs: 5_000,
+      faultAuthority: () => undefined,
     };
     const prepared = await prepareProviderOperation(deps, providerOperationPrepareAttempt(deps, operation, PREPARED));
     if (prepared.state !== 'pending-activation') throw new Error('expected a prepared operation');
@@ -1155,6 +1159,19 @@ describe('provider proxy cumulative root rotation', () => {
       },
     );
 
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const lifecycle = new ProviderProxySetLifecycle({
+      claims,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: runtime.time,
+      onSlotReleased: (routeKey) => manager.providerProxySlotReleased(routeKey),
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const providerProxyLifecycleRef = new ProviderProxySetLifecycleRef();
+    providerProxyLifecycleRef.connect(lifecycle);
+
     const localHandle = createFakeProviderServerHandle({ generation: 9_000 });
     const manager = new DefaultProviderHostManager({
       runtime,
@@ -1164,6 +1181,7 @@ describe('provider proxy cumulative root rotation', () => {
         identity: { instanceId: randomUUID(), buildSetId: randomUUID(), flavor: 'prod' },
         operationRegistry,
       },
+      providerProxyLifecycleRef,
     });
 
     const prepare = async (authority: RotationSet['authority'], jobId: string, operationId: string) => {

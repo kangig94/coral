@@ -21,6 +21,7 @@ import {
   grantBindingFromCapsule,
   guardianReaperHandoffInstallParamsSchema,
   handoffOperationSetSchema,
+  reaperHandoffRotateFieldsSchema,
   reaperRecordRedemptionParamsSchema,
   sameOperations,
   successionOperationRegisterParamsSchema,
@@ -387,14 +388,15 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           }
           return {
             holder: request.successor.instanceId,
-            fields: {
+            fields: reaperHandoffRotateFieldsSchema.parse({
               // A wire result describing what this call did, not a deadline-model state — the deadline
               // machine this endpoint shares with the guardian has exactly one enum, and this is not a
               // member of it (see `orphan-deadline.ts`'s own "one enforcer state machine, not two").
               state: 'successor-rotated',
               reaperRotationReceipt: mintReceipt(),
               operations: recordedRedemption.operations,
-            },
+              reaper: identityOf(recorded as RecordedContainmentIdentity & { readonly containmentKind: string }),
+            }),
           };
         },
       },

@@ -18,6 +18,8 @@ import { LaunchCoordinator } from '../live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
 import type { ProviderProxyAuthorityRegistry } from '../live/provider-proxy/authority.js';
 import { LocalOperationRegistry } from '../services/operation-registry.js';
+import { ProviderProxySetClaimMirror } from '../services/provider-proxy-set-claim-mirror.js';
+import { ProviderProxySetLifecycleRef } from '../services/provider-proxy-set-lifecycle-ref.js';
 import {
   createProviderProxySetInheritance,
   type ProviderProxySetInheritance,
@@ -173,6 +175,8 @@ export interface CoordinatorWorld {
   readonly providerProxyInheritance?: ProviderProxySetInheritance;
   /** This coordinator generation's live app-server operations (W2.3) — see `CoordinatorCoreOptions.operationRegistry`. */
   readonly operationRegistry: LocalOperationRegistry;
+  readonly providerProxyClaims: ProviderProxySetClaimMirror;
+  readonly providerProxyLifecycleRef: ProviderProxySetLifecycleRef;
   readonly pluginRoot: string;
   readonly now: () => number;
   readonly log: (message: string) => void;
@@ -256,6 +260,8 @@ export function createCoordinatorWorld(
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
   const storeServicesRef = createStoreServicesRef();
   const operationRegistry = options.operationRegistry ?? new LocalOperationRegistry();
+  const providerProxyClaims = new ProviderProxySetClaimMirror();
+  const providerProxyLifecycleRef = new ProviderProxySetLifecycleRef();
   // A caller-supplied `providerHostManager` (every test that fakes provider hosts) never carries live
   // guardian/reaper/proxy sets, so `providerProxyAuthority` stays absent rather than reporting on a
   // substitute it played no part in creating — matching `runShutdownSequence`'s own `undefined` default.
@@ -276,6 +282,7 @@ export function createCoordinatorWorld(
           ? {}
           : { onProviderEvent: options.buildProviderEventHandler }),
       },
+      providerProxyLifecycleRef,
     });
     providerHostManager = created;
     providerProxyAuthority = created;
@@ -291,7 +298,9 @@ export function createCoordinatorWorld(
       ...(options.buildProviderEventHandler === undefined
         ? {}
         : { onProviderEvent: options.buildProviderEventHandler }),
-      registerInheritedSet: (set) => created.registerInheritedSet(set),
+      registerInheritedSet: (set) => {
+        created.registerInheritedSet(set);
+      },
     });
   }
   providerRegistry.connectAppServerHost(providerHostManager);
@@ -335,6 +344,8 @@ export function createCoordinatorWorld(
     ...(providerProxyAuthority === undefined ? {} : { providerProxyAuthority }),
     ...(providerProxyInheritance === undefined ? {} : { providerProxyInheritance }),
     operationRegistry,
+    providerProxyClaims,
+    providerProxyLifecycleRef,
     pluginRoot,
     now,
     log,

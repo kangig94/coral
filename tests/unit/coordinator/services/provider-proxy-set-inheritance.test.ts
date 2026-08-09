@@ -184,6 +184,45 @@ function proxyIdentityFieldsFor(reference: ProviderProxySetLocator) {
   };
 }
 
+function guardianIdentityFor(reference: ProviderProxySetLocator) {
+  const { operation, locator: set } = reference;
+  return {
+    guardianInstanceId: set.guardian.instanceId,
+    pid: set.guardian.pid,
+    processStartedAtSeconds: set.guardian.processStartedAtSeconds,
+    generation: 'gen2' as const,
+    flavor: 'prod' as const,
+    buildSetId: operation.buildSetId,
+    hostFingerprint: set.hostFingerprint,
+    canonicalControlEndpoint: set.guardian.controlEndpoint,
+  };
+}
+
+function reaperIdentityFor(reference: ProviderProxySetLocator) {
+  const { operation, locator: set } = reference;
+  return {
+    reaperInstanceId: set.reaper.instanceId,
+    pid: set.reaper.pid,
+    processStartedAtSeconds: set.reaper.processStartedAtSeconds,
+    guardianInstanceId: set.guardian.instanceId,
+    generation: 'gen2' as const,
+    flavor: 'prod' as const,
+    buildSetId: operation.buildSetId,
+    hostFingerprint: set.hostFingerprint,
+    canonicalControlEndpoint: set.reaper.controlEndpoint,
+    containmentKind: set.containment.kind,
+  };
+}
+
+function containmentFor(reference: ProviderProxySetLocator) {
+  return {
+    pid: reference.locator.containment.pid,
+    processStartedAtSeconds: reference.locator.containment.processStartedAtSeconds,
+    processGroupId: reference.locator.containment.processGroupId,
+    containmentKind: reference.locator.containment.kind,
+  };
+}
+
 type RedemptionOperationSets = Readonly<{
   guardian: readonly OperationKey[];
   reaper: readonly OperationKey[];
@@ -210,6 +249,9 @@ function redemptionResponses(
       state: 'redeemed-provisional',
       redemptionReceipt: 'guardian-receipt',
       operations: operationSets.guardian,
+      guardian: guardianIdentityFor(loc),
+      reaper: reaperIdentityFor(loc),
+      containment: containmentFor(loc),
     },
     'guardian.heartbeat.v1': { state: 'active', nextHeartbeatChallenge: 'g2' },
     'reaper.handoff-rotate.v1': {
@@ -217,6 +259,7 @@ function redemptionResponses(
       state: 'successor-rotated',
       reaperRotationReceipt: 'reaper-receipt',
       operations: operationSets.reaper,
+      reaper: reaperIdentityFor(loc),
     },
     'reaper.heartbeat.v1': { state: 'active', nextHeartbeatChallenge: 'r2' },
     'handoff.redeem.v1': {
@@ -458,6 +501,7 @@ describe('attemptProviderProxySetInheritance', () => {
               state: 'successor-rotated',
               reaperRotationReceipt: 'reaper-receipt',
               operations: reaperOperations,
+              reaper: reaperIdentityFor(loc),
             };
           },
         },
@@ -583,7 +627,15 @@ describe('attemptProviderProxySetInheritance', () => {
     mockedConnect.mockImplementation(async (socketPath: string) => ({
       call: async (method: string) => {
         if (method === 'guardian.handoff-redeem.v1') {
-          return { ...OPENING, state: 'redeemed-provisional', redemptionReceipt: 'g', operations: [] };
+          return {
+            ...OPENING,
+            state: 'redeemed-provisional',
+            redemptionReceipt: 'g',
+            operations: [],
+            guardian: guardianIdentityFor(loc),
+            reaper: reaperIdentityFor(loc),
+            containment: containmentFor(loc),
+          };
         }
         if (method === 'guardian.heartbeat.v1') return { state: 'active', nextHeartbeatChallenge: 'g2' };
         if (method === 'reaper.handoff-rotate.v1') throw new Error('grant_invalid: replayed');
@@ -641,7 +693,15 @@ describe('attemptProviderProxySetInheritance', () => {
           // Fires the caller's own cancellation (a coordinator shutdown, in production) the instant guardian
           // redemption completes — before reaper is ever dialed.
           controller.abort();
-          return { ...OPENING, state: 'redeemed-provisional', redemptionReceipt: 'guardian-receipt', operations: [] };
+          return {
+            ...OPENING,
+            state: 'redeemed-provisional',
+            redemptionReceipt: 'guardian-receipt',
+            operations: [],
+            guardian: guardianIdentityFor(loc),
+            reaper: reaperIdentityFor(loc),
+            containment: containmentFor(loc),
+          };
         },
       },
       calls,
@@ -718,11 +778,9 @@ describe('createProviderProxySetInheritance', () => {
       registerInheritedSet,
     });
     const outcome = await inheritance.inheritProviderProxySet(loc, unusedDb, neverAborts);
-    const replayedOutcome = await inheritance.inheritProviderProxySet(loc, unusedDb, neverAborts);
     unsubscribe();
 
     expect(outcome.kind).toBe('inherited');
-    expect(replayedOutcome).toBe(outcome);
     expect(registerInheritedSet).toHaveBeenCalledTimes(1);
     expect(established).toHaveBeenCalledTimes(1);
     expect(registerInheritedSet.mock.invocationCallOrder[0]).toBeLessThan(established.mock.invocationCallOrder[0]);

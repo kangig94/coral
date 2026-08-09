@@ -1,5 +1,3 @@
-import { z } from 'zod';
-
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { providerHandoffCapsulePath } from '../../infra/path/index.js';
@@ -9,20 +7,18 @@ import { reapRecordedContainment } from '../../infra/process-containment.js';
 import {
   readHandoffCapsuleFile,
   type HandoffCapsule,
+  guardianHandoffRedeemFieldsSchema,
   guardianHandoffRedeemParamsSchema,
+  proxyHandoffRedeemFieldsSchema,
   proxyHandoffRedeemParamsSchema,
+  reaperHandoffRotateFieldsSchema,
 } from '../../provider-proxy/handoff-capsule.js';
-import { MAX_PROXY_OPERATION_LEDGERS } from '../../provider-proxy/ledger.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   controlEpochSchema,
   heartbeatChallengeSchema,
-  operationIdentitySchema,
-  proxyIdentitySchema,
   type CoordinatorIdentity,
-  type GuardianIdentity,
   type OperationIdentity,
-  type ReaperIdentity,
   reaperHandoffRotateParamsSchema,
 } from '../../provider-proxy/protocol.js';
 import type { ControlClient, ProviderEventHandler } from '../../provider-proxy/control-client.js';
@@ -51,7 +47,13 @@ import {
   type ProviderProxyOperationAuthority,
 } from '../live/provider-proxy/operation-route.js';
 import type { ProviderProxySetAcquisitionIdentity } from '../live/provider-hosts/proxy-set-acquisition.js';
-import type { ProviderProxySetIdentity } from './provider-proxy-operation-activation.js';
+import {
+  providerProxySetIdentitiesEqual,
+  providerProxySetIdentityFromRecord,
+  providerProxySetIdentitySchema,
+  providerProxySetKey,
+  type ProviderProxySetIdentity,
+} from './provider-proxy-set-identity.js';
 import type { ProviderProxyOperationSnapshot } from './operation-registry.js';
 
 /**
@@ -90,38 +92,14 @@ export type ProviderProxySetLocator = Readonly<{
   locator: ProviderOperationRecord['locator'];
 }>;
 
-const redeemedOperationSetSchema = z.array(operationIdentitySchema).max(MAX_PROXY_OPERATION_LEDGERS);
+const controlSessionFields = {
+  controlEpoch: controlEpochSchema,
+  heartbeatChallenge: heartbeatChallengeSchema,
+} as const;
 
-const guardianHandoffRedeemResultSchema = z
-  .object({
-    controlEpoch: controlEpochSchema,
-    heartbeatChallenge: heartbeatChallengeSchema,
-    state: z.literal('redeemed-provisional'),
-    redemptionReceipt: z.string().min(1),
-    operations: redeemedOperationSetSchema,
-  })
-  .strict();
-
-const reaperHandoffRotateResultSchema = z
-  .object({
-    controlEpoch: controlEpochSchema,
-    heartbeatChallenge: heartbeatChallengeSchema,
-    state: z.literal('successor-rotated'),
-    reaperRotationReceipt: z.string().min(1),
-    operations: redeemedOperationSetSchema,
-  })
-  .strict();
-
-const proxyHandoffRedeemResultSchema = z
-  .object({
-    controlEpoch: controlEpochSchema,
-    heartbeatChallenge: heartbeatChallengeSchema,
-    state: z.literal('redeemed-provisional'),
-    redemptionReceipt: z.string().min(1),
-    proxy: proxyIdentitySchema,
-    operations: redeemedOperationSetSchema,
-  })
-  .strict();
+export const guardianHandoffRedeemResultSchema = guardianHandoffRedeemFieldsSchema.extend(controlSessionFields);
+export const reaperHandoffRotateResultSchema = reaperHandoffRotateFieldsSchema.extend(controlSessionFields);
+export const proxyHandoffRedeemResultSchema = proxyHandoffRedeemFieldsSchema.extend(controlSessionFields);
 
 export type ProviderProxySetInheritanceDeps = Readonly<{
   runtime: Runtime;
@@ -260,29 +238,14 @@ async function confirmProviderProxySetDisappearance(
  * only ever checked between cuts, never inside one). A dead peer still costs up to one role's own connect
  * budget; what this closes is starting the *next* role once the caller has already given up.
  */
-async function redeem(
-  reference: ProviderProxySetLocator,
+async function redeemCapsule(
+  capsulePath: string,
+  capsule: HandoffCapsule,
+  expectedIdentity: ProviderProxySetIdentity | null,
   deps: ProviderProxySetInheritanceDeps,
   signal: AbortSignal,
-): Promise<ProviderProxySetInheritanceOutcome> {
+): Promise<DurableProviderProxyOperationAuthority> {
   const { runtime, coordinatorIdentity } = deps;
-  const { operation, locator } = reference;
-  const capsulePath = providerHandoffCapsulePath(
-    {
-      generation: coordinatorIdentity.generation,
-      flavor: coordinatorIdentity.flavor,
-      buildSetId: operation.buildSetId,
-      hostFingerprint: locator.hostFingerprint,
-      proxyInstanceId: operation.proxyInstanceId,
-    },
-    deps.baseDir === undefined ? undefined : { baseDir: deps.baseDir },
-  );
-  const uid = process.getuid?.() ?? 0;
-  const capsule = readHandoffCapsuleFile(capsulePath, { storage: runtime.storage, uid });
-  if (capsule === null) return { kind: 'not-bequeathed', reason: NOTHING_TO_INHERIT_REASON };
-  if (!capsuleMatchesLocator(capsule, reference, coordinatorIdentity)) {
-    return { kind: 'not-bequeathed', reason: 'capsule identity disagrees with the committed locator' };
-  }
   // A capsule matched, so the socket work below is about to start — refuse to open the first connection at
   // all if the caller has already given up, rather than spending one role's connect budget on an attempt
   // nobody is waiting for.
@@ -311,10 +274,7 @@ async function redeem(
       openParams: { grantId: capsule.grantId, secret: capsule.secret, successor: coordinatorIdentity },
       openParamsSchema: guardianHandoffRedeemParamsSchema,
       openResultSchema: guardianHandoffRedeemResultSchema,
-      // Nothing self-reported to verify: redemption echoes no guardian identity fields, only the receipt and
-      // the set the grant was installed over. The capsule/locator agreement above already established this is
-      // the right guardian.
-      identity: () => ({}),
+      identity: (opened) => opened.guardian,
       heartbeatMethod: 'guardian.heartbeat.v1',
       expectedIdentity: {},
     });
@@ -333,7 +293,7 @@ async function redeem(
       },
       openParamsSchema: reaperHandoffRotateParamsSchema,
       openResultSchema: reaperHandoffRotateResultSchema,
-      identity: () => ({}),
+      identity: (opened) => opened.reaper,
       heartbeatMethod: 'reaper.heartbeat.v1',
       expectedIdentity: {},
     });
@@ -351,27 +311,15 @@ async function redeem(
         secret: capsule.secret,
         successor: coordinatorIdentity,
         generation: coordinatorIdentity.generation,
-        hostFingerprint: locator.hostFingerprint,
-        buildSetId: operation.buildSetId,
-        proxyInstanceId: operation.proxyInstanceId,
+        hostFingerprint: capsule.hostFingerprint,
+        buildSetId: capsule.buildSetId,
+        proxyInstanceId: capsule.proxyInstanceId,
       },
       openParamsSchema: proxyHandoffRedeemParamsSchema,
       openResultSchema: proxyHandoffRedeemResultSchema,
       identity: (opened) => opened.proxy,
       heartbeatMethod: 'control.heartbeat.v1',
-      expectedIdentity: {
-        proxyInstanceId: operation.proxyInstanceId,
-        pid: locator.proxy.pid,
-        processStartedAtSeconds: locator.proxy.processStartedAtSeconds,
-        processGroupId: locator.containment.processGroupId,
-        guardianInstanceId: locator.guardian.instanceId,
-        reaperInstanceId: locator.reaper.instanceId,
-        generation: coordinatorIdentity.generation,
-        flavor: coordinatorIdentity.flavor,
-        buildSetId: operation.buildSetId,
-        hostFingerprint: locator.hostFingerprint,
-        canonicalEndpoint: locator.proxy.controlEndpoint,
-      },
+      expectedIdentity: {},
       ...(deps.onProviderEvent === undefined ? {} : { onProviderEvent: deps.onProviderEvent() }),
     });
 
@@ -380,6 +328,50 @@ async function redeem(
       !sameOperationSet(guardianSession.opened.operations, proxySession.opened.operations)
     ) {
       throw new Error('Guardian, reaper, and proxy redeemed different operation sets.');
+    }
+
+    const guardianIdentity = guardianSession.opened.guardian;
+    const reaperIdentity = reaperSession.opened.reaper;
+    const guardianReportedReaper = guardianSession.opened.reaper;
+    const containment = guardianSession.opened.containment;
+    const proxyIdentity = proxySession.opened.proxy;
+    const setIdentity = providerProxySetIdentitySchema.parse({
+      buildSetId: proxyIdentity.buildSetId,
+      hostFingerprint: proxyIdentity.hostFingerprint,
+      guardianInstanceId: guardianIdentity.guardianInstanceId,
+      guardianPid: guardianIdentity.pid,
+      guardianProcessStartedAtSeconds: guardianIdentity.processStartedAtSeconds,
+      guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
+      proxyInstanceId: proxyIdentity.proxyInstanceId,
+      proxyPid: proxyIdentity.pid,
+      reaperInstanceId: reaperIdentity.reaperInstanceId,
+      reaperPid: reaperIdentity.pid,
+      reaperProcessStartedAtSeconds: reaperIdentity.processStartedAtSeconds,
+      reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
+      containmentKind: reaperIdentity.containmentKind,
+      proxyProcessStartedAtSeconds: proxyIdentity.processStartedAtSeconds,
+      proxyProcessGroupId: proxyIdentity.processGroupId,
+      canonicalEndpoint: proxyIdentity.canonicalEndpoint,
+    });
+    if (
+      JSON.stringify(guardianReportedReaper) !== JSON.stringify(reaperIdentity) ||
+      containment.pid !== proxyIdentity.pid ||
+      containment.processStartedAtSeconds !== proxyIdentity.processStartedAtSeconds ||
+      containment.processGroupId !== proxyIdentity.processGroupId ||
+      containment.containmentKind !== reaperIdentity.containmentKind ||
+      capsule.buildSetId !== setIdentity.buildSetId ||
+      capsule.hostFingerprint !== setIdentity.hostFingerprint ||
+      capsule.guardianInstanceId !== setIdentity.guardianInstanceId ||
+      capsule.reaperInstanceId !== setIdentity.reaperInstanceId ||
+      capsule.proxyInstanceId !== setIdentity.proxyInstanceId ||
+      capsule.guardianControlEndpoint !== setIdentity.guardianControlEndpoint ||
+      capsule.reaperControlEndpoint !== setIdentity.reaperControlEndpoint ||
+      capsule.proxyEndpoint !== setIdentity.canonicalEndpoint
+    ) {
+      throw new Error('Provider proxy redemption identities disagree with the handoff capsule.');
+    }
+    if (expectedIdentity !== null && !providerProxySetIdentitiesEqual(expectedIdentity, setIdentity)) {
+      throw new Error('Provider proxy redemption identity disagrees with the durable operation record.');
     }
 
     // Keepalive is already established the moment `establishRoleControl` returns for each role — every one of
@@ -398,7 +390,7 @@ async function redeem(
         runtime,
         guardianSession.opened.controlEpoch,
         guardianSession.nextHeartbeatChallenge,
-        onHeartbeatError('guardian', locator.guardian.instanceId),
+        onHeartbeatError('guardian', guardianIdentity.guardianInstanceId),
       ),
       startHeartbeatLoop(
         reaperSession.client,
@@ -406,7 +398,7 @@ async function redeem(
         runtime,
         reaperSession.opened.controlEpoch,
         reaperSession.nextHeartbeatChallenge,
-        onHeartbeatError('reaper', locator.reaper.instanceId),
+        onHeartbeatError('reaper', reaperIdentity.reaperInstanceId),
       ),
       startHeartbeatLoop(
         proxySession.client,
@@ -414,34 +406,10 @@ async function redeem(
         runtime,
         proxySession.opened.controlEpoch,
         proxySession.nextHeartbeatChallenge,
-        onHeartbeatError('proxy', operation.proxyInstanceId),
+        onHeartbeatError('proxy', proxyIdentity.proxyInstanceId),
       ),
     ];
     signal.throwIfAborted();
-
-    const guardianIdentity: GuardianIdentity = {
-      guardianInstanceId: locator.guardian.instanceId,
-      pid: locator.guardian.pid,
-      processStartedAtSeconds: locator.guardian.processStartedAtSeconds,
-      generation: coordinatorIdentity.generation,
-      flavor: coordinatorIdentity.flavor,
-      buildSetId: operation.buildSetId,
-      hostFingerprint: locator.hostFingerprint,
-      canonicalControlEndpoint: locator.guardian.controlEndpoint,
-    };
-    const reaperIdentity: ReaperIdentity = {
-      reaperInstanceId: locator.reaper.instanceId,
-      pid: locator.reaper.pid,
-      processStartedAtSeconds: locator.reaper.processStartedAtSeconds,
-      guardianInstanceId: locator.guardian.instanceId,
-      generation: coordinatorIdentity.generation,
-      flavor: coordinatorIdentity.flavor,
-      buildSetId: operation.buildSetId,
-      hostFingerprint: locator.hostFingerprint,
-      canonicalControlEndpoint: locator.reaper.controlEndpoint,
-      containmentKind: locator.containment.kind,
-    };
-    const proxyIdentity = proxySession.opened.proxy;
 
     // Reusing the verified capsule keeps every later epoch bound to the same exact set and protected secret.
     const base = createProviderProxySetAuthority({
@@ -459,24 +427,6 @@ async function redeem(
       recoveryCapsule: capsule,
       operationRegistry: deps.operationRegistry,
     });
-    const setIdentity: ProviderProxySetIdentity = {
-      buildSetId: operation.buildSetId,
-      hostFingerprint: locator.hostFingerprint,
-      guardianInstanceId: locator.guardian.instanceId,
-      guardianPid: locator.guardian.pid,
-      guardianProcessStartedAtSeconds: locator.guardian.processStartedAtSeconds,
-      guardianControlEndpoint: locator.guardian.controlEndpoint,
-      proxyInstanceId: operation.proxyInstanceId,
-      proxyPid: locator.proxy.pid,
-      reaperInstanceId: locator.reaper.instanceId,
-      reaperPid: locator.reaper.pid,
-      reaperProcessStartedAtSeconds: locator.reaper.processStartedAtSeconds,
-      reaperControlEndpoint: locator.reaper.controlEndpoint,
-      containmentKind: locator.containment.kind,
-      proxyProcessStartedAtSeconds: locator.proxy.processStartedAtSeconds,
-      proxyProcessGroupId: locator.containment.processGroupId,
-      canonicalEndpoint: locator.proxy.controlEndpoint,
-    };
     const set = createProviderProxyOperationAuthority({
       base,
       setIdentity,
@@ -485,7 +435,7 @@ async function redeem(
       mutationRpcTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     });
 
-    return { kind: 'inherited', set };
+    return set;
   } catch (error: unknown) {
     // Stop every heartbeat loop this attempt started before closing its clients — the mirror image of
     // `createProviderProxySetAuthority`'s own `initiateControlClose` ordering, and the same order ordinary
@@ -497,6 +447,34 @@ async function redeem(
     for (const client of opened) client.close();
     throw error;
   }
+}
+
+async function redeem(
+  reference: ProviderProxySetLocator,
+  deps: ProviderProxySetInheritanceDeps,
+  signal: AbortSignal,
+): Promise<ProviderProxySetInheritanceOutcome> {
+  const { operation, locator } = reference;
+  const capsulePath = providerHandoffCapsulePath(
+    {
+      generation: deps.coordinatorIdentity.generation,
+      flavor: deps.coordinatorIdentity.flavor,
+      buildSetId: operation.buildSetId,
+      hostFingerprint: locator.hostFingerprint,
+      proxyInstanceId: operation.proxyInstanceId,
+    },
+    deps.baseDir === undefined ? undefined : { baseDir: deps.baseDir },
+  );
+  const capsule = readHandoffCapsuleFile(capsulePath, {
+    storage: deps.runtime.storage,
+    uid: process.getuid?.() ?? 0,
+  });
+  if (capsule === null) return { kind: 'not-bequeathed', reason: NOTHING_TO_INHERIT_REASON };
+  if (!capsuleMatchesLocator(capsule, reference, deps.coordinatorIdentity)) {
+    return { kind: 'not-bequeathed', reason: 'capsule identity disagrees with the committed locator' };
+  }
+  const set = await redeemCapsule(capsulePath, capsule, providerProxySetIdentityFromRecord(reference), deps, signal);
+  return { kind: 'inherited', set };
 }
 
 /**
@@ -557,6 +535,11 @@ export interface ProviderProxySetInheritance {
     db: Database,
     signal: AbortSignal,
   ): Promise<ProviderProxySetInheritanceOutcome>;
+  redeemDiscoveredCapsule(
+    capsule: HandoffCapsule,
+    capsulePath: string,
+    signal: AbortSignal,
+  ): Promise<DurableProviderProxyOperationAuthority>;
 }
 
 export type CreateProviderProxySetInheritanceOptions = Readonly<{
@@ -570,10 +553,6 @@ export type CreateProviderProxySetInheritanceOptions = Readonly<{
   registerInheritedSet(set: ProviderProxyOperationAuthority): void;
 }>;
 
-function providerProxySetAddress(reference: ProviderProxySetLocator): string {
-  return `${reference.operation.buildSetId}:${reference.locator.hostFingerprint}:${reference.operation.proxyInstanceId}`;
-}
-
 /**
  * Composes `attemptProviderProxySetInheritance` with this coordinator's own identity and registries, the same
  * way `world.ts` composes `ProviderProxySetAcquisitionConfig` for ordinary acquisition. This is the one
@@ -582,63 +561,73 @@ function providerProxySetAddress(reference: ProviderProxySetLocator): string {
 export function createProviderProxySetInheritance(
   options: CreateProviderProxySetInheritanceOptions,
 ): ProviderProxySetInheritance {
-  // Sharing the successful outcome prevents concurrent saga rows from racing two control establishments for
-  // the same set.
-  const inheritedByAddress = new Map<string, Promise<ProviderProxySetInheritanceOutcome>>();
+  const inFlightByIdentity = new Map<string, Promise<ProviderProxySetInheritanceOutcome>>();
+
+  const deps = (): ProviderProxySetInheritanceDeps | null => {
+    const pid = options.runtime.env.pid();
+    const platform = options.runtime.env.platform() as NodeJS.Platform;
+    const processStartedAtSeconds = probeProcessStartedAtSeconds(pid, platform);
+    if (processStartedAtSeconds === null) return null;
+    return {
+      runtime: options.runtime,
+      coordinatorIdentity: {
+        instanceId: options.identity.instanceId,
+        pid,
+        processStartedAtSeconds,
+        generation: 'gen2',
+        flavor: options.identity.flavor,
+        buildSetId: options.identity.buildSetId,
+      },
+      operationRegistry: options.operationRegistry,
+      confirmContainmentDisappearance:
+        options.confirmContainmentDisappearance ??
+        ((reference, store, proofSignal) =>
+          confirmProviderProxySetDisappearance(reference, store, options.runtime, proofSignal)),
+      ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
+    };
+  };
+
   return {
     async inheritProviderProxySet(locator, db, signal) {
-      const address = providerProxySetAddress(locator);
-      const existing = inheritedByAddress.get(address);
+      const identityKey = providerProxySetKey(providerProxySetIdentityFromRecord(locator));
+      const existing = inFlightByIdentity.get(identityKey);
       if (existing !== undefined) return existing;
       const attempt = (async (): Promise<ProviderProxySetInheritanceOutcome> => {
         try {
-          const pid = options.runtime.env.pid();
-          const platform = options.runtime.env.platform() as NodeJS.Platform;
-          const processStartedAtSeconds = probeProcessStartedAtSeconds(pid, platform);
+          const inheritanceDeps = deps();
           let outcome: ProviderProxySetInheritanceOutcome;
-          if (processStartedAtSeconds === null) {
+          if (inheritanceDeps === null) {
             outcome = { kind: 'not-bequeathed', reason: 'could not read this coordinator process’s own start time' };
           } else {
             // A per-address deadline bounds each redemption without letting one stalled carrier monopolize
             // startup reconciliation.
             const bounded = AbortSignal.any([signal, AbortSignal.timeout(INHERITANCE_REDEMPTION_DEADLINE_MS)]);
-            outcome = await attemptProviderProxySetInheritance(
-              locator,
-              db,
-              {
-                runtime: options.runtime,
-                coordinatorIdentity: {
-                  instanceId: options.identity.instanceId,
-                  pid,
-                  processStartedAtSeconds,
-                  generation: 'gen2',
-                  flavor: options.identity.flavor,
-                  buildSetId: options.identity.buildSetId,
-                },
-                operationRegistry: options.operationRegistry,
-                confirmContainmentDisappearance:
-                  options.confirmContainmentDisappearance ??
-                  ((reference, store, proofSignal) =>
-                    confirmProviderProxySetDisappearance(reference, store, options.runtime, proofSignal)),
-                ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
-              },
-              bounded,
-            );
+            outcome = await attemptProviderProxySetInheritance(locator, db, inheritanceDeps, bounded);
           }
           if (outcome.kind === 'inherited') {
             options.registerInheritedSet(outcome.set);
             notifyProviderProxyControlEstablished(outcome.set);
-          } else if (outcome.kind === 'not-bequeathed') {
-            inheritedByAddress.delete(address);
           }
           return outcome;
-        } catch (error: unknown) {
-          inheritedByAddress.delete(address);
-          throw error;
+        } finally {
+          inFlightByIdentity.delete(identityKey);
         }
       })();
-      inheritedByAddress.set(address, attempt);
+      inFlightByIdentity.set(identityKey, attempt);
       return attempt;
+    },
+    async redeemDiscoveredCapsule(capsule, capsulePath, signal) {
+      const inheritanceDeps = deps();
+      if (inheritanceDeps === null) {
+        throw new Error('could not read this coordinator process’s own start time');
+      }
+      return redeemCapsule(
+        capsulePath,
+        capsule,
+        null,
+        inheritanceDeps,
+        AbortSignal.any([signal, AbortSignal.timeout(INHERITANCE_REDEMPTION_DEADLINE_MS)]),
+      );
     },
   };
 }

@@ -25,7 +25,8 @@ import type {
   spawnRoleProcess as spawnRoleProcessType,
 } from '#src/provider-proxy/role-spawn.js';
 import type * as ProxyMod from '#src/provider-proxy/proxy.js';
-import type * as SemanticOperationMod from '#src/provider-proxy/semantic-operation.js';
+import type * as ProviderRootAuthorityMod from '#src/provider-proxy/provider-root-authority.js';
+import type * as SemanticOperationRunnerMod from '#src/provider-proxy/semantic-operation-runner.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
 const roleSenderHarness = vi.hoisted(() => ({
@@ -74,8 +75,8 @@ vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
   };
 });
 
-vi.mock('#src/provider-proxy/semantic-operation.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof SemanticOperationMod>();
+vi.mock('#src/provider-proxy/provider-root-authority.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof ProviderRootAuthorityMod>();
   return {
     ...actual,
     createProxyAppServerHostAuthority: (...args: Parameters<typeof actual.createProxyAppServerHostAuthority>) =>
@@ -93,6 +94,13 @@ vi.mock('#src/provider-proxy/semantic-operation.js', async (importOriginal) => {
             forceClose: async () => {},
           } satisfies ReturnType<typeof actual.createProxyAppServerHostAuthority>)
         : actual.createProxyAppServerHostAuthority(...args),
+  };
+});
+
+vi.mock('#src/provider-proxy/semantic-operation-runner.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof SemanticOperationRunnerMod>();
+  return {
+    ...actual,
     createSemanticOperationRuntime: (...args: Parameters<typeof actual.createSemanticOperationRuntime>) => {
       if (proxyRoleCloseHarness.enabled) {
         proxyRoleCloseHarness.onRelinquish = args[0].onRelinquish;

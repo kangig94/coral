@@ -1,5 +1,9 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+import { z } from 'zod';
+
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
-import { assertNever } from '../../infra/error-format.js';
+import { assertNever, errorMessage } from '../../infra/error-format.js';
 import type { AppServerProxyPlacementResult } from '../../jobs/contracts/app-server-proxy-route.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { buildJobEventRefs } from '../../jobs/refs.js';
@@ -7,6 +11,7 @@ import type { ProviderOperationTerminalizationPort } from '../../jobs/provider-o
 import { isAbortStopCause, type ProviderStopCause } from '../../providers/contract.js';
 import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
+  operationIdentitySchema,
   providerOperationPreparePermanentRefusalSchema,
   type ProviderOperationPreparePermanentRefusal,
 } from '../../provider-proxy/protocol.js';
@@ -41,6 +46,12 @@ import {
   type ProviderOperationPrepareAttempt,
 } from './provider-proxy-operation-activation.js';
 import type { ProviderOperationPrepareMaterializationResult } from './provider-operation-prepare.js';
+import {
+  providerProxySetIdentitiesEqual,
+  providerProxySetIdentitySchema,
+  providerProxySetIdentityFromRecord,
+  type ProviderProxySetIdentity,
+} from './provider-proxy-set-identity.js';
 import type { ProviderOperationRecoveryAcceptance } from './recovery/index.js';
 
 export type ProviderOperationReconciliationEvidence =
@@ -58,6 +69,30 @@ export type ProviderOperationReconciliationEvidence =
     }>
   | Readonly<{ kind: 'released-after-terminal'; settledThroughProviderSeq: number }>
   | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>;
+
+export type ContainmentDisappearanceNotice = Readonly<{
+  operation: ProviderOperationIdentity;
+  setIdentity: ProviderProxySetIdentity;
+  disappearanceReceipt: string;
+}>;
+
+export type ContainmentDisappearanceAcceptance = Readonly<{
+  kind: 'accepted';
+  operation: ProviderOperationIdentity;
+  disposition: 'record-absent' | 'local-recovery-committed' | 'terminalization-committed' | 'settlement-deleted';
+}>;
+
+export interface ProviderContainmentDisappearanceConsumer {
+  containmentDisappeared(notice: ContainmentDisappearanceNotice): Promise<ContainmentDisappearanceAcceptance>;
+}
+
+const containmentDisappearanceNoticeSchema = z
+  .object({
+    operation: operationIdentitySchema,
+    setIdentity: providerProxySetIdentitySchema,
+    disappearanceReceipt: z.string().min(1).max(4096),
+  })
+  .strict();
 
 export type ProviderOperationTerminationVerdict =
   | Readonly<{ kind: 'pending' }>
@@ -154,17 +189,44 @@ export function notifyProviderOperationSettlementPending(identity: ProviderOpera
 const TIMER_MIN_MS = 25;
 const TIMER_MAX_MS = 2_000;
 const NEVER_ABORTS = new AbortController().signal;
+const CONTAINMENT_DRIVE_FENCE = Symbol('provider-containment-drive-fence');
+
+class ContainmentDriveFencedError extends Error {
+  readonly reason = CONTAINMENT_DRIVE_FENCE;
+
+  constructor() {
+    super('Provider authority drive was fenced by exact containment disappearance.');
+    this.name = 'ContainmentDriveFencedError';
+  }
+}
+
+type AuthorityDriveContext = Readonly<{
+  key: string;
+  epoch: number;
+  abort: AbortController;
+  signal: AbortSignal;
+}>;
+
+type OperationSerializer = {
+  epoch: number;
+  activeAbort: AbortController | null;
+  inFlight: Promise<void> | null;
+  disappearance: Readonly<{
+    notice: ContainmentDisappearanceNotice;
+    promise: Promise<ContainmentDisappearanceAcceptance>;
+  }> | null;
+  consumed: Readonly<{
+    notice: ContainmentDisappearanceNotice;
+    acceptance: ContainmentDisappearanceAcceptance;
+  }> | null;
+};
 
 function operationKey(identity: ProviderOperationIdentity): string {
   return `${identity.jobId}:${identity.operationId}:${identity.proxyInstanceId}:${identity.buildSetId}`;
 }
 
 function sameAuthority(record: ProviderOperationRecord, authority: DurableProviderProxyOperationAuthority): boolean {
-  return (
-    authority.proxyInstanceId === record.operation.proxyInstanceId &&
-    authority.setIdentity.buildSetId === record.operation.buildSetId &&
-    authority.setIdentity.hostFingerprint === record.locator.hostFingerprint
-  );
+  return providerProxySetIdentitiesEqual(authority.setIdentity, providerProxySetIdentityFromRecord(record));
 }
 
 function retryDelayMs(retryCount: number): number {
@@ -185,13 +247,14 @@ function boundedPrepareRefusalReason(error: unknown): string {
   return (reason.length === 0 ? 'Provider operation prepare was refused.' : reason).slice(0, 4096);
 }
 
-export class ProviderOperationReconciler {
+export class ProviderOperationReconciler implements ProviderContainmentDisappearanceConsumer {
   readonly #deps: ProviderOperationReconcilerDeps;
   readonly #batchSize: number;
   readonly #publications = new Map<string, ActivePublication>();
   readonly #attachments = new Map<string, ProviderOperationIdentity>();
   readonly #settlements = new Map<string, ProviderOperationIdentity>();
-  readonly #inFlight = new Map<string, Promise<void>>();
+  readonly #serializers = new Map<string, OperationSerializer>();
+  readonly #driveContext = new AsyncLocalStorage<AuthorityDriveContext>();
   #unsubscribeSettlement: (() => void) | null = null;
   #timer: TimerHandle | null = null;
   #started = false;
@@ -314,20 +377,156 @@ export class ProviderOperationReconciler {
     void this.#poll();
   }
 
+  containmentDisappeared(notice: ContainmentDisappearanceNotice): Promise<ContainmentDisappearanceAcceptance> {
+    const parsed = containmentDisappearanceNoticeSchema.parse(notice);
+    if (
+      parsed.operation.buildSetId !== parsed.setIdentity.buildSetId ||
+      parsed.operation.proxyInstanceId !== parsed.setIdentity.proxyInstanceId
+    ) {
+      return Promise.reject(new Error('containment_disappearance_identity_mismatch'));
+    }
+    const key = operationKey(parsed.operation);
+    const serializer = this.#serializerFor(key);
+    const priorNotice = serializer.disappearance?.notice ?? serializer.consumed?.notice;
+    if (priorNotice !== undefined) {
+      if (!this.#sameDisappearanceNotice(priorNotice, parsed)) {
+        return Promise.reject(new Error('containment_disappearance_conflict'));
+      }
+      return (
+        serializer.disappearance?.promise ??
+        Promise.resolve(serializer.consumed?.acceptance as ContainmentDisappearanceAcceptance)
+      );
+    }
+
+    let resolveAcceptance!: (acceptance: ContainmentDisappearanceAcceptance) => void;
+    let rejectAcceptance!: (error: unknown) => void;
+    const promise = new Promise<ContainmentDisappearanceAcceptance>((resolve, reject) => {
+      resolveAcceptance = resolve;
+      rejectAcceptance = reject;
+    });
+    serializer.disappearance = { notice: parsed, promise };
+    serializer.epoch += 1;
+    serializer.activeAbort?.abort(new ContainmentDriveFencedError());
+    const active = serializer.inFlight ?? Promise.resolve();
+    const consume = (): Promise<ContainmentDisappearanceAcceptance> =>
+      this.#driveContext.exit(() => this.#consumeContainmentDisappearance(parsed));
+    void active.then(consume, consume).then(
+      (acceptance) => {
+        serializer.disappearance = null;
+        serializer.consumed = { notice: parsed, acceptance };
+        resolveAcceptance(acceptance);
+        this.wake();
+      },
+      (error: unknown) => {
+        rejectAcceptance(error);
+      },
+    );
+    return promise;
+  }
+
   reconcile(
     record: ProviderOperationRecord,
     preferredAuthority?: DurableProviderProxyOperationAuthority,
     signal?: AbortSignal,
   ): Promise<void> {
     const key = operationKey(record.operation);
-    const existing = this.#inFlight.get(key);
-    if (existing !== undefined) return existing;
-    const running = this.#drive(record, preferredAuthority, signal).finally(() => {
-      this.#inFlight.delete(key);
-      if (record.phase !== 'settlement-pending' && this.#settlements.has(key)) this.wake();
-    });
-    this.#inFlight.set(key, running);
+    const serializer = this.#serializerFor(key);
+    if (serializer.disappearance !== null) return serializer.disappearance.promise.then(() => undefined);
+    if (serializer.inFlight !== null) return serializer.inFlight;
+    serializer.epoch += 1;
+    const abort = new AbortController();
+    serializer.activeAbort = abort;
+    const context: AuthorityDriveContext = {
+      key,
+      epoch: serializer.epoch,
+      abort,
+      signal: signal === undefined ? abort.signal : AbortSignal.any([abort.signal, signal]),
+    };
+    const running = this.#driveContext
+      .run(context, () => this.#drive(record, preferredAuthority, context.signal))
+      .catch((error: unknown) => {
+        if (error instanceof ContainmentDriveFencedError) return;
+        throw error;
+      })
+      .finally(() => {
+        if (serializer.inFlight === running) serializer.inFlight = null;
+        if (serializer.activeAbort === abort) serializer.activeAbort = null;
+        if (record.phase !== 'settlement-pending' && this.#settlements.has(key)) this.wake();
+      });
+    serializer.inFlight = running;
     return running;
+  }
+
+  #serializerFor(key: string): OperationSerializer {
+    const existing = this.#serializers.get(key);
+    if (existing !== undefined) return existing;
+    const created: OperationSerializer = {
+      epoch: 0,
+      activeAbort: null,
+      inFlight: null,
+      disappearance: null,
+      consumed: null,
+    };
+    this.#serializers.set(key, created);
+    return created;
+  }
+
+  #sameDisappearanceNotice(left: ContainmentDisappearanceNotice, right: ContainmentDisappearanceNotice): boolean {
+    return (
+      operationKey(left.operation) === operationKey(right.operation) &&
+      left.disappearanceReceipt === right.disappearanceReceipt &&
+      providerProxySetIdentitiesEqual(left.setIdentity, right.setIdentity)
+    );
+  }
+
+  async #awaitAuthority<T>(pending: Promise<T>): Promise<T> {
+    const context = this.#driveContext.getStore();
+    if (context === undefined) return pending;
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = (): void => {
+        reject(
+          context.abort.signal.aborted
+            ? new ContainmentDriveFencedError()
+            : context.signal.reason instanceof Error
+              ? context.signal.reason
+              : new Error('Provider authority drive was aborted.'),
+        );
+      };
+      if (context.signal.aborted) {
+        onAbort();
+        return;
+      }
+      context.signal.addEventListener('abort', onAbort, { once: true });
+      pending.then(
+        (value) => {
+          context.signal.removeEventListener('abort', onAbort);
+          try {
+            this.#assertActiveDrive();
+            resolve(value);
+          } catch (error: unknown) {
+            reject(error instanceof Error ? error : new Error(errorMessage(error)));
+          }
+        },
+        (error: unknown) => {
+          context.signal.removeEventListener('abort', onAbort);
+          reject(error instanceof Error ? error : new Error(errorMessage(error)));
+        },
+      );
+    });
+  }
+
+  #assertActiveDrive(): void {
+    const context = this.#driveContext.getStore();
+    if (context === undefined) return;
+    const serializer = this.#serializers.get(context.key);
+    if (
+      context.abort.signal.aborted ||
+      serializer === undefined ||
+      serializer.epoch !== context.epoch ||
+      serializer.activeAbort !== context.abort
+    ) {
+      throw new ContainmentDriveFencedError();
+    }
   }
 
   async #drive(
@@ -349,7 +548,7 @@ export class ProviderOperationReconciler {
       }
       authority = authority !== null && sameAuthority(record, authority) ? authority : this.#deps.authorityFor(record);
       if (authority === null && this.#deps.acquireAuthority !== undefined) {
-        const acquired = await this.#deps.acquireAuthority(record, signal ?? NEVER_ABORTS);
+        const acquired = await this.#awaitAuthority(this.#deps.acquireAuthority(record, signal ?? NEVER_ABORTS));
         if (acquired !== null && 'kind' in acquired) {
           const current = await this.#finishContainmentDisappearance(record, acquired.disappearanceReceipt);
           if (current !== null) this.#schedule(TIMER_MIN_MS);
@@ -399,10 +598,12 @@ export class ProviderOperationReconciler {
     record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
     signal: AbortSignal,
   ): Promise<ProviderOperationRecord | null> {
+    this.#assertActiveDrive();
     const publication = this.#publications.get(operationKey(record.operation));
     if (publication !== undefined) {
       let deleted: ReturnType<typeof deleteProviderOperation>;
       try {
+        this.#assertActiveDrive();
         deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
       } catch (error: unknown) {
         const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
@@ -420,7 +621,7 @@ export class ProviderOperationReconciler {
     }
 
     try {
-      const acceptance = await this.#deps.recoverLocalJob(record, signal);
+      const acceptance = await this.#awaitAuthority(this.#deps.recoverLocalJob(record, signal));
       if (!isProviderOperationRecoveryAcceptance(acceptance, record.operation.jobId)) {
         throw new Error(`Exact recovery did not accept provider-operation job '${record.operation.jobId}'.`);
       }
@@ -431,6 +632,7 @@ export class ProviderOperationReconciler {
 
     let deleted: ReturnType<typeof deleteProviderOperation>;
     try {
+      this.#assertActiveDrive();
       deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
     } catch (error: unknown) {
       const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
@@ -475,7 +677,9 @@ export class ProviderOperationReconciler {
         );
       }
       try {
-        const inspected = await authority.inspectOperation(record.operation, record.prepareAttemptKey);
+        const inspected = await this.#awaitAuthority(
+          authority.inspectOperation(record.operation, record.prepareAttemptKey),
+        );
         if (inspected.state === 'prepared') {
           return this.#acceptPreparedEvidence(record, inspected);
         }
@@ -528,8 +732,8 @@ export class ProviderOperationReconciler {
     if (!this.#attemptMatchesRecord(record, attempt)) {
       throw new Error('Provider operation prepare send is not backed by the committed journal attempt.');
     }
-    await authority.registerSuccessionOperation(record.operation);
-    return authority.prepareOperation(attempt);
+    await this.#awaitAuthority(authority.registerSuccessionOperation(record.operation));
+    return this.#awaitAuthority(authority.prepareOperation(attempt));
   }
 
   #acceptPrepareResult(
@@ -583,7 +787,8 @@ export class ProviderOperationReconciler {
   ): Promise<ProviderOperationRecord | null> {
     try {
       const inspected =
-        knownInspection ?? (await authority.inspectOperation(record.operation, record.prepareAttemptKey));
+        knownInspection ??
+        (await this.#awaitAuthority(authority.inspectOperation(record.operation, record.prepareAttemptKey)));
       if (inspected.state === 'prepared') return this.#acceptPreparedEvidence(record, inspected);
       if (inspected.state === 'permanent-refusal') return this.#acceptPrepareResult(record, inspected);
       if (inspected.state === 'preparing') {
@@ -601,7 +806,9 @@ export class ProviderOperationReconciler {
       const released =
         inspected.state === 'released-never-started'
           ? inspected
-          : await authority.cancelOperation(record.operation, record.prepareAttemptNumber, record.prepareAttemptKey);
+          : await this.#awaitAuthority(
+              authority.cancelOperation(record.operation, record.prepareAttemptNumber, record.prepareAttemptKey),
+            );
       if (
         operationKey(released.operation) !== operationKey(record.operation) ||
         released.prepareAttemptNumber !== record.prepareAttemptNumber ||
@@ -610,7 +817,7 @@ export class ProviderOperationReconciler {
         throw new Error('Cancellation acknowledgement did not fence the journaled prepare attempt.');
       }
 
-      const materialized = await this.#deps.materializePrepare(record);
+      const materialized = await this.#awaitAuthority(Promise.resolve(this.#deps.materializePrepare(record)));
       if (materialized.state === 'permanent-refusal') {
         return this.#transition(record, this.#prepareRefusalRecord(record, materialized));
       }
@@ -681,11 +888,13 @@ export class ProviderOperationReconciler {
     authority: DurableProviderProxyOperationAuthority,
   ): Promise<ProviderOperationRecord | null> {
     try {
-      const result = await authority.authorizeOperation(record.operation, {
-        reservation: record.reservation,
-        providerRoot: record.providerRoot,
-        jointContainmentReceipt: record.jointContainmentReceipt,
-      });
+      const result = await this.#awaitAuthority(
+        authority.authorizeOperation(record.operation, {
+          reservation: record.reservation,
+          providerRoot: record.providerRoot,
+          jointContainmentReceipt: record.jointContainmentReceipt,
+        }),
+      );
       return this.#transition(
         record,
         providerOperationRecordSchema.parse({
@@ -727,11 +936,13 @@ export class ProviderOperationReconciler {
   ): Promise<ProviderOperationRecord | null> {
     let activationOutcome: Awaited<ReturnType<DurableProviderProxyOperationAuthority['activatePreparedOperation']>>;
     try {
-      activationOutcome = await authority.activatePreparedOperation(record.operation, {
-        reservation: record.reservation,
-        jointContainmentReceipt: record.jointContainmentReceipt,
-        jointActivationReceipt: record.jointActivationReceipt,
-      });
+      activationOutcome = await this.#awaitAuthority(
+        authority.activatePreparedOperation(record.operation, {
+          reservation: record.reservation,
+          jointContainmentReceipt: record.jointContainmentReceipt,
+          jointActivationReceipt: record.jointActivationReceipt,
+        }),
+      );
     } catch (error: unknown) {
       if (providerOperationErrorIsAmbiguous(error)) {
         await this.#recordRetry(record, error);
@@ -796,7 +1007,7 @@ export class ProviderOperationReconciler {
   ): Promise<ProviderOperationRecord | null> {
     let inspected: Awaited<ReturnType<DurableProviderProxyOperationAuthority['inspectOperation']>>;
     try {
-      inspected = await authority.inspectOperation(record.operation, record.prepareAttemptKey);
+      inspected = await this.#awaitAuthority(authority.inspectOperation(record.operation, record.prepareAttemptKey));
     } catch (error: unknown) {
       await this.#recordRetry(record, error);
       return null;
@@ -819,10 +1030,8 @@ export class ProviderOperationReconciler {
     }
     if (inspected.state === 'absent') {
       try {
-        const released = await authority.cancelOperation(
-          record.operation,
-          record.prepareAttemptNumber,
-          record.prepareAttemptKey,
+        const released = await this.#awaitAuthority(
+          authority.cancelOperation(record.operation, record.prepareAttemptNumber, record.prepareAttemptKey),
         );
         const cleanup = this.#prestartCleanupRecord(record, record.onNeverStarted);
         const verdict = providerOperationTerminationVerdict(cleanup, {
@@ -850,11 +1059,13 @@ export class ProviderOperationReconciler {
     }
 
     try {
-      const activationOutcome = await authority.activatePreparedOperation(record.operation, {
-        reservation: record.reservation,
-        jointContainmentReceipt: record.jointContainmentReceipt,
-        jointActivationReceipt: record.jointActivationReceipt,
-      });
+      const activationOutcome = await this.#awaitAuthority(
+        authority.activatePreparedOperation(record.operation, {
+          reservation: record.reservation,
+          jointContainmentReceipt: record.jointContainmentReceipt,
+          jointActivationReceipt: record.jointActivationReceipt,
+        }),
+      );
       if (activationOutcome.state === 'released-never-started') {
         return this.#transition(record, this.#prestartCleanupRecord(record, record.onNeverStarted));
       }
@@ -876,10 +1087,8 @@ export class ProviderOperationReconciler {
     authority: DurableProviderProxyOperationAuthority,
   ): Promise<ProviderOperationRecord | null> {
     try {
-      const released = await authority.cancelOperation(
-        record.operation,
-        record.prepareAttemptNumber,
-        record.prepareAttemptKey,
+      const released = await this.#awaitAuthority(
+        authority.cancelOperation(record.operation, record.prepareAttemptNumber, record.prepareAttemptKey),
       );
       const verdict = providerOperationTerminationVerdict(record, {
         kind: 'released-never-started',
@@ -908,6 +1117,7 @@ export class ProviderOperationReconciler {
     record: ProviderOperationRecord,
     directive: Extract<ProviderOperationAfterReleaseDirective, { kind: 'terminal-failed' | 'terminal-aborted' }>,
   ): ProviderOperationRecord | null {
+    this.#assertActiveDrive();
     const result = this.#deps.terminalization.terminalize(record, directive);
     if (result.kind === 'conflict') return result.current;
     this.#complete(record.operation, { kind: 'terminalized' });
@@ -919,7 +1129,9 @@ export class ProviderOperationReconciler {
     authority: DurableProviderProxyOperationAuthority,
   ): Promise<ProviderOperationRecord | null> {
     try {
-      const released = await authority.settleOperation(record.operation, record.terminalProviderSeq);
+      const released = await this.#awaitAuthority(
+        authority.settleOperation(record.operation, record.terminalProviderSeq),
+      );
       const verdict = providerOperationTerminationVerdict(record, {
         kind: 'released-after-terminal',
         settledThroughProviderSeq: released.settledThroughProviderSeq,
@@ -983,10 +1195,74 @@ export class ProviderOperationReconciler {
     }
   }
 
+  async #consumeContainmentDisappearance(
+    notice: ContainmentDisappearanceNotice,
+  ): Promise<ContainmentDisappearanceAcceptance> {
+    for (;;) {
+      const record = readProviderOperation(this.#deps.getProgressStore().getDb(), notice.operation);
+      if (record === null) {
+        return { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' };
+      }
+      if (!providerProxySetIdentitiesEqual(providerProxySetIdentityFromRecord(record), notice.setIdentity)) {
+        throw new Error('containment_disappearance_record_identity_mismatch');
+      }
+      if (record.phase === 'settlement-pending') {
+        const deleted = this.#deleteSettledOperation(record);
+        if (deleted.kind === 'conflict') continue;
+        this.#settlements.delete(operationKey(record.operation));
+        return { kind: 'accepted', operation: notice.operation, disposition: 'settlement-deleted' };
+      }
+      if (
+        record.phase === 'proxy-activation-pending' ||
+        record.phase === 'activation-resolution-pending' ||
+        record.phase === 'executing'
+      ) {
+        const directive =
+          record.phase === 'activation-resolution-pending'
+            ? record.activationIndeterminate
+            : record.phase === 'proxy-activation-pending'
+              ? {
+                  kind: 'terminal-failed' as const,
+                  code: 'activation_indeterminate',
+                  reason: `Provider containment disappeared after activation may have begun (${notice.disappearanceReceipt}).`,
+                }
+              : {
+                  kind: 'terminal-failed' as const,
+                  code: 'provider_lost',
+                  reason: `Provider execution was interrupted when its containment disappeared (${notice.disappearanceReceipt}).`,
+                };
+        const terminalized = this.#deps.terminalization.terminalize(record, directive);
+        if (terminalized.kind === 'conflict') continue;
+        this.#complete(record.operation, { kind: 'terminalized' });
+        return { kind: 'accepted', operation: notice.operation, disposition: 'terminalization-committed' };
+      }
+      if (record.phase === 'prestart-cleanup-pending' && record.afterRelease.kind !== 'local-authorized') {
+        const terminalized = this.#deps.terminalization.terminalize(record, record.afterRelease);
+        if (terminalized.kind === 'conflict') continue;
+        this.#complete(record.operation, { kind: 'terminalized' });
+        return { kind: 'accepted', operation: notice.operation, disposition: 'terminalization-committed' };
+      }
+      if (record.phase === 'local-recovery-pending') {
+        return { kind: 'accepted', operation: notice.operation, disposition: 'local-recovery-committed' };
+      }
+      const reason =
+        record.phase === 'prestart-cleanup-pending' && record.afterRelease.kind === 'local-authorized'
+          ? record.afterRelease.reason
+          : `Remote start is impossible because the exact provider containment disappeared (${notice.disappearanceReceipt}).`;
+      const transitioned = this.#transition(
+        record,
+        this.#toLocalRecoveryPending(record, reason, this.#deps.time.now()),
+      );
+      if (transitioned?.phase !== 'local-recovery-pending') continue;
+      return { kind: 'accepted', operation: notice.operation, disposition: 'local-recovery-committed' };
+    }
+  }
+
   async #commitExecuting(
     record: Extract<ProviderOperationRecord, { phase: 'proxy-activation-pending' | 'activation-resolution-pending' }>,
     activationAck: ProviderOperationActivationAck,
   ): Promise<Extract<ProviderOperationRecord, { phase: 'executing' }>> {
+    this.#assertActiveDrive();
     if (activationAck.committedThroughProviderSeq !== 0) {
       throw new Error('A fresh activation acknowledgement must begin at provider watermark zero.');
     }
@@ -1071,7 +1347,9 @@ export class ProviderOperationReconciler {
     const key = operationKey(record.operation);
     this.#attachments.set(key, record.operation);
     try {
-      const result = await authority.attachOperation(record.operation, record.committedThroughProviderSeq);
+      const result = await this.#awaitAuthority(
+        authority.attachOperation(record.operation, record.committedThroughProviderSeq),
+      );
       if (result.state === 'operation-absent') {
         if (operationKey(result.operation) !== key) {
           throw new Error('Operation-absent proof named a different operation.');
@@ -1115,7 +1393,7 @@ export class ProviderOperationReconciler {
   ): Promise<ProviderOperationRecord | null> {
     this.#registerExecuting(record, authority);
     if (record.controlIntent.kind === 'stop') {
-      await authority.buildOperationControl(record.operation).stop(record.controlIntent.cause);
+      await this.#awaitAuthority(authority.buildOperationControl(record.operation).stop(record.controlIntent.cause));
     }
     this.#complete(record.operation, { kind: 'remote-executing' });
     const latest = current ?? readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
@@ -1128,6 +1406,7 @@ export class ProviderOperationReconciler {
     record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
     authority: DurableProviderProxyOperationAuthority,
   ): void {
+    this.#assertActiveDrive();
     const launch = readProviderOperationJobLaunch(this.#deps.getProgressStore(), record.operation.jobId);
     const cleanup = providerOperationCleanupIdentity(launch);
     const control = authority.buildOperationControl(record.operation);
@@ -1282,6 +1561,7 @@ export class ProviderOperationReconciler {
   }
 
   #transition(expected: ProviderOperationRecord, next: ProviderOperationRecord): ProviderOperationRecord | null {
+    this.#assertActiveDrive();
     const result = compareAndSwapProviderOperation(this.#deps.getProgressStore().getDb(), expected, next);
     if (result.kind === 'updated') return result.record;
     return result.current;
@@ -1290,10 +1570,12 @@ export class ProviderOperationReconciler {
   #deleteSettledOperation(
     record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>,
   ): ReturnType<typeof deleteProviderOperation> {
+    this.#assertActiveDrive();
     return deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
   }
 
   async #recordRetry(record: ProviderOperationRecord, error: unknown): Promise<void> {
+    this.#assertActiveDrive();
     const now = this.#deps.time.now();
     const next = providerOperationRecordSchema.parse({
       ...record,

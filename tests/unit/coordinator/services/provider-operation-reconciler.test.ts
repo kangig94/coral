@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { providerOperationPrepareAttempt } from '#src/coordinator/services/provider-proxy-operation-activation.js';
+import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set-identity.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import type { ProviderProxyAuthorityFault } from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import type { ProviderOperationPrepareMaterializationResult } from '#src/coordinator/services/provider-operation-prepare.js';
 import type { ProviderOperationRecoveryAcceptance } from '#src/coordinator/services/recovery/index.js';
 import {
@@ -86,6 +90,120 @@ describe('provider operation termination verdicts', () => {
   });
 });
 
+function connectLifecycleAuthority(
+  authority: DurableProviderProxyOperationAuthority,
+  proof: ReturnType<typeof deferredValue<Awaited<ReturnType<DurableProviderProxyOperationAuthority['stopAndReap']>>>>,
+): (fault: ProviderProxyAuthorityFault) => void {
+  const listeners = new Set<(fault: ProviderProxyAuthorityFault) => void>();
+  Object.assign(authority, {
+    onFault: (listener: (fault: ProviderProxyAuthorityFault) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    stopAndReap: () => proof.promise,
+  });
+  return (fault) => {
+    for (const listener of listeners) listener(fault);
+  };
+}
+
+function lifecycleForSchedule(
+  record: ProviderOperationRecord,
+  reconciler: ProviderOperationReconciler,
+  authority: DurableProviderProxyOperationAuthority,
+): ProviderProxySetLifecycle {
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([record]);
+  const lifecycle = new ProviderProxySetLifecycle({
+    claims,
+    disappearanceConsumer: reconciler,
+    time: {
+      now: () => 100,
+      setTimeout: () => ({ unref: () => undefined }),
+      clearTimeout: () => undefined,
+    },
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  lifecycle.registerInheritedSet(authority);
+  return lifecycle;
+}
+
+describe('provider proxy exactly-once containment schedules', () => {
+  it('runs the prepare-pending zero-run schedule exactly once after absence handoff', async () => {
+    let localStarts = 0;
+    let emitFault = (_fault: ProviderProxyAuthorityFault): void => undefined;
+    const harness = createHarness({
+      prepareOperation: async () => {
+        emitFault({ policy: null, error: new Error('ambiguous prepare acknowledgement') });
+        throw new Error('ambiguous prepare acknowledgement');
+      },
+      inspectOperation: async () => {
+        emitFault({ policy: null, error: new Error('inspection remained ambiguous after prepare') });
+        throw new Error('inspection remained ambiguous');
+      },
+      recoverLocalJob: async (record) => {
+        localStarts += 1;
+        return providerRecoveryAccepted(record.operation.jobId);
+      },
+    });
+    const record = harness.record;
+    insertProviderOperation(harness.db, record);
+    const proof = deferredValue<Awaited<ReturnType<DurableProviderProxyOperationAuthority['stopAndReap']>>>();
+    emitFault = connectLifecycleAuthority(harness.authority, proof);
+    const lifecycle = lifecycleForSchedule(record, harness.reconciler, harness.authority);
+
+    await harness.reconciler.reconcile(record, harness.authority);
+    expect(localStarts).toBe(0);
+    expect(lifecycle.authorityFor(providerProxySetIdentityFromRecord(record))).toBeNull();
+
+    proof.resolve({ disappearanceReceipt: 'prepare-containment-absent' });
+    await vi.waitFor(() => expect(localStarts).toBe(1));
+
+    expect(localStarts).toBe(1);
+    expect(readProviderOperation(harness.db, record.operation)).toBeNull();
+  });
+
+  it('runs the post-start activation schedule once without authorizing local recovery', async () => {
+    let remoteStarts = 0;
+    let localStarts = 0;
+    let emitFault = (_fault: ProviderProxyAuthorityFault): void => undefined;
+    const harness = createHarness({
+      activatePreparedOperation: async () => {
+        remoteStarts += 1;
+        emitFault({ policy: null, error: new Error('activation acknowledgement failed after start') });
+        throw new Error('activation acknowledgement failed after start');
+      },
+      inspectOperation: async () => {
+        throw new Error('inspection remained ambiguous');
+      },
+      recoverLocalJob: async (record) => {
+        localStarts += 1;
+        return providerRecoveryAccepted(record.operation.jobId);
+      },
+    });
+    const record = providerOperationRecord('proxy-activation-pending');
+    insertProviderOperation(harness.db, record);
+    const proof = deferredValue<Awaited<ReturnType<DurableProviderProxyOperationAuthority['stopAndReap']>>>();
+    emitFault = connectLifecycleAuthority(harness.authority, proof);
+    const lifecycle = lifecycleForSchedule(record, harness.reconciler, harness.authority);
+
+    await harness.reconciler.reconcile(record, harness.authority);
+    if (lifecycle.snapshot().represented === 0) {
+      // A forgotten slot makes an overlapping replacement admissible; model the replacement's semantic start.
+      localStarts += 1;
+    }
+    expect({ remoteStarts, localStarts }).toEqual({ remoteStarts: 1, localStarts: 0 });
+    expect(lifecycle.authorityFor(providerProxySetIdentityFromRecord(record))).toBeNull();
+
+    proof.resolve({ disappearanceReceipt: 'activation-containment-absent' });
+    await vi.waitFor(() => expect(readProviderOperation(harness.db, record.operation)).toBeNull());
+
+    expect(remoteStarts + localStarts).toBe(1);
+    expect(localStarts).toBe(0);
+  });
+});
+
 const PREPARED = {
   version: 1,
   provider: 'codex',
@@ -108,6 +226,14 @@ const MATERIALIZED_PREPARED = { state: 'prepared', prepared: PREPARED } as const
 function deferred(): Readonly<{ promise: Promise<void>; resolve(): void }> {
   let resolve!: () => void;
   const promise = new Promise<void>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
+
+function deferredValue<T>(): Readonly<{ promise: Promise<T>; resolve(value: T): void }> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((accept) => {
     resolve = accept;
   });
   return { promise, resolve };
@@ -290,6 +416,8 @@ function createHarness(
   const readPhase = (): string => readProviderOperation(db, record.operation)?.phase ?? 'missing';
   const authority: DurableProviderProxyOperationAuthority = {
     proxyInstanceId: record.operation.proxyInstanceId,
+    faulted: new Promise<never>(() => {}),
+    onFault: () => () => undefined,
     setIdentity: {
       buildSetId: record.operation.buildSetId,
       hostFingerprint: record.locator.hostFingerprint,
@@ -594,9 +722,47 @@ describe('ProviderOperationReconciler publication', () => {
 
     harness.reconciler.onControlEstablished(harness.authority);
 
-    await vi.waitFor(() => expect(attachCalls).toBe(2));
-    expect(harness.registry.attach).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(attachCalls).toBe(2);
+      expect(harness.registry.attach).toHaveBeenCalledOnce();
+    });
     expect(readProviderOperation(harness.db, recovered.operation)?.phase).toBe('executing');
+  });
+
+  it('fences a blocked executing attach and acknowledges disappearance only after terminalization', async () => {
+    let resolveAttach!: (result: { state: 'attached'; replayFromProviderSeq: number }) => void;
+    const attachBlocked = new Promise<{ state: 'attached'; replayFromProviderSeq: number }>((resolve) => {
+      resolveAttach = resolve;
+    });
+    const harness = createHarness({ attachOperation: () => attachBlocked });
+    const recovered = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, recovered);
+
+    const drive = harness.reconciler.reconcile(recovered, harness.authority);
+    await vi.waitFor(() => expect(readProviderOperation(harness.db, recovered.operation)?.phase).toBe('executing'));
+
+    const acceptance = harness.reconciler.containmentDisappeared({
+      operation: recovered.operation,
+      setIdentity: providerProxySetIdentityFromRecord(recovered),
+      disappearanceReceipt: 'exact-absence-receipt',
+    });
+    const accepted = await Promise.race([
+      acceptance,
+      new Promise<'acceptance-timed-out'>((resolve) => setTimeout(() => resolve('acceptance-timed-out'), 50)),
+    ]);
+
+    expect(accepted).not.toBe('acceptance-timed-out');
+    if (accepted === 'acceptance-timed-out') throw new Error('disappearance acceptance did not preempt attach');
+    expect(accepted.disposition).toBe('terminalization-committed');
+    expect(readProviderOperation(harness.db, recovered.operation)).toBeNull();
+    expect(harness.registry.attach).not.toHaveBeenCalled();
+
+    if (recovered.phase !== 'executing') throw new Error('expected executing fixture');
+    resolveAttach({ state: 'attached', replayFromProviderSeq: recovered.committedThroughProviderSeq + 1 });
+    await drive;
+    await Promise.resolve();
+    expect(harness.registry.attach).not.toHaveBeenCalled();
+    expect(readProviderOperation(harness.db, recovered.operation)).toBeNull();
   });
 
   it('replays a durable stop intent when attaching an executing operation after restart', async () => {

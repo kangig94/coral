@@ -79,13 +79,15 @@ import {
   type SemanticOperationHost,
 } from '#src/provider-proxy/operation-supervisor.js';
 import {
-  SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS,
   createProxyAppServerHostAuthority,
-  createSemanticOperationRuntime,
   specFingerprint,
   specIdentityKey,
   type ProxyAppServerHostAuthority,
-} from '#src/provider-proxy/semantic-operation.js';
+} from '#src/provider-proxy/provider-root-authority.js';
+import {
+  SEMANTIC_OPERATION_CANCELLATION_TIMEOUT_MS,
+  createSemanticOperationRuntime,
+} from '#src/provider-proxy/semantic-operation-runner.js';
 // Only a test is allowed to see both copies at once (`src/provider-proxy/` may not import
 // `src/coordinator/`, enforced by `tests/invariants/architecture-layering.test.ts`, which scans `src/` only —
 // see the "agrees byte-for-byte" case below for why importing the forbidden-to-production original here is
@@ -586,7 +588,7 @@ describe('semantic-operation runtime: stop() racing a still-draining emit', () =
 
 describe('semantic-operation runtime: bounded cancellation', () => {
   it('force-closes the tracked host and lets transport closure settle a pull that ignores abort', async () => {
-    const { proxy, ledger, emittedEvents } = createTestProxy();
+    const { proxy, ledger } = createTestProxy();
     const key = testKey();
     const prepared = preparedFixture();
     prepareAndActivate(ledger, key, prepared);

@@ -57,6 +57,7 @@ import {
   MAX_PROVIDER_REPLAY_BYTES,
   MAX_PROVIDER_REPLAY_EVENTS,
 } from '#src/provider-proxy/ledger.js';
+import { proxyHandoffRedeemResultSchema } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
 import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import {
   decodeProxyControlFrame,
@@ -70,10 +71,8 @@ import type {
   SemanticOperationHost,
   SemanticOperationStartHandle,
 } from '#src/provider-proxy/operation-supervisor.js';
-import {
-  createSemanticOperationRuntime,
-  type ProxyAppServerHostAuthority,
-} from '#src/provider-proxy/semantic-operation.js';
+import type { ProxyAppServerHostAuthority } from '#src/provider-proxy/provider-root-authority.js';
+import { createSemanticOperationRuntime } from '#src/provider-proxy/semantic-operation-runner.js';
 import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 const NONCE = 'a'.repeat(64);
@@ -679,6 +678,7 @@ function activationDepsFor(set: ProxyUnderTest): ProviderProxyOperationActivatio
   return {
     proxyClient: set.control,
     guardianClient: set.control,
+    faultAuthority: () => undefined,
     setIdentity: {
       buildSetId: set.shared.buildSetId,
       hostFingerprint: FINGERPRINT,
@@ -886,6 +886,7 @@ describe('provider-proxy operation lifecycle', () => {
       controlEpoch: number;
       heartbeatChallenge: string;
     };
+    expect(proxyHandoffRedeemResultSchema.parse(redeemed).proxy).toEqual(set.identity);
     await successor.call(
       'control.heartbeat.v1',
       { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { createDeferred } from '#tools/testing/deferred.js';
 
 // `ensureProxySetFor` (the manager's own dedup/registry wiring) is what these tests exercise; the acquisition
@@ -8,12 +9,9 @@ vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', () => (
   ensureProviderProxySet: vi.fn(),
 }));
 
-import {
-  MAX_COORDINATOR_PROXY_SET_SLOTS,
-  DefaultProviderHostManager,
-  hostKeyFromSpec,
-} from '#src/coordinator/live/provider-hosts/index.js';
+import { DefaultProviderHostManager, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/index.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
+import { MAX_COORDINATOR_PROXY_SET_SLOTS } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
 import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
 import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
 import type {
@@ -21,6 +19,9 @@ import type {
   ProviderProxyOperationAuthority,
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
 import {
   createExclusiveSpec,
   createFakeProviderServerHandle,
@@ -34,7 +35,7 @@ const mockedEnsureProxySet = ensureProviderProxySet as unknown as ReturnType<typ
 
 function fakeProxySet(proxyInstanceId: string): ProviderProxySetAuthority {
   return {
-    proxyInstanceId,
+    proxyInstanceId: /^[0-9a-f]{8}-/u.test(proxyInstanceId) ? proxyInstanceId : randomUUID(),
     stopAndReap: async () => ({ disappearanceReceipt: 'r' }),
     stopHeartbeats: () => {},
     initiateControlClose: async () => {},
@@ -44,19 +45,20 @@ function fakeProxySet(proxyInstanceId: string): ProviderProxySetAuthority {
 /** `registerInheritedSet` takes the full operation-routing authority, unlike `ensureProxySetFor`'s untyped
  *  mock elsewhere in this file — a fresh fixture rather than widening `fakeProxySet` for every caller. */
 function fakeInheritedProxySet(proxyInstanceId: string): ProviderProxyOperationAuthority {
+  const base = fakeProxySet(proxyInstanceId);
   return {
-    ...fakeProxySet(proxyInstanceId),
+    ...base,
     registerSuccessionOperation: async () => {},
     setIdentity: {
-      buildSetId: 'b',
+      buildSetId: randomUUID(),
       hostFingerprint: 'a'.repeat(64),
-      guardianInstanceId: 'g',
+      guardianInstanceId: randomUUID(),
       guardianPid: 100,
       guardianProcessStartedAtSeconds: 1,
       guardianControlEndpoint: '/tmp/guardian.sock',
-      proxyInstanceId,
+      proxyInstanceId: base.proxyInstanceId,
       proxyPid: 200,
-      reaperInstanceId: 'r',
+      reaperInstanceId: randomUUID(),
       reaperPid: 300,
       reaperProcessStartedAtSeconds: 2,
       reaperControlEndpoint: '/tmp/reaper.sock',
@@ -80,6 +82,8 @@ function fakeDurableProxySet(
   const inherited = fakeInheritedProxySet(proxyInstanceId);
   return {
     ...inherited,
+    faulted: new Promise<never>(() => {}),
+    onFault: () => () => undefined,
     prepareOperation:
       options.prepareOperation ??
       (async () => {
@@ -117,6 +121,22 @@ const proxySetAcquisition = {
   // registry; empty is the honest answer regardless.
   operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
 };
+
+function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void): ProviderProxySetLifecycleRef {
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const lifecycle = new ProviderProxySetLifecycle({
+    claims,
+    disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+    time: runtime.time,
+    ...(onSlotReleased === undefined ? {} : { onSlotReleased }),
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  const ref = new ProviderProxySetLifecycleRef();
+  ref.connect(lifecycle);
+  return ref;
+}
 
 function expectedHost(spec: ProviderServerSpec, jobId = 'shared-attachment') {
   return { spec, jobId };
@@ -871,6 +891,7 @@ describe('provider host pool proxy set registry', () => {
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
 
     const spec = createSharedSpec();
@@ -891,15 +912,16 @@ describe('provider host pool proxy set registry', () => {
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
-    const set = fakeProxySet('proxy-a');
+    const set = fakeDurableProxySet('proxy-a');
     mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
       onSettled({ kind: 'acquired', set });
     });
 
     const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
 
-    expect(manager.liveSets()).toEqual([set]);
+    expect(manager.liveSets().map((candidate) => candidate.proxyInstanceId)).toEqual([set.proxyInstanceId]);
     const second = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-b' });
     expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
 
@@ -914,6 +936,7 @@ describe('provider host pool proxy set registry', () => {
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
     mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
       onSettled({ kind: 'failed', reason: 'guardian spawn exploded' });
@@ -935,8 +958,9 @@ describe('provider host pool proxy set registry', () => {
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
-    const set = fakeInheritedProxySet('proxy-routed');
+    const set = fakeDurableProxySet('proxy-routed');
     mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
       onSettled({ kind: 'acquired', set });
     });
@@ -944,7 +968,7 @@ describe('provider host pool proxy set registry', () => {
 
     const lease = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
 
-    expect(manager.routeAppServerOperation(spec)).toBe(set);
+    expect(manager.routeAppServerOperation(spec)?.proxyInstanceId).toBe(set.proxyInstanceId);
 
     lease.close();
     await manager.shutdown();
@@ -962,8 +986,9 @@ describe('provider host pool proxy set registry', () => {
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
-    const set = fakeProxySet('proxy-shared');
+    const set = fakeDurableProxySet('proxy-shared');
     mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
       onSettled({ kind: 'acquired', set });
     });
@@ -988,6 +1013,7 @@ describe('provider host pool proxy set registry', () => {
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(...servers.map(({ handle }) => handle)),
       proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
     mockedEnsureProxySet.mockImplementation(() => {
       // Every reserved slot remains pending while the fifth identity reaches the admission gate.
@@ -1038,10 +1064,14 @@ describe('provider host pool proxy set registry', () => {
       onSettled({ kind: 'acquired', set });
     });
     const servers = Array.from({ length: 5 }, (_, index) => createFakeProviderServerHandle({ generation: index + 1 }));
+    const providerProxyLifecycleRef = createProxySetLifecycleRef((routeKey) =>
+      manager.providerProxySlotReleased(routeKey),
+    );
     const manager = new DefaultProviderHostManager({
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(...servers.map(({ handle }) => handle)),
       proxySetAcquisition,
+      providerProxyLifecycleRef,
     });
     const specs = servers.map((_, index) => createSharedSpec({ env: { CORAL_ROTATION_SET: String(index) } }));
     const leases = [];
@@ -1064,7 +1094,9 @@ describe('provider host pool proxy set registry', () => {
     await vi.waitFor(() => expect(mockedEnsureProxySet).toHaveBeenCalledTimes(5));
     expect(stopHeartbeats).toHaveBeenCalledOnce();
     expect(initiateControlClose).toHaveBeenCalledOnce();
-    expect(manager.routeAppServerOperation(specs[0] as ProviderServerSpec)?.proxyInstanceId).toBe('proxy-a-fresh');
+    expect(manager.routeAppServerOperation(specs[0] as ProviderServerSpec)?.proxyInstanceId).toBe(
+      sets[4]?.proxyInstanceId,
+    );
     expect(manager.liveSets()).toHaveLength(MAX_COORDINATOR_PROXY_SET_SLOTS);
 
     for (const lease of leases) lease.close();
@@ -1081,6 +1113,7 @@ describe('provider host pool proxy set registry', () => {
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
     let capturedSignal: AbortSignal | undefined;
     mockedEnsureProxySet.mockImplementationOnce((_entry, env: { signal: AbortSignal }) => {
@@ -1120,8 +1153,9 @@ describe('provider host pool proxy set registration', () => {
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(createFakeProviderServerHandle().handle),
       proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
-    const set = fakeInheritedProxySet('proxy-inherited');
+    const set = fakeDurableProxySet('proxy-inherited');
 
     manager.registerInheritedSet(set);
 
@@ -1137,17 +1171,20 @@ describe('provider host pool proxy set registration', () => {
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(createFakeProviderServerHandle().handle),
       proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
     });
-    const acquired = fakeProxySet('proxy-acquired');
+    const acquired = fakeDurableProxySet('proxy-acquired');
     mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
       onSettled({ kind: 'acquired', set: acquired });
     });
     const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
-    const inherited = fakeInheritedProxySet('proxy-inherited');
+    const inherited = fakeDurableProxySet('proxy-inherited');
 
     manager.registerInheritedSet(inherited);
 
-    expect(new Set(manager.liveSets())).toEqual(new Set([acquired, inherited]));
+    expect(new Set(manager.liveSets().map((set) => set.proxyInstanceId))).toEqual(
+      new Set([acquired.proxyInstanceId, inherited.proxyInstanceId]),
+    );
     lease.close();
     await manager.shutdown();
   });
