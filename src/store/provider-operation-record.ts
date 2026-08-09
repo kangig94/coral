@@ -234,7 +234,7 @@ const executingSchema = z
     ...commonFields,
     ...executingFields,
     phase: z.literal('executing'),
-    controlIntent: providerOperationControlIntentSchema.optional(),
+    controlIntent: providerOperationControlIntentSchema,
   })
   .strict();
 
@@ -243,7 +243,7 @@ const prestartCleanupPendingSchema = z
     ...commonFields,
     phase: z.literal('prestart-cleanup-pending'),
     cleanupIntent: z.literal('release-never-started'),
-    afterRelease: providerOperationAfterReleaseDirectiveSchema.optional(),
+    afterRelease: providerOperationAfterReleaseDirectiveSchema,
   })
   .strict();
 
@@ -252,8 +252,8 @@ const activationResolutionPendingSchema = z
     ...commonFields,
     ...authorizedFields,
     phase: z.literal('activation-resolution-pending'),
-    onNeverStarted: providerOperationNeverStartedDirectiveSchema.optional(),
-    activationIndeterminate: providerOperationTerminalFailedDirectiveSchema.optional(),
+    onNeverStarted: providerOperationNeverStartedDirectiveSchema,
+    activationIndeterminate: providerOperationTerminalFailedDirectiveSchema,
   })
   .strict();
 
@@ -331,6 +331,16 @@ export const providerOperationRecordSchema = z
 export type ProviderOperationIdentity = Readonly<z.infer<typeof providerOperationIdentitySchema>>;
 export type ProviderOperationPrepareSource = Readonly<z.infer<typeof providerOperationPrepareSourceSchema>>;
 export type ProviderOperationActivationAck = Readonly<z.infer<typeof providerOperationActivationAckSchema>>;
+export type ProviderOperationAfterReleaseDirective = Readonly<
+  z.infer<typeof providerOperationAfterReleaseDirectiveSchema>
+>;
+export type ProviderOperationNeverStartedDirective = Readonly<
+  z.infer<typeof providerOperationNeverStartedDirectiveSchema>
+>;
+export type ProviderOperationTerminalDirective = Extract<
+  ProviderOperationAfterReleaseDirective,
+  { kind: 'terminal-failed' | 'terminal-aborted' }
+>;
 export type ProviderOperationRecord = Readonly<z.infer<typeof providerOperationRecordSchema>>;
 export type ProviderOperationPhase = ProviderOperationRecord['phase'];
 

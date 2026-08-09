@@ -425,7 +425,12 @@ async function launchThroughRoute(
     }),
     authorityFor: () => activeAuthority,
     registry,
-    materializePrepare: () => PREPARED,
+    materializePrepare: () => ({ kind: 'prepared', prepared: PREPARED }),
+    terminalization: {
+      terminalize: () => {
+        throw new Error('integration publication unexpectedly requested coordinator terminalization');
+      },
+    },
     backendNamespace: 'tests',
     time,
   });
@@ -634,8 +639,9 @@ describe('provider-proxy operation lifecycle', () => {
     set.advanceSilently(5_001);
     const executing = readProviderOperation(launched.db, operation);
     if (executing?.phase !== 'executing') throw new Error('expected executing journal row');
+    const { controlIntent: _controlIntent, ...settlementRecord } = executing;
     const settlement = providerOperationRecordSchema.parse({
-      ...executing,
+      ...settlementRecord,
       phase: 'settlement-pending',
       committedThroughProviderSeq: 0,
       terminalProviderSeq: 0,

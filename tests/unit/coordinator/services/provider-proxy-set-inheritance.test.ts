@@ -129,6 +129,7 @@ function executingRecord(
       committedThroughProviderSeq: 0,
     },
     committedThroughProviderSeq,
+    controlIntent: { kind: 'run' },
     revision: 0,
     retryNotBeforeMs: 0,
     retryCount: 0,
@@ -140,9 +141,10 @@ function executingRecord(
 
 function activationPendingRecord(reference: ProviderProxySetLocator): ProviderOperationRecord {
   const executing = executingRecord(reference);
-  const { activationAck, committedThroughProviderSeq, ...pending } = executing;
+  const { activationAck, committedThroughProviderSeq, controlIntent, ...pending } = executing;
   void activationAck;
   void committedThroughProviderSeq;
+  void controlIntent;
   return providerOperationRecordSchema.parse({
     ...pending,
     phase: 'proxy-activation-pending',

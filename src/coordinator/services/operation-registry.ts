@@ -65,7 +65,8 @@ export class LocalOperationRegistry {
     const identity: ProviderOperationEventIdentity = record.operation;
     const key = registryKey(identity.jobId, identity.operationId);
     const providerRoot = record.providerRoot;
-    this.entries.set(key, { identity, providerRoot, control, cleanup, state, stopCause: null });
+    const stopCause = record.controlIntent.kind === 'stop' ? record.controlIntent.cause : null;
+    this.entries.set(key, { identity, providerRoot, control, cleanup, state, stopCause });
     this.liveJobIndex.set(identity.jobId, key);
   }
 
@@ -116,16 +117,13 @@ export class LocalOperationRegistry {
   }
 
   /**
-   * The abort registry's `onAbort` action for every committed provider launch, wired once — unconditionally,
-   * before this job's fate as local or proxied is even decided (`activateCommittedProviderLaunch`). A job
-   * with no live entry here — local execution, an operation not yet activated, or one already settled — makes
-   * this a safe no-op; local execution's own signal-observing interrupt path is unaffected, since it listens
-   * on the shared `AbortSignal` directly rather than through this registry.
+   * The durable reconciler calls this only after the saga records the stop. A missing entry therefore delays
+   * the effect until attachment rather than losing the request; local execution still observes the shared
+   * `AbortSignal` directly.
    *
-   * Records `cause` on the entry before sending anything, so `recordedStopCauseFor` is correct the instant
-   * this returns regardless of whether the RPC below has completed, or ever completes. Fire-and-forget by
-   * design: the abort registry's `onAbort` contract is synchronous (`() => void`), and a dropped or slow
-   * `operation.stop.v1` reply must not block or crash whatever triggered the abort.
+   * Records `cause` before sending so a racing suspended event has the same durable disposition the caller
+   * already committed. Fire-and-forget keeps a slow reply from blocking the synchronous abort callback; the
+   * executing saga retries the effect.
    */
   stop(jobId: string, cause: ProviderStopCause): void {
     const key = this.liveJobIndex.get(jobId);

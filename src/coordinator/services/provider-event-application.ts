@@ -397,8 +397,9 @@ export function createStoreProviderEventEffectPort(
           `Provider operation '${identity.jobId}'/'${identity.operationId}' did not commit its terminal watermark.`,
         );
       }
+      const { controlIntent: _controlIntent, ...settlementRecord } = record;
       const next = providerOperationRecordSchema.parse({
-        ...record,
+        ...settlementRecord,
         phase: 'settlement-pending',
         terminalProviderSeq,
         settlementIntent: 'release-after-terminal',

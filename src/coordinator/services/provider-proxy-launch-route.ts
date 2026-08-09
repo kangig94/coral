@@ -18,7 +18,6 @@ export function createAppServerProxyRoute(deps: {
 }): AppServerProxyRoute {
   return {
     async activate(request: AppServerProxyRouteRequest, signal: AbortSignal) {
-      if (signal.aborted) return { kind: 'cancelled' };
       const authority = deps.hostManager.routeAppServerOperation(request.hostSpec);
       if (authority === null) {
         return {
@@ -69,7 +68,7 @@ export function createAppServerProxyRoute(deps: {
       });
       if (record.phase !== 'prepare-pending') throw new Error('Prepare-pending journal record failed validation.');
 
-      return deps.reconciler.begin({ record, attempt, authority });
+      return deps.reconciler.begin({ record, attempt, authority, signal });
     },
   };
 }

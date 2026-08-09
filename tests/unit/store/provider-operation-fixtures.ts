@@ -115,15 +115,33 @@ export function providerOperationRecord(
     case 'guardian-activation-pending':
       return providerOperationRecordSchema.parse({ ...common, ...prepared, phase });
     case 'proxy-activation-pending':
-    case 'activation-resolution-pending':
       return providerOperationRecordSchema.parse({ ...common, ...authorized, phase });
+    case 'activation-resolution-pending':
+      return providerOperationRecordSchema.parse({
+        ...common,
+        ...authorized,
+        phase,
+        onNeverStarted: {
+          kind: 'local-authorized',
+          reason: 'The exact proxy attempt was proven never started.',
+        },
+        activationIndeterminate: {
+          kind: 'terminal-failed',
+          code: 'activation_indeterminate',
+          reason: 'The proxy activation boundary could not be resolved.',
+        },
+      });
     case 'executing':
-      return providerOperationRecordSchema.parse({ ...common, ...executing, phase });
+      return providerOperationRecordSchema.parse({ ...common, ...executing, phase, controlIntent: { kind: 'run' } });
     case 'prestart-cleanup-pending':
       return providerOperationRecordSchema.parse({
         ...common,
         phase,
         cleanupIntent: 'release-never-started',
+        afterRelease: {
+          kind: 'local-authorized',
+          reason: 'The exact proxy attempt was proven never started.',
+        },
       });
     case 'settlement-pending':
       return providerOperationRecordSchema.parse({

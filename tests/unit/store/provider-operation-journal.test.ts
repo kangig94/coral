@@ -151,6 +151,13 @@ describe('provider operation journal', () => {
         controlIntent: { kind: 'stop', cause: 'signal_abort' },
       }).success,
     ).toBe(false);
+
+    const cleanup = providerOperationRecord('prestart-cleanup-pending');
+    if (cleanup.phase !== 'prestart-cleanup-pending') throw new Error('expected prestart cleanup fixture');
+    const { afterRelease: _afterRelease, ...missingAfterRelease } = cleanup;
+    expect(() => decodeProviderOperationRecord(JSON.stringify(missingAfterRelease))).toThrow(
+      /failed schema validation.*afterRelease/s,
+    );
   });
 
   it('uses exact-value compare-and-swap and makes stale revisions lose without changing the winner', () => {

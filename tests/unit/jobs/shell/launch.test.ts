@@ -21,6 +21,7 @@ import type { AppServerTransport, HostRef, ProviderEventBody, ProviderRequest } 
 import type { AppServerHostAuthority } from '#src/providers/internal/app-server-host.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 import type { AppServerProxyRoute } from '#src/jobs/contracts/app-server-proxy-route.js';
+import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
@@ -1503,6 +1504,53 @@ describe('ExecutionService launch', () => {
       expect(getInternals(service).progressStore.readTerminalProjection(decision.jobId)?.outcome).toEqual({
         kind: 'completed',
       });
+    });
+
+    it('cleans up an already-terminalized placement without writing a second terminal', async () => {
+      const { provider, execute } = makeAppServerProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const activate = vi.fn(async (request: Parameters<AppServerProxyRoute['activate']>[0]) => {
+        const store = getInternals(service).progressStore;
+        const status = store.readStatus(request.jobId);
+        store.commit((commit) => {
+          appendJobTerminalRecorded(commit, {
+            jobId: request.jobId,
+            sessionId: request.sessionId,
+            namespace: status?.backendNamespace,
+            project: status?.projectRoot,
+            terminal: {
+              content: '',
+              durationMs: 0,
+              outcome: { kind: 'aborted', reason: 'signal_abort' },
+            },
+          });
+          return undefined;
+        });
+        return { kind: 'terminalized' as const };
+      });
+      const service = createService(ctx, {
+        appServerProxyRoute: { activate },
+        appServerHostAuthority: fakeAppServerHostAuthority(),
+      });
+
+      const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') throw new Error('expected running launch');
+      trackJob(decision.jobId);
+      await vi.waitFor(() =>
+        expect(getInternals(service).progressStore.readTerminalProjection(decision.jobId)?.outcome).toEqual({
+          kind: 'aborted',
+          reason: 'signal_abort',
+        }),
+      );
+      await vi.waitFor(() => expect(getInternals(service).abortRegistry.has(decision.jobId)).toBe(false));
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(
+        getInternals(service)
+          .progressStore.readJobEvents(decision.jobId)
+          .filter((event) => event.type === 'terminal'),
+      ).toHaveLength(1);
     });
 
     it.each([

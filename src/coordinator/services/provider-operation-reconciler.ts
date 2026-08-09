@@ -2,7 +2,8 @@ import type { TimePort, TimerHandle } from '../../infra/port-types.js';
 import type { AppServerProxyPlacementResult } from '../../jobs/contracts/app-server-proxy-route.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { buildJobEventRefs } from '../../jobs/refs.js';
-import type { ProxyPreparedAppServerOperation } from '../../provider-proxy/protocol.js';
+import type { ProviderOperationTerminalizationPort } from '../../jobs/provider-operation-terminalization.js';
+import { isAbortStopCause, type ProviderStopCause } from '../../providers/contract.js';
 import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
   providerOperationCleanupIdentity,
@@ -13,13 +14,16 @@ import {
   deleteProviderOperation,
   insertProviderOperation,
   readProviderOperation,
+  readProviderOperationForJob,
   readProviderOperations,
   readProviderOperationsDue,
 } from '../../store/provider-operation-journal.js';
 import {
   providerOperationRecordSchema,
+  type ProviderOperationAfterReleaseDirective,
   type ProviderOperationActivationAck,
   type ProviderOperationIdentity,
+  type ProviderOperationNeverStartedDirective,
   type ProviderOperationRecord,
 } from '../../store/provider-operation-record.js';
 import type { DurableProviderProxyOperationAuthority } from '../live/provider-proxy/operation-route.js';
@@ -31,6 +35,7 @@ import {
   providerOperationPrepareAttempt,
   type ProviderOperationPrepareAttempt,
 } from './provider-proxy-operation-activation.js';
+import type { ProviderOperationPrepareMaterializationResult } from './provider-operation-prepare.js';
 
 export type ProviderOperationReconciliationEvidence =
   | Readonly<{ kind: 'unresolved' }>
@@ -95,6 +100,7 @@ type ActivePublication = Readonly<{
   operation: ProviderOperationIdentity;
   attempt: ProviderOperationPrepareAttempt;
   resolve: (result: AppServerProxyPlacementResult) => void;
+  disposeAbort: () => void;
 }>;
 
 type ProviderOperationReconcilerDeps = Readonly<{
@@ -104,10 +110,11 @@ type ProviderOperationReconcilerDeps = Readonly<{
     record: ProviderOperationRecord,
     signal: AbortSignal,
   ) => Promise<DurableProviderProxyOperationAuthority | null>;
-  registry: Pick<LocalOperationRegistry, 'activate' | 'adopt' | 'settled'>;
+  registry: Pick<LocalOperationRegistry, 'activate' | 'adopt' | 'settled' | 'stop'>;
   materializePrepare: (
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
-  ) => Promise<ProxyPreparedAppServerOperation> | ProxyPreparedAppServerOperation;
+  ) => Promise<ProviderOperationPrepareMaterializationResult> | ProviderOperationPrepareMaterializationResult;
+  terminalization: ProviderOperationTerminalizationPort;
   backendNamespace: string;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   batchSize?: number;
@@ -118,6 +125,7 @@ export type BeginProviderOperationPublication = Readonly<{
   record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>;
   attempt: ProviderOperationPrepareAttempt;
   authority: DurableProviderProxyOperationAuthority;
+  signal: AbortSignal;
 }>;
 
 type ProviderOperationSettlementListener = (identity: ProviderOperationIdentity) => void;
@@ -204,11 +212,21 @@ export class ProviderOperationReconciler {
     }
 
     return new Promise<AppServerProxyPlacementResult>((resolve) => {
+      let inserted = false;
+      let abortRequestedAt: string | null = null;
+      const onAbort = (): void => {
+        abortRequestedAt ??= new Date(this.#deps.time.now()).toISOString();
+        if (!inserted) return;
+        this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
+      };
+      input.signal.addEventListener('abort', onAbort, { once: true });
       this.#publications.set(key, {
         operation: input.record.operation,
         attempt: input.attempt,
         resolve,
+        disposeAbort: () => input.signal.removeEventListener('abort', onAbort),
       });
+      if (input.signal.aborted) onAbort();
       try {
         insertProviderOperation(this.#deps.getProgressStore().getDb(), input.record);
       } catch (error: unknown) {
@@ -218,8 +236,28 @@ export class ProviderOperationReconciler {
         });
         return;
       }
+      inserted = true;
+      if (abortRequestedAt !== null) {
+        this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
+        return;
+      }
       void this.reconcile(input.record, input.authority);
     });
+  }
+
+  requestStop(jobId: string, cause: ProviderStopCause): void {
+    try {
+      const record = readProviderOperationForJob(this.#deps.getProgressStore().getDb(), jobId);
+      if (record === null) {
+        this.#deps.registry.stop(jobId, cause);
+        return;
+      }
+      this.#requestControlIntent(record.operation, cause, new Date(this.#deps.time.now()).toISOString());
+    } catch (error: unknown) {
+      this.#deps.onError?.(
+        `Provider operation stop intent failed for job '${jobId}': ${providerOperationErrorReason(error)}`,
+      );
+    }
   }
 
   onControlEstablished(authority: DurableProviderProxyOperationAuthority): void {
@@ -443,11 +481,26 @@ export class ProviderOperationReconciler {
         throw new Error('Cancellation acknowledgement did not fence the journaled prepare attempt.');
       }
 
-      const prepared = await this.#deps.materializePrepare(record);
+      const materialized = await this.#deps.materializePrepare(record);
+      if (materialized.kind === 'permanent-refusal') {
+        return this.#transition(
+          record,
+          this.#prestartCleanupRecord(record, {
+            kind: 'terminal-failed',
+            code: materialized.code,
+            reason: materialized.reason,
+          }),
+        );
+      }
       const nextAttemptNumber = record.prepareAttemptNumber + 1;
       if (!Number.isSafeInteger(nextAttemptNumber))
         throw new Error('Provider operation prepare attempts are exhausted.');
-      const attempt = providerOperationPrepareAttempt(authority, record.operation, prepared, nextAttemptNumber);
+      const attempt = providerOperationPrepareAttempt(
+        authority,
+        record.operation,
+        materialized.prepared,
+        nextAttemptNumber,
+      );
       const rotated = providerOperationRecordSchema.parse({
         ...record,
         prepareAttemptNumber: nextAttemptNumber,
@@ -504,23 +557,18 @@ export class ProviderOperationReconciler {
       }
       return this.#transition(
         record,
-        providerOperationRecordSchema.parse({
-          version: record.version,
-          operation: record.operation,
-          locator: record.locator,
-          prepareAttemptNumber: record.prepareAttemptNumber,
-          prepareAttemptKey: record.prepareAttemptKey,
-          phase: 'prestart-cleanup-pending',
-          cleanupIntent: 'release-never-started',
-          revision: record.revision + 1,
-          retryNotBeforeMs: this.#deps.time.now(),
-          retryCount: 0,
-          lastError: {
+        this.#prestartCleanupRecord(
+          record,
+          {
+            kind: 'local-authorized',
+            reason: 'Guardian authorization was refused before proxy activation.',
+          },
+          {
             observedAtMs: this.#deps.time.now(),
             code: providerOperationErrorCode(error),
             message: providerOperationErrorReason(error),
           },
-        }),
+        ),
       );
     }
   }
@@ -543,53 +591,44 @@ export class ProviderOperationReconciler {
       }
       return this.#transition(
         record,
-        providerOperationRecordSchema.parse({
-          ...record,
-          phase: 'activation-resolution-pending',
-          revision: record.revision + 1,
-          retryNotBeforeMs: this.#deps.time.now(),
-          retryCount: 0,
-          lastError: {
+        this.#activationResolutionRecord(
+          record,
+          {
+            kind: 'local-authorized',
+            reason: 'The proxy proved that semantic execution never began.',
+          },
+          {
             observedAtMs: this.#deps.time.now(),
             code: providerOperationErrorCode(error),
             message: providerOperationErrorReason(error),
           },
-        }),
+        ),
       );
     }
     if (activationOutcome.state === 'released-never-started') {
       return this.#transition(
         record,
-        providerOperationRecordSchema.parse({
-          version: record.version,
-          operation: record.operation,
-          locator: record.locator,
-          prepareAttemptNumber: record.prepareAttemptNumber,
-          prepareAttemptKey: record.prepareAttemptKey,
-          phase: 'prestart-cleanup-pending',
-          cleanupIntent: 'release-never-started',
-          revision: record.revision + 1,
-          retryNotBeforeMs: this.#deps.time.now(),
-          retryCount: 0,
-          lastError: record.lastError,
+        this.#prestartCleanupRecord(record, {
+          kind: 'local-authorized',
+          reason: 'The proxy proved that semantic execution never began.',
         }),
       );
     }
     if (activationOutcome.state === 'released-activation-indeterminate') {
       return this.#transition(
         record,
-        providerOperationRecordSchema.parse({
-          ...record,
-          phase: 'activation-resolution-pending',
-          revision: record.revision + 1,
-          retryNotBeforeMs: this.#deps.time.now(),
-          retryCount: 0,
-          lastError: {
+        this.#activationResolutionRecord(
+          record,
+          {
+            kind: 'local-authorized',
+            reason: 'The proxy proved that semantic execution never began.',
+          },
+          {
             observedAtMs: this.#deps.time.now(),
             code: 'activation_indeterminate',
             message: 'The proxy released an activation whose start boundary could not be proven.',
           },
-        }),
+        ),
       );
     }
     try {
@@ -597,6 +636,7 @@ export class ProviderOperationReconciler {
     } catch (error: unknown) {
       const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
       if (current?.phase === 'executing') return current;
+      if (current !== null && current.revision !== record.revision) return current;
       await this.#recordRetry(record, error);
       return null;
     }
@@ -619,29 +659,40 @@ export class ProviderOperationReconciler {
       inspected.state === 'released-never-started' ||
       (inspected.state === 'releasing' && inspected.releaseKind === 'never-started')
     ) {
-      return this.#transition(
-        record,
-        providerOperationRecordSchema.parse({
-          version: record.version,
-          operation: record.operation,
-          locator: record.locator,
-          prepareAttemptNumber: record.prepareAttemptNumber,
-          prepareAttemptKey: record.prepareAttemptKey,
-          phase: 'prestart-cleanup-pending',
-          cleanupIntent: 'release-never-started',
-          revision: record.revision + 1,
-          retryNotBeforeMs: this.#deps.time.now(),
-          retryCount: 0,
-          lastError: record.lastError,
-        }),
-      );
+      return this.#transition(record, this.#prestartCleanupRecord(record, record.onNeverStarted));
     }
-    if (
-      inspected.state === 'absent' ||
-      inspected.state === 'released-activation-indeterminate' ||
-      inspected.state === 'released-after-terminal' ||
-      inspected.state === 'releasing'
-    ) {
+    if (inspected.state === 'released-activation-indeterminate') {
+      try {
+        return this.#terminalize(record, record.activationIndeterminate);
+      } catch (error: unknown) {
+        await this.#recordRetry(record, error);
+        return null;
+      }
+    }
+    if (inspected.state === 'absent') {
+      try {
+        const released = await authority.cancelOperation(
+          record.operation,
+          record.prepareAttemptNumber,
+          record.prepareAttemptKey,
+        );
+        const cleanup = this.#prestartCleanupRecord(record, record.onNeverStarted);
+        const verdict = providerOperationTerminationVerdict(cleanup, {
+          kind: 'released-never-started',
+          operation: released.operation,
+          prepareAttemptNumber: released.prepareAttemptNumber,
+          prepareAttemptKey: released.prepareAttemptKey,
+        });
+        if (verdict.kind !== 'released-never-started') {
+          throw new Error('Cancellation acknowledgement did not match the journal attempt.');
+        }
+        return this.#transition(record, cleanup);
+      } catch (error: unknown) {
+        await this.#recordRetry(record, error);
+        return null;
+      }
+    }
+    if (inspected.state === 'released-after-terminal' || inspected.state === 'releasing') {
       await this.#recordRetry(record, new Error('Indeterminate remote activation requires operator recovery.'));
       return null;
     }
@@ -657,31 +708,16 @@ export class ProviderOperationReconciler {
         jointActivationReceipt: record.jointActivationReceipt,
       });
       if (activationOutcome.state === 'released-never-started') {
-        return this.#transition(
-          record,
-          providerOperationRecordSchema.parse({
-            version: record.version,
-            operation: record.operation,
-            locator: record.locator,
-            prepareAttemptNumber: record.prepareAttemptNumber,
-            prepareAttemptKey: record.prepareAttemptKey,
-            phase: 'prestart-cleanup-pending',
-            cleanupIntent: 'release-never-started',
-            revision: record.revision + 1,
-            retryNotBeforeMs: this.#deps.time.now(),
-            retryCount: 0,
-            lastError: record.lastError,
-          }),
-        );
+        return this.#transition(record, this.#prestartCleanupRecord(record, record.onNeverStarted));
       }
       if (activationOutcome.state === 'released-activation-indeterminate') {
-        await this.#recordRetry(record, new Error('The proxy released an indeterminate activation.'));
-        return null;
+        return this.#terminalize(record, record.activationIndeterminate);
       }
       return await this.#commitExecuting(record, activationOutcome);
     } catch (error: unknown) {
       const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
       if (current?.phase === 'executing') return current;
+      if (current !== null && current.revision !== record.revision) return current;
       await this.#recordRetry(record, error);
       return null;
     }
@@ -707,17 +743,30 @@ export class ProviderOperationReconciler {
         await this.#recordRetry(record, new Error('Cancellation acknowledgement did not match the journal attempt.'));
         return null;
       }
+      if (record.afterRelease.kind !== 'local-authorized') {
+        return this.#terminalize(record, record.afterRelease);
+      }
       const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
       if (deleted.kind === 'conflict') return deleted.current;
       this.#complete(record.operation, {
         kind: 'local-authorized',
-        reason: 'The proxy fenced and released the operation before semantic execution began.',
+        reason: record.afterRelease.reason,
       });
       return null;
     } catch (error: unknown) {
       await this.#recordRetry(record, error);
       return null;
     }
+  }
+
+  #terminalize(
+    record: ProviderOperationRecord,
+    directive: Extract<ProviderOperationAfterReleaseDirective, { kind: 'terminal-failed' | 'terminal-aborted' }>,
+  ): ProviderOperationRecord | null {
+    const result = this.#deps.terminalization.terminalize(record, directive);
+    if (result.kind === 'conflict') return result.current;
+    this.#complete(record.operation, { kind: 'terminalized' });
+    return null;
   }
 
   async #driveSettlement(
@@ -752,10 +801,26 @@ export class ProviderOperationReconciler {
       throw new Error('A fresh activation acknowledgement must begin at provider watermark zero.');
     }
     const next = providerOperationRecordSchema.parse({
-      ...record,
+      version: record.version,
+      operation: record.operation,
+      locator: record.locator,
+      prepareAttemptNumber: record.prepareAttemptNumber,
+      prepareAttemptKey: record.prepareAttemptKey,
+      reservation: record.reservation,
+      providerRoot: record.providerRoot,
+      jointContainmentReceipt: record.jointContainmentReceipt,
+      jointActivationReceipt: record.jointActivationReceipt,
       phase: 'executing',
       activationAck,
       committedThroughProviderSeq: 0,
+      controlIntent:
+        record.phase === 'activation-resolution-pending' && record.onNeverStarted.kind === 'terminal-aborted'
+          ? {
+              kind: 'stop',
+              cause: record.onNeverStarted.cause,
+              requestedAt: record.onNeverStarted.requestedAt,
+            }
+          : { kind: 'run' },
       revision: record.revision + 1,
       retryNotBeforeMs: this.#deps.time.now(),
       retryCount: 0,
@@ -824,8 +889,9 @@ export class ProviderOperationReconciler {
         const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
         if (deleted.kind === 'conflict') {
           if (deleted.current?.phase !== 'executing') {
+            const finished = await this.#finishAttached(record, authority, deleted.current);
             this.#attachments.delete(key);
-            return this.#finishAttached(record, authority, deleted.current);
+            return finished;
           }
           return deleted.current;
         }
@@ -840,29 +906,41 @@ export class ProviderOperationReconciler {
         throw new Error('Attachment reply named a different replay boundary.');
       }
 
+      const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
+      const attachedRecord = current?.phase === 'executing' ? current : record;
+      const finished = await this.#finishAttached(
+        attachedRecord,
+        authority,
+        current?.phase === 'executing' ? undefined : current,
+      );
       this.#attachments.delete(key);
-      return this.#finishAttached(record, authority);
+      return finished;
     } catch (error: unknown) {
       const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
       if (current?.phase !== 'executing') {
+        const finished = await this.#finishAttached(record, authority, current);
         this.#attachments.delete(key);
-        return this.#finishAttached(record, authority, current);
+        return finished;
       }
       await this.#recordRetry(current, error);
       return null;
     }
   }
 
-  #finishAttached(
+  async #finishAttached(
     record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
     authority: DurableProviderProxyOperationAuthority,
-    current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation),
-  ): ProviderOperationRecord | null {
+    current?: ProviderOperationRecord | null,
+  ): Promise<ProviderOperationRecord | null> {
     this.#registerExecuting(record, authority);
+    if (record.controlIntent.kind === 'stop') {
+      await authority.buildOperationControl(record.operation).stop(record.controlIntent.cause);
+    }
     this.#complete(record.operation, { kind: 'remote-executing' });
-    if (current?.phase === 'executing') return null;
+    const latest = current ?? readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
+    if (latest?.phase === 'executing') return null;
     this.#deps.registry.settled(record.operation);
-    return current;
+    return latest;
   }
 
   #registerExecuting(
@@ -876,6 +954,123 @@ export class ProviderOperationReconciler {
       this.#deps.registry.activate(record, control, cleanup);
     } else {
       this.#deps.registry.adopt(record, control, cleanup);
+    }
+  }
+
+  #prestartCleanupRecord(
+    record: ProviderOperationRecord,
+    afterRelease: ProviderOperationAfterReleaseDirective,
+    lastError: ProviderOperationRecord['lastError'] = record.lastError,
+  ): Extract<ProviderOperationRecord, { phase: 'prestart-cleanup-pending' }> {
+    const next = providerOperationRecordSchema.parse({
+      version: record.version,
+      operation: record.operation,
+      locator: record.locator,
+      prepareAttemptNumber: record.prepareAttemptNumber,
+      prepareAttemptKey: record.prepareAttemptKey,
+      phase: 'prestart-cleanup-pending',
+      cleanupIntent: 'release-never-started',
+      afterRelease,
+      revision: record.revision + 1,
+      retryNotBeforeMs: this.#deps.time.now(),
+      retryCount: 0,
+      lastError,
+    });
+    if (next.phase !== 'prestart-cleanup-pending') {
+      throw new Error('Prestart cleanup journal transition failed validation.');
+    }
+    return next;
+  }
+
+  #activationResolutionRecord(
+    record: Extract<ProviderOperationRecord, { phase: 'proxy-activation-pending' | 'activation-resolution-pending' }>,
+    onNeverStarted: ProviderOperationNeverStartedDirective,
+    lastError: ProviderOperationRecord['lastError'],
+  ): Extract<ProviderOperationRecord, { phase: 'activation-resolution-pending' }> {
+    const next = providerOperationRecordSchema.parse({
+      ...record,
+      phase: 'activation-resolution-pending',
+      onNeverStarted,
+      activationIndeterminate: {
+        kind: 'terminal-failed',
+        code: 'activation_indeterminate',
+        reason: 'The provider activation boundary could not be proven after release.',
+      },
+      revision: record.revision + 1,
+      retryNotBeforeMs: this.#deps.time.now(),
+      retryCount: 0,
+      lastError,
+    });
+    if (next.phase !== 'activation-resolution-pending') {
+      throw new Error('Activation resolution journal transition failed validation.');
+    }
+    return next;
+  }
+
+  #requestControlIntent(
+    identity: ProviderOperationIdentity,
+    cause: ProviderStopCause,
+    requestedAt: string,
+    preferredAuthority?: DurableProviderProxyOperationAuthority,
+  ): void {
+    let current = readProviderOperation(this.#deps.getProgressStore().getDb(), identity);
+    while (current !== null) {
+      const aborted = isAbortStopCause(cause) ? ({ kind: 'terminal-aborted', cause, requestedAt } as const) : null;
+      let next: ProviderOperationRecord;
+      if (current.phase === 'prepare-pending' || current.phase === 'guardian-activation-pending') {
+        if (aborted === null) return;
+        next = this.#prestartCleanupRecord(current, aborted);
+      } else if (current.phase === 'proxy-activation-pending') {
+        if (aborted === null) return;
+        next = this.#activationResolutionRecord(current, aborted, current.lastError);
+      } else if (current.phase === 'activation-resolution-pending') {
+        if (aborted === null || current.onNeverStarted.kind === 'terminal-aborted') return;
+        next = providerOperationRecordSchema.parse({
+          ...current,
+          onNeverStarted: aborted,
+          revision: current.revision + 1,
+          retryNotBeforeMs: this.#deps.time.now(),
+          retryCount: 0,
+          lastError: current.lastError,
+        });
+      } else if (current.phase === 'prestart-cleanup-pending') {
+        if (aborted === null || current.afterRelease.kind !== 'local-authorized') return;
+        next = providerOperationRecordSchema.parse({
+          ...current,
+          afterRelease: aborted,
+          revision: current.revision + 1,
+          retryNotBeforeMs: this.#deps.time.now(),
+          retryCount: 0,
+          lastError: current.lastError,
+        });
+      } else if (current.phase === 'executing') {
+        if (current.controlIntent.kind === 'stop') {
+          this.#deps.registry.stop(current.operation.jobId, current.controlIntent.cause);
+          void this.reconcile(current, preferredAuthority);
+          return;
+        }
+        next = providerOperationRecordSchema.parse({
+          ...current,
+          controlIntent: { kind: 'stop', cause, requestedAt },
+          revision: current.revision + 1,
+          retryNotBeforeMs: this.#deps.time.now(),
+          retryCount: 0,
+          lastError: current.lastError,
+        });
+      } else {
+        return;
+      }
+
+      const result = compareAndSwapProviderOperation(this.#deps.getProgressStore().getDb(), current, next);
+      if (result.kind === 'conflict') {
+        current = result.current;
+        continue;
+      }
+      if (result.record.phase === 'executing' && result.record.controlIntent.kind === 'stop') {
+        this.#deps.registry.stop(result.record.operation.jobId, result.record.controlIntent.cause);
+      }
+      void this.reconcile(result.record, preferredAuthority);
+      return;
     }
   }
 
@@ -913,6 +1108,7 @@ export class ProviderOperationReconciler {
     const publication = this.#publications.get(key);
     if (publication === undefined) return;
     this.#publications.delete(key);
+    publication.disposeAbort();
     publication.resolve(result);
   }
 

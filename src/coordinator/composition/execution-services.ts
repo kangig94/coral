@@ -19,6 +19,7 @@ import { ProviderOperationCleanupRouter } from '../../jobs/provider-operation-cl
 import { readProviderOperationJobLaunch } from '../../jobs/provider-operation-state.js';
 import { readProjectionProviderSession } from '../../sessions/projections.js';
 import { materializeProviderOperationPrepare } from '../services/provider-operation-prepare.js';
+import { terminalizeProviderOperation } from '../../jobs/provider-operation-terminalization.js';
 
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
@@ -82,6 +83,10 @@ export function createExecutionServices({
         record.operation,
         record.prepareSource,
       ),
+    terminalization: {
+      terminalize: (record, directive) =>
+        terminalizeProviderOperation(getProgressStore(), record, directive, runtime.time.now()),
+    },
     backendNamespace,
     time: runtime.time,
     onError: (message) => backendLog.warn(message),
@@ -121,7 +126,7 @@ export function createExecutionServices({
         reconciler: providerOperationReconciler,
         now: () => runtime.time.now(),
       }),
-      operations: { stop: (jobId, cause) => world.operationRegistry.stop(jobId, cause) },
+      operations: { stop: (jobId, cause) => providerOperationReconciler.requestStop(jobId, cause) },
       providerOperationCleanup,
       observeCarriers: createObserveCarriers(
         {

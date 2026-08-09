@@ -3,10 +3,7 @@ import { z } from 'zod';
 import { resolveEquippedTools } from '../../expansion/equipped-tools.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import { applyInjectBundle } from '../../providers/inject.js';
-import {
-  proxyPreparedAppServerOperationSchema,
-  type ProxyPreparedAppServerOperation,
-} from '../../provider-proxy/protocol.js';
+import { proxyPreparedAppServerOperationSchema } from '../../provider-proxy/protocol.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderJobLaunch } from '../../jobs/records.js';
 import { toProviderRequest } from '../../jobs/provider-request.js';
@@ -38,6 +35,10 @@ export const providerOperationPrepareMaterializationResultSchema = z
   ])
   .describe('provider operation prepare materialization outcome');
 
+export type ProviderOperationPrepareMaterializationResult = Readonly<
+  z.infer<typeof providerOperationPrepareMaterializationResultSchema>
+>;
+
 export type ProviderOperationPrepareMaterializerDeps = Readonly<{
   runtime: Pick<Runtime, 'time' | 'env' | 'storage' | 'paths'>;
   providerRegistry: ProviderBindingCatalog;
@@ -50,7 +51,7 @@ export function materializeProviderOperationPrepare(
   deps: ProviderOperationPrepareMaterializerDeps,
   operation: ProviderOperationIdentity,
   source: ProviderOperationPrepareSource,
-): ProxyPreparedAppServerOperation {
+): ProviderOperationPrepareMaterializationResult {
   const launch = deps.readJobLaunch(operation.jobId, source.jobLaunchEventSeq);
   if (launch.jobId !== operation.jobId || launch.sessionId !== source.sessionId) {
     throw new Error('Provider operation prepare source does not match its durable job launch.');
@@ -67,7 +68,11 @@ export function materializeProviderOperationPrepare(
     throw new Error('Provider operation platform no longer matches the coordinator runtime.');
   }
   if (source.childAuthorization.expiresAtMs <= deps.runtime.time.now()) {
-    throw new Error('Provider operation child authorization has expired.');
+    return {
+      kind: 'permanent-refusal',
+      code: 'authorization_expired',
+      reason: 'Provider operation child authorization has expired.',
+    };
   }
 
   const bound = deps.providerRegistry.rehydrateBinding(session.binding);
@@ -99,18 +104,21 @@ export function materializeProviderOperationPrepare(
     nowMs: deps.runtime.time.now(),
   });
 
-  return proxyPreparedAppServerOperationSchema.parse({
-    version: 1,
-    provider: launch.provider,
-    binding: session.binding,
-    request: requestWithInject,
-    persistedContinuity: continuity.value ?? null,
-    baseEnv: deps.runtime.env.fullSnapshot(),
-    protectedEnv: {
-      CORAL_JOB_ID: operation.jobId,
-      CORAL_SESSION_ID: source.sessionId,
-      [CORAL_CHILD_PRINCIPAL_HANDLE]: child.handle,
-    },
-    platform: source.platform,
-  });
+  return {
+    kind: 'prepared',
+    prepared: proxyPreparedAppServerOperationSchema.parse({
+      version: 1,
+      provider: launch.provider,
+      binding: session.binding,
+      request: requestWithInject,
+      persistedContinuity: continuity.value ?? null,
+      baseEnv: deps.runtime.env.fullSnapshot(),
+      protectedEnv: {
+        CORAL_JOB_ID: operation.jobId,
+        CORAL_SESSION_ID: source.sessionId,
+        [CORAL_CHILD_PRINCIPAL_HANDLE]: child.handle,
+      },
+      platform: source.platform,
+    }),
+  };
 }

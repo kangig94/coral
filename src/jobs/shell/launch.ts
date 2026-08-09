@@ -112,11 +112,9 @@ export interface LaunchOrchestratorDeps {
    */
   appServerProxyRoute?: AppServerProxyRoute;
   /**
-   * The registry's abort-side capability: sends `operation.stop.v1` for whichever live proxied operation, if
-   * any, `jobId` currently maps to. Optional for the same reason `appServerProxyRoute` is — every test, and
-   * any coordinator build with no live set. Registered unconditionally as the abort registry's `onAbort`
-   * action for every committed launch, before this job's fate as local or proxied is even known; a local job
-   * simply has no matching registry entry, so `stop()` is a safe no-op for it.
+   * The placement owner's abort-side capability. It is registered before local versus proxy ownership is
+   * known so publication can durably record a stop before a live registry entry exists, while local execution
+   * continues to observe the same signal directly. Compositions without proxy placement may omit it.
    */
   operations?: { stop(jobId: string, cause: ProviderStopCause): void };
   terminalMaterializer: {
@@ -687,14 +685,9 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       if (input.committedSession !== undefined) {
         this.deps.sessionManager.observeCommittedEntry(input.committedSession);
       }
-      // Registered unconditionally, before this job's fate as local or proxied is even decided: for local
-      // execution the action is a no-op (nothing is registered under this job id yet), and local interrupt
-      // still happens the existing way, by observing the shared `AbortSignal` below directly. For a proxied
-      // entry the registry finds the live operation this job maps to and sends `operation.stop.v1` for it —
-      // the one wire that both makes `coral-cli abort` do anything to a proxied job and gives
-      // `recordedStopCauseFor` a cause to report back. `'signal_abort'` matches the reason every other path
-      // through this class already records for an `abortRegistry`-triggered stop (see `finishAbortedJob`'s
-      // caller below).
+      // Registered before placement so the same signal governs either owner. Local execution observes the
+      // signal directly; durable publication rechecks an already-aborted signal at insertion and records later
+      // stops in the saga before the proxy can act on them.
       this.deps.abortRegistry.register(input.jobId, () => this.deps.operations?.stop(input.jobId, 'signal_abort'));
       if (this.deps.abortRegistry.getSignal(input.jobId) === null) {
         throw new Error(`Abort registration produced no signal for committed job ${input.jobId}.`);
@@ -977,7 +970,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     signal: AbortSignal,
     pool: LaunchPool,
     protectedEnv?: ProviderOperationEnvironmentInput,
-  ): Promise<'settled' | 'preserved'> {
+  ): Promise<'settled' | 'preserved' | 'terminalized'> {
     const session = this.deps.sessionManager.get(provider.name, sessionId);
     if (!session) {
       throw new ProviderBindingRuntimeError(
@@ -1049,7 +1042,14 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         operationEnvironment,
         initialVersion,
       );
-      if (providerStream.kind === 'cancelled') return 'preserved';
+      if (providerStream.kind === 'cancelled') {
+        signal.throwIfAborted();
+        throw new Error('App-server placement was cancelled without an aborted launch signal.');
+      }
+      if (providerStream.kind === 'terminalized') {
+        this.releaseTerminalJob(jobId, sessionId);
+        return 'terminalized';
+      }
       if (providerStream.kind === 'proxied') {
         // Activation succeeded: `applyProviderEventAtSeq`, wired as the proxy's `onProviderEvent` handler on
         // the live control connection this coordinator holds, is now the sole and exclusive applier of every
@@ -1280,6 +1280,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   ): Promise<
     | Readonly<{ kind: 'local'; stream: AsyncIterable<ProviderEventBody> }>
     | Readonly<{ kind: 'proxied' }>
+    | Readonly<{ kind: 'terminalized' }>
     | Readonly<{ kind: 'cancelled' }>
   > {
     if (prepared.kind === 'app-server') {
@@ -1320,6 +1321,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           this.appServerHandoffAborts.delete(jobId);
           return { kind: 'proxied' };
         }
+        if (activation.kind === 'terminalized') return { kind: 'terminalized' };
         if (activation.kind === 'cancelled') return { kind: 'cancelled' };
         if (activation.kind === 'failed') throw new Error(activation.reason);
         if (activation.kind !== 'local-authorized') {

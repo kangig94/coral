@@ -88,7 +88,7 @@ describe('materializeProviderOperationPrepare', () => {
     const registerPersistedAuthorization = vi.fn();
     const rehydrateBinding = vi.fn();
 
-    expect(() =>
+    expect(
       materializeProviderOperationPrepare(
         {
           runtime: {
@@ -105,7 +105,11 @@ describe('materializeProviderOperationPrepare', () => {
         record.operation,
         source,
       ),
-    ).toThrow('Provider operation child authorization has expired.');
+    ).toEqual({
+      kind: 'permanent-refusal',
+      code: 'authorization_expired',
+      reason: 'Provider operation child authorization has expired.',
+    });
     expect(registerPersistedAuthorization).not.toHaveBeenCalled();
     expect(rehydrateBinding).not.toHaveBeenCalled();
   });
@@ -185,21 +189,24 @@ describe('materializeProviderOperationPrepare', () => {
     );
 
     expect(prepared).toMatchObject({
-      provider: 'codex',
-      binding,
-      request: {
-        sessionId: record.prepareSource.sessionId,
-        prompt: 'durable prompt',
-        conversationRef: 'durable-conversation',
+      kind: 'prepared',
+      prepared: {
+        provider: 'codex',
+        binding,
+        request: {
+          sessionId: record.prepareSource.sessionId,
+          prompt: 'durable prompt',
+          conversationRef: 'durable-conversation',
+        },
+        persistedContinuity: { threadId: 'durable-thread' },
+        baseEnv: { CURRENT_ENV: 'yes' },
+        protectedEnv: {
+          CORAL_JOB_ID: record.operation.jobId,
+          CORAL_SESSION_ID: record.prepareSource.sessionId,
+          CORAL_CHILD_PRINCIPAL_HANDLE: 'fresh-random-handle',
+        },
+        platform: 'linux',
       },
-      persistedContinuity: { threadId: 'durable-thread' },
-      baseEnv: { CURRENT_ENV: 'yes' },
-      protectedEnv: {
-        CORAL_JOB_ID: record.operation.jobId,
-        CORAL_SESSION_ID: record.prepareSource.sessionId,
-        CORAL_CHILD_PRINCIPAL_HANDLE: 'fresh-random-handle',
-      },
-      platform: 'linux',
     });
     expect(registerPersistedAuthorization).toHaveBeenCalledWith({
       issuer: 'provider-operation-reprepare',

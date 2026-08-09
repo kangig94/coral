@@ -98,9 +98,10 @@ describe('createAppServerProxyRoute', () => {
     expect(begin).not.toHaveBeenCalled();
   });
 
-  it('returns cancelled without routing or journalling an already-aborted launch', async () => {
-    const routeAppServerOperation = vi.fn();
-    const begin = vi.fn();
+  it('passes an already-aborted launch into the write-ahead publication boundary', async () => {
+    const set = authority();
+    const routeAppServerOperation = vi.fn(() => set);
+    const begin = vi.fn(async () => ({ kind: 'terminalized' as const }));
     const route = createAppServerProxyRoute({
       hostManager: { routeAppServerOperation },
       reconciler: { begin },
@@ -109,9 +110,9 @@ describe('createAppServerProxyRoute', () => {
     const controller = new AbortController();
     controller.abort();
 
-    await expect(route.activate(request, controller.signal)).resolves.toEqual({ kind: 'cancelled' });
-    expect(routeAppServerOperation).not.toHaveBeenCalled();
-    expect(begin).not.toHaveBeenCalled();
+    await expect(route.activate(request, controller.signal)).resolves.toEqual({ kind: 'terminalized' });
+    expect(routeAppServerOperation).toHaveBeenCalledOnce();
+    expect(begin).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }));
   });
 
   it('hands the reconciler a source-complete row and its exact journaled attempt', async () => {
