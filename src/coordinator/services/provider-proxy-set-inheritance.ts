@@ -7,19 +7,21 @@ import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import { createMonotonicClock } from '../../infra/monotonic-clock.js';
 import { reapRecordedContainment } from '../../infra/process-containment.js';
 import {
-  handoffOperationSetSchema,
   readHandoffCapsuleFile,
   type HandoffCapsule,
   guardianHandoffRedeemParamsSchema,
   proxyHandoffRedeemParamsSchema,
 } from '../../provider-proxy/handoff-capsule.js';
+import { MAX_PROXY_OPERATION_LEDGERS } from '../../provider-proxy/ledger.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   controlEpochSchema,
   heartbeatChallengeSchema,
+  operationIdentitySchema,
   proxyIdentitySchema,
   type CoordinatorIdentity,
   type GuardianIdentity,
+  type OperationIdentity,
   type ReaperIdentity,
   reaperHandoffRotateParamsSchema,
 } from '../../provider-proxy/protocol.js';
@@ -88,13 +90,15 @@ export type ProviderProxySetLocator = Readonly<{
   locator: ProviderOperationRecord['locator'];
 }>;
 
+const redeemedOperationSetSchema = z.array(operationIdentitySchema).max(MAX_PROXY_OPERATION_LEDGERS);
+
 const guardianHandoffRedeemResultSchema = z
   .object({
     controlEpoch: controlEpochSchema,
     heartbeatChallenge: heartbeatChallengeSchema,
     state: z.literal('redeemed-provisional'),
     redemptionReceipt: z.string().min(1),
-    operations: handoffOperationSetSchema,
+    operations: redeemedOperationSetSchema,
   })
   .strict();
 
@@ -104,7 +108,7 @@ const reaperHandoffRotateResultSchema = z
     heartbeatChallenge: heartbeatChallengeSchema,
     state: z.literal('successor-rotated'),
     reaperRotationReceipt: z.string().min(1),
-    operations: handoffOperationSetSchema,
+    operations: redeemedOperationSetSchema,
   })
   .strict();
 
@@ -115,7 +119,7 @@ const proxyHandoffRedeemResultSchema = z
     state: z.literal('redeemed-provisional'),
     redemptionReceipt: z.string().min(1),
     proxy: proxyIdentitySchema,
-    operations: handoffOperationSetSchema,
+    operations: redeemedOperationSetSchema,
   })
   .strict();
 
@@ -142,6 +146,29 @@ export type ProviderProxySetInheritanceOutcome =
   | Readonly<{ kind: 'not-bequeathed'; reason: string }>;
 
 const NOTHING_TO_INHERIT_REASON = 'no capsule at this address';
+
+function canonicalOperationSet(operations: readonly OperationIdentity[]): string[] {
+  return [
+    ...new Set(
+      operations.map(
+        ({ jobId, operationId, proxyInstanceId, buildSetId }) =>
+          `${jobId}:${operationId}:${proxyInstanceId}:${buildSetId}`,
+      ),
+    ),
+  ].sort();
+}
+
+/** Redemption agreement is order-insensitive set equality over the complete canonical operation identity:
+ *  job, operation, proxy, and build-set UUIDs. Each UUID is canonical and therefore contains no `:`, so the
+ *  sorted keys are collision-free and role-specific wire order cannot create a false disagreement. */
+function sameOperationSet(left: readonly OperationIdentity[], right: readonly OperationIdentity[]): boolean {
+  const canonicalLeft = canonicalOperationSet(left);
+  const canonicalRight = canonicalOperationSet(right);
+  return (
+    canonicalLeft.length === canonicalRight.length &&
+    canonicalLeft.every((operation, index) => operation === canonicalRight[index])
+  );
+}
 
 /** Every field a capsule read back from disk must agree with the locator that named its address, plus this
  *  successor's own build, because bytes for any other set cannot establish authority over this one. */
@@ -347,6 +374,13 @@ async function redeem(
       },
       ...(deps.onProviderEvent === undefined ? {} : { onProviderEvent: deps.onProviderEvent() }),
     });
+
+    if (
+      !sameOperationSet(guardianSession.opened.operations, reaperSession.opened.operations) ||
+      !sameOperationSet(guardianSession.opened.operations, proxySession.opened.operations)
+    ) {
+      throw new Error('Guardian, reaper, and proxy redeemed different operation sets.');
+    }
 
     // Keepalive is already established the moment `establishRoleControl` returns for each role — every one of
     // the three opens above already echoed its own first challenge before this line runs. What starts here is

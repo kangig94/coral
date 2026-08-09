@@ -1,4 +1,4 @@
-export type ReplayBudgetUsage = Readonly<{
+type ReplayBudgetUsage = Readonly<{
   bufferedBytes: number;
   reservedBytes: number;
   waiting: number;

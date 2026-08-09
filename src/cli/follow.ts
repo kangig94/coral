@@ -8,8 +8,9 @@ import type { JobTerminal } from '../jobs/records.js';
 import { parseSerializedWaitCursor, serializeWaitCursor, type WaitCursor, type WaitStreamEvent } from '../jobs/wait.js';
 import { advanceWaitRenderCursor, parseWaitStreamEventValue } from '../jobs/wait-stream-event.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/http/sse.js';
-import { isTransientStreamError, TransientHttpError } from '../infra/http-errors.js';
+import { BackendUnreachableError, isTransientStreamError, TransientHttpError } from '../infra/http-errors.js';
 import { assertNever } from '../infra/error-format.js';
+import { isRecord } from '../infra/json.js';
 import { ensure } from '../transport/ipc/ensure.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import { runHandoff, type HandoffOutcome } from '../coordinator/handoff-runner.js';
@@ -203,6 +204,19 @@ function boundedTimeoutSeconds(deadlineMs: number): number {
   return Math.max(1, Math.ceil((deadlineMs - Date.now()) / 1_000));
 }
 
+function withWaitRecovery(error: unknown, jobIds: readonly string[]): unknown {
+  const body = error instanceof BackendToolHttpError && isRecord(error.body) ? error.body : null;
+  if (!(error instanceof BackendUnreachableError) && body?.code !== 'backend_unreachable') {
+    return error;
+  }
+
+  const message = body !== null && typeof body.message === 'string' ? body.message : (error as Error).message;
+  return new BackendUnreachableError(
+    `${message} Run \`coral-cli backend status\` and follow its recovery guidance, then rerun ` +
+      `\`coral-cli wait jobs ${jobIds.join(' ')}\` to continue waiting.`,
+  );
+}
+
 export async function followJobs(options: FollowJobsOptions): Promise<number> {
   const allJobIds = [...jobIdsFromStart(options.start)];
   const rawCursor = initialSerializedCursor(options.start);
@@ -302,7 +316,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
 
         const handledError = mapWaitSubscriptionError(error);
         if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
-          options.emitError(handledError);
+          options.emitError(withWaitRecovery(handledError, remainingJobIds));
           return fallbackExitCode();
         }
         if (retriesLeft === 0) {
@@ -316,7 +330,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
             );
             return errorCodeToExit('transient');
           }
-          options.emitError(handledError);
+          options.emitError(withWaitRecovery(handledError, remainingJobIds));
           return fallbackExitCode();
         }
 
@@ -333,7 +347,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
       }
 
       if (connection.kind === 'fatal-error') {
-        options.emitError(connection.error);
+        options.emitError(withWaitRecovery(connection.error, remainingJobIds));
         return fallbackExitCode();
       }
 
@@ -426,7 +440,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
 
         const handledError = mapWaitSubscriptionError(error);
         if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
-          options.emitError(handledError);
+          options.emitError(withWaitRecovery(handledError, remainingJobIds));
           return fallbackExitCode();
         }
         if (retriesLeft === 0) {

@@ -2,6 +2,7 @@ import { isAbsolute, normalize } from 'node:path';
 
 import { z } from 'zod';
 
+import { persistedProviderNameSchema } from '../providers/registry.js';
 import { principalWireSchema } from '../security/principal-wire.js';
 
 const canonicalUuidSchema = z
@@ -90,7 +91,7 @@ export const providerOperationActivationAckSchema = z
     hostRef: z.discriminatedUnion('leaseMode', [
       z
         .object({
-          provider: z.string().min(1).max(128),
+          provider: persistedProviderNameSchema,
           fingerprint: fingerprintSchema,
           instanceId: z.string().min(1).max(1024),
           leaseMode: z.literal('shared'),
@@ -98,7 +99,7 @@ export const providerOperationActivationAckSchema = z
         .strict(),
       z
         .object({
-          provider: z.string().min(1).max(128),
+          provider: persistedProviderNameSchema,
           fingerprint: fingerprintSchema,
           instanceId: z.string().min(1).max(1024),
           leaseMode: z.literal('job-exclusive'),

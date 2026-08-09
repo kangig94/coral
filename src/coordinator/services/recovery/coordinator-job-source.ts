@@ -30,7 +30,7 @@ export type RawCoordinatorSessionRow = {
 };
 
 /** One canonical provider-operation saga row from the generic `meta` keyspace. */
-export type RawProviderOperationSagaRow = {
+type RawProviderOperationSagaRow = {
   readonly key: string;
   readonly value: string;
 };

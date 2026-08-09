@@ -94,7 +94,7 @@ type SupervisedOperation = {
   pendingCompletion: 'terminal-awaiting-settlement' | 'suspended-awaiting-durable-decision' | null;
 };
 
-export type OperationSupervisorOptions = Readonly<{
+type OperationSupervisorOptions = Readonly<{
   host: SemanticOperationHost;
   timer: ControlEndpointTimer;
   mintReservation(): Reservation;

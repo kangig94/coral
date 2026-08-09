@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('#src/provider-proxy/handoff-capsule.js', async (importOriginal) => {
@@ -18,7 +18,10 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
 
 import { readHandoffCapsuleFile, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
-import { connectRoleControlWithRetry } from '#src/provider-proxy/role-spawn.js';
+import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
+import { connectControlClient } from '#src/provider-proxy/control-client.js';
+import { createProxy } from '#src/provider-proxy/proxy.js';
+import { connectRoleControlWithRetry, runtimeControlTimer } from '#src/provider-proxy/role-spawn.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import type { Database } from '#src/store/db.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
@@ -147,6 +150,7 @@ function byteSorted(operations: readonly OperationKey[]): OperationKey[] {
 function fakeClient(
   responses: Record<string, unknown | ((params: unknown) => unknown)>,
   calls: { method: string; params: unknown }[],
+  close: () => void = () => {},
 ): ControlClient {
   return {
     call: async (method: string, params: unknown) => {
@@ -155,7 +159,7 @@ function fakeClient(
       if (entry === undefined) throw new Error(`unexpected call to ${method}`);
       return typeof entry === 'function' ? (entry as (p: unknown) => unknown)(params) : entry;
     },
-    close: () => {},
+    close,
   };
 }
 
@@ -180,10 +184,24 @@ function proxyIdentityFieldsFor(reference: ProviderProxySetLocator) {
   };
 }
 
+type RedemptionOperationSets = Readonly<{
+  guardian: readonly OperationKey[];
+  reaper: readonly OperationKey[];
+  proxy: readonly OperationKey[];
+}>;
+
+function matchingOperationSets(operations: readonly OperationKey[]): RedemptionOperationSets {
+  return {
+    guardian: operations.map((operation) => ({ ...operation })),
+    reaper: operations.map((operation) => ({ ...operation })),
+    proxy: operations.map((operation) => ({ ...operation })),
+  };
+}
+
 /** The three "open" replies a full, successful redemption needs, keyed exactly as `fakeClient` dispatches. */
 function redemptionResponses(
   loc: ProviderProxySetLocator,
-  operations: readonly OperationKey[],
+  operationSets: RedemptionOperationSets,
   overrides: Record<string, unknown | ((params: unknown) => unknown)> = {},
 ): Record<string, unknown | ((params: unknown) => unknown)> {
   return {
@@ -191,14 +209,14 @@ function redemptionResponses(
       ...OPENING,
       state: 'redeemed-provisional',
       redemptionReceipt: 'guardian-receipt',
-      operations,
+      operations: operationSets.guardian,
     },
     'guardian.heartbeat.v1': { state: 'active', nextHeartbeatChallenge: 'g2' },
     'reaper.handoff-rotate.v1': {
       ...OPENING,
       state: 'successor-rotated',
       reaperRotationReceipt: 'reaper-receipt',
-      operations,
+      operations: operationSets.reaper,
     },
     'reaper.heartbeat.v1': { state: 'active', nextHeartbeatChallenge: 'r2' },
     'handoff.redeem.v1': {
@@ -206,10 +224,102 @@ function redemptionResponses(
       state: 'redeemed-provisional',
       redemptionReceipt: 'proxy-receipt',
       proxy: proxyIdentityFieldsFor(loc),
-      operations,
+      operations: operationSets.proxy,
     },
     'control.heartbeat.v1': { state: 'active', nextHeartbeatChallenge: 'p2' },
     ...overrides,
+  };
+}
+
+async function startRegisteredProxy(
+  reference: ProviderProxySetLocator,
+  capsule: HandoffCapsule,
+  installedOperations: readonly OperationKey[],
+  registeredOperations: readonly OperationKey[],
+): Promise<Readonly<{ connect(): Promise<ControlClient>; close(): Promise<void> }>> {
+  let clockMs = 0n;
+  const timer = runtimeControlTimer(runtime);
+  const bootstrapNonce = 'b'.repeat(64);
+  const proxy = createProxy({
+    capsule: {
+      role: 'proxy',
+      generation: capsule.generation,
+      flavor: capsule.flavor,
+      buildSetId: capsule.buildSetId,
+      hostFingerprint: capsule.hostFingerprint,
+      guardianInstanceId: capsule.guardianInstanceId,
+      reaperInstanceId: capsule.reaperInstanceId,
+      proxyInstanceId: capsule.proxyInstanceId,
+      bootstrapNonce,
+      canonicalEndpoint: capsule.proxyEndpoint,
+      guardianControlEndpoint: capsule.guardianControlEndpoint,
+      proxyGuardianAuthSecret: 'c'.repeat(64),
+    },
+    clock: createMonotonicClock(Symbol('inheritance-real-proxy'), { readMilliseconds: () => clockMs }),
+    identity: proxyIdentityFieldsFor(reference),
+    host: {
+      start: () => {
+        throw new Error('redemption test unexpectedly started an operation');
+      },
+      stop: () => {
+        throw new Error('redemption test unexpectedly stopped an operation');
+      },
+    },
+    timer,
+    mintChallenge: () => randomUUID(),
+    mintReceipt: () => randomUUID(),
+    mintReservation: () => {
+      throw new Error('redemption test unexpectedly reserved an operation');
+    },
+    wallClockNow: () => 0,
+    containment: {
+      stageProviderRoot: () => {
+        throw new Error('redemption test unexpectedly staged a provider root');
+      },
+    },
+  });
+  await proxy.listen();
+
+  const predecessor = await connectControlClient(capsule.proxyEndpoint, timer, 5_000);
+  try {
+    const opened = (await predecessor.call(
+      'control.open.v1',
+      { bootstrapNonce, coordinator: COORDINATOR_IDENTITY },
+      5_000,
+    )) as { controlEpoch: number; heartbeatChallenge: string };
+    await predecessor.call(
+      'control.heartbeat.v1',
+      { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
+      5_000,
+    );
+    await predecessor.call(
+      'handoff.install.v1',
+      {
+        grantId: capsule.grantId,
+        secretSha256: createHash('sha256').update(capsule.secret).digest('hex'),
+        generation: capsule.generation,
+        hostFingerprint: capsule.hostFingerprint,
+        buildSetId: capsule.buildSetId,
+        proxyInstanceId: capsule.proxyInstanceId,
+        operations: installedOperations,
+        orphanTimeoutMs: capsule.orphanTimeoutMs,
+      },
+      5_000,
+    );
+    for (const operation of registeredOperations) {
+      await predecessor.call('succession.register-operation.v1', { operation }, 5_000);
+    }
+  } finally {
+    predecessor.close();
+  }
+
+  // Expire the predecessor's live-control lease so the real proxy admits the successor redemption below.
+  clockMs = 6_000n;
+  return {
+    connect: () => connectControlClient(capsule.proxyEndpoint, timer, 5_000),
+    close: async () => {
+      await proxy.close();
+    },
   };
 }
 
@@ -286,7 +396,7 @@ describe('attemptProviderProxySetInheritance', () => {
     const operations = [operationFor(loc)];
     const calls: { method: string; params: unknown }[] = [];
     const client = fakeClient(
-      redemptionResponses(loc, operations, {
+      redemptionResponses(loc, matchingOperationSets(operations), {
         'operation.stop.v1': { state: 'stopping' },
       }),
       calls,
@@ -315,25 +425,141 @@ describe('attemptProviderProxySetInheritance', () => {
   });
 
   it('redeems guardian, reaper, and proxy in proof order for the same complete operation set', async () => {
+    const original = locator();
+    const loc: ProviderProxySetLocator = {
+      ...original,
+      locator: {
+        ...original.locator,
+        proxy: {
+          ...original.locator.proxy,
+          controlEndpoint: `/tmp/coral-inheritance-${randomUUID()}.sock`,
+        },
+      },
+    };
+    const capsule = capsuleFor(loc);
+    mockedReadCapsule.mockReturnValueOnce(capsule);
+    const otherIdentity = { jobId: randomUUID(), operationId: randomUUID() };
+    const guardianOperations = byteSorted([operationFor(loc), operationFor(loc, otherIdentity)]);
+    const reaperOperations = byteSorted([operationFor(loc), operationFor(loc, otherIdentity)]);
+    const proxy = await startRegisteredProxy(loc, capsule, [], [operationFor(loc), operationFor(loc, otherIdentity)]);
+    const calls: { method: string; params: unknown }[] = [];
+    const connectionOrder: string[] = [];
+    let sawGuardianReceiptOnRotate = false;
+    const roleClient = fakeClient(
+      redemptionResponses(
+        loc,
+        { guardian: guardianOperations, reaper: reaperOperations, proxy: [] },
+        {
+          'reaper.handoff-rotate.v1': (params: unknown) => {
+            sawGuardianReceiptOnRotate =
+              (params as { guardianRedemptionReceipt: string }).guardianRedemptionReceipt === 'guardian-receipt';
+            return {
+              ...OPENING,
+              state: 'successor-rotated',
+              reaperRotationReceipt: 'reaper-receipt',
+              operations: reaperOperations,
+            };
+          },
+        },
+      ),
+      calls,
+    );
+    mockedConnect.mockImplementation(async (socketPath: string) => {
+      connectionOrder.push(socketPath);
+      if (socketPath === loc.locator.guardian.controlEndpoint) return roleClient;
+      if (socketPath === loc.locator.reaper.controlEndpoint) return roleClient;
+      if (socketPath === loc.locator.proxy.controlEndpoint) return proxy.connect();
+      throw new Error(`unexpected connection to ${socketPath}`);
+    });
+
+    try {
+      const outcome = await attemptProviderProxySetInheritance(
+        loc,
+        unusedDb,
+        {
+          runtime,
+          coordinatorIdentity: COORDINATOR_IDENTITY,
+          operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        },
+        neverAborts,
+      );
+
+      if (outcome.kind !== 'inherited') throw new Error('inheritance did not return its operation authority');
+      try {
+        expect(sawGuardianReceiptOnRotate).toBe(true);
+        expect(outcome.set.proxyInstanceId).toBe(loc.operation.proxyInstanceId);
+        expect(connectionOrder).toEqual([
+          loc.locator.guardian.controlEndpoint,
+          loc.locator.reaper.controlEndpoint,
+          loc.locator.proxy.controlEndpoint,
+        ]);
+        expect(calls.some((call) => call.method.startsWith('operation.'))).toBe(false);
+      } finally {
+        outcome.set.stopHeartbeats();
+        await outcome.set.initiateControlClose();
+      }
+    } finally {
+      await proxy.close();
+    }
+  });
+
+  it('rejects and closes every opened role when one redeemed operation set is a strict subset', async () => {
+    const loc = locator();
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const otherIdentity = { jobId: randomUUID(), operationId: randomUUID() };
+    const guardianOperations = byteSorted([operationFor(loc), operationFor(loc, otherIdentity)]);
+    const reaperOperations = byteSorted([operationFor(loc), operationFor(loc, otherIdentity)]);
+    const proxyOperations = [operationFor(loc)];
+    const calls: { method: string; params: unknown }[] = [];
+    const closed: string[] = [];
+    const responses = redemptionResponses(loc, {
+      guardian: guardianOperations,
+      reaper: reaperOperations,
+      proxy: proxyOperations,
+    });
+    const roleEndpoints = [
+      loc.locator.guardian.controlEndpoint,
+      loc.locator.reaper.controlEndpoint,
+      loc.locator.proxy.controlEndpoint,
+    ];
+
+    mockedConnect.mockImplementation(async (socketPath: string) => {
+      if (!roleEndpoints.includes(socketPath)) throw new Error(`unexpected connection to ${socketPath}`);
+      return fakeClient(responses, calls, () => closed.push(socketPath));
+    });
+
+    await expect(
+      attemptProviderProxySetInheritance(
+        loc,
+        unusedDb,
+        {
+          runtime,
+          coordinatorIdentity: COORDINATOR_IDENTITY,
+          operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        },
+        neverAborts,
+      ),
+    ).rejects.toThrow('Guardian, reaper, and proxy redeemed different operation sets.');
+    expect(closed).toHaveLength(3);
+    expect(closed).toEqual(expect.arrayContaining(roleEndpoints));
+  });
+
+  it('accepts equivalent redeemed operation sets in different orders', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
     const mine = operationFor(loc);
     const other = operationFor(loc, { jobId: randomUUID(), operationId: randomUUID() });
-    const operations = byteSorted([mine, other]);
-
     const calls: { method: string; params: unknown }[] = [];
-    let sawGuardianReceiptOnRotate = false;
     const client = fakeClient(
-      redemptionResponses(loc, operations, {
-        'reaper.handoff-rotate.v1': (params: unknown) => {
-          sawGuardianReceiptOnRotate =
-            (params as { guardianRedemptionReceipt: string }).guardianRedemptionReceipt === 'guardian-receipt';
-          return { ...OPENING, state: 'successor-rotated', reaperRotationReceipt: 'reaper-receipt', operations };
-        },
+      redemptionResponses(loc, {
+        guardian: [{ ...mine }, { ...other }],
+        reaper: [{ ...other }, { ...mine }],
+        proxy: [{ ...mine }, { ...other }],
       }),
       calls,
     );
     stubConnect(client);
+
     const outcome = await attemptProviderProxySetInheritance(
       loc,
       unusedDb,
@@ -345,16 +571,9 @@ describe('attemptProviderProxySetInheritance', () => {
       neverAborts,
     );
 
-    expect(sawGuardianReceiptOnRotate).toBe(true);
-    expect(outcome.kind).toBe('inherited');
-    if (outcome.kind !== 'inherited') throw new Error('unreachable');
-    expect(outcome.set.proxyInstanceId).toBe(loc.operation.proxyInstanceId);
-    const methodOrder = calls.map((c) => c.method);
-    expect(methodOrder.indexOf('guardian.handoff-redeem.v1')).toBeLessThan(
-      methodOrder.indexOf('reaper.handoff-rotate.v1'),
-    );
-    expect(methodOrder.indexOf('reaper.handoff-rotate.v1')).toBeLessThan(methodOrder.indexOf('handoff.redeem.v1'));
-    expect(methodOrder.some((method) => method.startsWith('operation.'))).toBe(false);
+    if (outcome.kind !== 'inherited') throw new Error('inheritance did not return its operation authority');
+    outcome.set.stopHeartbeats();
+    await outcome.set.initiateControlClose();
   });
 
   it('closes every already-opened connection and rejects when a later role refusal leaves control ambiguous', async () => {
@@ -417,7 +636,7 @@ describe('attemptProviderProxySetInheritance', () => {
     const calls: { method: string; params: unknown }[] = [];
     const client = fakeClient(
       {
-        ...redemptionResponses(loc, []),
+        ...redemptionResponses(loc, matchingOperationSets([])),
         'guardian.handoff-redeem.v1': () => {
           // Fires the caller's own cancellation (a coordinator shutdown, in production) the instant guardian
           // redemption completes — before reaper is ever dialed.
@@ -486,7 +705,7 @@ describe('createProviderProxySetInheritance', () => {
   it('registers and announces a redeemed set so pending journal phases resume', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
-    const client = fakeClient(redemptionResponses(loc, []), []);
+    const client = fakeClient(redemptionResponses(loc, matchingOperationSets([])), []);
     stubConnect(client);
     const registerInheritedSet = vi.fn<(set: ProviderProxyOperationAuthority) => void>();
     const established = vi.fn();

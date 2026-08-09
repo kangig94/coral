@@ -13,6 +13,7 @@ import {
   providerSuspendedEventBodySchema,
   providerTerminalEventBodySchema,
 } from '../providers/contract.js';
+import { persistedProviderNameSchema } from '../providers/registry.js';
 import {
   MAX_PROXY_OPERATION_LEDGERS,
   operationPrepareAttemptKeySchema,
@@ -678,17 +679,19 @@ export const proxyOperationRenewResultSchema = z
 
 export const activationFingerprintSchema = operationPrepareAttemptKeySchema;
 
-const proxyOperationHostRefIdentitySchema = {
-  provider: z.string().min(1),
-  fingerprint: hostFingerprintSchema,
-  instanceId: z.string().min(1),
-} as const;
+const proxyOperationHostRefIdentitySchema = z
+  .object({
+    provider: persistedProviderNameSchema,
+    fingerprint: hostFingerprintSchema,
+    instanceId: z.string().min(1),
+  })
+  .strict();
 
 export const proxyOperationHostRefSchema = z.discriminatedUnion('leaseMode', [
-  z.object({ ...proxyOperationHostRefIdentitySchema, leaseMode: z.literal('shared') }).strict(),
+  z.object({ ...proxyOperationHostRefIdentitySchema.shape, leaseMode: z.literal('shared') }).strict(),
   z
     .object({
-      ...proxyOperationHostRefIdentitySchema,
+      ...proxyOperationHostRefIdentitySchema.shape,
       leaseMode: z.literal('job-exclusive'),
       ownerJobId: z.string().min(1),
     })

@@ -17,6 +17,7 @@ import {
   readProviderOperation,
 } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
+import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
 import { proxyOperationAttachResultSchema } from '#src/provider-proxy/protocol.js';
 import { createGrantRegistry, handoffSecretDigest, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import { terminalizeProviderOperation } from '#src/jobs/provider-operation-terminalization.js';
@@ -103,8 +104,72 @@ const PREPARED = {
 } as const;
 const MATERIALIZED_PREPARED = { kind: 'prepared', prepared: PREPARED } as const;
 
+function preparedFor(provider: string) {
+  return {
+    ...PREPARED,
+    provider,
+    binding: { ...PREPARED.binding, provider },
+  };
+}
+
+async function activationAckFromRealProxy(provider: string, operation: ProviderOperationRecord['operation']) {
+  const reservation = asReservation('00000000-0000-4000-8000-000000000007');
+  const jointContainmentReceipt = asJointContainmentReceipt('containment-receipt');
+  const jointActivationReceipt = asJointActivationReceipt('activation-receipt');
+  const prepareAttemptKey = 'c'.repeat(64);
+  const supervisor = new OperationSupervisor({
+    host: {
+      start: () => ({
+        result: Promise.resolve({
+          kind: 'started',
+          hostRef: {
+            provider,
+            fingerprint: 'a'.repeat(64),
+            instanceId: 'host-instance-1',
+            leaseMode: 'shared',
+          },
+        }),
+        abortAndRelease: async () => undefined,
+      }),
+      stop: async () => undefined,
+    },
+    timer: {
+      setTimeout: () => ({ unref: () => undefined }),
+      clearTimeout: () => undefined,
+    },
+    mintReservation: () => reservation,
+    wallClockNow: () => Date.parse('2026-08-09T12:34:56.000Z'),
+    nowMs: () => 100,
+    proxyInstanceId: operation.proxyInstanceId,
+    buildSetId: operation.buildSetId,
+    stageProviderRoot: () => ({
+      result: Promise.resolve({
+        providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+        receipt: jointContainmentReceipt,
+      }),
+      confirmActivation: async () => undefined,
+      abortAndRelease: async () => undefined,
+    }),
+    pushProviderEvent: async () => ({ kind: 'ack', committedThroughProviderSeq: 0 }),
+  });
+  await supervisor.prepare(operation, {
+    prepareAttemptNumber: 1,
+    prepareAttemptKey,
+    prepared: preparedFor(provider),
+  });
+  const outcome = await supervisor.activate(operation, {
+    reservation,
+    jointContainmentReceipt,
+    jointActivationReceipt,
+    activationFingerprint: prepareAttemptKey,
+  });
+  if (outcome.state !== 'executing') throw new Error('real proxy sender did not produce an activation ACK');
+  return outcome;
+}
+
 function createHarness(
   overrides: {
+    providerName?: string;
     prepareOperation?: DurableProviderProxyOperationAuthority['prepareOperation'];
     inspectOperation?: DurableProviderProxyOperationAuthority['inspectOperation'];
     authorizeOperation?: DurableProviderProxyOperationAuthority['authorizeOperation'];
@@ -123,6 +188,8 @@ function createHarness(
     failCommitOnce?: boolean;
   } = {},
 ) {
+  const providerName = overrides.providerName ?? PREPARED.provider;
+  const prepared = preparedFor(providerName);
   const record = providerOperationRecord('prepare-pending') as Extract<
     ProviderOperationRecord,
     { phase: 'prepare-pending' }
@@ -164,7 +231,7 @@ function createHarness(
       jobId: record.operation.jobId,
       owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
       sessionId: record.prepareSource.sessionId,
-      provider: 'codex',
+      provider: providerName,
       projectRoot: '/workspace',
       backendNamespace: 'tests',
       jobKind: 'provider',
@@ -175,7 +242,7 @@ function createHarness(
       jobId: record.operation.jobId,
       owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
       sessionId: record.prepareSource.sessionId,
-      provider: 'codex',
+      provider: providerName,
       projectRoot: '/workspace',
       backendNamespace: 'tests',
       pool: 'curate',
@@ -279,7 +346,7 @@ function createHarness(
     getProgressStore: () => progressStore,
     authorityFor: () => authority,
     registry,
-    materializePrepare: overrides.materializePrepare ?? (() => MATERIALIZED_PREPARED),
+    materializePrepare: overrides.materializePrepare ?? (() => ({ kind: 'prepared', prepared })),
     terminalization,
     backendNamespace: 'tests',
     time: {
@@ -289,7 +356,7 @@ function createHarness(
     },
   });
   const begin = (signal = new AbortController().signal) => {
-    const attempt = providerOperationPrepareAttempt(authority, record.operation, PREPARED, record.prepareAttemptNumber);
+    const attempt = providerOperationPrepareAttempt(authority, record.operation, prepared, record.prepareAttemptNumber);
     return reconciler.begin({
       record: { ...record, prepareAttemptKey: attempt.prepareAttemptKey },
       attempt,
@@ -316,6 +383,32 @@ function createHarness(
 }
 
 describe('ProviderOperationReconciler publication', () => {
+  it.each([128, 129])(
+    'persists the real proxy activation sender provider at registry-supported length %i',
+    async (providerLength) => {
+      const provider = 'p'.repeat(providerLength);
+      const harness = createHarness({
+        providerName: provider,
+        activatePreparedOperation: (operation) => activationAckFromRealProxy(provider, operation),
+      });
+
+      const publication = harness.begin();
+      await vi.waitFor(() => {
+        const durable = readProviderOperation(harness.db, harness.record.operation);
+        expect(
+          durable?.phase,
+          `${providerLength}-character activation ACK provider was rejected: ${durable?.lastError?.message ?? 'no durable error'}`,
+        ).toBe('executing');
+      });
+      await expect(publication).resolves.toEqual({ kind: 'remote-executing' });
+
+      expect(readProviderOperation(harness.db, harness.record.operation)).toMatchObject({
+        phase: 'executing',
+        activationAck: { hostRef: { provider } },
+      });
+    },
+  );
+
   it('writes every mutation intent before its send and commits execution only from the activation ACK', async () => {
     const harness = createHarness();
 
@@ -1303,28 +1396,27 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
       terminalAwaitingSettlement: false,
     };
     let faulted = false;
+    let prepareCalls = 0;
+    let prepareEffects = 0;
+    const applyPrepare = (): void => {
+      prepareEffects += 1;
+      state.prepared = true;
+      state.guardianMembershipPresent = true;
+    };
     const harness = createHarness({
       prepareOperation: async () => {
+        prepareCalls += 1;
         if (!faulted && !boundary.includes('sqlite')) {
           faulted = true;
-          return callAcrossFaultBoundary(
-            scenario,
-            observe,
-            () => {
-              state.prepared = true;
-              state.guardianMembershipPresent = true;
-            },
-            () => ({
-              state: 'pending-activation' as const,
-              reservation: asReservation('00000000-0000-4000-8000-000000000007'),
-              leaseExpiresInMs: 15_000,
-              providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
-              jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
-            }),
-          );
+          return callAcrossFaultBoundary(scenario, observe, applyPrepare, () => ({
+            state: 'pending-activation' as const,
+            reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+            leaseExpiresInMs: 15_000,
+            providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+            jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+          }));
         }
-        state.prepared = true;
-        state.guardianMembershipPresent = true;
+        if (!state.prepared) applyPrepare();
         return {
           state: 'pending-activation' as const,
           reservation: asReservation('00000000-0000-4000-8000-000000000007'),
@@ -1382,11 +1474,24 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
       }
     });
     restoreCommitFault();
+    if (boundary === 'after-send') {
+      const effectWasApplied = scenario.afterSendEffect === 'applied';
+      expect(state.prepared, `prepare/${fault}: remote state did not distinguish the lost send`).toBe(effectWasApplied);
+      expect(prepareEffects, `prepare/${fault}: unexpected prepare effect before recovery`).toBe(
+        effectWasApplied ? 1 : 0,
+      );
+    }
     expectFaultInvariant(harness, state, 'prepare', fault);
     const final = await driveCurrentRecord(harness);
     const placement = await publication;
     expect(final?.phase, `prepare/${fault}: publication did not settle`).toBe('executing');
     expect(placement).toEqual({ kind: 'remote-executing' });
+    if (boundary === 'after-send') {
+      expect(prepareCalls, `prepare/${fault}: prepared inspection retried the remote prepare`).toBe(
+        scenario.afterSendEffect === 'applied' ? 1 : 2,
+      );
+      expect(prepareEffects, `prepare/${fault}: remote prepare effect was not applied exactly once`).toBe(1);
+    }
     expectFaultInvariant(harness, state, 'prepare', fault);
   });
 
@@ -1402,27 +1507,27 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
       terminalAwaitingSettlement: false,
     };
     let faulted = false;
+    let authorizationCalls = 0;
+    let authorizationEffects = 0;
+    const applyAuthorization = (): void => {
+      authorizationEffects += 1;
+      state.guardianAuthorized = true;
+    };
     const harness = createHarness({
       authorizeOperation: async () => {
+        authorizationCalls += 1;
         const observe = (point: FaultBoundary): void => {
           const current = readProviderOperation(harness.db, harness.record.operation);
           expect(current?.phase, `guardian activation/${fault} at ${point}`).toBe('guardian-activation-pending');
         };
         if (!faulted && !boundary.includes('sqlite')) {
           faulted = true;
-          return callAcrossFaultBoundary(
-            scenario,
-            observe,
-            () => {
-              state.guardianAuthorized = true;
-            },
-            () => ({
-              state: 'activation-authorized' as const,
-              jointActivationReceipt: asJointActivationReceipt('activation-receipt'),
-            }),
-          );
+          return callAcrossFaultBoundary(scenario, observe, applyAuthorization, () => ({
+            state: 'activation-authorized' as const,
+            jointActivationReceipt: asJointActivationReceipt('activation-receipt'),
+          }));
         }
-        state.guardianAuthorized = true;
+        if (!state.guardianAuthorized) applyAuthorization();
         return {
           state: 'activation-authorized',
           jointActivationReceipt: asJointActivationReceipt('activation-receipt'),
@@ -1451,9 +1556,27 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
       : () => undefined;
     await harness.reconciler.reconcile(initial, harness.authority);
     restoreCommitFault();
+    if (boundary === 'after-send') {
+      const effectWasApplied = scenario.afterSendEffect === 'applied';
+      expect(
+        state.guardianAuthorized,
+        `guardian activation/${fault}: remote state did not distinguish the lost send`,
+      ).toBe(effectWasApplied);
+      expect(
+        authorizationEffects,
+        `guardian activation/${fault}: unexpected authorization effect before recovery`,
+      ).toBe(effectWasApplied ? 1 : 0);
+    }
     expectFaultInvariant(harness, state, 'guardian activation', fault);
     const final = await driveCurrentRecord(harness);
     expect(['executing', undefined], `guardian activation/${fault}: unsafe terminal phase`).toContain(final?.phase);
+    if (boundary === 'after-send') {
+      expect(authorizationCalls, `guardian activation/${fault}: authorization recovery call count`).toBe(2);
+      expect(
+        authorizationEffects,
+        `guardian activation/${fault}: remote authorization effect was applied more than once`,
+      ).toBe(1);
+    }
     expectFaultInvariant(harness, state, 'guardian activation', fault);
   });
 
@@ -1469,26 +1592,23 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
       terminalAwaitingSettlement: false,
     };
     let faulted = false;
+    let activationCalls = 0;
+    const startKernel = (): void => {
+      state.kernelStarts += 1;
+      state.ledgerPresent = true;
+    };
     const harness = createHarness({
       activatePreparedOperation: async () => {
+        activationCalls += 1;
         const observe = (point: FaultBoundary): void => {
           const current = readProviderOperation(harness.db, harness.record.operation);
           expect(current?.phase, `proxy activation/${fault} at ${point}`).toBe('proxy-activation-pending');
         };
         if (!faulted && !boundary.includes('sqlite')) {
           faulted = true;
-          return callAcrossFaultBoundary(
-            scenario,
-            observe,
-            () => {
-              if (!state.ledgerPresent) state.kernelStarts += 1;
-              state.ledgerPresent = true;
-            },
-            () => activationAck,
-          );
+          return callAcrossFaultBoundary(scenario, observe, startKernel, () => activationAck);
         }
-        if (!state.ledgerPresent) state.kernelStarts += 1;
-        state.ledgerPresent = true;
+        if (!state.ledgerPresent) startKernel();
         return activationAck;
       },
     });
@@ -1499,9 +1619,24 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
       : () => undefined;
     await harness.reconciler.reconcile(initial, harness.authority);
     restoreCommitFault();
+    if (boundary === 'after-send') {
+      const effectWasApplied = scenario.afterSendEffect === 'applied';
+      expect(state.ledgerPresent, `proxy activation/${fault}: remote state did not distinguish the lost send`).toBe(
+        effectWasApplied,
+      );
+      expect(state.kernelStarts, `proxy activation/${fault}: unexpected kernel start before recovery`).toBe(
+        effectWasApplied ? 1 : 0,
+      );
+    }
     expectFaultInvariant(harness, state, 'proxy activation', fault);
     const final = await driveCurrentRecord(harness);
     expect(final?.phase, `proxy activation/${fault}: activation did not settle`).toBe('executing');
+    if (boundary === 'after-send') {
+      expect(activationCalls, `proxy activation/${fault}: activation recovery call count`).toBe(2);
+      expect(state.kernelStarts, `proxy activation/${fault}: remote activation effect was applied more than once`).toBe(
+        1,
+      );
+    }
     expectFaultInvariant(harness, state, 'proxy activation', fault);
   });
 
@@ -1510,13 +1645,17 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
     const fault = scenario.label;
     const state = { ...startedRemoteState(), terminalAwaitingSettlement: true };
     let faulted = false;
+    let settlementCalls = 0;
+    let settlementEffects = 0;
     const harness = createHarness({
       settleOperation: async (_operation, finalProviderSeq) => {
+        settlementCalls += 1;
         const observe = (point: FaultBoundary): void => {
           const current = readProviderOperation(harness.db, harness.record.operation);
           expect(current?.phase, `settlement/${fault} at ${point}`).toBe('settlement-pending');
         };
         const release = (): void => {
+          settlementEffects += 1;
           state.ledgerPresent = false;
           state.guardianMembershipPresent = false;
           state.terminalAwaitingSettlement = false;
@@ -1528,7 +1667,7 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
             settledThroughProviderSeq: finalProviderSeq,
           }));
         }
-        release();
+        if (state.terminalAwaitingSettlement) release();
         return { state: 'released-after-terminal', settledThroughProviderSeq: finalProviderSeq };
       },
     });
@@ -1540,14 +1679,26 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
     await harness.reconciler.reconcile(initial, harness.authority);
     restoreCommitFault();
     if (boundary === 'after-send') {
+      const effectWasApplied = scenario.afterSendEffect === 'applied';
       expect(
         readProviderOperation(harness.db, harness.record.operation)?.phase,
         `settlement/${fault}: ambiguous release lost durable intent`,
       ).toBe('settlement-pending');
+      expect(
+        state.terminalAwaitingSettlement,
+        `settlement/${fault}: remote state did not distinguish the lost send`,
+      ).toBe(!effectWasApplied);
+      expect(settlementEffects, `settlement/${fault}: unexpected settlement effect before recovery`).toBe(
+        effectWasApplied ? 1 : 0,
+      );
     }
     expectFaultInvariant(harness, state, 'settlement', fault);
     const final = await driveCurrentRecord(harness);
     expect(final, `settlement/${fault}: tombstone survived confirmed release`).toBeNull();
+    if (boundary === 'after-send') {
+      expect(settlementCalls, `settlement/${fault}: settlement recovery call count`).toBe(2);
+      expect(settlementEffects, `settlement/${fault}: remote settlement effect was applied more than once`).toBe(1);
+    }
     expectFaultInvariant(harness, state, 'settlement', fault);
   });
 
@@ -1563,13 +1714,17 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
       terminalAwaitingSettlement: false,
     };
     let faulted = false;
+    let releaseCalls = 0;
+    let releaseEffects = 0;
     const harness = createHarness({
       cancelOperation: async (operation, prepareAttemptNumber, prepareAttemptKey) => {
+        releaseCalls += 1;
         const observe = (point: FaultBoundary): void => {
           const current = readProviderOperation(harness.db, harness.record.operation);
           expect(current?.phase, `release/${fault} at ${point}`).toBe('prestart-cleanup-pending');
         };
         const release = (): void => {
+          releaseEffects += 1;
           state.prepared = false;
           state.guardianAuthorized = false;
           state.guardianMembershipPresent = false;
@@ -1583,7 +1738,7 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
             prepareAttemptKey,
           }));
         }
-        release();
+        if (state.prepared || state.guardianMembershipPresent) release();
         return { state: 'released-never-started', operation, prepareAttemptNumber, prepareAttemptKey };
       },
     });
@@ -1595,14 +1750,25 @@ describe('ProviderOperationReconciler fault-injection matrix', () => {
     await harness.reconciler.reconcile(initial, harness.authority);
     restoreCommitFault();
     if (boundary === 'after-send') {
+      const effectWasApplied = scenario.afterSendEffect === 'applied';
       expect(
         readProviderOperation(harness.db, harness.record.operation)?.phase,
         `release/${fault}: ambiguous release lost durable intent`,
       ).toBe('prestart-cleanup-pending');
+      expect(state.prepared, `release/${fault}: remote state did not distinguish the lost send`).toBe(
+        !effectWasApplied,
+      );
+      expect(releaseEffects, `release/${fault}: unexpected prestart release effect before recovery`).toBe(
+        effectWasApplied ? 1 : 0,
+      );
     }
     expectFaultInvariant(harness, state, 'release', fault);
     const final = await driveCurrentRecord(harness);
     expect(final, `release/${fault}: cleanup row survived confirmed release`).toBeNull();
+    if (boundary === 'after-send') {
+      expect(releaseCalls, `release/${fault}: prestart release recovery call count`).toBe(2);
+      expect(releaseEffects, `release/${fault}: remote prestart release effect was applied more than once`).toBe(1);
+    }
     expectFaultInvariant(harness, state, 'release', fault);
   });
 });

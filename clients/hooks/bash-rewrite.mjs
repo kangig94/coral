@@ -58,8 +58,9 @@ const SHORT_BOOLEAN_FLAGS = new Set(['b', 'd']);
 
 // Bash rejects timeouts above 600_000 ms, so this is the ceiling, not a choice. A bounded wait derives its
 // own deadline from this value minus a flush margin (see FOLLOW_TIMEOUT_SECONDS in src/cli/follow.ts) so it
-// finishes first: it exits 75 with a printed resume cursor when work is still running, and both would be lost
-// if Bash killed the process mid-write. Raising the wait deadline to this ceiling removes that margin.
+// finishes first: it exits 75 with a printed resume command when work is still running. The command has a
+// cursor after observed progress, but can be cursor-free when initial backend recovery/shutdown retries
+// exhaust; the command and exit code would both be lost if Bash killed the process mid-write.
 const WAIT_BASH_TIMEOUT_MS = 600_000;
 
 // Shell-grammar characters that cause parse errors when they appear in an unquoted token.

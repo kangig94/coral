@@ -487,6 +487,23 @@ describe('truthful operation wire schemas', () => {
     expect(proxyOperationActivateResultSchema.safeParse(missingHostRef).success).toBe(false);
     expect(proxyOperationInspectResultSchema.safeParse({ ...receipt, activationAck: receipt }).success).toBe(false);
   });
+
+  it.each(['Codex', 'codex proxy'])('rejects a provider name the registry cannot persist: %s', (provider) => {
+    const receipt = {
+      state: 'executing',
+      activationFingerprint: prepareAttemptKey,
+      startedAt: '2026-08-09T12:34:56.000Z',
+      hostRef: {
+        provider,
+        fingerprint: HOST_FINGERPRINT,
+        instanceId: UUID_A,
+        leaseMode: 'shared',
+      },
+      committedThroughProviderSeq: 0,
+    };
+
+    expect(proxyOperationActivateResultSchema.safeParse(receipt).success).toBe(false);
+  });
 });
 
 describe('assertRecordedSetAgreement', () => {

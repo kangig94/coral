@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import type { ProviderCatalog } from './catalog.js';
 import {
   PROVIDER_ARTIFACT_DISCARD_PROTOCOL,
@@ -140,6 +142,8 @@ const RESERVED_TOOL_NAMES = new Set([
   'discuss_abort',
 ]);
 const PERSISTED_PROVIDER_NAME = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
+export const persistedProviderNameSchema = z.string().regex(PERSISTED_PROVIDER_NAME);
+
 export class ProviderRegistry implements ProviderCatalog {
   private sealed = false;
   private sealedComponents: readonly ProviderPersistedCodecComponent[] | undefined;
@@ -163,7 +167,7 @@ export class ProviderRegistry implements ProviderCatalog {
     if (RESERVED_TOOL_NAMES.has(name)) {
       throw new Error(`Provider name "${name}" is reserved`);
     }
-    if (!PERSISTED_PROVIDER_NAME.test(name)) {
+    if (!persistedProviderNameSchema.safeParse(name).success) {
       throw new TypeError(`Provider name "${name}" cannot form a stable persisted codec name.`);
     }
     if (this.providers.has(name)) {

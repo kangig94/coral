@@ -202,6 +202,22 @@ function createCauseRenderFixture(): { home: string; pluginRoot: string; cleanup
       'workflow-1',
       Buffer.from(JSON.stringify({ kind: 'unknown', message: 'workflow failure' }), 'utf-8'),
     );
+    insertEvent.run(
+      3,
+      '2026-03-21T00:00:00.000Z',
+      'job.progress.emitted',
+      'job',
+      'job-activation-unknown',
+      Buffer.from(
+        JSON.stringify({
+          kind: 'domain',
+          stage: 'provider_operation_failed',
+          message: 'Provider containment disappeared after activation may have begun.',
+          detail: { code: 'activation_indeterminate' },
+        }),
+        'utf-8',
+      ),
+    );
   } finally {
     db.close();
   }
@@ -798,31 +814,50 @@ describe('cli follow', () => {
     },
   );
 
-  it('keeps BackendUnreachableError when every initial connection attempt fails', async () => {
-    const { launchAndFollow } = await loadFollowModule();
-    const { BackendUnreachableError } = await import('#src/infra/http-errors.js');
-    const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
-    const emitError = vi.fn((error: unknown) => {
-      expect(error).toBeInstanceOf(BackendUnreachableError);
-      process.exitCode = 69;
-    });
+  it.each(['launch-follow', 'wait'] as const)(
+    'prints backend recovery commands when %s exhausts initial connection attempts',
+    async (path) => {
+      const { followJobs, launchAndFollow } = await loadFollowModule();
+      const { BackendUnreachableError } = await import('#src/infra/http-errors.js');
+      const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
+      let renderedError = '';
+      const emitError = vi.fn((error: unknown) => {
+        expect(error).toBeInstanceOf(BackendUnreachableError);
+        renderedError = (error as Error).message;
+        process.exitCode = 69;
+      });
 
-    mockState.ensure.mockResolvedValue(makeBackend());
-    mockState.subscribe
-      .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'))
-      .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'))
-      .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'));
+      if (path === 'launch-follow') {
+        mockState.ensure.mockResolvedValue(makeBackend());
+        mockState.subscribe.mockRejectedValue(new BackendUnreachableError('fetch failed'));
+        await expect(launchAndFollow(makeOptions({ emitError, backoffScheduler }))).resolves.toBe(69);
+      } else {
+        await expect(
+          followJobs({
+            start: { kind: 'jobs', jobIds: ['job-1'] },
+            reconnectPolicy: 'bounded',
+            connect: async () => {
+              throw new BackendUnreachableError('fetch failed');
+            },
+            abortJobs: async () => undefined,
+            projectRoot: '/project/root',
+            emitError,
+            render: { isTTY: false, columns: 80, embed: false, verbose: false },
+            backoffScheduler,
+          }),
+        ).resolves.toBe(69);
+      }
 
-    const options = makeOptions({ emitError, backoffScheduler });
-
-    await expect(launchAndFollow(options)).resolves.toBe(69);
-
-    expect(emitError).toHaveBeenCalledOnce();
-    expect((emitError.mock.calls[0]?.[0] as Error).message).toBe('fetch failed');
-    expect(backoffScheduler).toHaveBeenCalledTimes(2);
-    expect(mockState.ensure).toHaveBeenCalledTimes(3);
-    expect(mockState.subscribe).toHaveBeenCalledTimes(3);
-  });
+      expect(emitError).toHaveBeenCalledOnce();
+      expect(renderedError).toContain('Run `coral-cli backend status` and follow its recovery guidance');
+      expect(renderedError).toContain('`coral-cli wait jobs job-1` to continue waiting');
+      expect(backoffScheduler).toHaveBeenCalledTimes(2);
+      if (path === 'launch-follow') {
+        expect(mockState.ensure).toHaveBeenCalledTimes(3);
+        expect(mockState.subscribe).toHaveBeenCalledTimes(3);
+      }
+    },
+  );
 
   it('warns on first SIGINT, aborts on second SIGINT, and calls abortJob once', async () => {
     const { launchAndFollow } = await loadFollowModule();
@@ -913,7 +948,22 @@ describe('cli follow', () => {
     await expect(launchAndFollow(makeOptions())).resolves.toBe(expected);
   });
 
-  it('renders local cause chains from the store for failed terminal outcomes', async () => {
+  it.each([
+    {
+      name: 'a nested workflow cause',
+      causeRef: { stream: { kind: 'workflow', id: 'workflow-1' }, seq: 1 },
+      expected:
+        'Job job-1 failed: Failed: Workflow failed. Caused by: Workflow lifecycle fault (unknown): workflow failure.',
+    },
+    {
+      name: 'an indeterminate provider activation cause with its inspection command',
+      causeRef: { stream: { kind: 'job', id: 'job-activation-unknown' }, seq: 3 },
+      expected:
+        'Job job-1 failed: Failed: Provider containment disappeared after activation may have begun. ' +
+        'Activation indeterminate [activation_indeterminate]: the provider may have started. ' +
+        'Run `coral-cli jobs detail job-activation-unknown` to inspect the durable job record before deciding whether to retry.',
+    },
+  ] as const)('renders $name from the store for failed terminal outcomes', async ({ causeRef, expected }) => {
     // Module-load-time env capture: this test needs fresh import after HOME change.
     const fixture = createCauseRenderFixture();
     const originalHome = process.env.HOME;
@@ -932,10 +982,7 @@ describe('cli follow', () => {
             content: '',
             outcome: {
               kind: 'failed',
-              causeRef: {
-                stream: { kind: 'workflow', id: 'workflow-1' },
-                seq: 1,
-              },
+              causeRef,
             },
           });
         }),
@@ -943,10 +990,7 @@ describe('cli follow', () => {
 
       await expect(launchAndFollow(makeOptions({ pluginRoot: fixture.pluginRoot }))).resolves.toBe(1);
 
-      expect(stdout).toContain(
-        'Job job-1 failed: Failed: Workflow failed. Caused by: Workflow lifecycle fault (unknown): workflow failure.',
-      );
-      expect(stdout).not.toContain('workflow/workflow-1#1');
+      expect(stdout).toContain(expected);
     } finally {
       if (originalHome === undefined) {
         delete process.env.HOME;

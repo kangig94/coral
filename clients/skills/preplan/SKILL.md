@@ -136,9 +136,19 @@ items with the "unconfirmed" marker, then seek user feedback.
     launch = Bash(`coral-cli <other-host> pioneer -i "<draft file content>" --work-dir "<work_dir>" -d`)
     job = parse `Run coral-cli wait jobs <job> to wait for completion.` from launch
     terminal = Bash(`coral-cli wait jobs ${job} --embed`)   // foreground; returns at terminal or the bound
-    output = Read(<path from the terminal's `Result path:` line>)
+    while true:
+      if terminal begins `Still waiting` with `(cursor: <cursor>)`:
+        terminal = Bash(`coral-cli wait jobs ${job} --cursor <cursor> --embed`)
+        continue
+      if terminal prints `remediation: <command>`:
+        terminal = Bash(<command exactly as printed>)
+        continue
+      if terminal contains `Result path: <path>`:
+        output = Read(<path>)
+        break
+      stop with the rendered error
     ```
-    Classify the result from its rendered output, not exit code `75` alone. `Result path: <path>` marks a terminal result, so read that artifact and stop waiting even when a terminal `provider_exit` propagated code `75`; a status beginning `Still waiting` with `(cursor: <cursor>)` means the job is still live, so resume with `coral-cli wait jobs ${job} --cursor <cursor> --embed`. If a transient error instead prints `remediation:`, follow that exact command. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
+    Classify the rendered output before reading an artifact; do not classify exit code `75` alone. `Result path: <path>` marks a terminal result even when a terminal `provider_exit` propagated code `75`. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
 
     Then consume `output`: for items where pioneer identifies a genuinely more elegant form, mark the
     sub-item unconfirmed and add the three-point spectrum (default, minimal, elegant) with pioneer's

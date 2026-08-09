@@ -13,7 +13,7 @@ type ProviderOperationTerminalizationStore = Pick<
   'getDb' | 'commit' | 'readStatus' | 'readLaunchProjection'
 >;
 
-export type ProviderOperationTerminalizationResult =
+type ProviderOperationTerminalizationResult =
   | Readonly<{ kind: 'terminalized' }>
   | Readonly<{ kind: 'conflict'; current: ProviderOperationRecord | null }>;
 

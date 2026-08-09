@@ -39,8 +39,9 @@ const RUNTIME_INFRA_FORBIDDEN = [
  * the successor will read. The tree is clean today, which is exactly when stating it is cheap.
  */
 const PROVIDER_PROXY_ROOT = 'src/provider-proxy/';
+const STORE_ROOT = 'src/store/';
 const PROVIDER_PROXY_FORBIDDEN = [
-  'src/store/',
+  STORE_ROOT,
   'src/coordinator/',
   'src/transport/',
   'src/read-model/',
@@ -215,6 +216,7 @@ describe('architecture layering invariants', () => {
       'src/infra/',
       'src/transport/',
       PROVIDER_PROXY_ROOT,
+      STORE_ROOT,
       SECURITY_ROOT,
       ...DOMAIN_ROOT_DIRS.map((root) => `${root}/`),
     ];
@@ -298,6 +300,16 @@ describe('architecture layering invariants', () => {
     const violations = IMPORT_EDGES.filter((edge) => edge.source.startsWith(PROVIDER_PROXY_ROOT))
       .filter((edge) => startsWithAny(edge.target, PROVIDER_PROXY_FORBIDDEN))
       .map((edge) => `${edge.source} -> ${edge.target}`);
+
+    expect(violations).toEqual([]);
+  });
+
+  it('the journal store does not reach into the provider proxy', () => {
+    // The Journal is durable authority below the live proxy domain; durable records validate provider
+    // identities at the providers boundary instead of importing proxy protocol schemas.
+    const violations = collectViolations(
+      (source, target) => source.startsWith(STORE_ROOT) && target.startsWith(PROVIDER_PROXY_ROOT),
+    );
 
     expect(violations).toEqual([]);
   });
