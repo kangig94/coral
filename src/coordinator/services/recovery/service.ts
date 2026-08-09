@@ -4,10 +4,7 @@ import { backendLog } from '../../../infra/backend-log.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal, JobTerminalInput } from '../../../jobs/records.js';
 import { isTerminalPhase, type JobPhase } from '../../../jobs/phase.js';
-import {
-  hasProviderOperationRuntimeMetaForJob,
-  readProviderOperationRuntimeMetaForJob,
-} from '../../../jobs/runtime-meta-store.js';
+import { hasProviderOperationForJob, readProviderOperationForJob } from '../../../store/provider-operation-journal.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../../runtime/durable-runtime.js';
@@ -201,14 +198,8 @@ export class RecoveryService {
       );
       return;
     }
-    // W2.3 hazard: an `acquired` `hostRef` can now name a live provider proxy set rather than a local
-    // `ProviderHostManager` entry (see `provider-proxy-launch-route.ts`'s `proxiedHostRef`). This coordinator
-    // generation's `LocalOperationRegistry` starts empty at boot, so it cannot yet tell whether that set is
-    // still alive — attaching to it as if it were local would either silently fail (harmless here) or, worse,
-    // `attachSession` finding no local entry could read as "replace it" upstream. The durable
-    // `provider_operation.v1` row is the one fact this coordinator generation can check without a live
-    // connection: its presence alone means adopting this job is W2.5's job, not this one's.
-    if (hasProviderOperationRuntimeMetaForJob(this.deps.progressStore.getDb(), launchRecord.jobId)) {
+    // A saga-owned host must be inherited before this generation may address it as a local host.
+    if (hasProviderOperationForJob(this.deps.progressStore.getDb(), launchRecord.jobId)) {
       backendLog.warn(
         `Cannot interrupt recovered app-server job ${launchRecord.jobId}: its acquired host names a live provider proxy operation this coordinator generation has not adopted.`,
       );
@@ -257,13 +248,16 @@ export class RecoveryService {
       return;
     }
 
-    // Same fact `interruptAppServerJob` above checks presence-only for, decoded here: a committed
-    // `provider_operation.v1` row means this `acquired` `hostRef` names a live provider proxy set, not a
-    // local host, so the classifier must never route it through `probe`/`openReplacement`.
-    const providerOperationLocator = readProviderOperationRuntimeMetaForJob(
-      this.deps.progressStore.getDb(),
-      launchRecord.jobId,
-    );
+    const providerOperation = readProviderOperationForJob(this.deps.progressStore.getDb(), launchRecord.jobId);
+    if (
+      providerOperation !== null &&
+      providerOperation.phase !== 'executing' &&
+      providerOperation.phase !== 'settlement-pending'
+    ) {
+      throw new Error(
+        `Running job '${launchRecord.jobId}' has provider operation phase '${providerOperation.phase}' without executing evidence.`,
+      );
+    }
     const plan = planInterruptedAppServerRecovery(
       authority,
       runtimeRecord,
@@ -272,7 +266,7 @@ export class RecoveryService {
         recovery: boundProvider.recovery !== undefined,
         probe: boundProvider.appServer?.supportsProbe === true,
       },
-      providerOperationLocator,
+      providerOperation,
     );
     options.signal.throwIfAborted();
     const performed = await performInterruptedAppServerRecovery(plan, boundProvider, {
@@ -281,8 +275,8 @@ export class RecoveryService {
       storage: this.deps.runtime.storage,
       jobDir: (jobId) => this.deps.progressStore.jobDir(jobId),
       signal: options.signal,
-      reapCarrier: (locator) =>
-        reapProviderOperationCarrier(locator, {
+      reapCarrier: (record) =>
+        reapProviderOperationCarrier(record, {
           process: this.deps.runtime.process,
           platform: this.deps.runtime.env.platform() as NodeJS.Platform,
           db: this.deps.progressStore.getDb(),

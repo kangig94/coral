@@ -1,7 +1,7 @@
 import { PROJECTION_JOB_COLUMNS, type ProjectionJobStoredRow } from '../../../jobs/projection-row.js';
-import { providerOperationRuntimeMetaKeyPrefix } from '../../../jobs/runtime-meta.js';
 import { sha256Hex } from '../../../infra/hash.js';
 import type { Database } from '../../../store/db.js';
+import { providerOperationRecordKeyPrefix } from '../../../store/provider-operation-journal.js';
 import type { EventsRow } from '../../../store/schema.js';
 import {
   canonicalRecoveryRevision,
@@ -29,9 +29,8 @@ export type RawCoordinatorSessionRow = {
   readonly last_seq: number;
 };
 
-/** One `meta` row naming a committed `provider_operation.v1:<jobId>:<operationId>` locator — the generic
- *  key/value shape `src/store/schema.sql`'s `meta` table stores, not a domain event. */
-export type RawProviderOperationMetaRow = {
+/** One canonical provider-operation saga row from the generic `meta` keyspace. */
+export type RawProviderOperationSagaRow = {
   readonly key: string;
   readonly value: string;
 };
@@ -41,7 +40,7 @@ export type RawCoordinatorJobRecoveryEnvelope = {
   readonly projection: ProjectionJobStoredRow | null;
   readonly statusEvents: readonly EventsRow[];
   readonly claimedSession: RawCoordinatorSessionRow | null;
-  readonly providerOperations: readonly RawProviderOperationMetaRow[];
+  readonly providerOperations: readonly RawProviderOperationSagaRow[];
 };
 
 function scanCoordinatorJobRecoveryEnvelopes(
@@ -88,7 +87,7 @@ function scanCoordinatorJobRecoveryEnvelopes(
     // host — see `provider-proxy-launch-route.ts`'s `proxiedHostRef`. Reading this alongside everything else
     // this envelope already reads keeps it inside the same `withConsistentRead` snapshot, so the revision
     // folded below stays accurate for whether that fact changes between a scan and its settlement.
-    const readProviderOperations = db.prepare<[string], RawProviderOperationMetaRow>(
+    const readProviderOperations = db.prepare<[string], RawProviderOperationSagaRow>(
       `SELECT key, value
          FROM meta
         WHERE key LIKE ?
@@ -100,7 +99,7 @@ function scanCoordinatorJobRecoveryEnvelopes(
       projection,
       statusEvents: readStatusEvents.all(projection.job_id),
       claimedSession: projection.session_id === null ? null : (readClaimedSession.get(projection.session_id) ?? null),
-      providerOperations: readProviderOperations.all(`${providerOperationRuntimeMetaKeyPrefix(projection.job_id)}%`),
+      providerOperations: readProviderOperations.all(`${providerOperationRecordKeyPrefix(projection.job_id)}%`),
     }));
     const orphanedClaims = db
       .prepare<[], RawCoordinatorSessionRow & { active_job_id: string }>(
@@ -123,7 +122,7 @@ function scanCoordinatorJobRecoveryEnvelopes(
         projection: null,
         statusEvents: Object.freeze([]),
         claimedSession,
-        providerOperations: readProviderOperations.all(`${providerOperationRuntimeMetaKeyPrefix(jobId)}%`),
+        providerOperations: readProviderOperations.all(`${providerOperationRecordKeyPrefix(jobId)}%`),
       }));
     return [...jobEnvelopes, ...orphanedClaims];
   });
@@ -136,10 +135,10 @@ function sessionRevisionFields(jobId: string, row: RawCoordinatorSessionRow | nu
   return projectionSessionRevisionFields(row);
 }
 
-/** Folds each committed `provider_operation.v1` row's key and a digest of its value into the revision, so a
+/** Folds each canonical saga row's key and a digest of its value into the revision, so a
  *  row appearing, disappearing, or changing between a scan and its settlement invalidates a stale quarantine
  *  the same way every other fact this envelope reads already does. */
-function providerOperationRevisionFields(rows: readonly RawProviderOperationMetaRow[]): RecoveryRevisionField[] {
+function providerOperationRevisionFields(rows: readonly RawProviderOperationSagaRow[]): RecoveryRevisionField[] {
   return rows.map((row) => ({ table: 'meta', key: row.key, field: 'value', value: sha256Hex(row.value) }));
 }
 

@@ -11,7 +11,6 @@ import {
   encodeProxyControlFrame,
   guardianIdentitySchema,
   guardianOperationActivateParamsSchema,
-  guardianOperationReleaseParamsSchema,
   guardianProxyOperationReleaseParamsSchema,
   guardianProxyOperationReleaseResultSchema,
   guardianRegisterProviderRootParamsSchema,
@@ -51,7 +50,8 @@ import {
 } from '#src/provider-proxy/protocol.js';
 import { reaperRecordRedemptionParamsSchema } from '#src/provider-proxy/handoff-capsule.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
-import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
+import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
+import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 const UUID_A = '11111111-1111-4111-8111-111111111111';
 const UUID_B = '22222222-2222-4222-8222-222222222222';
@@ -373,29 +373,6 @@ describe('guardian control-method request schemas, shared with their one coordin
     }
   });
 
-  it('guardian.operation-release.v1: rejects a payload missing the receipt bug (3) omitted, and one with an extra field', () => {
-    const valid = { operation, reservation: UUID_A, jointContainmentReceipt: 'joint-1' };
-    expect(guardianOperationReleaseParamsSchema.safeParse(valid).success).toBe(true);
-
-    // Remove the exact field bug (3) omitted at this branch's compensation call site.
-    const { jointContainmentReceipt: _omitted, ...missingReceipt } = valid;
-    const missing = guardianOperationReleaseParamsSchema.safeParse(missingReceipt);
-    expect(missing.success).toBe(false);
-    if (!missing.success) {
-      expect(missing.error.issues).toEqual(
-        expect.arrayContaining([expect.objectContaining({ path: ['jointContainmentReceipt'] })]),
-      );
-    }
-
-    const extra = guardianOperationReleaseParamsSchema.safeParse({ ...valid, unexpected: true });
-    expect(extra.success).toBe(false);
-    if (!extra.success) {
-      expect(extra.error.issues).toEqual(
-        expect.arrayContaining([expect.objectContaining({ code: 'unrecognized_keys' })]),
-      );
-    }
-  });
-
   it('guardian.stop-and-reap.v1: rejects a payload missing providerRoots, and one with an extra field', () => {
     const guardianIdentityFixture = { ...guardianIdentity };
     const reaperIdentityFixture = { ...reaperIdentity };
@@ -538,34 +515,11 @@ describe('assertRecordedSetAgreement', () => {
     // holding them in lockstep by construction.
     const registry = new LocalOperationRegistry();
     const identity = { jobId: UUID_A, operationId: UUID_B, proxyInstanceId: UUID_C, buildSetId: UUID_D };
-    const meta: ProviderOperationRuntimeMeta = {
-      version: 1,
-      jobId: identity.jobId,
-      operationId: identity.operationId,
-      buildSetId: identity.buildSetId,
-      hostFingerprint: HOST_FINGERPRINT,
-      guardianInstanceId: guardianIdentity.guardianInstanceId,
-      guardianPid: guardianIdentity.pid,
-      guardianProcessStartedAtSeconds: guardianIdentity.processStartedAtSeconds,
-      guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
-      proxyInstanceId: identity.proxyInstanceId,
-      proxyPid: proxyIdentity.pid,
-      reaperInstanceId: reaperIdentity.reaperInstanceId,
-      reaperPid: reaperIdentity.pid,
-      reaperProcessStartedAtSeconds: reaperIdentity.processStartedAtSeconds,
-      reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
-      containmentKind: reaperIdentity.containmentKind,
-      proxyProcessStartedAtSeconds: proxyIdentity.processStartedAtSeconds,
-      proxyProcessGroupId: proxyIdentity.processGroupId,
-      canonicalEndpoint: proxyIdentity.canonicalEndpoint,
-      reservation: UUID_A,
-      providerRootPid: ROOT_A.pid,
-      providerRootProcessStartedAtSeconds: ROOT_A.processStartedAtSeconds,
-      jointContainmentReceipt: 'joint-1',
-      committedThroughProviderSeq: 0,
-    };
+    const executing = providerOperationRecord('executing', { operation: identity });
+    const record = providerOperationRecordSchema.parse({ ...executing, providerRoot: ROOT_A });
+    if (record.phase !== 'executing') throw new Error('expected executing provider operation');
 
-    registry.activate(meta, { stop: async () => {} }, { jobId: meta.jobId, pool: 'default' });
+    registry.activate(record, { stop: async () => {} }, { jobId: record.operation.jobId, pool: 'default' });
     // The operation's terminal commits and the registry forgets it — concurrently, from teardown's own view,
     // with the enforcer that still recorded `ROOT_A` (a released membership does not remove the enforcer's own
     // recorded root — only teardown itself may conclude absence).
@@ -610,10 +564,7 @@ describe('proxy control-method request schemas, shared with their coordinator se
     };
     expect(proxyOperationActivateParamsSchema.safeParse(valid).success).toBe(true);
 
-    // `committedThroughProviderSeq` is not an arbitrary extra field: the coordinator really sent it, this
-    // `.strict()` schema really had no place for it, and every activation therefore failed
-    // `unrecognized_keys`, compensated, and fell back to in-process execution — the branch's headline feature
-    // never ran. Sharing the schema is what lets that be refused at the sender instead of on arrival.
+    // Sharing the strict schema keeps a sender from adding coordinator-only state to the wire contract.
     const extra = proxyOperationActivateParamsSchema.safeParse({ ...valid, committedThroughProviderSeq: 0 });
     expect(extra.success).toBe(false);
     if (!extra.success) {

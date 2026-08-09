@@ -86,6 +86,10 @@ function canonicalRecordKey(identity: ProviderOperationIdentity): string {
   );
 }
 
+export function providerOperationRecordKeyPrefix(jobId: string): string {
+  return `${PROVIDER_OPERATION_RECORD_PREFIX}${jobId}:`;
+}
+
 function dueEntryFor(record: ProviderOperationRecord): MetaRow | null {
   if (record.phase === 'executing') return null;
   return {
@@ -251,6 +255,30 @@ export function readProviderOperation(
   identity: ProviderOperationIdentity,
 ): ProviderOperationRecord | null {
   return readCanonicalRecord(db, canonicalRecordKey(identity)) ?? null;
+}
+
+export function hasProviderOperationForJob(db: Database, jobId: string): boolean {
+  const prefix = providerOperationRecordKeyPrefix(jobId);
+  return (
+    db
+      .prepare<
+        [string, string],
+        Pick<MetaRow, 'key'>
+      >('SELECT key FROM meta WHERE key >= ? AND key < ? ORDER BY key LIMIT 1')
+      .get(prefix, `${prefix}\uffff`) !== undefined
+  );
+}
+
+export function readProviderOperationForJob(db: Database, jobId: string): ProviderOperationRecord | null {
+  const prefix = providerOperationRecordKeyPrefix(jobId);
+  const rows = db
+    .prepare<[string, string], MetaRow>('SELECT key, value FROM meta WHERE key >= ? AND key < ? ORDER BY key LIMIT 2')
+    .all(prefix, `${prefix}\uffff`);
+  if (rows.length > 1) {
+    throw new ProviderOperationJournalError(`Job '${jobId}' has more than one live provider operation.`);
+  }
+  const row = rows[0];
+  return row === undefined ? null : decodeCanonicalValue(row.key, row.value);
 }
 
 export function readProviderOperations(db: Database): readonly ProviderOperationRecord[] {

@@ -117,13 +117,8 @@ export function createProviderProxySetAuthority(
       // Byte-sorted by operationId: the wire schema (`handoffOperationSetSchema`) requires it and this is
       // the one place that assembles the set, so sorting happens here rather than being asked of every caller.
       //
-      // Not re-confirmed against the proxy's own `operation.status.v1` first. That query used to gate the
-      // whole install on every named operation still being live and carrier-eligible, refusing the entire
-      // grant — for every operation on this proxy — the instant one had already gone stale. A successor
-      // learns the identical fact for free and per-operation the moment it tries to adopt: `operation.adopt.v1`
-      // answers `operation_not_found` for exactly this proxy no longer holding it, so the whole-set refusal
-      // bought nothing a narrower, later, isolated failure did not already cover — and cost every other
-      // operation in the set a handoff it would otherwise have gotten cleanly.
+      // A stale member must not deny handoff to every other journal-owned operation in the set. The successor
+      // isolates that disagreement per operation when `operation.adopt.v1` reports `operation_not_found`.
       const handoffOperations = [...operations]
         .sort((left, right) =>
           left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,

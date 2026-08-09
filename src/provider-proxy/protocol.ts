@@ -435,9 +435,8 @@ export function assertNamedTeardownReserve(claimedMs: number, expectedMs: number
  * receipt — a sender that validates does not make a receiver that trusts safe — but a coordinator sender now
  * parses the identical schema object before writing the frame, so an omitted or misspelled field fails at
  * the sender with a clear error instead of travelling to a strict receiver that refuses it. Two of the four
- * incidents this section closes were exactly this shape: `guardian.operation-release.v1` sent by
- * `provider-proxy-operation-activation.ts`'s compensation without the receipt its own staging minted, and
- * `operation.activate.v1` sent to the proxy with a field this `.strict()` schema has no place for.
+ * One incident this section closes had exactly this shape: `operation.activate.v1` was sent to the proxy
+ * with a field this `.strict()` schema has no place for.
  */
 
 /** `guardian.register-provider-root.v1`'s request. The proxy (`role-main.ts`) is this method's one sender. */
@@ -457,24 +456,6 @@ export const guardianOperationActivateParamsSchema = z
     operation: operationIdentitySchema,
     reservation: reservationSchema,
     providerRoot: providerRootSchema,
-    jointContainmentReceipt: jointContainmentReceiptSchema,
-  })
-  .strict();
-
-/**
- * `guardian.operation-release.v1`'s request. Its one sender is now the `OperationStopControl.releaseMembership`
- * capability a successful activation hands `LocalOperationRegistry` (`operation-registry.ts`), which sends it
- * once that operation's terminal durably commits and retries until the guardian confirms. The failure-path
- * caller this used to name is gone: a failed or uncertain activation no longer compensates from a closure that
- * evaporates with the call, it advances a durable saga phase the reconciler owns. `jointContainmentReceipt`
- * is required: the guardian's release handler refuses a caller that cannot present the receipt its own staging
- * minted, and omitting it here previously made the failure-path compensation itself throw on the wire,
- * replacing the activation failure it existed to report.
- */
-export const guardianOperationReleaseParamsSchema = z
-  .object({
-    operation: operationIdentitySchema,
-    reservation: reservationSchema,
     jointContainmentReceipt: jointContainmentReceiptSchema,
   })
   .strict();
@@ -510,9 +491,6 @@ export const guardianStopAndReapParamsSchema = z
 export const guardianOperationActivateResultSchema = z
   .object({ state: z.literal('activation-authorized'), jointActivationReceipt: jointActivationReceiptSchema })
   .strict();
-
-/** `guardian.operation-release.v1`'s result. */
-export const guardianOperationReleaseResultSchema = z.object({ state: z.literal('membership-released') }).strict();
 
 export const guardianProxyOperationReleaseResultSchema = z
   .object({ state: z.enum(['membership-released', 'membership-absent']) })
@@ -608,11 +586,8 @@ export const proxyOperationPrepareParamsSchema = z
   .strict();
 
 /**
- * The reservation-bearing request shape, named for what it carries rather than for one method, because it is
- * the only schema here serving more than one: `operation.renew-activation.v1` and `operation.cancel-pending.v1`
- * both parse it directly, and `operation.activate.v1` extends it. Naming it after any single one of the three
- * would make the other two read as accidents; declaring it three times would restate a derivation, which is
- * the drift this section exists to remove.
+ * The reservation-bearing request shape is shared by renewal and extended by activation, keeping the common
+ * correlation fields derived once.
  */
 export const proxyOperationReservationParamsSchema = z
   .object({
@@ -640,19 +615,6 @@ export const proxyOperationStopParamsSchema = z
 /** `operation.adopt.v1`'s request. */
 export const proxyOperationAdoptParamsSchema = z
   .object({ operation: operationIdentitySchema, committedThroughProviderSeq: nonNegativeSafeIntegerSchema })
-  .strict();
-
-/**
- * `operation.status.v1`'s request. Bounded by the ledger's own capacity rather than a second 128: a request
- * asking about more operations than this proxy could ever hold is asking about operations that are not here,
- * and one cap is one fact.
- *
- * Shared here despite having no sender in this repository. `proxy.ts` documents why the responder ships
- * first — a requester can be added later, a responder cannot be retrofitted into a process already running —
- * and leaving its schema private would make whoever adds that requester do this move before they could start.
- */
-export const proxyOperationStatusParamsSchema = z
-  .object({ operations: z.array(operationIdentitySchema).min(1).max(MAX_PROXY_OPERATION_LEDGERS) })
   .strict();
 
 export const proxyOperationInspectParamsSchema = z
@@ -804,9 +766,6 @@ export const proxyOperationCancelResultSchema = z
 export const proxyOperationSettleResultSchema = z
   .object({ state: z.literal('released-after-terminal'), settledThroughProviderSeq: nonNegativeSafeIntegerSchema })
   .strict();
-
-/** `operation.cancel-pending.v1`'s result. */
-export const proxyOperationCancelPendingResultSchema = z.object({ state: z.literal('released') }).strict();
 
 /** `operation.stop.v1`'s result. `state` is the ledger's own state rather than a closed set: the proxy reports
  *  where the operation actually landed, and enumerating that here would be a second copy of the ledger's

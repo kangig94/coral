@@ -129,7 +129,21 @@ function prepareAndActivate(
   const reserved = ledger.prepare({ key, reservation: asReservation('res'), prepared, nowMs: 0 });
   if (reserved.kind !== 'reserved') throw new Error('expected a reservation');
   ledger.recordPreparation(key, { pid: 1, processStartedAtSeconds: 1 }, asJointContainmentReceipt('contained'));
-  ledger.activate(key, asReservation('res'), 0);
+  const fingerprint = 'f'.repeat(64);
+  ledger.beginActivation(key, asReservation('res'), 0, fingerprint);
+  ledger.completeActivation(key, fingerprint, {
+    state: 'executing',
+    activationFingerprint: fingerprint,
+    startedAt: new Date(0).toISOString(),
+    hostRef: {
+      provider: prepared.provider,
+      fingerprint: '0'.repeat(64),
+      instanceId: `test:${key.operationId}`,
+      leaseMode: 'job-exclusive',
+      ownerJobId: key.jobId,
+    },
+    committedThroughProviderSeq: 0,
+  });
 }
 
 /** A `BoundProvider` test double whose `execute` never yields until its own signal aborts — a kernel that is

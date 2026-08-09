@@ -19,7 +19,6 @@ import type { ProviderSession } from '#src/sessions/entry.js';
 import type { ProviderBindingCatalog } from '#src/providers/catalog.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import type { ProviderOperationEventIdentity } from '#src/jobs/provider-event.js';
-import { providerOperationRuntimeMetaKey } from '#src/jobs/runtime-meta.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
 import {
@@ -100,7 +99,7 @@ function testDeps(overrides: Partial<ProviderEventApplicationDeps> = {}): Provid
   };
 }
 
-/** Allocates a claimed job and its executing saga plus the temporary v1 compatibility locator. */
+/** Allocates a claimed job and its executing saga. */
 function seedOperation(): { jobId: string; sessionId: string; identity: ProviderOperationEventIdentity } {
   const jobId = randomUUID();
   const session = allocateTestSession(
@@ -127,75 +126,7 @@ function seedOperation(): { jobId: string; sessionId: string; identity: Provider
     proxyInstanceId: PROXY_INSTANCE_ID,
     buildSetId: BUILD_SET_ID,
   };
-  const guardianInstanceId = randomUUID();
-  const reaperInstanceId = randomUUID();
-  const reservation = randomUUID();
-  const compatibilityMeta = {
-    version: 1,
-    jobId,
-    operationId: OPERATION_ID,
-    buildSetId: BUILD_SET_ID,
-    hostFingerprint: 'a'.repeat(64),
-    guardianInstanceId,
-    guardianPid: 100,
-    guardianProcessStartedAtSeconds: 1,
-    guardianControlEndpoint: '/tmp/guardian.sock',
-    proxyInstanceId: PROXY_INSTANCE_ID,
-    proxyPid: 200,
-    reaperInstanceId,
-    reaperPid: 300,
-    reaperProcessStartedAtSeconds: 2,
-    reaperControlEndpoint: '/tmp/reaper.sock',
-    containmentKind: 'detached-group',
-    proxyProcessStartedAtSeconds: 3,
-    proxyProcessGroupId: 200,
-    canonicalEndpoint: '/tmp/proxy.sock',
-    reservation,
-    providerRootPid: 400,
-    providerRootProcessStartedAtSeconds: 4,
-    jointContainmentReceipt: 'receipt-1',
-    committedThroughProviderSeq: 0,
-  } as const;
-  progressStore
-    .getDb()
-    .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
-    .run(providerOperationRuntimeMetaKey(jobId, OPERATION_ID), JSON.stringify(compatibilityMeta));
-  insertProviderOperation(
-    progressStore.getDb(),
-    // The shared builder rather than a second hand-assembled record: this file already drifted from the
-    // schema once by carrying its own copy, and the only thing it genuinely needs to differ on is agreeing
-    // with the compatibility row and set locator it just wrote.
-    providerOperationRecord('executing', {
-      operation: identity,
-      locator: {
-        hostFingerprint: compatibilityMeta.hostFingerprint,
-        proxy: {
-          instanceId: PROXY_INSTANCE_ID,
-          pid: compatibilityMeta.proxyPid,
-          processStartedAtSeconds: compatibilityMeta.proxyProcessStartedAtSeconds,
-          controlEndpoint: compatibilityMeta.canonicalEndpoint,
-        },
-        guardian: {
-          instanceId: guardianInstanceId,
-          pid: compatibilityMeta.guardianPid,
-          processStartedAtSeconds: compatibilityMeta.guardianProcessStartedAtSeconds,
-          controlEndpoint: compatibilityMeta.guardianControlEndpoint,
-        },
-        reaper: {
-          instanceId: reaperInstanceId,
-          pid: compatibilityMeta.reaperPid,
-          processStartedAtSeconds: compatibilityMeta.reaperProcessStartedAtSeconds,
-          controlEndpoint: compatibilityMeta.reaperControlEndpoint,
-        },
-        containment: {
-          pid: compatibilityMeta.proxyPid,
-          processStartedAtSeconds: compatibilityMeta.proxyProcessStartedAtSeconds,
-          processGroupId: compatibilityMeta.proxyProcessGroupId,
-          kind: compatibilityMeta.containmentKind,
-        },
-      },
-    }),
-  );
+  insertProviderOperation(progressStore.getDb(), providerOperationRecord('executing', { operation: identity }));
 
   return { jobId, sessionId: session.sessionId, identity };
 }
@@ -390,11 +321,6 @@ describe('createStoreProviderEventEffectPort', () => {
   it('writes the settlement tombstone after terminal effects and the final watermark in the same transaction', async () => {
     const { identity } = seedOperation();
     const port = createStoreProviderEventEffectPort(testDeps());
-    const readMetaRow = () =>
-      progressStore
-        .getDb()
-        .prepare('SELECT value FROM meta WHERE key = ?')
-        .get(providerOperationRuntimeMetaKey(identity.jobId, identity.operationId));
 
     await port.runInTransaction(async (tx) => {
       await port.appendJobTerminal(tx, identity, 1, {
@@ -417,19 +343,11 @@ describe('createStoreProviderEventEffectPort', () => {
       terminalProviderSeq: 1,
       settlementIntent: 'release-after-terminal',
     });
-    const compatibility = readMetaRow() as { value: string } | undefined;
-    expect(compatibility).not.toBeUndefined();
-    expect(JSON.parse(compatibility?.value ?? '{}')).toMatchObject({ committedThroughProviderSeq: 1 });
   });
 
   it('rolls back the settlement tombstone together with terminal effects and the final watermark', async () => {
     const { identity } = seedOperation();
     const port = createStoreProviderEventEffectPort(testDeps());
-    const readMetaRow = () =>
-      progressStore
-        .getDb()
-        .prepare('SELECT value FROM meta WHERE key = ?')
-        .get(providerOperationRuntimeMetaKey(identity.jobId, identity.operationId));
 
     await expect(
       port.runInTransaction(async (tx) => {
@@ -448,7 +366,6 @@ describe('createStoreProviderEventEffectPort', () => {
       }),
     ).rejects.toThrow('boom after settlement intent');
 
-    expect(readMetaRow()).not.toBeUndefined();
     expect(progressStore.readTerminalProjection(identity.jobId)).toBeNull();
     expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
       phase: 'executing',
@@ -487,13 +404,10 @@ describe('createStoreProviderEventEffectPort', () => {
     ).rejects.toThrow('boom');
 
     expect(progressStore.readJobEvents(identity.jobId).some((event) => event.type === 'progress')).toBe(false);
-    const meta = progressStore
-      .getDb()
-      .prepare('SELECT value FROM meta WHERE key = ?')
-      .get(providerOperationRuntimeMetaKey(identity.jobId, identity.operationId)) as { value: string } | undefined;
-    expect(
-      meta && (JSON.parse(meta.value) as { committedThroughProviderSeq: number }).committedThroughProviderSeq,
-    ).toBe(0);
+    expect(readProviderOperation(progressStore.getDb(), identity)).toMatchObject({
+      phase: 'executing',
+      committedThroughProviderSeq: 0,
+    });
   });
 });
 

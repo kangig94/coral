@@ -28,14 +28,9 @@ import {
   MAX_PROXY_OPERATION_LEDGERS,
   MAX_PROVIDER_REPLAY_BYTES,
   MAX_PROVIDER_REPLAY_EVENTS,
-  PROXY_PENDING_ACTIVATION_LEASE_MS,
 } from '#src/provider-proxy/ledger.js';
 import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
-import {
-  PROXY_CONTROL_RPC_TIMEOUT_MS,
-  PROXY_STATUS_RPC_TIMEOUT_MS,
-  type ProxyPreparedAppServerOperation,
-} from '#src/provider-proxy/protocol.js';
+import type { ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
 import { createProxy, type SemanticOperationHost } from '#src/provider-proxy/proxy.js';
 import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
@@ -63,18 +58,6 @@ const timer: ControlEndpointTimer = {
   setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
   clearTimeout: (handle: { unref?: () => void }) => clearTimeout(handle as unknown as NodeJS.Timeout),
 };
-
-/** Wraps the real timer, recording every budget `serveRequest` actually schedules — the only way to observe
- *  which `budgetMs` a method was dispatched under without reaching into the endpoint's own closure. */
-function recordingTimer(observedBudgetsMs: number[]): ControlEndpointTimer {
-  return {
-    setTimeout: (callback, ms) => {
-      observedBudgetsMs.push(ms);
-      return timer.setTimeout(callback, ms);
-    },
-    clearTimeout: (handle) => timer.clearTimeout(handle),
-  };
-}
 
 type Started = { jobId: string; operationId: string };
 
@@ -607,7 +590,7 @@ describe('provider-proxy operation lifecycle', () => {
     expect(set.started).toHaveLength(1);
   });
 
-  it('does not fall back locally when the activation reply is lost after the proxy starts', async () => {
+  it('keeps proxy placement when the activation reply is lost after the proxy starts', async () => {
     const set = await startProxy();
     const launched = await launchThroughRoute(set, { dropActivationReplies: 1 });
 
@@ -671,7 +654,7 @@ describe('provider-proxy operation lifecycle', () => {
     expect(set.releasedMemberships).toEqual([{ jobId: operation.jobId, operationId: operation.operationId }]);
   });
 
-  it('does not fall back locally when both activation attempts lose their replies', async () => {
+  it('keeps proxy placement when both activation attempts lose their replies', async () => {
     const set = await startProxy();
     const launched = await launchThroughRoute(set, { dropActivationReplies: 2 });
 
@@ -718,7 +701,7 @@ describe('provider-proxy operation lifecycle', () => {
     expect(launched.registry.stateForJob(launched.jobId)).toBe('activated');
   });
 
-  it('does not let a guardian activation timeout authorise local fallback', async () => {
+  it('does not let a guardian activation timeout authorise local placement', async () => {
     const set = await startProxy();
     const launched = await launchThroughRoute(set, { dropGuardianActivationReplies: 1 });
 
@@ -841,20 +824,6 @@ describe('provider-proxy operation lifecycle', () => {
     expect(reserved).toEqual({ state: 'capacity', retryable: true, reason: 'operation-ledgers' });
   });
 
-  it('moves an expired reservation to a state control can still cancel', async () => {
-    const set = await startProxy();
-    const { operation, reserved } = await prepare(set);
-    await set.advanceWithHeartbeat(15_001);
-
-    await expect(activate(set, operation, reserved)).rejects.toThrow(/lease expired/u);
-
-    // The reservation is not silently gone: durable meta may already name it, so it stays cancellable by
-    // exactly the reservation that was authorized.
-    expect(
-      await set.control.call('operation.cancel-pending.v1', { operation, reservation: reserved.reservation }, 5_000),
-    ).toEqual({ state: 'released' });
-  });
-
   it('renews a pending-activation reservation, extending its lease from the call’s own now', async () => {
     const set = await startProxy();
     const { operation, reserved } = await prepare(set);
@@ -894,27 +863,6 @@ describe('provider-proxy operation lifecycle', () => {
     ).toMatchObject({ state: 'pending-activation' });
   });
 
-  it('reports a repeated cancel as released rather than not-found', async () => {
-    const set = await startProxy();
-    const { operation, reserved } = await prepare(set);
-    const request = {
-      operation,
-      reservation: reserved.reservation,
-    };
-    await set.control.call('operation.cancel-pending.v1', request, 5_000);
-
-    expect(await set.control.call('operation.cancel-pending.v1', request, 5_000)).toEqual({ state: 'released' });
-  });
-
-  it('refuses a cancel presenting a different reservation', async () => {
-    const set = await startProxy();
-    const { operation } = await prepare(set);
-
-    await expect(
-      set.control.call('operation.cancel-pending.v1', { operation, reservation: asReservation(randomUUID()) }, 5_000),
-    ).rejects.toThrow(/different reservation/u);
-  });
-
   it.each([
     ['restart', 'suspended-awaiting-durable-decision'],
     ['handoff', 'suspended-awaiting-durable-decision'],
@@ -936,7 +884,7 @@ describe('provider-proxy operation lifecycle', () => {
 
   it('releases a pending-activation entry on stop without calling a kernel that never started', async () => {
     const set = await startProxy();
-    const { operation, reserved } = await prepare(set);
+    const { operation } = await prepare(set);
 
     const stopped = (await set.control.call('operation.stop.v1', { operation, cause: 'user_abort' }, 5_000)) as {
       state: string;
@@ -945,10 +893,6 @@ describe('provider-proxy operation lifecycle', () => {
     // `SemanticOperationHost.stop`'s contract is "stops a running kernel" — this one was never started.
     expect(stopped.state).toBe('released');
     expect(set.stopped).toEqual([]);
-    // Released, not stuck: a cancel for the same reservation now reports it as already gone.
-    expect(
-      await set.control.call('operation.cancel-pending.v1', { operation, reservation: reserved.reservation }, 5_000),
-    ).toEqual({ state: 'released' });
   });
 
   it('refuses adoption before any grant has been redeemed on this proxy', async () => {
@@ -1074,49 +1018,6 @@ describe('provider-proxy operation lifecycle', () => {
       5_000,
     )) as { state: string };
     expect(stillLive.state).toBe('active');
-  });
-
-  it('answers operation.status.v1 from a second connection while control stays with the incumbent', async () => {
-    const set = await startProxy();
-    const { operation, reserved } = await prepare(set);
-    await activate(set, operation, reserved);
-
-    // A third party — e.g. a coordinator checking whether this proxy still holds an operation it lost
-    // track of — connects without ever claiming control. Before the fix, `acceptConnection` destroyed this
-    // socket at accept time purely because a live control tenancy already existed, so the one method the
-    // observation authority exists for could never be reached while a tenancy was actually live: the normal
-    // case, not the edge case.
-    const observer = await connectControlClient(set.endpoint, timer, 5_000);
-    cleanups.push(() => observer.close());
-
-    const status = (await observer.call('operation.status.v1', { operations: [operation] }, 5_000)) as {
-      proxyInstanceId: string;
-      operations: unknown[];
-    };
-
-    expect(status.proxyInstanceId).toBe(set.shared.proxyInstanceId);
-    expect(status.operations).toEqual([{ operation, held: true, state: 'executing', committedThroughProviderSeq: 0 }]);
-
-    // The incumbent's own control tenancy is untouched by the observer's connection: it can still mutate.
-    const another = await prepare(set);
-    expect(another.reserved.state).toBe('pending-activation');
-  });
-
-  it('bounds operation.status.v1 to PROXY_STATUS_RPC_TIMEOUT_MS, unlike an ordinary mutation method', async () => {
-    const observedBudgetsMs: number[] = [];
-    const set = await startProxy({ timer: recordingTimer(observedBudgetsMs) });
-    const { operation, reserved } = await prepare(set);
-
-    observedBudgetsMs.length = 0;
-    await set.control.call('operation.renew-activation.v1', { operation, reservation: reserved.reservation }, 5_000);
-    // An ordinary mutation method declares no `budgetMs` of its own, so it inherits the endpoint default.
-    expect(observedBudgetsMs).toEqual([PROXY_CONTROL_RPC_TIMEOUT_MS, PROXY_PENDING_ACTIVATION_LEASE_MS]);
-
-    observedBudgetsMs.length = 0;
-    await set.control.call('operation.status.v1', { operations: [operation] }, 5_000);
-    // `operation.status.v1` declares its own, tighter budget: an observation call, not a mutation the caller
-    // is blocked on, so it is bounded well below the ordinary control budget rather than inheriting it.
-    expect(observedBudgetsMs).toEqual([PROXY_STATUS_RPC_TIMEOUT_MS]);
   });
 });
 

@@ -254,9 +254,7 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
   });
 
   /** Records every call made to a role's client and answers the named install method with the fixture above,
-   *  or the configured failure for that one role. `installHandoffGrant` no longer queries `operation.status.v1`
-   *  first — it trusts the snapshot the caller already fixed (see its own updated doc comment) — so a role
-   *  client here only ever sees the one `*.handoff-install.v1` call. */
+   *  or the configured failure for that one role. */
   function recordingClient(role: 'guardian' | 'reaper' | 'proxy', calls: InstallCall[], fail?: string): ControlClient {
     return {
       call: (method: string, params: unknown) => {

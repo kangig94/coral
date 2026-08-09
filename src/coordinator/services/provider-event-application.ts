@@ -24,7 +24,6 @@ import type { ProviderEventRequest, ProviderEventResult } from '../../provider-p
 import { compareAndSwapProviderOperation, readProviderOperation } from '../../store/provider-operation-journal.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '../../store/provider-operation-record.js';
 import { notifyProviderOperationSettlementPending } from './provider-operation-reconciler.js';
-import { writeProviderOperationCompatibilityMeta } from './provider-proxy-operation-activation.js';
 
 /**
  * The coordinator's real `ProviderEventEffectPort` (W2.3, W2.5): the store-backed implementation of the seam
@@ -257,7 +256,6 @@ export function createStoreProviderEventEffectPort(
       });
       if (next.phase !== 'executing') throw new Error('Provider watermark transition failed validation.');
       updateJournalRecord(tx.db, record, next);
-      writeProviderOperationCompatibilityMeta(tx.db, next);
     },
 
     appendProgress: async (tx, identity, _seq, body) => {

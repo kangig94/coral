@@ -18,15 +18,15 @@ declare const rawUuid: string;
 const ledger = createOperationLedger<{ readonly prepared: true }>();
 const key = { jobId: 'j', operationId: 'o' };
 
-// @ts-expect-error a reservation was two fields once, and `activate` compared both while `renew` compared one.
+// @ts-expect-error a reservation was two fields once, and activation compared both while renewal compared one.
 // One value cannot half-match, and the arity is what makes the old shape unwritable.
-ledger.activate(key, reservation, reservation, 0);
+ledger.beginActivation(key, reservation, reservation, 0, 'f'.repeat(64));
 
-ledger.activate(key, reservation, 0);
+ledger.beginActivation(key, reservation, 0, 'f'.repeat(64));
 
 // @ts-expect-error the reservation must have been received, not typed into existence. This is the exact shape
 // of the defect that made every activation fail `identity_mismatch`: a fresh value where a forwarded one belongs.
-ledger.activate(key, rawUuid, 0);
+ledger.beginActivation(key, rawUuid, 0, 'f'.repeat(64));
 
 // @ts-expect-error two receipts travel in the same message and are not interchangeable — presenting one where
 // the other belongs is a different mistake, and the brands are what tell them apart.

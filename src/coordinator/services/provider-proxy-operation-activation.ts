@@ -1,7 +1,5 @@
 import { z } from 'zod';
 
-import { writeProviderOperationRuntimeMeta } from '../../jobs/runtime-meta-store.js';
-import type { ProviderOperationRuntimeMeta } from '../../jobs/runtime-meta.js';
 import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
   guardianOperationActivateParamsSchema,
@@ -20,6 +18,7 @@ import {
   proxyOperationStopParamsSchema,
   proxyOperationStopResultSchema,
   type OperationIdentity,
+  type ProxyOperationActivationReceipt,
   type ProxyPreparedAppServerOperation,
 } from '../../provider-proxy/protocol.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
@@ -64,7 +63,6 @@ const prepareResultSchema = z.union([
 export type PrepareProviderOperationResult = z.output<typeof prepareResultSchema>;
 export type InspectProviderOperationResult = z.output<typeof proxyOperationInspectResultSchema>;
 export type AuthorizeProviderOperationResult = z.output<typeof guardianOperationActivateResultSchema>;
-export type ActivateProviderOperationResult = z.output<typeof proxyOperationActivateResultSchema>;
 export type CancelProviderOperationResult = z.output<typeof proxyOperationCancelResultSchema>;
 export type SettleProviderOperationResult = z.output<typeof proxyOperationSettleResultSchema>;
 
@@ -174,7 +172,7 @@ export async function activateProviderOperation(
     jointContainmentReceipt: string;
     jointActivationReceipt: string;
   }>,
-): Promise<ActivateProviderOperationResult> {
+): Promise<ProxyOperationActivationReceipt> {
   const params = proxyOperationActivateParamsSchema.parse({ operation, ...evidence });
   return callStrict(
     deps.proxyClient,
@@ -262,44 +260,4 @@ export function providerOperationSetLocator(setIdentity: ProviderProxySetIdentit
       kind: setIdentity.containmentKind,
     },
   };
-}
-
-export function providerOperationRuntimeMeta(
-  record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
-): ProviderOperationRuntimeMeta {
-  return {
-    version: 1,
-    jobId: record.operation.jobId,
-    operationId: record.operation.operationId,
-    buildSetId: record.operation.buildSetId,
-    hostFingerprint: record.locator.hostFingerprint,
-    guardianInstanceId: record.locator.guardian.instanceId,
-    guardianPid: record.locator.guardian.pid,
-    guardianProcessStartedAtSeconds: record.locator.guardian.processStartedAtSeconds,
-    guardianControlEndpoint: record.locator.guardian.controlEndpoint,
-    proxyInstanceId: record.locator.proxy.instanceId,
-    proxyPid: record.locator.proxy.pid,
-    reaperInstanceId: record.locator.reaper.instanceId,
-    reaperPid: record.locator.reaper.pid,
-    reaperProcessStartedAtSeconds: record.locator.reaper.processStartedAtSeconds,
-    reaperControlEndpoint: record.locator.reaper.controlEndpoint,
-    containmentKind: record.locator.containment.kind,
-    proxyProcessStartedAtSeconds: record.locator.proxy.processStartedAtSeconds,
-    proxyProcessGroupId: record.locator.containment.processGroupId,
-    canonicalEndpoint: record.locator.proxy.controlEndpoint,
-    reservation: record.reservation,
-    providerRootPid: record.providerRoot.pid,
-    providerRootProcessStartedAtSeconds: record.providerRoot.processStartedAtSeconds,
-    jointContainmentReceipt: record.jointContainmentReceipt,
-    committedThroughProviderSeq: record.committedThroughProviderSeq,
-  };
-}
-
-export function writeProviderOperationCompatibilityMeta(
-  db: Parameters<typeof writeProviderOperationRuntimeMeta>[0],
-  record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
-): ProviderOperationRuntimeMeta {
-  const meta = providerOperationRuntimeMeta(record);
-  writeProviderOperationRuntimeMeta(db, meta);
-  return meta;
 }

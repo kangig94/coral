@@ -11,18 +11,13 @@ import { createBoundJobsRecoveryHarness } from '#tests/helpers/bound-jobs-recove
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { JobStore } from '#src/jobs/store.js';
-import { writeProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
-import {
-  NOTHING_TO_INHERIT_REASON,
-  type ProviderProxySetInheritance,
-} from '#src/coordinator/services/provider-proxy-set-inheritance.js';
+import { type ProviderProxySetInheritance } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
 import type { RecoveryCapableService, ProviderRecoveryAuthority } from '#src/jobs/reconcile/contracts.js';
 import type { JobLaunch } from '#src/jobs/records.js';
-import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
-import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
+import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 
 import { providerOperationRecord } from '../../../store/provider-operation-fixtures.js';
 
@@ -87,37 +82,30 @@ function seedRunningAppServerJob(
   });
 }
 
-function committedLocator(overrides: {
+function committedOperation(overrides: {
   jobId: string;
   operationId: string;
   proxyInstanceId: string;
-}): ProviderOperationRuntimeMeta {
-  return {
-    version: 1,
-    jobId: overrides.jobId,
-    operationId: overrides.operationId,
-    buildSetId: randomUUID(),
-    hostFingerprint: '0'.repeat(64),
-    guardianInstanceId: randomUUID(),
-    guardianPid: 100,
-    guardianProcessStartedAtSeconds: 1,
-    guardianControlEndpoint: '/tmp/guardian.sock',
-    proxyInstanceId: overrides.proxyInstanceId,
-    proxyPid: 200,
-    reaperInstanceId: randomUUID(),
-    reaperPid: 300,
-    reaperProcessStartedAtSeconds: 2,
-    reaperControlEndpoint: '/tmp/reaper.sock',
-    containmentKind: 'posix-group',
-    proxyProcessStartedAtSeconds: 3,
-    proxyProcessGroupId: 200,
-    canonicalEndpoint: '/tmp/proxy.sock',
-    reservation: randomUUID(),
-    providerRootPid: 7_001,
-    providerRootProcessStartedAtSeconds: 800,
-    jointContainmentReceipt: 'joint-1',
-    committedThroughProviderSeq: 0,
-  };
+}): ProviderOperationRecord {
+  const fixture = providerOperationRecord('executing');
+  if (fixture.phase !== 'executing') throw new Error('executing fixture failed validation');
+  return providerOperationRecordSchema.parse({
+    ...fixture,
+    operation: {
+      jobId: overrides.jobId,
+      operationId: overrides.operationId,
+      proxyInstanceId: overrides.proxyInstanceId,
+      buildSetId: randomUUID(),
+    },
+    locator: {
+      ...fixture.locator,
+      proxy: { ...fixture.locator.proxy, instanceId: overrides.proxyInstanceId },
+    },
+    activationAck: {
+      ...fixture.activationAck,
+      hostRef: { ...fixture.activationAck.hostRef, ownerJobId: overrides.jobId },
+    },
+  });
 }
 
 function createFakeService(overrides: Partial<RecoveryCapableService> = {}): RecoveryCapableService {
@@ -151,7 +139,7 @@ describe('runRecoveryAdoption inheritance pre-pass', () => {
     const operationId = randomUUID();
     const proxyInstanceId = randomUUID();
     seedRunningAppServerJob(progressStore, { jobId, sessionId, provider: 'codex', proxyInstanceId });
-    writeProviderOperationRuntimeMeta(progressStore.getDb(), committedLocator({ jobId, operationId, proxyInstanceId }));
+    insertProviderOperation(progressStore.getDb(), committedOperation({ jobId, operationId, proxyInstanceId }));
 
     const fakeService = createFakeService();
     const createInvocationContext = (projectRoot: string): InvocationContext => ({
@@ -307,119 +295,5 @@ describe('runStartupRecovery provider-operation ownership', () => {
     expect(fakeService.captureProviderRecoveryAuthority).not.toHaveBeenCalled();
     expect(fakeService.finalizeInterruptedAppServerJob).not.toHaveBeenCalled();
     expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
-  });
-});
-
-/**
- * Finding 1: `readProviderOperationRuntimeMetaForJob` fails loud on a corrupt `provider_operation.v1` row by
- * design (its own doc — a silent `null` would misroute back through the probe/openReplacement path adoption
- * exists to close off). But "loud" must stay scoped to the one job whose row is corrupt; before this fix, the
- * pre-pass let that throw escape the whole `for (const job of runningJobs)` loop, which propagates out of
- * `runRecoveryAdoption` uncaught and aborts the entire coordinator boot — bricking startup for every other
- * running job the pre-pass exists to recover, not just the corrupt one.
- */
-describe('runRecoveryAdoption inheritance pre-pass — corrupt locator resilience', () => {
-  it('does not abort recovery when one running job has a corrupt provider_operation.v1 row, and the healthy job still recovers', async () => {
-    const runtime = createRealRuntime('prod');
-    const progressStore = createProgressStore(runtime);
-
-    const healthyJobId = randomUUID();
-    const corruptJobId = randomUUID();
-    seedRunningAppServerJob(progressStore, {
-      jobId: healthyJobId,
-      sessionId: 'healthy-app-server-session',
-      provider: 'codex',
-      proxyInstanceId: randomUUID(),
-    });
-    writeProviderOperationRuntimeMeta(
-      progressStore.getDb(),
-      committedLocator({ jobId: healthyJobId, operationId: randomUUID(), proxyInstanceId: randomUUID() }),
-    );
-    seedRunningAppServerJob(progressStore, {
-      jobId: corruptJobId,
-      sessionId: 'corrupt-app-server-session',
-      provider: 'codex',
-      proxyInstanceId: randomUUID(),
-    });
-    // Written directly rather than through `writeProviderOperationRuntimeMeta`, which only ever produces
-    // bytes the codec can decode — this reproduces on-disk corruption of a coordinator-only-written row.
-    progressStore
-      .getDb()
-      .prepare<[string, string]>('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
-      .run(`provider_operation.v1:${corruptJobId}:${randomUUID()}`, 'not valid json');
-
-    const fakeService = createFakeService();
-    const createInvocationContext = (projectRoot: string): InvocationContext => ({
-      projectRoot,
-      pluginRoot: '/tmp/plugin',
-      coralEnv: {},
-      principal: testProjectPrincipal(projectRoot),
-    });
-    const getRecoveryService = (): RecoveryCapableService => fakeService;
-
-    // Nothing is actually redeemed in this test — the point is that the corrupt read for `corruptJobId` does
-    // not stop the pre-pass from reaching (or skipping past) `healthyJobId` in the same loop.
-    const inheritProviderProxySet = vi.fn(async () => ({
-      kind: 'not-bequeathed' as const,
-      reason: NOTHING_TO_INHERIT_REASON,
-    }));
-    const providerProxyInheritance: ProviderProxySetInheritance = { inheritProviderProxySet };
-
-    const log = vi.fn();
-    const signal = new AbortController().signal;
-    const coordinatorCommit = (cb: Parameters<JobStore['commit']>[0]) => progressStore.commit(cb);
-
-    const boundRecovery = await createBoundJobsRecoveryHarness({
-      identity: {
-        pluginRoot: '/tmp/plugin',
-        namespace: NAMESPACE,
-        version: 'test-version',
-        buildSetId: '00000000-0000-4000-8000-000000000000',
-        bundleHash: 'test-bundle',
-        cliBundleHash: 'test-cli-bundle',
-        claudeAppserverBundleHash: 'test-claude-bundle',
-        flavor: 'prod',
-        instanceId: 'corrupt-locator-test',
-        token: 'test-token',
-        bootToken: 'test-boot-token',
-        shutdownToken: 'test-shutdown-token',
-        now: () => runtime.time.now(),
-        log,
-      },
-      runtime,
-      progressStore,
-      providerRegistry: {} as never,
-      getRecoveryService,
-      createInvocationContext,
-      signal,
-      coordinatorCommit,
-    });
-
-    const recoveryCoordinator = createRecoveryCoordinator(
-      {
-        progressStore,
-        runtime,
-        runtimeState: { setLaunchFenceActive: vi.fn() },
-        eventBus: { emit: vi.fn() } as never,
-        getRecoveryService,
-        createInvocationContext,
-        providerProxyInheritance,
-        log,
-      },
-      boundRecovery.bound,
-    );
-
-    // The corrupt row must not reject the whole recovery walk.
-    await expect(boundRecovery.run(recoveryCoordinator)).resolves.toBeUndefined();
-
-    // Both jobs reached ordinary carrier-detached finalization: the corrupt locator neither crashed the walk
-    // (which would have stopped `healthyJobId` from ever settling) nor silently vanished `corruptJobId`
-    // itself — it falls through to the same settle path any other non-bequeathed job takes.
-    expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledTimes(2);
-    const finalizedJobIds = vi
-      .mocked(fakeService.finalizeInterruptedAppServerJob)
-      .mock.calls.map(([authority]) => authority.launchRecord.jobId)
-      .sort();
-    expect(finalizedJobIds).toEqual([corruptJobId, healthyJobId].sort());
   });
 });

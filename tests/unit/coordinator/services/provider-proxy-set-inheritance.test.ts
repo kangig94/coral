@@ -25,7 +25,6 @@ import { readHandoffCapsuleFile, type HandoffCapsule } from '#src/provider-proxy
 import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import { connectRoleControlWithRetry } from '#src/provider-proxy/role-spawn.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
-import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
 import type { Database } from '#src/store/db.js';
 import { readProviderOperation } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
@@ -33,6 +32,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import {
   attemptProviderProxySetInheritance,
   createProviderProxySetInheritance,
+  type ProviderProxySetLocator,
 } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
 import {
   subscribeProviderProxyControlEstablished,
@@ -42,9 +42,6 @@ import { proxyOperationAdoptParamsSchema } from '#src/provider-proxy/protocol.js
 
 const mockedReadCapsule = vi.mocked(readHandoffCapsuleFile);
 const mockedReadOperation = vi.mocked(readProviderOperation);
-const mockedReadMeta = vi.fn<
-  (_db: Database, jobId: string, operationId: string) => ProviderOperationRuntimeMeta | null
->(() => null);
 const mockedConnect = vi.mocked(connectRoleControlWithRetry);
 const mockedProbe = vi.mocked(probeProcessStartedAtSeconds);
 
@@ -69,81 +66,55 @@ const HOST_FINGERPRINT = 'a'.repeat(64);
  *  (`control-endpoint.ts`'s own `establishControl`); every fake "open" response below spreads this in. */
 const OPENING = { controlEpoch: 1, heartbeatChallenge: 'first-challenge' };
 
-function locator(overrides: Partial<ProviderOperationRuntimeMeta> = {}): ProviderOperationRuntimeMeta {
+function locator(operationOverrides: Partial<ProviderOperationRecord['operation']> = {}): ProviderProxySetLocator {
+  const proxyInstanceId = operationOverrides.proxyInstanceId ?? PROXY_INSTANCE_ID;
   return {
-    version: 1,
-    jobId: randomUUID(),
-    operationId: randomUUID(),
-    buildSetId: BUILD_SET_ID,
-    hostFingerprint: HOST_FINGERPRINT,
-    guardianInstanceId: GUARDIAN_INSTANCE_ID,
-    guardianPid: 100,
-    guardianProcessStartedAtSeconds: 1,
-    guardianControlEndpoint: '/tmp/guardian.sock',
-    proxyInstanceId: PROXY_INSTANCE_ID,
-    proxyPid: 200,
-    reaperInstanceId: REAPER_INSTANCE_ID,
-    reaperPid: 300,
-    reaperProcessStartedAtSeconds: 2,
-    reaperControlEndpoint: '/tmp/reaper.sock',
-    containmentKind: 'posix-group',
-    proxyProcessStartedAtSeconds: 3,
-    proxyProcessGroupId: 200,
-    canonicalEndpoint: '/tmp/proxy.sock',
-    reservation: randomUUID(),
-    providerRootPid: 7_001,
-    providerRootProcessStartedAtSeconds: 800,
-    jointContainmentReceipt: 'joint-1',
-    committedThroughProviderSeq: 0,
-    ...overrides,
+    operation: {
+      jobId: randomUUID(),
+      operationId: randomUUID(),
+      proxyInstanceId,
+      buildSetId: BUILD_SET_ID,
+      ...operationOverrides,
+    },
+    locator: {
+      hostFingerprint: HOST_FINGERPRINT,
+      guardian: {
+        instanceId: GUARDIAN_INSTANCE_ID,
+        pid: 100,
+        processStartedAtSeconds: 1,
+        controlEndpoint: '/tmp/guardian.sock',
+      },
+      proxy: {
+        instanceId: proxyInstanceId,
+        pid: 200,
+        processStartedAtSeconds: 3,
+        controlEndpoint: '/tmp/proxy.sock',
+      },
+      reaper: {
+        instanceId: REAPER_INSTANCE_ID,
+        pid: 300,
+        processStartedAtSeconds: 2,
+        controlEndpoint: '/tmp/reaper.sock',
+      },
+      containment: { pid: 200, processStartedAtSeconds: 3, processGroupId: 200, kind: 'posix-group' },
+    },
   };
 }
 
-function executingRecord(meta: ProviderOperationRuntimeMeta): Extract<ProviderOperationRecord, { phase: 'executing' }> {
+function executingRecord(
+  reference: ProviderProxySetLocator,
+  committedThroughProviderSeq = 0,
+): Extract<ProviderOperationRecord, { phase: 'executing' }> {
   const record = providerOperationRecordSchema.parse({
     version: 1,
-    operation: {
-      jobId: meta.jobId,
-      operationId: meta.operationId,
-      proxyInstanceId: meta.proxyInstanceId,
-      buildSetId: meta.buildSetId,
-    },
-    locator: {
-      hostFingerprint: meta.hostFingerprint,
-      proxy: {
-        instanceId: meta.proxyInstanceId,
-        pid: meta.proxyPid,
-        processStartedAtSeconds: meta.proxyProcessStartedAtSeconds,
-        controlEndpoint: meta.canonicalEndpoint,
-      },
-      guardian: {
-        instanceId: meta.guardianInstanceId,
-        pid: meta.guardianPid,
-        processStartedAtSeconds: meta.guardianProcessStartedAtSeconds,
-        controlEndpoint: meta.guardianControlEndpoint,
-      },
-      reaper: {
-        instanceId: meta.reaperInstanceId,
-        pid: meta.reaperPid,
-        processStartedAtSeconds: meta.reaperProcessStartedAtSeconds,
-        controlEndpoint: meta.reaperControlEndpoint,
-      },
-      containment: {
-        pid: meta.proxyPid,
-        processStartedAtSeconds: meta.proxyProcessStartedAtSeconds,
-        processGroupId: meta.proxyProcessGroupId,
-        kind: meta.containmentKind,
-      },
-    },
+    operation: reference.operation,
+    locator: reference.locator,
     prepareAttemptNumber: 1,
     prepareAttemptKey: 'b'.repeat(64),
     phase: 'executing',
-    reservation: meta.reservation,
-    providerRoot: {
-      pid: meta.providerRootPid,
-      processStartedAtSeconds: meta.providerRootProcessStartedAtSeconds,
-    },
-    jointContainmentReceipt: meta.jointContainmentReceipt,
+    reservation: randomUUID(),
+    providerRoot: { pid: 7_001, processStartedAtSeconds: 800 },
+    jointContainmentReceipt: 'joint-1',
     jointActivationReceipt: 'activation-receipt',
     activationAck: {
       state: 'executing',
@@ -151,14 +122,14 @@ function executingRecord(meta: ProviderOperationRuntimeMeta): Extract<ProviderOp
       startedAt: '2026-08-09T12:34:56.000Z',
       hostRef: {
         provider: 'codex',
-        fingerprint: meta.hostFingerprint,
+        fingerprint: reference.locator.hostFingerprint,
         instanceId: 'host-instance-1',
         leaseMode: 'job-exclusive',
-        ownerJobId: meta.jobId,
+        ownerJobId: reference.operation.jobId,
       },
       committedThroughProviderSeq: 0,
     },
-    committedThroughProviderSeq: meta.committedThroughProviderSeq,
+    committedThroughProviderSeq,
     revision: 0,
     retryNotBeforeMs: 0,
     retryCount: 0,
@@ -168,8 +139,8 @@ function executingRecord(meta: ProviderOperationRuntimeMeta): Extract<ProviderOp
   return record;
 }
 
-function activationPendingRecord(meta: ProviderOperationRuntimeMeta): ProviderOperationRecord {
-  const executing = executingRecord(meta);
+function activationPendingRecord(reference: ProviderProxySetLocator): ProviderOperationRecord {
+  const executing = executingRecord(reference);
   const { activationAck, committedThroughProviderSeq, ...pending } = executing;
   void activationAck;
   void committedThroughProviderSeq;
@@ -181,27 +152,25 @@ function activationPendingRecord(meta: ProviderOperationRuntimeMeta): ProviderOp
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedReadOperation.mockImplementation((db, operation) => {
-    const meta = mockedReadMeta(db, operation.jobId, operation.operationId);
-    return meta === null ? null : executingRecord(meta);
-  });
+  mockedReadOperation.mockReturnValue(null);
 });
 
-function capsuleFor(loc: ProviderOperationRuntimeMeta, overrides: Partial<HandoffCapsule> = {}): HandoffCapsule {
+function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<HandoffCapsule> = {}): HandoffCapsule {
+  const { operation, locator: set } = reference;
   return {
     version: 1,
     grantId: randomUUID(),
     secret: 'f'.repeat(64),
     generation: 'gen2',
     flavor: 'prod',
-    buildSetId: loc.buildSetId,
-    hostFingerprint: loc.hostFingerprint,
-    guardianInstanceId: loc.guardianInstanceId,
-    reaperInstanceId: loc.reaperInstanceId,
-    proxyInstanceId: loc.proxyInstanceId,
-    guardianControlEndpoint: loc.guardianControlEndpoint,
-    reaperControlEndpoint: loc.reaperControlEndpoint,
-    proxyEndpoint: loc.canonicalEndpoint,
+    buildSetId: operation.buildSetId,
+    hostFingerprint: set.hostFingerprint,
+    guardianInstanceId: set.guardian.instanceId,
+    reaperInstanceId: set.reaper.instanceId,
+    proxyInstanceId: operation.proxyInstanceId,
+    guardianControlEndpoint: set.guardian.controlEndpoint,
+    reaperControlEndpoint: set.reaper.controlEndpoint,
+    proxyEndpoint: set.proxy.controlEndpoint,
     orphanTimeoutMs: 30_000,
     teardownReserveMs: 14_000,
     ...overrides,
@@ -219,12 +188,9 @@ const COORDINATOR_IDENTITY = {
 
 type OperationKey = { jobId: string; operationId: string; proxyInstanceId: string; buildSetId: string };
 
-function operationFor(loc: ProviderOperationRuntimeMeta, overrides: Partial<OperationKey> = {}): OperationKey {
+function operationFor(reference: ProviderProxySetLocator, overrides: Partial<OperationKey> = {}): OperationKey {
   return {
-    jobId: loc.jobId,
-    operationId: loc.operationId,
-    proxyInstanceId: loc.proxyInstanceId,
-    buildSetId: loc.buildSetId,
+    ...reference.operation,
     ...overrides,
   };
 }
@@ -256,25 +222,26 @@ function stubConnect(client: ControlClient): void {
   mockedConnect.mockImplementation(async () => client);
 }
 
-function proxyIdentityFieldsFor(loc: ProviderOperationRuntimeMeta) {
+function proxyIdentityFieldsFor(reference: ProviderProxySetLocator) {
+  const { operation, locator: set } = reference;
   return {
-    proxyInstanceId: loc.proxyInstanceId,
-    pid: loc.proxyPid,
-    processStartedAtSeconds: loc.proxyProcessStartedAtSeconds,
-    processGroupId: loc.proxyProcessGroupId,
-    guardianInstanceId: loc.guardianInstanceId,
-    reaperInstanceId: loc.reaperInstanceId,
+    proxyInstanceId: operation.proxyInstanceId,
+    pid: set.proxy.pid,
+    processStartedAtSeconds: set.proxy.processStartedAtSeconds,
+    processGroupId: set.containment.processGroupId,
+    guardianInstanceId: set.guardian.instanceId,
+    reaperInstanceId: set.reaper.instanceId,
     generation: 'gen2' as const,
     flavor: 'prod' as const,
-    buildSetId: loc.buildSetId,
-    hostFingerprint: loc.hostFingerprint,
-    canonicalEndpoint: loc.canonicalEndpoint,
+    buildSetId: operation.buildSetId,
+    hostFingerprint: set.hostFingerprint,
+    canonicalEndpoint: set.proxy.controlEndpoint,
   };
 }
 
 /** The three "open" replies a full, successful redemption needs, keyed exactly as `fakeClient` dispatches. */
 function redemptionResponses(
-  loc: ProviderOperationRuntimeMeta,
+  loc: ProviderProxySetLocator,
   operations: readonly OperationKey[],
   overrides: Record<string, unknown | ((params: unknown) => unknown)> = {},
 ): Record<string, unknown | ((params: unknown) => unknown)> {
@@ -362,8 +329,8 @@ describe('attemptProviderProxySetInheritance', () => {
       calls,
     );
     stubConnect(client);
-    mockedReadMeta.mockImplementation((_db: Database, jobId: string, operationId: string) =>
-      locator({ jobId, operationId, committedThroughProviderSeq: 5 }),
+    mockedReadOperation.mockImplementation((_db: Database, operation) =>
+      executingRecord({ operation, locator: loc.locator }, 5),
     );
 
     // The adopted stop control is handed to the registry and nowhere else, so capturing it here is the only
@@ -430,8 +397,8 @@ describe('attemptProviderProxySetInheritance', () => {
       calls,
     );
     stubConnect(client);
-    mockedReadMeta.mockImplementation((_db: Database, jobId: string, operationId: string) =>
-      locator({ jobId, operationId, committedThroughProviderSeq: jobId === loc.jobId ? 5 : 9 }),
+    mockedReadOperation.mockImplementation((_db: Database, operation) =>
+      executingRecord({ operation, locator: loc.locator }, operation.jobId === loc.operation.jobId ? 5 : 9),
     );
 
     const registered: {
@@ -448,7 +415,7 @@ describe('attemptProviderProxySetInheritance', () => {
         operationRegistry: {
           adopt: (meta, _control, cleanup) =>
             registered.push({
-              jobId: meta.jobId,
+              jobId: meta.operation.jobId,
               committedThroughProviderSeq: meta.committedThroughProviderSeq,
               cleanup,
             }),
@@ -463,11 +430,14 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(sawGuardianReceiptOnRotate).toBe(true);
     expect(outcome.kind).toBe('inherited');
     if (outcome.kind !== 'inherited') throw new Error('unreachable');
-    expect(outcome.set.proxyInstanceId).toBe(loc.proxyInstanceId);
+    expect(outcome.set.proxyInstanceId).toBe(loc.operation.proxyInstanceId);
     expect([...outcome.adoptedJobIds].sort()).toEqual([mine.jobId, other.jobId].sort());
     expect(registered).toHaveLength(2);
-    expect(registered.find((r) => r.jobId === loc.jobId)?.committedThroughProviderSeq).toBe(5);
-    expect(registered.find((r) => r.jobId === loc.jobId)?.cleanup).toEqual({ jobId: loc.jobId, pool: 'curate' });
+    expect(registered.find((r) => r.jobId === loc.operation.jobId)?.committedThroughProviderSeq).toBe(5);
+    expect(registered.find((r) => r.jobId === loc.operation.jobId)?.cleanup).toEqual({
+      jobId: loc.operation.jobId,
+      pool: 'curate',
+    });
 
     const methodOrder = calls.map((c) => c.method);
     expect(methodOrder.indexOf('guardian.handoff-redeem.v1')).toBeLessThan(
@@ -531,8 +501,8 @@ describe('attemptProviderProxySetInheritance', () => {
       calls,
     );
     stubConnect(client);
-    mockedReadMeta.mockImplementation((_db: Database, jobId: string, operationId: string) =>
-      locator({ jobId, operationId }),
+    mockedReadOperation.mockImplementation((_db: Database, operation) =>
+      executingRecord({ operation, locator: loc.locator }),
     );
 
     const outcome = await attemptProviderProxySetInheritance(
@@ -561,7 +531,7 @@ describe('attemptProviderProxySetInheritance', () => {
     const calls: { method: string; params: unknown }[] = [];
     const client = fakeClient(redemptionResponses(loc, operations), calls);
     stubConnect(client);
-    mockedReadMeta.mockReturnValueOnce(null);
+    mockedReadOperation.mockReturnValueOnce(null);
     const adopt = vi.fn();
 
     const outcome = await attemptProviderProxySetInheritance(
@@ -613,7 +583,7 @@ describe('attemptProviderProxySetInheritance', () => {
 
     expect(outcome).toEqual({ kind: 'not-bequeathed', reason: expect.stringContaining('grant_invalid') });
     // The guardian connection opened before the reaper refusal must be closed rather than leaked.
-    expect(closed).toContain(loc.guardianControlEndpoint);
+    expect(closed).toContain(loc.locator.guardian.controlEndpoint);
   });
 
   it('stops every heartbeat loop before closing clients when a later step fails after they start', async () => {
@@ -625,7 +595,7 @@ describe('attemptProviderProxySetInheritance', () => {
     const op = operationFor(loc);
     const client = fakeClient(redemptionResponses(loc, [op]), []);
     stubConnect(client);
-    mockedReadMeta.mockImplementation(() => {
+    mockedReadOperation.mockImplementation(() => {
       throw new Error('meta store unavailable');
     });
     const clearIntervalSpy = vi.spyOn(runtime.time, 'clearInterval');

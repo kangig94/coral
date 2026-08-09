@@ -39,6 +39,7 @@ import { crashedJobTerminalizationSource } from '#src/jobs/crashed-job-terminali
 import { coordinatorJobRecoverySource } from '#src/coordinator/services/recovery/coordinator-job-source.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import type { EventsRow } from '#src/store/schema.js';
+import { providerOperationRecordKeyPrefix } from '#src/store/provider-operation-journal.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -572,7 +573,7 @@ describe('coordinator job recovery source revisions', () => {
       mutate: (db) =>
         db
           .prepare(`INSERT INTO meta (key, value) VALUES (?, ?)`)
-          .run('provider_operation.v1:revision-coordinator-job:revision-coordinator-operation', '{"locator":"v1"}'),
+          .run(`${providerOperationRecordKeyPrefix('revision-coordinator-job')}operation:proxy:build`, '{"saga":"v1"}'),
     },
   ];
 

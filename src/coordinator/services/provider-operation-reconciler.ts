@@ -2,7 +2,6 @@ import type { TimePort, TimerHandle } from '../../infra/port-types.js';
 import type { AppServerProxyPlacementResult } from '../../jobs/contracts/app-server-proxy-route.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { buildJobEventRefs } from '../../jobs/refs.js';
-import { deleteProviderOperationRuntimeMeta } from '../../jobs/runtime-meta-store.js';
 import type { ProxyPreparedAppServerOperation } from '../../provider-proxy/protocol.js';
 import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
@@ -30,9 +29,7 @@ import {
   providerOperationErrorIsAmbiguous,
   providerOperationErrorReason,
   providerOperationPrepareAttempt,
-  providerOperationRuntimeMeta,
   type ProviderOperationPrepareAttempt,
-  writeProviderOperationCompatibilityMeta,
 } from './provider-proxy-operation-activation.js';
 
 export type ProviderOperationReconciliationEvidence =
@@ -712,7 +709,6 @@ export class ProviderOperationReconciler {
         return undefined;
       }
       updated = true;
-      writeProviderOperationCompatibilityMeta(progressStore.getDb(), next);
       commit.append({
         type: 'job.runtime.started',
         stream: { kind: 'job', id: record.operation.jobId },
@@ -750,9 +746,8 @@ export class ProviderOperationReconciler {
     authority: DurableProviderProxyOperationAuthority,
     cleanup: ReturnType<typeof providerOperationCleanupIdentity>,
   ): void {
-    const meta = providerOperationRuntimeMeta(record);
     const control = authority.buildOperationControl(record.operation);
-    this.#deps.registry.activate(meta, control, cleanup);
+    this.#deps.registry.activate(record, control, cleanup);
   }
 
   #transition(expected: ProviderOperationRecord, next: ProviderOperationRecord): ProviderOperationRecord | null {
@@ -764,26 +759,7 @@ export class ProviderOperationReconciler {
   #deleteSettledOperation(
     record: Extract<ProviderOperationRecord, { phase: 'settlement-pending' }>,
   ): ReturnType<typeof deleteProviderOperation> {
-    const db = this.#deps.getProgressStore().getDb();
-    const ownsTransaction = !db.isTransaction;
-    if (ownsTransaction) db.exec('BEGIN IMMEDIATE');
-    try {
-      const deleted = deleteProviderOperation(db, record);
-      if (deleted.kind === 'deleted' || deleted.current === null) {
-        deleteProviderOperationRuntimeMeta(db, record.operation.jobId, record.operation.operationId);
-      }
-      if (ownsTransaction) db.exec('COMMIT');
-      return deleted;
-    } catch (error: unknown) {
-      if (ownsTransaction) {
-        try {
-          db.exec('ROLLBACK');
-        } catch {
-          // Preserve the deletion failure that determines whether reconciliation retries.
-        }
-      }
-      throw error;
-    }
+    return deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
   }
 
   async #recordRetry(record: ProviderOperationRecord, error: unknown): Promise<void> {

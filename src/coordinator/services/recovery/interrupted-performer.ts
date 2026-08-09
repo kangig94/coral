@@ -11,8 +11,6 @@ import {
 import { elapsedDurationMs } from '../../../jobs/duration.js';
 import type { InterruptedProbeOutcome } from '../../../jobs/reconcile/interrupted-reason.js';
 import type { JobTerminalInput } from '../../../jobs/records.js';
-import type { ProviderOperationRuntimeMeta } from '../../../jobs/runtime-meta.js';
-import { deleteProviderOperationRuntimeMeta } from '../../../jobs/runtime-meta-store.js';
 import { MAX_PROXY_RECORDED_PROVIDER_ROOTS } from '../../../provider-proxy/enforcement.js';
 import {
   DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
@@ -21,11 +19,16 @@ import {
 import type { ProviderArtifactHandleInput, ProviderTerminalEventBody } from '../../../providers/contract.js';
 import type { BoundProvider, BoundProviderHostPreparationInput } from '../../../providers/bound-provider-contract.js';
 import type { Database } from '../../../store/db.js';
+import { deleteProviderOperation } from '../../../store/provider-operation-journal.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { readContinuityRef } from '../../../sessions/continuity.js';
 import type { ContinuitySnapshot } from '../../../sessions/continuity.js';
 import type { ProviderValidatedSessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
-import type { AppServerInterruptedRecoveryPlan, DurableInterruptedRecoveryPlan } from './interrupted-plan.js';
+import type {
+  AppServerInterruptedRecoveryPlan,
+  DurableInterruptedRecoveryPlan,
+  ProviderOperationCarrierRecord,
+} from './interrupted-plan.js';
 
 export type PerformedInterruptedRecovery =
   | Readonly<{ kind: 'unsupported' }>
@@ -56,49 +59,42 @@ type PerformerRuntime = Readonly<{
   signal?: AbortSignal;
   /**
    * Confirms — reaping via SIGTERM/SIGKILL if the recorded proxy set is still alive — that a `carrier-
-   * detached` plan's carrier is gone, then best-effort deletes its committed `provider_operation.v1` row.
+   * detached` plan's carrier is gone, then best-effort retires the saga record that named it.
    * Rejects when absence cannot be confirmed inside the reap budget; the caller must not finalize the job
    * in that case.
    */
-  reapCarrier(locator: ProviderOperationRuntimeMeta): Promise<void>;
+  reapCarrier(locator: ProviderOperationCarrierRecord): Promise<void>;
 }>;
 
-/** What `reapCarrier` needs to build one recorded-containment reap: real ports at the composition root, or a
- *  fake clock/process pair in tests — see `reapProviderOperationCarrier`. */
+/** Keeps process observation injectable because recovery must distinguish a recycled pid from its recorded process. */
 export type CarrierReapDeps<Scope extends symbol> = Readonly<{
   process: Pick<Runtime['process'], 'kill' | 'isAlive'>;
   platform: NodeJS.Platform;
   db: Database;
   clock: MonotonicClock<Scope>;
-  /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe, matching every other
-   *  `ProcessContainmentEnvironment` composer (e.g. `provider-proxy/role-main.ts`). */
+  /** Tests replace the platform probe so ambiguous process identity can be exercised without real children. */
   readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
 }>;
 
 /**
- * Reaps exactly the recorded proxy process group (`proxyPid`/`proxyProcessStartedAtSeconds`/
- * `proxyProcessGroupId`) and its recorded provider root (`providerRootPid`/
- * `providerRootProcessStartedAtSeconds`) — never the guardian or reaper, which are not named by these fields
- * and observe `containment-absent` on their own clocks to exit by themselves. The budget is the same total
- * window the provider-proxy's own deadline model guarantees a set is gone by at defaults (orphan timeout plus
- * teardown reserve, ~44s), so a set still inside its orphan window at boot still gets a fair reap.
+ * Only the proxy containment and provider root are reaped here because guardian and reaper own their own
+ * orphan clocks and exit after observing containment absence. The budget matches that orphan window plus
+ * teardown reserve, so recovery does not mistake a still-protected carrier for an orphan.
  *
- * Deletion mirrors `coordinator/index.ts`'s `settled` cleanup: durable meta first, best-effort — a bookkeeping
- * failure here is logged, not thrown, because the safety-critical step (confirming the carrier is gone) has
- * already succeeded by this point, and a residual row is harmless once the job it named goes terminal.
+ * Saga retirement is best-effort only after absence is proven; a leftover name is safe, while finalizing a
+ * job before absence is proven could permit a second kernel.
  */
 export async function reapProviderOperationCarrier<Scope extends symbol>(
-  locator: ProviderOperationRuntimeMeta,
+  record: ProviderOperationCarrierRecord,
   deps: CarrierReapDeps<Scope>,
 ): Promise<void> {
+  const { locator } = record;
   const containment: RecordedContainmentIdentity = {
-    pid: locator.proxyPid,
-    processStartedAtSeconds: locator.proxyProcessStartedAtSeconds,
-    processGroupId: locator.proxyProcessGroupId,
+    pid: locator.containment.pid,
+    processStartedAtSeconds: locator.containment.processStartedAtSeconds,
+    processGroupId: locator.containment.processGroupId,
   };
-  const providerRoots: readonly RecordedProcessIdentity[] = [
-    { pid: locator.providerRootPid, processStartedAtSeconds: locator.providerRootProcessStartedAtSeconds },
-  ];
+  const providerRoots: readonly RecordedProcessIdentity[] = [record.providerRoot];
   const exitDeadline = deps.clock.shiftMilliseconds(
     deps.clock.now(),
     DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS + PROXY_TEARDOWN_RESERVE_MS,
@@ -115,10 +111,10 @@ export async function reapProviderOperationCarrier<Scope extends symbol>(
   });
 
   try {
-    deleteProviderOperationRuntimeMeta(deps.db, locator.jobId, locator.operationId);
+    deleteProviderOperation(deps.db, record);
   } catch (error: unknown) {
     backendLog.warn(
-      `Failed to delete provider operation runtime meta for job '${locator.jobId}'/operation '${locator.operationId}': ${errorMessage(error)}`,
+      `Failed to retire provider operation saga for job '${record.operation.jobId}'/operation '${record.operation.operationId}': ${errorMessage(error)}`,
     );
   }
 }
@@ -172,7 +168,7 @@ export async function performInterruptedAppServerRecovery(
     // Precondition before this may finalize like `waiting`: confirm the recorded carrier is gone. A rejection
     // here (absence unconfirmed inside budget) propagates to the caller, which must leave the job nonterminal
     // rather than treat an unconfirmed carrier as safely detached.
-    await runtime.reapCarrier(plan.locator);
+    await runtime.reapCarrier(plan.carrier);
     const probeResult = {
       resumable: plan.preservedConversationRef !== undefined || plan.continuity !== undefined,
       updatedContinuity: plan.continuity,

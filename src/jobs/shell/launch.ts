@@ -108,8 +108,7 @@ export interface LaunchOrchestratorDeps {
   getEventMetadata?: () => Pick<CoralEventInput, 'correlationId' | 'namespace' | 'project'> | null;
   /**
    * Tries to hand an app-server operation to a live, detached provider proxy set before running it in this
-   * process (W2.3). The port remains optional so compositions without proxy routing preserve in-process
-   * execution; `executeJob` treats absence identically to the port returning `null`.
+   * process (W2.3). Compositions without this optional port select local placement directly.
    */
   appServerProxyRoute?: AppServerProxyRoute;
   /**

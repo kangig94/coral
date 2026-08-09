@@ -42,8 +42,8 @@ export type ProviderHostLifecycle = Pick<ProviderHostManager, 'drainForHandoff' 
 
 /**
  * The registration half of the inheritance branch of proxy-set acquisition (W2.4/W2.5). The redemption
- * mechanism itself — reading a predecessor's bequeathed capsule and adopting its operations — needs jobs-
- * domain vocabulary (`ProviderOperationRuntimeMeta`) that `coordinator/live/**` may not reach directly
+ * mechanism itself — reading a predecessor's bequeathed capsule and adopting its operations — needs the
+ * durable saga and jobs cleanup vocabulary that `coordinator/live/**` may not compose directly
  * (`architecture-layering.test.ts`'s coordinator-contract-entrypoint rule), so it lives in
  * `coordinator/services/provider-proxy-set-inheritance.ts` and calls back into this narrow, domain-free seam
  * once it already holds a live, connected set.

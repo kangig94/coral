@@ -28,7 +28,6 @@ import {
   createOperationLedger,
   operationActivationFingerprint,
   operationPrepareAttemptKey,
-  operationPrepareStatusParamsSchema,
   type OperationLedger,
   type PrepareResult,
   type ProviderOperationKey,
@@ -52,12 +51,10 @@ import {
   proxyOperationPrepareParamsSchema as prepareParamsSchema,
   proxyOperationReservationParamsSchema as reservationParamsSchema,
   proxyControlOpenParamsSchema as openParamsSchema,
-  proxyOperationStatusParamsSchema as operationStatusParamsSchema,
   proxyOperationInspectParamsSchema as inspectParamsSchema,
   proxyOperationCancelParamsSchema as cancelParamsSchema,
   proxyOperationSettleParamsSchema as settleParamsSchema,
   proxyOperationActivateResultSchema,
-  proxyOperationCancelPendingResultSchema,
   proxyOperationCancelResultSchema,
   proxyOperationInspectResultSchema,
   proxyOperationPrepareCapacityResultSchema,
@@ -791,11 +788,8 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       },
     ],
     [
-      // No requester in this repository, and kept deliberately — the same asymmetry `operation.status.v1`
-      // records below. A responder cannot be retrofitted into a process that is already running, so it has to
-      // ship before anything needs it; a requester can be added at any time. Until then this method is the
-      // only way a lease could ever be extended past `PROXY_PENDING_ACTIVATION_LEASE_MS`, which is a fixed
-      // expiry today.
+      // No requester currently extends the fixed activation lease, but the mutation remains part of the
+      // reservation protocol.
       'operation.renew-activation.v1',
       {
         authority: 'active',
@@ -909,30 +903,6 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             void pump(key);
             return ack;
           });
-        },
-      },
-    ],
-    [
-      'operation.cancel-pending.v1',
-      {
-        authority: 'active',
-        handle: (params) => {
-          const request = reservationParamsSchema.parse(params);
-          assertNamedOperation(request.operation);
-          const key = ledgerKey(request.operation);
-          const entry = ledger.get(key);
-          const token = operationToken(key);
-          const released = releasedOperations.get(token);
-          if ((entry?.reservation ?? released?.reservation) !== request.reservation) {
-            throw new ProxyControlProtocolError('invalid_request', 'Cancel presented a different reservation.');
-          }
-          const attempt = prepareAttempts.get(token);
-          if (attempt === undefined) {
-            return proxyOperationCancelPendingResultSchema.parse({ state: 'released' });
-          }
-          return cancelNeverStarted(key, attempt.prepareAttemptNumber, attempt.prepareAttemptKey).then(() =>
-            proxyOperationCancelPendingResultSchema.parse({ state: 'released' }),
-          );
         },
       },
     ],
@@ -1176,61 +1146,6 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             activationAck: entry.activationAck,
             committedThroughProviderSeq: entry.committedThroughProviderSeq,
           });
-        },
-      },
-    ],
-    [
-      'operation.status.v1',
-      {
-        // This method remains observation-only even when prepare reconciliation recovers a reservation: the
-        // active cancellation method establishes its own attempt fence and obtains any reservation internally.
-        // The operation-list variant still has no production requester here because its responder has to
-        // predate the successor build that will use it to inspect this already-running proxy.
-        authority: 'observation',
-        budgetMs: PROXY_STATUS_RPC_TIMEOUT_MS,
-        handle: (params) => {
-          const prepareStatus = operationPrepareStatusParamsSchema.safeParse(params);
-          if (prepareStatus.success) {
-            const entry = ledger.getByPrepareAttemptKey(prepareStatus.data.prepareAttemptKey);
-            if (entry === null) return { state: 'absent' };
-            if (entry.providerRoot === null || entry.jointContainmentReceipt === null) {
-              return { state: 'preparing' };
-            }
-            return proxyOperationPreparePendingResultSchema.parse({
-              state: 'pending-activation',
-              reservation: entry.reservation,
-              leaseExpiresInMs: entry.leaseExpiresAtMs - nowMs(),
-              providerRoot: entry.providerRoot,
-              jointContainmentReceipt: entry.jointContainmentReceipt,
-            });
-          }
-          const request = operationStatusParamsSchema.parse(params);
-          // Every named operation must name *this* proxy. Refusing the whole request rather than the
-          // offending entry is deliberate: a caller that mixed two proxies' operations together has a bug
-          // in what it believes about its own store, and answering the half that happened to match would
-          // hide it behind a plausible-looking reply.
-          for (const operation of request.operations) {
-            if (operation.proxyInstanceId !== capsule.proxyInstanceId || operation.buildSetId !== capsule.buildSetId) {
-              throw new ProxyControlProtocolError('identity_mismatch', 'A named operation is not this proxy.');
-            }
-          }
-          return {
-            proxyInstanceId: capsule.proxyInstanceId,
-            operations: request.operations.map((operation) => {
-              const entry = ledger.get({ jobId: operation.jobId, operationId: operation.operationId });
-              // `absent` is a positive finding from the one authority that can make it: this proxy is
-              // alive, it answered, and it holds no such operation. It is not the same as an unanswered
-              // probe, and the caller must be able to tell them apart.
-              return entry === null
-                ? { operation, held: false as const }
-                : {
-                    operation,
-                    held: true as const,
-                    state: legacyState(entry.state),
-                    committedThroughProviderSeq: entry.committedThroughProviderSeq,
-                  };
-            }),
-          };
         },
       },
     ],

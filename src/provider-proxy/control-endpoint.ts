@@ -251,9 +251,8 @@ function handlerFailure(id: string | number, error: unknown): ProxyControlJsonRp
   const message = error instanceof Error ? error.message : 'Control request failed.';
   if (error instanceof UnknownControlMethodError) {
     // `data.code` carries `method_not_found` for the same reason every other branch below attaches one: a
-    // caller only ever branches on `data.code`, never on prose. This is what lets an N±1-build caller tell
-    // "the peer's build does not have this method — fall back" apart from "this call failed" — the sensor
-    // the cross-version evolution mechanism (`operation.status.v1`'s own doc makes the same point) depends on.
+    // caller only ever branches on `data.code`, never on prose. This lets a caller distinguish a method an
+    // older peer does not implement from a failure of a method both peers understand.
     return {
       jsonrpc: '2.0',
       id,

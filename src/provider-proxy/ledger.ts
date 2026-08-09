@@ -46,9 +46,6 @@ export type ProviderRootIdentity = Readonly<{ pid: number; processStartedAtSecon
 
 export const operationPrepareAttemptKeySchema = z.string().regex(/^[0-9a-f]{64}$/u);
 export const operationPrepareAttemptNumberSchema = z.number().int().positive().safe();
-export const operationPrepareStatusParamsSchema = z
-  .object({ prepareAttemptKey: operationPrepareAttemptKeySchema })
-  .strict();
 
 export function operationPrepareAttemptKey(
   request: Readonly<{
@@ -157,13 +154,6 @@ export interface OperationLedger<Prepared = unknown> {
   beginActivation(key: ProviderOperationKey, reservation: Reservation, nowMs: number, fingerprint: string): void;
   completeActivation(key: ProviderOperationKey, fingerprint: string, ack: ProxyOperationActivationReceipt): void;
   beginRelease(key: ProviderOperationKey): void;
-  /** Temporary direct adapter for tests and hosts that only need to seed an executing ledger. */
-  activate(
-    key: ProviderOperationKey,
-    reservation: Reservation,
-    nowMs: number,
-    receipt?: Omit<ProxyOperationActivationReceipt, 'state' | 'activationFingerprint'>,
-  ): void;
   transition(key: ProviderOperationKey, next: ProviderOperationState | 'released'): void;
   /** Buffers one provider event, returning whether the producer must pause before sending more. */
   recordEvent(key: ProviderOperationKey, event: ReplayEvent): { paused: boolean };
@@ -177,7 +167,6 @@ export interface OperationLedger<Prepared = unknown> {
    */
   nextProviderSeq(key: ProviderOperationKey): number;
   get(key: ProviderOperationKey): OperationLedgerEntry<Prepared> | null;
-  getByPrepareAttemptKey(prepareAttemptKey: string): OperationLedgerEntry<Prepared> | null;
   /**
    * Every operation this ledger currently holds, in no particular order. Used to resume draining every
    * operation's buffer after a control tenancy reattaches — not to look up any one operation's own state.
@@ -356,26 +345,6 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
       entry.state = 'releasing';
     },
 
-    activate(key, reservation, nowMs, receipt): void {
-      const fingerprint = `direct:${reservation}`;
-      const entry = require(key);
-      if (entry.state === 'executing' && entry.activationFingerprint === fingerprint) return;
-      this.beginActivation(key, reservation, nowMs, fingerprint);
-      this.completeActivation(key, fingerprint, {
-        state: 'executing',
-        activationFingerprint: fingerprint,
-        startedAt: receipt?.startedAt ?? new Date(0).toISOString(),
-        hostRef: receipt?.hostRef ?? {
-          provider: 'test',
-          fingerprint: '0'.repeat(64),
-          instanceId: `direct:${key.operationId}`,
-          leaseMode: 'job-exclusive',
-          ownerJobId: key.jobId,
-        },
-        committedThroughProviderSeq: receipt?.committedThroughProviderSeq ?? 0,
-      });
-    },
-
     transition(key, next): void {
       const entry = require(key);
       if (!ALLOWED_TRANSITIONS[entry.state].includes(next)) {
@@ -451,13 +420,6 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
     get(key): OperationLedgerEntry<Prepared> | null {
       const entry = entries.get(keyOf(key));
       return entry === undefined ? null : snapshot(entry);
-    },
-
-    getByPrepareAttemptKey(prepareAttemptKey): OperationLedgerEntry<Prepared> | null {
-      for (const entry of entries.values()) {
-        if (entry.idempotencyKey === prepareAttemptKey) return snapshot(entry);
-      }
-      return null;
     },
 
     keys(): readonly ProviderOperationKey[] {

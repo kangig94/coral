@@ -15,7 +15,6 @@ import {
 } from '../live/provider-proxy/operation-route.js';
 import { backendLog } from '../../infra/backend-log.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
-import type { ProviderProxySetLocator } from '../services/provider-proxy-set-inheritance.js';
 import { ProviderOperationCleanupRouter } from '../../jobs/provider-operation-cleanup.js';
 import { readProviderOperationJobLaunch } from '../../jobs/provider-operation-state.js';
 import { readProjectionProviderSession } from '../../sessions/projections.js';
@@ -31,27 +30,6 @@ type CreateExecutionServicesDeps = {
 
 function listInstantiatedExecutionServices(services: ReadonlyMap<string, ProjectRequestPort>): ProjectRequestPort[] {
   return [...services.values()];
-}
-
-function providerProxySetLocator(record: ProviderOperationRecord): ProviderProxySetLocator {
-  return {
-    buildSetId: record.operation.buildSetId,
-    hostFingerprint: record.locator.hostFingerprint,
-    guardianInstanceId: record.locator.guardian.instanceId,
-    guardianPid: record.locator.guardian.pid,
-    guardianProcessStartedAtSeconds: record.locator.guardian.processStartedAtSeconds,
-    guardianControlEndpoint: record.locator.guardian.controlEndpoint,
-    proxyInstanceId: record.locator.proxy.instanceId,
-    proxyPid: record.locator.proxy.pid,
-    proxyProcessStartedAtSeconds: record.locator.proxy.processStartedAtSeconds,
-    proxyProcessGroupId: record.locator.containment.processGroupId,
-    canonicalEndpoint: record.locator.proxy.controlEndpoint,
-    reaperInstanceId: record.locator.reaper.instanceId,
-    reaperPid: record.locator.reaper.pid,
-    reaperProcessStartedAtSeconds: record.locator.reaper.processStartedAtSeconds,
-    reaperControlEndpoint: record.locator.reaper.controlEndpoint,
-    containmentKind: record.locator.containment.kind,
-  };
 }
 
 export function createExecutionServices({
@@ -85,7 +63,7 @@ export function createExecutionServices({
       const live = authorityFor(record);
       if (live !== null || world.providerProxyInheritance === undefined) return live;
       const outcome = await world.providerProxyInheritance.inheritProviderProxySet(
-        providerProxySetLocator(record),
+        record,
         getProgressStore().getDb(),
         signal,
       );

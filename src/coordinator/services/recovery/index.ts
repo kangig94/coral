@@ -3,9 +3,7 @@ import { backendLog } from '../../../infra/backend-log.js';
 import { ProcessContainmentError } from '../../../infra/process-containment.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
-import { readProviderOperationRuntimeMetaForJob } from '../../../jobs/runtime-meta-store.js';
-import type { ProviderOperationRuntimeMeta } from '../../../jobs/runtime-meta.js';
-import { readProviderOperations } from '../../../store/provider-operation-journal.js';
+import { readProviderOperationForJob, readProviderOperations } from '../../../store/provider-operation-journal.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { JobStore } from '../../../jobs/store.js';
@@ -649,7 +647,7 @@ export function createRecoveryCoordinator(
     const inheritedJobIds = new Set<string>();
     if (providerProxyInheritance !== undefined) {
       // `RecoveryRegistry`'s own app-server abort handler (`registerRunningRecovery`, `actions.ts`) calls
-      // `interruptAppServerJob`, which refuses on purpose once a job's `provider_operation.v1` locator is
+      // `interruptAppServerJob`, which refuses on purpose once a job's saga record is
       // committed — adoption is exactly the moment that refusal stops being "not yet this coordinator's to
       // interrupt" and becomes permanent, since nothing else was ever going to make `coral-cli abort` reach
       // this operation. Wiring the real, operation-registry-backed `onAbort` onto this project's ordinary
@@ -661,29 +659,16 @@ export function createRecoveryCoordinator(
       const attemptedAddresses = new Set<string>();
       for (const job of runningJobs) {
         if (!isAppServerRuntime(job.runtimeRecord)) continue;
-        let locator: ProviderOperationRuntimeMeta | null;
-        try {
-          locator = readProviderOperationRuntimeMetaForJob(progressStore.getDb(), job.jobId);
-        } catch (error: unknown) {
-          // `readProviderOperationRuntimeMetaForJob` fails loud on a corrupt row by design (its own doc: a
-          // silent null here would misroute back through the probe/openReplacement path adoption exists to
-          // close off) — but that "loud" is scoped to this one job's inheritance attempt, not to the whole
-          // boot pre-pass. Skip it and let it fall through to the ordinary settle path below, whose
-          // containment quarantines per-job faults instead of aborting recovery for every other job.
-          backendLog.warn(
-            `Provider operation locator is unreadable for job ${job.jobId}; skipping proxy-set inheritance for it: ${errorMessage(error)}`,
-          );
-          continue;
-        }
-        if (locator === null) continue;
-        const address = `${locator.buildSetId}:${locator.hostFingerprint}:${locator.proxyInstanceId}`;
+        const record = readProviderOperationForJob(progressStore.getDb(), job.jobId);
+        if (record === null) continue;
+        const address = `${record.operation.buildSetId}:${record.locator.hostFingerprint}:${record.operation.proxyInstanceId}`;
         if (attemptedAddresses.has(address)) continue;
         attemptedAddresses.add(address);
         // Every other step in this walk checks `signal` after its own await; this pre-pass is no exception —
         // a shutdown requested while a prior address's attempt was still bounded-but-slow must stop this one
         // from starting rather than spending its own deadline too.
         signal.throwIfAborted();
-        const outcome = await providerProxyInheritance.inheritProviderProxySet(locator, progressStore.getDb(), signal);
+        const outcome = await providerProxyInheritance.inheritProviderProxySet(record, progressStore.getDb(), signal);
         if (outcome.kind === 'inherited') {
           for (const inheritedJobId of outcome.adoptedJobIds) {
             inheritedJobIds.add(inheritedJobId);
@@ -740,7 +725,7 @@ export function createRecoveryCoordinator(
               // budget. That is honestly fatal for this job alone: finalizing anyway risks a second local
               // kernel racing a carrier that may still be live, so this job is quarantined nonterminal rather
               // than settled — unaffected jobs continue, and a later boot retries once the recorded
-              // `provider_operation.v1` row changes (see `coordinatorJobRecoverySubject`'s revision).
+              // saga row changes (see `coordinatorJobRecoverySubject`'s revision).
               if (error instanceof ProcessContainmentError) {
                 controls.report(
                   `Carrier reap unconfirmed for interrupted app-server job: ${jobId}: ${errorMessage(error)}\n`,

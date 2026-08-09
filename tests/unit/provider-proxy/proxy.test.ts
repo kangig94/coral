@@ -287,31 +287,6 @@ async function startProxy(
 }
 
 describe('provider-proxy proxy: staged-but-never-executed release (BLOCKING B4)', () => {
-  it('releases a staged provider root when operation.cancel-pending.v1 cancels before activation', async () => {
-    const host = fakeHost();
-    const { control, operation } = await startProxy(host);
-
-    const prepared = (await control.call(
-      'operation.prepare.v1',
-      { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
-      5_000,
-    )) as { state: string; reservation: string };
-    expect(prepared.state).toBe('pending-activation');
-
-    const cancelled = await control.call(
-      'operation.cancel-pending.v1',
-      { operation, reservation: prepared.reservation },
-      5_000,
-    );
-
-    expect(cancelled).toEqual({ state: 'released' });
-    // The kernel was never started — `host.stop` must not have been reached for a cancel — but the staged
-    // app-server session `operation.prepare.v1` opened must still have been released.
-    expect(host.starts).toBe(0);
-    expect(host.stops).toBe(0);
-    expect(host.released).toEqual([{ jobId: operation.jobId, operationId: operation.operationId }]);
-  });
-
   it('releases a staged provider root when operation.stop.v1 stops before activation', async () => {
     const host = fakeHost();
     const { control, operation } = await startProxy(host);
@@ -330,29 +305,6 @@ describe('provider-proxy proxy: staged-but-never-executed release (BLOCKING B4)'
     expect(stopped.state).toBe('released');
     expect(host.starts).toBe(0);
     expect(host.stops).toBe(0);
-    expect(host.released).toEqual([{ jobId: operation.jobId, operationId: operation.operationId }]);
-  });
-
-  it('does not release anything a second time — idempotent for a retried cancel', async () => {
-    const host = fakeHost();
-    const { control, operation } = await startProxy(host);
-
-    const prepared = (await control.call(
-      'operation.prepare.v1',
-      { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
-      5_000,
-    )) as { reservation: string };
-
-    await control.call('operation.cancel-pending.v1', { operation, reservation: prepared.reservation }, 5_000);
-    const repeated = await control.call(
-      'operation.cancel-pending.v1',
-      { operation, reservation: prepared.reservation },
-      5_000,
-    );
-
-    expect(repeated).toEqual({ state: 'released' });
-    // Released once, not once per call — the ledger entry was already gone on the retry, so the retry never
-    // reaches the release call a second time.
     expect(host.released).toEqual([{ jobId: operation.jobId, operationId: operation.operationId }]);
   });
 });

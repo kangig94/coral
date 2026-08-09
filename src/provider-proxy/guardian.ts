@@ -36,8 +36,6 @@ import {
   guardianOperationActivateParamsSchema as operationActivateParamsSchema,
   guardianOpenParamsSchema as openParamsSchema,
   guardianOperationActivateResultSchema,
-  guardianOperationReleaseParamsSchema as operationReleaseParamsSchema,
-  guardianOperationReleaseResultSchema,
   guardianProxyOperationReleaseParamsSchema as proxyOperationReleaseParamsSchema,
   guardianProxyOperationReleaseResultSchema,
   guardianRegisterProviderRootParamsSchema as registerProviderRootParamsSchema,
@@ -528,42 +526,6 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
           } finally {
             if (activating.get(key) === promise) activating.delete(key);
           }
-        },
-      },
-    ],
-    [
-      'guardian.operation-release.v1',
-      {
-        authority: 'active',
-        handle: (params) => {
-          const request = operationReleaseParamsSchema.parse(params);
-          const key = membershipKey(request.operation);
-          const membership = staged.get(key);
-          if (membership === undefined) {
-            return guardianOperationReleaseResultSchema.parse({ state: 'membership-released' });
-          }
-          if (membership.jointContainmentReceipt !== request.jointContainmentReceipt) {
-            throw new ProxyControlProtocolError(
-              'unauthorized_control',
-              'Release must present the joint containment receipt.',
-            );
-          }
-          // Same disagreement `guardian.operation-activate.v1` refuses: a different reservation for a known
-          // operation is reasoning about a different prepare, not the one this membership records.
-          if (membership.reservation !== request.reservation) {
-            throw new ProxyControlProtocolError(
-              'identity_mismatch',
-              'Release named a different reservation than this operation staged.',
-            );
-          }
-          if (!sameOperationIdentity(membership.operation, request.operation)) {
-            throw new ProxyControlProtocolError('identity_mismatch', 'Release named a different operation.');
-          }
-          // The membership record is dropped, but the recorded root stays in the enforcer: a released
-          // operation does not prove its process is gone, and only teardown may conclude absence.
-          staged.delete(key);
-          activating.delete(key);
-          return guardianOperationReleaseResultSchema.parse({ state: 'membership-released' });
         },
       },
     ],

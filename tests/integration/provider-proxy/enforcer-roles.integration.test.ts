@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createMonotonicClock, type MonotonicClock } from '#src/infra/monotonic-clock.js';
 import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
-import type { ProviderOperationRuntimeMeta } from '#src/jobs/runtime-meta.js';
+import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { createGuardian } from '#src/provider-proxy/guardian.js';
@@ -23,6 +23,7 @@ import {
   resolveProviderProxyDeadlineConfiguration,
   type EnforcerDeadlineStateMachine,
 } from '#src/provider-proxy/orphan-deadline.js';
+import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 const NONCE = 'a'.repeat(64);
 const PAIR_SECRET = 'c'.repeat(64);
@@ -740,10 +741,10 @@ describe('provider-proxy guardian and reaper', () => {
     // loop would have leaked one reaper slot per cycle and failed near iteration 128 under the old code.
     const cycles = MAX_PROXY_OPERATION_LEDGERS + 40;
     for (let cycle = 0; cycle < cycles; cycle += 1) {
-      const { operation, reservation, jointContainmentReceipt } = await stage(set);
-      const released = (await set.control.call(
-        'guardian.operation-release.v1',
-        { operation, reservation, jointContainmentReceipt },
+      const { operation, reservation } = await stage(set);
+      const released = (await set.proxyChannel.call(
+        'guardian.operation-release.v2',
+        { proxy: set.proxyIdentity, operation, reservation },
         5_000,
       )) as { state: string };
       expect(released.state).toBe('membership-released');
@@ -809,14 +810,14 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toThrow(/different provider root/u);
   });
 
-  it('refuses guardian.operation-release.v1 presenting a different reservation for a known operation', async () => {
+  it('refuses guardian.operation-release.v2 presenting a different reservation for a known operation', async () => {
     const set = await startSet();
-    const { jointContainmentReceipt, operation } = await stage(set);
+    const { operation } = await stage(set);
 
     await expect(
-      set.control.call(
-        'guardian.operation-release.v1',
-        { operation, reservation: randomUUID(), jointContainmentReceipt },
+      set.proxyChannel.call(
+        'guardian.operation-release.v2',
+        { proxy: set.proxyIdentity, operation, reservation: randomUUID() },
         5_000,
       ),
     ).rejects.toThrow(/different reservation/u);
@@ -945,9 +946,9 @@ describe('provider-proxy guardian and reaper', () => {
         5_000,
       )) as { state: string; jointContainmentReceipt: string };
       expect(staged.state).toBe('staged-contained');
-      const released = (await set.control.call(
-        'guardian.operation-release.v1',
-        { operation, reservation, jointContainmentReceipt: staged.jointContainmentReceipt },
+      const released = (await set.proxyChannel.call(
+        'guardian.operation-release.v2',
+        { proxy: set.proxyIdentity, operation, reservation },
         5_000,
       )) as { state: string };
       expect(released.state).toBe('membership-released');
@@ -1150,11 +1151,11 @@ describe('provider-proxy guardian and reaper', () => {
 
   it('keeps a released membership recorded so only teardown may conclude absence', async () => {
     const set = await startSet();
-    const { jointContainmentReceipt, operation, reservation } = await stage(set);
+    const { operation, reservation } = await stage(set);
 
-    const released = (await set.control.call(
-      'guardian.operation-release.v1',
-      { operation, reservation, jointContainmentReceipt },
+    const released = (await set.proxyChannel.call(
+      'guardian.operation-release.v2',
+      { proxy: set.proxyIdentity, operation, reservation },
       5_000,
     )) as { state: string };
     expect(released.state).toBe('membership-released');
@@ -2097,33 +2098,45 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
     // registry, not a hand-rolled fake, so it proves `adopt()` itself populates `providerRootsFor` correctly,
     // not merely that a caller can hand-supply the right value.
     const operationRegistry = new LocalOperationRegistry();
-    const meta: ProviderOperationRuntimeMeta = {
-      version: 1,
+    const operation = {
       jobId: randomUUID(),
       operationId: randomUUID(),
       buildSetId: set.coordinatorIdentity.buildSetId,
-      hostFingerprint: FINGERPRINT,
-      guardianInstanceId: set.guardianIdentity.guardianInstanceId,
-      guardianPid: set.guardianIdentity.pid,
-      guardianProcessStartedAtSeconds: set.guardianIdentity.processStartedAtSeconds,
-      guardianControlEndpoint: set.guardianIdentity.canonicalControlEndpoint,
       proxyInstanceId: set.proxyIdentity.proxyInstanceId,
-      proxyPid: set.proxyIdentity.pid,
-      reaperInstanceId: set.reaperIdentity.reaperInstanceId,
-      reaperPid: set.reaperIdentity.pid,
-      reaperProcessStartedAtSeconds: set.reaperIdentity.processStartedAtSeconds,
-      reaperControlEndpoint: set.reaperIdentity.canonicalControlEndpoint,
-      containmentKind: set.reaperIdentity.containmentKind,
-      proxyProcessStartedAtSeconds: set.proxyIdentity.processStartedAtSeconds,
-      proxyProcessGroupId: set.proxyIdentity.processGroupId,
-      canonicalEndpoint: set.proxyIdentity.canonicalEndpoint,
-      reservation: randomUUID(),
-      providerRootPid: ROOT.pid,
-      providerRootProcessStartedAtSeconds: ROOT.processStartedAtSeconds,
-      jointContainmentReceipt: 'joint-1',
-      committedThroughProviderSeq: 0,
     };
-    operationRegistry.adopt(meta, { stop: async () => {} }, { jobId: meta.jobId, pool: 'default' });
+    const executing = providerOperationRecord('executing', {
+      operation,
+      locator: {
+        hostFingerprint: FINGERPRINT,
+        guardian: {
+          instanceId: set.guardianIdentity.guardianInstanceId,
+          pid: set.guardianIdentity.pid,
+          processStartedAtSeconds: set.guardianIdentity.processStartedAtSeconds,
+          controlEndpoint: set.guardianIdentity.canonicalControlEndpoint,
+        },
+        proxy: {
+          instanceId: set.proxyIdentity.proxyInstanceId,
+          pid: set.proxyIdentity.pid,
+          processStartedAtSeconds: set.proxyIdentity.processStartedAtSeconds,
+          controlEndpoint: set.proxyIdentity.canonicalEndpoint,
+        },
+        reaper: {
+          instanceId: set.reaperIdentity.reaperInstanceId,
+          pid: set.reaperIdentity.pid,
+          processStartedAtSeconds: set.reaperIdentity.processStartedAtSeconds,
+          controlEndpoint: set.reaperIdentity.canonicalControlEndpoint,
+        },
+        containment: {
+          pid: set.proxyIdentity.pid,
+          processStartedAtSeconds: set.proxyIdentity.processStartedAtSeconds,
+          processGroupId: set.proxyIdentity.processGroupId,
+          kind: set.reaperIdentity.containmentKind,
+        },
+      },
+    });
+    const record = providerOperationRecordSchema.parse({ ...executing, providerRoot: ROOT });
+    if (record.phase !== 'executing') throw new Error('expected executing provider operation');
+    operationRegistry.adopt(record, { stop: async () => {} }, { jobId: record.operation.jobId, pool: 'default' });
 
     const authority = createProviderProxySetAuthority({
       proxyInstanceId: set.proxyIdentity.proxyInstanceId,

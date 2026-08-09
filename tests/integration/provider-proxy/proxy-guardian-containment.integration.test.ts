@@ -46,11 +46,9 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
  * the same setup `enforcer-roles.integration.test.ts` uses. Only `ensureProviderRoot` is faked (a canned root,
  * no child process); the reservation, the wire calls, and the guardian/reaper themselves are all real.
  *
- * This is the one path `operation-lifecycle.integration.test.ts` cannot exercise (it injects a stub
- * `containment`) and a full `coral-cli claude` invocation cannot observe either (`launch.ts`'s in-process
- * fallback makes a failed proxy activation behaviourally identical to no proxy at all) — see `role-main.ts`'s
- * `stageProviderRoot` doc for why forwarding the ledger's own reservation, rather than a freshly minted one,
- * is what lets `guardian.operation-activate.v1` ever agree with what the coordinator committed.
+ * This path needs its own seam test because the operation-lifecycle harness injects containment and an
+ * end-to-end CLI invocation cannot observe the two guardian hops directly. Forwarding the ledger's own
+ * reservation is what lets guardian activation agree with the prepared operation.
  */
 
 const NONCE = 'a'.repeat(64);

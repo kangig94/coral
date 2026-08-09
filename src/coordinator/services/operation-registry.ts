@@ -2,8 +2,8 @@ import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { LocalOperationRegistryState } from '../../jobs/carrier-observation.js';
 import type { ProviderOperationEventIdentity } from '../../jobs/provider-event.js';
-import type { ProviderOperationRuntimeMeta } from '../../jobs/runtime-meta.js';
 import type { ProviderStopCause } from '../../providers/contract.js';
+import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
 import type {
   ProviderOperationCleanupIdentity,
   ProviderOperationCleanupPort,
@@ -15,8 +15,8 @@ import type {
  * this module is the only thing that may write it.
  *
  * Lives in `coordinator/services/`, not `coordinator/live/`, for the same reason
- * `provider-proxy-operation-activation.ts` is there: it composes jobs-domain vocabulary
- * (`ProviderOperationEventIdentity`, `ProviderOperationRuntimeMeta`) with a live control capability, which
+ * `provider-proxy-operation-activation.ts` is there: it composes jobs-domain vocabulary with a live control
+ * capability and the durable saga record, which
  * `coordinator/live/**` may not do freely (`architecture-layering.test.ts`'s coordinator-contract-entrypoint
  * rule).
  */
@@ -40,11 +40,8 @@ function registryKey(jobId: string, operationId: string): string {
 
 /**
  * One coordinator generation's live app-server operations, keyed exactly like the proxy ledger and the
- * `provider_operation.v1:<jobId>:<operationId>` meta row each entry is built from.
- *
- * `register` (private) takes the durable meta row itself rather than a hand-assembled identity because both
- * live activation and restart/handoff adoption have that same record in hand. `activate` and `adopt` remain
- * thin entry points onto this one builder; only their local-state classification differs.
+ * provider-operation saga record each entry is built from. Both live activation and restart adoption already
+ * hold the executing record, so registration does not flatten it into a second locator shape.
  */
 export class LocalOperationRegistry {
   private readonly entries = new Map<string, RegistryEntry>();
@@ -60,22 +57,14 @@ export class LocalOperationRegistry {
   }
 
   private register(
-    meta: ProviderOperationRuntimeMeta,
+    record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
     control: OperationStopControl,
     cleanup: ProviderOperationCleanupIdentity,
     state: LocalOperationRegistryState,
   ): void {
-    const identity: ProviderOperationEventIdentity = {
-      jobId: meta.jobId,
-      operationId: meta.operationId,
-      proxyInstanceId: meta.proxyInstanceId,
-      buildSetId: meta.buildSetId,
-    };
+    const identity: ProviderOperationEventIdentity = record.operation;
     const key = registryKey(identity.jobId, identity.operationId);
-    const providerRoot = {
-      pid: meta.providerRootPid,
-      processStartedAtSeconds: meta.providerRootProcessStartedAtSeconds,
-    };
+    const providerRoot = record.providerRoot;
     this.entries.set(key, { identity, providerRoot, control, cleanup, state, stopCause: null });
     this.liveJobIndex.set(identity.jobId, key);
   }
@@ -86,30 +75,28 @@ export class LocalOperationRegistry {
    * job launch, so the same registration path remains available after coordinator restart.
    */
   activate(
-    meta: ProviderOperationRuntimeMeta,
+    record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
     control: OperationStopControl,
     cleanup: ProviderOperationCleanupIdentity,
   ): void {
-    this.register(meta, control, cleanup, 'activated');
+    this.register(record, control, cleanup, 'activated');
   }
 
   /**
    * W2.5's second thin entry point onto the same private builder: registers an operation this coordinator
    * generation never activated but adopted from a predecessor's bequeathed proxy set, via
    * `guardian.handoff-redeem.v1` → `reaper.handoff-rotate.v1` → `handoff.redeem.v1` → `operation.adopt.v1`
-   * (`provider-proxy-set-inheritance.ts`, the only production caller). `meta` is the exact row that
-   * caller already read back from the store — the same "meta row is what both a live activation and a later
-   * adoption equally have in hand" contract this class's own header doc promises.
+   * (`provider-proxy-set-inheritance.ts`, the only production caller).
    *
    * A generation that restored local admission state can resolve the same identity; one that did not has a
    * natural no-op at the jobs-layer cleanup port.
    */
   adopt(
-    meta: ProviderOperationRuntimeMeta,
+    record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
     control: OperationStopControl,
     cleanup: ProviderOperationCleanupIdentity,
   ): void {
-    this.register(meta, control, cleanup, 'adopted');
+    this.register(record, control, cleanup, 'adopted');
   }
 
   /**

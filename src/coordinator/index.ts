@@ -401,16 +401,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       recordedStopCauseFor: (identity) => operationRegistry.recordedStopCauseFor(identity),
       operations: {
         settled: (identity) => {
-          // The terminal commit no longer deletes this operation's durable row at all: the same transaction
-          // that appends the terminal moves the saga to `settlement-pending` (`provider-event-application.ts`),
-          // and the row survives as a tombstone until the proxy confirms release. Deleting at terminal time
-          // made a lost settlement reply unreplayable — the ledger entry it was meant to release outlived the
-          // only thing that could name it. A composition root has no business writing durable state here
-          // regardless, and now has nothing durable left to write. This
-          // callback is left with only the in-process release: the admission slot, abort registration, and
-          // job pool entry this coordinator generation itself holds for the job — never durable, and never
-          // owned by anything but this process — freed here because it is what frees the admission slot
-          // (root cause of the pool-fill bug this whole change exists to close).
+          // The saga tombstone must outlive a lost settlement reply, so this callback releases only the
+          // process-local admission, abort, and pool bookkeeping owned by this coordinator generation.
           try {
             operationRegistry.settled(identity);
           } catch (error: unknown) {

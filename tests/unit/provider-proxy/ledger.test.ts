@@ -22,7 +22,25 @@ function reserved(ledger: OperationLedger, key = KEY, nowMs = 0): void {
 
 function executing(ledger: OperationLedger, key = KEY, nowMs = 0): void {
   reserved(ledger, key, nowMs);
-  ledger.activate(key, asReservation('res-1'), nowMs);
+  activate(ledger, key, nowMs);
+}
+
+function activate(ledger: OperationLedger, key = KEY, nowMs = 0): void {
+  const fingerprint = 'f'.repeat(64);
+  ledger.beginActivation(key, asReservation('res-1'), nowMs, fingerprint);
+  ledger.completeActivation(key, fingerprint, {
+    state: 'executing',
+    activationFingerprint: fingerprint,
+    startedAt: new Date(0).toISOString(),
+    hostRef: {
+      provider: 'test',
+      fingerprint: '0'.repeat(64),
+      instanceId: `test:${key.operationId}`,
+      leaseMode: 'job-exclusive',
+      ownerJobId: key.jobId,
+    },
+    committedThroughProviderSeq: 0,
+  });
 }
 
 describe('provider-proxy operation ledger', () => {
@@ -30,7 +48,7 @@ describe('provider-proxy operation ledger', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
 
-    ledger.activate(KEY, asReservation('res-1'), 0);
+    activate(ledger);
     ledger.transition(KEY, 'terminal-awaiting-settlement');
     ledger.beginRelease(KEY);
     ledger.transition(KEY, 'released');
@@ -41,7 +59,7 @@ describe('provider-proxy operation ledger', () => {
   it('refuses a transition the state machine does not name', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
-    ledger.activate(KEY, asReservation('res-1'), 0);
+    activate(ledger);
 
     expect(() => ledger.transition(KEY, 'prepared')).toThrow(LedgerError);
   });
@@ -50,9 +68,9 @@ describe('provider-proxy operation ledger', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
 
-    expect(() => ledger.activate(KEY, asReservation('res-1'), PROXY_PENDING_ACTIVATION_LEASE_MS)).toThrow(
-      /lease expired/u,
-    );
+    expect(() =>
+      ledger.beginActivation(KEY, asReservation('res-1'), PROXY_PENDING_ACTIVATION_LEASE_MS, 'f'.repeat(64)),
+    ).toThrow(/lease expired/u);
 
     expect(ledger.get(KEY)?.state).toBe('prepared');
     ledger.beginRelease(KEY);
@@ -69,7 +87,7 @@ describe('provider-proxy operation ledger', () => {
     );
     expect(() => ledger.renew(KEY, asReservation('other'), 10_000)).toThrow(/different reservation/u);
 
-    ledger.activate(KEY, asReservation('res-1'), 10_000);
+    activate(ledger, KEY, 10_000);
     expect(() => ledger.renew(KEY, asReservation('res-1'), 10_000)).toThrow(/Cannot renew from executing/u);
   });
 
@@ -96,7 +114,9 @@ describe('provider-proxy operation ledger', () => {
     // Formerly two assertions — a wrong id and a wrong nonce — because the entry carried two values and
     // `activate` compared both while `renew` compared only the first. One value cannot half-match, so the
     // asymmetry that made that possible is gone along with the second field.
-    expect(() => ledger.activate(KEY, asReservation('other-reservation'), 0)).toThrow(/different reservation/u);
+    expect(() => ledger.beginActivation(KEY, asReservation('other-reservation'), 0, 'f'.repeat(64))).toThrow(
+      /different reservation/u,
+    );
   });
 
   it('reports capacity as a retryable refusal that reserves nothing', () => {
@@ -224,7 +244,7 @@ describe('provider-proxy operation ledger', () => {
   it('reaches released only through the suspend arm once suspended', () => {
     const ledger = createOperationLedger();
     reserved(ledger);
-    ledger.activate(KEY, asReservation('res-1'), 0);
+    activate(ledger);
 
     ledger.transition(KEY, 'suspended-awaiting-durable-decision');
 
@@ -234,17 +254,6 @@ describe('provider-proxy operation ledger', () => {
     ledger.beginRelease(KEY);
     ledger.transition(KEY, 'released');
     expect(ledger.get(KEY)).toBeNull();
-  });
-
-  it('treats a repeated activation of a running operation as the same request', () => {
-    const ledger = createOperationLedger();
-    executing(ledger);
-    ledger.activate(KEY, asReservation('res-1'), 0);
-
-    // The lease governs permission to begin, not replay of an already completed activation.
-    ledger.activate(KEY, asReservation('res-1'), PROXY_PENDING_ACTIVATION_LEASE_MS * 2);
-
-    expect(ledger.get(KEY)?.state).toBe('executing');
   });
 
   it('computes the next providerSeq from the newest buffered event, or the acknowledged floor once empty', () => {
