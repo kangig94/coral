@@ -109,7 +109,11 @@ type ProviderOperationReconcilerDeps = Readonly<{
   acquireAuthority?: (
     record: ProviderOperationRecord,
     signal: AbortSignal,
-  ) => Promise<DurableProviderProxyOperationAuthority | null>;
+  ) => Promise<
+    | DurableProviderProxyOperationAuthority
+    | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>
+    | null
+  >;
   registry: Pick<LocalOperationRegistry, 'activate' | 'adopt' | 'settled' | 'stop'>;
   materializePrepare: (
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
@@ -311,13 +315,25 @@ export class ProviderOperationReconciler {
         ? preferredAuthority
         : this.#deps.authorityFor(initial);
     if (authority === null && this.#deps.acquireAuthority !== undefined) {
-      authority = await this.#deps.acquireAuthority(initial, signal ?? NEVER_ABORTS);
+      const acquired = await this.#deps.acquireAuthority(initial, signal ?? NEVER_ABORTS);
+      if (acquired !== null && 'kind' in acquired) {
+        const current = await this.#finishContainmentDisappearance(initial, acquired.disappearanceReceipt);
+        if (current !== null) this.#schedule(TIMER_MIN_MS);
+        return;
+      }
+      authority = acquired;
     }
 
     for (let transitionCount = 0; transitionCount < 8 && record !== null; transitionCount += 1) {
       authority = authority !== null && sameAuthority(record, authority) ? authority : this.#deps.authorityFor(record);
       if (authority === null && this.#deps.acquireAuthority !== undefined) {
-        authority = await this.#deps.acquireAuthority(record, signal ?? NEVER_ABORTS);
+        const acquired = await this.#deps.acquireAuthority(record, signal ?? NEVER_ABORTS);
+        if (acquired !== null && 'kind' in acquired) {
+          const current = await this.#finishContainmentDisappearance(record, acquired.disappearanceReceipt);
+          if (current !== null) this.#schedule(TIMER_MIN_MS);
+          return;
+        }
+        authority = acquired;
       }
       if (authority === null) {
         await this.#recordRetry(record, new Error('No live control authority is available for this proxy set.'));
@@ -406,6 +422,7 @@ export class ProviderOperationReconciler {
     if (!this.#attemptMatchesRecord(record, attempt)) {
       throw new Error('Provider operation prepare send is not backed by the committed journal attempt.');
     }
+    await authority.registerSuccessionOperation(record.operation);
     return authority.prepareOperation(attempt);
   }
 
@@ -788,6 +805,54 @@ export class ProviderOperationReconciler {
       this.#settlements.delete(operationKey(record.operation));
       return null;
     } catch (error: unknown) {
+      await this.#recordRetry(record, error);
+      return null;
+    }
+  }
+
+  async #finishContainmentDisappearance(
+    record: ProviderOperationRecord,
+    disappearanceReceipt: string,
+  ): Promise<ProviderOperationRecord | null> {
+    try {
+      if (record.phase === 'settlement-pending') {
+        const deleted = this.#deleteSettledOperation(record);
+        if (deleted.kind === 'conflict') return deleted.current;
+        this.#settlements.delete(operationKey(record.operation));
+        return null;
+      }
+      if (record.phase === 'proxy-activation-pending' || record.phase === 'activation-resolution-pending') {
+        const directive =
+          record.phase === 'activation-resolution-pending'
+            ? record.activationIndeterminate
+            : {
+                kind: 'terminal-failed' as const,
+                code: 'activation_indeterminate',
+                reason: `Provider containment disappeared after activation may have begun (${disappearanceReceipt}).`,
+              };
+        return this.#terminalize(record, directive);
+      }
+      if (record.phase === 'executing') {
+        return this.#terminalize(record, {
+          kind: 'terminal-failed',
+          code: 'provider_lost',
+          reason: `Provider execution was interrupted when its containment disappeared (${disappearanceReceipt}).`,
+        });
+      }
+      if (record.phase === 'prestart-cleanup-pending' && record.afterRelease.kind !== 'local-authorized') {
+        return this.#terminalize(record, record.afterRelease);
+      }
+      const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+      if (deleted.kind === 'conflict') return deleted.current;
+      const reason =
+        record.phase === 'prestart-cleanup-pending' && record.afterRelease.kind === 'local-authorized'
+          ? record.afterRelease.reason
+          : `Remote start is impossible because the exact provider containment disappeared (${disappearanceReceipt}).`;
+      this.#complete(record.operation, { kind: 'local-authorized', reason });
+      return null;
+    } catch (error: unknown) {
+      const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
+      if (current !== null && current.revision !== record.revision) return current;
       await this.#recordRetry(record, error);
       return null;
     }

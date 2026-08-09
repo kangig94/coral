@@ -94,7 +94,7 @@ function rootKey(root: RecordedProcessIdentity): string {
  * gone" from "the leader exited". The group and every root appear, because leader exit alone is never
  * absence evidence.
  */
-function disappearanceReceipt(
+export function providerProxyDisappearanceReceipt(
   containment: RecordedContainmentIdentity,
   roots: readonly RecordedProcessIdentity[],
 ): string {
@@ -137,7 +137,7 @@ export function createArmedEnforcer<Scope extends symbol>(options: ArmedEnforcer
     deadlines.markContainmentAbsent();
     return settle({
       kind: 'containment-absent',
-      disappearanceReceipt: disappearanceReceipt(containment, orderedRoots()),
+      disappearanceReceipt: providerProxyDisappearanceReceipt(containment, orderedRoots()),
     });
   };
 

@@ -32,15 +32,14 @@ export const grantSecretDigestSchema = z
   .regex(/^[0-9a-f]{64}$/u, 'a grant secret digest is SHA-256 as 64 lowercase hexadecimal characters');
 
 /**
- * One handoff operation set, on the wire wherever an install or a redemption forward names it:
+ * One succession operation set, on the wire wherever an install or a redemption forward names it:
  * `*.handoff-install.v1` on all three roles, and the guardian's own forward of a redemption to its paired
  * reaper. Byte order is what makes the set comparable — an unsorted or duplicated set is refused at every
  * ingress rather than made order-insensitive downstream: canonical values are established at the boundary,
  * not repaired past it.
  *
- * Deliberately absent from a *redemption request*: the set is established once, at install, and a redeemer
- * never presents it — see `InstalledGrant.operations` and `GrantRegistry.redeem`'s own doc for why checking
- * a redeemer-echoed copy against the installed one added nothing a redeemer could not already control.
+ * Deliberately absent from a *redemption request*: membership is owned by the live roles, and checking a
+ * redeemer-echoed copy would only compare the redeemer with itself.
  */
 export const handoffOperationSetSchema = z
   .array(operationIdentitySchema)
@@ -59,11 +58,8 @@ export const handoffOperationSetSchema = z
 /**
  * `guardian.handoff-install.v1` and `reaper.handoff-install.v1`'s shared request: the guardian and reaper
  * are paired peers of the same set, so a coordinator installs the identical grant on both by the identical
- * message. Deliberately not `proxy.ts`'s own `handoff.install.v1` schema, which carries no `successor` or
- * `teardownReserveMs` field and identifies the set through `grantSetShape` instead of a full
- * `CoordinatorIdentity` — the proxy learns of a handoff only through the two authorities that already hold
- * one, never directly, so its wire shape is a genuinely different message rather than a drifted copy of
- * this one.
+ * message. Deliberately not `proxy.ts`'s own `handoff.install.v1` schema: the proxy binds its own exact set
+ * fields directly, while guardian and reaper also validate coordinator build and teardown policy.
  */
 export const guardianReaperHandoffInstallParamsSchema = z
   .object({
@@ -117,8 +113,8 @@ export const proxyHandoffInstallParamsSchema = z
   })
   .strict();
 
-/** `handoff.redeem.v1`'s request. No `operations` field: the set is bound at install and returned by
- *  redemption, never presented by a redeemer to be checked against — see `GrantRegistry.redeem`'s own doc. */
+/** `handoff.redeem.v1` omits operations so a redeemer cannot substitute self-asserted membership for the
+ *  proxy's current registered set. */
 export const proxyHandoffRedeemParamsSchema = z
   .object({
     grantId: canonicalUuidSchema,
@@ -126,6 +122,13 @@ export const proxyHandoffRedeemParamsSchema = z
     successor: coordinatorIdentitySchema,
     ...proxyGrantSetShape,
   })
+  .strict();
+
+/** A strict full-tuple boundary prevents succession membership from degrading to operation-id authority. */
+export const successionOperationRegisterParamsSchema = z.object({ operation: operationIdentitySchema }).strict();
+
+export const successionOperationRegisterResultSchema = z
+  .object({ state: z.literal('succession-registered'), operation: operationIdentitySchema })
   .strict();
 
 /** `guardian.handoff-redeem.v1`'s request. The guardian is the sole linearization point for the plaintext
@@ -143,8 +146,8 @@ export const guardianHandoffRedeemParamsSchema = z
  * The successor half of one grant: exactly what a redeemer needs to reach and authenticate against the set,
  * and nothing a durable authority already tracks on its own terms. Two facts are deliberately absent:
  *
- * - The operation set. It is installed once, directly on all three roles, and a redeemer never needs to name
- *   it in advance — `GrantRedemption` hands it back at redemption instead (`InstalledGrant.operations`).
+ * - The operation set. It is registered directly on the roles, and a redeemer never needs to name it in
+ *   advance — `GrantRedemption` hands the current set back instead (`InstalledGrant.operations`).
  *   Carrying it here too would make this file a second, staler copy of a fact the roles already hold.
  * - `committedThroughProviderSeq`. The store's own copy of that watermark advances transactionally, inside
  *   the same commit as the effect it accompanies (`coordinator/services/provider-event-application.ts`), and
@@ -181,11 +184,8 @@ export type HandoffCapsule = z.infer<typeof handoffCapsuleSchema>;
  * tuple is what a grant is bound to: a capsule replayed from another build set or another proxy cannot be
  * redeemed here just because its secret happens to match (`GrantBinding`, checked by `redeem` below).
  *
- * `operations` is retained but not bound: it is recorded once at `install` and handed back verbatim by
- * `redeem` (see `GrantRedemption`), never re-checked against anything a caller later presents. Binding
- * redemption to it added nothing a redeemer could not already control — a redeemer that only ever echoes
- * back what it was told is being checked against itself, not against an independent fact — while the
- * identity tuple, `secretSha256`, and each role's own instance id are facts the redeemer cannot forge.
+ * `operations` is monotonic role-owned state, not part of what a redeemer presents. Binding redemption to a
+ * caller-supplied copy would check that caller against itself rather than against an independent fact.
  */
 export type InstalledGrant = Readonly<{
   grantId: string;
@@ -206,9 +206,8 @@ export type InstalledGrant = Readonly<{
 }>;
 
 /**
- * Only the decoding failures. A grant that is refused once it is *on* the wire — wrong secret, wrong set,
- * a second successor — refuses with the protocol's own `grant_invalid`/`grant_replayed`, so no layer has to
- * translate one vocabulary into the other on the way out.
+ * Only the decoding failures. A credential refused on the wire — wrong secret, wrong set, or a competing
+ * live successor — uses `grant_invalid`/`grant_replayed`, avoiding a second translation vocabulary.
  */
 export type HandoffCapsuleErrorCode =
   | 'handoff_capsule_too_large'
@@ -439,36 +438,33 @@ export function sameOperations(left: readonly OperationIdentity[], right: readon
 }
 
 /**
- * One set-wide grant, consumed by the first redemption that presents the matching secret and identity tuple.
- * Install is idempotent only for the exact same value: re-installing a different digest or a different
- * operation set under the same id is a conflict, not an update.
+ * One set-wide credential. Install is idempotent only for the exact same initial value; membership grows
+ * through `register`, so replacing the digest can never masquerade as an update.
  */
 export interface GrantRegistry {
   install(grant: InstalledGrant): { state: 'installed-dormant'; grantId: string };
+  register(operation: OperationIdentity): { state: 'succession-registered'; operation: OperationIdentity };
   /**
-   * Consumes the grant for one successor. Single-use means one *successor*, not one call: a successor whose
-   * reply was lost in transit retries with the identical grant and identity, and must get back what it
-   * already earned — refusing it would hand the set to a teardown it had already prevented. The recorded
-   * redemption is what tells "the same one, again" from "a different one", so retry-safety and
-   * replay-refusal are the same comparison rather than two mechanisms.
+   * A successor whose reply was lost must get back the epoch it already earned. A different successor may
+   * rotate the same credential only after role-local liveness says that epoch ended.
    *
-   * No `operations` parameter: the installed set is not part of what a redeemer proves it holds — a redeemer
-   * would only ever be echoing back the exact value it read out of the capsule this same install produced,
-   * which the installed copy already equals by construction. `GrantRedemption.grant.operations` hands the set
-   * back on success instead, so a caller who genuinely needs it gets it from the one place it was ever
-   * authoritative.
+   * No `operations` parameter: membership is role-owned state, so a redeemer-supplied set would be a
+   * self-assertion rather than authority. `GrantRedemption.grant.operations` returns the role's current set.
    */
   redeem(input: {
     grantId: string;
     secret: string;
-    /** Who is redeeming. Recorded on the first success and required to match on every retry. */
+    /** Identifies same-epoch retries; a different value requires the replacement policy to admit it. */
     successorInstanceId: string;
     binding: GrantBinding;
   }): GrantRedemption;
   redemption(): GrantRedemption | null;
 }
 
-export function createGrantRegistry(mintReceipt: () => string): GrantRegistry {
+export function createGrantRegistry(
+  mintReceipt: () => string,
+  policy: Readonly<{ mayReplaceRedemption?: () => boolean }> = {},
+): GrantRegistry {
   let installed: InstalledGrant | null = null;
   let redemption: GrantRedemption | null = null;
 
@@ -497,19 +493,45 @@ export function createGrantRegistry(mintReceipt: () => string): GrantRegistry {
         if (redemption === null) {
           throw new ProxyControlProtocolError('grant_invalid', 'A different grant is already installed for this set.');
         }
-        // The installed grant was already consumed by the one successor `redeem` ever admits (single-use,
-        // see its own doc), and `install` is reachable only under `authority: 'active'` at the endpoint — so
-        // the only caller who can ever present a *different* grant here is that same successor's own
-        // coordinator, now the set's legitimate active holder (no other party can hold active control: the
-        // bootstrap nonce is spent and this grant is spent). A spent grant secures nothing further once
-        // redeemed, so replacing it is what lets that coordinator bequeath the set again for its own future
-        // handoff, instead of being permanently refused by a credential nobody needs any more. The stale
-        // redemption record is cleared with it: it named the old grant's successor, and must not answer for
-        // a grant that successor never redeemed.
+        // Only active control can replace a redeemed compatibility grant, so clearing the old redemption
+        // cannot authorize a party that does not already own the set.
         redemption = null;
       }
       installed = grant;
       return { state: 'installed-dormant', grantId: grant.grantId };
+    },
+
+    register(operation): { state: 'succession-registered'; operation: OperationIdentity } {
+      if (installed === null) {
+        throw new ProxyControlProtocolError('grant_invalid', 'No recovery credential is installed for this set.');
+      }
+      if (operation.proxyInstanceId !== installed.proxyInstanceId || operation.buildSetId !== installed.buildSetId) {
+        throw new ProxyControlProtocolError('identity_mismatch', 'The operation belongs to a different proxy set.');
+      }
+      const existing = installed.operations.find((candidate) => candidate.operationId === operation.operationId);
+      if (existing !== undefined) {
+        if (
+          existing.jobId !== operation.jobId ||
+          existing.proxyInstanceId !== operation.proxyInstanceId ||
+          existing.buildSetId !== operation.buildSetId
+        ) {
+          throw new ProxyControlProtocolError(
+            'identity_mismatch',
+            'The operation id is already registered to a different full identity.',
+          );
+        }
+        return { state: 'succession-registered', operation: existing };
+      }
+      const operations = handoffOperationSetSchema.parse(
+        [...installed.operations, operation].sort((left, right) =>
+          left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
+        ),
+      );
+      installed = Object.freeze({ ...installed, operations });
+      if (redemption !== null) {
+        redemption = Object.freeze({ ...redemption, grant: installed });
+      }
+      return { state: 'succession-registered', operation };
     },
 
     redeem({ grantId, secret, successorInstanceId, binding }): GrantRedemption {
@@ -527,10 +549,17 @@ export function createGrantRegistry(mintReceipt: () => string): GrantRegistry {
       }
       if (redemption !== null) {
         if (redemption.successorInstanceId !== successorInstanceId) {
-          throw new ProxyControlProtocolError(
-            'grant_replayed',
-            'This grant was already redeemed by another successor.',
-          );
+          if (policy.mayReplaceRedemption?.() !== true) {
+            throw new ProxyControlProtocolError(
+              'grant_replayed',
+              'This grant was already redeemed while its control epoch remains live.',
+            );
+          }
+          redemption = Object.freeze({
+            grant: installed,
+            redemptionReceipt: mintReceipt(),
+            successorInstanceId,
+          });
         }
         return redemption;
       }

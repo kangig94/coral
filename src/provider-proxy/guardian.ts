@@ -23,6 +23,8 @@ import {
   guardianReaperHandoffInstallParamsSchema,
   guardianHandoffRedeemParamsSchema as handoffRedeemParamsSchema,
   reaperRecordRedemptionParamsSchema,
+  successionOperationRegisterParamsSchema,
+  successionOperationRegisterResultSchema,
   type GrantBinding,
 } from './handoff-capsule.js';
 import {
@@ -296,7 +298,9 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
   const setIdentity: GrantBinding = grantBindingFromCapsule(capsule);
 
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
-  const grants = createGrantRegistry(mintReceipt);
+  const grants = createGrantRegistry(mintReceipt, {
+    mayReplaceRedemption: () => !deadlines.controlIsLive(),
+  });
   const staged = new Map<string, StagedMembership>();
   const activating = new Map<string, Promise<z.infer<typeof guardianOperationActivateResultSchema>>>();
 
@@ -387,6 +391,16 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
               operations: redemption.grant.operations,
             },
           };
+        },
+      },
+    ],
+    [
+      'guardian.succession-register-operation.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = successionOperationRegisterParamsSchema.parse(params);
+          return successionOperationRegisterResultSchema.parse(grants.register(request.operation));
         },
       },
     ],

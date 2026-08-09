@@ -68,6 +68,7 @@ function authority(): DurableProviderProxyOperationAuthority {
       canonicalEndpoint: '/tmp/proxy.sock',
     },
     snapshotOperations: async () => [],
+    registerSuccessionOperation: async () => undefined,
     installHandoffGrant: async () => undefined,
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,

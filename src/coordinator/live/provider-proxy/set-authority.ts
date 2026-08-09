@@ -3,6 +3,8 @@ import { z } from 'zod';
 import {
   guardianReaperHandoffInstallParamsSchema,
   handoffSecretDigest,
+  successionOperationRegisterParamsSchema,
+  successionOperationRegisterResultSchema,
   writeHandoffCapsuleFile,
   type HandoffCapsule,
   proxyHandoffInstallParamsSchema,
@@ -20,13 +22,14 @@ import {
   guardianStopAndReapResultSchema,
   type CoordinatorIdentity,
   type GuardianIdentity,
+  type OperationIdentity,
   type ProxyIdentity,
   type ReaperIdentity,
 } from '../../../provider-proxy/protocol.js';
 import type { ControlClient } from '../../../provider-proxy/control-client.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { HeartbeatLoop } from './heartbeat.js';
-import type { ProviderProxySetAuthority } from './authority.js';
+import type { ProviderProxySetRecoveryAuthority } from './authority.js';
 
 const handoffInstallAckSchema = z
   .object({ state: z.literal('installed-dormant'), grantId: canonicalUuidSchema })
@@ -60,12 +63,13 @@ export type ProviderProxySetAuthorityDependencies = Readonly<{
   /** This coordinator's own identity — named on every install call so a peer that checks it (build match
    *  only; see `assertNamedCoordinatorBuild`) can report a disagreement instead of installing blind. */
   coordinatorIdentity: CoordinatorIdentity;
-  /** Where `installHandoffGrant` writes this set's one successor capsule. Precomputed by the caller
+  /** Where fresh acquisition writes this set's recovery capsule. Precomputed by the caller
    *  (`establishControl`), which already resolves `baseDir`/generation/flavor the same way every other
    *  proxy-role path in `acquisition-steps.ts` does. */
   handoffCapsulePath: string;
-  /** `ids`/`env`/`storage` for minting the grant and writing its capsule durably. */
+  /** Kept outside SQLite so the credential secret never enters durable domain records. */
   runtime: Pick<Runtime, 'ids' | 'env' | 'storage'>;
+  recoveryCapsule?: HandoffCapsule;
   /** Reads every durable operation still owned by this proxy set, including publication and settlement work
    *  that has no live-registry entry in this coordinator generation. */
   snapshotProviderOperations: (proxyInstanceId: string) => readonly ProviderOperationKey[];
@@ -81,7 +85,7 @@ export type ProviderProxySetAuthorityDependencies = Readonly<{
  */
 export function createProviderProxySetAuthority(
   deps: ProviderProxySetAuthorityDependencies,
-): ProviderProxySetAuthority {
+): ProviderProxySetRecoveryAuthority {
   const {
     proxyInstanceId,
     guardianClient,
@@ -98,6 +102,98 @@ export function createProviderProxySetAuthority(
     operationRegistry,
   } = deps;
 
+  let recoveryCapsule: HandoffCapsule | null = deps.recoveryCapsule ?? null;
+  const requireRecoveryCapsule = (): HandoffCapsule => {
+    if (recoveryCapsule !== null) return recoveryCapsule;
+    const deadlineConfig = resolveProviderProxyDeadlineConfiguration(runtime.env);
+    recoveryCapsule = {
+      version: 1,
+      grantId: runtime.ids.uuid(),
+      secret: runtime.ids.randomBytes(32).toString('hex'),
+      generation: guardianIdentity.generation,
+      flavor: guardianIdentity.flavor,
+      buildSetId: guardianIdentity.buildSetId,
+      hostFingerprint: guardianIdentity.hostFingerprint,
+      guardianInstanceId: guardianIdentity.guardianInstanceId,
+      reaperInstanceId: reaperIdentity.reaperInstanceId,
+      proxyInstanceId: proxyIdentityFields.proxyInstanceId,
+      guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
+      reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
+      proxyEndpoint: proxyIdentityFields.canonicalEndpoint,
+      orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
+      teardownReserveMs: deadlineConfig.teardownReserveMs,
+    };
+    return recoveryCapsule;
+  };
+  let recoveryCredentialInstalled = deps.recoveryCapsule !== undefined;
+  let recoveryCredentialInstall: Promise<void> | null = null;
+
+  const installRecoveryCredential = async (signal: AbortSignal): Promise<void> => {
+    if (recoveryCredentialInstalled) return;
+    signal.throwIfAborted();
+    recoveryCredentialInstall ??= (async () => {
+      const capsule = requireRecoveryCapsule();
+      const secretSha256 = handoffSecretDigest(capsule.secret);
+      const guardianReaperInstallPayload = guardianReaperHandoffInstallParamsSchema.parse({
+        grantId: capsule.grantId,
+        secretSha256,
+        successor: coordinatorIdentity,
+        operations: [],
+        orphanTimeoutMs: capsule.orphanTimeoutMs,
+        teardownReserveMs: capsule.teardownReserveMs,
+      });
+      const [guardianAck, reaperAck, proxyAck] = await Promise.all([
+        guardianClient.call('guardian.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
+        reaperClient.call('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
+        proxyClient.call(
+          'handoff.install.v1',
+          proxyHandoffInstallParamsSchema.parse({
+            grantId: capsule.grantId,
+            secretSha256,
+            generation: capsule.generation,
+            hostFingerprint: capsule.hostFingerprint,
+            buildSetId: capsule.buildSetId,
+            proxyInstanceId: capsule.proxyInstanceId,
+            operations: [],
+            orphanTimeoutMs: capsule.orphanTimeoutMs,
+          }),
+          PROXY_CONTROL_RPC_TIMEOUT_MS,
+        ),
+      ]);
+      handoffInstallAckSchema.parse(guardianAck);
+      handoffInstallAckSchema.parse(reaperAck);
+      handoffInstallAckSchema.parse(proxyAck);
+      writeHandoffCapsuleFile(handoffCapsulePath, capsule, {
+        storage: runtime.storage,
+        uid: process.getuid?.() ?? 0,
+      });
+      recoveryCredentialInstalled = true;
+    })();
+    await recoveryCredentialInstall;
+    signal.throwIfAborted();
+  };
+
+  const registerSuccessionOperation = async (
+    operation: OperationIdentity,
+    signal: AbortSignal = new AbortController().signal,
+  ): Promise<void> => {
+    await installRecoveryCredential(signal);
+    signal.throwIfAborted();
+    if (operation.proxyInstanceId !== proxyInstanceId || operation.buildSetId !== guardianIdentity.buildSetId) {
+      throw new Error('Succession registration named an operation from another proxy set.');
+    }
+    const params = successionOperationRegisterParamsSchema.parse({ operation });
+    const [guardianResult, reaperResult, proxyResult] = await Promise.all([
+      guardianClient.call('guardian.succession-register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      reaperClient.call('reaper.succession-register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      proxyClient.call('succession.register-operation.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+    ]);
+    successionOperationRegisterResultSchema.parse(guardianResult);
+    successionOperationRegisterResultSchema.parse(reaperResult);
+    successionOperationRegisterResultSchema.parse(proxyResult);
+    signal.throwIfAborted();
+  };
+
   return {
     proxyInstanceId,
     snapshotOperations: async (signal) => {
@@ -108,100 +204,26 @@ export function createProviderProxySetAuthority(
       signal.throwIfAborted();
       return operations;
     },
+    installRecoveryCredential,
+    registerSuccessionOperation,
     installHandoffGrant: async (operations: readonly ProviderOperationKey[], signal: AbortSignal) => {
       if (operations.length === 0) {
         throw new Error('installHandoffGrant requires at least one operation to install a grant over.');
       }
       signal.throwIfAborted();
 
-      // Byte-sorted by operationId: the wire schema (`handoffOperationSetSchema`) requires it and this is
-      // the one place that assembles the set, so sorting happens here rather than being asked of every caller.
-      //
-      // A stale member must not deny handoff to every other journal-owned operation in the set. The successor
-      // reconciles attachment per operation, so one exact absence does not refuse the set handoff.
-      const handoffOperations = [...operations]
-        .sort((left, right) =>
-          left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
-        )
-        .map((key) => ({
-          jobId: key.jobId,
-          operationId: key.operationId,
-          proxyInstanceId,
-          buildSetId: guardianIdentity.buildSetId,
-        }));
-
-      const deadlineConfig = resolveProviderProxyDeadlineConfiguration(runtime.env);
-      const grantId = runtime.ids.uuid();
-      const secret = runtime.ids.randomBytes(32).toString('hex');
-      const secretSha256 = handoffSecretDigest(secret);
-
-      // The guardian and reaper are paired peers of the same set, so they get the identical message — parsed
-      // once, here, against the exact schema `guardian.ts`/`reaper.ts` parse it with on receipt, so a mistake
-      // in this payload fails at this sender instead of at one strict receiver and not the other.
-      const guardianReaperInstallPayload = guardianReaperHandoffInstallParamsSchema.parse({
-        grantId,
-        secretSha256,
-        successor: coordinatorIdentity,
-        operations: handoffOperations,
-        orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
-        teardownReserveMs: deadlineConfig.teardownReserveMs,
-      });
-
-      // These installs are not transactional: `Promise.all` can reject after one or two authorities accepted
-      // the grant. The shutdown caller makes a partial install safe by reaping this set after any install
-      // failure, so the containment is torn down regardless of how far this got.
-      await Promise.all([
-        guardianClient.call('guardian.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
-        reaperClient.call('reaper.handoff-install.v1', guardianReaperInstallPayload, PROXY_CONTROL_RPC_TIMEOUT_MS),
-        // Its schema lives in `handoff-capsule.ts` rather than `protocol.ts` beside the others because it
-        // needs that module's grant-secret and operation-set primitives, and `handoff-capsule.ts` imports
-        // `protocol.ts`. It does not merge with the guardian/reaper message two lines above — that one carries
-        // a `successor` and a teardown reserve where this identifies the set through its grant-set fields,
-        // because the proxy learns of a handoff only through the two authorities that already hold one.
-        proxyClient.call(
-          'handoff.install.v1',
-          proxyHandoffInstallParamsSchema.parse({
-            grantId,
-            secretSha256,
-            generation: proxyIdentityFields.generation,
-            hostFingerprint: proxyIdentityFields.hostFingerprint,
-            buildSetId: proxyIdentityFields.buildSetId,
-            proxyInstanceId: proxyIdentityFields.proxyInstanceId,
-            operations: handoffOperations,
-            orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
-          }),
-          PROXY_CONTROL_RPC_TIMEOUT_MS,
-        ),
-      ]).then(([guardianAck, reaperAck, proxyAck]) => {
-        handoffInstallAckSchema.parse(guardianAck);
-        handoffInstallAckSchema.parse(reaperAck);
-        handoffInstallAckSchema.parse(proxyAck);
-      });
-      signal.throwIfAborted();
-
-      // The durable half. A grant installed with no capsule is a secret nobody could ever present, so this
-      // is not reachable unless every install above already acknowledged the identical value.
-      const capsule: HandoffCapsule = {
-        version: 1,
-        grantId,
-        secret,
-        generation: guardianIdentity.generation,
-        flavor: guardianIdentity.flavor,
-        buildSetId: guardianIdentity.buildSetId,
-        hostFingerprint: guardianIdentity.hostFingerprint,
-        guardianInstanceId: guardianIdentity.guardianInstanceId,
-        reaperInstanceId: reaperIdentity.reaperInstanceId,
-        proxyInstanceId: proxyIdentityFields.proxyInstanceId,
-        guardianControlEndpoint: guardianIdentity.canonicalControlEndpoint,
-        reaperControlEndpoint: reaperIdentity.canonicalControlEndpoint,
-        proxyEndpoint: proxyIdentityFields.canonicalEndpoint,
-        orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
-        teardownReserveMs: deadlineConfig.teardownReserveMs,
-      };
-      writeHandoffCapsuleFile(handoffCapsulePath, capsule, {
-        storage: runtime.storage,
-        uid: process.getuid?.() ?? 0,
-      });
+      await installRecoveryCredential(signal);
+      for (const operation of operations) {
+        await registerSuccessionOperation(
+          {
+            jobId: operation.jobId,
+            operationId: operation.operationId,
+            proxyInstanceId,
+            buildSetId: guardianIdentity.buildSetId,
+          },
+          signal,
+        );
+      }
     },
     stopAndReap: async (signal) => {
       try {

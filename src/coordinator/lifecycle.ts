@@ -688,7 +688,7 @@ export type LifecycleDeps = {
    */
   readonly providerProxyAuthority?: ProviderProxyAuthorityRegistry;
   /** Same absence rule as `providerProxyAuthority` above. Threaded straight into `createRecoveryCoordinator`
-   *  (`services/recovery/index.ts`) so `runRecoveryAdoption` can inherit a bequeathed set for a running app-
+   *  (`services/recovery/index.ts`) so `runRecoveryAdoption` can redeem a standing set for a running app-
    *  server job before it could otherwise decide that job carrier-detached. */
   readonly providerProxyInheritance?: ProviderProxySetInheritance;
   readonly kbDaemonSupervisor?: KbDaemonSupervisor;

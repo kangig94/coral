@@ -20,8 +20,11 @@ import {
   createGrantRegistry,
   grantBindingFromCapsule,
   guardianReaperHandoffInstallParamsSchema,
+  handoffOperationSetSchema,
   reaperRecordRedemptionParamsSchema,
   sameOperations,
+  successionOperationRegisterParamsSchema,
+  successionOperationRegisterResultSchema,
   type GrantBinding,
 } from './handoff-capsule.js';
 import {
@@ -131,7 +134,9 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
    *  built from this reaper's own capsule so a coordinator can never install a grant for a set it does not
    *  belong to. */
   const setIdentity: GrantBinding = grantBindingFromCapsule(capsule);
-  const grants = createGrantRegistry(mintReceipt);
+  const grants = createGrantRegistry(mintReceipt, {
+    mayReplaceRedemption: () => !deadlines.controlIsLive(),
+  });
   // What `reaper.record-redemption.v1` records and `reaper.handoff-rotate.v1` checks: the guardian is the
   // only party that can ever produce this, so its presence alone is what authorizes rotation here — this
   // reaper never independently verifies the grant's secret. `operations` is the guardian's own
@@ -307,29 +312,27 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
     [
       'reaper.record-redemption.v1',
       {
-        // The guardian's own channel, the instant `guardian.handoff-redeem.v1` consumes the grant — the same
+        // The guardian's own channel, the instant `guardian.handoff-redeem.v1` validates the credential — the same
         // shape `reaper.record-containment.v1`/`reaper.register-provider-root.v1` already use for guardian→
         // reaper facts.
         authority: 'pairing',
         handle: (params) => {
           const request = reaperRecordRedemptionParamsSchema.parse(params);
           if (recordedRedemption !== null) {
-            // Idempotent for the identical redemption — a retried `guardian.handoff-redeem.v1` (the successor's
-            // reply was lost) forwards the same fact again; a different one here means two redemptions were
-            // attempted, which `grants.redeem()` on the guardian itself already refuses before this is ever
-            // reached, so reaching a mismatch here would mean the two authorities disagree about the same grant.
-            if (
+            const different =
               recordedRedemption.grantId !== request.grantId ||
               recordedRedemption.successorInstanceId !== request.successor.instanceId ||
               recordedRedemption.redemptionReceipt !== request.redemptionReceipt ||
-              !sameOperations(recordedRedemption.operations, request.operations)
-            ) {
+              !sameOperations(recordedRedemption.operations, request.operations);
+            if (different && deadlines.controlIsLive()) {
               throw new ProxyControlProtocolError(
                 'identity_mismatch',
-                'This reaper already recorded a different redemption.',
+                'This reaper already recorded a different live control epoch.',
               );
             }
-            return reaperRecordRedemptionResultSchema.parse({ state: 'redemption-recorded' });
+            if (!different) {
+              return reaperRecordRedemptionResultSchema.parse({ state: 'redemption-recorded' });
+            }
           }
           recordedRedemption = {
             grantId: request.grantId,
@@ -338,6 +341,34 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             redemptionReceipt: request.redemptionReceipt,
           };
           return reaperRecordRedemptionResultSchema.parse({ state: 'redemption-recorded' });
+        },
+      },
+    ],
+    [
+      'reaper.succession-register-operation.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = successionOperationRegisterParamsSchema.parse(params);
+          const alreadyRecorded = recordedRedemption?.operations.find(
+            (operation) => operation.operationId === request.operation.operationId,
+          );
+          if (alreadyRecorded !== undefined && !sameOperations([alreadyRecorded], [request.operation])) {
+            throw new ProxyControlProtocolError(
+              'identity_mismatch',
+              'The operation id is already registered to a different full identity.',
+            );
+          }
+          const result = successionOperationRegisterResultSchema.parse(grants.register(request.operation));
+          if (recordedRedemption !== null && alreadyRecorded === undefined) {
+            const operations = handoffOperationSetSchema.parse(
+              [...recordedRedemption.operations, request.operation].sort((left, right) =>
+                left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
+              ),
+            );
+            recordedRedemption = { ...recordedRedemption, operations };
+          }
+          return result;
         },
       },
     ],

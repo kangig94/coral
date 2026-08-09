@@ -68,7 +68,8 @@ export function createExecutionServices({
         getProgressStore().getDb(),
         signal,
       );
-      return outcome.kind === 'inherited' ? outcome.set : null;
+      if (outcome.kind === 'inherited') return outcome.set;
+      return outcome.kind === 'containment-disappeared' ? outcome : null;
     },
     registry: world.operationRegistry,
     materializePrepare: (record) =>

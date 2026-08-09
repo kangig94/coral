@@ -449,6 +449,7 @@ export function createProviderProxyAcquisitionSteps(
           snapshotProviderOperations: options.snapshotProviderOperations,
           operationRegistry: options.operationRegistry,
         });
+        await base.installRecoveryCredential(new AbortController().signal);
         // The set-level identity `operation.prepare.v1`'s coordinator meta commit needs (W2.3): fixed for
         // this set's whole lifetime, built from the exact same verified fields `base`'s identity checks just
         // confirmed rather than re-derived, so the two can never disagree.

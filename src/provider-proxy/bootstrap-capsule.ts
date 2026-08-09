@@ -92,8 +92,8 @@ export type ProviderBootstrapRole = ProviderBootstrapCapsule['role'];
  * The one-use half of a bootstrap capsule, held by the role the capsule was issued to. Presenting it is how
  * a coordinator proves it is the one that started this process; the first acceptance spends it, so the nonce
  * authorizes exactly one control tenancy and a replay opens no second one. The spend lives here rather than
- * in the control endpoint because a credential's one-shot belongs to whoever owns the credential — the same
- * reason a handoff grant's one-shot lives in its registry.
+ * in the control endpoint because only the bootstrap owner can distinguish its first presentation from a
+ * replay without teaching the transport about role secrets.
  */
 export interface BootstrapNonceCredential {
   /** Throws `unauthorized_control` unless `offered` is the unspent nonce; spends it on acceptance. */

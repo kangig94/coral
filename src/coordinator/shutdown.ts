@@ -441,8 +441,8 @@ export async function runShutdownSequence({
     // acquisition still in flight, so nothing settling afterward can be missing from it.
     liveProxySets = providerProxyAuthority?.liveSets() ?? [];
     for (const set of liveProxySets) {
-      // Snapshot and install per proxy, each in its own step: a grant that fails for one carrier must
-      // hard-transition that carrier alone rather than stranding every other operation behind one EOF.
+      // Refresh each proxy's standing membership independently so one degraded carrier cannot block the
+      // release boundary for every other set.
       await runBudgetedStep(`provider proxy handoff grant '${set.proxyInstanceId}'`, async (signal) => {
         const operations = await set.snapshotOperations(signal);
         if (operations.length === 0) {
@@ -452,8 +452,8 @@ export async function runShutdownSequence({
         try {
           await set.installHandoffGrant(operations, signal);
         } catch (error: unknown) {
-          // The failed carrier goes down here rather than at exit: leaving it live with no redeemable grant
-          // would leave a successor with nothing to adopt and a containment nobody is releasing.
+          // A failed refresh cannot prove that every journal row reached all three roles, so this carrier
+          // still takes the existing fail-closed reap path.
           handoffReapCandidates.push(set);
           throw error;
         }

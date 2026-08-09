@@ -354,6 +354,7 @@ async function launchThroughRoute(
   const base = {
     proxyInstanceId: set.shared.proxyInstanceId,
     snapshotOperations: async () => [],
+    registerSuccessionOperation: async () => undefined,
     installHandoffGrant: async () => undefined,
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,

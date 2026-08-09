@@ -41,6 +41,7 @@ function fakeProxySet(proxyInstanceId: string): ProviderProxySetAuthority {
 function fakeInheritedProxySet(proxyInstanceId: string): ProviderProxyOperationAuthority {
   return {
     ...fakeProxySet(proxyInstanceId),
+    registerSuccessionOperation: async () => {},
     setIdentity: {
       buildSetId: 'b',
       hostFingerprint: 'a'.repeat(64),

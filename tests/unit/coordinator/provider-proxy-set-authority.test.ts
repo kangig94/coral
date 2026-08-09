@@ -262,6 +262,12 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
         if (fail !== undefined && method === fail) {
           return Promise.reject(new Error(`${role} refused ${method}`));
         }
+        if (method.includes('succession.register') || method.includes('succession-register')) {
+          return Promise.resolve({
+            state: 'succession-registered',
+            operation: (params as { operation: unknown }).operation,
+          });
+        }
         return Promise.resolve(INSTALL_ACK);
       },
       close: () => {},
@@ -316,14 +322,21 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
     );
   });
 
-  it('installs the identical grant on guardian, reaper and proxy, then writes a durable mode-0600 capsule with no operation set of its own', async () => {
+  it('installs one standing credential on all roles and keeps its secret only in the mode-0600 capsule', async () => {
     const calls: InstallCall[] = [];
     const { authority, handoffCapsulePath } = authorityForInstall({ calls });
 
     await authority.installHandoffGrant([OPERATION_KEY], new AbortController().signal);
 
     expect(calls.map((call) => call.method)).toEqual(
-      expect.arrayContaining(['guardian.handoff-install.v1', 'reaper.handoff-install.v1', 'handoff.install.v1']),
+      expect.arrayContaining([
+        'guardian.handoff-install.v1',
+        'reaper.handoff-install.v1',
+        'handoff.install.v1',
+        'guardian.succession-register-operation.v1',
+        'reaper.succession-register-operation.v1',
+        'succession.register-operation.v1',
+      ]),
     );
 
     const written = JSON.parse(readFileSync(handoffCapsulePath, 'utf-8')) as {
@@ -351,7 +364,7 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
     expect(() => statSync(handoffCapsulePath)).toThrow();
   });
 
-  it('includes a non-executing journal operation in the installed handoff grant', async () => {
+  it('registers a non-executing journal operation in standing succession membership', async () => {
     const calls: InstallCall[] = [];
     const pendingOperation = {
       jobId: '88888888-8888-4888-8888-888888888889',
@@ -365,18 +378,14 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
     const operations = await authority.snapshotOperations(new AbortController().signal);
     await authority.installHandoffGrant(operations, new AbortController().signal);
 
-    const proxyInstall = calls.find((call) => call.method === 'handoff.install.v1');
-    expect(proxyInstall?.params).toEqual(
-      expect.objectContaining({
-        operations: [
-          {
-            ...pendingOperation,
-            proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
-            buildSetId: GUARDIAN_IDENTITY.buildSetId,
-          },
-        ],
-      }),
-    );
+    const proxyRegistration = calls.find((call) => call.method === 'succession.register-operation.v1');
+    expect(proxyRegistration?.params).toEqual({
+      operation: {
+        ...pendingOperation,
+        proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+        buildSetId: GUARDIAN_IDENTITY.buildSetId,
+      },
+    });
   });
 });
 

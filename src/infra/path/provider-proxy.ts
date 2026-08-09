@@ -203,10 +203,9 @@ export function providerReaperBootstrapCapsulePath(
 }
 
 /**
- * The successor half of a handoff grant: one capsule per proxy (there is one grant per proxy over its
- * complete operation set, never one per operation), keyed by `proxyInstanceId` like every other proxy-role
- * path. A distinct `.handoff.json` suffix on the same identity hash keeps it from ever colliding with that
- * proxy's own one-use `.bootstrap.json` path, which names a different secret with a different lifetime.
+ * One capsule per exact proxy set keeps the recovery secret independent of operation count. A distinct
+ * `.handoff.json` suffix prevents the standing credential from colliding with the proxy's one-use bootstrap
+ * secret, which has a different authority and lifetime.
  */
 export function providerHandoffCapsulePath(
   identity: ProviderProxyEndpointIdentity,

@@ -11,6 +11,8 @@ import {
 } from './control-endpoint.js';
 import {
   createGrantRegistry,
+  successionOperationRegisterParamsSchema,
+  successionOperationRegisterResultSchema,
   type GrantBinding,
   proxyHandoffInstallParamsSchema as handoffInstallParamsSchema,
   proxyHandoffRedeemParamsSchema as handoffRedeemParamsSchema,
@@ -85,10 +87,12 @@ function ledgerKey(operation: OperationIdentity): ProviderOperationKey {
 export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>): Proxy {
   const { capsule, clock, identity, host, timer, mintChallenge, mintReceipt } = options;
   const bootstrapNonce = createBootstrapNonceCredential(capsule.bootstrapNonce);
-  const grants = createGrantRegistry(mintReceipt);
   const startedAt = clock.now();
   const nowMs = (): number => clock.millisecondsBetween(startedAt, clock.now());
   const evidence = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, startedAt, () => null);
+  const grants = createGrantRegistry(mintReceipt, {
+    mayReplaceRedemption: () => !evidence.isControlLive(clock.now()),
+  });
 
   const supervisor = new OperationSupervisor({
     host,
@@ -335,6 +339,17 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             operations: request.operations,
             orphanTimeoutMs: request.orphanTimeoutMs,
           });
+        },
+      },
+    ],
+    [
+      'succession.register-operation.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = successionOperationRegisterParamsSchema.parse(params);
+          assertNamedOperation(request.operation);
+          return successionOperationRegisterResultSchema.parse(grants.register(request.operation));
         },
       },
     ],

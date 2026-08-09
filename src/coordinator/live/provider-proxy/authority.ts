@@ -1,12 +1,11 @@
 import type { ProviderOperationKey } from '../../../provider-proxy/ledger.js';
+import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 
 /**
  * What coordinated shutdown needs from the live guardian/reaper/proxy sets.
  *
- * The contract is written from the consumer's side on purpose. Shutdown is the only caller, and every method
- * here exists because one row of the plan's fault matrix demands it — not because a set happens to be able
- * to do it. The concrete implementation belongs to the lazy provider-host acquisition path that creates the
- * sets; nothing else may reach a set through this surface.
+ * The contract is written from its consumers' side: publication needs standing succession membership and
+ * shutdown needs ordered relinquishment, while neither should reach into role clients directly.
  */
 
 /** One live set, as shutdown sees it. */
@@ -21,13 +20,7 @@ export interface ProviderProxySetAuthority {
    * back into one.
    */
   snapshotOperations(signal: AbortSignal): Promise<readonly ProviderOperationKey[]>;
-  /**
-   * Installs one grant across guardian, reaper and proxy over the exact snapshot, then writes and fsyncs the
-   * successor capsule. Both halves are one step: a grant with no capsule is unredeemable and a capsule with
-   * no grant is a secret nobody honours, so either alone strands the set. Every install RPC this issues is
-   * idempotent for the identical value, so a caller that reaps the set after this throws leaves nothing to
-   * unwind — the still-running containment is about to be torn down regardless of how far the install got.
-   */
+  /** Retained until Stage 7 so shutdown callers converge on the standing credential without a flag day. */
   installHandoffGrant(operations: readonly ProviderOperationKey[], signal: AbortSignal): Promise<void>;
   /**
    * Stops and reaps this set, returning only once the recorded containment and every recorded provider root
@@ -45,6 +38,11 @@ export interface ProviderProxySetAuthority {
    * every close *triggered* before it waits on any of them, so one slow set cannot delay the rest.
    */
   initiateControlClose(): Promise<void>;
+}
+
+export interface ProviderProxySetRecoveryAuthority extends ProviderProxySetAuthority {
+  installRecoveryCredential(signal: AbortSignal): Promise<void>;
+  registerSuccessionOperation(operation: OperationIdentity, signal?: AbortSignal): Promise<void>;
 }
 
 export interface ProviderProxyAuthorityRegistry {

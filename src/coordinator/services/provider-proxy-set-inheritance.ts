@@ -4,6 +4,8 @@ import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { providerHandoffCapsulePath } from '../../infra/path/index.js';
 import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
+import { createMonotonicClock } from '../../infra/monotonic-clock.js';
+import { reapRecordedContainment } from '../../infra/process-containment.js';
 import type { ProviderOperationCleanupIdentity } from '../../jobs/contracts/provider-operation-lifecycle.js';
 import {
   handoffOperationSetSchema,
@@ -26,9 +28,14 @@ import {
 import type { ControlClient, ProviderEventHandler } from '../../provider-proxy/control-client.js';
 import type { ProviderOperationKey } from '../../provider-proxy/ledger.js';
 import { runtimeControlTimer, type RoleConnectRetryOptions } from '../../provider-proxy/role-spawn.js';
+import {
+  MAX_PROXY_RECORDED_PROVIDER_ROOTS,
+  providerProxyDisappearanceReceipt,
+} from '../../provider-proxy/enforcement.js';
+import { PROXY_TEARDOWN_RESERVE_MS } from '../../provider-proxy/orphan-deadline.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { Database } from '../../store/db.js';
-import { readProviderOperation } from '../../store/provider-operation-journal.js';
+import { readProviderOperation, readProviderOperations } from '../../store/provider-operation-journal.js';
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../../store/provider-operation-record.js';
 import {
   ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS,
@@ -49,9 +56,9 @@ import type { ProviderProxySetIdentity } from './provider-proxy-operation-activa
 import type { LocalOperationRegistry } from './operation-registry.js';
 
 /**
- * The branch of proxy-set acquisition that redeems a predecessor's bequeathed set instead of spawning a new
- * one. `installHandoffGrant` (`provider-proxy/set-authority.ts`) is the write half — one grant across
- * guardian, reaper and proxy, plus a durable successor capsule; this file is the read half.
+ * The branch of proxy-set acquisition that redeems a predecessor's continuously recoverable set instead of
+ * spawning a new one. Fresh acquisition installs the role digests and durable capsule before publishing the
+ * set; this file is the read half.
  *
  * The capsule is addressable, never discovered: `providerHandoffCapsulePath` hashes `flavor`/`generation`
  * (this successor's own — a grant is build-bound) and `buildSetId`/`hostFingerprint`/`proxyInstanceId` (the
@@ -117,21 +124,28 @@ const proxyHandoffRedeemResultSchema = z
 
 export type ProviderProxySetInheritanceDeps = Readonly<{
   runtime: Runtime;
+  baseDir?: string;
   /** This successor's own wire identity — `pid`/`processStartedAtSeconds` read fresh, matching
    *  `ensureProviderProxySet`'s own coordinator-identity construction. */
   coordinatorIdentity: CoordinatorIdentity;
   /** Compatibility surface for live operation tracking and stop-and-reap root snapshots. */
   operationRegistry: Pick<LocalOperationRegistry, 'adopt' | 'operationsFor' | 'providerRootsFor'>;
   cleanupIdentityFor(jobId: string): ProviderOperationCleanupIdentity;
-  /** Reads the journal afresh when this successor later bequeaths the set again. */
+  /** Reads the journal afresh so graceful release refreshes the standing membership from durable truth. */
   snapshotProviderOperations?: (proxyInstanceId: string) => readonly ProviderOperationKey[];
   /** Wired onto the redeemed proxy connection exactly as ordinary acquisition wires it onto a freshly opened
    *  one (`ProviderProxyAcquisitionStepsOptions.onProviderEvent`'s own doc). */
   onProviderEvent?(): ProviderEventHandler;
+  confirmContainmentDisappearance?: (
+    reference: ProviderProxySetLocator,
+    db: Database,
+    signal: AbortSignal,
+  ) => Promise<string | null>;
 }>;
 
 export type ProviderProxySetInheritanceOutcome =
   | Readonly<{ kind: 'inherited'; set: DurableProviderProxyOperationAuthority; adoptedJobIds: ReadonlySet<string> }>
+  | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>
   | Readonly<{ kind: 'not-bequeathed'; reason: string }>;
 
 /** The one `not-bequeathed` reason that is the ordinary, expected outcome on a coordinator generation that
@@ -173,6 +187,64 @@ function executingJobsNamedByGrant(operations: readonly OperationIdentity[], db:
   return executingJobIds;
 }
 
+const providerSetDisappearanceClockScope = Symbol('provider-set-disappearance');
+
+async function confirmProviderProxySetDisappearance(
+  reference: ProviderProxySetLocator,
+  db: Database,
+  runtime: Runtime,
+  signal: AbortSignal,
+): Promise<string | null> {
+  const platform = runtime.env.platform() as NodeJS.Platform;
+  const enforcerIdentities = [reference.locator.guardian, reference.locator.reaper];
+  const enforcerMayStillBeLive = enforcerIdentities.some((identity) => {
+    try {
+      const observed = probeProcessStartedAtSeconds(identity.pid, platform);
+      return (
+        observed === identity.processStartedAtSeconds || (observed === null && runtime.process.isAlive(identity.pid))
+      );
+    } catch {
+      return true;
+    }
+  });
+  if (enforcerMayStillBeLive) {
+    return null;
+  }
+  signal.throwIfAborted();
+
+  const roots = new Map<string, Readonly<{ pid: number; processStartedAtSeconds: number }>>();
+  for (const record of readProviderOperations(db)) {
+    if (
+      record.operation.proxyInstanceId !== reference.operation.proxyInstanceId ||
+      record.operation.buildSetId !== reference.operation.buildSetId ||
+      !('providerRoot' in record)
+    ) {
+      continue;
+    }
+    roots.set(`${record.providerRoot.pid}@${record.providerRoot.processStartedAtSeconds}`, record.providerRoot);
+  }
+  const providerRoots = [...roots.values()];
+  const containment = {
+    pid: reference.locator.containment.pid,
+    processStartedAtSeconds: reference.locator.containment.processStartedAtSeconds,
+    processGroupId: reference.locator.containment.processGroupId,
+  };
+  const clock = createMonotonicClock(providerSetDisappearanceClockScope);
+  await reapRecordedContainment(
+    containment,
+    providerRoots,
+    clock.shiftMilliseconds(clock.now(), PROXY_TEARDOWN_RESERVE_MS),
+    {
+      maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
+      clock,
+      process: runtime.process,
+      platform,
+    },
+  );
+  signal.throwIfAborted();
+  return providerProxyDisappearanceReceipt(containment, providerRoots);
+}
+
 /**
  * The real redemption sequence, throwing freely — `attemptProviderProxySetInheritance` below is the one
  * boundary that converts every failure here into `not-bequeathed`.
@@ -191,13 +263,16 @@ async function redeem(
 ): Promise<ProviderProxySetInheritanceOutcome> {
   const { runtime, coordinatorIdentity } = deps;
   const { operation, locator } = reference;
-  const capsulePath = providerHandoffCapsulePath({
-    generation: coordinatorIdentity.generation,
-    flavor: coordinatorIdentity.flavor,
-    buildSetId: operation.buildSetId,
-    hostFingerprint: locator.hostFingerprint,
-    proxyInstanceId: operation.proxyInstanceId,
-  });
+  const capsulePath = providerHandoffCapsulePath(
+    {
+      generation: coordinatorIdentity.generation,
+      flavor: coordinatorIdentity.flavor,
+      buildSetId: operation.buildSetId,
+      hostFingerprint: locator.hostFingerprint,
+      proxyInstanceId: operation.proxyInstanceId,
+    },
+    deps.baseDir === undefined ? undefined : { baseDir: deps.baseDir },
+  );
   const uid = process.getuid?.() ?? 0;
   const capsule = readHandoffCapsuleFile(capsulePath, { storage: runtime.storage, uid });
   if (capsule === null) return { kind: 'not-bequeathed', reason: NOTHING_TO_INHERIT_REASON };
@@ -359,12 +434,7 @@ async function redeem(
     };
     const proxyIdentity = proxySession.opened.proxy;
 
-    // This successor's own future handoff capsule for this exact set, should it too shut down in handoff
-    // mode: `buildSetId`/`generation`/`flavor` are this coordinator's own (proven equal to the locator's and
-    // the capsule's by the redemption that just succeeded — a grant is build-bound), and `proxyInstanceId` is
-    // unchanged by inheritance, so this resolves to the identical address this redemption just read from. A
-    // set can be bequeathed more than once: overwriting the just-consumed capsule at that address with a
-    // fresh grant is exactly correct, not a collision.
+    // Reusing the verified capsule keeps every later epoch bound to the same exact set and protected secret.
     const base = createProviderProxySetAuthority({
       proxyInstanceId: proxyIdentity.proxyInstanceId,
       guardianClient: guardianSession.client,
@@ -377,6 +447,7 @@ async function redeem(
       coordinatorIdentity,
       handoffCapsulePath: capsulePath,
       runtime,
+      recoveryCapsule: capsule,
       snapshotProviderOperations:
         deps.snapshotProviderOperations ??
         (() => {
@@ -437,10 +508,23 @@ export async function attemptProviderProxySetInheritance(
   deps: ProviderProxySetInheritanceDeps,
   signal: AbortSignal,
 ): Promise<ProviderProxySetInheritanceOutcome> {
+  let outcome: ProviderProxySetInheritanceOutcome;
   try {
-    return await redeem(locator, db, deps, signal);
+    outcome = await redeem(locator, db, deps, signal);
   } catch (error: unknown) {
-    return { kind: 'not-bequeathed', reason: error instanceof Error ? error.message : String(error) };
+    outcome = { kind: 'not-bequeathed', reason: error instanceof Error ? error.message : String(error) };
+  }
+  if (outcome.kind !== 'not-bequeathed') return outcome;
+  try {
+    const disappearanceReceipt = await deps.confirmContainmentDisappearance?.(locator, db, signal);
+    return disappearanceReceipt === undefined || disappearanceReceipt === null
+      ? outcome
+      : { kind: 'containment-disappeared', disappearanceReceipt };
+  } catch (error: unknown) {
+    return {
+      kind: 'not-bequeathed',
+      reason: `${outcome.reason}; containment disappearance was not proven: ${errorMessage(error)}`,
+    };
   }
 }
 
@@ -467,6 +551,7 @@ export type CreateProviderProxySetInheritanceOptions = Readonly<{
   cleanupIdentityFor(jobId: string): ProviderOperationCleanupIdentity;
   snapshotProviderOperations?: (proxyInstanceId: string) => readonly ProviderOperationKey[];
   onProviderEvent?(): ProviderEventHandler;
+  confirmContainmentDisappearance?: ProviderProxySetInheritanceDeps['confirmContainmentDisappearance'];
   /** Where a successfully inherited set is folded in so it participates in this coordinator's own later
    *  shutdown — `DefaultProviderHostManager.registerInheritedSet` in production. */
   registerInheritedSet(set: ProviderProxyOperationAuthority): void;
@@ -484,8 +569,8 @@ function providerProxySetAddress(reference: ProviderProxySetLocator): string {
 export function createProviderProxySetInheritance(
   options: CreateProviderProxySetInheritanceOptions,
 ): ProviderProxySetInheritance {
-  // A grant is single-use, while startup saga recovery and the following running-job pass can name the same
-  // set; sharing the successful outcome prevents the second owner from treating a consumed capsule as loss.
+  // Sharing the successful outcome prevents startup saga recovery and the following running-job pass from
+  // racing two control establishments for the same set.
   const inheritedByAddress = new Map<string, Promise<ProviderProxySetInheritanceOutcome>>();
   return {
     async inheritProviderProxySet(locator, db, signal) {
@@ -522,6 +607,10 @@ export function createProviderProxySetInheritance(
               operationRegistry: options.operationRegistry,
               cleanupIdentityFor: options.cleanupIdentityFor,
               snapshotProviderOperations: options.snapshotProviderOperations,
+              confirmContainmentDisappearance:
+                options.confirmContainmentDisappearance ??
+                ((reference, store, proofSignal) =>
+                  confirmProviderProxySetDisappearance(reference, store, options.runtime, proofSignal)),
               ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
             },
             bounded,
@@ -530,7 +619,7 @@ export function createProviderProxySetInheritance(
         if (outcome.kind === 'inherited') {
           options.registerInheritedSet(outcome.set);
           notifyProviderProxyControlEstablished(outcome.set);
-        } else {
+        } else if (outcome.kind === 'not-bequeathed') {
           inheritedByAddress.delete(address);
         }
         return outcome;

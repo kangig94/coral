@@ -662,6 +662,7 @@ describe('createProviderProxySetInheritance', () => {
       identity,
       operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
       cleanupIdentityFor,
+      confirmContainmentDisappearance: async () => null,
       registerInheritedSet,
     });
     const outcome = await inheritance.inheritProviderProxySet(locator(), unusedDb, neverAborts);
@@ -694,6 +695,7 @@ describe('createProviderProxySetInheritance', () => {
     expect(replayedOutcome).toBe(outcome);
     expect(registerInheritedSet).toHaveBeenCalledTimes(1);
     expect(established).toHaveBeenCalledTimes(1);
+    expect(registerInheritedSet.mock.invocationCallOrder[0]).toBeLessThan(established.mock.invocationCallOrder[0]);
     expect(mockedConnect).toHaveBeenCalledTimes(3);
     if (outcome.kind === 'inherited') {
       expect(registerInheritedSet).toHaveBeenCalledWith(outcome.set);

@@ -158,7 +158,10 @@ async function startSet(options: { recordContainment?: boolean } = {}) {
     issueFirstChallenge: () => ({ accepted: true, challenge: mintRoleChallenge() }) as const,
     admitSuccessor: () => ({ accepted: true, challenge: mintRoleChallenge() }) as const,
     reattachControl: () => ({ accepted: true }) as const,
-    echoChallenge: () => ({ accepted: true, nextChallenge: mintRoleChallenge() }) as const,
+    echoChallenge: () => {
+      controlLive = true;
+      return { accepted: true, nextChallenge: mintRoleChallenge() } as const;
+    },
     observeEof: () => {},
     observePairingLoss: () => {},
     latchTeardown: () => {},
@@ -1391,23 +1394,38 @@ describe('provider-proxy guardian and reaper', () => {
     set.lapseControl();
     set.control.close();
 
-    const redeemOn = async (request_: Record<string, unknown>): Promise<{ redemptionReceipt: string }> => {
+    const redeemOn = async (
+      request_: Record<string, unknown>,
+    ): Promise<{
+      client: ControlClient;
+      redemptionReceipt: string;
+      controlEpoch: number;
+      heartbeatChallenge: string;
+    }> => {
       // A lost reply means the connection broke, so the retry necessarily arrives on a fresh one.
       const client = await connectControlClient(set.guardianEndpoint, timer, 5_000);
       cleanups.push(() => client.close());
-      return (await client.call('guardian.handoff-redeem.v1', request_, 5_000)) as { redemptionReceipt: string };
+      const opened = (await client.call('guardian.handoff-redeem.v1', request_, 5_000)) as {
+        redemptionReceipt: string;
+        controlEpoch: number;
+        heartbeatChallenge: string;
+      };
+      return { client, ...opened };
     };
     const first = await redeemOn(request);
 
     // A retry whose first reply was lost must get back what it earned. A fresh receipt would silently
     // invalidate the one the successor may already be holding.
-    expect((await redeemOn(request)).redemptionReceipt).toBe(first.redemptionReceipt);
+    const retried = await redeemOn(request);
+    expect(retried.redemptionReceipt).toBe(first.redemptionReceipt);
+    await retried.client.call(
+      'guardian.heartbeat.v1',
+      { controlEpoch: retried.controlEpoch, heartbeatChallenge: retried.heartbeatChallenge },
+      5_000,
+    );
 
     const other = { ...set.coordinatorIdentity, instanceId: randomUUID() };
-    await expect(redeemOn({ ...request, successor: other })).rejects.toThrow(/already redeemed by another successor/u);
-    // `control-endpoint.ts` documents `grant_replayed` as the code a caller branches on to give up rather
-    // than retry — the message alone does not tell that apart from a retryable `grant_invalid`.
-    await expect(redeemOn({ ...request, successor: other })).rejects.toMatchObject({ protocolCode: 'grant_replayed' });
+    await expect(redeemOn({ ...request, successor: other })).rejects.toThrow(/control channel closed/u);
   });
 
   it('refuses a redemption request that still names an operation set — the field no longer exists on the wire', async () => {
@@ -1682,7 +1700,7 @@ describe('provider-proxy guardian and reaper', () => {
         { ...first, redemptionReceipt: 'redemption-receipt-two' },
         5_000,
       ),
-    ).rejects.toThrow(/already recorded a different redemption/u);
+    ).rejects.toThrow(/different live control epoch/u);
   });
 
   it('refuses reaper.record-redemption.v1 when a second push repeats the receipt but disagrees on operations', async () => {
@@ -1704,7 +1722,7 @@ describe('provider-proxy guardian and reaper', () => {
     // "the same fact repeated" when the set it names has moved.
     await expect(
       set.reaperChannel.call('reaper.record-redemption.v1', { ...first, operations: [operation] }, 5_000),
-    ).rejects.toThrow(/already recorded a different redemption/u);
+    ).rejects.toThrow(/different live control epoch/u);
   });
 
   it('refuses reaper.handoff-rotate.v1 before the guardian has ever redeemed the grant', async () => {

@@ -34,6 +34,7 @@ import type { StrictBundleIdentityResult } from '#src/infra/bundle-manifest.js';
 import {
   providerGuardianBootstrapCapsulePath,
   providerGuardianEndpoint,
+  providerHandoffCapsulePath,
   providerProxyBootstrapCapsulePath,
   providerProxyEndpoint,
   providerReaperBootstrapCapsulePath,
@@ -43,6 +44,13 @@ import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
 import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/index.js';
+import {
+  attemptProviderProxySetInheritance,
+  type ProviderProxySetLocator,
+} from '#src/coordinator/services/provider-proxy-set-inheritance.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
+import { insertProviderOperation, readProviderOperations } from '#src/store/provider-operation-journal.js';
 import {
   createProviderBootstrapCapsule,
   type GuardianBootstrapCapsule,
@@ -65,6 +73,8 @@ import {
 } from '#src/provider-proxy/role-main.js';
 import type { Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 /**
  * Drives the real spawn topology in-process rather than against the built backend artifact.
@@ -611,12 +621,127 @@ describe('provider-proxy process topology: acquisition', () => {
     expect(result.kind).toBe('acquired');
     if (result.kind !== 'acquired') throw new Error(`unreachable: ${JSON.stringify(result)}`);
     expect(result.set.proxyInstanceId.length).toBeGreaterThan(0);
+    expect(
+      existsSync(
+        providerHandoffCapsulePath(
+          {
+            generation: GENERATION,
+            flavor: FLAVOR,
+            buildSetId: shared.buildSetId,
+            hostFingerprint: shared.hostFingerprint,
+            proxyInstanceId: result.set.proxyInstanceId,
+          },
+          { baseDir },
+        ),
+      ),
+    ).toBe(true);
     await expect(result.set.snapshotOperations(new AbortController().signal)).resolves.toEqual([]);
 
+    result.set.stopHeartbeats();
     const reaped = await result.set.stopAndReap(new AbortController().signal);
     expect(reaped).toHaveProperty('disappearanceReceipt');
-    result.set.stopHeartbeats();
     await result.set.initiateControlClose();
+  });
+
+  it('redeems a standing set after an abrupt coordinator transport cut without a shutdown handoff', async () => {
+    const baseDir = scopedTempDir('coral-topology-abrupt-recovery-');
+    const shared = mintSharedSetIdentity();
+    const environment = createFakeRoleEnvironment({
+      base: createRealRuntime(FLAVOR),
+      pluginRoot: baseDir,
+      baseDir,
+      resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
+    });
+    cleanups.push(() => closeHandles(environment));
+
+    const acquired = await acquireProviderProxySet({
+      steps: createProviderProxyAcquisitionSteps(acquisitionOptions(environment, baseDir, shared)),
+      deadlineSignal: AbortSignal.timeout(15_000),
+    });
+    if (acquired.kind !== 'acquired') throw new Error(`acquisition failed: ${JSON.stringify(acquired)}`);
+    const identity = acquired.set.setIdentity;
+    const operation = {
+      jobId: randomUUID(),
+      operationId: randomUUID(),
+      proxyInstanceId: acquired.set.proxyInstanceId,
+      buildSetId: identity.buildSetId,
+    };
+    const reference: ProviderProxySetLocator = {
+      operation,
+      locator: {
+        hostFingerprint: identity.hostFingerprint,
+        guardian: {
+          instanceId: identity.guardianInstanceId,
+          pid: identity.guardianPid,
+          processStartedAtSeconds: identity.guardianProcessStartedAtSeconds,
+          controlEndpoint: identity.guardianControlEndpoint,
+        },
+        proxy: {
+          instanceId: identity.proxyInstanceId,
+          pid: identity.proxyPid,
+          processStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+          controlEndpoint: identity.canonicalEndpoint,
+        },
+        reaper: {
+          instanceId: identity.reaperInstanceId,
+          pid: identity.reaperPid,
+          processStartedAtSeconds: identity.reaperProcessStartedAtSeconds,
+          controlEndpoint: identity.reaperControlEndpoint,
+        },
+        containment: {
+          pid: identity.proxyPid,
+          processStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+          processGroupId: identity.proxyProcessGroupId,
+          kind: identity.containmentKind,
+        },
+      },
+    };
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    insertProviderOperation(db, providerOperationRecord('prepare-pending', { operation, locator: reference.locator }));
+
+    await acquired.set.registerSuccessionOperation(operation);
+    acquired.set.stopHeartbeats();
+    await acquired.set.initiateControlClose();
+
+    const successorIdentity: CoordinatorIdentity = {
+      instanceId: randomUUID(),
+      pid: process.pid,
+      processStartedAtSeconds: probeProcessStartedAtSeconds(process.pid, process.platform) ?? 0,
+      generation: GENERATION,
+      flavor: FLAVOR,
+      buildSetId: shared.buildSetId,
+    };
+    const recovered = await attemptProviderProxySetInheritance(
+      reference,
+      db,
+      {
+        runtime: environment.outerRuntime(),
+        baseDir,
+        coordinatorIdentity: successorIdentity,
+        operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
+        cleanupIdentityFor: (jobId) => ({ jobId, pool: 'curate' }),
+        snapshotProviderOperations: (proxyInstanceId) =>
+          readProviderOperations(db)
+            .filter((record) => record.operation.proxyInstanceId === proxyInstanceId)
+            .map((record) => ({ jobId: record.operation.jobId, operationId: record.operation.operationId })),
+      },
+      AbortSignal.timeout(15_000),
+    );
+
+    expect(recovered.kind).toBe('inherited');
+    if (recovered.kind !== 'inherited') throw new Error(`recovery failed: ${JSON.stringify(recovered)}`);
+    await expect(recovered.set.attachOperation(operation, 0)).resolves.toEqual({
+      state: 'operation-absent',
+      operation,
+    });
+    expect(await recovered.set.snapshotOperations(new AbortController().signal)).toEqual([
+      { jobId: operation.jobId, operationId: operation.operationId },
+    ]);
+    recovered.set.stopHeartbeats();
+    const reaped = await recovered.set.stopAndReap(new AbortController().signal);
+    expect(reaped).toHaveProperty('disappearanceReceipt');
+    await recovered.set.initiateControlClose();
   });
 
   it('unwinds the capsules and reaps the guardian when a later cut fails control establishment', async () => {

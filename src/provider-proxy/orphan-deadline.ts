@@ -333,9 +333,8 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       if (now === null) return { accepted: false, reason: 'teardown-latched' };
       if (evidence.isControlLive(now)) return { accepted: false, reason: 'control-active' };
       const challenge = policy.mintChallenge();
-      // Authorizes, and does not also consume: the credential's one-shot belongs to whoever owns the
-      // credential. Installing a challenge before the grant is checked would let a refused replay poison a
-      // legitimate successor's retry, while the reverse order costs nothing — the set is torn down anyway.
+      // Installing a challenge before the credential is checked would let a refused replay poison a
+      // legitimate successor's retry, while the reverse order costs nothing.
       evidence.beginSuccessorControl(challenge, now);
       return { accepted: true, challenge };
     },

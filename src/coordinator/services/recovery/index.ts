@@ -681,7 +681,7 @@ export function createRecoveryCoordinator(
             );
             state.recoveryRegistry?.remove(inheritedJobId);
           }
-        } else if (outcome.reason !== NOTHING_TO_INHERIT_REASON) {
+        } else if (outcome.kind === 'not-bequeathed' && outcome.reason !== NOTHING_TO_INHERIT_REASON) {
           // A capsule was actually found at this address — this is not the ordinary "nothing bequeathed"
           // case — so redemption failing mid-flight is worth a look even though it is not fatal to boot: the
           // job(s) at this address fall through to ordinary carrier-detached handling below, same as any other

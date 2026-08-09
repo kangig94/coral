@@ -216,10 +216,9 @@ describe('provider-proxy handoff capsule', () => {
     };
     registry.redeem(request);
 
-    // Single-use means one successor, not one call: two racing coordinators reading the same capsule must
-    // not both come away believing they own the set.
+    // Two racing coordinators reading the same capsule must not both come away believing they own the set.
     expect(() => registry.redeem({ ...request, successorInstanceId: OTHER_SUCCESSOR })).toThrow(
-      /already redeemed by another successor/u,
+      /control epoch remains live/u,
     );
     // A caller branches on the discriminated code, never on message text — `control-endpoint.ts` documents
     // `grant_replayed` as the code that means "give up", distinct from a retryable `grant_invalid`.
@@ -229,6 +228,40 @@ describe('provider-proxy handoff capsule', () => {
       expect(error).toMatchObject({ code: 'grant_replayed' });
     }
     expect(registry.redemption()?.successorInstanceId).toBe(SUCCESSOR);
+  });
+
+  it('carries exact-set membership into later epochs only after incumbent liveness ends', () => {
+    let incumbentLive = true;
+    const registry = createGrantRegistry(mintReceipt(), { mayReplaceRedemption: () => !incumbentLive });
+    const grant = installedGrantFor([]);
+    registry.install(grant);
+    registry.register(OPERATION_A);
+    const request = {
+      grantId: grant.grantId,
+      secret: SECRET,
+      successorInstanceId: SUCCESSOR,
+      binding: bindingOf(grant),
+    };
+
+    const incumbent = registry.redeem(request);
+    expect(incumbent.grant.operations).toEqual([OPERATION_A]);
+    expect(() => registry.redeem({ ...request, successorInstanceId: OTHER_SUCCESSOR })).toThrow(
+      /control epoch remains live/u,
+    );
+    expect(() =>
+      registry.redeem({
+        ...request,
+        successorInstanceId: OTHER_SUCCESSOR,
+        binding: { ...request.binding, proxyInstanceId: randomUUID() },
+      }),
+    ).toThrow(/different guardian\/reaper\/proxy set/u);
+
+    incumbentLive = false;
+    const successor = registry.redeem({ ...request, successorInstanceId: OTHER_SUCCESSOR });
+
+    expect(successor.successorInstanceId).toBe(OTHER_SUCCESSOR);
+    expect(successor.redemptionReceipt).toBe('receipt-2');
+    expect(successor.grant.operations).toEqual([OPERATION_A]);
   });
 
   it('refuses redemption presenting the wrong secret', () => {

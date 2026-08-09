@@ -42,7 +42,7 @@ export type ProviderHostLifecycle = Pick<ProviderHostManager, 'drainForHandoff' 
 
 /**
  * The registration half of the inheritance branch of proxy-set acquisition (W2.4/W2.5). The redemption
- * mechanism itself — reading a predecessor's bequeathed capsule and adopting its operations — needs the
+ * mechanism itself — reading a standing recovery capsule and attaching its operations — needs the
  * durable saga and jobs cleanup vocabulary that `coordinator/live/**` may not compose directly
  * (`architecture-layering.test.ts`'s coordinator-contract-entrypoint rule), so it lives in
  * `coordinator/services/provider-proxy-set-inheritance.ts` and calls back into this narrow, domain-free seam
@@ -159,8 +159,8 @@ export class DefaultProviderHostManager
   private readonly proxySetAcquisitionConfig?: ProviderProxySetAcquisitionConfig;
   // Keyed by `entry.identityKey` — the executable identity — never by `entry.hostKey`. A set is one
   // guardian/reaper/proxy triple of real processes, and one proxy carries many operations: the ledger is
-  // keyed by `(jobId, operationId)` up to `MAX_PROXY_OPERATION_LEDGERS`, a handoff grant covers a proxy's
-  // whole operation set rather than one operation, and release refuses to reap a provider root another
+  // keyed by `(jobId, operationId)` up to `MAX_PROXY_OPERATION_LEDGERS`, succession membership belongs to
+  // the proxy set rather than one control epoch, and release refuses to reap a provider root another
   // operation in the same set still references. Keying by `hostKey` would contradict all of that and, because
   // a job-exclusive `hostKey` carries a fresh sequence number per acquisition, would mint three processes per
   // job and never retire them — unbounded growth in a daemon that outlives many jobs.
@@ -184,8 +184,8 @@ export class DefaultProviderHostManager
   private readonly proxySetAcquisitionStop = new AbortController();
   // Inherited sets are keyed by `proxyInstanceId`, never folded into `liveProxySets`: this manager has no
   // `ProviderServerSpec` to derive that map's `identityKey` from at inheritance time (only a committed
-  // locator), and a bequeathed set's operations are the fixed set the grant named — routing a brand-new
-  // operation onto it is not this branch's concern. `liveSets()` still reports it, so it participates in this
+  // locator), and routing a brand-new operation onto a recovered set is not this branch's concern.
+  // `liveSets()` still reports it, so it participates in this
   // coordinator's own later shutdown (a second handoff included) exactly as an acquired set would.
   private readonly inheritedProxySets = new Map<string, ProviderProxyOperationAuthority>();
 

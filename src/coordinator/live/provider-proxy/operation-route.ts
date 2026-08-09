@@ -21,10 +21,11 @@ import {
   type SettleProviderOperationResult,
 } from '../../services/provider-proxy-operation-activation.js';
 import type { OperationStopControl } from '../../services/operation-registry.js';
-import type { ProviderProxySetAuthority } from './authority.js';
+import type { ProviderProxySetAuthority, ProviderProxySetRecoveryAuthority } from './authority.js';
 
 export interface ProviderProxyOperationAuthority extends ProviderProxySetAuthority {
   readonly setIdentity: ProviderProxySetIdentity;
+  registerSuccessionOperation: ProviderProxySetRecoveryAuthority['registerSuccessionOperation'];
 }
 
 export interface DurableProviderProxyOperationAuthority extends ProviderProxyOperationAuthority {
@@ -87,7 +88,7 @@ export function isProviderProxyOperationAuthority(
 }
 
 export function createProviderProxyOperationAuthority(deps: {
-  base: ProviderProxySetAuthority;
+  base: ProviderProxySetAuthority & Pick<ProviderProxySetRecoveryAuthority, 'registerSuccessionOperation'>;
   setIdentity: ProviderProxySetIdentity;
   proxyClient: OperationControlClient;
   guardianClient: OperationControlClient;

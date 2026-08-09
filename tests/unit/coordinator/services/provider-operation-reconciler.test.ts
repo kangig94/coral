@@ -18,6 +18,7 @@ import {
 } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { proxyOperationAttachResultSchema } from '#src/provider-proxy/protocol.js';
+import { createGrantRegistry, handoffSecretDigest, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import { terminalizeProviderOperation } from '#src/jobs/provider-operation-terminalization.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import {
@@ -111,6 +112,7 @@ function createHarness(
     attachOperation?: DurableProviderProxyOperationAuthority['attachOperation'];
     settleOperation?: DurableProviderProxyOperationAuthority['settleOperation'];
     cancelOperation?: DurableProviderProxyOperationAuthority['cancelOperation'];
+    registerSuccessionOperation?: DurableProviderProxyOperationAuthority['registerSuccessionOperation'];
     materializePrepare?: () =>
       | ProviderOperationPrepareMaterializationResult
       | Promise<ProviderOperationPrepareMaterializationResult>;
@@ -212,6 +214,7 @@ function createHarness(
       canonicalEndpoint: record.locator.proxy.controlEndpoint,
     },
     snapshotOperations: async () => [],
+    registerSuccessionOperation: overrides.registerSuccessionOperation ?? (async () => undefined),
     installHandoffGrant: async () => undefined,
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,
@@ -625,6 +628,100 @@ describe('ProviderOperationReconciler publication', () => {
     expect(readProviderOperation(harness.db, harness.record.operation)?.phase).toBe('executing');
   });
 
+  it('recreates a coordinator after the succession-register/prepare cut using only SQLite, capsule, and proxy state', async () => {
+    const harness = createHarness();
+    const recovered = harness.record;
+    insertProviderOperation(harness.db, recovered);
+
+    const capsule: HandoffCapsule = {
+      version: 1,
+      grantId: '99999999-9999-4999-8999-999999999999',
+      secret: 'd'.repeat(64),
+      generation: 'gen2',
+      flavor: 'prod',
+      buildSetId: recovered.operation.buildSetId,
+      hostFingerprint: recovered.locator.hostFingerprint,
+      guardianInstanceId: recovered.locator.guardian.instanceId,
+      reaperInstanceId: recovered.locator.reaper.instanceId,
+      proxyInstanceId: recovered.operation.proxyInstanceId,
+      guardianControlEndpoint: recovered.locator.guardian.controlEndpoint,
+      reaperControlEndpoint: recovered.locator.reaper.controlEndpoint,
+      proxyEndpoint: recovered.locator.proxy.controlEndpoint,
+      orphanTimeoutMs: 30_000,
+      teardownReserveMs: 14_000,
+    };
+    const modeledProxyState = createGrantRegistry(() => 'recovery-receipt');
+    modeledProxyState.install({
+      grantId: capsule.grantId,
+      secretSha256: handoffSecretDigest(capsule.secret),
+      generation: capsule.generation,
+      flavor: capsule.flavor,
+      buildSetId: capsule.buildSetId,
+      hostFingerprint: capsule.hostFingerprint,
+      guardianInstanceId: capsule.guardianInstanceId,
+      reaperInstanceId: capsule.reaperInstanceId,
+      proxyInstanceId: capsule.proxyInstanceId,
+      operations: [],
+      orphanTimeoutMs: capsule.orphanTimeoutMs,
+    });
+
+    // This is the only remote effect left by the dead coordinator: the full tuple landed, then its
+    // transport vanished before prepare. No authority or promise from that coordinator crosses the cut.
+    modeledProxyState.register(recovered.operation);
+
+    const successorCalls: string[] = [];
+    const successorAuthority: DurableProviderProxyOperationAuthority = {
+      ...harness.authority,
+      registerSuccessionOperation: async (operation) => {
+        successorCalls.push('register');
+        modeledProxyState.register(operation);
+      },
+      prepareOperation: async (attempt) => {
+        successorCalls.push('prepare');
+        expect(modeledProxyState.redemption()?.grant.operations).toContainEqual(recovered.operation);
+        return harness.authority.prepareOperation(attempt);
+      },
+    };
+    const acquireAuthority = vi.fn(async () => {
+      modeledProxyState.redeem({
+        grantId: capsule.grantId,
+        secret: capsule.secret,
+        successorInstanceId: '88888888-8888-4888-8888-888888888888',
+        binding: {
+          generation: capsule.generation,
+          flavor: capsule.flavor,
+          buildSetId: capsule.buildSetId,
+          hostFingerprint: capsule.hostFingerprint,
+          guardianInstanceId: capsule.guardianInstanceId,
+          reaperInstanceId: capsule.reaperInstanceId,
+          proxyInstanceId: capsule.proxyInstanceId,
+        },
+      });
+      return successorAuthority;
+    });
+    const recreated = new ProviderOperationReconciler({
+      getProgressStore: () => harness.progressStore,
+      authorityFor: () => null,
+      acquireAuthority,
+      registry: harness.registry,
+      materializePrepare: () => MATERIALIZED_PREPARED,
+      terminalization: harness.terminalization,
+      backendNamespace: 'tests',
+      time: {
+        now: () => 100,
+        setTimeout: () => ({ unref: () => undefined }),
+        clearTimeout: () => undefined,
+      },
+    });
+
+    await recreated.reconcileAtStartup(new AbortController().signal);
+
+    expect(acquireAuthority).toHaveBeenCalledOnce();
+    expect(successorCalls).toEqual(['register', 'prepare']);
+    expect(readProviderOperation(harness.db, recovered.operation)?.phase).toBe('executing');
+    expect(harness.registry.adopt).toHaveBeenCalledOnce();
+  });
+
   it('keeps a timeout pending and never turns it into local authorization', async () => {
     const ambiguous = Object.assign(new Error('prepare timed out'), { code: 'control_call_failed' });
     const harness = createHarness({
@@ -988,6 +1085,61 @@ describe('ProviderOperationReconciler publication', () => {
 
     expect(settleCalls).toBe(2);
     expect(replayedAlreadyReleased).toBe(true);
+  });
+
+  it('takes the phase-specific exit after exact containment disappearance', async () => {
+    const terminalCleanup = providerOperationRecordSchema.parse({
+      ...providerOperationRecord('prestart-cleanup-pending'),
+      afterRelease: {
+        kind: 'terminal-failed',
+        code: 'authorization_expired',
+        reason: 'The durable authorization expired before recovery.',
+      },
+    });
+    const cases = [
+      { record: providerOperationRecord('prepare-pending'), failureCode: null },
+      { record: providerOperationRecord('guardian-activation-pending'), failureCode: null },
+      { record: providerOperationRecord('prestart-cleanup-pending'), failureCode: null },
+      { record: terminalCleanup, failureCode: 'authorization_expired' },
+      { record: providerOperationRecord('proxy-activation-pending'), failureCode: 'activation_indeterminate' },
+      { record: providerOperationRecord('activation-resolution-pending'), failureCode: 'activation_indeterminate' },
+      { record: providerOperationRecord('executing'), failureCode: 'provider_lost' },
+      { record: providerOperationRecord('settlement-pending'), failureCode: null },
+    ] as const;
+
+    for (const { record, failureCode } of cases) {
+      const harness = createHarness();
+      insertProviderOperation(harness.db, record);
+      const acquireAuthority = vi.fn(async () => ({
+        kind: 'containment-disappeared' as const,
+        disappearanceReceipt: 'group:101,leader:101@1000,root:104@1003',
+      }));
+      const reconciler = new ProviderOperationReconciler({
+        getProgressStore: () => harness.progressStore,
+        authorityFor: () => null,
+        acquireAuthority,
+        registry: harness.registry,
+        materializePrepare: () => MATERIALIZED_PREPARED,
+        terminalization: harness.terminalization,
+        backendNamespace: 'tests',
+        time: {
+          now: () => 100,
+          setTimeout: () => ({ unref: () => undefined }),
+          clearTimeout: () => undefined,
+        },
+      });
+
+      await reconciler.reconcileAtStartup(new AbortController().signal);
+
+      expect(acquireAuthority, record.phase).toHaveBeenCalledWith(record, expect.any(AbortSignal));
+      expect(readProviderOperation(harness.db, record.operation), record.phase).toBeNull();
+      const failureCodes = harness.appended
+        .filter((event) => (event as { type?: string }).type === 'job.progress.emitted')
+        .map((event) => (event as { body: { detail?: { code?: string } } }).body.detail?.code);
+      expect(failureCodes, record.phase).toEqual(failureCode === null ? [] : [failureCode]);
+      expect(harness.registry.activate, record.phase).not.toHaveBeenCalled();
+      expect(harness.registry.adopt, record.phase).not.toHaveBeenCalled();
+    }
   });
 });
 
