@@ -81,7 +81,7 @@ import {
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
 import { runStartupStaleArtifactPrune } from './startup-recovery.js';
-import type { RunJobsStartupFn } from '../jobs/startup.js';
+import type { ProviderOperationStartupOwnership, RunJobsStartupFn } from '../jobs/startup.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
@@ -634,6 +634,7 @@ export type StartupRecoveryInputs = {
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readonly createInvocationContext: (projectRoot: string) => InvocationContext;
   readonly recoveryCoordinator: RecoveryCoordinator;
+  readonly providerOperationStartupOwnership: ProviderOperationStartupOwnership;
   readonly signal: AbortSignal;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
   /**
@@ -965,6 +966,7 @@ async function runLifecycleStartup({
     );
     state.recoveryCoordinator = recoveryCoordinator;
     connectProviderOperationRecovery?.(recoveryCoordinator);
+    const providerOperationStartupOwnership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
     signal.throwIfAborted();
 
     // Bind the HTTP listener and signal kernel-ready BEFORE Era II's
@@ -1023,6 +1025,7 @@ async function runLifecycleStartup({
             getDiscussContext,
             createInvocationContext,
             recoveryCoordinator,
+            providerOperationStartupOwnership,
             signal,
             recoverPersistedDiscussFn,
             interruptedAppServerReason: bound.acquiredViaHandoff ? 'handoff' : 'restart',

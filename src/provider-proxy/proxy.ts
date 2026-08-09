@@ -23,7 +23,12 @@ import {
   type OperationLedger,
   type ProviderOperationKey,
 } from './ledger.js';
-import { OperationSupervisor, type OperationStageHandle, type SemanticOperationHost } from './operation-supervisor.js';
+import {
+  OperationSupervisor,
+  type OperationStageHandle,
+  type ProviderEventEmissionResult,
+  type SemanticOperationHost,
+} from './operation-supervisor.js';
 import { PROXY_CONTROL_LEASE_MS } from './orphan-deadline.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
@@ -71,7 +76,7 @@ export interface Proxy {
   listen(): Promise<void>;
   close(): Promise<void>;
   ledger(): OperationLedger<ProxyPreparedAppServerOperation>;
-  emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody, signal?: AbortSignal): Promise<void>;
+  emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody): ProviderEventEmissionResult;
 }
 
 function ledgerKey(operation: OperationIdentity): ProviderOperationKey {
@@ -377,6 +382,6 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       return endpoint.close();
     },
     ledger: () => supervisor.ledger(),
-    emitProviderEvent: (key, event, signal) => supervisor.emitProviderEvent(key, event, signal),
+    emitProviderEvent: (key, event) => supervisor.emitProviderEvent(key, event),
   };
 }

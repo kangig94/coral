@@ -572,7 +572,7 @@ describe('provider-proxy truthful operation authority', () => {
     const activating = control.call('operation.activate.v1', activation, 5_000);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('starting'));
 
-    await proxy.emitProviderEvent(operation, {
+    proxy.emitProviderEvent(operation, {
       kind: 'terminal',
       terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
       diagnostics: {},
@@ -610,6 +610,34 @@ describe('provider-proxy truthful operation authority', () => {
     expect(proxy.ledger().get(operation)?.state).toBe('terminal-awaiting-settlement');
     expect(attachRequestParses).toHaveBeenCalledTimes(2);
     expect(attachResultParses).toHaveBeenCalledTimes(3);
+  });
+
+  it('commits each encoded provider frame synchronously before another emission can begin', async () => {
+    const { control, operation, proxy } = await startProxy(fakeHost());
+    const prepared = (await control.call(
+      'operation.prepare.v1',
+      { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
+      5_000,
+    )) as { reservation: Reservation; jointContainmentReceipt: JointContainmentReceipt };
+    await control.call(
+      'operation.activate.v1',
+      {
+        operation,
+        reservation: prepared.reservation,
+        jointContainmentReceipt: prepared.jointContainmentReceipt,
+        jointActivationReceipt: asJointActivationReceipt('activation-1'),
+      },
+      5_000,
+    );
+    await control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
+
+    const emissions = [
+      proxy.emitProviderEvent(operation, { kind: 'progress', message: 'first' }),
+      proxy.emitProviderEvent(operation, { kind: 'progress', message: 'second' }),
+    ].map((emission) => Promise.resolve(emission).catch(() => undefined));
+
+    expect(proxy.ledger().get(operation)?.bufferedEvents).toHaveLength(2);
+    await Promise.all(emissions);
   });
 
   it('actively releases an expired lease without another RPC', async () => {
@@ -975,7 +1003,7 @@ describe('provider-proxy truthful operation authority', () => {
       5_000,
     );
     await control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
-    await proxy.emitProviderEvent(operation, { kind: 'progress', message: 'final' });
+    proxy.emitProviderEvent(operation, { kind: 'progress', message: 'final' });
     await control.call('operation.stop.v1', { operation, cause: 'signal_abort' }, 5_000);
 
     const settleRequest = proxyOperationSettleParamsSchema.parse({ operation, finalProviderSeq: 1 });

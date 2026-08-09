@@ -28,6 +28,7 @@ import {
   type SessionProviderFailureDiagnostic,
 } from './fault.js';
 import { providerSessionProvider } from './entry.js';
+import { isProviderProxyFailureOrigin } from '../providers/proxy-failure.js';
 
 // sessions/fault.ts is the canonical authority with exhaustive-switch +
 // assertNever. Runtime-injected values are rendered as diagnostics instead of
@@ -119,6 +120,9 @@ const interrupted = typedDescriber(sessionInterruptedBodySchema, (body) => {
 });
 
 const providerFailed = typedDescriber(sessionProviderFailedBodySchema, (body) => {
+  if (isProviderProxyFailureOrigin(body.provider)) {
+    return `Provider proxy stopped the turn: ${ensureSentence(body.message)}`;
+  }
   const diagnostic = describeProviderFailureDiagnostic(body.diagnostic);
   switch (body.reason) {
     case 'session_unavailable':

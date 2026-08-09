@@ -8,6 +8,7 @@ import {
   controlPairResultSchema,
   coordinatorIdentitySchema,
   decodeProxyControlFrame,
+  encodedProxyControlFrameByteLength,
   encodeProxyControlFrame,
   guardianIdentitySchema,
   guardianOperationActivateParamsSchema,
@@ -51,6 +52,12 @@ import {
   reaperRegisterProviderRootResultSchema,
 } from '#src/provider-proxy/protocol.js';
 import { reaperRecordRedemptionParamsSchema } from '#src/provider-proxy/handoff-capsule.js';
+import {
+  providerProxyEmergencyEvent,
+  providerProxyEmergencyEventSchema,
+  providerProxyFailureMessages,
+  type ProviderProxyReplayFailureReason,
+} from '#src/providers/proxy-failure.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
@@ -232,6 +239,24 @@ describe('provider proxy protocol vocabulary', () => {
     expect(() => decodeProxyControlFrame(invalid)).toThrowError(expect.objectContaining({ code: 'invalid_request' }));
     expect(encodeProxyControlFrame({ jsonrpc: '2.0', id: 'frame', method: 'control.test' })).toMatch(/[^\n]\n$/);
   });
+
+  it.each([
+    ['NUL', '\u0000'],
+    ['backspace', '\b'],
+    ['tab', '\t'],
+    ['newline', '\n'],
+    ['form feed', '\f'],
+    ['carriage return', '\r'],
+    ['quote', '"'],
+    ['backslash', '\\'],
+    ['BMP non-ASCII', '한'],
+    ['astral', '🪸'],
+  ] as const)('preflights %s with the exact encoded UTF-8 byte length', (_label, value) => {
+    const message = { jsonrpc: '2.0' as const, id: 1, method: 'control.test', params: { value } };
+    const predicted = encodedProxyControlFrameByteLength(message);
+
+    expect(predicted).toBe(Buffer.byteLength(JSON.stringify(message) + '\n', 'utf8'));
+  });
 });
 
 describe('shared heartbeat, pairing, and guardian-to-reaper schemas', () => {
@@ -272,6 +297,16 @@ describe('shared heartbeat, pairing, and guardian-to-reaper schemas', () => {
 
 describe('provider.event.v1 vocabulary', () => {
   const operation = { jobId: UUID_A, operationId: UUID_B, proxyInstanceId: UUID_C, buildSetId: UUID_D };
+  const replayReasons = [
+    'provider_replay_operation_events_exhausted',
+    'provider_replay_operation_bytes_exhausted',
+    'provider_replay_proxy_bytes_exhausted',
+    'provider_completion_too_large',
+  ] as const;
+
+  function emergencyEvent(reason: ProviderProxyReplayFailureReason) {
+    return providerProxyEmergencyEvent({ reason });
+  }
 
   it('publishes the one method name used in both directions of the reverse channel', () => {
     expect(PROVIDER_EVENT_METHOD).toBe('provider.event.v1');
@@ -329,6 +364,49 @@ describe('provider.event.v1 vocabulary', () => {
       false,
     );
     expect(providerEventResultSchema.safeParse({ kind: 'nack', committedThroughProviderSeq: 0 }).success).toBe(false);
+  });
+
+  it('encodes all four closed emergency frames at the exact reviewed byte lengths', () => {
+    const lengths = replayReasons.map((reason) => {
+      const request = providerEventRequestSchema.parse({
+        operation,
+        providerSeq: Number.MAX_SAFE_INTEGER,
+        event: emergencyEvent(reason),
+      });
+      const frame = encodeProxyControlFrame({
+        jsonrpc: '2.0',
+        id: Number.MAX_SAFE_INTEGER,
+        method: PROVIDER_EVENT_METHOD,
+        params: request,
+      });
+      return Buffer.byteLength(frame, 'utf8');
+    });
+
+    expect(lengths).toEqual([633, 632, 635, 641]);
+    expect(Math.max(...lengths)).toBe(641);
+  });
+
+  it('rejects caller-supplied fields from the reserved emergency shape', () => {
+    const event = emergencyEvent('provider_replay_operation_events_exhausted');
+
+    expect(
+      providerProxyEmergencyEventSchema.safeParse({
+        ...event,
+        diagnostics: { warnings: ['caller supplied'] },
+      }).success,
+    ).toBe(false);
+    expect(
+      providerProxyEmergencyEventSchema.safeParse({
+        ...event,
+        failureCause: {
+          ...event.failureCause,
+          body: {
+            ...event.failureCause.body,
+            message: `${providerProxyFailureMessages.provider_replay_operation_events_exhausted}!`,
+          },
+        },
+      }).success,
+    ).toBe(false);
   });
 });
 

@@ -907,13 +907,115 @@ function assertFrameSize(observedBytes: number): void {
   }
 }
 
-export function encodeProxyControlFrame(message: ProxyControlJsonRpcMessage): string {
-  let validated: ProxyControlJsonRpcMessage;
+function validateProxyControlMessage(message: ProxyControlJsonRpcMessage): ProxyControlJsonRpcMessage {
   try {
-    validated = proxyControlJsonRpcMessageSchema.parse(message);
+    return proxyControlJsonRpcMessageSchema.parse(message);
   } catch {
     throw new ProxyControlProtocolError('invalid_request', 'Proxy control message failed strict JSON-RPC validation.');
   }
+}
+
+function encodedJsonStringByteLength(value: string): number {
+  let bytes = 2;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (
+      code === 0x22 ||
+      code === 0x5c ||
+      code === 0x08 ||
+      code === 0x09 ||
+      code === 0x0a ||
+      code === 0x0c ||
+      code === 0x0d
+    ) {
+      bytes += 2;
+      continue;
+    }
+    if (code <= 0x1f || (code >= 0xd800 && code <= 0xdfff)) {
+      const next = value.charCodeAt(index + 1);
+      if (code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 6;
+      }
+      continue;
+    }
+    if (code <= 0x7f) bytes += 1;
+    else if (code <= 0x7ff) bytes += 2;
+    else bytes += 3;
+  }
+  return bytes;
+}
+
+function encodedJsonValueByteLength(value: unknown, ancestors: Set<object>, key: string): number | null {
+  if (value !== null && typeof value === 'object') {
+    const toJSON = Reflect.get(value, 'toJSON');
+    if (typeof toJSON === 'function')
+      return encodedJsonValueByteLength(Reflect.apply(toJSON, value, [key]), ancestors, key);
+  }
+  if (value === null) return 4;
+  switch (typeof value) {
+    case 'string':
+      return encodedJsonStringByteLength(value);
+    case 'boolean':
+      return value ? 4 : 5;
+    case 'number': {
+      const encoded = JSON.stringify(value);
+      return encoded === undefined ? null : encoded.length;
+    }
+    case 'undefined':
+    case 'function':
+    case 'symbol':
+      return null;
+    case 'bigint':
+      throw new TypeError('Do not know how to serialize a BigInt');
+    case 'object':
+      break;
+  }
+
+  const object = value as object;
+  if (ancestors.has(object)) throw new TypeError('Converting circular structure to JSON');
+  ancestors.add(object);
+  try {
+    if (Array.isArray(value)) {
+      let bytes = 2;
+      for (let index = 0; index < value.length; index += 1) {
+        if (index > 0) bytes += 1;
+        bytes += encodedJsonValueByteLength(value[index], ancestors, String(index)) ?? 4;
+      }
+      return bytes;
+    }
+
+    let bytes = 2;
+    let encodedProperties = 0;
+    for (const property of Object.keys(value as Record<string, unknown>)) {
+      const propertyBytes = encodedJsonValueByteLength(
+        (value as Record<string, unknown>)[property],
+        ancestors,
+        property,
+      );
+      if (propertyBytes === null) continue;
+      if (encodedProperties > 0) bytes += 1;
+      bytes += encodedJsonStringByteLength(property) + 1 + propertyBytes;
+      encodedProperties += 1;
+    }
+    return bytes;
+  } finally {
+    ancestors.delete(object);
+  }
+}
+
+export function encodedProxyControlFrameByteLength(message: ProxyControlJsonRpcMessage): number {
+  const validated = validateProxyControlMessage(message);
+  const messageBytes = encodedJsonValueByteLength(validated, new Set<object>(), '');
+  if (messageBytes === null)
+    throw new ProxyControlProtocolError('invalid_request', 'Proxy control message is not JSON.');
+  return messageBytes + 1;
+}
+
+export function encodeProxyControlFrame(message: ProxyControlJsonRpcMessage): string {
+  const validated = validateProxyControlMessage(message);
 
   const frame = `${JSON.stringify(validated)}\n`;
   assertFrameSize(Buffer.byteLength(frame, 'utf8'));

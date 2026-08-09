@@ -117,17 +117,16 @@ function createTestProxy(): { proxy: Proxy; ledger: OperationLedger<ProxyPrepare
     listen: async () => {},
     close: async () => {},
     ledger: () => ledger,
-    emitProviderEvent: async (key, event, signal) => {
+    emitProviderEvent: (key, event) => {
       const providerSeq = ledger.nextProviderSeq(key);
-      await ledger.recordEvent(
+      ledger.recordEvent(
         key,
         { providerSeq, frame: JSON.stringify(event) },
-        event.kind === 'terminal' || event.kind === 'suspended'
-          ? { kind: 'completion' }
-          : { kind: 'ordinary', ...(signal === undefined ? {} : { signal }) },
+        event.kind === 'terminal' || event.kind === 'suspended' ? { kind: 'completion' } : { kind: 'ordinary' },
       );
       if (event.kind === 'terminal') ledger.transition(key, 'terminal-awaiting-settlement');
       if (event.kind === 'suspended') ledger.transition(key, 'suspended-awaiting-durable-decision');
+      return 'recorded';
     },
   };
   return { proxy, ledger };

@@ -1,18 +1,54 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import {
   LedgerError,
   MAX_PROVIDER_REPLAY_BYTES,
   MAX_PROVIDER_REPLAY_EVENTS,
-  MAX_PROXY_REPLAY_BYTES,
+  MAX_PROXY_SHARED_REPLAY_BYTES,
   PROXY_PENDING_ACTIVATION_LEASE_MS,
   createOperationLedger,
   type OperationLedger,
   type ProviderOperationKey,
 } from '#src/provider-proxy/ledger.js';
+import { ReplayAdmissionError } from '#src/provider-proxy/replay-budget.js';
+import { providerProxyEmergencyEvent } from '#src/providers/proxy-failure.js';
+import {
+  PROVIDER_EVENT_METHOD,
+  encodeProxyControlFrame,
+  providerEventRequestSchema,
+} from '#src/provider-proxy/protocol.js';
 import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 const KEY: ProviderOperationKey = { jobId: 'job-1', operationId: 'op-1' };
+const WIRE_KEY: ProviderOperationKey = {
+  jobId: '11111111-1111-4111-8111-111111111111',
+  operationId: '22222222-2222-4222-8222-222222222222',
+};
+
+function wireLedger(): OperationLedger {
+  return createOperationLedger({
+    encodeProxyEmergencyCompletion: ({ key, providerSeq, frameId, event }) => {
+      const request = providerEventRequestSchema.parse({
+        operation: {
+          ...key,
+          proxyInstanceId: '33333333-3333-4333-8333-333333333333',
+          buildSetId: '44444444-4444-4444-8444-444444444444',
+        },
+        providerSeq,
+        event,
+      });
+      return {
+        providerSeq,
+        frame: encodeProxyControlFrame({
+          jsonrpc: '2.0',
+          id: frameId,
+          method: PROVIDER_EVENT_METHOD,
+          params: request,
+        }),
+      };
+    },
+  });
+}
 
 function reserved(ledger: OperationLedger, key = KEY, nowMs = 0): void {
   const result = ledger.prepare({ key, reservation: asReservation('res-1'), prepared: {}, nowMs });
@@ -48,7 +84,7 @@ async function recordEvent(
   event: Readonly<{ providerSeq: number; frame: string }>,
   key = KEY,
 ): Promise<void> {
-  await ledger.recordEvent(key, event, { kind: 'ordinary' });
+  ledger.recordEvent(key, event, { kind: 'ordinary' });
 }
 
 describe('provider-proxy operation ledger', () => {
@@ -152,25 +188,44 @@ describe('provider-proxy operation ledger', () => {
     await expect(recordEvent(ledger, { providerSeq: 1, frame: 'x'.repeat(10) })).rejects.toThrow(/monotonically/u);
   });
 
-  it('admits the next event when an acknowledgement frees the per-operation event ceiling', async () => {
+  it('admits the next event after an acknowledgement frees the per-operation event ceiling', async () => {
     const ledger = createOperationLedger();
     executing(ledger);
     for (let seq = 1; seq <= MAX_PROVIDER_REPLAY_EVENTS; seq += 1) {
       await recordEvent(ledger, { providerSeq: seq, frame: 'x' });
     }
 
-    let wasAdmitted = false;
-    const admitted = ledger
-      .recordEvent(KEY, { providerSeq: MAX_PROVIDER_REPLAY_EVENTS + 1, frame: 'x' }, { kind: 'ordinary' })
-      .then(() => {
-        wasAdmitted = true;
-      });
-    await Promise.resolve();
-    expect(wasAdmitted).toBe(false);
+    expect(() =>
+      ledger.recordEvent(KEY, { providerSeq: MAX_PROVIDER_REPLAY_EVENTS + 1, frame: 'x' }, { kind: 'ordinary' }),
+    ).toThrow(expect.objectContaining({ code: 'replay_admission_refused', scope: 'operation-events' }));
     ledger.acknowledge(KEY, MAX_PROVIDER_REPLAY_EVENTS);
-    await admitted;
-    expect(wasAdmitted).toBe(true);
+    ledger.recordEvent(KEY, { providerSeq: MAX_PROVIDER_REPLAY_EVENTS + 1, frame: 'x' }, { kind: 'ordinary' });
     expect(ledger.get(KEY)?.bufferedBytes).toBe(1);
+  });
+
+  it('does not let an ineligible operation head-block an eligible operation below shared capacity', async () => {
+    const ledger = createOperationLedger();
+    const blockedKey = { jobId: 'job-1', operationId: 'blocked' };
+    const eligibleKey = { jobId: 'job-1', operationId: 'eligible' };
+    executing(ledger, blockedKey);
+    executing(ledger, eligibleKey);
+    for (let seq = 1; seq <= MAX_PROVIDER_REPLAY_EVENTS; seq += 1) {
+      await recordEvent(ledger, { providerSeq: seq, frame: 'x' }, blockedKey);
+    }
+
+    try {
+      void ledger.recordEvent(
+        blockedKey,
+        { providerSeq: MAX_PROVIDER_REPLAY_EVENTS + 1, frame: 'blocked' },
+        { kind: 'ordinary' },
+      );
+    } catch {
+      // Synchronous refusal is the expected final behavior.
+    }
+    void ledger.recordEvent(eligibleKey, { providerSeq: 1, frame: 'eligible' }, { kind: 'ordinary' });
+    await Promise.resolve();
+
+    expect(ledger.get(eligibleKey)?.bufferedEvents).toHaveLength(1);
   });
 
   it('refuses an acknowledgement that moves backwards', async () => {
@@ -186,25 +241,22 @@ describe('provider-proxy operation ledger', () => {
     const ledger = createOperationLedger();
     const keys = Array.from({ length: 5 }, (_, index) => ({ jobId: 'job-1', operationId: `op-${index}` }));
     for (const key of keys) executing(ledger, key);
-    await Promise.all(
-      keys
-        .slice(0, 4)
-        .map((key) =>
-          ledger.recordEvent(
-            key,
-            { providerSeq: 1, frame: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES) },
-            { kind: 'ordinary' },
-          ),
-        ),
+    const sharedChunks = [
+      MAX_PROVIDER_REPLAY_BYTES,
+      MAX_PROVIDER_REPLAY_BYTES,
+      MAX_PROVIDER_REPLAY_BYTES,
+      MAX_PROXY_SHARED_REPLAY_BYTES - 3 * MAX_PROVIDER_REPLAY_BYTES,
+    ];
+    for (const [index, bytes] of sharedChunks.entries()) {
+      const key = keys[index];
+      if (key === undefined) throw new Error('Expected a shared replay operation.');
+      ledger.recordEvent(key, { providerSeq: 1, frame: 'x'.repeat(bytes) }, { kind: 'ordinary' });
+    }
+    const refusedKey = keys[4];
+    if (refusedKey === undefined) throw new Error('Expected a fifth operation.');
+    expect(() => ledger.recordEvent(refusedKey, { providerSeq: 1, frame: 'x' }, { kind: 'ordinary' })).toThrow(
+      expect.objectContaining({ code: 'replay_admission_refused', scope: 'proxy-shared-bytes' }),
     );
-    const waitingKey = keys[4];
-    if (waitingKey === undefined) throw new Error('Expected a fifth operation.');
-    let wasAdmitted = false;
-    const waiting = ledger.recordEvent(waitingKey, { providerSeq: 1, frame: 'x' }, { kind: 'ordinary' }).then(() => {
-      wasAdmitted = true;
-    });
-    await Promise.resolve();
-    expect(wasAdmitted).toBe(false);
 
     const releasedKey = keys[0];
     if (releasedKey === undefined) throw new Error('Expected a reserved operation.');
@@ -212,8 +264,8 @@ describe('provider-proxy operation ledger', () => {
     ledger.beginRelease(releasedKey);
     ledger.transition(releasedKey, 'released');
 
-    await vi.waitFor(() => expect(wasAdmitted).toBe(true));
-    await waiting;
+    ledger.recordEvent(refusedKey, { providerSeq: 1, frame: 'x' }, { kind: 'ordinary' });
+    expect(ledger.get(refusedKey)?.bufferedEvents).toHaveLength(1);
   });
 
   it('returns the existing reservation for a repeated prepare and refuses a conflicting one', () => {
@@ -243,33 +295,26 @@ describe('provider-proxy operation ledger', () => {
     // Byte pressure must bite on its own; the count ceiling is nowhere near reached here.
     expect(seq).toBeLessThan(MAX_PROVIDER_REPLAY_EVENTS);
     expect(ledger.get(KEY)?.bufferedBytes).toBeGreaterThanOrEqual(MAX_PROVIDER_REPLAY_BYTES);
-    const controller = new AbortController();
-    let wasAdmitted = false;
-    const waiting = ledger
-      .recordEvent(KEY, { providerSeq: seq + 1, frame: 'x' }, { kind: 'ordinary', signal: controller.signal })
-      .then(() => {
-        wasAdmitted = true;
-      });
-    await Promise.resolve();
-    expect(wasAdmitted).toBe(false);
-    controller.abort();
-    await expect(waiting).rejects.toMatchObject({ name: 'AbortError' });
+    expect(() => ledger.recordEvent(KEY, { providerSeq: seq + 1, frame: 'x' }, { kind: 'ordinary' })).toThrow(
+      expect.objectContaining({ code: 'replay_admission_refused', scope: 'operation-bytes' }),
+    );
   });
 
   it('refuses a new operation while production reservations exhaust the proxy-wide byte budget', async () => {
     const ledger = createOperationLedger();
-    const operations = MAX_PROXY_REPLAY_BYTES / MAX_PROVIDER_REPLAY_BYTES;
+    const operations = Math.ceil(MAX_PROXY_SHARED_REPLAY_BYTES / MAX_PROVIDER_REPLAY_BYTES);
     const keys: ProviderOperationKey[] = [];
     for (let index = 0; index < operations; index += 1) {
       const key = { jobId: 'job-1', operationId: `op-${index}` };
       executing(ledger, key);
       keys.push(key);
     }
-    await Promise.all(
-      keys.map((key) =>
-        ledger.recordEvent(key, { providerSeq: 1, frame: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES) }, { kind: 'ordinary' }),
-      ),
-    );
+    let remaining = MAX_PROXY_SHARED_REPLAY_BYTES;
+    for (const key of keys) {
+      const bytes = Math.min(remaining, MAX_PROVIDER_REPLAY_BYTES);
+      ledger.recordEvent(key, { providerSeq: 1, frame: 'x'.repeat(bytes) }, { kind: 'ordinary' });
+      remaining -= bytes;
+    }
 
     const refused = ledger.prepare({
       key: { jobId: 'job-1', operationId: 'late' },
@@ -321,11 +366,48 @@ describe('provider-proxy operation ledger', () => {
       caught = error;
     }
 
-    expect(caught).toBeInstanceOf(LedgerError);
-    expect((caught as InstanceType<typeof LedgerError>).code).toBe('replay_capacity_exhausted');
+    expect(caught).toBeInstanceOf(ReplayAdmissionError);
+    expect(caught).toMatchObject({ code: 'replay_admission_refused', scope: 'operation-bytes' });
     // Refused, not partially buffered: nothing was recorded, so the sequence floor did not move.
     expect(ledger.get(KEY)?.bufferedEvents).toEqual([]);
     expect(ledger.nextProviderSeq(KEY)).toBe(1);
+  });
+
+  it('records only a runtime-validated closed event through the proxy-emergency entry point', () => {
+    const ledger = wireLedger();
+    executing(ledger, WIRE_KEY);
+    const event = providerProxyEmergencyEvent({ reason: 'provider_replay_operation_events_exhausted' });
+
+    ledger.recordProxyEmergencyCompletion(WIRE_KEY, event, Number.MAX_SAFE_INTEGER);
+
+    const entry = ledger.get(WIRE_KEY);
+    expect(entry?.bufferedEvents).toHaveLength(1);
+    expect(Buffer.byteLength(entry?.bufferedEvents[0]?.frame ?? '', 'utf8')).toBeLessThanOrEqual(641);
+  });
+
+  it('rejects an open emergency shape before its frame encoder can reach the reserved lane', () => {
+    const ledger = wireLedger();
+    executing(ledger, WIRE_KEY);
+    const event = providerProxyEmergencyEvent({ reason: 'provider_replay_operation_events_exhausted' });
+
+    expect(() =>
+      ledger.recordProxyEmergencyCompletion(
+        WIRE_KEY,
+        { ...event, diagnostics: { warnings: [] } },
+        Number.MAX_SAFE_INTEGER,
+      ),
+    ).toThrow();
+    expect(ledger.get(WIRE_KEY)?.bufferedEvents).toEqual([]);
+  });
+
+  it('does not let generic recordEvent select emergency-completion admission', () => {
+    const ledger = createOperationLedger();
+    executing(ledger);
+
+    expect(() =>
+      ledger.recordEvent(KEY, { providerSeq: 1, frame: 'not closed' }, { kind: 'emergency-completion' } as never),
+    ).toThrow(/Unsupported replay admission kind/u);
+    expect(ledger.get(KEY)?.bufferedEvents).toEqual([]);
   });
 
   it('lists every held operation for resuming a drain after a control tenancy reattaches', () => {

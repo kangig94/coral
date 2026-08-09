@@ -697,11 +697,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     if (staged.get(key) === entry) staged.delete(key);
   };
 
-  const synthesizeAndEmitFailure = async (
-    key: ProviderOperationKey,
-    provider: string,
-    error: unknown,
-  ): Promise<void> => {
+  const synthesizeAndEmitFailure = (key: ProviderOperationKey, provider: string, error: unknown): void => {
     const proxy = getProxy();
     const event: ProviderEventBody = {
       kind: 'terminal',
@@ -714,13 +710,13 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       failureCause: providerRequestFailed({ provider, message: errorMessage(error) }),
     };
     try {
-      await proxy.emitProviderEvent(key, event);
+      proxy.emitProviderEvent(key, event);
     } catch {
       /* the ledger entry is gone (already released); nothing left to notify */
     }
   };
 
-  const emitAbortedTerminal = async (key: ProviderOperationKey, cause: ProviderStopCause): Promise<void> => {
+  const emitAbortedTerminal = (key: ProviderOperationKey, cause: ProviderStopCause): void => {
     if (!isAbortStopCause(cause)) return;
     const proxy = getProxy();
     const event: ProviderEventBody = {
@@ -729,7 +725,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       diagnostics: {},
     };
     try {
-      await proxy.emitProviderEvent(key, event);
+      proxy.emitProviderEvent(key, event);
     } catch {
       /* ledger entry already gone */
     }
@@ -756,7 +752,19 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
           }),
         ]);
         if (step.done) throw new Error('Provider event stream ended without terminal or suspension.');
-        await proxy.emitProviderEvent(key, step.value, entry.abortController.signal);
+        const emission = proxy.emitProviderEvent(key, step.value);
+
+        if (emission === 'proxy-emergency-terminal') {
+          try {
+            await iterator.return?.();
+          } catch (error: unknown) {
+            backendLog.error(
+              `semantic operation runtime: replay-refusal iterator cleanup failed for ${operationKeyString(key)}`,
+              error,
+            );
+          }
+          break;
+        }
 
         if (step.value.kind === 'terminal') {
           try {
@@ -795,13 +803,13 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         // than the shape of what it threw. Interruption causes (restart/handoff) emit nothing: the coordinator
         // synthesizes `session.interrupted` itself from `operation.stop.v1`'s own `suspended-awaiting-durable-
         // decision` reply, not from a provider event this proxy would have to invent.
-        if (isAbortStopCause(cause)) await emitAbortedTerminal(key, cause);
+        if (isAbortStopCause(cause)) emitAbortedTerminal(key, cause);
         return;
       }
       // Nobody asked this operation to stop; the kernel unwound on its own. A terminal must still reach the
       // coordinator (see the task report's "kernel throws mid-stream" judgement) — synthesize one rather than
       // leaving the ledger entry executing forever with nothing to end it.
-      await synthesizeAndEmitFailure(key, provider, error);
+      synthesizeAndEmitFailure(key, provider, error);
     } finally {
       if (!entry.startCommitted) {
         settleStart({ kind: 'never-started', reason: 'The provider ended before its start boundary.' });
@@ -852,7 +860,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
           await runPump(key, entry, bound.name, iterable, settle);
         } catch (error: unknown) {
           if (!entry.startCommitted) settle({ kind: 'never-started', reason: errorMessage(error) });
-          else if (!entry.releaseRequested) await synthesizeAndEmitFailure(key, bound.name, error);
+          else if (!entry.releaseRequested) synthesizeAndEmitFailure(key, bound.name, error);
         }
       });
       const abortAndRelease = (): Promise<void> =>

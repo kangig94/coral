@@ -10,7 +10,13 @@ import {
   type ControlClientTimer,
   type ProviderEventHandler,
 } from '#src/provider-proxy/control-client.js';
-import { MAX_PROXY_CONTROL_FRAME_BYTES, PROVIDER_EVENT_METHOD } from '#src/provider-proxy/protocol.js';
+import {
+  encodeProxyControlFrame,
+  MAX_PROXY_CONTROL_FRAME_BYTES,
+  PROVIDER_EVENT_METHOD,
+  providerEventRequestSchema,
+} from '#src/provider-proxy/protocol.js';
+import { providerProxyEmergencyEvent, providerProxyReplayFailureReasonSchema } from '#src/providers/proxy-failure.js';
 
 const OPERATION = {
   jobId: '11111111-1111-1111-1111-111111111111',
@@ -245,6 +251,47 @@ describe('control client', () => {
 
     expect(received).toEqual([{ operation: OPERATION, providerSeq: 1, event: { kind: 'progress', message: 'tick' } }]);
     expect(reply).toEqual({ id: 7, jsonrpc: '2.0', result: { kind: 'ack', committedThroughProviderSeq: 1 } });
+  });
+
+  it('accepts all four encoded proxy-emergency frames through the real strict receiver', async () => {
+    const received: unknown[] = [];
+    const handler: ProviderEventHandler = (request) => {
+      received.push(request);
+      return { kind: 'ack', committedThroughProviderSeq: request.providerSeq };
+    };
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000, handler);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    const lengths: number[] = [];
+
+    for (const reason of providerProxyReplayFailureReasonSchema.options) {
+      const request = providerEventRequestSchema.parse({
+        operation: OPERATION,
+        providerSeq: Number.MAX_SAFE_INTEGER,
+        event: providerProxyEmergencyEvent({ reason }),
+      });
+      const frame = encodeProxyControlFrame({
+        jsonrpc: '2.0',
+        id: Number.MAX_SAFE_INTEGER,
+        method: PROVIDER_EVENT_METHOD,
+        params: request,
+      });
+      lengths.push(Buffer.byteLength(frame, 'utf8'));
+
+      const reply = new Promise<{ result?: unknown }>((resolve) => {
+        serverSocket.once('data', (chunk: Buffer) => resolve(JSON.parse(chunk.toString('utf8').split('\n')[0])));
+      });
+      serverSocket.write(frame);
+      await expect(reply).resolves.toEqual({
+        jsonrpc: '2.0',
+        id: Number.MAX_SAFE_INTEGER,
+        result: { kind: 'ack', committedThroughProviderSeq: Number.MAX_SAFE_INTEGER },
+      });
+    }
+
+    expect(lengths).toEqual([633, 632, 635, 641]);
+    expect(received).toHaveLength(4);
   });
 
   it('refuses provider.event.v1 params that fail strict validation without invoking the handler', async () => {

@@ -773,6 +773,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         getDiscussContext,
         createInvocationContext,
         recoveryCoordinator,
+        providerOperationStartupOwnership,
         signal,
         recoverPersistedDiscussFn,
       },
@@ -789,6 +790,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         signal,
         log: identity.log,
         coordinatorCommit: (cb) => progressStore.commit(cb),
+        providerOperationStartupOwnership,
       });
       signal.throwIfAborted();
 

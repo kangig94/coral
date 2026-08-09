@@ -399,10 +399,19 @@ describe('runStartupRecovery provider-operation ownership', () => {
       boundRecovery.bound,
     );
 
+    const startupOwnership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
+    expect(startupOwnership).toEqual({ jobIds: [jobId] });
+    expect(Object.isFrozen(startupOwnership)).toBe(true);
+    expect(Object.isFrozen(startupOwnership.jobIds)).toBe(true);
+
     await boundRecovery.run(recoveryCoordinator);
     expect(recoverQueuedJob).toHaveBeenCalledTimes(1);
 
-    await recoveryCoordinator.recoverProviderOperationJob(record, signal);
+    await expect(recoveryCoordinator.recoverProviderOperationJob(record, signal)).resolves.toEqual({
+      state: 'accepted',
+      jobId,
+      owner: 'recovery-coordinator',
+    });
     expect(recoverQueuedJob).toHaveBeenCalledTimes(1);
     recoveryCoordinator.completeProviderOperationJobRecovery(jobId);
     await recoveryCoordinator.teardown();

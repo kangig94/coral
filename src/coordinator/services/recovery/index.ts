@@ -3,10 +3,7 @@ import { ProcessContainmentError } from '../../../infra/process-containment.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobTerminalInput } from '../../../jobs/records.js';
 import { readProviderOperations } from '../../../store/provider-operation-journal.js';
-import {
-  providerOperationJobRecoveryOwner,
-  type ProviderOperationRecord,
-} from '../../../store/provider-operation-record.js';
+import type { ProviderOperationRecord } from '../../../store/provider-operation-record.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { JobStore } from '../../../jobs/store.js';
@@ -54,6 +51,7 @@ import type { CoralEventInput } from '../../../store/envelope.js';
 import { normalizeProviderSession } from '../../../sessions/entry-normalization.js';
 import { InterruptedRecoveryCommitError, RecoveryOwnershipReleaseError } from './interrupted-finalizer.js';
 import { registerCoordinatorStartupRecovery, type BoundCoordinator } from '../../handoff.js';
+import type { ProviderOperationStartupOwnership } from '../../../jobs/startup.js';
 
 const RECOVERY_POLL_MS = 500;
 
@@ -71,15 +69,22 @@ type RecoveryCoordinatorState = {
       commitStarted(): boolean;
     }>
   >;
-  providerOperationRecoveries: Map<string, Promise<void>>;
+  providerOperationRecoveries: Map<string, Promise<ProviderOperationRecoveryAcceptance>>;
   teardownRequested: boolean;
 };
 
+export type ProviderOperationRecoveryAcceptance = Readonly<{
+  state: 'accepted';
+  jobId: string;
+  owner: 'recovery-coordinator';
+}>;
+
 export interface RecoveryCoordinator {
+  snapshotProviderOperationStartupOwnership(): ProviderOperationStartupOwnership;
   recoverProviderOperationJob(
     record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
     signal: AbortSignal,
-  ): Promise<void>;
+  ): Promise<ProviderOperationRecoveryAcceptance>;
   completeProviderOperationJobRecovery(jobId: string): void;
   releaseAdoptedJob(jobId: string): void;
   getRecoveryRegistry(): RecoveryRegistry | null;
@@ -105,6 +110,7 @@ export type StartupRecoveryContext = {
   signal: AbortSignal;
   log: (message: string) => void;
   coordinatorCommit: CommitEventsFn;
+  providerOperationStartupOwnership: ProviderOperationStartupOwnership;
   interruptedAppServerReason?: InterruptedAppServerReason;
 };
 
@@ -353,7 +359,7 @@ export function createRecoveryCoordinator(
     recoveryPollIntervals: new Map<string, TimerHandle>(),
     adoptedRunningJobCleanups: new Map<string, () => void>(),
     inflightFinalizations: new Map(),
-    providerOperationRecoveries: new Map<string, Promise<void>>(),
+    providerOperationRecoveries: new Map<string, Promise<ProviderOperationRecoveryAcceptance>>(),
     teardownRequested: false,
   };
 
@@ -1028,7 +1034,7 @@ export function createRecoveryCoordinator(
   const recoverProviderOperationJobOnce = async (
     record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
     signal: AbortSignal,
-  ): Promise<void> => {
+  ): Promise<ProviderOperationRecoveryAcceptance> => {
     const jobId = record.operation.jobId;
     const coordinatorCommit: CommitEventsFn = (callback) => progressStore.commit(callback);
     const freshItems: CoordinatorRecoveryItem[] = [];
@@ -1089,12 +1095,13 @@ export function createRecoveryCoordinator(
       await acceptQueuedRecovery(queued, signal, coordinatorCommit, 'retry');
     }
     maybeReleaseRecoveryRegistry();
+    return { state: 'accepted', jobId, owner: 'recovery-coordinator' };
   };
 
   const recoverProviderOperationJob = (
     record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
     signal: AbortSignal,
-  ): Promise<void> => {
+  ): Promise<ProviderOperationRecoveryAcceptance> => {
     const jobId = record.operation.jobId;
     const existing = state.providerOperationRecoveries.get(jobId);
     if (existing !== undefined) return existing;
@@ -1112,6 +1119,13 @@ export function createRecoveryCoordinator(
   const completeProviderOperationJobRecovery = (jobId: string): void => {
     state.providerOperationRecoveries.delete(jobId);
   };
+
+  const snapshotProviderOperationStartupOwnership = (): ProviderOperationStartupOwnership =>
+    Object.freeze({
+      jobIds: Object.freeze([
+        ...new Set(readProviderOperations(progressStore.getDb()).map((record) => record.operation.jobId)),
+      ]),
+    });
 
   async function runStartupRecovery(ctx: StartupRecoveryContext): Promise<JobStore> {
     const { runtime, progressStore, signal } = ctx;
@@ -1136,17 +1150,7 @@ export function createRecoveryCoordinator(
     state.recoveryRegistry = recoveryRegistry;
     const queuedRecoverable: QueuedRecoverableJob[] = [];
     const runningRecoverable: RunningRecoverableJob[] = [];
-    const providerOperationRecords = readProviderOperations(progressStore.getDb());
-    const sagaOwnedJobIds = new Set(
-      providerOperationRecords
-        .filter((record) => providerOperationJobRecoveryOwner(record) === 'provider-operation-saga')
-        .map((record) => record.operation.jobId),
-    );
-    const localRecoveryRecords = providerOperationRecords.filter(
-      (record): record is Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }> =>
-        providerOperationJobRecoveryOwner(record) === 'generic-job-recovery',
-    );
-    const localRecoveryJobIds = new Set(localRecoveryRecords.map((record) => record.operation.jobId));
+    const sagaOwnedJobIds = new Set(ctx.providerOperationStartupOwnership.jobIds);
 
     const recoveryItems: CoordinatorRecoveryItem[] = [];
     await runCoordinatorWalk({
@@ -1154,9 +1158,7 @@ export function createRecoveryCoordinator(
       coordinatorCommit: ctx.coordinatorCommit,
       summary: 'Coordinator recovery snapshot hydration',
       settle: (item) => {
-        // Remote-owned saga phases stay outside generic carrier recovery. The durable local handoff is routed
-        // through the exact-job map below so startup and post-snapshot reconciliation share one acceptance.
-        if (!sagaOwnedJobIds.has(item.jobId) && !localRecoveryJobIds.has(item.jobId)) recoveryItems.push(item);
+        if (!sagaOwnedJobIds.has(item.jobId)) recoveryItems.push(item);
         return {
           kind: 'advanced',
           outcome: 'settled',
@@ -1200,6 +1202,10 @@ export function createRecoveryCoordinator(
         interruptedAppServerReason,
       });
     }
+    const localRecoveryRecords = readProviderOperations(progressStore.getDb()).filter(
+      (record): record is Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }> =>
+        record.phase === 'local-recovery-pending',
+    );
     for (const record of localRecoveryRecords) {
       try {
         await recoverProviderOperationJob(record, signal);
@@ -1217,6 +1223,7 @@ export function createRecoveryCoordinator(
     registerCoordinatorStartupRecovery(bound, runStartupRecovery);
   }
   return {
+    snapshotProviderOperationStartupOwnership,
     recoverProviderOperationJob,
     completeProviderOperationJobRecovery,
     releaseAdoptedJob,

@@ -861,6 +861,7 @@ function createLifecycleHarness(
         providerRegistry,
         getRecoveryService,
         createInvocationContext,
+        providerOperationStartupOwnership,
         signal,
         recoverPersistedDiscussFn,
         knownDiscussSources,
@@ -878,6 +879,7 @@ function createLifecycleHarness(
         signal,
         log: identity.log,
         coordinatorCommit: createTestJobJournalDeps(options.progressStore, runtime).coordinatorCommit,
+        providerOperationStartupOwnership,
         interruptedAppServerReason: options.interruptedAppServerReason,
       });
       return recoverPersistedDiscussFn({
@@ -2176,6 +2178,7 @@ describe('lifecycle recovery', () => {
           getRecoveryService,
           createInvocationContext,
           recoveryCoordinator,
+          providerOperationStartupOwnership,
           signal,
         },
         runJobsStartup,
@@ -2200,6 +2203,7 @@ describe('lifecycle recovery', () => {
           signal,
           log: identity.log,
           coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
+          providerOperationStartupOwnership,
         });
         return [];
       },

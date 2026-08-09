@@ -49,6 +49,7 @@ export async function createBoundJobsRecoveryHarness(
         signal: inputs.signal,
         log: inputs.identity.log,
         coordinatorCommit: options.coordinatorCommit,
+        providerOperationStartupOwnership: inputs.providerOperationStartupOwnership,
         interruptedAppServerReason: inputs.interruptedAppServerReason,
       });
       return [];
@@ -77,6 +78,7 @@ export async function createBoundJobsRecoveryHarness(
         },
         createInvocationContext: options.createInvocationContext,
         recoveryCoordinator,
+        providerOperationStartupOwnership: recoveryCoordinator.snapshotProviderOperationStartupOwnership(),
         signal: options.signal,
         recoverPersistedDiscussFn: async () => [],
       });

@@ -26,6 +26,7 @@ const mockState = vi.hoisted(() => {
   const events: string[] = [];
   const fakeDb = {
     closed: false,
+    prepare: vi.fn(() => ({ all: vi.fn(() => []) })),
     close: vi.fn(() => {
       fakeDb.closed = true;
       events.push('storeDb.close');

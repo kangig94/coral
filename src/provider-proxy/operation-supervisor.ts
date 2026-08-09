@@ -1,8 +1,10 @@
 import type { HostRef, ProviderEventBody, ProviderStopCause } from '../providers/contract.js';
 import { isInterruptionStopCause } from '../providers/contract.js';
+import { providerProxyEmergencyEvent, type ProviderProxyReplayFailureReason } from '../providers/proxy-failure.js';
 import type { ControlEndpointTimer } from './control-endpoint.js';
 import {
   LedgerError,
+  MAX_PROVIDER_REPLAY_BYTES,
   createOperationLedger,
   type OperationLedger,
   type PrepareResult,
@@ -10,9 +12,11 @@ import {
   type ProviderOperationState,
   type ProviderRootIdentity,
 } from './ledger.js';
+import { ReplayAdmissionError } from './replay-budget.js';
 import {
   PROVIDER_EVENT_METHOD,
   ProxyControlProtocolError,
+  encodedProxyControlFrameByteLength,
   encodeProxyControlFrame,
   providerEventRequestSchema,
   providerEventResultSchema,
@@ -38,6 +42,8 @@ import {
 } from './protocol.js';
 
 export const OPERATION_RELEASE_RETRY_MS = 1_000;
+
+export type ProviderEventEmissionResult = 'recorded' | 'proxy-emergency-terminal';
 
 export type SemanticOperationStartResult =
   | Readonly<{ kind: 'started'; hostRef: HostRef }>
@@ -160,12 +166,35 @@ function legacyState(state: ProviderOperationState): string {
 
 export class OperationSupervisor {
   readonly #options: OperationSupervisorOptions;
-  readonly #ledger = createOperationLedger<ProxyPreparedAppServerOperation>();
+  readonly #ledger: OperationLedger<ProxyPreparedAppServerOperation>;
   readonly #operations = new Map<string, SupervisedOperation>();
   #nextProviderEventFrameId = 1;
 
   constructor(options: OperationSupervisorOptions) {
     this.#options = options;
+    this.#ledger = createOperationLedger<ProxyPreparedAppServerOperation>({
+      encodeProxyEmergencyCompletion: ({ key, providerSeq, frameId, event }) => {
+        const request = providerEventRequestSchema.parse({
+          operation: {
+            jobId: key.jobId,
+            operationId: key.operationId,
+            proxyInstanceId: options.proxyInstanceId,
+            buildSetId: options.buildSetId,
+          },
+          providerSeq,
+          event,
+        });
+        return {
+          providerSeq,
+          frame: encodeProxyControlFrame({
+            jsonrpc: '2.0',
+            id: frameId,
+            method: PROVIDER_EVENT_METHOD,
+            params: request,
+          }),
+        };
+      },
+    });
   }
 
   ledger(): OperationLedger<ProxyPreparedAppServerOperation> {
@@ -661,7 +690,7 @@ export class OperationSupervisor {
     }
   }
 
-  async emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody, signal?: AbortSignal): Promise<void> {
+  emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody): ProviderEventEmissionResult {
     const record = this.#requireRecord(key);
     const providerSeq = this.#ledger.nextProviderSeq(key);
     const request = providerEventRequestSchema.parse({
@@ -674,22 +703,36 @@ export class OperationSupervisor {
       providerSeq,
       event,
     });
-    const frame = encodeProxyControlFrame({
+    const message = {
       jsonrpc: '2.0',
       id: this.#nextProviderEventFrameId,
       method: PROVIDER_EVENT_METHOD,
       params: request,
-    });
+    } as const;
+    if (encodedProxyControlFrameByteLength(message) > MAX_PROVIDER_REPLAY_BYTES) {
+      return this.#recordProxyEmergencyCompletion(
+        record,
+        event.kind === 'terminal' || event.kind === 'suspended'
+          ? 'provider_completion_too_large'
+          : 'provider_replay_operation_bytes_exhausted',
+      );
+    }
+
+    const frame = encodeProxyControlFrame(message);
+    try {
+      this.#ledger.recordEvent(
+        key,
+        { providerSeq, frame },
+        event.kind === 'terminal' || event.kind === 'suspended' ? { kind: 'completion' } : { kind: 'ordinary' },
+      );
+    } catch (error: unknown) {
+      if (!(error instanceof ReplayAdmissionError)) throw error;
+      return this.#recordProxyEmergencyCompletion(record, this.#replayFailureReason(event, error));
+    }
     this.#nextProviderEventFrameId += 1;
-    await this.#ledger.recordEvent(
-      key,
-      { providerSeq, frame },
-      event.kind === 'terminal' || event.kind === 'suspended'
-        ? { kind: 'completion' }
-        : { kind: 'ordinary', ...(signal === undefined ? {} : { signal }) },
-    );
     this.#recordCompletion(record, event);
     void this.#pump(record);
+    return 'recorded';
   }
 
   close(): void {
@@ -1002,6 +1045,32 @@ export class OperationSupervisor {
       providerRoot: entry.providerRoot,
       jointContainmentReceipt: entry.jointContainmentReceipt,
     });
+  }
+
+  #replayFailureReason(event: ProviderEventBody, error: ReplayAdmissionError): ProviderProxyReplayFailureReason {
+    if (event.kind === 'terminal' || event.kind === 'suspended') return 'provider_completion_too_large';
+    switch (error.scope) {
+      case 'operation-events':
+        return 'provider_replay_operation_events_exhausted';
+      case 'operation-bytes':
+        return 'provider_replay_operation_bytes_exhausted';
+      case 'proxy-shared-bytes':
+        return 'provider_replay_proxy_bytes_exhausted';
+      case 'completion-frame-bytes':
+        return 'provider_completion_too_large';
+    }
+  }
+
+  #recordProxyEmergencyCompletion(
+    record: SupervisedOperation,
+    reason: ProviderProxyReplayFailureReason,
+  ): ProviderEventEmissionResult {
+    const event = providerProxyEmergencyEvent({ reason });
+    this.#ledger.recordProxyEmergencyCompletion(record.key, event, this.#nextProviderEventFrameId);
+    this.#nextProviderEventFrameId += 1;
+    this.#recordCompletion(record, event);
+    void this.#pump(record);
+    return 'proxy-emergency-terminal';
   }
 
   #recordCompletion(record: SupervisedOperation, event: ProviderEventBody): void {

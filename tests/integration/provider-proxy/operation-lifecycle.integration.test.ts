@@ -58,7 +58,11 @@ import {
   MAX_PROVIDER_REPLAY_EVENTS,
 } from '#src/provider-proxy/ledger.js';
 import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
-import type { ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
+import {
+  decodeProxyControlFrame,
+  providerEventRequestSchema,
+  type ProxyPreparedAppServerOperation,
+} from '#src/provider-proxy/protocol.js';
 import { createProxyGuardianContainment } from '#src/provider-proxy/role-main.js';
 import { createProxy, type Proxy } from '#src/provider-proxy/proxy.js';
 import type {
@@ -1219,7 +1223,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
-    await set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' });
+    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' });
 
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.committedThroughProviderSeq).toBe(1));
     expect(received).toEqual([
@@ -1253,51 +1257,69 @@ describe('provider-proxy provider.event.v1 emission', () => {
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
-    await set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' });
+    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' });
 
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.committedThroughProviderSeq).toBe(1));
     // The same event, sent twice — a `replay` reply does not advance providerSeq allocation.
     expect(receivedSeqs).toEqual([1, 1]);
   });
 
-  it('queues production once the per-operation event ceiling is reached', async () => {
+  it('records a proxy-origin terminal synchronously once the per-operation event ceiling is reached', async () => {
     const set = await startProxy();
     const { operation, reserved } = await prepare(set);
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
     for (let index = 0; index < MAX_PROVIDER_REPLAY_EVENTS; index += 1) {
-      await set.proxy.emitProviderEvent(key, { kind: 'progress', message: `tick-${index}` });
+      set.proxy.emitProviderEvent(key, { kind: 'progress', message: `tick-${index}` });
     }
 
-    const controller = new AbortController();
-    let admitted = false;
-    const waiting = set.proxy
-      .emitProviderEvent(key, { kind: 'progress', message: 'waiting' }, controller.signal)
-      .then(() => {
-        admitted = true;
-      });
-    await Promise.resolve();
-    expect(admitted).toBe(false);
-    controller.abort();
-    await expect(waiting).rejects.toMatchObject({ name: 'AbortError' });
+    expect(set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'refused' })).toBe('proxy-emergency-terminal');
+    const entry = set.proxy.ledger().get(key);
+    expect(entry?.state).toBe('terminal-awaiting-settlement');
+    expect(entry?.bufferedEvents).toHaveLength(MAX_PROVIDER_REPLAY_EVENTS + 1);
+    const emergency = entry?.bufferedEvents.at(-1);
+    if (emergency === undefined) throw new Error('Expected a proxy-emergency terminal.');
+    const decoded = decodeProxyControlFrame(emergency.frame);
+    if (!('params' in decoded)) throw new Error('Expected a provider event request.');
+    expect(providerEventRequestSchema.parse(decoded.params)).toMatchObject({
+      providerSeq: MAX_PROVIDER_REPLAY_EVENTS + 1,
+      event: {
+        kind: 'terminal',
+        failureCause: {
+          body: {
+            provider: '@coral/provider-proxy',
+            message: 'Replay event count reached 4,096 for this operation.',
+          },
+        },
+      },
+    });
   });
 
-  it('throws replay_capacity_exhausted for a single event too large to ever buffer, and buffers nothing', async () => {
+  it('preflights an oversized event into a proxy-origin terminal without buffering the offending frame', async () => {
     const set = await startProxy();
     const { operation, reserved } = await prepare(set);
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
-    let caught: unknown;
-    try {
-      await set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES) });
-    } catch (error: unknown) {
-      caught = error;
-    }
-
-    expect((caught as { code?: string } | undefined)?.code).toBe('replay_capacity_exhausted');
-    expect(set.proxy.ledger().get(key)?.bufferedEvents).toEqual([]);
+    expect(set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES) })).toBe(
+      'proxy-emergency-terminal',
+    );
+    const [emergency] = set.proxy.ledger().get(key)?.bufferedEvents ?? [];
+    if (emergency === undefined) throw new Error('Expected a proxy-emergency terminal.');
+    const decoded = decodeProxyControlFrame(emergency.frame);
+    if (!('params' in decoded)) throw new Error('Expected a provider event request.');
+    expect(providerEventRequestSchema.parse(decoded.params)).toMatchObject({
+      providerSeq: 1,
+      event: {
+        failureCause: {
+          body: {
+            provider: '@coral/provider-proxy',
+            message: 'Replay bytes reached 16,777,216 for this operation.',
+          },
+        },
+      },
+    });
   });
 
   it('keeps an unacknowledged event buffered through control loss and delivers it once a successor attaches', async () => {
@@ -1309,7 +1331,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
-    await set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' });
+    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' });
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.bufferedEvents).toHaveLength(1));
 
     const redeem = await installGrantForOperations(set, [operation]);
@@ -1353,7 +1375,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     const { operation, reserved } = await prepare(set);
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
-    await set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' });
+    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' });
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.bufferedEvents).toHaveLength(1));
 
     const redeem = await installGrantForOperations(set, [operation]);

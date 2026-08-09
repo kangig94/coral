@@ -41,6 +41,7 @@ import {
   type ProviderOperationPrepareAttempt,
 } from './provider-proxy-operation-activation.js';
 import type { ProviderOperationPrepareMaterializationResult } from './provider-operation-prepare.js';
+import type { ProviderOperationRecoveryAcceptance } from './recovery/index.js';
 
 export type ProviderOperationReconciliationEvidence =
   | Readonly<{ kind: 'unresolved' }>
@@ -127,7 +128,7 @@ type ProviderOperationReconcilerDeps = Readonly<{
   recoverLocalJob(
     record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
     signal: AbortSignal,
-  ): Promise<void>;
+  ): Promise<unknown>;
   completeLocalRecovery(jobId: string): void;
   terminalization: ProviderOperationTerminalizationPort;
   backendNamespace: string;
@@ -168,6 +169,15 @@ function sameAuthority(record: ProviderOperationRecord, authority: DurableProvid
 
 function retryDelayMs(retryCount: number): number {
   return Math.min(TIMER_MIN_MS * 2 ** Math.min(retryCount, 6), TIMER_MAX_MS);
+}
+
+function isProviderOperationRecoveryAcceptance(
+  value: unknown,
+  jobId: string,
+): value is ProviderOperationRecoveryAcceptance {
+  if (typeof value !== 'object' || value === null) return false;
+  const acceptance = value as Partial<ProviderOperationRecoveryAcceptance>;
+  return acceptance.state === 'accepted' && acceptance.jobId === jobId && acceptance.owner === 'recovery-coordinator';
 }
 
 function boundedPrepareRefusalReason(error: unknown): string {
@@ -391,22 +401,50 @@ export class ProviderOperationReconciler {
   ): Promise<ProviderOperationRecord | null> {
     const publication = this.#publications.get(operationKey(record.operation));
     if (publication !== undefined) {
-      const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
-      if (deleted.kind === 'conflict') return deleted.current;
+      let deleted: ReturnType<typeof deleteProviderOperation>;
+      try {
+        deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+      } catch (error: unknown) {
+        const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
+        if (current === null) {
+          this.#complete(record.operation, { kind: 'local-authorized', reason: record.reason });
+          return null;
+        }
+        if (current.revision !== record.revision) return current;
+        await this.#recordRetry(record, error);
+        return null;
+      }
+      if (deleted.kind === 'conflict' && deleted.current !== null) return deleted.current;
       this.#complete(record.operation, { kind: 'local-authorized', reason: record.reason });
       return null;
     }
 
     try {
-      await this.#deps.recoverLocalJob(record, signal);
-      const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
-      if (deleted.kind === 'conflict') return deleted.current;
-      this.#deps.completeLocalRecovery(record.operation.jobId);
-      return null;
+      const acceptance = await this.#deps.recoverLocalJob(record, signal);
+      if (!isProviderOperationRecoveryAcceptance(acceptance, record.operation.jobId)) {
+        throw new Error(`Exact recovery did not accept provider-operation job '${record.operation.jobId}'.`);
+      }
     } catch (error: unknown) {
       await this.#recordRetry(record, error);
       return null;
     }
+
+    let deleted: ReturnType<typeof deleteProviderOperation>;
+    try {
+      deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
+    } catch (error: unknown) {
+      const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
+      if (current === null) {
+        this.#deps.completeLocalRecovery(record.operation.jobId);
+        return null;
+      }
+      if (current.revision !== record.revision) return current;
+      await this.#recordRetry(record, error);
+      return null;
+    }
+    if (deleted.kind === 'conflict' && deleted.current !== null) return deleted.current;
+    this.#deps.completeLocalRecovery(record.operation.jobId);
+    return null;
   }
 
   async #drivePrepare(
@@ -502,10 +540,7 @@ export class ProviderOperationReconciler {
       return this.#transition(record, this.#prepareRefusalRecord(record, result));
     }
     if (result.state === 'capacity') {
-      const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
-      if (deleted.kind === 'conflict') return deleted.current;
-      this.#complete(record.operation, { kind: 'local-authorized', reason: result.reason });
-      return null;
+      return this.#transition(record, this.#toLocalRecoveryPending(record, result.reason, this.#deps.time.now()));
     }
     return this.#acceptPreparedEvidence(record, result);
   }
@@ -861,20 +896,7 @@ export class ProviderOperationReconciler {
       }
       return this.#transition(
         record,
-        providerOperationRecordSchema.parse({
-          version: record.version,
-          operation: record.operation,
-          locator: record.locator,
-          prepareAttemptNumber: record.prepareAttemptNumber,
-          prepareAttemptKey: record.prepareAttemptKey,
-          phase: 'local-recovery-pending',
-          recoveryIntent: 'recover-local',
-          reason: record.afterRelease.reason,
-          revision: record.revision + 1,
-          retryNotBeforeMs: this.#deps.time.now(),
-          retryCount: 0,
-          lastError: null,
-        }),
+        this.#toLocalRecoveryPending(record, record.afterRelease.reason, this.#deps.time.now()),
       );
     } catch (error: unknown) {
       await this.#recordRetry(record, error);
@@ -948,14 +970,11 @@ export class ProviderOperationReconciler {
       if (record.phase === 'prestart-cleanup-pending' && record.afterRelease.kind !== 'local-authorized') {
         return this.#terminalize(record, record.afterRelease);
       }
-      const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
-      if (deleted.kind === 'conflict') return deleted.current;
       const reason =
         record.phase === 'prestart-cleanup-pending' && record.afterRelease.kind === 'local-authorized'
           ? record.afterRelease.reason
           : `Remote start is impossible because the exact provider containment disappeared (${disappearanceReceipt}).`;
-      this.#complete(record.operation, { kind: 'local-authorized', reason });
-      return null;
+      return this.#transition(record, this.#toLocalRecoveryPending(record, reason, this.#deps.time.now()));
     } catch (error: unknown) {
       const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
       if (current !== null && current.revision !== record.revision) return current;
@@ -1140,6 +1159,32 @@ export class ProviderOperationReconciler {
     });
     if (next.phase !== 'prestart-cleanup-pending') {
       throw new Error('Prestart cleanup journal transition failed validation.');
+    }
+    return next;
+  }
+
+  #toLocalRecoveryPending(
+    record: ProviderOperationRecord,
+    reason: string,
+    nowMs: number,
+  ): Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }> {
+    const boundedReason = reason.trim() || 'Provider operation authorized local recovery.';
+    const next = providerOperationRecordSchema.parse({
+      version: record.version,
+      operation: record.operation,
+      locator: record.locator,
+      prepareAttemptNumber: record.prepareAttemptNumber,
+      prepareAttemptKey: record.prepareAttemptKey,
+      phase: 'local-recovery-pending',
+      recoveryIntent: 'recover-local',
+      reason: boundedReason.slice(0, 4_096),
+      revision: record.revision + 1,
+      retryNotBeforeMs: nowMs,
+      retryCount: 0,
+      lastError: null,
+    });
+    if (next.phase !== 'local-recovery-pending') {
+      throw new Error('Local recovery journal transition failed validation.');
     }
     return next;
   }

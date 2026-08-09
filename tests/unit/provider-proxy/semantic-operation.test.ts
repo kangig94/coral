@@ -36,6 +36,7 @@ import { spawnProviderServerTransport, type ProviderServerHandle } from '#src/pr
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { providerRequestFailed } from '#src/providers/fault.js';
+import { providerProxyEmergencyEvent } from '#src/providers/proxy-failure.js';
 import type {
   BoundProvider,
   BoundProviderAppServerCapability,
@@ -45,15 +46,18 @@ import type { HostRef, ProviderEventBody, ProviderServerSpec } from '#src/provid
 import {
   MAX_PROVIDER_REPLAY_EVENTS,
   MAX_PROVIDER_REPLAY_BYTES,
+  MAX_PROXY_SHARED_REPLAY_BYTES,
   createOperationLedger,
   operationPrepareAttemptKey,
   type OperationLedger,
   type ProviderOperationKey,
 } from '#src/provider-proxy/ledger.js';
 import type { Proxy } from '#src/provider-proxy/proxy.js';
+import { ReplayAdmissionError } from '#src/provider-proxy/replay-budget.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import {
   PROVIDER_EVENT_METHOD,
+  decodeProxyControlFrame,
   encodeProxyControlFrame,
   providerEventRequestSchema,
   proxyOperationPreparePendingResultSchema,
@@ -209,24 +213,43 @@ function createTestProxy(): {
   ledger: OperationLedger<ProxyPreparedAppServerOperation>;
   emittedEvents: Array<{ key: ProviderOperationKey; event: ProviderEventBody }>;
 } {
-  const ledger = createOperationLedger<ProxyPreparedAppServerOperation>();
+  const ledger = createOperationLedger<ProxyPreparedAppServerOperation>({
+    encodeProxyEmergencyCompletion: ({ providerSeq, event }) => ({ providerSeq, frame: JSON.stringify(event) }),
+  });
   const emittedEvents: Array<{ key: ProviderOperationKey; event: ProviderEventBody }> = [];
   const proxy: Proxy = {
     listen: async () => {},
     close: async () => {},
     ledger: () => ledger,
-    emitProviderEvent: async (key, event, signal) => {
+    emitProviderEvent: (key, event) => {
       const providerSeq = ledger.nextProviderSeq(key);
-      await ledger.recordEvent(
-        key,
-        { providerSeq, frame: JSON.stringify(event) },
-        event.kind === 'terminal' || event.kind === 'suspended'
-          ? { kind: 'completion' }
-          : { kind: 'ordinary', ...(signal === undefined ? {} : { signal }) },
-      );
+      try {
+        ledger.recordEvent(
+          key,
+          { providerSeq, frame: JSON.stringify(event) },
+          event.kind === 'terminal' || event.kind === 'suspended' ? { kind: 'completion' } : { kind: 'ordinary' },
+        );
+      } catch (error: unknown) {
+        if (!(error instanceof ReplayAdmissionError)) throw error;
+        const emergency = providerProxyEmergencyEvent({
+          reason:
+            event.kind === 'terminal' || event.kind === 'suspended'
+              ? 'provider_completion_too_large'
+              : error.scope === 'operation-events'
+                ? 'provider_replay_operation_events_exhausted'
+                : error.scope === 'operation-bytes'
+                  ? 'provider_replay_operation_bytes_exhausted'
+                  : 'provider_replay_proxy_bytes_exhausted',
+        });
+        ledger.recordProxyEmergencyCompletion(key, emergency, 1);
+        emittedEvents.push({ key, event: emergency });
+        ledger.transition(key, 'terminal-awaiting-settlement');
+        return 'proxy-emergency-terminal';
+      }
       emittedEvents.push({ key, event });
       if (event.kind === 'terminal') ledger.transition(key, 'terminal-awaiting-settlement');
       if (event.kind === 'suspended') ledger.transition(key, 'suspended-awaiting-durable-decision');
+      return 'recorded';
     },
   };
   return { proxy, ledger, emittedEvents };
@@ -263,7 +286,7 @@ async function fillToEventCeiling(
   key: ProviderOperationKey,
 ): Promise<void> {
   for (let seq = 1; seq <= MAX_PROVIDER_REPLAY_EVENTS; seq += 1) {
-    await ledger.recordEvent(key, { providerSeq: seq, frame: 'x' }, { kind: 'ordinary' });
+    ledger.recordEvent(key, { providerSeq: seq, frame: 'x' }, { kind: 'ordinary' });
   }
 }
 
@@ -282,7 +305,11 @@ function supervisedOperation(index: number): OperationIdentity {
   };
 }
 
-function capacityFillingProgressEvent(operation: OperationIdentity, frameId: number): ProviderEventBody {
+function capacityFillingProgressEvent(
+  operation: OperationIdentity,
+  frameId: number,
+  targetFrameBytes = MAX_PROVIDER_REPLAY_BYTES,
+): ProviderEventBody {
   const event: ProviderEventBody = { kind: 'progress', message: '' };
   const frame = encodeProxyControlFrame({
     jsonrpc: '2.0',
@@ -290,7 +317,7 @@ function capacityFillingProgressEvent(operation: OperationIdentity, frameId: num
     method: PROVIDER_EVENT_METHOD,
     params: providerEventRequestSchema.parse({ operation, providerSeq: 1, event }),
   });
-  return { kind: 'progress', message: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES - Buffer.byteLength(frame, 'utf8')) };
+  return { kind: 'progress', message: 'x'.repeat(targetFrameBytes - Buffer.byteLength(frame, 'utf8')) };
 }
 
 type SaturatedCompletion = 'terminal' | 'suspended' | 'throw' | 'eof';
@@ -639,19 +666,18 @@ describe('semantic-operation runtime: bounded cancellation', () => {
 // --- pre-consumption replay admission ------------------------------------------------------------------------
 
 describe('semantic-operation runtime: replay admission', () => {
-  it('pulls one ordinary event before admission and does not pull another until that event is admitted', async () => {
-    const { proxy, ledger, emittedEvents } = createTestProxy();
-    const key = testKey();
+  it('turns event-count refusal into a proxy-origin terminal without pulling the provider terminal', async () => {
+    const operation = supervisedOperation(99);
+    const key = { jobId: operation.jobId, operationId: operation.operationId };
     const prepared = preparedFixture();
-    prepareAndActivate(ledger, key, prepared);
-    await fillToEventCeiling(ledger, key);
-
+    const gate = deferred();
     let pullCount = 0;
     const progressEvent: ProviderEventBody = { kind: 'progress', message: 'first' };
     providerRegistryDouble.rehydrateBinding.mockReturnValue({
       ok: true,
       value: fakeBoundProvider({
         execute: async function* () {
+          await gate.promise;
           pullCount += 1;
           yield progressEvent;
           pullCount += 1;
@@ -660,19 +686,92 @@ describe('semantic-operation runtime: replay admission', () => {
       }),
     });
 
-    const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
-    await host.ensureProviderRoot(key, prepared);
-    host.host.start({ key, prepared });
+    const proxy = {} as Proxy;
+    const semantic = createSemanticOperationRuntime({
+      runtime,
+      hostAuthority: fakeHostAuthority(),
+      getProxy: () => proxy,
+    });
+    const containmentReceipt = asJointContainmentReceipt('contained');
+    const supervisor = new OperationSupervisor({
+      host: semantic.host,
+      timer: supervisorTimer,
+      mintReservation: () => asReservation('40000000-0000-4000-8000-000000000001'),
+      wallClockNow: () => 0,
+      nowMs: () => 0,
+      proxyInstanceId: operation.proxyInstanceId,
+      buildSetId: operation.buildSetId,
+      stageProviderRoot: (stagedKey, reserved) => ({
+        result: semantic
+          .ensureProviderRoot(stagedKey, reserved.prepared)
+          .then((staged) =>
+            staged.state === 'permanent-refusal'
+              ? staged
+              : { state: 'staged' as const, providerRoot: staged.providerRoot, receipt: containmentReceipt },
+          ),
+        confirmActivation: async () => {},
+        abortAndRelease: async () => {},
+      }),
+      pushProviderEvent: async () => {
+        throw new Error('control is deliberately offline');
+      },
+    });
+    Object.assign(proxy, {
+      listen: async () => {},
+      close: async () => {},
+      ledger: () => supervisor.ledger(),
+      emitProviderEvent: (emittedKey: ProviderOperationKey, event: ProviderEventBody) =>
+        supervisor.emitProviderEvent(emittedKey, event),
+    });
+
+    const prepareRequest = {
+      operation,
+      hostFingerprint: 'a'.repeat(64),
+      prepareAttemptNumber: 1,
+      prepared,
+    };
+    const reservation = proxyOperationPreparePendingResultSchema.parse(
+      await supervisor.prepare(operation, {
+        prepareAttemptNumber: 1,
+        prepareAttemptKey: operationPrepareAttemptKey(prepareRequest),
+        prepared,
+      }),
+    );
+    await supervisor.activate(operation, {
+      reservation: reservation.reservation,
+      jointContainmentReceipt: reservation.jointContainmentReceipt,
+      jointActivationReceipt: asJointActivationReceipt('activated'),
+      activationFingerprint: 'f'.repeat(64),
+    });
+    await supervisor.attach(operation, 0);
+    await fillToEventCeiling(supervisor.ledger(), key);
+    gate.resolve();
 
     await vi.waitFor(() => expect(pullCount).toBe(1));
-    expect(emittedEvents).toHaveLength(0);
-    expect(pullCount).toBe(1);
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
-    ledger.acknowledge(key, 1);
-    await vi.waitFor(() => expect(pullCount).toBe(2));
-    expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement');
-    expect(ledger.get(key)?.bufferedEvents).toHaveLength(MAX_PROVIDER_REPLAY_EVENTS + 1);
-    expect(emittedEvents.at(-1)).toEqual({ key, event: terminalCompleted });
+    const entry = supervisor.ledger().get(key);
+    expect({
+      state: entry?.state,
+      eventCount: entry?.bufferedEvents.length,
+      pullCount,
+    }).toEqual({
+      state: 'terminal-awaiting-settlement',
+      eventCount: MAX_PROVIDER_REPLAY_EVENTS + 1,
+      pullCount: 1,
+    });
+    const emergency = entry?.bufferedEvents.at(-1);
+    if (emergency === undefined) throw new Error('Expected a proxy-emergency terminal.');
+    const decoded = decodeProxyControlFrame(emergency.frame);
+    if (!('params' in decoded)) throw new Error('Expected a provider event request.');
+    expect(providerEventRequestSchema.parse(decoded.params)).toMatchObject({
+      providerSeq: MAX_PROVIDER_REPLAY_EVENTS + 1,
+      event: {
+        kind: 'terminal',
+        failureCause: { body: { provider: '@coral/provider-proxy' } },
+      },
+    });
+    supervisor.close();
   });
 
   it.each([
@@ -681,7 +780,7 @@ describe('semantic-operation runtime: replay admission', () => {
     ['throw', 'terminal-awaiting-settlement'],
     ['eof', 'terminal-awaiting-settlement'],
   ] as const)(
-    'admits a fifth %s completion while four ordinary frames retain the full proxy budget',
+    'admits a fifth %s completion while four ordinary frames retain the full shared budget',
     async (completion, expectedState) => {
       const holders = [1, 2, 3, 4].map(supervisedOperation);
       const target = supervisedOperation(5);
@@ -701,7 +800,7 @@ describe('semantic-operation runtime: replay admission', () => {
         listen: async () => {},
         close: async () => {},
         ledger: () => supervisor.ledger(),
-        emitProviderEvent: (key, event, signal) => supervisor.emitProviderEvent(key, event, signal),
+        emitProviderEvent: (key, event) => supervisor.emitProviderEvent(key, event),
       };
       const semantic = createSemanticOperationRuntime({
         runtime,
@@ -790,8 +889,10 @@ describe('semantic-operation runtime: replay admission', () => {
           const holderPreparation = prepared.get(holder);
           if (holderPreparation === undefined) throw new Error('missing holder preparation');
           await activate(holder, holderPreparation);
-          await supervisor.emitProviderEvent(holder, capacityFillingProgressEvent(holder, index + 1));
-          expect(supervisor.ledger().get(holder)?.bufferedBytes).toBe(MAX_PROVIDER_REPLAY_BYTES);
+          const targetFrameBytes =
+            index < 3 ? MAX_PROVIDER_REPLAY_BYTES : MAX_PROXY_SHARED_REPLAY_BYTES - 3 * MAX_PROVIDER_REPLAY_BYTES;
+          supervisor.emitProviderEvent(holder, capacityFillingProgressEvent(holder, index + 1, targetFrameBytes));
+          expect(supervisor.ledger().get(holder)?.bufferedBytes).toBe(targetFrameBytes);
         }
 
         const targetPreparation = prepared.get(target);
@@ -801,7 +902,6 @@ describe('semantic-operation runtime: replay admission', () => {
         for (const holder of holders) {
           expect(supervisor.ledger().get(holder)).toMatchObject({
             state: 'executing',
-            bufferedBytes: MAX_PROVIDER_REPLAY_BYTES,
           });
         }
         await vi.waitFor(() => expect(supervisor.ledger().get(target)?.state).toBe(expectedState));

@@ -4,6 +4,7 @@ import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { providerOperationPrepareAttempt } from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import type { ProviderOperationPrepareMaterializationResult } from '#src/coordinator/services/provider-operation-prepare.js';
+import type { ProviderOperationRecoveryAcceptance } from '#src/coordinator/services/recovery/index.js';
 import {
   ProviderOperationReconciler,
   providerOperationTerminationVerdict,
@@ -112,6 +113,10 @@ function deferred(): Readonly<{ promise: Promise<void>; resolve(): void }> {
   return { promise, resolve };
 }
 
+function providerRecoveryAccepted(jobId: string): ProviderOperationRecoveryAcceptance {
+  return { state: 'accepted', jobId, owner: 'recovery-coordinator' };
+}
+
 function preparedFor(provider: string) {
   return {
     ...PREPARED,
@@ -193,9 +198,17 @@ function createHarness(
     recoverLocalJob?: (
       record: Extract<ProviderOperationRecord, { phase: 'local-recovery-pending' }>,
       signal: AbortSignal,
-    ) => Promise<void>;
+    ) => Promise<ProviderOperationRecoveryAcceptance>;
     completeLocalRecovery?: (jobId: string) => void;
     authorityFor?: (record: ProviderOperationRecord) => DurableProviderProxyOperationAuthority | null;
+    acquireAuthority?: (
+      record: ProviderOperationRecord,
+      signal: AbortSignal,
+    ) => Promise<
+      | DurableProviderProxyOperationAuthority
+      | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>
+      | null
+    >;
     stopOperation?: (
       cause: Parameters<ReturnType<DurableProviderProxyOperationAuthority['buildOperationControl']>['stop']>[0],
     ) => Promise<void>;
@@ -360,9 +373,11 @@ function createHarness(
   const reconciler = new ProviderOperationReconciler({
     getProgressStore: () => progressStore,
     authorityFor: overrides.authorityFor ?? (() => authority),
+    ...(overrides.acquireAuthority === undefined ? {} : { acquireAuthority: overrides.acquireAuthority }),
     registry,
     materializePrepare: overrides.materializePrepare ?? (() => ({ state: 'prepared', prepared })),
-    recoverLocalJob: overrides.recoverLocalJob ?? (async () => undefined),
+    recoverLocalJob:
+      overrides.recoverLocalJob ?? (async (localRecord) => providerRecoveryAccepted(localRecord.operation.jobId)),
     completeLocalRecovery: overrides.completeLocalRecovery ?? (() => undefined),
     terminalization,
     backendNamespace: 'tests',
@@ -816,7 +831,7 @@ describe('ProviderOperationReconciler publication', () => {
       acquireAuthority,
       registry: harness.registry,
       materializePrepare: () => MATERIALIZED_PREPARED,
-      recoverLocalJob: async () => undefined,
+      recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
       completeLocalRecovery: () => undefined,
       terminalization: harness.terminalization,
       backendNamespace: 'tests',
@@ -878,7 +893,7 @@ describe('ProviderOperationReconciler publication', () => {
       acquireAuthority,
       registry: harness.registry,
       materializePrepare: () => MATERIALIZED_PREPARED,
-      recoverLocalJob: async () => undefined,
+      recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
       completeLocalRecovery: () => undefined,
       terminalization: harness.terminalization,
       backendNamespace: 'tests',
@@ -911,7 +926,7 @@ describe('ProviderOperationReconciler publication', () => {
       acquireAuthority,
       registry,
       materializePrepare: () => MATERIALIZED_PREPARED,
-      recoverLocalJob: async () => undefined,
+      recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
       completeLocalRecovery: () => undefined,
       terminalization: harness.terminalization,
       backendNamespace: 'tests',
@@ -962,7 +977,7 @@ describe('ProviderOperationReconciler publication', () => {
   });
 
   it('deletes a live publication handoff and resolves local authorization without generic recovery', async () => {
-    const recoverLocalJob = vi.fn(async () => undefined);
+    const recoverLocalJob = vi.fn(async (record) => providerRecoveryAccepted(record.operation.jobId));
     const completeLocalRecovery = vi.fn();
     const harness = createHarness({
       prepareOperation: async () => ({
@@ -985,9 +1000,92 @@ describe('ProviderOperationReconciler publication', () => {
     expect(completeLocalRecovery).not.toHaveBeenCalled();
   });
 
+  it('resolves a live handoff when exact deletion committed before reporting an error', async () => {
+    const harness = createHarness({
+      prepareOperation: async () => ({
+        state: 'permanent-refusal',
+        code: 'provider_creation_refused',
+        disposition: 'local-fallback',
+        reason: 'The provider must run locally.',
+      }),
+    });
+    const restoreCommitFault = installSqliteCommitFault(harness, 'after-sqlite-commit', null);
+
+    try {
+      await expect(harness.begin()).resolves.toEqual({
+        kind: 'local-authorized',
+        reason: 'The provider must run locally.',
+      });
+      expect(readProviderOperation(harness.db, harness.record.operation)).toBeNull();
+    } finally {
+      restoreCommitFault();
+    }
+  });
+
+  it('persists prepare capacity as a local handoff before exact recovery accepts it', async () => {
+    const accepted = deferred();
+    const recoverLocalJob = vi.fn(async (record) => {
+      await accepted.promise;
+      return providerRecoveryAccepted(record.operation.jobId);
+    });
+    const completeLocalRecovery = vi.fn();
+    const harness = createHarness({
+      prepareOperation: async () => ({ state: 'capacity', retryable: true, reason: 'operation-ledgers' }),
+      recoverLocalJob,
+      completeLocalRecovery,
+    });
+    insertProviderOperation(harness.db, harness.record);
+
+    const reconciliation = harness.reconciler.reconcile(harness.record);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect({
+      sagaPhase: readProviderOperation(harness.db, harness.record.operation)?.phase ?? null,
+      recoverCalls: recoverLocalJob.mock.calls.length,
+      localCompletions: completeLocalRecovery.mock.calls.length,
+    }).toEqual({
+      sagaPhase: 'local-recovery-pending',
+      recoverCalls: 1,
+      localCompletions: 0,
+    });
+
+    accepted.resolve();
+    await reconciliation;
+  });
+
+  it('persists proven pre-execution containment disappearance as a local handoff', async () => {
+    const recoverLocalJob = vi.fn(async (record) => providerRecoveryAccepted(record.operation.jobId));
+    const completeLocalRecovery = vi.fn();
+    const harness = createHarness({
+      authorityFor: () => null,
+      acquireAuthority: async () => ({
+        kind: 'containment-disappeared',
+        disappearanceReceipt: 'containment-is-absent',
+      }),
+      recoverLocalJob,
+      completeLocalRecovery,
+    });
+    insertProviderOperation(harness.db, harness.record);
+
+    await harness.reconciler.reconcile(harness.record);
+
+    expect({
+      sagaPhase: readProviderOperation(harness.db, harness.record.operation)?.phase ?? null,
+      recoverCalls: recoverLocalJob.mock.calls.length,
+      localCompletions: completeLocalRecovery.mock.calls.length,
+    }).toEqual({
+      sagaPhase: 'local-recovery-pending',
+      recoverCalls: 0,
+      localCompletions: 0,
+    });
+  });
+
   it('keeps local recovery durable until exact generic recovery accepts it', async () => {
     const accepted = deferred();
-    const recoverLocalJob = vi.fn(() => accepted.promise);
+    const recoverLocalJob = vi.fn(async (record) => {
+      await accepted.promise;
+      return providerRecoveryAccepted(record.operation.jobId);
+    });
     const completeLocalRecovery = vi.fn();
     const authorityFor = vi.fn(() => null);
     const harness = createHarness({ recoverLocalJob, completeLocalRecovery, authorityFor });
@@ -1007,7 +1105,7 @@ describe('ProviderOperationReconciler publication', () => {
   });
 
   it('leaves local-recovery-pending rows to the generic startup recovery pass', async () => {
-    const recoverLocalJob = vi.fn(async () => undefined);
+    const recoverLocalJob = vi.fn(async (record) => providerRecoveryAccepted(record.operation.jobId));
     const authorityFor = vi.fn(() => null);
     const harness = createHarness({ recoverLocalJob, authorityFor });
     const record = providerOperationRecord('local-recovery-pending');
@@ -1021,6 +1119,7 @@ describe('ProviderOperationReconciler publication', () => {
   });
 
   it('records a retry when exact generic recovery rejects the local handoff', async () => {
+    const acceptedRecoveries = 0;
     const recoverLocalJob = vi.fn(async () => {
       throw new Error('local recovery unavailable');
     });
@@ -1032,7 +1131,15 @@ describe('ProviderOperationReconciler publication', () => {
 
     await harness.reconciler.reconcile(record);
 
-    expect(readProviderOperation(harness.db, record.operation)).toMatchObject({
+    const durable = readProviderOperation(harness.db, record.operation);
+    expect({
+      sagaPhase: durable?.phase ?? null,
+      acceptedRecoveries,
+    }).toEqual({
+      sagaPhase: 'local-recovery-pending',
+      acceptedRecoveries: 0,
+    });
+    expect(durable).toMatchObject({
       phase: 'local-recovery-pending',
       revision: record.revision + 1,
       retryCount: 1,
@@ -1042,13 +1149,39 @@ describe('ProviderOperationReconciler publication', () => {
     expect(completeLocalRecovery).not.toHaveBeenCalled();
   });
 
+  it('retains the handoff when exact recovery accepts a different job', async () => {
+    const recoverLocalJob = vi.fn(async () => providerRecoveryAccepted('another-job'));
+    const completeLocalRecovery = vi.fn();
+    const harness = createHarness({ recoverLocalJob, completeLocalRecovery, authorityFor: () => null });
+    const record = providerOperationRecord('local-recovery-pending');
+    insertProviderOperation(harness.db, record);
+
+    await harness.reconciler.reconcile(record);
+
+    expect(readProviderOperation(harness.db, record.operation)).toMatchObject({
+      phase: 'local-recovery-pending',
+      revision: record.revision + 1,
+      retryCount: 1,
+      lastError: expect.objectContaining({
+        message: `Exact recovery did not accept provider-operation job '${record.operation.jobId}'.`,
+      }),
+    });
+    expect(completeLocalRecovery).not.toHaveBeenCalled();
+  });
+
   it('does not complete recovery against a stale local-recovery revision', async () => {
     const firstAcceptance = deferred();
     const currentAcceptance = deferred();
     const recoverLocalJob = vi
       .fn()
-      .mockImplementationOnce(() => firstAcceptance.promise)
-      .mockImplementationOnce(() => currentAcceptance.promise);
+      .mockImplementationOnce(async (record) => {
+        await firstAcceptance.promise;
+        return providerRecoveryAccepted(record.operation.jobId);
+      })
+      .mockImplementationOnce(async (record) => {
+        await currentAcceptance.promise;
+        return providerRecoveryAccepted(record.operation.jobId);
+      });
     const completeLocalRecovery = vi.fn();
     const harness = createHarness({ recoverLocalJob, completeLocalRecovery });
     const record = providerOperationRecord('local-recovery-pending');
@@ -1380,17 +1513,33 @@ describe('ProviderOperationReconciler publication', () => {
       },
     });
     const cases = [
-      { record: providerOperationRecord('prepare-pending'), failureCode: null },
-      { record: providerOperationRecord('guardian-activation-pending'), failureCode: null },
-      { record: providerOperationRecord('prestart-cleanup-pending'), failureCode: null },
-      { record: terminalCleanup, failureCode: 'authorization_expired' },
-      { record: providerOperationRecord('proxy-activation-pending'), failureCode: 'activation_indeterminate' },
-      { record: providerOperationRecord('activation-resolution-pending'), failureCode: 'activation_indeterminate' },
-      { record: providerOperationRecord('executing'), failureCode: 'provider_lost' },
-      { record: providerOperationRecord('settlement-pending'), failureCode: null },
+      { record: providerOperationRecord('prepare-pending'), durablePhase: 'local-recovery-pending', failureCode: null },
+      {
+        record: providerOperationRecord('guardian-activation-pending'),
+        durablePhase: 'local-recovery-pending',
+        failureCode: null,
+      },
+      {
+        record: providerOperationRecord('prestart-cleanup-pending'),
+        durablePhase: 'local-recovery-pending',
+        failureCode: null,
+      },
+      { record: terminalCleanup, durablePhase: null, failureCode: 'authorization_expired' },
+      {
+        record: providerOperationRecord('proxy-activation-pending'),
+        durablePhase: null,
+        failureCode: 'activation_indeterminate',
+      },
+      {
+        record: providerOperationRecord('activation-resolution-pending'),
+        durablePhase: null,
+        failureCode: 'activation_indeterminate',
+      },
+      { record: providerOperationRecord('executing'), durablePhase: null, failureCode: 'provider_lost' },
+      { record: providerOperationRecord('settlement-pending'), durablePhase: null, failureCode: null },
     ] as const;
 
-    for (const { record, failureCode } of cases) {
+    for (const { record, durablePhase, failureCode } of cases) {
       const harness = createHarness();
       insertProviderOperation(harness.db, record);
       const acquireAuthority = vi.fn(async () => ({
@@ -1403,7 +1552,7 @@ describe('ProviderOperationReconciler publication', () => {
         acquireAuthority,
         registry: harness.registry,
         materializePrepare: () => MATERIALIZED_PREPARED,
-        recoverLocalJob: async () => undefined,
+        recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
         completeLocalRecovery: () => undefined,
         terminalization: harness.terminalization,
         backendNamespace: 'tests',
@@ -1417,7 +1566,7 @@ describe('ProviderOperationReconciler publication', () => {
       await reconciler.reconcileAtStartup(new AbortController().signal);
 
       expect(acquireAuthority, record.phase).toHaveBeenCalledWith(record, expect.any(AbortSignal));
-      expect(readProviderOperation(harness.db, record.operation), record.phase).toBeNull();
+      expect(readProviderOperation(harness.db, record.operation)?.phase ?? null, record.phase).toBe(durablePhase);
       const failureCodes = harness.appended
         .filter((event) => (event as { type?: string }).type === 'job.progress.emitted')
         .map((event) => (event as { body: { detail?: { code?: string } } }).body.detail?.code);
