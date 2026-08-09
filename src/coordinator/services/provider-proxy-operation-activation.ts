@@ -26,32 +26,16 @@ import {
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
 import type { ProviderStopCause } from '../../providers/contract.js';
 import type { OperationStopControl } from './operation-registry.js';
+import type {
+  ControlCallPolicy,
+  ProviderOperationSagaPhase,
+  ProviderProxyAuthorityFault,
+} from './provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from './provider-proxy-set-identity.js';
 
 export interface OperationControlClient {
   call(method: string, params: unknown, timeoutMs: number): Promise<unknown>;
-  readonly faulted?: Promise<unknown>;
 }
-
-export type ProviderOperationSagaPhase =
-  | 'prepare-pending'
-  | 'guardian-activation-pending'
-  | 'proxy-activation-pending'
-  | 'prestart-cleanup-pending'
-  | 'executing'
-  | 'settlement-pending';
-
-export type ControlCallPolicy = Readonly<{
-  method: string;
-  phase: ProviderOperationSagaPhase;
-  effect: 'observation' | 'mutation';
-  preEffectProtocolCodes: ReadonlySet<ProxyControlProtocolErrorCode>;
-}>;
-
-export type ProviderProxyAuthorityFault = Readonly<{
-  policy: ControlCallPolicy | null;
-  error: unknown;
-}>;
 
 export interface ProviderProxyOperationActivationDeps {
   readonly proxyClient: OperationControlClient;
@@ -81,13 +65,15 @@ async function callStrict<TResult>(
   try {
     raw = await client.call(policy.method, params, timeoutMs);
   } catch (error: unknown) {
-    if (controlCallFaultsAuthority(policy, error)) faultAuthority({ policy, error });
+    if (controlCallFaultsAuthority(policy, error)) {
+      faultAuthority({ kind: 'operation-control-failed', policy, error });
+    }
     throw error;
   }
   try {
     return resultSchema.parse(raw);
   } catch (error: unknown) {
-    if (policy.effect === 'mutation') faultAuthority({ policy, error });
+    if (policy.effect === 'mutation') faultAuthority({ kind: 'operation-control-failed', policy, error });
     throw error;
   }
 }

@@ -696,6 +696,8 @@ describe('provider-proxy guardian and reaper', () => {
       call: async (): Promise<never> => {
         throw new Error('reaper unreachable');
       },
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
       close: (): void => {},
     };
     const guardian = createGuardian({
@@ -1035,6 +1037,8 @@ describe('provider-proxy guardian and reaper', () => {
           method === 'reaper.record-containment.v1'
             ? Promise.resolve({ state: 'containment-recorded', reaper: reaperIdentity })
             : stubReaperCall(method, params),
+        faulted: new Promise<never>(() => undefined),
+        onFault: () => () => undefined,
         close: (): void => {},
       },
       self: { pid: 5_102, processStartedAtSeconds: 902 },
@@ -2046,6 +2050,8 @@ describe('provider-proxy guardian and reaper', () => {
           method === 'reaper.record-containment.v1'
             ? Promise.resolve({ state: 'containment-recorded', reaper: reaperIdentity })
             : Promise.reject(new Error(`Unexpected reaper call: ${method}`)),
+        faulted: new Promise<never>(() => undefined),
+        onFault: () => () => undefined,
         close: () => {},
       },
       self: { pid: 5_102, processStartedAtSeconds: 902 },
@@ -2278,6 +2284,8 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
   function unreachableClient(): ControlClient {
     return {
       call: () => Promise.reject(new Error('unreachable: this client was not expected to be called')),
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
       close: () => {},
     };
   }
@@ -2297,7 +2305,11 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
       guardianIdentity: set.guardianIdentity,
       reaperIdentity: set.reaperIdentity,
       proxyIdentityFields: set.proxyIdentity,
-      heartbeats: [],
+      heartbeats: {
+        proxy: { stop: () => undefined },
+        guardian: { stop: () => undefined },
+        reaper: { stop: () => undefined },
+      },
       coordinatorIdentity: set.coordinatorIdentity,
       handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
       runtime: { ids: undefined, env: undefined, storage: undefined } as unknown as Pick<
@@ -2380,7 +2392,11 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
       guardianIdentity: set.guardianIdentity,
       reaperIdentity: set.reaperIdentity,
       proxyIdentityFields: set.proxyIdentity,
-      heartbeats: [],
+      heartbeats: {
+        proxy: { stop: () => undefined },
+        guardian: { stop: () => undefined },
+        reaper: { stop: () => undefined },
+      },
       coordinatorIdentity: set.coordinatorIdentity,
       handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
       runtime: { ids: undefined, env: undefined, storage: undefined } as unknown as Pick<

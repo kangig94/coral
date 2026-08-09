@@ -29,7 +29,7 @@ import {
 } from '../../../provider-proxy/protocol.js';
 import type { ControlClient } from '../../../provider-proxy/control-client.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import type { HeartbeatLoop } from './heartbeat.js';
+import type { ProviderProxyRoleHeartbeats } from './heartbeat.js';
 import type { ProviderProxySetRecoveryAuthority } from './authority.js';
 
 const handoffInstallAckSchema = z
@@ -60,7 +60,7 @@ export type ProviderProxySetAuthorityDependencies = Readonly<{
   guardianIdentity: GuardianIdentity;
   reaperIdentity: ReaperIdentity;
   proxyIdentityFields: ProxyIdentity;
-  heartbeats: readonly HeartbeatLoop[];
+  heartbeats: ProviderProxyRoleHeartbeats;
   /** This coordinator's own identity — named on every install call so a peer that checks it (build match
    *  only; see `assertNamedCoordinatorBuild`) can report a disagreement instead of installing blind. */
   coordinatorIdentity: CoordinatorIdentity;
@@ -244,7 +244,9 @@ export function createProviderProxySetAuthority(
       }
     },
     stopHeartbeats: () => {
-      for (const heartbeat of heartbeats) heartbeat.stop();
+      heartbeats.proxy.stop();
+      heartbeats.guardian.stop();
+      heartbeats.reaper.stop();
     },
     initiateControlClose: async () => {
       proxyClient.close();

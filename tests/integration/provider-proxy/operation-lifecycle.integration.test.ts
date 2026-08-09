@@ -44,6 +44,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
+import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { createProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import {
   inspectProviderOperation,
@@ -517,14 +518,30 @@ async function launchThroughRoute(
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,
   } as const;
-  const authorityForClient = (client: { call(method: string, params: unknown, timeoutMs: number): Promise<unknown> }) =>
-    createProviderProxyOperationAuthority({
+  const authorityForClient = (client: {
+    call(method: string, params: unknown, timeoutMs: number): Promise<unknown>;
+  }) => {
+    const proxy = {
+      call: client.call.bind(client),
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => undefined,
+    };
+    const guardian = {
+      ...guardianClient,
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => undefined,
+    };
+    const clients = { proxy, guardian, reaper: guardian };
+    return createProviderProxyOperationAuthority({
       base,
       setIdentity,
-      proxyClient: client,
-      guardianClient,
+      clients,
+      faults: createProviderProxyAuthorityFaultLatch(clients),
       mutationRpcTimeoutMs: 5_000,
     });
+  };
   const authority = authorityForClient(proxyClient);
   let activeAuthority = authority;
   const registry = new LocalOperationRegistry();

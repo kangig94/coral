@@ -6,6 +6,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { createBootstrapNonceCredential } from '#src/provider-proxy/bootstrap-capsule.js';
+import { connectControlClient } from '#src/provider-proxy/control-client.js';
+import {
+  activateProviderOperation,
+  providerOperationErrorCode,
+} from '#src/coordinator/services/provider-proxy-operation-activation.js';
+import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set-identity.js';
 import {
   createControlEndpoint,
   type ControlChallenge,
@@ -371,6 +377,65 @@ describe('provider-proxy control endpoint', () => {
     // failed" — every other refusal in this file attaches a `data.code` from the closed set for exactly this
     // reason, and this branch previously did not.
     expect(unknown.error?.data?.code).toBe('method_not_found');
+  });
+
+  it('keeps a real older endpoint missing operation.activate.v1 pre-effect and non-faulting', async () => {
+    const { socketPath } = await startEndpoint();
+    const client = await connectControlClient(socketPath, realTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const setIdentity: ProviderProxySetIdentity = {
+      buildSetId: '11111111-1111-4111-8111-111111111111',
+      hostFingerprint: 'b'.repeat(64),
+      guardianInstanceId: '22222222-2222-4222-8222-222222222222',
+      guardianPid: 101,
+      guardianProcessStartedAtSeconds: 1_001,
+      guardianControlEndpoint: `${socketPath}.guardian`,
+      proxyInstanceId: '33333333-3333-4333-8333-333333333333',
+      proxyPid: 102,
+      reaperInstanceId: '44444444-4444-4444-8444-444444444444',
+      reaperPid: 103,
+      reaperProcessStartedAtSeconds: 1_003,
+      reaperControlEndpoint: `${socketPath}.reaper`,
+      containmentKind: 'posix-group',
+      proxyProcessStartedAtSeconds: 1_002,
+      proxyProcessGroupId: 102,
+      canonicalEndpoint: socketPath,
+    };
+    const faults: unknown[] = [];
+    let semanticStartCalls = 0;
+    let returnedCode: string | null = null;
+
+    try {
+      await activateProviderOperation(
+        {
+          proxyClient: client,
+          guardianClient: client,
+          setIdentity,
+          mutationRpcTimeoutMs: 5_000,
+          faultAuthority: (fault) => faults.push(fault),
+        },
+        {
+          jobId: '55555555-5555-4555-8555-555555555555',
+          operationId: '66666666-6666-4666-8666-666666666666',
+          proxyInstanceId: setIdentity.proxyInstanceId,
+          buildSetId: setIdentity.buildSetId,
+        },
+        {
+          reservation: '77777777-7777-4777-8777-777777777777',
+          jointContainmentReceipt: 'containment-receipt',
+          jointActivationReceipt: 'activation-receipt',
+        },
+      );
+      semanticStartCalls += 1;
+    } catch (error: unknown) {
+      returnedCode = providerOperationErrorCode(error);
+    }
+
+    expect({ returnedCode, semanticStartCalls, authorityFaults: faults.length }).toEqual({
+      returnedCode: 'method_not_found',
+      semanticStartCalls: 0,
+      authorityFaults: 0,
+    });
   });
 
   it('refuses a successor whose credential arrives after the incumbent reasserts control', async () => {

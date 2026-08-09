@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { TimerHandle } from '#src/infra/port-types.js';
 import type { HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
-import type { ProviderProxyAuthorityFault } from '#src/coordinator/services/provider-proxy-operation-activation.js';
+import type { ProviderProxyAuthorityFault } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
 import {
   ProviderProxySetLifecycle,
@@ -13,6 +13,8 @@ import {
 } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set-identity.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+
+const noContainmentProof = async (): Promise<null> => null;
 
 function deferred<T>(): Readonly<{ promise: Promise<T>; resolve(value: T): void }> {
   let resolve!: (value: T) => void;
@@ -133,6 +135,7 @@ describe('ProviderProxySetLifecycle', () => {
       claims,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
       redeemCapsule: async () => {
         throw new Error('unconfirmed redemption');
       },
@@ -166,6 +169,7 @@ describe('ProviderProxySetLifecycle', () => {
       claims: noClaims,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
     });
     duplicateAddress.initializeClaimSlots();
     expect(() =>
@@ -179,6 +183,7 @@ describe('ProviderProxySetLifecycle', () => {
       claims: noClaims,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
     });
     duplicateGrant.initializeClaimSlots();
     expect(() =>
@@ -199,6 +204,7 @@ describe('ProviderProxySetLifecycle', () => {
       claims,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
     });
     claimAlias.initializeClaimSlots();
     expect(() =>
@@ -227,6 +233,7 @@ describe('ProviderProxySetLifecycle', () => {
       claims,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: clock,
+      proveContainmentAbsent: noContainmentProof,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -235,13 +242,55 @@ describe('ProviderProxySetLifecycle', () => {
     lifecycle.acquisitionSucceeded(admission.slotId, authority);
     expect(lifecycle.routeFor('codex-route')).toBe(authority);
 
-    const authorityFault = { policy: null, error: new Error('control closed') };
+    const authorityFault: ProviderProxyAuthorityFault = {
+      kind: 'heartbeat-failed',
+      role: 'proxy',
+      method: 'control.heartbeat.v1',
+      error: new Error('control closed'),
+    };
     for (const listener of faultListeners) listener(authorityFault);
 
     expect(lifecycle.routeFor('codex-route')).toBeNull();
     expect(lifecycle.snapshot().states).toEqual(['containing']);
     fault.resolve(authorityFault);
     await authority.faulted;
+  });
+
+  it('installs absence delivery before closing controls and begins durable delivery in the same turn', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const closeObservations: Array<readonly string[]> = [];
+    const containmentDisappeared = vi.fn(() => new Promise<never>(() => undefined));
+    const authority: DurableProviderProxyOperationAuthority = {
+      ...fakeAuthority({ record, stopAndReap: () => new Promise<never>(() => undefined) }),
+      initiateControlClose: () => {
+        closeObservations.push(lifecycle.snapshot().states);
+        return Promise.resolve();
+      },
+    };
+    const lifecycle = new ProviderProxySetLifecycle({
+      claims,
+      disappearanceConsumer: { containmentDisappeared },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority);
+    lifecycle.faultAuthority(authority.setIdentity);
+
+    lifecycle.containmentAbsent(authority.setIdentity, 'public-proof-receipt');
+
+    expect(closeObservations).toEqual([['absence-delivery-pending']]);
+    expect(containmentDisappeared).toHaveBeenCalledOnce();
+    expect(lifecycle.snapshot()).toEqual(
+      expect.objectContaining({ represented: 1, states: ['absence-delivery-pending'], pendingOperationCounts: [1] }),
+    );
+    expect(() => lifecycle.containmentAbsent(authority.setIdentity, 'public-proof-receipt')).not.toThrow();
+    expect(() => lifecycle.containmentAbsent(authority.setIdentity, 'conflicting-receipt')).toThrow(
+      'provider_proxy_containment_absence_conflict',
+    );
   });
 
   it('retains absence and its capsule until every captured operation acknowledges durable disposition', async () => {
@@ -271,6 +320,7 @@ describe('ProviderProxySetLifecycle', () => {
             : secondAcceptance.promise,
       },
       time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
       retireCapsule,
     });
     lifecycle.initializeClaimSlots();
@@ -312,6 +362,7 @@ describe('ProviderProxySetLifecycle', () => {
       claims,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: clock,
+      proveContainmentAbsent: noContainmentProof,
       retireCapsule,
       onError: (message) => retirementErrors.push(message),
     });
@@ -348,6 +399,7 @@ describe('ProviderProxySetLifecycle', () => {
       claims,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: clock,
+      proveContainmentAbsent: noContainmentProof,
       onProgressPremiseViolation: (violation) => violations.push(violation),
     });
     lifecycle.initializeClaimSlots();
@@ -386,6 +438,7 @@ describe('ProviderProxySetLifecycle', () => {
       claims,
       disappearanceConsumer: { containmentDisappeared: consumer },
       time: clock,
+      proveContainmentAbsent: noContainmentProof,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -413,6 +466,7 @@ describe('ProviderProxySetLifecycle', () => {
       claims,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -470,6 +524,7 @@ describe('ProviderProxySetLifecycle', () => {
       claims,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();

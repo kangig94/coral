@@ -652,14 +652,21 @@ function applyNotificationCore(
     }
     case 'turn/completed': {
       const threadId = extractThreadId(message);
-      const turnId = extractTurnId(message);
+      const routedTurnId = extractTurnId(message);
       const turn = (notification.params as { turn?: Turn } | undefined)?.turn ?? null;
+      const completedTurnId = readTurnId(turn);
       if (threadId !== null && threadId !== state.threadId) {
         attempt.activeSubagentTurns.delete(threadId);
         scheduleInferredCompletion(state, attempt);
         return;
       }
-      if (threadId !== state.threadId || turnId === null || turnId !== attempt.turnId || turn === null) {
+      if (
+        threadId !== state.threadId ||
+        routedTurnId !== attempt.turnId ||
+        completedTurnId === null ||
+        completedTurnId !== attempt.turnId ||
+        turn === null
+      ) {
         return;
       }
       const finalStatus = codexFinalTurnStatusSchema.safeParse(turn.status);
@@ -675,7 +682,7 @@ function applyNotificationCore(
       const validatedTurn = { ...turn, status: finalStatus.data };
       state.onProviderTurnTerminal({
         kind: 'provider-turn-terminal',
-        providerTurnId: turnId,
+        providerTurnId: completedTurnId,
         status: finalStatus.data,
       });
       completeTurn(state, attempt, validatedTurn, 'notification');

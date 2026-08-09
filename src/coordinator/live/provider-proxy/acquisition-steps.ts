@@ -1,8 +1,6 @@
 import { z } from 'zod';
 
-import { backendLog } from '../../../infra/backend-log.js';
 import { BUILD_FLAVOR_ENV_KEY } from '../../../infra/build-flavor.js';
-import { errorMessage } from '../../../infra/error-format.js';
 import { probeProcessStartedAtSeconds } from '../../../infra/node-process.js';
 import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '../../../providers/app-server-transport.js';
 import {
@@ -46,7 +44,7 @@ import {
   reaperOpenParamsSchema,
 } from '../../../provider-proxy/protocol.js';
 import type { AcquisitionUndo, ProviderProxyAcquisitionSteps } from './index.js';
-import { startHeartbeatLoop } from './heartbeat.js';
+import { startProviderProxyAuthorityHeartbeats } from './heartbeat.js';
 import { establishRoleControl } from './role-control.js';
 import { createProviderProxySetAuthority } from './set-authority.js';
 import { buildGuardianSpawnUndo } from './spawn-undo.js';
@@ -56,6 +54,7 @@ import {
   type ProviderProxyOperationAuthority,
 } from './operation-route.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set-identity.js';
+import { createProviderProxyAuthorityFaultLatch } from '../../services/provider-proxy-authority-fault.js';
 
 /**
  * The production implementation of `ProviderProxyAcquisitionSteps`: mints one guardian/reaper/proxy set's
@@ -395,37 +394,36 @@ export function createProviderProxyAcquisitionSteps(
           },
         });
 
-        // A degrading heartbeat is otherwise silent until the enforcer's own deadline fires (`heartbeat.ts`'s
-        // own doc) — logged here, per role, so an operator sees it before then.
-        const onHeartbeatError = (role: 'proxy' | 'guardian' | 'reaper', instanceId: string) => (error: unknown) => {
-          backendLog.warn(`provider-proxy ${role} heartbeat echo failed for ${instanceId}: ${errorMessage(error)}`);
+        const clients = {
+          proxy: proxySession.client,
+          guardian: guardianSession.client,
+          reaper: reaperSession.client,
         };
-        const heartbeats = [
-          startHeartbeatLoop(
-            proxySession.client,
-            'control.heartbeat.v1',
-            runtime,
-            proxySession.opened.controlEpoch,
-            proxySession.nextHeartbeatChallenge,
-            onHeartbeatError('proxy', setMinted.proxyInstanceId),
-          ),
-          startHeartbeatLoop(
-            guardianSession.client,
-            'guardian.heartbeat.v1',
-            runtime,
-            guardianSession.opened.controlEpoch,
-            guardianSession.nextHeartbeatChallenge,
-            onHeartbeatError('guardian', setMinted.guardianInstanceId),
-          ),
-          startHeartbeatLoop(
-            reaperSession.client,
-            'reaper.heartbeat.v1',
-            runtime,
-            reaperSession.opened.controlEpoch,
-            reaperSession.nextHeartbeatChallenge,
-            onHeartbeatError('reaper', setMinted.reaperInstanceId),
-          ),
-        ];
+        const faults = createProviderProxyAuthorityFaultLatch(clients);
+        const heartbeats = startProviderProxyAuthorityHeartbeats(
+          {
+            proxy: {
+              client: clients.proxy,
+              controlEpoch: proxySession.opened.controlEpoch,
+              nextHeartbeatChallenge: proxySession.nextHeartbeatChallenge,
+              instanceId: setMinted.proxyInstanceId,
+            },
+            guardian: {
+              client: clients.guardian,
+              controlEpoch: guardianSession.opened.controlEpoch,
+              nextHeartbeatChallenge: guardianSession.nextHeartbeatChallenge,
+              instanceId: setMinted.guardianInstanceId,
+            },
+            reaper: {
+              client: clients.reaper,
+              controlEpoch: reaperSession.opened.controlEpoch,
+              nextHeartbeatChallenge: reaperSession.nextHeartbeatChallenge,
+              instanceId: setMinted.reaperInstanceId,
+            },
+          },
+          runtime,
+          faults,
+        );
 
         const handoffCapsulePath = providerHandoffCapsulePath(
           { generation, flavor, buildSetId, hostFingerprint, proxyInstanceId: setMinted.proxyInstanceId },
@@ -470,8 +468,8 @@ export function createProviderProxyAcquisitionSteps(
         const set = createProviderProxyOperationAuthority({
           base,
           setIdentity,
-          proxyClient: proxySession.client,
-          guardianClient: guardianSession.client,
+          clients,
+          faults,
           mutationRpcTimeoutMs: PROXY_OPERATION_ACTIVATION_RPC_TIMEOUT_MS,
         });
         notifyProviderProxyControlEstablished(set);
@@ -481,7 +479,9 @@ export function createProviderProxyAcquisitionSteps(
           undo: {
             label: 'control',
             run: () => {
-              for (const heartbeat of heartbeats) heartbeat.stop();
+              heartbeats.proxy.stop();
+              heartbeats.guardian.stop();
+              heartbeats.reaper.stop();
               proxySession.client.close();
               guardianSession.client.close();
               reaperSession.client.close();

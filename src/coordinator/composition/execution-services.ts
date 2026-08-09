@@ -11,6 +11,7 @@ import { createAppServerProxyRoute } from '../services/provider-proxy-launch-rou
 import { ProviderOperationReconciler } from '../services/provider-operation-reconciler.js';
 import { subscribeProviderProxyControlEstablished } from '../live/provider-proxy/operation-route.js';
 import { backendLog } from '../../infra/backend-log.js';
+import { assertNever } from '../../infra/error-format.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
 import { ProviderOperationCleanupRouter } from '../../jobs/provider-operation-cleanup.js';
 import { readProviderOperationJobLaunch } from '../../jobs/provider-operation-state.js';
@@ -77,8 +78,20 @@ export function createExecutionServices({
         getProgressStore().getDb(),
         signal,
       );
-      if (outcome.kind === 'inherited') return outcome.set;
-      return outcome.kind === 'containment-disappeared' ? outcome : null;
+      switch (outcome.kind) {
+        case 'inherited':
+          return outcome.set;
+        case 'not-bequeathed':
+          return null;
+        case 'containment-disappeared':
+          providerProxyLifecycle.containmentAbsent(
+            providerProxySetIdentityFromRecord(record),
+            outcome.disappearanceReceipt,
+          );
+          return null;
+        default:
+          return assertNever(outcome);
+      }
     },
     registry: world.operationRegistry,
     materializePrepare: (record) =>
@@ -113,6 +126,10 @@ export function createExecutionServices({
     claims: world.providerProxyClaims,
     disappearanceConsumer: providerOperationReconciler,
     time: runtime.time,
+    proveContainmentAbsent: (identity, signal) =>
+      providerProxyInheritance === undefined
+        ? Promise.resolve(null)
+        : providerProxyInheritance.proveContainmentAbsent(identity, getProgressStore().getDb(), signal),
     retireCapsule: (path) => retireProviderHandoffCapsule(runtime.storage, path),
     ...(providerProxyInheritance === undefined
       ? {}

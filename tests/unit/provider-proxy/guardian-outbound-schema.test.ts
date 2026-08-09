@@ -137,7 +137,12 @@ function createGuardianHarness() {
     if (method === 'reaper.record-redemption.v1') return { state: 'redemption-recorded' };
     return { state: 'root-recorded' };
   });
-  const reaperChannel: ControlClient = { call: reaperCall, close: vi.fn() };
+  const reaperChannel: ControlClient = {
+    call: reaperCall,
+    faulted: new Promise<never>(() => undefined),
+    onFault: () => () => undefined,
+    close: vi.fn(),
+  };
   let receipt = 0;
   const mintReceipt = vi.fn(() => {
     receipt += 1;

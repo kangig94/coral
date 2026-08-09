@@ -95,7 +95,7 @@ export type ProviderProxySetLifecycleDeps = Readonly<{
   claims: ProviderProxySetClaimMirror;
   disappearanceConsumer: ProviderContainmentDisappearanceConsumer;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
-  proveContainmentAbsent?: (identity: ProviderProxySetIdentity, signal: AbortSignal) => Promise<string | null>;
+  proveContainmentAbsent(identity: ProviderProxySetIdentity, signal: AbortSignal): Promise<string | null>;
   retireCapsule?: (path: string) => Promise<void> | void;
   onProgressPremiseViolation?: (violation: ProviderProxySetLifecycleProgressViolation) => void;
   onError?: (message: string) => void;
@@ -297,6 +297,67 @@ export class ProviderProxySetLifecycle {
       return;
     }
     this.#beginContainment(slot, 'provider_authority_lost');
+  }
+
+  containmentAbsent(identity: ProviderProxySetIdentity, disappearanceReceipt: string): void {
+    const key = providerProxySetKey(identity);
+    if (typeof disappearanceReceipt !== 'string' || disappearanceReceipt.length === 0) {
+      throw new Error('provider_proxy_containment_absence_receipt_invalid');
+    }
+    const slot = this.#slots.get(key);
+    if (slot === undefined) throw new Error('provider_proxy_containment_absence_slot_missing');
+    if (
+      slot.kind === 'acquiring' ||
+      slot.kind === 'capsule-recovering' ||
+      !providerProxySetIdentitiesEqual(slot.identity, identity)
+    ) {
+      throw new Error('provider_proxy_containment_absence_identity_mismatch');
+    }
+    if (slot.kind === 'absence-delivery-pending') {
+      if (slot.disappearanceReceipt !== disappearanceReceipt) {
+        throw new Error('provider_proxy_containment_absence_conflict');
+      }
+      return;
+    }
+    if (slot.kind === 'available' || slot.kind === 'draining') {
+      throw new Error('provider_proxy_containment_absence_before_authority_fault');
+    }
+
+    const pendingOperations = new Map(
+      this.#deps.claims.claimsFor(slot.identity).map((claim) => [operationKey(claim.operation), claim.operation]),
+    );
+    const pending: Extract<ProviderProxySetSlot, { kind: 'absence-delivery-pending' }> = {
+      kind: 'absence-delivery-pending',
+      key: slot.key,
+      identity: slot.identity,
+      address: slot.address,
+      capacityClass: slot.capacityClass,
+      disappearanceReceipt,
+      pendingOperations,
+      capsulePath: slot.capsulePath,
+      routeKey: slot.kind === 'recovering' ? null : slot.routeKey,
+      retirementTimer: null,
+    };
+    if (slot.kind !== 'recovering') {
+      slot.attemptToken += 1;
+      if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
+    }
+    this.#slots.set(key, pending);
+
+    if (slot.kind !== 'recovering') {
+      void slot.authority
+        .initiateControlClose()
+        .catch((error: unknown) =>
+          this.#deps.onError?.(
+            `Provider proxy control close after containment failed: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+    }
+    if (pendingOperations.size === 0) {
+      void this.#retireAndRelease(pending);
+      return;
+    }
+    for (const operation of pendingOperations.values()) void this.#deliverDisappearance(pending, operation);
   }
 
   snapshot(): ProviderProxySetLifecycleSnapshot {
@@ -504,18 +565,16 @@ export class ProviderProxySetLifecycle {
           `Provider containment request failed: ${error instanceof Error ? error.message : String(error)}`,
         );
       });
-    if (this.#deps.proveContainmentAbsent !== undefined) {
-      void this.#deps
-        .proveContainmentAbsent(slot.identity, abort.signal)
-        .then((receipt) => {
-          if (receipt !== null) this.#finishContainmentAttempt(slot, token, abort, receipt);
-        })
-        .catch((error: unknown) => {
-          this.#deps.onError?.(
-            `Independent provider containment proof failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        });
-    }
+    void this.#deps
+      .proveContainmentAbsent(slot.identity, abort.signal)
+      .then((receipt) => {
+        if (receipt !== null) this.#finishContainmentAttempt(slot, token, abort, receipt);
+      })
+      .catch((error: unknown) => {
+        this.#deps.onError?.(
+          `Independent provider containment proof failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
   }
 
   #finishContainmentAttempt(
@@ -533,7 +592,7 @@ export class ProviderProxySetLifecycle {
     }
     slot.completedAttempts += 1;
     if (receipt !== null) {
-      this.#beginAbsenceDelivery(slot, receipt);
+      this.containmentAbsent(slot.identity, receipt);
       return;
     }
     slot.kind = 'containment-wait';
@@ -545,38 +604,6 @@ export class ProviderProxySetLifecycle {
       this.#runContainmentAttempt(slot);
     }, delayMs);
     slot.retryTimer.unref?.();
-  }
-
-  #beginAbsenceDelivery(slot: EstablishedSlot, disappearanceReceipt: string): void {
-    slot.attemptToken += 1;
-    void slot.authority
-      .initiateControlClose()
-      .catch((error: unknown) =>
-        this.#deps.onError?.(
-          `Provider proxy control close after containment failed: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-      );
-    const pendingOperations = new Map(
-      this.#deps.claims.claimsFor(slot.identity).map((claim) => [operationKey(claim.operation), claim.operation]),
-    );
-    const pending: Extract<ProviderProxySetSlot, { kind: 'absence-delivery-pending' }> = {
-      kind: 'absence-delivery-pending',
-      key: slot.key,
-      identity: slot.identity,
-      address: slot.address,
-      capacityClass: slot.capacityClass,
-      disappearanceReceipt,
-      pendingOperations,
-      capsulePath: slot.capsulePath,
-      routeKey: slot.routeKey,
-      retirementTimer: null,
-    };
-    this.#slots.set(slot.key, pending);
-    if (pendingOperations.size === 0) {
-      void this.#retireAndRelease(pending);
-      return;
-    }
-    for (const operation of pendingOperations.values()) void this.#deliverDisappearance(pending, operation);
   }
 
   async #deliverDisappearance(

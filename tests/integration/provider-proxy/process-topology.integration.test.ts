@@ -44,6 +44,9 @@ import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
 import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/index.js';
+import { isProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
 import {
   attemptProviderProxySetInheritance,
   type ProviderProxySetLocator,
@@ -637,6 +640,67 @@ describe('provider-proxy process topology: acquisition', () => {
     const reaped = await result.set.stopAndReap(new AbortController().signal);
     expect(reaped).toHaveProperty('disappearanceReceipt');
     await result.set.initiateControlClose();
+  });
+
+  it('removes a fresh lifecycle route when the real reaper control channel closes', async () => {
+    const baseDir = scopedTempDir('coral-topology-reaper-channel-');
+    const shared = mintSharedSetIdentity();
+    const environment = createFakeRoleEnvironment({
+      base: createRealRuntime(FLAVOR),
+      pluginRoot: baseDir,
+      baseDir,
+      resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
+    });
+    cleanups.push(() => closeHandles(environment));
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const lifecycle = new ProviderProxySetLifecycle({
+      claims,
+      disappearanceConsumer: {
+        containmentDisappeared: async (notice) => ({
+          kind: 'accepted',
+          operation: notice.operation,
+          disposition: 'record-absent',
+        }),
+      },
+      time: environment.outerRuntime().time,
+      proveContainmentAbsent: async () => null,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const routeKey = 'fresh-reaper-channel';
+    const admission = lifecycle.beginFreshAcquisition(routeKey);
+    if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
+
+    const acquired = await acquireProviderProxySet({
+      steps: createProviderProxyAcquisitionSteps(acquisitionOptions(environment, baseDir, shared)),
+      deadlineSignal: AbortSignal.timeout(15_000),
+    });
+    if (acquired.kind !== 'acquired') throw new Error(`acquisition failed: ${JSON.stringify(acquired)}`);
+    if (!isProviderProxyOperationAuthority(acquired.set)) throw new Error('expected durable authority');
+    const set = acquired.set;
+    lifecycle.acquisitionSucceeded(admission.slotId, set);
+    expect(lifecycle.routeFor(routeKey)).toBe(set);
+
+    await environment.handles.reaper?.close();
+    const observedFault = await Promise.race([
+      set.faulted,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 500)),
+    ]);
+    const observation = {
+      fault:
+        observedFault?.kind === 'control-channel-fault'
+          ? { kind: observedFault.kind, role: observedFault.role }
+          : observedFault,
+      routeAvailable: lifecycle.routeFor(routeKey) !== null,
+    };
+    set.stopHeartbeats();
+    await set.initiateControlClose();
+
+    expect(observation).toEqual({
+      fault: { kind: 'control-channel-fault', role: 'reaper' },
+      routeAvailable: false,
+    });
   });
 
   it('redeems a standing set after an abrupt coordinator transport cut without a shutdown handoff', async () => {

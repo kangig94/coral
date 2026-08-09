@@ -162,6 +162,39 @@ describe('control client', () => {
     await expect(call).rejects.toMatchObject({ code: 'control_client_closed', protocolCode: undefined });
   });
 
+  it('notifies current fault listeners inline before compatibility promise reactions', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    const observations: string[] = [];
+    client.onFault(() => observations.push('listener'));
+    void client.faulted.then(() => observations.push('promise'));
+
+    serverSocket.destroy();
+    await client.faulted;
+    await Promise.resolve();
+
+    expect(observations).toEqual(['listener', 'promise']);
+  });
+
+  it('invokes a late fault subscriber before onFault returns', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    const serverSocket = await waitForAccept(sockets);
+    serverSocket.destroy();
+    await client.faulted;
+    let observedCode: string | null = null;
+
+    const unsubscribe = client.onFault((error) => {
+      observedCode = error.code;
+    });
+
+    expect(observedCode).toBe('control_client_closed');
+    expect(unsubscribe).not.toThrow();
+  });
+
   it('rejects a call that exceeds its own budget with control_call_failed', async () => {
     const { socketPath, sockets } = await startTestServer();
     const timer = manualTimer();

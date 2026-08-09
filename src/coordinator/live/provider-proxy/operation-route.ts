@@ -1,3 +1,4 @@
+import type { ControlClient } from '../../../provider-proxy/control-client.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 import {
   activateProviderOperation,
@@ -13,14 +14,17 @@ import {
   type AttachProviderOperationResult,
   type CancelProviderOperationResult,
   type InspectProviderOperationResult,
-  type OperationControlClient,
   type PrepareProviderOperationResult,
   type ProviderProxyOperationActivationDeps,
-  type ProviderProxyAuthorityFault,
   type ProviderOperationPrepareAttempt,
   type SettleProviderOperationResult,
 } from '../../services/provider-proxy-operation-activation.js';
 import type { OperationStopControl } from '../../services/operation-registry.js';
+import type {
+  ProviderProxyAuthorityFault,
+  ProviderProxyAuthorityFaultLatch,
+  ProviderProxyRoleClients,
+} from '../../services/provider-proxy-authority-fault.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set-identity.js';
 import type { ProviderProxySetAuthority, ProviderProxySetRecoveryAuthority } from './authority.js';
 
@@ -95,45 +99,21 @@ export function isProviderProxyOperationAuthority(
 export function createProviderProxyOperationAuthority(deps: {
   base: ProviderProxySetAuthority & Pick<ProviderProxySetRecoveryAuthority, 'registerSuccessionOperation'>;
   setIdentity: ProviderProxySetIdentity;
-  proxyClient: OperationControlClient;
-  guardianClient: OperationControlClient;
+  clients: ProviderProxyRoleClients<ControlClient>;
+  faults: ProviderProxyAuthorityFaultLatch;
   mutationRpcTimeoutMs: number;
 }): DurableProviderProxyOperationAuthority {
-  let resolveFault!: (fault: ProviderProxyAuthorityFault) => void;
-  let faultLatched = false;
-  let latchedFault: ProviderProxyAuthorityFault | null = null;
-  const faultListeners = new Set<(fault: ProviderProxyAuthorityFault) => void>();
-  const faulted = new Promise<ProviderProxyAuthorityFault>((resolve) => {
-    resolveFault = resolve;
-  });
-  const faultAuthority = (fault: ProviderProxyAuthorityFault): void => {
-    if (faultLatched) return;
-    faultLatched = true;
-    latchedFault = fault;
-    for (const listener of faultListeners) listener(fault);
-    resolveFault(fault);
-  };
-  for (const client of [deps.proxyClient, deps.guardianClient]) {
-    void client.faulted?.then((error) => faultAuthority({ policy: null, error }));
-  }
   const activationDeps: ProviderProxyOperationActivationDeps = {
-    proxyClient: deps.proxyClient,
-    guardianClient: deps.guardianClient,
+    proxyClient: deps.clients.proxy,
+    guardianClient: deps.clients.guardian,
     setIdentity: deps.setIdentity,
     mutationRpcTimeoutMs: deps.mutationRpcTimeoutMs,
-    faultAuthority,
+    faultAuthority: deps.faults.latch,
   };
   return {
     ...deps.base,
-    faulted,
-    onFault: (listener) => {
-      if (latchedFault !== null) {
-        listener(latchedFault);
-        return () => undefined;
-      }
-      faultListeners.add(listener);
-      return () => faultListeners.delete(listener);
-    },
+    faulted: deps.faults.faulted,
+    onFault: deps.faults.onFault,
     setIdentity: deps.setIdentity,
     prepareOperation: (attempt) => prepareProviderOperation(activationDeps, attempt),
     inspectOperation: (operation, prepareAttemptKey) =>

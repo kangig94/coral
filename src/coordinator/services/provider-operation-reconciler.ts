@@ -67,8 +67,7 @@ export type ProviderOperationReconciliationEvidence =
       prepareAttemptNumber: number;
       prepareAttemptKey: string;
     }>
-  | Readonly<{ kind: 'released-after-terminal'; settledThroughProviderSeq: number }>
-  | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>;
+  | Readonly<{ kind: 'released-after-terminal'; settledThroughProviderSeq: number }>;
 
 export type ContainmentDisappearanceNotice = Readonly<{
   operation: ProviderOperationIdentity;
@@ -98,8 +97,7 @@ export type ProviderOperationTerminationVerdict =
   | Readonly<{ kind: 'pending' }>
   | Readonly<{ kind: 'executing'; activationAck: ProviderOperationActivationAck }>
   | Readonly<{ kind: 'released-never-started' }>
-  | Readonly<{ kind: 'released-after-terminal' }>
-  | Readonly<{ kind: 'indeterminate-activation'; disappearanceReceipt: string }>;
+  | Readonly<{ kind: 'released-after-terminal' }>;
 
 const activationMayHaveBegun = (record: ProviderOperationRecord): boolean =>
   record.phase === 'proxy-activation-pending' || record.phase === 'activation-resolution-pending';
@@ -131,9 +129,6 @@ export function providerOperationTerminationVerdict(
   ) {
     return { kind: 'released-after-terminal' };
   }
-  if (evidence.kind === 'containment-disappeared' && activationMayHaveBegun(record)) {
-    return { kind: 'indeterminate-activation', disappearanceReceipt: evidence.disappearanceReceipt };
-  }
   return { kind: 'pending' };
 }
 
@@ -151,11 +146,7 @@ type ProviderOperationReconcilerDeps = Readonly<{
   acquireAuthority?: (
     record: ProviderOperationRecord,
     signal: AbortSignal,
-  ) => Promise<
-    | DurableProviderProxyOperationAuthority
-    | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>
-    | null
-  >;
+  ) => Promise<DurableProviderProxyOperationAuthority | null>;
   registry: Pick<LocalOperationRegistry, 'activate' | 'attach' | 'settled' | 'stop'>;
   materializePrepare: (
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
@@ -207,18 +198,27 @@ type AuthorityDriveContext = Readonly<{
   signal: AbortSignal;
 }>;
 
+type ContainmentDisappearanceDeliveryState =
+  | Readonly<{ kind: 'ready' }>
+  | Readonly<{
+      kind: 'delivering';
+      promise: Promise<ContainmentDisappearanceAcceptance>;
+    }>
+  | Readonly<{
+      kind: 'consumed';
+      acceptance: ContainmentDisappearanceAcceptance;
+    }>;
+
+type LatchedContainmentDisappearance = {
+  notice: ContainmentDisappearanceNotice;
+  delivery: ContainmentDisappearanceDeliveryState;
+};
+
 type OperationSerializer = {
   epoch: number;
   activeAbort: AbortController | null;
   inFlight: Promise<void> | null;
-  disappearance: Readonly<{
-    notice: ContainmentDisappearanceNotice;
-    promise: Promise<ContainmentDisappearanceAcceptance>;
-  }> | null;
-  consumed: Readonly<{
-    notice: ContainmentDisappearanceNotice;
-    acceptance: ContainmentDisappearanceAcceptance;
-  }> | null;
+  disappearance: LatchedContainmentDisappearance | null;
 };
 
 function operationKey(identity: ProviderOperationIdentity): string {
@@ -387,38 +387,38 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     }
     const key = operationKey(parsed.operation);
     const serializer = this.#serializerFor(key);
-    const priorNotice = serializer.disappearance?.notice ?? serializer.consumed?.notice;
-    if (priorNotice !== undefined) {
-      if (!this.#sameDisappearanceNotice(priorNotice, parsed)) {
-        return Promise.reject(new Error('containment_disappearance_conflict'));
-      }
-      return (
-        serializer.disappearance?.promise ??
-        Promise.resolve(serializer.consumed?.acceptance as ContainmentDisappearanceAcceptance)
-      );
+    if (serializer.disappearance === null) {
+      serializer.disappearance = { notice: parsed, delivery: { kind: 'ready' } };
+      serializer.epoch += 1;
+      serializer.activeAbort?.abort(new ContainmentDriveFencedError());
+    } else if (!this.#sameDisappearanceNotice(serializer.disappearance.notice, parsed)) {
+      return Promise.reject(new Error('containment_disappearance_conflict'));
     }
 
-    let resolveAcceptance!: (acceptance: ContainmentDisappearanceAcceptance) => void;
-    let rejectAcceptance!: (error: unknown) => void;
-    const promise = new Promise<ContainmentDisappearanceAcceptance>((resolve, reject) => {
-      resolveAcceptance = resolve;
-      rejectAcceptance = reject;
-    });
-    serializer.disappearance = { notice: parsed, promise };
-    serializer.epoch += 1;
-    serializer.activeAbort?.abort(new ContainmentDriveFencedError());
+    const disappearance = serializer.disappearance;
+    switch (disappearance.delivery.kind) {
+      case 'consumed':
+        return Promise.resolve(disappearance.delivery.acceptance);
+      case 'delivering':
+        return disappearance.delivery.promise;
+      case 'ready':
+        break;
+    }
+
     const active = serializer.inFlight ?? Promise.resolve();
     const consume = (): Promise<ContainmentDisappearanceAcceptance> =>
       this.#driveContext.exit(() => this.#consumeContainmentDisappearance(parsed));
-    void active.then(consume, consume).then(
+    const promise = active.then(consume, consume);
+    disappearance.delivery = { kind: 'delivering', promise };
+    void promise.then(
       (acceptance) => {
-        serializer.disappearance = null;
-        serializer.consumed = { notice: parsed, acceptance };
-        resolveAcceptance(acceptance);
+        if (disappearance.delivery.kind !== 'delivering' || disappearance.delivery.promise !== promise) return;
+        disappearance.delivery = { kind: 'consumed', acceptance };
         this.wake();
       },
-      (error: unknown) => {
-        rejectAcceptance(error);
+      () => {
+        if (disappearance.delivery.kind !== 'delivering' || disappearance.delivery.promise !== promise) return;
+        disappearance.delivery = { kind: 'ready' };
       },
     );
     return promise;
@@ -431,7 +431,16 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   ): Promise<void> {
     const key = operationKey(record.operation);
     const serializer = this.#serializerFor(key);
-    if (serializer.disappearance !== null) return serializer.disappearance.promise.then(() => undefined);
+    if (serializer.disappearance !== null) {
+      switch (serializer.disappearance.delivery.kind) {
+        case 'ready':
+          return Promise.resolve();
+        case 'delivering':
+          return serializer.disappearance.delivery.promise.then(() => undefined);
+        case 'consumed':
+          break;
+      }
+    }
     if (serializer.inFlight !== null) return serializer.inFlight;
     serializer.epoch += 1;
     const abort = new AbortController();
@@ -465,7 +474,6 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       activeAbort: null,
       inFlight: null,
       disappearance: null,
-      consumed: null,
     };
     this.#serializers.set(key, created);
     return created;
@@ -548,13 +556,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       }
       authority = authority !== null && sameAuthority(record, authority) ? authority : this.#deps.authorityFor(record);
       if (authority === null && this.#deps.acquireAuthority !== undefined) {
-        const acquired = await this.#awaitAuthority(this.#deps.acquireAuthority(record, signal ?? NEVER_ABORTS));
-        if (acquired !== null && 'kind' in acquired) {
-          const current = await this.#finishContainmentDisappearance(record, acquired.disappearanceReceipt);
-          if (current !== null) this.#schedule(TIMER_MIN_MS);
-          return;
-        }
-        authority = acquired;
+        authority = await this.#awaitAuthority(this.#deps.acquireAuthority(record, signal ?? NEVER_ABORTS));
       }
       if (authority === null) {
         await this.#recordRetry(record, new Error('No live control authority is available for this proxy set.'));
@@ -1145,51 +1147,6 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       this.#settlements.delete(operationKey(record.operation));
       return null;
     } catch (error: unknown) {
-      await this.#recordRetry(record, error);
-      return null;
-    }
-  }
-
-  async #finishContainmentDisappearance(
-    record: ProviderOperationRecord,
-    disappearanceReceipt: string,
-  ): Promise<ProviderOperationRecord | null> {
-    try {
-      if (record.phase === 'settlement-pending') {
-        const deleted = this.#deleteSettledOperation(record);
-        if (deleted.kind === 'conflict') return deleted.current;
-        this.#settlements.delete(operationKey(record.operation));
-        return null;
-      }
-      if (record.phase === 'proxy-activation-pending' || record.phase === 'activation-resolution-pending') {
-        const directive =
-          record.phase === 'activation-resolution-pending'
-            ? record.activationIndeterminate
-            : {
-                kind: 'terminal-failed' as const,
-                code: 'activation_indeterminate',
-                reason: `Provider containment disappeared after activation may have begun (${disappearanceReceipt}).`,
-              };
-        return this.#terminalize(record, directive);
-      }
-      if (record.phase === 'executing') {
-        return this.#terminalize(record, {
-          kind: 'terminal-failed',
-          code: 'provider_lost',
-          reason: `Provider execution was interrupted when its containment disappeared (${disappearanceReceipt}).`,
-        });
-      }
-      if (record.phase === 'prestart-cleanup-pending' && record.afterRelease.kind !== 'local-authorized') {
-        return this.#terminalize(record, record.afterRelease);
-      }
-      const reason =
-        record.phase === 'prestart-cleanup-pending' && record.afterRelease.kind === 'local-authorized'
-          ? record.afterRelease.reason
-          : `Remote start is impossible because the exact provider containment disappeared (${disappearanceReceipt}).`;
-      return this.#transition(record, this.#toLocalRecoveryPending(record, reason, this.#deps.time.now()));
-    } catch (error: unknown) {
-      const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
-      if (current !== null && current.revision !== record.revision) return current;
       await this.#recordRetry(record, error);
       return null;
     }

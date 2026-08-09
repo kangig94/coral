@@ -222,10 +222,18 @@ function fakeSpawnedRole(): unknown {
   };
 }
 
-function enableRoleSender(capsule: unknown, channel: ControlClient, spawnRoleProcess = vi.fn(fakeSpawnedRole)): void {
+function enableRoleSender(
+  capsule: unknown,
+  channel: Pick<ControlClient, 'call' | 'close'>,
+  spawnRoleProcess = vi.fn(fakeSpawnedRole),
+): void {
   roleSenderHarness.enabled = true;
   roleSenderHarness.capsule = capsule;
-  roleSenderHarness.channel = channel;
+  roleSenderHarness.channel = {
+    ...channel,
+    faulted: new Promise<never>(() => undefined),
+    onFault: () => () => undefined,
+  };
   roleSenderHarness.spawnRoleProcess = spawnRoleProcess;
 }
 

@@ -319,7 +319,11 @@ describe('codexThreadProvider', () => {
 
     lease.emit({
       method: 'turn/completed',
-      params: { threadId: 'thread-1', turn: { id: 'turn-other', status: 'interrupted' } },
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        turn: { id: 'turn-other', status: 'interrupted' },
+      },
     });
     expect(onProviderTurnTerminal).not.toHaveBeenCalled();
 

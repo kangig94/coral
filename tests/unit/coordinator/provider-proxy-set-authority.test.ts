@@ -76,7 +76,17 @@ const COORDINATOR_IDENTITY: CoordinatorIdentity = {
 function unreachableClient(): ControlClient {
   return {
     call: () => Promise.reject(new Error('unreachable: this client was not expected to be called')),
+    faulted: new Promise<never>(() => undefined),
+    onFault: () => () => undefined,
     close: () => {},
+  };
+}
+
+function inactiveHeartbeats() {
+  return {
+    proxy: { stop: () => undefined },
+    guardian: { stop: () => undefined },
+    reaper: { stop: () => undefined },
   };
 }
 
@@ -116,6 +126,8 @@ function fakeControlClient(time: VirtualTime, resolveAtMs: number, result: unkno
           resolve(result);
         }, resolveAtMs);
       }),
+    faulted: new Promise<never>(() => undefined),
+    onFault: () => () => undefined,
     close: () => {},
   };
 }
@@ -132,7 +144,7 @@ function authorityWithGuardianClient(
     guardianIdentity: GUARDIAN_IDENTITY,
     reaperIdentity: REAPER_IDENTITY,
     proxyIdentityFields: PROXY_IDENTITY,
-    heartbeats: [],
+    heartbeats: inactiveHeartbeats(),
     coordinatorIdentity: COORDINATOR_IDENTITY,
     handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
     runtime: unusedRuntimePorts(),
@@ -207,6 +219,8 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
         calls.push(params);
         return Promise.resolve({ state: 'containment-absent', disappearanceReceipt: 'gone' });
       },
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
       close: () => {},
     };
     const root = { pid: 9_001, processStartedAtSeconds: 700 };
@@ -231,6 +245,8 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
         calls.push(params);
         return Promise.resolve({ state: 'containment-absent', disappearanceReceipt: 'gone' });
       },
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
       close: () => {},
     };
     const authority = authorityWithGuardianClient(client, []);
@@ -276,6 +292,8 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
         }
         return Promise.resolve(INSTALL_ACK);
       },
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
       close: () => {},
     };
   }
@@ -309,7 +327,7 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
       guardianIdentity: GUARDIAN_IDENTITY,
       reaperIdentity: REAPER_IDENTITY,
       proxyIdentityFields: PROXY_IDENTITY,
-      heartbeats: [],
+      heartbeats: inactiveHeartbeats(),
       coordinatorIdentity: COORDINATOR_IDENTITY,
       handoffCapsulePath,
       runtime,

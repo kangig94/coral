@@ -66,6 +66,7 @@ import {
   attachProviderOperation,
   authorizeProviderOperation,
   prepareProviderOperation,
+  providerOperationErrorCode,
   providerOperationPrepareAttempt,
 } from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import type { ProviderProxySetIdentity } from '#src/coordinator/services/provider-proxy-set-identity.js';
@@ -75,10 +76,12 @@ import { LocalOperationRegistry } from '#src/coordinator/services/operation-regi
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
+import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import {
   createProviderProxyOperationAuthority,
   isProviderProxyOperationAuthority,
+  type DurableProviderProxyOperationAuthority,
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
@@ -500,6 +503,32 @@ async function startCoordinatorActivationSet() {
   return { ...set, db, proxy, proxyControl, setIdentity, started };
 }
 
+function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const lifecycle = new ProviderProxySetLifecycle({
+    claims,
+    disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+    time: { ...timer, now: () => 0 },
+    proveContainmentAbsent: () => new Promise<never>(() => undefined),
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  const authority = {
+    proxyInstanceId: setIdentity.proxyInstanceId,
+    setIdentity,
+    faulted: new Promise<never>(() => undefined),
+    onFault: () => () => undefined,
+    stopHeartbeats: () => undefined,
+    stopAndReap: () => new Promise<never>(() => undefined),
+    initiateControlClose: async () => undefined,
+  } as unknown as DurableProviderProxyOperationAuthority;
+  const admission = lifecycle.beginFreshAcquisition('activation-route');
+  if (admission.kind !== 'accepted') throw new Error('expected activation route admission');
+  lifecycle.acquisitionSucceeded(admission.slotId, authority);
+  return { lifecycle, authority };
+}
+
 const ROTATION_HOST_SPEC: ProviderServerSpec = {
   provider: 'codex',
   command: 'codex',
@@ -655,17 +684,22 @@ async function startRotationSet(operationRegistry: LocalOperationRegistry) {
       containmentKind: CONTAINMENT.containmentKind,
     },
     proxyIdentityFields: set.proxyIdentity,
-    heartbeats: [],
+    heartbeats: {
+      proxy: { stop: () => undefined },
+      guardian: { stop: () => undefined },
+      reaper: { stop: () => undefined },
+    },
     coordinatorIdentity: set.coordinatorIdentity,
     handoffCapsulePath: `${set.proxyEndpoint}.handoff.json`,
     runtime,
     operationRegistry,
   });
+  const clients = { proxy: proxyControl, guardian: set.control, reaper: set.control };
   const authority = createProviderProxyOperationAuthority({
     base,
     setIdentity,
-    proxyClient: proxyControl,
-    guardianClient: set.control,
+    clients,
+    faults: createProviderProxyAuthorityFaultLatch(clients),
     mutationRpcTimeoutMs: 5_000,
   });
 
@@ -904,6 +938,118 @@ describe('provider proxy activation against a real guardian', () => {
     // currently valid payload produces identical bytes with or without that parse.
     expect(activationSchemaParses).toHaveBeenCalledTimes(2);
     expect(activationResultSchemaParses).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { code: 'identity_mismatch', prepare: false },
+    { code: 'operation_not_found', prepare: false },
+    { code: 'unauthorized_control', prepare: true },
+  ] as const)('keeps real endpoint $code refusal before semantic start', async ({ code, prepare }) => {
+    const set = await startCoordinatorActivationSet();
+    const { lifecycle, authority } = establishActivationRoute(set.setIdentity);
+    const faults: unknown[] = [];
+    const deps = {
+      proxyClient: set.proxyControl,
+      guardianClient: set.control,
+      setIdentity: set.setIdentity,
+      mutationRpcTimeoutMs: 5_000,
+      faultAuthority: (fault: unknown) => {
+        faults.push(fault);
+        lifecycle.faultAuthority(set.setIdentity);
+      },
+    };
+    const operation = {
+      jobId: randomUUID(),
+      operationId: randomUUID(),
+      proxyInstanceId: code === 'identity_mismatch' ? randomUUID() : set.proxyIdentity.proxyInstanceId,
+      buildSetId: code === 'identity_mismatch' ? randomUUID() : set.proxyIdentity.buildSetId,
+    };
+    let reservation = asReservation(randomUUID());
+    let jointContainmentReceipt = asJointContainmentReceipt('unprepared-containment');
+    if (prepare) {
+      const prepared = await prepareProviderOperation(deps, providerOperationPrepareAttempt(deps, operation, PREPARED));
+      if (prepared.state !== 'pending-activation') throw new Error('expected a prepared operation');
+      reservation = prepared.reservation;
+      jointContainmentReceipt = asJointContainmentReceipt('wrong-containment-receipt');
+    }
+    let returnedCode: string | null = null;
+
+    try {
+      await activateProviderOperation(deps, operation, {
+        reservation,
+        jointContainmentReceipt,
+        jointActivationReceipt: asJointActivationReceipt('unused-activation-receipt'),
+      });
+    } catch (error: unknown) {
+      returnedCode = providerOperationErrorCode(error);
+    }
+
+    expect({
+      returnedCode,
+      semanticStartCalls: set.started.length,
+      authorityFaults: faults.length,
+      routeAvailable: lifecycle.routeFor('activation-route') === authority,
+    }).toEqual({ returnedCode: code, semanticStartCalls: 0, authorityFaults: 0, routeAvailable: true });
+  });
+
+  it('faults and removes routing when a raw recordStart failure follows a real semantic start', async () => {
+    const set = await startCoordinatorActivationSet();
+    const { lifecycle, authority } = establishActivationRoute(set.setIdentity);
+    const faults: unknown[] = [];
+    const deps = {
+      proxyClient: set.proxyControl,
+      guardianClient: set.control,
+      setIdentity: set.setIdentity,
+      mutationRpcTimeoutMs: 5_000,
+      faultAuthority: (fault: unknown) => {
+        faults.push(fault);
+        lifecycle.faultAuthority(set.setIdentity);
+      },
+    };
+    const operation = {
+      jobId: randomUUID(),
+      operationId: randomUUID(),
+      proxyInstanceId: set.proxyIdentity.proxyInstanceId,
+      buildSetId: set.proxyIdentity.buildSetId,
+    };
+    const prepared = await prepareProviderOperation(deps, providerOperationPrepareAttempt(deps, operation, PREPARED));
+    if (prepared.state !== 'pending-activation') throw new Error('expected a prepared operation');
+    const authorized = await authorizeProviderOperation(deps, operation, {
+      reservation: prepared.reservation,
+      providerRoot: prepared.providerRoot,
+      jointContainmentReceipt: prepared.jointContainmentReceipt,
+    });
+    const recordStart = vi.spyOn(set.proxy.ledger(), 'recordStart').mockImplementationOnce(() => {
+      throw new Error('injected post-start ledger failure');
+    });
+    const routeBeforeActivation = lifecycle.routeFor('activation-route');
+    let returnedCode: string | null = null;
+
+    try {
+      await activateProviderOperation(deps, operation, {
+        reservation: prepared.reservation,
+        jointContainmentReceipt: prepared.jointContainmentReceipt,
+        jointActivationReceipt: authorized.jointActivationReceipt,
+      });
+    } catch (error: unknown) {
+      returnedCode = providerOperationErrorCode(error);
+    } finally {
+      recordStart.mockRestore();
+    }
+
+    expect({
+      semanticStartCalls: set.started.length,
+      returnedCode,
+      authorityFaults: faults.length,
+      routeBeforeActivation,
+      routeAfterFailure: lifecycle.routeFor('activation-route'),
+    }).toEqual({
+      semanticStartCalls: 1,
+      returnedCode: 'protocol_violation',
+      authorityFaults: 1,
+      routeBeforeActivation: authority,
+      routeAfterFailure: null,
+    });
   });
 
   it('forwards the ledger’s own reservation, so a later operation-activate.v1 presenting it is accepted', async () => {
@@ -1165,6 +1311,7 @@ describe('provider proxy cumulative root rotation', () => {
       claims,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: runtime.time,
+      proveContainmentAbsent: async () => null,
       onSlotReleased: (routeKey) => manager.providerProxySlotReleased(routeKey),
     });
     lifecycle.initializeClaimSlots();

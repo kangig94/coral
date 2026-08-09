@@ -1,8 +1,7 @@
-import { backendLog } from '../../infra/backend-log.js';
-import { errorMessage } from '../../infra/error-format.js';
 import { providerHandoffCapsulePath } from '../../infra/path/index.js';
 import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import { createMonotonicClock } from '../../infra/monotonic-clock.js';
+import { errorMessage } from '../../infra/error-format.js';
 import { reapRecordedContainment } from '../../infra/process-containment.js';
 import {
   readHandoffCapsuleFile,
@@ -39,7 +38,10 @@ import {
 } from '../live/provider-proxy/acquisition-steps.js';
 import { establishRoleControl } from '../live/provider-proxy/role-control.js';
 import { createProviderProxySetAuthority } from '../live/provider-proxy/set-authority.js';
-import { startHeartbeatLoop, type HeartbeatLoop } from '../live/provider-proxy/heartbeat.js';
+import {
+  startProviderProxyAuthorityHeartbeats,
+  type ProviderProxyRoleHeartbeats,
+} from '../live/provider-proxy/heartbeat.js';
 import {
   createProviderProxyOperationAuthority,
   notifyProviderProxyControlEstablished,
@@ -55,6 +57,7 @@ import {
   type ProviderProxySetIdentity,
 } from './provider-proxy-set-identity.js';
 import type { ProviderProxyOperationSnapshot } from './operation-registry.js';
+import { createProviderProxyAuthorityFaultLatch } from './provider-proxy-authority-fault.js';
 
 /**
  * The branch of proxy-set acquisition that redeems a predecessor's continuously recoverable set instead of
@@ -111,11 +114,12 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
   /** Wired onto the redeemed proxy connection exactly as ordinary acquisition wires it onto a freshly opened
    *  one (`ProviderProxyAcquisitionStepsOptions.onProviderEvent`'s own doc). */
   onProviderEvent?(): ProviderEventHandler;
-  confirmContainmentDisappearance?: (
-    reference: ProviderProxySetLocator,
+  proveContainmentAbsent?: (
+    identity: ProviderProxySetIdentity,
     db: Database,
     signal: AbortSignal,
   ) => Promise<string | null>;
+  registerInheritedSet?(set: ProviderProxyOperationAuthority): void;
 }>;
 
 export type ProviderProxySetInheritanceOutcome =
@@ -172,14 +176,17 @@ function capsuleMatchesLocator(
 
 const providerSetDisappearanceClockScope = Symbol('provider-set-disappearance');
 
-async function confirmProviderProxySetDisappearance(
-  reference: ProviderProxySetLocator,
+async function proveProviderProxySetContainmentAbsent(
+  identity: ProviderProxySetIdentity,
   db: Database,
   runtime: Runtime,
   signal: AbortSignal,
 ): Promise<string | null> {
   const platform = runtime.env.platform() as NodeJS.Platform;
-  const enforcerIdentities = [reference.locator.guardian, reference.locator.reaper];
+  const enforcerIdentities = [
+    { pid: identity.guardianPid, processStartedAtSeconds: identity.guardianProcessStartedAtSeconds },
+    { pid: identity.reaperPid, processStartedAtSeconds: identity.reaperProcessStartedAtSeconds },
+  ];
   const enforcerMayStillBeLive = enforcerIdentities.some((identity) => {
     try {
       const observed = probeProcessStartedAtSeconds(identity.pid, platform);
@@ -198,9 +205,8 @@ async function confirmProviderProxySetDisappearance(
   const roots = new Map<string, Readonly<{ pid: number; processStartedAtSeconds: number }>>();
   for (const record of readProviderOperations(db)) {
     if (
-      record.operation.proxyInstanceId !== reference.operation.proxyInstanceId ||
-      record.operation.buildSetId !== reference.operation.buildSetId ||
-      !('providerRoot' in record)
+      !('providerRoot' in record) ||
+      !providerProxySetIdentitiesEqual(providerProxySetIdentityFromRecord(record), identity)
     ) {
       continue;
     }
@@ -208,9 +214,9 @@ async function confirmProviderProxySetDisappearance(
   }
   const providerRoots = [...roots.values()];
   const containment = {
-    pid: reference.locator.containment.pid,
-    processStartedAtSeconds: reference.locator.containment.processStartedAtSeconds,
-    processGroupId: reference.locator.containment.processGroupId,
+    pid: identity.proxyPid,
+    processStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+    processGroupId: identity.proxyProcessGroupId,
   };
   const clock = createMonotonicClock(providerSetDisappearanceClockScope);
   await reapRecordedContainment(
@@ -262,7 +268,7 @@ async function redeemCapsule(
   const opened: ControlClient[] = [];
   // Declared outside the `try` so the `catch` below can stop whatever this attempt already started, however
   // far it got — an empty array is the correct, safe value for a failure before any heartbeat loop exists.
-  let heartbeats: HeartbeatLoop[] = [];
+  let heartbeats: ProviderProxyRoleHeartbeats | null = null;
 
   try {
     // Plan order: guardian first — it is the sole linearization point for the plaintext secret and the party
@@ -374,41 +380,36 @@ async function redeemCapsule(
       throw new Error('Provider proxy redemption identity disagrees with the durable operation record.');
     }
 
-    // Keepalive is already established the moment `establishRoleControl` returns for each role — every one of
-    // the three opens above already echoed its own first challenge before this line runs. What starts here is
-    // the ongoing renewal past that first echo, exactly mirroring ordinary acquisition's own three loops.
-    //
-    // A degrading heartbeat is otherwise silent until the enforcer's own deadline fires (`heartbeat.ts`'s own
-    // doc) — logged here, per role, so an operator sees it before then.
-    const onHeartbeatError = (role: 'guardian' | 'reaper' | 'proxy', instanceId: string) => (error: unknown) => {
-      backendLog.warn(`provider-proxy ${role} heartbeat echo failed for ${instanceId}: ${errorMessage(error)}`);
+    const clients = {
+      proxy: proxySession.client,
+      guardian: guardianSession.client,
+      reaper: reaperSession.client,
     };
-    heartbeats = [
-      startHeartbeatLoop(
-        guardianSession.client,
-        'guardian.heartbeat.v1',
-        runtime,
-        guardianSession.opened.controlEpoch,
-        guardianSession.nextHeartbeatChallenge,
-        onHeartbeatError('guardian', guardianIdentity.guardianInstanceId),
-      ),
-      startHeartbeatLoop(
-        reaperSession.client,
-        'reaper.heartbeat.v1',
-        runtime,
-        reaperSession.opened.controlEpoch,
-        reaperSession.nextHeartbeatChallenge,
-        onHeartbeatError('reaper', reaperIdentity.reaperInstanceId),
-      ),
-      startHeartbeatLoop(
-        proxySession.client,
-        'control.heartbeat.v1',
-        runtime,
-        proxySession.opened.controlEpoch,
-        proxySession.nextHeartbeatChallenge,
-        onHeartbeatError('proxy', proxyIdentity.proxyInstanceId),
-      ),
-    ];
+    const faults = createProviderProxyAuthorityFaultLatch(clients);
+    heartbeats = startProviderProxyAuthorityHeartbeats(
+      {
+        proxy: {
+          client: clients.proxy,
+          controlEpoch: proxySession.opened.controlEpoch,
+          nextHeartbeatChallenge: proxySession.nextHeartbeatChallenge,
+          instanceId: proxyIdentity.proxyInstanceId,
+        },
+        guardian: {
+          client: clients.guardian,
+          controlEpoch: guardianSession.opened.controlEpoch,
+          nextHeartbeatChallenge: guardianSession.nextHeartbeatChallenge,
+          instanceId: guardianIdentity.guardianInstanceId,
+        },
+        reaper: {
+          client: clients.reaper,
+          controlEpoch: reaperSession.opened.controlEpoch,
+          nextHeartbeatChallenge: reaperSession.nextHeartbeatChallenge,
+          instanceId: reaperIdentity.reaperInstanceId,
+        },
+      },
+      runtime,
+      faults,
+    );
     signal.throwIfAborted();
 
     // Reusing the verified capsule keeps every later epoch bound to the same exact set and protected secret.
@@ -430,10 +431,11 @@ async function redeemCapsule(
     const set = createProviderProxyOperationAuthority({
       base,
       setIdentity,
-      proxyClient: proxySession.client,
-      guardianClient: guardianSession.client,
+      clients,
+      faults,
       mutationRpcTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     });
+    deps.registerInheritedSet?.(set);
 
     return set;
   } catch (error: unknown) {
@@ -443,7 +445,9 @@ async function redeemCapsule(
     // loop left running against a closed client would call `client.call` into an `onError` that logs and
     // continues, forever, on every future heartbeat interval — this attempt failed, so nothing is left to
     // keep alive.
-    for (const heartbeat of heartbeats) heartbeat.stop();
+    heartbeats?.proxy.stop();
+    heartbeats?.guardian.stop();
+    heartbeats?.reaper.stop();
     for (const client of opened) client.close();
     throw error;
   }
@@ -490,12 +494,13 @@ export async function attemptProviderProxySetInheritance(
   deps: ProviderProxySetInheritanceDeps,
   signal: AbortSignal,
 ): Promise<ProviderProxySetInheritanceOutcome> {
+  const identity = providerProxySetIdentityFromRecord(locator);
   let outcome: ProviderProxySetInheritanceOutcome;
   try {
     outcome = await redeem(locator, deps, signal);
   } catch (error: unknown) {
     try {
-      const disappearanceReceipt = await deps.confirmContainmentDisappearance?.(locator, db, signal);
+      const disappearanceReceipt = await deps.proveContainmentAbsent?.(identity, db, signal);
       if (disappearanceReceipt !== undefined && disappearanceReceipt !== null) {
         return { kind: 'containment-disappeared', disappearanceReceipt };
       }
@@ -510,7 +515,7 @@ export async function attemptProviderProxySetInheritance(
   }
   if (outcome.kind !== 'not-bequeathed') return outcome;
   try {
-    const disappearanceReceipt = await deps.confirmContainmentDisappearance?.(locator, db, signal);
+    const disappearanceReceipt = await deps.proveContainmentAbsent?.(identity, db, signal);
     return disappearanceReceipt === undefined || disappearanceReceipt === null
       ? outcome
       : { kind: 'containment-disappeared', disappearanceReceipt };
@@ -540,6 +545,7 @@ export interface ProviderProxySetInheritance {
     capsulePath: string,
     signal: AbortSignal,
   ): Promise<DurableProviderProxyOperationAuthority>;
+  proveContainmentAbsent(identity: ProviderProxySetIdentity, db: Database, signal: AbortSignal): Promise<string | null>;
 }
 
 export type CreateProviderProxySetInheritanceOptions = Readonly<{
@@ -547,7 +553,6 @@ export type CreateProviderProxySetInheritanceOptions = Readonly<{
   identity: ProviderProxySetAcquisitionIdentity;
   operationRegistry: ProviderProxyOperationSnapshot;
   onProviderEvent?(): ProviderEventHandler;
-  confirmContainmentDisappearance?: ProviderProxySetInheritanceDeps['confirmContainmentDisappearance'];
   /** Where a successfully inherited set is folded in so it participates in this coordinator's own later
    *  shutdown — `DefaultProviderHostManager.registerInheritedSet` in production. */
   registerInheritedSet(set: ProviderProxyOperationAuthority): void;
@@ -563,7 +568,9 @@ export function createProviderProxySetInheritance(
 ): ProviderProxySetInheritance {
   const inFlightByIdentity = new Map<string, Promise<ProviderProxySetInheritanceOutcome>>();
 
-  const deps = (): ProviderProxySetInheritanceDeps | null => {
+  const deps = (
+    registerInheritedSet?: (set: ProviderProxyOperationAuthority) => void,
+  ): ProviderProxySetInheritanceDeps | null => {
     const pid = options.runtime.env.pid();
     const platform = options.runtime.env.platform() as NodeJS.Platform;
     const processStartedAtSeconds = probeProcessStartedAtSeconds(pid, platform);
@@ -579,10 +586,9 @@ export function createProviderProxySetInheritance(
         buildSetId: options.identity.buildSetId,
       },
       operationRegistry: options.operationRegistry,
-      confirmContainmentDisappearance:
-        options.confirmContainmentDisappearance ??
-        ((reference, store, proofSignal) =>
-          confirmProviderProxySetDisappearance(reference, store, options.runtime, proofSignal)),
+      proveContainmentAbsent: (identity, store, proofSignal) =>
+        proveProviderProxySetContainmentAbsent(identity, store, options.runtime, proofSignal),
+      ...(registerInheritedSet === undefined ? {} : { registerInheritedSet }),
       ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
     };
   };
@@ -594,7 +600,7 @@ export function createProviderProxySetInheritance(
       if (existing !== undefined) return existing;
       const attempt = (async (): Promise<ProviderProxySetInheritanceOutcome> => {
         try {
-          const inheritanceDeps = deps();
+          const inheritanceDeps = deps(options.registerInheritedSet);
           let outcome: ProviderProxySetInheritanceOutcome;
           if (inheritanceDeps === null) {
             outcome = { kind: 'not-bequeathed', reason: 'could not read this coordinator process’s own start time' };
@@ -605,7 +611,6 @@ export function createProviderProxySetInheritance(
             outcome = await attemptProviderProxySetInheritance(locator, db, inheritanceDeps, bounded);
           }
           if (outcome.kind === 'inherited') {
-            options.registerInheritedSet(outcome.set);
             notifyProviderProxyControlEstablished(outcome.set);
           }
           return outcome;
@@ -629,5 +634,7 @@ export function createProviderProxySetInheritance(
         AbortSignal.any([signal, AbortSignal.timeout(INHERITANCE_REDEMPTION_DEADLINE_MS)]),
       );
     },
+    proveContainmentAbsent: (identity, db, signal) =>
+      proveProviderProxySetContainmentAbsent(identity, db, options.runtime, signal),
   };
 }

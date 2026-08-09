@@ -6,7 +6,7 @@ import { providerOperationPrepareAttempt } from '#src/coordinator/services/provi
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set-identity.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
-import type { ProviderProxyAuthorityFault } from '#src/coordinator/services/provider-proxy-operation-activation.js';
+import type { ProviderProxyAuthorityFault } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderOperationPrepareMaterializationResult } from '#src/coordinator/services/provider-operation-prepare.js';
 import type { ProviderOperationRecoveryAcceptance } from '#src/coordinator/services/recovery/index.js';
 import {
@@ -32,6 +32,10 @@ import {
   asJointContainmentReceipt,
   asReservation,
 } from '#tests/helpers/provider-proxy-correlation.js';
+
+function proxyHeartbeatFault(error: unknown): ProviderProxyAuthorityFault {
+  return { kind: 'heartbeat-failed', role: 'proxy', method: 'control.heartbeat.v1', error };
+}
 
 import { providerOperationRecord } from '../../store/provider-operation-fixtures.js';
 
@@ -76,11 +80,6 @@ describe('provider operation termination verdicts', () => {
         { kind: 'released-after-terminal', settledThroughProviderSeq: 4 },
         'released-after-terminal',
       ],
-      [
-        providerOperationRecord('activation-resolution-pending'),
-        { kind: 'containment-disappeared', disappearanceReceipt: 'gone' },
-        'indeterminate-activation',
-      ],
       [providerOperationRecord('prepare-pending'), { kind: 'unresolved' }, 'pending'],
     ] satisfies ReadonlyArray<readonly [ProviderOperationRecord, ProviderOperationReconciliationEvidence, string]>;
 
@@ -122,6 +121,7 @@ function lifecycleForSchedule(
       setTimeout: () => ({ unref: () => undefined }),
       clearTimeout: () => undefined,
     },
+    proveContainmentAbsent: async () => null,
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
@@ -135,11 +135,11 @@ describe('provider proxy exactly-once containment schedules', () => {
     let emitFault = (_fault: ProviderProxyAuthorityFault): void => undefined;
     const harness = createHarness({
       prepareOperation: async () => {
-        emitFault({ policy: null, error: new Error('ambiguous prepare acknowledgement') });
+        emitFault(proxyHeartbeatFault(new Error('ambiguous prepare acknowledgement')));
         throw new Error('ambiguous prepare acknowledgement');
       },
       inspectOperation: async () => {
-        emitFault({ policy: null, error: new Error('inspection remained ambiguous after prepare') });
+        emitFault(proxyHeartbeatFault(new Error('inspection remained ambiguous after prepare')));
         throw new Error('inspection remained ambiguous');
       },
       recoverLocalJob: async (record) => {
@@ -171,7 +171,7 @@ describe('provider proxy exactly-once containment schedules', () => {
     const harness = createHarness({
       activatePreparedOperation: async () => {
         remoteStarts += 1;
-        emitFault({ policy: null, error: new Error('activation acknowledgement failed after start') });
+        emitFault(proxyHeartbeatFault(new Error('activation acknowledgement failed after start')));
         throw new Error('activation acknowledgement failed after start');
       },
       inspectOperation: async () => {
@@ -330,11 +330,7 @@ function createHarness(
     acquireAuthority?: (
       record: ProviderOperationRecord,
       signal: AbortSignal,
-    ) => Promise<
-      | DurableProviderProxyOperationAuthority
-      | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>
-      | null
-    >;
+    ) => Promise<DurableProviderProxyOperationAuthority | null>;
     stopOperation?: (
       cause: Parameters<ReturnType<DurableProviderProxyOperationAuthority['buildOperationControl']>['stop']>[0],
     ) => Promise<void>;
@@ -763,6 +759,66 @@ describe('ProviderOperationReconciler publication', () => {
     await Promise.resolve();
     expect(harness.registry.attach).not.toHaveBeenCalled();
     expect(readProviderOperation(harness.db, recovered.operation)).toBeNull();
+  });
+
+  it('retries rejected disappearance delivery without forgetting the notice', async () => {
+    const harness = createHarness();
+    const terminalize = harness.terminalization.terminalize;
+    const terminalizeCalls = vi
+      .spyOn(harness.terminalization, 'terminalize')
+      .mockImplementationOnce(() => {
+        throw new Error('transient terminalization failure');
+      })
+      .mockImplementation(terminalize);
+    const recovered = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, recovered);
+    const notice = {
+      operation: recovered.operation,
+      setIdentity: providerProxySetIdentityFromRecord(recovered),
+      disappearanceReceipt: 'retryable-absence-receipt',
+    };
+
+    await expect(harness.reconciler.containmentDisappeared(notice)).rejects.toThrow(
+      'transient terminalization failure',
+    );
+    expect(terminalizeCalls).toHaveBeenCalledTimes(1);
+    expect(readProviderOperation(harness.db, recovered.operation)?.phase).toBe('executing');
+
+    let retryError: string | null = null;
+    await harness.reconciler.containmentDisappeared(notice).catch((error: unknown) => {
+      retryError = error instanceof Error ? error.message : String(error);
+    });
+    expect({
+      retryError,
+      terminalizeCalls: terminalizeCalls.mock.calls.length,
+      phase: readProviderOperation(harness.db, recovered.operation)?.phase ?? 'missing',
+    }).toEqual({ retryError: null, terminalizeCalls: 2, phase: 'missing' });
+  });
+
+  it('rejects a conflicting disappearance receipt after delivery failure', async () => {
+    const harness = createHarness();
+    const terminalizeCalls = vi.spyOn(harness.terminalization, 'terminalize').mockImplementationOnce(() => {
+      throw new Error('transient terminalization failure');
+    });
+    const recovered = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, recovered);
+    const notice = {
+      operation: recovered.operation,
+      setIdentity: providerProxySetIdentityFromRecord(recovered),
+      disappearanceReceipt: 'first-absence-receipt',
+    };
+
+    await expect(harness.reconciler.containmentDisappeared(notice)).rejects.toThrow(
+      'transient terminalization failure',
+    );
+    await expect(
+      harness.reconciler.containmentDisappeared({
+        ...notice,
+        disappearanceReceipt: 'conflicting-absence-receipt',
+      }),
+    ).rejects.toThrow('containment_disappearance_conflict');
+    expect(terminalizeCalls).toHaveBeenCalledTimes(1);
+    expect(readProviderOperation(harness.db, recovered.operation)?.phase).toBe('executing');
   });
 
   it('replays a durable stop intent when attaching an executing operation after restart', async () => {
@@ -1224,33 +1280,6 @@ describe('ProviderOperationReconciler publication', () => {
     await reconciliation;
   });
 
-  it('persists proven pre-execution containment disappearance as a local handoff', async () => {
-    const recoverLocalJob = vi.fn(async (record) => providerRecoveryAccepted(record.operation.jobId));
-    const completeLocalRecovery = vi.fn();
-    const harness = createHarness({
-      authorityFor: () => null,
-      acquireAuthority: async () => ({
-        kind: 'containment-disappeared',
-        disappearanceReceipt: 'containment-is-absent',
-      }),
-      recoverLocalJob,
-      completeLocalRecovery,
-    });
-    insertProviderOperation(harness.db, harness.record);
-
-    await harness.reconciler.reconcile(harness.record);
-
-    expect({
-      sagaPhase: readProviderOperation(harness.db, harness.record.operation)?.phase ?? null,
-      recoverCalls: recoverLocalJob.mock.calls.length,
-      localCompletions: completeLocalRecovery.mock.calls.length,
-    }).toEqual({
-      sagaPhase: 'local-recovery-pending',
-      recoverCalls: 0,
-      localCompletions: 0,
-    });
-  });
-
   it('keeps local recovery durable until exact generic recovery accepts it', async () => {
     const accepted = deferred();
     const recoverLocalJob = vi.fn(async (record) => {
@@ -1672,79 +1701,6 @@ describe('ProviderOperationReconciler publication', () => {
 
     expect(settleCalls).toBe(2);
     expect(replayedAlreadyReleased).toBe(true);
-  });
-
-  it('takes the phase-specific exit after exact containment disappearance', async () => {
-    const terminalCleanup = providerOperationRecordSchema.parse({
-      ...providerOperationRecord('prestart-cleanup-pending'),
-      afterRelease: {
-        kind: 'terminal-failed',
-        code: 'authorization_expired',
-        reason: 'The durable authorization expired before recovery.',
-      },
-    });
-    const cases = [
-      { record: providerOperationRecord('prepare-pending'), durablePhase: 'local-recovery-pending', failureCode: null },
-      {
-        record: providerOperationRecord('guardian-activation-pending'),
-        durablePhase: 'local-recovery-pending',
-        failureCode: null,
-      },
-      {
-        record: providerOperationRecord('prestart-cleanup-pending'),
-        durablePhase: 'local-recovery-pending',
-        failureCode: null,
-      },
-      { record: terminalCleanup, durablePhase: null, failureCode: 'authorization_expired' },
-      {
-        record: providerOperationRecord('proxy-activation-pending'),
-        durablePhase: null,
-        failureCode: 'activation_indeterminate',
-      },
-      {
-        record: providerOperationRecord('activation-resolution-pending'),
-        durablePhase: null,
-        failureCode: 'activation_indeterminate',
-      },
-      { record: providerOperationRecord('executing'), durablePhase: null, failureCode: 'provider_lost' },
-      { record: providerOperationRecord('settlement-pending'), durablePhase: null, failureCode: null },
-    ] as const;
-
-    for (const { record, durablePhase, failureCode } of cases) {
-      const harness = createHarness();
-      insertProviderOperation(harness.db, record);
-      const acquireAuthority = vi.fn(async () => ({
-        kind: 'containment-disappeared' as const,
-        disappearanceReceipt: 'group:101,leader:101@1000,root:104@1003',
-      }));
-      const reconciler = new ProviderOperationReconciler({
-        getProgressStore: () => harness.progressStore,
-        authorityFor: () => null,
-        acquireAuthority,
-        registry: harness.registry,
-        materializePrepare: () => MATERIALIZED_PREPARED,
-        recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
-        completeLocalRecovery: () => undefined,
-        terminalization: harness.terminalization,
-        backendNamespace: 'tests',
-        time: {
-          now: () => 100,
-          setTimeout: () => ({ unref: () => undefined }),
-          clearTimeout: () => undefined,
-        },
-      });
-
-      await reconciler.reconcileAtStartup(new AbortController().signal);
-
-      expect(acquireAuthority, record.phase).toHaveBeenCalledWith(record, expect.any(AbortSignal));
-      expect(readProviderOperation(harness.db, record.operation)?.phase ?? null, record.phase).toBe(durablePhase);
-      const failureCodes = harness.appended
-        .filter((event) => (event as { type?: string }).type === 'job.progress.emitted')
-        .map((event) => (event as { body: { detail?: { code?: string } } }).body.detail?.code);
-      expect(failureCodes, record.phase).toEqual(failureCode === null ? [] : [failureCode]);
-      expect(harness.registry.activate, record.phase).not.toHaveBeenCalled();
-      expect(harness.registry.attach, record.phase).not.toHaveBeenCalled();
-    }
   });
 });
 

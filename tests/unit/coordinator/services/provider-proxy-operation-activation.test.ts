@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 
 import { describe, expect, it } from 'vitest';
 
-import type { OperationIdentity, ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
+import {
+  PROXY_CONTROL_PROTOCOL_ERROR_CODES,
+  type OperationIdentity,
+  type ProxyControlProtocolErrorCode,
+  type ProxyPreparedAppServerOperation,
+} from '#src/provider-proxy/protocol.js';
 import {
   activateProviderOperation,
   attachProviderOperation,
@@ -204,11 +209,19 @@ describe('provider proxy operation mutations', () => {
     ]);
   });
 
-  it('faults protocol_violation but preserves the audited pre-effect activation refusals', async () => {
-    const failure = (protocolCode: string): Error & { code: string; protocolCode: string } =>
+  it('keeps exactly the four audited activation codes non-faulting across the complete protocol code set', async () => {
+    const auditedPreEffectCodes = new Set<ProxyControlProtocolErrorCode>([
+      'method_not_found',
+      'identity_mismatch',
+      'operation_not_found',
+      'unauthorized_control',
+    ]);
+    const failure = (protocolCode: ProxyControlProtocolErrorCode): Error & { code: string; protocolCode: string } =>
       Object.assign(new Error(protocolCode), { code: 'control_call_failed', protocolCode });
-    const faults: unknown[] = [];
-    const activate = async (protocolCode: string): Promise<void> => {
+    const observed: Array<readonly [ProxyControlProtocolErrorCode, number]> = [];
+
+    for (const protocolCode of PROXY_CONTROL_PROTOCOL_ERROR_CODES) {
+      const faults: unknown[] = [];
       const proxy: OperationControlClient = {
         call: () => Promise.reject(failure(protocolCode)),
       };
@@ -223,12 +236,12 @@ describe('provider proxy operation mutations', () => {
           jointActivationReceipt: 'joint-activation-1',
         }),
       ).rejects.toThrow(protocolCode);
-    };
+      observed.push([protocolCode, faults.length]);
+    }
 
-    await activate('identity_mismatch');
-    expect(faults).toEqual([]);
-    await activate('protocol_violation');
-    expect(faults).toHaveLength(1);
+    expect(observed).toEqual(
+      PROXY_CONTROL_PROTOCOL_ERROR_CODES.map((code) => [code, auditedPreEffectCodes.has(code) ? 0 : 1]),
+    );
   });
 
   it('strictly validates attachment before and after the wire call', async () => {
