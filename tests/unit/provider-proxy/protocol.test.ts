@@ -617,6 +617,17 @@ describe('proxy control-method request schemas, shared with their coordinator se
     expect(proxyOperationPrepareParamsSchema.safeParse({ ...valid, unexpected: true }).success).toBe(false);
   });
 
+  it('operation.prepare.v1: rejects a prepared provider name the registry cannot persist', () => {
+    const invalid = {
+      operation,
+      hostFingerprint: 'a'.repeat(64),
+      prepareAttemptNumber: 1,
+      prepared: { ...PREPARED_OPERATION, provider: 'Codex' },
+    };
+
+    expect(proxyOperationPrepareParamsSchema.safeParse(invalid).success).toBe(false);
+  });
+
   it('the reservation shape serves renew, cancel-pending, and activate alike', () => {
     const valid = { operation, reservation: UUID_A };
     expect(proxyOperationReservationParamsSchema.safeParse(valid).success).toBe(true);

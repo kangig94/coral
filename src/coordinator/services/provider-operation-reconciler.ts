@@ -575,17 +575,7 @@ export class ProviderOperationReconciler {
         throw new Error('Cancellation acknowledgement did not fence the journaled prepare attempt.');
       }
 
-      let materialized: ProviderOperationPrepareMaterializationResult;
-      try {
-        materialized = await this.#deps.materializePrepare(record);
-      } catch (error: unknown) {
-        materialized = providerOperationPreparePermanentRefusalSchema.parse({
-          state: 'permanent-refusal',
-          code: 'prepare_materialization_refused',
-          disposition: 'terminal-failure',
-          reason: boundedPrepareRefusalReason(error),
-        });
-      }
+      const materialized = await this.#deps.materializePrepare(record);
       if (materialized.state === 'permanent-refusal') {
         return this.#transition(record, this.#prepareRefusalRecord(record, materialized));
       }

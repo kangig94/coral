@@ -1171,29 +1171,81 @@ describe('ProviderOperationReconciler publication', () => {
     });
   });
 
-  it('releases and terminalizes an expired recovered authorization instead of retrying it', async () => {
+  it('keeps a thrown materialization dependency outage retryable without rotating the attempt', async () => {
     const prepareOperation = vi.fn();
+    const materializePrepare = vi.fn(async () => {
+      throw new Error('temporary credential store unavailable');
+    });
+    const harness = createHarness({
+      prepareOperation,
+      inspectOperation: async () => ({ state: 'absent' }),
+      materializePrepare,
+    });
+    insertProviderOperation(harness.db, harness.record);
+
+    await harness.reconciler.reconcile(harness.record, harness.authority);
+
+    expect({
+      materializations: materializePrepare.mock.calls.length,
+      durable: readProviderOperation(harness.db, harness.record.operation),
+      terminalEvents: harness.appended,
+    }).toMatchObject({
+      materializations: 1,
+      durable: {
+        phase: 'prepare-pending',
+        prepareAttemptNumber: 1,
+        prepareAttemptKey: harness.record.prepareAttemptKey,
+        retryCount: 1,
+        lastError: expect.objectContaining({ message: 'temporary credential store unavailable' }),
+      },
+      terminalEvents: [],
+    });
+    expect(prepareOperation).not.toHaveBeenCalled();
+  });
+
+  it('releases and terminalizes an expired recovered authorization instead of retrying it', async () => {
+    const sentPrepareAttemptNumbers: number[] = [];
+    const prepareOperation = vi.fn(async (attempt) => {
+      sentPrepareAttemptNumbers.push(attempt.request.prepareAttemptNumber);
+      return {
+        state: 'pending-activation' as const,
+        reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+        leaseExpiresInMs: 15_000,
+        providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+        jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+      };
+    });
     const cancelOperation = vi.fn(async (operation, prepareAttemptNumber, prepareAttemptKey) => ({
       state: 'released-never-started' as const,
       operation,
       prepareAttemptNumber,
       prepareAttemptKey,
     }));
-    const harness = createHarness({
-      prepareOperation,
-      inspectOperation: async () => ({ state: 'absent' }),
-      cancelOperation,
-      materializePrepare: async () => ({
+    const materializePrepare = vi
+      .fn()
+      .mockResolvedValueOnce({
         state: 'permanent-refusal',
         code: 'authorization_expired',
         disposition: 'terminal-failure',
         reason: 'Provider operation child authorization has expired.',
-      }),
+      })
+      .mockResolvedValue(MATERIALIZED_PREPARED);
+    const harness = createHarness({
+      prepareOperation,
+      inspectOperation: async () => ({ state: 'absent' }),
+      cancelOperation,
+      materializePrepare,
     });
     insertProviderOperation(harness.db, harness.record);
 
     await harness.reconciler.reconcile(harness.record, harness.authority);
+    const afterRefusal = readProviderOperation(harness.db, harness.record.operation);
+    if (afterRefusal !== null) {
+      await harness.reconciler.reconcile(afterRefusal, harness.authority);
+    }
 
+    expect(sentPrepareAttemptNumbers).toEqual([]);
+    expect(materializePrepare).toHaveBeenCalledOnce();
     expect(cancelOperation).toHaveBeenCalledTimes(2);
     expect(prepareOperation).not.toHaveBeenCalled();
     expect(readProviderOperation(harness.db, harness.record.operation)).toBeNull();

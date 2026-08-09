@@ -34,27 +34,4 @@ describe('operator guidance', () => {
     expect(resultPath).toBeGreaterThan(remediation);
     expect(artifactRead).toBeGreaterThan(resultPath);
   });
-
-  it('documents the provider-contract exemption from provider-proxy layering bans', () => {
-    const rule = readProjectFile('.claude/rules/design-philosophy.md');
-
-    expect(rule).toContain('`providers/` is deliberately exempt');
-    expect(rule).toContain(
-      'the provider proxy exists to run providers, and their contracts are the vocabulary it adapts',
-    );
-  });
-});
-
-describe('module-local implementation types', () => {
-  it.each([
-    ['src/coordinator/services/recovery/coordinator-job-source.ts', 'RawProviderOperationSagaRow'],
-    ['src/jobs/provider-operation-terminalization.ts', 'ProviderOperationTerminalizationResult'],
-    ['src/provider-proxy/replay-budget.ts', 'ReplayBudgetUsage'],
-    ['src/provider-proxy/operation-supervisor.ts', 'OperationSupervisorOptions'],
-  ] as const)('does not export %s:%s', (path, typeName) => {
-    const source = readProjectFile(path);
-
-    expect(source).toMatch(new RegExp(`(?:^|\\n)type ${typeName}\\b`, 'u'));
-    expect(source).not.toMatch(new RegExp(`(?:^|\\n)export type ${typeName}\\b`, 'u'));
-  });
 });

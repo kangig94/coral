@@ -250,7 +250,7 @@ const providerEventSeqSchema = z.number().int().positive().safe();
 export const proxyPreparedAppServerOperationSchema = z
   .object({
     version: z.literal(1),
-    provider: nonEmptyStringSchema,
+    provider: persistedProviderNameSchema,
     binding: providerBindingEnvelopeSchema,
     request: providerRequestSchema,
     /** Provider-opaque continuity, `null` when the session has none rather than absent, so "no snapshot" is
