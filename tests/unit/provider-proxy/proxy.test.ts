@@ -8,7 +8,12 @@ import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import type { HostRef } from '#src/providers/contract.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
-import { createProxy, type SemanticOperationHost } from '#src/provider-proxy/proxy.js';
+import { createProxy } from '#src/provider-proxy/proxy.js';
+import {
+  OPERATION_RELEASE_RETRY_MS,
+  type SemanticOperationHost,
+  type SemanticOperationStartHandle,
+} from '#src/provider-proxy/operation-supervisor.js';
 import {
   PROXY_PENDING_ACTIVATION_LEASE_MS,
   operationActivationFingerprint,
@@ -98,18 +103,19 @@ function fakeHost(): SemanticOperationHost & {
     stops: 0,
     start({ key }) {
       this.starts += 1;
-      return hostRefFor(key.jobId);
+      return startHandle(Promise.resolve({ kind: 'started', hostRef: hostRefFor(key.jobId) }));
     },
     stop() {
       this.stops += 1;
     },
-    releaseStaged(key) {
-      released.push(key);
-    },
-    releaseSettled(key) {
-      settled.push(key);
-    },
   };
+}
+
+function startHandle(
+  result: SemanticOperationStartHandle['result'],
+  abortAndRelease: SemanticOperationStartHandle['abortAndRelease'] = async () => {},
+): SemanticOperationStartHandle {
+  return { result, abortAndRelease };
 }
 
 /** Records every `setTimeout` call the endpoint's own per-request budget timer makes, tagged with `ms`, while
@@ -185,7 +191,7 @@ async function startProxy(
   options: {
     readMilliseconds?: () => bigint;
     onProviderEvent?: Parameters<typeof connectControlClient>[3];
-    stageProviderRoot?: () => Promise<{
+    stageProviderRoot?: (signal: AbortSignal) => Promise<{
       providerRoot: { pid: number; processStartedAtSeconds: number };
       receipt: JointContainmentReceipt;
     }>;
@@ -241,15 +247,42 @@ async function startProxy(
     mintReservation: () => asReservation(randomUUID()),
     wallClockNow: options.wallClockNow ?? (() => STARTED_AT_MS),
     containment: {
-      // No real guardian: a fixed root/receipt is all `operation.prepare.v1` needs to stage.
-      stageProviderRoot:
-        options.stageProviderRoot ??
-        (async () => ({
-          providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
-          receipt: asJointContainmentReceipt('joint-1'),
-        })),
-      confirmActivation: options.confirmActivation ?? (async () => {}),
-      releaseMembership: options.releaseMembership ?? (async () => {}),
+      stageProviderRoot: (key, reserved) => {
+        const abortController = new AbortController();
+        const result = (
+          options.stageProviderRoot ??
+          (async () => ({
+            providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
+            receipt: asJointContainmentReceipt('joint-1'),
+          }))
+        )(abortController.signal);
+        let localReleased = false;
+        let membershipReleased = false;
+        return {
+          result,
+          confirmActivation: options.confirmActivation ?? (async () => {}),
+          abortAndRelease: async () => {
+            abortController.abort();
+            try {
+              await result;
+            } catch {
+              return;
+            }
+            const tracked = host as Partial<{ released: ProviderOperationKey[]; settled: ProviderOperationKey[] }>;
+            if (!localReleased) {
+              localReleased = true;
+              tracked.released?.push(key);
+              if (tracked.settled !== undefined && proxy.ledger().get(key)?.state === 'releasing') {
+                const entry = proxy.ledger().get(key);
+                if (entry !== null && entry.activationAck !== null) tracked.settled.push(key);
+              }
+            }
+            if (membershipReleased) return;
+            await (options.releaseMembership ?? (async () => {}))({ key, reservation: reserved.reservation });
+            membershipReleased = true;
+          },
+        };
+      },
     },
   });
   await proxy.listen();
@@ -347,11 +380,11 @@ describe('provider-proxy truthful operation authority', () => {
     expect(host.starts).toBe(1);
   });
 
-  it('keeps a rejected start in release and never makes it activatable again', async () => {
+  it('retains a rejected start as a typed activation-indeterminate receipt', async () => {
     const host = fakeHost();
-    host.start = function start(): never {
+    host.start = function start(): SemanticOperationStartHandle {
       this.starts += 1;
-      throw new Error('start rejected');
+      return startHandle(Promise.reject(new Error('start rejected')));
     };
     const release = deferred();
     const { control, operation, proxy } = await startProxy(host, timer, {
@@ -374,14 +407,67 @@ describe('provider-proxy truthful operation authority', () => {
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('releasing'));
     await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
       state: 'releasing',
+      releaseKind: 'activation-indeterminate',
       activationAck: null,
     });
 
     release.resolve();
-    await expect(activating).rejects.toThrow(/start rejected/u);
-    await expect(control.call('operation.activate.v1', activation, 5_000)).rejects.toThrow(/No such prepared/u);
+    const receipt = {
+      state: 'released-activation-indeterminate',
+      operation,
+      prepareAttemptNumber: 1,
+      prepareAttemptKey,
+    };
+    await expect(activating).resolves.toEqual(receipt);
+    await expect(control.call('operation.activate.v1', activation, 5_000)).resolves.toEqual(receipt);
+    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toEqual(
+      receipt,
+    );
     expect(proxy.ledger().get(operation)).toBeNull();
     expect(host.starts).toBe(1);
+  });
+
+  it('keeps the activation deadline armed while the host start is unresolved', async () => {
+    const controlled = controlledTimer();
+    const host = fakeHost();
+    const startResult = deferred<Awaited<SemanticOperationStartHandle['result']>>();
+    const startAborted = vi.fn(() => {
+      startResult.resolve({ kind: 'never-started', reason: 'deadline aborted start' });
+      return Promise.resolve();
+    });
+    host.start = function start(): SemanticOperationStartHandle {
+      this.starts += 1;
+      return startHandle(startResult.promise, startAborted);
+    };
+    const { control, operation, proxy } = await startProxy(host, controlled.timer, {
+      readMilliseconds: controlled.readMilliseconds,
+    });
+    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
+    const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
+    const prepared = (await control.call('operation.prepare.v1', prepareRequest, 5_000)) as {
+      reservation: Reservation;
+      jointContainmentReceipt: JointContainmentReceipt;
+    };
+    const activating = control.call(
+      'operation.activate.v1',
+      {
+        operation,
+        reservation: prepared.reservation,
+        jointContainmentReceipt: prepared.jointContainmentReceipt,
+        jointActivationReceipt: asJointActivationReceipt('activation-1'),
+      },
+      5_000,
+    );
+    await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('starting'));
+    const activationTimedOut = expect(activating).rejects.toThrow(/exceeded its 5000ms budget/u);
+
+    controlled.advance(PROXY_PENDING_ACTIVATION_LEASE_MS);
+
+    await activationTimedOut;
+    await vi.waitFor(() => expect(startAborted).toHaveBeenCalled());
+    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+      state: 'released-never-started',
+    });
   });
 
   it('inspects starting immediately and buffers provider events until the ACK exists', async () => {
@@ -389,9 +475,9 @@ describe('provider-proxy truthful operation authority', () => {
     const inspectResultParses = vi.spyOn(proxyOperationInspectResultSchema, 'parse');
     const host = fakeHost();
     const started = deferred<HostRef>();
-    host.start = function start(): Promise<HostRef> {
+    host.start = function start(): SemanticOperationStartHandle {
       this.starts += 1;
-      return started.promise;
+      return startHandle(started.promise.then((hostRef) => ({ kind: 'started' as const, hostRef })));
     };
     let wallClockMs = STARTED_AT_MS;
     const received: unknown[] = [];
@@ -462,6 +548,107 @@ describe('provider-proxy truthful operation authority', () => {
     await vi.waitFor(() => expect(proxy.ledger().get(operation)).toBeNull());
     expect(host.released).toEqual([{ jobId: operation.jobId, operationId: operation.operationId }]);
     expect(releaseMembership).toHaveBeenCalledOnce();
+  });
+
+  it('aborts unresolved staging as soon as its activation lease expires', async () => {
+    const controlled = controlledTimer();
+    const staging = deferred<{
+      providerRoot: { pid: number; processStartedAtSeconds: number };
+      receipt: JointContainmentReceipt;
+    }>();
+    const stageAborted = vi.fn();
+    const host = fakeHost();
+    const { control, operation, proxy } = await startProxy(host, controlled.timer, {
+      readMilliseconds: controlled.readMilliseconds,
+      stageProviderRoot: (signal) => {
+        signal.addEventListener('abort', stageAborted, { once: true });
+        return staging.promise;
+      },
+    });
+    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
+    const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
+    const preparing = control.call('operation.prepare.v1', prepareRequest, 5_000);
+    await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('preparing'));
+
+    controlled.advance(PROXY_PENDING_ACTIVATION_LEASE_MS);
+
+    await vi.waitFor(() => expect(stageAborted).toHaveBeenCalledOnce());
+    expect(proxy.ledger().get(operation)?.state).toBe('releasing');
+    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+      state: 'releasing',
+      releaseKind: 'never-started',
+    });
+
+    staging.resolve({
+      providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
+      receipt: asJointContainmentReceipt('joint-late'),
+    });
+    await expect(preparing).rejects.toThrow(/lease expired/u);
+    await vi.waitFor(() => expect(proxy.ledger().get(operation)).toBeNull());
+  });
+
+  it('turns a late staging completion into release instead of publishing prepared', async () => {
+    const staging = deferred<{
+      providerRoot: { pid: number; processStartedAtSeconds: number };
+      receipt: JointContainmentReceipt;
+    }>();
+    const host = fakeHost();
+    const { control, operation, proxy } = await startProxy(host, timer, {
+      stageProviderRoot: () => staging.promise,
+    });
+    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
+    const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
+    const preparing = control.call('operation.prepare.v1', prepareRequest, 5_000);
+    await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('preparing'));
+    const cancelling = control.call(
+      'operation.cancel.v2',
+      { operation, prepareAttemptNumber: 1, prepareAttemptKey },
+      5_000,
+    );
+    await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('releasing'));
+
+    staging.resolve({
+      providerRoot: { pid: 7_000, processStartedAtSeconds: 900 },
+      receipt: asJointContainmentReceipt('joint-late'),
+    });
+
+    await expect(preparing).rejects.toThrow(/lease expired/u);
+    const receipt = await cancelling;
+    expect(receipt).toMatchObject({ state: 'released-never-started' });
+    expect(host.released).toContainEqual({ jobId: operation.jobId, operationId: operation.operationId });
+    expect(proxy.ledger().get(operation)).toBeNull();
+    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toEqual(
+      receipt,
+    );
+  });
+
+  it('retains a failed guardian release and retries it from the releasing state', async () => {
+    const controlled = controlledTimer();
+    const releaseMembership = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('guardian unavailable'))
+      .mockResolvedValue(undefined);
+    const host = fakeHost();
+    const { control, operation, proxy } = await startProxy(host, controlled.timer, {
+      readMilliseconds: controlled.readMilliseconds,
+      releaseMembership,
+    });
+    const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };
+    const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
+    await control.call('operation.prepare.v1', prepareRequest, 5_000);
+
+    controlled.advance(PROXY_PENDING_ACTIVATION_LEASE_MS);
+
+    await vi.waitFor(() => expect(releaseMembership).toHaveBeenCalledTimes(1));
+    expect(proxy.ledger().get(operation)?.state).toBe('releasing');
+
+    controlled.advance(OPERATION_RELEASE_RETRY_MS);
+
+    await vi.waitFor(() => expect(releaseMembership).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(proxy.ledger().get(operation)).toBeNull());
+    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+      state: 'released-never-started',
+    });
   });
 
   it('fences an attempt that never entered preparation and refuses its delayed prepare', async () => {
@@ -610,9 +797,9 @@ describe('provider-proxy truthful operation authority', () => {
   it('joins cancellation to an in-flight start and refuses never-started proof after the ACK', async () => {
     const host = fakeHost();
     const started = deferred<HostRef>();
-    host.start = function start(): Promise<HostRef> {
+    host.start = function start(): SemanticOperationStartHandle {
       this.starts += 1;
-      return started.promise;
+      return startHandle(started.promise.then((hostRef) => ({ kind: 'started' as const, hostRef })));
     };
     const { control, operation, proxy } = await startProxy(host);
     const prepareRequest = { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED };

@@ -21,11 +21,12 @@ export const MAX_PROXY_REPLAY_BYTES = 64 * 1024 * 1024;
 /** How long a reservation stays activatable without renewal, on the proxy's own clock. */
 export const PROXY_PENDING_ACTIVATION_LEASE_MS = 15_000;
 
-/** The phases are evidence: `starting` means the host call is unresolved, never that a kernel exists. */
+/** The phases are evidence: `starting` means the supervisor has no proof that the host crossed its start boundary. */
 export type ProviderOperationState =
   | 'preparing'
   | 'prepared'
   | 'starting'
+  | 'started-awaiting-publication'
   | 'executing'
   | 'terminal-awaiting-settlement'
   | 'suspended-awaiting-durable-decision'
@@ -35,7 +36,8 @@ const ALLOWED_TRANSITIONS: Readonly<Record<ProviderOperationState, readonly (Pro
   Object.freeze({
     preparing: ['prepared', 'releasing'],
     prepared: ['starting', 'releasing'],
-    starting: ['executing', 'releasing'],
+    starting: ['started-awaiting-publication', 'releasing'],
+    'started-awaiting-publication': ['executing'],
     executing: ['terminal-awaiting-settlement', 'suspended-awaiting-durable-decision'],
     'terminal-awaiting-settlement': ['releasing'],
     'suspended-awaiting-durable-decision': ['releasing'],
@@ -153,6 +155,8 @@ export interface OperationLedger<Prepared = unknown> {
   ): void;
   renew(key: ProviderOperationKey, reservation: Reservation, nowMs: number): OperationLedgerEntry<Prepared>;
   beginActivation(key: ProviderOperationKey, reservation: Reservation, nowMs: number, fingerprint: string): void;
+  recordStart(key: ProviderOperationKey, fingerprint: string, ack: ProxyOperationActivationReceipt): void;
+  publishActivation(key: ProviderOperationKey, fingerprint: string): void;
   completeActivation(key: ProviderOperationKey, fingerprint: string, ack: ProxyOperationActivationReceipt): void;
   beginRelease(key: ProviderOperationKey): void;
   transition(key: ProviderOperationKey, next: ProviderOperationState | 'released'): void;
@@ -237,6 +241,7 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
     return (
       entry !== undefined &&
       (entry.state === 'starting' ||
+        entry.state === 'started-awaiting-publication' ||
         entry.state === 'executing' ||
         entry.state === 'terminal-awaiting-settlement' ||
         entry.state === 'suspended-awaiting-durable-decision') &&
@@ -330,13 +335,26 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
       entry.activationFingerprint = fingerprint;
     },
 
-    completeActivation(key, fingerprint, ack): void {
+    recordStart(key, fingerprint, ack): void {
       const entry = require(key);
       if (entry.state !== 'starting' || entry.activationFingerprint !== fingerprint) {
-        throw new LedgerError('operation_invalid_transition', `Cannot complete activation from ${entry.state}.`);
+        throw new LedgerError('operation_invalid_transition', `Cannot record start from ${entry.state}.`);
       }
       entry.activationAck = Object.freeze({ ...ack });
+      entry.state = 'started-awaiting-publication';
+    },
+
+    publishActivation(key, fingerprint): void {
+      const entry = require(key);
+      if (entry.state !== 'started-awaiting-publication' || entry.activationFingerprint !== fingerprint) {
+        throw new LedgerError('operation_invalid_transition', `Cannot publish activation from ${entry.state}.`);
+      }
       entry.state = 'executing';
+    },
+
+    completeActivation(key, fingerprint, ack): void {
+      this.recordStart(key, fingerprint, ack);
+      this.publishActivation(key, fingerprint);
     },
 
     beginRelease(key): void {
@@ -375,6 +393,7 @@ export function createOperationLedger<Prepared = unknown>(): OperationLedger<Pre
         }
         if (
           entry.state !== 'starting' &&
+          entry.state !== 'started-awaiting-publication' &&
           entry.state !== 'executing' &&
           entry.state !== 'terminal-awaiting-settlement' &&
           entry.state !== 'suspended-awaiting-durable-decision'

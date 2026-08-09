@@ -26,8 +26,13 @@ import type {
   BoundProviderHostPreparationInput,
 } from '../providers/bound-provider-contract.js';
 import type { ProviderOperationKey } from './ledger.js';
+import type {
+  SemanticOperationHost,
+  SemanticOperationStartHandle,
+  SemanticOperationStartResult,
+} from './operation-supervisor.js';
 import type { ReplayCapacityReservation } from './replay-budget.js';
-import type { Proxy, SemanticOperationHost } from './proxy.js';
+import type { Proxy } from './proxy.js';
 import type { ProxyPreparedAppServerOperation } from './protocol.js';
 
 /**
@@ -404,6 +409,7 @@ function buildExecutionRuntime(
   key: ProviderOperationKey,
   prepared: ProxyPreparedAppServerOperation,
   signal: AbortSignal,
+  onHostRef: BoundProviderAppServerExecutionRuntime['onHostRef'],
 ): BoundProviderAppServerExecutionRuntime {
   return {
     transport: 'app-server',
@@ -429,7 +435,7 @@ function buildExecutionRuntime(
     // (`src/expansion/equipped-tools.ts`) that `ProxyPreparedAppServerOperationV1` does not carry, and this
     // proxy has no store to resolve it from independently. Reported gap, not a silent truncation.
     onAppServerWaiting: () => {},
-    onHostRef: () => {},
+    onHostRef,
   };
 }
 
@@ -441,21 +447,30 @@ function operationKeyString(key: ProviderOperationKey): string {
 
 type StagedOperation = {
   readonly key: ProviderOperationKey;
-  readonly bound: BoundProvider;
-  readonly staged: Readonly<{ hostRef: HostRef; close(): void }>;
-  readonly root: Readonly<{ pid: number; processStartedAtSeconds: number }>;
   readonly abortController: AbortController;
+  bound: BoundProvider | null;
+  staged: Readonly<{ hostRef: HostRef; close(): void }> | null;
+  root: Readonly<{ pid: number; processStartedAtSeconds: number }> | null;
+  stageHandle: SemanticOperationStageHandle | null;
+  startHandle: SemanticOperationStartHandle | null;
+  startCommitted: boolean;
+  releaseRequested: boolean;
+  closed: boolean;
   /** Set once `stop()` is in flight, so the pump loop's catch-all can tell a deliberate stop from a genuine
    *  unprompted kernel failure and choose the right synthesized outcome (or none, for an interruption). */
   pendingStopCause: ProviderStopCause | null;
   /** Resolves once the pump loop has fully settled; `stop()` awaits this so no event can be emitted after it
-   *  returns (proxy.ts transitions the ledger immediately after `stop()` resolves). `null` until `host.start`
-   *  assigns it — `stop()` is only ever called after the proxy has stored the activation ACK, so by the time
-   *  it is read it is always set;
+   *  returns. `null` until `host.start` assigns it — `stop()` is only ever called after the supervisor has
+   *  stored the activation ACK, so by the time it is read it is always set;
    *  mutated in place rather than replacing the map entry, so `start`/`stop` and the pump loop all observe the
    *  same object. */
   done: Promise<void> | null;
 };
+
+export interface SemanticOperationStageHandle {
+  readonly result: Promise<Readonly<{ pid: number; processStartedAtSeconds: number }>>;
+  abortAndRelease(): Promise<void>;
+}
 
 export type SemanticOperationRuntimeOptions = Readonly<{
   runtime: Runtime;
@@ -468,6 +483,7 @@ export type SemanticOperationRuntimeOptions = Readonly<{
 
 export interface SemanticOperationRuntime {
   readonly host: SemanticOperationHost;
+  stage(key: ProviderOperationKey, prepared: ProxyPreparedAppServerOperation): SemanticOperationStageHandle;
   /**
    * Ensures this operation's provider root exists — spawning the underlying app-server child only when no
    * pooled entry already serves it — without starting the operation's own turn. Idempotent per key: a retried
@@ -487,8 +503,7 @@ export interface SemanticOperationRuntime {
    * it, closing only the control endpoint leaves every kernel running and every app-server child alive until
    * the enforcers escalate to a hard kill, and no provider ever receives its own graceful-shutdown RPC.
    * Best-effort per operation — one kernel's stop failing must not stop this from still stopping every other
-   * one — via the identical `host.stop`/`host.releaseStaged` paths `proxy.ts`'s own RPC handlers use, so a
-   * shutdown behaves exactly like every operation in it having been individually stopped or cancelled.
+   * one — through the same stop and abortable stage handles the supervisor owns.
    */
   shutdown(cause: ProviderStopCause): Promise<void>;
 }
@@ -505,17 +520,10 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     return entry;
   };
 
-  const safeTransition = (
-    key: ProviderOperationKey,
-    next: 'terminal-awaiting-settlement' | 'suspended-awaiting-durable-decision',
-  ): void => {
-    try {
-      getProxy().ledger().transition(key, next);
-    } catch {
-      // Already transitioned by `operation.stop.v1`'s own handler (proxy.ts) racing this natural completion —
-      // see the task report's "stop racing a still-draining emit" judgement. Whichever got there first wins;
-      // the loser's transition is a no-op refusal, not a defect to surface.
-    }
+  const closeStaged = (entry: StagedOperation): void => {
+    if (entry.closed) return;
+    entry.closed = true;
+    entry.staged?.close();
   };
 
   const synthesizeAndEmitFailure = async (
@@ -543,7 +551,6 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     } finally {
       reservation?.release();
     }
-    safeTransition(key, 'terminal-awaiting-settlement');
   };
 
   const emitAbortedTerminal = async (key: ProviderOperationKey, cause: ProviderStopCause): Promise<void> => {
@@ -563,13 +570,14 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
     } finally {
       reservation?.release();
     }
-    safeTransition(key, 'terminal-awaiting-settlement');
   };
 
   const runPump = async (
     key: ProviderOperationKey,
     entry: StagedOperation,
+    provider: string,
     iterable: AsyncIterable<ProviderEventBody>,
+    settleStart: (result: SemanticOperationStartResult) => void,
   ): Promise<void> => {
     const proxy = getProxy();
     const iterator = iterable[Symbol.asyncIterator]();
@@ -593,7 +601,6 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         }
 
         if (step.value.kind === 'terminal') {
-          safeTransition(key, 'terminal-awaiting-settlement');
           try {
             await iterator.return?.();
           } catch (error: unknown) {
@@ -606,7 +613,6 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
           break;
         }
         if (step.value.kind === 'suspended') {
-          safeTransition(key, 'suspended-awaiting-durable-decision');
           try {
             await iterator.return?.();
           } catch (error: unknown) {
@@ -620,6 +626,11 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         }
       }
     } catch (error: unknown) {
+      if (!entry.startCommitted) {
+        settleStart({ kind: 'never-started', reason: errorMessage(error) });
+        return;
+      }
+      if (entry.releaseRequested) return;
       const cause = entry.pendingStopCause;
       if (cause !== null) {
         // A `stop()` was already in flight when the kernel unwound — trust why we asked it to stop rather
@@ -632,29 +643,69 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       // Nobody asked this operation to stop; the kernel unwound on its own. A terminal must still reach the
       // coordinator (see the task report's "kernel throws mid-stream" judgement) — synthesize one rather than
       // leaving the ledger entry executing forever with nothing to end it.
-      await synthesizeAndEmitFailure(key, entry.bound.name, error);
+      await synthesizeAndEmitFailure(key, provider, error);
     } finally {
-      entry.staged.close();
+      if (!entry.startCommitted) {
+        settleStart({ kind: 'never-started', reason: 'The provider ended before its start boundary.' });
+      }
+      closeStaged(entry);
     }
   };
 
   const host: SemanticOperationHost = {
     start: ({ key, prepared }) => {
       const entry = requireStaged(key);
-      const bound = entry.bound;
-      const preparedExecution = bound.prepareExecution(executionInput(runtime, prepared));
-      if (preparedExecution.kind !== 'app-server') {
-        throw new Error(
-          `Provider '${bound.name}' prepared a standalone execution; this proxy runs app-server operations only.`,
-        );
-      }
-      const executionRuntime = buildExecutionRuntime(runtime, key, prepared, entry.abortController.signal);
-      const iterable = preparedExecution.execute(executionRuntime);
-      // Fire-and-forget by design: `operation.activate.v1` must return once the kernel has *started*, not
-      // once the whole turn has finished (`PROXY_CONTROL_RPC_TIMEOUT_MS` is 5s; a turn can run for minutes).
-      // Mutated in place (not a map replace) so `stop()`'s later `requireStaged` reads the same object.
-      entry.done = runPump(key, entry, iterable);
-      return entry.staged.hostRef;
+      if (entry.startHandle !== null) return entry.startHandle;
+      let settled = false;
+      let settle!: (result: SemanticOperationStartResult) => void;
+      const result = new Promise<SemanticOperationStartResult>((resolve) => {
+        settle = (outcome) => {
+          if (settled) return;
+          settled = true;
+          resolve(outcome);
+        };
+      });
+      entry.done = Promise.resolve().then(async () => {
+        const bound = entry.bound;
+        if (bound === null) {
+          settle({ kind: 'never-started', reason: 'The provider stage did not finish.' });
+          return;
+        }
+        try {
+          const preparedExecution = bound.prepareExecution(executionInput(runtime, prepared));
+          if (preparedExecution.kind !== 'app-server') {
+            throw new Error(
+              `Provider '${bound.name}' prepared a standalone execution; this proxy runs app-server operations only.`,
+            );
+          }
+          const executionRuntime = buildExecutionRuntime(
+            runtime,
+            key,
+            prepared,
+            entry.abortController.signal,
+            (hostRef) => {
+              entry.abortController.signal.throwIfAborted();
+              entry.startCommitted = true;
+              settle({ kind: 'started', hostRef });
+            },
+          );
+          const iterable = preparedExecution.execute(executionRuntime);
+          await runPump(key, entry, bound.name, iterable, settle);
+        } catch (error: unknown) {
+          if (!entry.startCommitted) settle({ kind: 'never-started', reason: errorMessage(error) });
+          else if (!entry.releaseRequested) await synthesizeAndEmitFailure(key, bound.name, error);
+        }
+      });
+      const abortAndRelease = async (): Promise<void> => {
+        entry.releaseRequested = true;
+        entry.abortController.abort(new Error('Provider operation activation was released.'));
+        await entry.done;
+        closeStaged(entry);
+        if (staged.get(operationKeyString(key)) === entry) staged.delete(operationKeyString(key));
+      };
+      const handle: SemanticOperationStartHandle = Object.freeze({ result, abortAndRelease });
+      entry.startHandle = handle;
+      return handle;
     },
 
     stop: async ({ key, cause }) => {
@@ -664,63 +715,74 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       await (entry.done ?? Promise.resolve());
       staged.delete(operationKeyString(key));
     },
-
-    releaseStaged: (key) => {
-      const keyStr = operationKeyString(key);
-      const entry = staged.get(keyStr);
-      // No entry: never staged, or already released. A started-but-not-yet-settled entry (`done !== null`)
-      // is left alone — it belongs to `stop()`'s own release, not this one, so a caller racing the two paths
-      // for the same key can never double-close the same staged session.
-      if (entry === undefined || entry.done !== null) return;
-      staged.delete(keyStr);
-      entry.staged.close();
-    },
-
-    releaseSettled: (key) => {
-      const keyStr = operationKeyString(key);
-      const entry = staged.get(keyStr);
-      if (entry === undefined) return;
-      staged.delete(keyStr);
-    },
   };
 
-  return {
-    async ensureProviderRoot(key, prepared) {
-      const keyStr = operationKeyString(key);
-      const existing = staged.get(keyStr);
-      if (existing !== undefined) return existing.root;
+  const stage = (
+    key: ProviderOperationKey,
+    prepared: ProxyPreparedAppServerOperation,
+  ): SemanticOperationStageHandle => {
+    const keyStr = operationKeyString(key);
+    const existing = staged.get(keyStr);
+    if (existing?.stageHandle !== null && existing?.stageHandle !== undefined) return existing.stageHandle;
 
+    const abortController = new AbortController();
+    const entry: StagedOperation = {
+      key,
+      abortController,
+      bound: null,
+      staged: null,
+      root: null,
+      stageHandle: null,
+      startHandle: null,
+      startCommitted: false,
+      releaseRequested: false,
+      closed: false,
+      pendingStopCause: null,
+      done: null,
+    };
+    staged.set(keyStr, entry);
+    const result = Promise.resolve().then(async () => {
       const bound = rebuildBoundProvider(prepared, hostAuthority);
-      const abortController = new AbortController();
+      entry.bound = bound;
       const appServer = bound.appServer;
-      if (appServer === undefined) {
-        // rebuildBoundProvider already asserts this; kept as a narrowing guard for the call below.
-        throw new Error(`Provider '${bound.name}' has no app-server capability.`);
-      }
+      if (appServer === undefined) throw new Error(`Provider '${bound.name}' has no app-server capability.`);
       const openedStaging = await appServer.openReplacement(stagingInput(runtime, prepared), {
         jobId: key.jobId,
         signal: abortController.signal,
       });
+      entry.staged = openedStaging;
+      abortController.signal.throwIfAborted();
       const root = hostAuthority.rootIdentity(openedStaging.hostRef);
       if (root === null) {
-        openedStaging.close();
+        closeStaged(entry);
         throw new Error(
           `Staged provider root for ${key.jobId}/${key.operationId} vanished before it could be reported.`,
         );
       }
-
-      const entry: StagedOperation = {
-        key,
-        bound,
-        staged: openedStaging,
-        root,
-        abortController,
-        pendingStopCause: null,
-        done: null,
-      };
-      staged.set(keyStr, entry);
+      entry.root = root;
       return root;
-    },
+    });
+    const abortAndRelease = async (): Promise<void> => {
+      entry.releaseRequested = true;
+      abortController.abort(new Error('Provider operation stage was released.'));
+      try {
+        await result;
+      } catch {
+        // The stage result is reported to its caller; release only waits until no late child can escape.
+      }
+      await (entry.done ?? Promise.resolve());
+      closeStaged(entry);
+      if (staged.get(keyStr) === entry) staged.delete(keyStr);
+    };
+    const handle: SemanticOperationStageHandle = Object.freeze({ result, abortAndRelease });
+    entry.stageHandle = handle;
+    return handle;
+  };
+
+  return {
+    stage,
+
+    ensureProviderRoot: (key, prepared) => stage(key, prepared).result,
 
     host,
 
@@ -737,8 +799,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
               // await the kernel's own unwind, and let the pump loop's `finally` release the staged session.
               await host.stop({ key: entry.key, cause });
             } else {
-              // Staged but never started: nothing to abort, so release its session directly.
-              host.releaseStaged?.(entry.key);
+              await entry.stageHandle?.abortAndRelease();
             }
           } catch (error: unknown) {
             backendLog.error(

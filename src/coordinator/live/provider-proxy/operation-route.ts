@@ -1,4 +1,4 @@
-import type { OperationIdentity, ProxyOperationActivationReceipt } from '../../../provider-proxy/protocol.js';
+import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 import {
   activateProviderOperation,
   authorizeProviderOperation,
@@ -8,6 +8,7 @@ import {
   prepareProviderOperation,
   settleProviderOperation,
   type AuthorizeProviderOperationResult,
+  type ActivateProviderOperationResult,
   type CancelProviderOperationResult,
   type InspectProviderOperationResult,
   type OperationControlClient,
@@ -38,7 +39,7 @@ export interface DurableProviderProxyOperationAuthority extends ProviderProxyOpe
   activatePreparedOperation(
     operation: OperationIdentity,
     evidence: Parameters<typeof activateProviderOperation>[2],
-  ): Promise<ProxyOperationActivationReceipt>;
+  ): Promise<ActivateProviderOperationResult>;
   cancelOperation(
     operation: OperationIdentity,
     prepareAttemptNumber: number,

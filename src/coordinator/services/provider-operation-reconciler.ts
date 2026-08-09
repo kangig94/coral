@@ -325,17 +325,16 @@ export class ProviderOperationReconciler {
       return this.#acceptPrepareResult(record, result);
     } catch (error: unknown) {
       let retryError = error;
-      if (providerOperationErrorIsAmbiguous(error)) {
-        try {
-          const inspected = await authority.inspectOperation(record.operation, record.prepareAttemptKey);
-          if (inspected.state === 'prepared') {
-            return this.#acceptPreparedEvidence(record, inspected);
-          }
-        } catch (inspectionError: unknown) {
-          retryError = new Error(
-            `${providerOperationErrorReason(error)}; inspect failed: ${providerOperationErrorReason(inspectionError)}`,
-          );
+      try {
+        const inspected = await authority.inspectOperation(record.operation, record.prepareAttemptKey);
+        if (inspected.state === 'prepared') {
+          return this.#acceptPreparedEvidence(record, inspected);
         }
+        if (inspected.state === 'released-never-started') return this.#recoverPrepare(record, authority);
+      } catch (inspectionError: unknown) {
+        retryError = new Error(
+          `${providerOperationErrorReason(error)}; inspect failed: ${providerOperationErrorReason(inspectionError)}`,
+        );
       }
       await this.#recordRetry(record, retryError);
       return null;
@@ -417,7 +416,7 @@ export class ProviderOperationReconciler {
         await this.#recordRetry(record, new Error('Proxy still reports the journaled prepare attempt as preparing.'));
         return null;
       }
-      if (inspected.state !== 'absent') {
+      if (inspected.state !== 'absent' && inspected.state !== 'released-never-started') {
         await this.#recordRetry(
           record,
           new Error(`Proxy reported incompatible state '${inspected.state}' for a prepare-pending operation.`),
@@ -425,11 +424,10 @@ export class ProviderOperationReconciler {
         return null;
       }
 
-      const released = await authority.cancelOperation(
-        record.operation,
-        record.prepareAttemptNumber,
-        record.prepareAttemptKey,
-      );
+      const released =
+        inspected.state === 'released-never-started'
+          ? inspected
+          : await authority.cancelOperation(record.operation, record.prepareAttemptNumber, record.prepareAttemptKey);
       if (
         operationKey(released.operation) !== operationKey(record.operation) ||
         released.prepareAttemptNumber !== record.prepareAttemptNumber ||
@@ -524,9 +522,9 @@ export class ProviderOperationReconciler {
     record: Extract<ProviderOperationRecord, { phase: 'proxy-activation-pending' }>,
     authority: DurableProviderProxyOperationAuthority,
   ): Promise<ProviderOperationRecord | null> {
-    let activationAck: ProviderOperationActivationAck;
+    let activationOutcome: Awaited<ReturnType<DurableProviderProxyOperationAuthority['activatePreparedOperation']>>;
     try {
-      activationAck = await authority.activatePreparedOperation(record.operation, {
+      activationOutcome = await authority.activatePreparedOperation(record.operation, {
         reservation: record.reservation,
         jointContainmentReceipt: record.jointContainmentReceipt,
         jointActivationReceipt: record.jointActivationReceipt,
@@ -552,8 +550,43 @@ export class ProviderOperationReconciler {
         }),
       );
     }
+    if (activationOutcome.state === 'released-never-started') {
+      return this.#transition(
+        record,
+        providerOperationRecordSchema.parse({
+          version: record.version,
+          operation: record.operation,
+          locator: record.locator,
+          prepareAttemptNumber: record.prepareAttemptNumber,
+          prepareAttemptKey: record.prepareAttemptKey,
+          phase: 'prestart-cleanup-pending',
+          cleanupIntent: 'release-never-started',
+          revision: record.revision + 1,
+          retryNotBeforeMs: this.#deps.time.now(),
+          retryCount: 0,
+          lastError: record.lastError,
+        }),
+      );
+    }
+    if (activationOutcome.state === 'released-activation-indeterminate') {
+      return this.#transition(
+        record,
+        providerOperationRecordSchema.parse({
+          ...record,
+          phase: 'activation-resolution-pending',
+          revision: record.revision + 1,
+          retryNotBeforeMs: this.#deps.time.now(),
+          retryCount: 0,
+          lastError: {
+            observedAtMs: this.#deps.time.now(),
+            code: 'activation_indeterminate',
+            message: 'The proxy released an activation whose start boundary could not be proven.',
+          },
+        }),
+      );
+    }
     try {
-      await this.#commitExecuting(record, activationAck, authority);
+      await this.#commitExecuting(record, activationOutcome, authority);
     } catch (error: unknown) {
       await this.#recordRetry(record, error);
     }
@@ -574,7 +607,8 @@ export class ProviderOperationReconciler {
 
     if (
       inspected.state === 'prepared' ||
-      (inspected.state === 'releasing' && inspected.activationFingerprint === null)
+      inspected.state === 'released-never-started' ||
+      (inspected.state === 'releasing' && inspected.releaseKind === 'never-started')
     ) {
       return this.#transition(
         record,
@@ -593,7 +627,12 @@ export class ProviderOperationReconciler {
         }),
       );
     }
-    if (inspected.state === 'absent' || inspected.state === 'releasing') {
+    if (
+      inspected.state === 'absent' ||
+      inspected.state === 'released-activation-indeterminate' ||
+      inspected.state === 'released-after-terminal' ||
+      inspected.state === 'releasing'
+    ) {
       await this.#recordRetry(record, new Error('Indeterminate remote activation requires operator recovery.'));
       return null;
     }
@@ -603,12 +642,34 @@ export class ProviderOperationReconciler {
     }
 
     try {
-      const activationAck = await authority.activatePreparedOperation(record.operation, {
+      const activationOutcome = await authority.activatePreparedOperation(record.operation, {
         reservation: record.reservation,
         jointContainmentReceipt: record.jointContainmentReceipt,
         jointActivationReceipt: record.jointActivationReceipt,
       });
-      await this.#commitExecuting(record, activationAck, authority);
+      if (activationOutcome.state === 'released-never-started') {
+        return this.#transition(
+          record,
+          providerOperationRecordSchema.parse({
+            version: record.version,
+            operation: record.operation,
+            locator: record.locator,
+            prepareAttemptNumber: record.prepareAttemptNumber,
+            prepareAttemptKey: record.prepareAttemptKey,
+            phase: 'prestart-cleanup-pending',
+            cleanupIntent: 'release-never-started',
+            revision: record.revision + 1,
+            retryNotBeforeMs: this.#deps.time.now(),
+            retryCount: 0,
+            lastError: record.lastError,
+          }),
+        );
+      }
+      if (activationOutcome.state === 'released-activation-indeterminate') {
+        await this.#recordRetry(record, new Error('The proxy released an indeterminate activation.'));
+        return null;
+      }
+      await this.#commitExecuting(record, activationOutcome, authority);
     } catch (error: unknown) {
       await this.#recordRetry(record, error);
     }

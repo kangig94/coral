@@ -31,7 +31,8 @@ import {
 } from '#src/provider-proxy/ledger.js';
 import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import type { ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
-import { createProxy, type SemanticOperationHost } from '#src/provider-proxy/proxy.js';
+import { createProxy } from '#src/provider-proxy/proxy.js';
+import type { SemanticOperationHost, SemanticOperationStartHandle } from '#src/provider-proxy/operation-supervisor.js';
 import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provider-proxy-correlation.js';
 
 const NONCE = 'a'.repeat(64);
@@ -119,15 +120,21 @@ async function startProxy(
     // proxy must hand over the envelope prepare validated, not activate's own request params.
     start: ({ key, prepared }) => {
       startAttempts += 1;
-      if (options.failStart === true) throw new Error('the semantic kernel failed to start');
+      if (options.failStart === true) {
+        return {
+          result: Promise.reject(new Error('the semantic kernel failed to start')),
+          abortAndRelease: async () => {},
+        };
+      }
       started.push({ ...key, prepared });
-      return hostRefFor(key.jobId);
+      const handle: SemanticOperationStartHandle = {
+        result: Promise.resolve({ kind: 'started', hostRef: hostRefFor(key.jobId) }),
+        abortAndRelease: async () => {},
+      };
+      return handle;
     },
     stop: ({ key, cause }) => {
       stopped.push({ ...key, cause });
-    },
-    releaseStaged: (key) => {
-      released.push(key);
     },
   };
 
@@ -153,25 +160,32 @@ async function startProxy(
     mintReservation: () => asReservation(randomUUID()),
     wallClockNow: () => WALL_CLOCK_EPOCH_MS + Number(elapsed),
     containment: {
-      stageProviderRoot: () => {
+      stageProviderRoot: (key) => {
         stageAttempts += 1;
-        if (options.failStage === true || (options.failStageOnce === true && stageAttempts === 1)) {
-          throw new Error('the guardian refused to stage this root');
-        }
-        return Promise.resolve({
-          providerRoot: { pid: 7_001, processStartedAtSeconds: 800 },
-          receipt: asJointContainmentReceipt('joint-1'),
-        });
-      },
-      confirmActivation: () => {
-        if (options.failConfirmActivation === true) {
-          throw new Error('the guardian did not recognise this activation pair');
-        }
-        return Promise.resolve();
-      },
-      releaseMembership: ({ key }) => {
-        releasedMemberships.push(key);
-        return Promise.resolve();
+        const guardianRegistered =
+          options.failStage !== true && !(options.failStageOnce === true && stageAttempts === 1);
+        const result = !guardianRegistered
+          ? Promise.reject(new Error('the guardian refused to stage this root'))
+          : Promise.resolve({
+              providerRoot: { pid: 7_001, processStartedAtSeconds: 800 },
+              receipt: asJointContainmentReceipt('joint-1'),
+            });
+        let releasedStage = false;
+        return {
+          result,
+          confirmActivation: async () => {
+            if (options.failConfirmActivation === true) {
+              throw new Error('the guardian did not recognise this activation pair');
+            }
+          },
+          abortAndRelease: async () => {
+            await result.catch(() => undefined);
+            if (releasedStage) return;
+            releasedStage = true;
+            released.push(key);
+            if (guardianRegistered) releasedMemberships.push(key);
+          },
+        };
       },
     },
   });
@@ -746,7 +760,11 @@ describe('provider-proxy operation lifecycle', () => {
     const set = await startProxy({ failConfirmActivation: true });
     const { operation, reserved } = await prepare(set);
 
-    await expect(activate(set, operation, reserved)).rejects.toThrow(/did not recognise/u);
+    await expect(activate(set, operation, reserved)).resolves.toMatchObject({
+      state: 'released-never-started',
+      operation,
+      prepareAttemptNumber: 1,
+    });
     expect(set.started).toEqual([]);
   });
 

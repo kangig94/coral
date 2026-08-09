@@ -5,7 +5,7 @@ import {
   guardianOperationActivateParamsSchema,
   guardianOperationActivateResultSchema,
   proxyOperationActivateParamsSchema,
-  proxyOperationActivateResultSchema,
+  proxyOperationActivationOutcomeSchema,
   proxyOperationCancelParamsSchema,
   proxyOperationCancelResultSchema,
   proxyOperationInspectParamsSchema,
@@ -18,7 +18,7 @@ import {
   proxyOperationStopParamsSchema,
   proxyOperationStopResultSchema,
   type OperationIdentity,
-  type ProxyOperationActivationReceipt,
+  type ProxyOperationActivationOutcome,
   type ProxyPreparedAppServerOperation,
 } from '../../provider-proxy/protocol.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
@@ -65,6 +65,7 @@ export type InspectProviderOperationResult = z.output<typeof proxyOperationInspe
 export type AuthorizeProviderOperationResult = z.output<typeof guardianOperationActivateResultSchema>;
 export type CancelProviderOperationResult = z.output<typeof proxyOperationCancelResultSchema>;
 export type SettleProviderOperationResult = z.output<typeof proxyOperationSettleResultSchema>;
+export type ActivateProviderOperationResult = z.output<typeof proxyOperationActivationOutcomeSchema>;
 
 async function callStrict<TResult>(
   client: OperationControlClient,
@@ -172,14 +173,14 @@ export async function activateProviderOperation(
     jointContainmentReceipt: string;
     jointActivationReceipt: string;
   }>,
-): Promise<ProxyOperationActivationReceipt> {
+): Promise<ProxyOperationActivationOutcome> {
   const params = proxyOperationActivateParamsSchema.parse({ operation, ...evidence });
   return callStrict(
     deps.proxyClient,
     'operation.activate.v1',
     params,
     deps.mutationRpcTimeoutMs,
-    proxyOperationActivateResultSchema,
+    proxyOperationActivationOutcomeSchema,
   );
 }
 

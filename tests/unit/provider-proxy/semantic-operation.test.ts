@@ -132,7 +132,10 @@ function fakeBoundProvider(options: {
     prepareExecution: () => ({
       kind: 'app-server',
       hostSpec: fakeHostSpec(name),
-      execute: options.execute,
+      execute: (executionRuntime) => {
+        executionRuntime.onHostRef(fakeHostRef(name));
+        return options.execute(executionRuntime);
+      },
     }),
     appServer: {
       supportsInterrupt: false,
@@ -187,13 +190,14 @@ function createTestProxy(): {
       const providerSeq = ledger.nextProviderSeq(key);
       ledger.recordEvent(key, { providerSeq, frame: JSON.stringify(event) }, reservation);
       emittedEvents.push({ key, event });
+      if (event.kind === 'terminal') ledger.transition(key, 'terminal-awaiting-settlement');
+      if (event.kind === 'suspended') ledger.transition(key, 'suspended-awaiting-durable-decision');
     },
   };
   return { proxy, ledger, emittedEvents };
 }
 
-/** Mirrors what `operation.prepare.v1` then `operation.activate.v1` do to a ledger entry before `host.start`
- *  is ever legal to call — `runPump`'s own `safeTransition` calls require the entry to already be `executing`. */
+/** Mirrors the supervisor-owned transitions that make `host.start` legal before the semantic runtime emits. */
 function prepareAndActivate(
   ledger: OperationLedger<ProxyPreparedAppServerOperation>,
   key: ProviderOperationKey,
@@ -258,9 +262,9 @@ describe('semantic-operation runtime: pump loop outcomes', () => {
 
     const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
     await host.ensureProviderRoot(key, prepared);
-    const startedHostRef = host.host.start({ key, prepared });
+    const start = host.host.start({ key, prepared });
 
-    expect(startedHostRef).toEqual(stagedHostRef);
+    await expect(start.result).resolves.toEqual({ kind: 'started', hostRef: stagedHostRef });
     await vi.waitFor(() => expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement'));
     expect(emittedEvents).toEqual([{ key, event: terminalCompleted }]);
     expect(closeStaged).toHaveBeenCalledOnce();

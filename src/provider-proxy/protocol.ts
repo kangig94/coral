@@ -711,7 +711,36 @@ export const proxyOperationActivateResultSchema = z
   })
   .strict();
 
+export const proxyOperationCancelResultSchema = z
+  .object({
+    state: z.literal('released-never-started'),
+    operation: operationIdentitySchema,
+    prepareAttemptNumber: operationPrepareAttemptNumberSchema,
+    prepareAttemptKey: operationPrepareAttemptKeySchema,
+  })
+  .strict();
+
+export const proxyOperationSettleResultSchema = z
+  .object({ state: z.literal('released-after-terminal'), settledThroughProviderSeq: nonNegativeSafeIntegerSchema })
+  .strict();
+
+export const proxyOperationReleasedActivationIndeterminateSchema = z
+  .object({
+    state: z.literal('released-activation-indeterminate'),
+    operation: operationIdentitySchema,
+    prepareAttemptNumber: operationPrepareAttemptNumberSchema,
+    prepareAttemptKey: operationPrepareAttemptKeySchema,
+  })
+  .strict();
+
+export const proxyOperationActivationOutcomeSchema = z.discriminatedUnion('state', [
+  proxyOperationActivateResultSchema,
+  proxyOperationCancelResultSchema,
+  proxyOperationReleasedActivationIndeterminateSchema,
+]);
+
 export type ProxyOperationActivationReceipt = z.output<typeof proxyOperationActivateResultSchema>;
+export type ProxyOperationActivationOutcome = z.output<typeof proxyOperationActivationOutcomeSchema>;
 
 /** Transport failure remains outside this result so ambiguity cannot decode as operation absence. */
 export const proxyOperationAttachResultSchema = z.discriminatedUnion('state', [
@@ -743,10 +772,14 @@ export const proxyOperationInspectResultSchema = z.discriminatedUnion('state', [
       activationFingerprint: activationFingerprintSchema,
     })
     .strict(),
+  proxyOperationActivateResultSchema.extend({ state: z.literal('started-awaiting-publication') }).strict(),
   proxyOperationActivateResultSchema,
   z
     .object({
       state: z.literal('releasing'),
+      releaseKind: z.enum(['never-started', 'activation-indeterminate', 'after-terminal']),
+      prepareAttemptNumber: operationPrepareAttemptNumberSchema,
+      prepareAttemptKey: operationPrepareAttemptKeySchema,
       reservation: reservationSchema,
       providerRoot: providerRootSchema.nullable(),
       jointContainmentReceipt: jointContainmentReceiptSchema.nullable(),
@@ -755,6 +788,9 @@ export const proxyOperationInspectResultSchema = z.discriminatedUnion('state', [
       committedThroughProviderSeq: nonNegativeSafeIntegerSchema,
     })
     .strict(),
+  proxyOperationCancelResultSchema,
+  proxyOperationReleasedActivationIndeterminateSchema,
+  proxyOperationSettleResultSchema,
   z
     .object({
       state: z.literal('terminal-awaiting-settlement'),
@@ -765,32 +801,13 @@ export const proxyOperationInspectResultSchema = z.discriminatedUnion('state', [
     .strict(),
 ]);
 
-export const proxyOperationCancelResultSchema = z
-  .object({
-    state: z.literal('released-never-started'),
-    operation: operationIdentitySchema,
-    prepareAttemptNumber: operationPrepareAttemptNumberSchema,
-    prepareAttemptKey: operationPrepareAttemptKeySchema,
-  })
-  .strict();
-
-export const proxyOperationSettleResultSchema = z
-  .object({ state: z.literal('released-after-terminal'), settledThroughProviderSeq: nonNegativeSafeIntegerSchema })
-  .strict();
-
 /** Reusing the live cancel and settle schemas prevents this inert aggregate from drifting before cutover. */
 export const proxyOperationReleaseReceiptSchema = z.discriminatedUnion('state', [
   proxyOperationCancelResultSchema,
-  z
-    .object({
-      state: z.literal('released-activation-indeterminate'),
-      operation: operationIdentitySchema,
-      prepareAttemptNumber: operationPrepareAttemptNumberSchema,
-      prepareAttemptKey: operationPrepareAttemptKeySchema,
-    })
-    .strict(),
+  proxyOperationReleasedActivationIndeterminateSchema,
   proxyOperationSettleResultSchema,
 ]);
+export type ProxyOperationReleaseReceipt = z.output<typeof proxyOperationReleaseReceiptSchema>;
 
 /** `operation.stop.v1`'s result. `state` is the ledger's own state rather than a closed set: the proxy reports
  *  where the operation actually landed, and enumerating that here would be a second copy of the ledger's

@@ -32,6 +32,7 @@ import {
   resolveProviderProxyDeadlineConfiguration,
   type EnforcerDeadlineStateMachine,
 } from './orphan-deadline.js';
+import type { OperationStageHandle } from './operation-supervisor.js';
 import type { ControlClient } from './control-client.js';
 import {
   guardianRegisterProviderRootParamsSchema,
@@ -49,7 +50,11 @@ import {
 } from './protocol.js';
 import { createProxy, type Proxy, type ProxyOptions } from './proxy.js';
 import { createReaper, type Reaper } from './reaper.js';
-import { createProxyAppServerHostAuthority, createSemanticOperationRuntime } from './semantic-operation.js';
+import {
+  createProxyAppServerHostAuthority,
+  createSemanticOperationRuntime,
+  type SemanticOperationStageHandle,
+} from './semantic-operation.js';
 import {
   connectRoleControlWithRetry,
   runtimeControlTimer,
@@ -677,33 +682,21 @@ const registerProviderRootResultSchema = z
   })
   .strict();
 
-/** A stable string key for the containment closures' own bookkeeping — the same composite `(jobId,
- *  operationId)` shape `semantic-operation.ts`'s own internal key uses, reimplemented here as the trivial
- *  one-liner it is rather than exported and shared: the two modules track this key for genuinely different
- *  reasons (kernel execution state vs. containment-receipt recognition), matching this codebase's existing
- *  precedent of `proxy.ts`'s `pumpToken` and `ledger.ts`'s `keyOf` each independently restating the same shape. */
-function containmentKeyString(key: { jobId: string; operationId: string }): string {
-  return `${key.jobId} ${key.operationId}`;
-}
-
 /** What `createProxyGuardianContainment` needs to talk to the guardian on the kernel's behalf, with every
  *  dependency that would otherwise force a real provider spawn or a real spawned guardian process taken as a
- *  parameter: `ensureProviderRoot` in particular is captured from `semantic-operation.ts` in production, but a
+ *  parameter: `stageProviderRoot` in particular is captured from `semantic-operation.ts` in production, but a
  *  test can supply a canned root instead. */
 export type ProxyGuardianContainmentDeps = Readonly<{
   identity: ProxyIdentity;
   guardianChannel: Pick<ControlClient, 'call'>;
-  ensureProviderRoot(
-    key: ProviderOperationKey,
-    prepared: ProxyPreparedAppServerOperation,
-  ): Promise<Readonly<{ pid: number; processStartedAtSeconds: number }>>;
+  stageProviderRoot(key: ProviderOperationKey, prepared: ProxyPreparedAppServerOperation): SemanticOperationStageHandle;
 }>;
 
 /**
  * Builds the containment closures a proxy uses to talk to its guardian on the kernel's behalf:
- * `stageProviderRoot` (called from `operation.prepare.v1`) and `confirmActivation` (called from
- * `operation.activate.v1`). Extracted out of `startProviderProxyRole` so it can be exercised against a real
- * `createGuardian` in a test without spawning a real provider — only `ensureProviderRoot` needs replacing for
+ * `stageProviderRoot` (called from `operation.prepare.v1`). Extracted out of `startProviderProxyRole` so it can
+ * be exercised against a real `createGuardian` in a test without spawning a real provider — only the semantic
+ * stage needs replacing for
  * that, everything else here is the real wiring `startProviderProxyRole` itself installs.
  *
  * Takes no ledger access of any kind: `stageProviderRoot`'s `reservation` parameter is exactly what
@@ -712,92 +705,82 @@ export type ProxyGuardianContainmentDeps = Readonly<{
  * be asked before one exists — and minting a fresh one to answer anyway is exactly how this bug shipped; a
  * seam with no such question to ask cannot make that mistake.
  *
- * Owns its own `recognisedReceipts` map rather than taking one as a dependency: it is this containment
- * wiring's own record of what it staged, not a second read of the ledger's (`proxy.ts` already refuses a
- * mismatch there before ever calling `confirmActivation`), so it has no reason to be shared or injected.
  */
 export function createProxyGuardianContainment(
   deps: ProxyGuardianContainmentDeps,
 ): ProxyOptions<symbol>['containment'] {
-  // Key plain, value branded. The key is `containmentKeyString(key)` — a derived index, not a correlation
-  // token, and branding a lookup string would say nothing. The value is the receipt itself, so the comparison
-  // below can only ever be receipt against receipt: handing it a reservation or an activation receipt is now
-  // a type error rather than a silent mismatch, at the exact site the fabrication defect lived.
-  const recognisedReceipts = new Map<string, JointContainmentReceipt>();
-
   return {
-    stageProviderRoot: async (key, reserved) => {
-      const root = await deps.ensureProviderRoot(key, reserved.prepared);
-      // Parsed against the guardian's own schema before the frame is written, not merely typed: the receiver
-      // is `.strict()`, so a field it has no place for — or one this call forgot — is refused on arrival,
-      // and a refusal here reads as an activation failure rather than as the malformed request it is.
-      const params = guardianRegisterProviderRootParamsSchema.parse({
-        proxy: deps.identity,
-        operation: {
-          jobId: key.jobId,
-          operationId: key.operationId,
-          proxyInstanceId: deps.identity.proxyInstanceId,
-          buildSetId: deps.identity.buildSetId,
-        },
-        // The exact reservation `operation.prepare.v1` was handed, not a fresh one: the guardian stores
-        // whatever this call presents and `guardian.operation-activate.v1` later compares it against the
-        // coordinator's own copy of the same reservation (returned to the coordinator by
-        // `operation.prepare.v1`'s reply). Presenting anything else here means that later comparison can
-        // never agree, and activation refuses with `identity_mismatch` on every attempt.
-        reservation: reserved.reservation,
-        providerPid: root.pid,
-        providerProcessStartedAtSeconds: root.processStartedAtSeconds,
-      });
-      const response = await deps.guardianChannel.call(
-        'guardian.register-provider-root.v1',
-        params,
-        PROXY_CONTROL_RPC_TIMEOUT_MS,
-      );
-      const parsed = registerProviderRootResultSchema.parse(response);
-      recognisedReceipts.set(containmentKeyString(key), parsed.jointContainmentReceipt);
-      return { providerRoot: parsed.providerRoot, receipt: parsed.jointContainmentReceipt };
-    },
-    confirmActivation: async ({ key, jointContainmentReceipt, jointActivationReceipt }) => {
-      // `jointContainmentReceipt`: recognised against what this containment wiring itself staged, not a
-      // second read of `proxy.ts`'s own ledger-side check (which already ran before this was called).
-      const recognised = recognisedReceipts.get(containmentKeyString(key));
-      if (recognised === undefined || recognised !== jointContainmentReceipt) {
-        throw new Error(
-          `Activation named a containment receipt this proxy never staged for ${key.jobId}/${key.operationId}.`,
+    stageProviderRoot: (key, reserved) => {
+      const semanticStage = deps.stageProviderRoot(key, reserved.prepared);
+      let guardianMayHoldMembership = false;
+      let guardianReleased = false;
+      let recognisedReceipt: JointContainmentReceipt | null = null;
+      const result = semanticStage.result.then(async (root) => {
+        const params = guardianRegisterProviderRootParamsSchema.parse({
+          proxy: deps.identity,
+          operation: {
+            jobId: key.jobId,
+            operationId: key.operationId,
+            proxyInstanceId: deps.identity.proxyInstanceId,
+            buildSetId: deps.identity.buildSetId,
+          },
+          reservation: reserved.reservation,
+          providerPid: root.pid,
+          providerProcessStartedAtSeconds: root.processStartedAtSeconds,
+        });
+        guardianMayHoldMembership = true;
+        const response = await deps.guardianChannel.call(
+          'guardian.register-provider-root.v1',
+          params,
+          PROXY_CONTROL_RPC_TIMEOUT_MS,
         );
-      }
-      // `jointActivationReceipt`: `guardian.operation-activate.v1` — the RPC that mints it — requires
-      // *active* guardian control, which only the coordinator's own connection to the guardian ever holds;
-      // this proxy's own connection is the *pairing* channel `guardian.register-provider-root.v1` requires,
-      // a distinct, narrower authority with no reachable method to re-ask the guardian about an activation
-      // receipt. There is therefore no live corroboration this proxy can perform for this specific field —
-      // see the task report's "confirmActivation" judgement — so it is accepted here as presented by a
-      // coordinator that could only have obtained it by already proving active control over both this proxy
-      // (to reach `operation.activate.v1` at all) and the guardian that minted it. Non-emptiness is the one
-      // well-formedness fact left to check; the wire schema (`activateParamsSchema`) already guarantees it,
-      // so this is a defensive restatement of that guarantee, not new coverage.
-      if (jointActivationReceipt.length === 0) {
-        throw new Error('Activation presented an empty activation receipt.');
-      }
-    },
-    releaseMembership: async ({ key, reservation }) => {
-      const params = guardianProxyOperationReleaseParamsSchema.parse({
-        proxy: deps.identity,
-        operation: {
-          jobId: key.jobId,
-          operationId: key.operationId,
-          proxyInstanceId: deps.identity.proxyInstanceId,
-          buildSetId: deps.identity.buildSetId,
-        },
-        reservation,
+        const parsed = registerProviderRootResultSchema.parse(response);
+        recognisedReceipt = parsed.jointContainmentReceipt;
+        return { providerRoot: parsed.providerRoot, receipt: parsed.jointContainmentReceipt };
       });
-      const response = await deps.guardianChannel.call(
-        'guardian.operation-release.v2',
-        params,
-        PROXY_CONTROL_RPC_TIMEOUT_MS,
-      );
-      guardianProxyOperationReleaseResultSchema.parse(response);
-      recognisedReceipts.delete(containmentKeyString(key));
+
+      const handle: OperationStageHandle = Object.freeze({
+        result,
+        async confirmActivation(input: Parameters<OperationStageHandle['confirmActivation']>[0]) {
+          const { jointContainmentReceipt, jointActivationReceipt } = input;
+          if (recognisedReceipt === null || recognisedReceipt !== jointContainmentReceipt) {
+            throw new Error(
+              `Activation named a containment receipt this proxy never staged for ${key.jobId}/${key.operationId}.`,
+            );
+          }
+          if (jointActivationReceipt.length === 0) {
+            throw new Error('Activation presented an empty activation receipt.');
+          }
+        },
+        async abortAndRelease() {
+          const semanticRelease = semanticStage.abortAndRelease();
+          try {
+            await result;
+          } catch {
+            // Registration ambiguity still requires the idempotent guardian release below.
+          }
+          await semanticRelease;
+          if (!guardianMayHoldMembership || guardianReleased) return;
+          const params = guardianProxyOperationReleaseParamsSchema.parse({
+            proxy: deps.identity,
+            operation: {
+              jobId: key.jobId,
+              operationId: key.operationId,
+              proxyInstanceId: deps.identity.proxyInstanceId,
+              buildSetId: deps.identity.buildSetId,
+            },
+            reservation: reserved.reservation,
+          });
+          const response = await deps.guardianChannel.call(
+            'guardian.operation-release.v2',
+            params,
+            PROXY_CONTROL_RPC_TIMEOUT_MS,
+          );
+          guardianProxyOperationReleaseResultSchema.parse(response);
+          guardianReleased = true;
+        },
+      });
+      return handle;
     },
   };
 }
@@ -878,7 +861,7 @@ export async function startProviderProxyRole(
     containment: createProxyGuardianContainment({
       identity,
       guardianChannel,
-      ensureProviderRoot: semantic.ensureProviderRoot,
+      stageProviderRoot: semantic.stage,
     }),
   });
   proxyRef = proxy;

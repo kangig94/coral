@@ -117,6 +117,8 @@ function createTestProxy(): { proxy: Proxy; ledger: OperationLedger<ProxyPrepare
     emitProviderEvent: (key, event, reservation) => {
       const providerSeq = ledger.nextProviderSeq(key);
       ledger.recordEvent(key, { providerSeq, frame: JSON.stringify(event) }, reservation);
+      if (event.kind === 'terminal') ledger.transition(key, 'terminal-awaiting-settlement');
+      if (event.kind === 'suspended') ledger.transition(key, 'suspended-awaiting-durable-decision');
     },
   };
   return { proxy, ledger };
@@ -162,6 +164,7 @@ function fakeBoundProviderStuckUntilAborted(closeStaged: () => void): BoundProvi
       kind: 'app-server',
       hostSpec: fakeHostSpec(),
       execute: async function* (execRuntime: BoundProviderAppServerExecutionRuntime): AsyncIterable<ProviderEventBody> {
+        execRuntime.onHostRef(fakeHostRef());
         await new Promise<never>((_resolve, reject) => {
           execRuntime.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
         });
@@ -193,7 +196,8 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
 
     const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
     await host.ensureProviderRoot(key, prepared);
-    host.host.start({ key, prepared });
+    const start = host.host.start({ key, prepared });
+    await expect(start.result).resolves.toEqual({ kind: 'started', hostRef: fakeHostRef() });
 
     // Still running: nothing has released the staged session yet.
     expect(closeStaged).not.toHaveBeenCalled();
@@ -203,8 +207,8 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
     // The kernel was told to stop and its own staged app-server session was released — the same release
     // `host.stop`'s own `finally` performs, driven here by `shutdown` rather than `operation.stop.v1`.
     expect(closeStaged).toHaveBeenCalledOnce();
-    // A synthesized aborted terminal reached the ledger — proof the kernel's own abort was actually driven,
-    // not merely awaited past.
+    // The proxy seam applies the supervisor-owned terminal transition, proving shutdown drove the kernel's abort
+    // rather than merely awaiting it.
     expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement');
   });
 

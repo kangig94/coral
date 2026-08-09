@@ -22,15 +22,16 @@ import { createOperationLedger, operationPrepareAttemptKey } from '#src/provider
 import {
   guardianProxyOperationReleaseParamsSchema,
   guardianProxyOperationReleaseResultSchema,
+  proxyOperationActivationOutcomeSchema,
   proxyOperationActivateParamsSchema,
-  proxyOperationActivateResultSchema,
   proxyOperationCancelParamsSchema,
   proxyOperationCancelResultSchema,
   proxyOperationPrepareParamsSchema,
   type ProxyIdentity,
   type ProxyPreparedAppServerOperation,
 } from '#src/provider-proxy/protocol.js';
-import { createProxy, type SemanticOperationHost } from '#src/provider-proxy/proxy.js';
+import type { SemanticOperationHost } from '#src/provider-proxy/operation-supervisor.js';
+import { createProxy } from '#src/provider-proxy/proxy.js';
 import { createReaper } from '#src/provider-proxy/reaper.js';
 import { createProxyGuardianContainment } from '#src/provider-proxy/role-main.js';
 import {
@@ -297,7 +298,10 @@ async function startCoordinatorActivationSet() {
   const host: SemanticOperationHost = {
     start: ({ key, prepared }) => {
       started.push({ ...key, prepared });
-      return hostRefFor(key.jobId);
+      return {
+        result: Promise.resolve({ kind: 'started', hostRef: hostRefFor(key.jobId) }),
+        abortAndRelease: async () => {},
+      };
     },
     stop: () => {},
   };
@@ -324,7 +328,7 @@ async function startCoordinatorActivationSet() {
     containment: createProxyGuardianContainment({
       identity: set.proxyIdentity,
       guardianChannel: set.guardianChannel,
-      ensureProviderRoot: async () => ROOT,
+      stageProviderRoot: () => ({ result: Promise.resolve(ROOT), abortAndRelease: async () => {} }),
     }),
   });
   await proxy.listen();
@@ -430,7 +434,7 @@ describe('provider proxy activation against a real guardian', () => {
   it('executes coordinator activation through the real clients and both real handlers', async () => {
     const set = await startCoordinatorActivationSet();
     const activationSchemaParses = vi.spyOn(proxyOperationActivateParamsSchema, 'parse');
-    const activationResultSchemaParses = vi.spyOn(proxyOperationActivateResultSchema, 'parse');
+    const activationResultSchemaParses = vi.spyOn(proxyOperationActivationOutcomeSchema, 'parse');
     const operation = {
       jobId: randomUUID(),
       operationId: randomUUID(),
@@ -483,13 +487,14 @@ describe('provider proxy activation against a real guardian', () => {
       identity: proxyIdentity,
       guardianChannel,
       // The one dependency replaced: a canned root instead of spawning a real provider process.
-      ensureProviderRoot: async () => ROOT,
+      stageProviderRoot: () => ({ result: Promise.resolve(ROOT), abortAndRelease: async () => {} }),
     });
 
-    const staged = await containment.stageProviderRoot(key, {
+    const stage = containment.stageProviderRoot(key, {
       reservation: reserved.entry.reservation,
       prepared: reserved.entry.prepared,
     });
+    const staged = await stage.result;
     expect(staged.providerRoot).toEqual(ROOT);
 
     // The coordinator's own reservation: exactly the value `operation.prepare.v1` would have echoed back from
@@ -517,8 +522,7 @@ describe('provider proxy activation against a real guardian', () => {
     // The full local half of activation also succeeds against what this containment wiring itself recognised
     // as staged — the last step `operation.activate.v1` performs before starting the kernel.
     await expect(
-      containment.confirmActivation({
-        key,
+      stage.confirmActivation({
         jointContainmentReceipt: asJointContainmentReceipt(staged.receipt),
         jointActivationReceipt: asJointActivationReceipt(activated.jointActivationReceipt),
       }),
