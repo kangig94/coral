@@ -9,9 +9,7 @@ import type { ProviderProxyOperationAuthority } from '#src/coordinator/live/prov
 
 const SET: ProviderProxyOperationAuthority = {
   proxyInstanceId: 'p1',
-  snapshotOperations: async () => [],
   registerSuccessionOperation: async () => {},
-  installHandoffGrant: async () => {},
   stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
   stopHeartbeats: () => {},
   initiateControlClose: async () => {},

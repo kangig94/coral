@@ -1091,9 +1091,6 @@ export function createCoordinatorCore(
     terminateAllFn: defaults.terminateAllFn,
     providerHostManager: world.providerHostManager,
     ...(world.providerProxyAuthority === undefined ? {} : { providerProxyAuthority: world.providerProxyAuthority }),
-    ...(world.providerProxyInheritance === undefined
-      ? {}
-      : { providerProxyInheritance: world.providerProxyInheritance }),
     kbDaemonSupervisor: kbDaemonSupervisorWithTrackedShutdown,
     disposeLifecycleReactor: () => {
       disposeChildPrincipalTerminalListeners();

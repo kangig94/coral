@@ -1,4 +1,3 @@
-import type { ProviderOperationKey } from '../../../provider-proxy/ledger.js';
 import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 
 /**
@@ -12,16 +11,6 @@ import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
 export interface ProviderProxySetAuthority {
   /** Names the set in failure reports, so an aggregate says which carrier could not be released. */
   readonly proxyInstanceId: string;
-  /**
-   * The operations this proxy still carries, byte-sorted. Taken once per proxy so the whole sequence reasons
-   * about a fixed set: a grant installed over one snapshot and a capsule written from another would hand the
-   * successor a set neither authority agreed to. `jobId` travels alongside `operationId` because a grant's
-   * wire `OperationIdentity` needs both — an operation id alone is not a key `installHandoffGrant` could turn
-   * back into one.
-   */
-  snapshotOperations(signal: AbortSignal): Promise<readonly ProviderOperationKey[]>;
-  /** Retained until Stage 7 so shutdown callers converge on the standing credential without a flag day. */
-  installHandoffGrant(operations: readonly ProviderOperationKey[], signal: AbortSignal): Promise<void>;
   /**
    * Stops and reaps this set, returning only once the recorded containment and every recorded provider root
    * are confirmed absent. Observing the proxy leader's exit is not that confirmation.

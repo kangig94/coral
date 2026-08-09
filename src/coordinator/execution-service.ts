@@ -102,7 +102,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       },
       terminalMaterializer: { recordProviderTerminal },
       ...(deps.appServerProxyRoute === undefined ? {} : { appServerProxyRoute: deps.appServerProxyRoute }),
-      ...(deps.operations === undefined ? {} : { operations: deps.operations }),
     });
     deps.providerOperationCleanup?.register(this.launchOrchestrator);
     const waitCoordinator = new WaitCoordinator({
@@ -308,10 +307,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
 
   async interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void> {
     return this.recoveryService.interruptAppServerJob(authority, runtimeRecord);
-  }
-
-  registerInheritedAppServerAbort(jobId: string): void {
-    this.recoveryService.registerInheritedAppServerAbort(jobId);
   }
 
   private finishQueuedAbort(jobId: string, sessionId: string, reason: AbortReason): void {

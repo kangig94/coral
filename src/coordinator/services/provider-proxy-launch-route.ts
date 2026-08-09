@@ -26,7 +26,7 @@ export function createAppServerProxyRoute(deps: {
         };
       }
       if (!isProviderProxyOperationAuthority(authority)) {
-        return { kind: 'failed', reason: 'The selected proxy set does not support durable operation replay.' };
+        throw new Error('The selected proxy set does not support durable operation replay.');
       }
 
       const operation: OperationIdentity = operationIdentitySchema.parse({

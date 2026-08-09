@@ -67,9 +67,7 @@ function authority(): DurableProviderProxyOperationAuthority {
       proxyProcessGroupId: 200,
       canonicalEndpoint: '/tmp/proxy.sock',
     },
-    snapshotOperations: async () => [],
     registerSuccessionOperation: async () => undefined,
-    installHandoffGrant: async () => undefined,
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,
@@ -169,9 +167,7 @@ describe('createAppServerProxyRoute', () => {
       now: () => 10,
     });
 
-    await expect(route.activate(request, new AbortController().signal)).resolves.toMatchObject({
-      kind: 'failed',
-    });
+    await expect(route.activate(request, new AbortController().signal)).rejects.toThrow(/durable operation replay/u);
     expect(begin).not.toHaveBeenCalled();
   });
 });

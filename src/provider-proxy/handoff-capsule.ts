@@ -493,7 +493,7 @@ export function createGrantRegistry(
         if (redemption === null) {
           throw new ProxyControlProtocolError('grant_invalid', 'A different grant is already installed for this set.');
         }
-        // Only active control can replace a redeemed compatibility grant, so clearing the old redemption
+        // Only active control can replace a redeemed recovery credential, so clearing the old redemption
         // cannot authorize a party that does not already own the set.
         redemption = null;
       }

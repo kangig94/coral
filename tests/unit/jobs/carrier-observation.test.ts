@@ -39,7 +39,7 @@ describe('classifyCarrier', () => {
     expect(observation.defect).toBeUndefined();
   });
 
-  it.each(['activated', 'adopted'] as const)('reads a locally %s operation as live', (registryState) => {
+  it.each(['activated', 'attached'] as const)('reads a locally %s operation as live', (registryState) => {
     expect(observe({ carrierClass: 'app-server-acquired', registryState }).liveness).toBe('live');
   });
 

@@ -1322,8 +1322,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           return { kind: 'proxied' };
         }
         if (activation.kind === 'terminalized') return { kind: 'terminalized' };
-        if (activation.kind === 'cancelled') return { kind: 'cancelled' };
-        if (activation.kind === 'failed') throw new Error(activation.reason);
         if (activation.kind !== 'local-authorized') {
           throw new Error('App-server placement resolved without an execution authority.');
         }

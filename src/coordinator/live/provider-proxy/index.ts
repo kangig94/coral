@@ -119,8 +119,8 @@ async function unwind(
  * Acquires one set, or leaves nothing behind trying.
  *
  * There is no partial success: the caller receives either a set whose three controls are all active and all
- * agree on the same identities, or a typed failure. An abandoned set is never eligible for handoff or
- * adoption, and it self-expires from its own guardian-start deadline even if this cleanup could not reach it.
+ * agree on the same identities, or a typed failure. An abandoned set has no published recovery authority and
+ * self-expires from its own guardian-start deadline even if this cleanup could not reach it.
  */
 export async function acquireProviderProxySet(
   options: ProviderProxyAcquisitionOptions,

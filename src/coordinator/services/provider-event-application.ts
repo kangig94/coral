@@ -80,7 +80,7 @@ export interface ProviderEventApplicationDeps {
    * Where a proxied operation's terminal (or interrupting suspension) reports back once it has durably
    * committed, so whatever registered the operation can let go of the in-process bookkeeping it still holds
    * for that job — its admission slot above all. `settled` receives the full identity, not just `jobId`,
-   * because the registry, the proxy ledger, and the compatibility locator are all keyed by the
+   * because the registry and proxy ledger are both keyed by the
    * `(jobId, operationId)` pair. Composed in `coordinator/index.ts` beside where this whole
    * handler is built, from the same `LocalOperationRegistry` that also answers `recordedStopCauseFor` above.
    */

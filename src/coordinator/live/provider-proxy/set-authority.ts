@@ -9,7 +9,6 @@ import {
   type HandoffCapsule,
   proxyHandoffInstallParamsSchema,
 } from '../../../provider-proxy/handoff-capsule.js';
-import type { ProviderOperationKey } from '../../../provider-proxy/ledger.js';
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
 import {
   PROXY_TEARDOWN_RESERVE_MS,
@@ -70,18 +69,14 @@ export type ProviderProxySetAuthorityDependencies = Readonly<{
   /** Kept outside SQLite so the credential secret never enters durable domain records. */
   runtime: Pick<Runtime, 'ids' | 'env' | 'storage'>;
   recoveryCapsule?: HandoffCapsule;
-  /** Reads every durable operation still owned by this proxy set, including publication and settlement work
-   *  that has no live-registry entry in this coordinator generation. */
-  snapshotProviderOperations: (proxyInstanceId: string) => readonly ProviderOperationKey[];
   /** `stopAndReap`'s source for provider roots this generation can still name in set agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
 }>;
 
 /**
  * Builds the `ProviderProxySetAuthority` shutdown sees, from three already-established role sessions. Split
- * out from `establishControl` so it takes clients and identities as plain inputs rather than reaching into
- * that function's closure — the same shape that lets a test drive `stopAndReap`/`installHandoffGrant` with a
- * fake `ControlClient` instead of a real socket handshake.
+ * out from `establishControl` so tests can exercise recovery installation and containment release without a
+ * real socket handshake.
  */
 export function createProviderProxySetAuthority(
   deps: ProviderProxySetAuthorityDependencies,
@@ -98,7 +93,6 @@ export function createProviderProxySetAuthority(
     coordinatorIdentity,
     handoffCapsulePath,
     runtime,
-    snapshotProviderOperations,
     operationRegistry,
   } = deps;
 
@@ -196,35 +190,8 @@ export function createProviderProxySetAuthority(
 
   return {
     proxyInstanceId,
-    snapshotOperations: async (signal) => {
-      signal.throwIfAborted();
-      const operations = [...snapshotProviderOperations(proxyInstanceId)].sort((left, right) =>
-        left.operationId < right.operationId ? -1 : left.operationId > right.operationId ? 1 : 0,
-      );
-      signal.throwIfAborted();
-      return operations;
-    },
     installRecoveryCredential,
     registerSuccessionOperation,
-    installHandoffGrant: async (operations: readonly ProviderOperationKey[], signal: AbortSignal) => {
-      if (operations.length === 0) {
-        throw new Error('installHandoffGrant requires at least one operation to install a grant over.');
-      }
-      signal.throwIfAborted();
-
-      await installRecoveryCredential(signal);
-      for (const operation of operations) {
-        await registerSuccessionOperation(
-          {
-            jobId: operation.jobId,
-            operationId: operation.operationId,
-            proxyInstanceId,
-            buildSetId: guardianIdentity.buildSetId,
-          },
-          signal,
-        );
-      }
-    },
     stopAndReap: async (signal) => {
       try {
         // The coordinator's own half of the set-agreement both enforcers check

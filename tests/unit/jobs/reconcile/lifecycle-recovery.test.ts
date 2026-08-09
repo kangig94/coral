@@ -360,7 +360,6 @@ function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
     finalizeInterruptedDurableJob: vi.fn(async () => {}),
     interruptAppServerJob: vi.fn(async () => {}),
-    registerInheritedAppServerAbort: vi.fn(),
     ...overrides,
   };
 }

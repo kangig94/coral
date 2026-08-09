@@ -434,10 +434,6 @@ function fakeSet(
 ): ProviderProxySetAuthority {
   return {
     proxyInstanceId,
-    snapshotOperations: async () => [{ jobId: 'job-1', operationId: 'op-1' }],
-    installHandoffGrant: async () => {
-      callLog.push(`install:${proxyInstanceId}`);
-    },
     stopAndReap: async () => {
       callLog.push(`reap:${proxyInstanceId}`);
       return { disappearanceReceipt: `gone:${proxyInstanceId}` };
@@ -553,42 +549,6 @@ describe('required provider-proxy shutdown steps', () => {
     expect(callLog).toContain('reap:p2');
   });
 
-  it('installs one grant per carrier and reaps only the carriers with nothing to hand off', async () => {
-    const callLog: CallLog = [];
-    const empty = fakeSet('p-empty', callLog, { snapshotOperations: async () => [] });
-    const harness = buildHarness({
-      hooksOnShutdown: async () => {},
-      providerProxyAuthority: registryOf([fakeSet('p-live', callLog), empty]),
-    });
-
-    await runShutdownSequence(harness.ctx);
-
-    expect(callLog).toContain('install:p-live');
-    // A carrier with no live operation has nothing a successor could adopt, so leaving it running would
-    // strand it; a carrier that does have work is handed over instead of killed.
-    expect(callLog).toContain('reap:p-empty');
-    expect(callLog).not.toContain('reap:p-live');
-    expect(callLog).not.toContain('install:p-empty');
-  });
-
-  it('hard-transitions only the carrier whose grant install failed', async () => {
-    const callLog: CallLog = [];
-    const harness = buildHarness({
-      hooksOnShutdown: async () => {},
-      providerProxyAuthority: registryOf([
-        fakeSet('p-bad', callLog, { installHandoffGrant: () => Promise.reject(new Error('reaper refused')) }),
-        fakeSet('p-good', callLog),
-      ]),
-    });
-
-    expect(await shutdownFailureDetail(harness.ctx)).toMatch(/reaper refused/u);
-    // The failed carrier goes down; the healthy one keeps its grant, because one failed install must not
-    // strand every other operation behind a single EOF.
-    expect(callLog).toContain('reap:p-bad');
-    expect(callLog).toContain('install:p-good');
-    expect(callLog).not.toContain('reap:p-good');
-  });
-
   it('triggers the IPC socket release even when every control close rejects', async () => {
     const callLog: CallLog = [];
     const harness = buildHarness({
@@ -602,7 +562,7 @@ describe('required provider-proxy shutdown steps', () => {
     };
 
     // The socket is what the successor is waiting on. A control close that rejects must not suppress its
-    // release, or the successor waits out an adoption window it was never meant to spend.
+    // release, or a successor cannot establish exclusive control.
     expect(await shutdownFailureDetail(harness.ctx)).toMatch(/control p1: .*control gone/u);
     expect(callLog).toContain('closeIpcServerFn:start');
   });
@@ -653,28 +613,6 @@ describe('required provider-proxy shutdown steps', () => {
     expect(callLog).toContain('closeIpcServerFn:start');
   });
 
-  it('excludes a set already reaped during handoff from the release boundary', async () => {
-    const callLog: CallLog = [];
-    const harness = buildHarness({
-      hooksOnShutdown: async () => {},
-      providerProxyAuthority: registryOf([
-        fakeSet('p-empty', callLog, { snapshotOperations: async () => [] }),
-        fakeSet('p-live', callLog),
-      ]),
-    });
-    harness.ctx.closeIpcServerFn = async () => {
-      callLog.push('closeIpcServerFn:start');
-    };
-
-    await runShutdownSequence(harness.ctx);
-
-    // p-empty was already stopped and reaped as a handoff-reap candidate; re-offering it to the release
-    // boundary would retry a close against containment that no longer exists.
-    expect(callLog).toContain('reap:p-empty');
-    expect(callLog).not.toContain('control:p-empty');
-    expect(callLog).toContain('control:p-live');
-  });
-
   it('skips the required provider-proxy steps entirely when there are no live sets', async () => {
     const callLog: CallLog = [];
     const harness = buildHarness({
@@ -687,9 +625,9 @@ describe('required provider-proxy shutdown steps', () => {
 
     await runShutdownSequence(harness.ctx);
 
-    // No live set means the required proxy steps (reap, grant, release boundary) have nothing to do; the
+    // No live set means the required proxy steps (reap and release boundary) have nothing to do; the
     // plain (non-required) IPC close path runs instead.
-    expect(callLog.some((entry) => /^(heartbeats|control|reap|install):/u.test(entry))).toBe(false);
+    expect(callLog.some((entry) => /^(heartbeats|control|reap):/u.test(entry))).toBe(false);
     expect(callLog).toContain('closeIpcServerFn:start');
   });
 

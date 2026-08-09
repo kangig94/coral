@@ -1625,7 +1625,7 @@ describe('provider-proxy guardian and reaper', () => {
   });
 
   it('carries a multi-operation grant through guardian redemption and reaper rotation byte-sorted and intact', async () => {
-    // W2.4/W2.5's real-socket coverage for a set inheritance would adopt more than one operation from: the
+    // Real-socket set recovery may attach more than one operation from the same membership proof: the
     // guardian never re-derives the set (only the successor's grantId/secret), and the reaper never receives
     // it directly either (only the guardian's own authoritative forward) — so this is the one place both
     // hops of that forward can be checked against the exact same multi-operation set at once.
@@ -2091,7 +2091,6 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
         Runtime,
         'ids' | 'env' | 'storage'
       >,
-      snapshotProviderOperations: () => [],
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [ROOT] },
     });
 
@@ -2106,14 +2105,12 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
     expect(set.alive.has(CONTAINMENT.pid)).toBe(false);
   });
 
-  it('threads an adopted operation’s real provider root through stopAndReap, on the inheritance path’s own registry shape', async () => {
+  it('threads an attached operation’s real provider root through stopAndReap on the recovery registry shape', async () => {
     const set = await startSet();
     await stage(set);
 
-    // Mirrors exactly what `provider-proxy-set-inheritance.ts`'s `adoptRedeemedOperations` does with a
-    // redeemed grant's operations: register one on a real `LocalOperationRegistry` via `adopt()` — the same
-    // write a successor uses to fold an inherited operation into its own live tracking. This is a real
-    // registry, not a hand-rolled fake, so it proves `adopt()` itself populates `providerRootsFor` correctly,
+    // Use a real `LocalOperationRegistry`, because a successor's attachment must retain the provider root
+    // needed for exact set disappearance. This proves `attach()` populates `providerRootsFor` correctly,
     // not merely that a caller can hand-supply the right value.
     const operationRegistry = new LocalOperationRegistry();
     const operation = {
@@ -2154,7 +2151,7 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
     });
     const record = providerOperationRecordSchema.parse({ ...executing, providerRoot: ROOT });
     if (record.phase !== 'executing') throw new Error('expected executing provider operation');
-    operationRegistry.adopt(record, { stop: async () => {} }, { jobId: record.operation.jobId, pool: 'default' });
+    operationRegistry.attach(record, { stop: async () => {} }, { jobId: record.operation.jobId, pool: 'default' });
 
     const authority = createProviderProxySetAuthority({
       proxyInstanceId: set.proxyIdentity.proxyInstanceId,
@@ -2171,7 +2168,6 @@ describe('provider-proxy/set-authority: stopAndReap against a real guardian', ()
         Runtime,
         'ids' | 'env' | 'storage'
       >,
-      snapshotProviderOperations: () => [],
       operationRegistry,
     });
 

@@ -226,8 +226,7 @@ function observeShutdownTask(
 
 /**
  * Reaps every live set and confirms the containment is gone. Used by `hard`, and by `handoff` for the
- * proxies that carry nothing — a set with no live operation has nothing to hand off, so leaving it running
- * would strand a carrier no successor will ever adopt.
+ * sets whose containment must not survive this coordinator.
  */
 async function reapProviderProxySets(
   sets: readonly ProviderProxySetAuthority[],
@@ -264,9 +263,8 @@ async function releaseIpcSocket(
  * Every heartbeat stop, then every control close, then the IPC socket release, is invoked synchronously and
  * in that order before any of them is awaited; a synchronous throw from one is caught and folded into the
  * same outcome as an asynchronous rejection, so it cannot skip the triggers queued after it. A control whose
- * close rejects — or a heartbeat stop that throws — must not keep the socket bound, because the socket is
- * what the successor is waiting on, and a successor that cannot bind waits out the full adoption window for
- * no reason.
+ * close rejects — or a heartbeat stop that throws — must not keep the socket bound, because the successor
+ * cannot establish its own coordinator authority while the old socket remains bound.
  */
 async function releaseHandoffAuthority(
   sets: readonly ProviderProxySetAuthority[],
@@ -344,8 +342,6 @@ export async function runShutdownSequence({
   const observeTask = (label: string, task: Promise<void>): Promise<void> =>
     observeShutdownTask(failures, label, task, log);
   const mode = shutdownModeFromReason(reason);
-  /** Sets that reached the release boundary with nothing redeemable behind them. */
-  const handoffReapCandidates: ProviderProxySetAuthority[] = [];
   const drainTimeout = mode === 'handoff' ? HANDOFF_DRAIN_TIMEOUT_MS : SHUTDOWN_DRAIN_TIMEOUT_MS;
 
   log(`Coral backend shutting down (${reason}, mode=${mode})...\n`);
@@ -440,32 +436,6 @@ export async function runShutdownSequence({
     // Same reasoning as the hard-mode read above: taken only after `drainForHandoff()` has aborted every
     // acquisition still in flight, so nothing settling afterward can be missing from it.
     liveProxySets = providerProxyAuthority?.liveSets() ?? [];
-    for (const set of liveProxySets) {
-      // Refresh each proxy's standing membership independently so one degraded carrier cannot block the
-      // release boundary for every other set.
-      await runBudgetedStep(`provider proxy handoff grant '${set.proxyInstanceId}'`, async (signal) => {
-        const operations = await set.snapshotOperations(signal);
-        if (operations.length === 0) {
-          handoffReapCandidates.push(set);
-          return;
-        }
-        try {
-          await set.installHandoffGrant(operations, signal);
-        } catch (error: unknown) {
-          // A failed refresh cannot prove that every journal row reached all three roles, so this carrier
-          // still takes the existing fail-closed reap path.
-          handoffReapCandidates.push(set);
-          throw error;
-        }
-      });
-    }
-    // A set with no live operation has nothing to hand off, so it is reaped with the same required
-    // semantics `hard` uses — including the ones whose grant install just failed.
-    if (handoffReapCandidates.length > 0) {
-      await runRequiredBudgetedStep('provider proxy handoff reap', async (signal) =>
-        reapProviderProxySets(handoffReapCandidates, signal),
-      );
-    }
   }
 
   await runBudgetedStep('components disposeAll', async (signal) => runtimeState.components.disposeAll(signal));
@@ -479,23 +449,16 @@ export async function runShutdownSequence({
   // No async work may run between this resolution and `onStopped()`; that
   // structural invariant is what makes "socket bound = old daemon authority"
   // hold across the handoff window.
-  // Sets already reaped above (nothing to hand off, or a failed grant install) are gone from the guardian/
-  // reaper/proxy trio; re-offering them to the release boundary would retry a close against containment that
-  // no longer exists and fail the required step a second time for the same underlying reap.
-  const alreadyReaped = new Set(handoffReapCandidates);
-  const handoffReleaseCandidates = liveProxySets.filter((set) => !alreadyReaped.has(set));
-
-  if (mode === 'handoff' && handoffReleaseCandidates.length > 0) {
+  if (mode === 'handoff' && liveProxySets.length > 0) {
     // One ordered boundary rather than a socket close beside a separate control close. Control loss makes
-    // the installed grants redeemable without moving either enforcer's challenge-derived deadline, and the
-    // socket release that immediately follows lets the successor bind instead of waiting out the adoption
-    // window it was never meant to spend.
+    // each standing credential redeemable without moving either enforcer's challenge-derived deadline, and
+    // the socket release that immediately follows lets the successor bind without spending that deadline.
     //
     // Only when carriers exist. The required semantics protect the handoff of a *carrier*; applying them to
     // a shutdown that ran no provider work would turn a slow-but-harmless drain into a non-zero exit for a
     // property nothing was relying on.
     await runRequiredBudgetedStep('provider proxy handoff authority release', async (signal) =>
-      releaseHandoffAuthority(handoffReleaseCandidates, () => releaseIpcSocket(ipcServer, closeIpcServerFn), signal),
+      releaseHandoffAuthority(liveProxySets, () => releaseIpcSocket(ipcServer, closeIpcServerFn), signal),
     );
   } else if (ipcServer && closeIpcServerFn) {
     const ipcServerClosed = observeTask(

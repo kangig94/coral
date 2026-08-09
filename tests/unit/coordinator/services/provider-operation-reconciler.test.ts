@@ -213,9 +213,7 @@ function createHarness(
       proxyProcessGroupId: record.locator.containment.processGroupId,
       canonicalEndpoint: record.locator.proxy.controlEndpoint,
     },
-    snapshotOperations: async () => [],
     registerSuccessionOperation: overrides.registerSuccessionOperation ?? (async () => undefined),
-    installHandoffGrant: async () => undefined,
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,
@@ -269,7 +267,7 @@ function createHarness(
       })),
     buildOperationControl: () => ({ stop: overrides.stopOperation ?? (async () => undefined) }),
   };
-  const registry = { activate: vi.fn(), adopt: vi.fn(), settled: vi.fn(), stop: vi.fn() };
+  const registry = { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() };
   let now = 100;
   const terminalization = {
     terminalize: (
@@ -467,16 +465,16 @@ describe('ProviderOperationReconciler publication', () => {
       phase: 'executing',
       retryCount: 1,
     });
-    expect(harness.registry.adopt).not.toHaveBeenCalled();
+    expect(harness.registry.attach).not.toHaveBeenCalled();
 
     harness.reconciler.onControlEstablished(harness.authority);
 
     await vi.waitFor(() => expect(attachCalls).toBe(2));
-    expect(harness.registry.adopt).toHaveBeenCalledOnce();
+    expect(harness.registry.attach).toHaveBeenCalledOnce();
     expect(readProviderOperation(harness.db, recovered.operation)?.phase).toBe('executing');
   });
 
-  it('replays a durable stop intent when adopting an executing operation after restart', async () => {
+  it('replays a durable stop intent when attaching an executing operation after restart', async () => {
     const stopOperation = vi.fn(async () => undefined);
     const harness = createHarness({ stopOperation });
     const recovered = providerOperationRecordSchema.parse({
@@ -494,7 +492,7 @@ describe('ProviderOperationReconciler publication', () => {
 
     expect(stopOperation).toHaveBeenCalledOnce();
     expect(stopOperation).toHaveBeenCalledWith('user_abort');
-    expect(harness.registry.adopt).toHaveBeenCalledOnce();
+    expect(harness.registry.attach).toHaveBeenCalledOnce();
     expect(readProviderOperation(harness.db, recovered.operation)).toMatchObject({
       phase: 'executing',
       controlIntent: recovered.controlIntent,
@@ -563,12 +561,15 @@ describe('ProviderOperationReconciler publication', () => {
     if (retry?.phase !== 'executing') throw new Error('expected retryable executing attachment');
     await harness.reconciler.reconcile(retry, harness.authority);
 
-    await expect(publication).resolves.toEqual({
-      kind: 'failed',
-      reason: 'The provider proxy proved that the committed operation is absent.',
-    });
+    await expect(publication).resolves.toEqual({ kind: 'terminalized' });
     expect(readProviderOperation(harness.db, harness.record.operation)).toBeNull();
     expect(harness.registry.activate).not.toHaveBeenCalled();
+    expect(harness.appended).toContainEqual(
+      expect.objectContaining({
+        type: 'job.progress.emitted',
+        body: expect.objectContaining({ detail: expect.objectContaining({ code: 'provider_lost' }) }),
+      }),
+    );
   });
 
   it('does not publish execution after two lost guardian activation replies', async () => {
@@ -719,7 +720,7 @@ describe('ProviderOperationReconciler publication', () => {
     expect(acquireAuthority).toHaveBeenCalledOnce();
     expect(successorCalls).toEqual(['register', 'prepare']);
     expect(readProviderOperation(harness.db, recovered.operation)?.phase).toBe('executing');
-    expect(harness.registry.adopt).toHaveBeenCalledOnce();
+    expect(harness.registry.attach).toHaveBeenCalledOnce();
   });
 
   it('keeps a timeout pending and never turns it into local authorization', async () => {
@@ -789,7 +790,7 @@ describe('ProviderOperationReconciler publication', () => {
     const recovered = providerOperationRecord('proxy-activation-pending');
     insertProviderOperation(harness.db, recovered);
     const acquireAuthority = vi.fn(async () => null);
-    const registry = { activate: vi.fn(), adopt: vi.fn(), settled: vi.fn(), stop: vi.fn() };
+    const registry = { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() };
     const reconciler = new ProviderOperationReconciler({
       getProgressStore: () => harness.progressStore,
       authorityFor: () => null,
@@ -1001,7 +1002,7 @@ describe('ProviderOperationReconciler publication', () => {
         },
       }),
     ]);
-    expect(harness.registry.adopt).toHaveBeenCalledWith(expect.any(Object), expect.any(Object), {
+    expect(harness.registry.attach).toHaveBeenCalledWith(expect.any(Object), expect.any(Object), {
       jobId: recovered.operation.jobId,
       pool: 'curate',
     });
@@ -1138,7 +1139,7 @@ describe('ProviderOperationReconciler publication', () => {
         .map((event) => (event as { body: { detail?: { code?: string } } }).body.detail?.code);
       expect(failureCodes, record.phase).toEqual(failureCode === null ? [] : [failureCode]);
       expect(harness.registry.activate, record.phase).not.toHaveBeenCalled();
-      expect(harness.registry.adopt, record.phase).not.toHaveBeenCalled();
+      expect(harness.registry.attach, record.phase).not.toHaveBeenCalled();
     }
   });
 });
@@ -1160,6 +1161,21 @@ const FAULT_BOUNDARIES: readonly FaultBoundary[] = [
   'after-sqlite-commit',
 ];
 
+type FaultScenario = Readonly<{
+  label: string;
+  boundary: FaultBoundary;
+  afterSendEffect: 'applied' | 'not-applied';
+}>;
+
+const FAULT_SCENARIOS: readonly FaultScenario[] = FAULT_BOUNDARIES.flatMap<FaultScenario>((boundary) =>
+  boundary === 'after-send'
+    ? [
+        { label: `${boundary}/remote-effect-not-applied`, boundary, afterSendEffect: 'not-applied' },
+        { label: `${boundary}/remote-effect-applied`, boundary, afterSendEffect: 'applied' },
+      ]
+    : [{ label: boundary, boundary, afterSendEffect: 'not-applied' }],
+);
+
 type RemoteOperationState = {
   prepared: boolean;
   guardianAuthorized: boolean;
@@ -1174,15 +1190,19 @@ function injectedTransportError(boundary: FaultBoundary): Error {
 }
 
 async function callAcrossFaultBoundary<T>(
-  boundary: FaultBoundary,
+  scenario: FaultScenario,
   observe: (point: FaultBoundary) => void,
   applyRemoteEffect: () => void,
   reply: () => T,
 ): Promise<T> {
+  const { boundary } = scenario;
   observe('before-send');
   if (boundary === 'before-send') throw injectedTransportError(boundary);
   observe('after-send');
-  if (boundary === 'after-send') throw injectedTransportError(boundary);
+  if (boundary === 'after-send') {
+    if (scenario.afterSendEffect === 'applied') applyRemoteEffect();
+    throw injectedTransportError(boundary);
+  }
   applyRemoteEffect();
   observe('before-reply');
   if (boundary === 'before-reply') throw injectedTransportError(boundary);
@@ -1223,7 +1243,7 @@ function expectFaultInvariant(
   harness: ReturnType<typeof createHarness>,
   state: RemoteOperationState,
   stage: string,
-  boundary: FaultBoundary,
+  fault: string,
 ): void {
   const record = readProviderOperation(harness.db, harness.record.operation);
   const remoteStateExists =
@@ -1233,14 +1253,14 @@ function expectFaultInvariant(
     state.guardianMembershipPresent ||
     state.terminalAwaitingSettlement;
   if (remoteStateExists) {
-    expect(record, `${stage}/${boundary}: remote state lost its durable name`).not.toBeNull();
+    expect(record, `${stage}/${fault}: remote state lost its durable name`).not.toBeNull();
   }
-  expect(state.kernelStarts, `${stage}/${boundary}: kernel started more than once`).toBeLessThanOrEqual(1);
+  expect(state.kernelStarts, `${stage}/${fault}: kernel started more than once`).toBeLessThanOrEqual(1);
   if (record?.phase === 'executing' || harness.registry.activate.mock.calls.length > 0) {
-    expect(state.kernelStarts, `${stage}/${boundary}: execution was published without a kernel`).toBe(1);
+    expect(state.kernelStarts, `${stage}/${fault}: execution was published without a kernel`).toBe(1);
   }
   if (record === null) {
-    expect(remoteStateExists, `${stage}/${boundary}: unnamed remote state survived`).toBe(false);
+    expect(remoteStateExists, `${stage}/${fault}: unnamed remote state survived`).toBe(false);
   }
 }
 
@@ -1250,7 +1270,7 @@ async function driveCurrentRecord(harness: ReturnType<typeof createHarness>): Pr
     if (
       current === null ||
       (current.phase === 'executing' &&
-        (harness.registry.activate.mock.calls.length > 0 || harness.registry.adopt.mock.calls.length > 0))
+        (harness.registry.activate.mock.calls.length > 0 || harness.registry.attach.mock.calls.length > 0))
     ) {
       return current;
     }
@@ -1271,304 +1291,318 @@ function startedRemoteState(): RemoteOperationState {
 }
 
 describe('ProviderOperationReconciler fault-injection matrix', () => {
-  it('preserves publication invariants across every prepare boundary', async () => {
-    for (const boundary of FAULT_BOUNDARIES) {
-      const state: RemoteOperationState = {
-        prepared: false,
-        guardianAuthorized: false,
-        kernelStarts: 0,
-        ledgerPresent: false,
-        guardianMembershipPresent: false,
-        terminalAwaitingSettlement: false,
-      };
-      let faulted = false;
-      const harness = createHarness({
-        prepareOperation: async () => {
-          if (!faulted && !boundary.includes('sqlite')) {
-            faulted = true;
-            return callAcrossFaultBoundary(
-              boundary,
-              observe,
-              () => {
-                state.prepared = true;
-                state.guardianMembershipPresent = true;
-              },
-              () => ({
-                state: 'pending-activation' as const,
-                reservation: asReservation('00000000-0000-4000-8000-000000000007'),
-                leaseExpiresInMs: 15_000,
-                providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
-                jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
-              }),
-            );
-          }
-          state.prepared = true;
-          state.guardianMembershipPresent = true;
-          return {
-            state: 'pending-activation' as const,
-            reservation: asReservation('00000000-0000-4000-8000-000000000007'),
-            leaseExpiresInMs: 15_000,
-            providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
-            jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
-          };
-        },
-        inspectOperation: async () =>
-          state.prepared
-            ? {
-                state: 'prepared' as const,
-                reservation: asReservation('00000000-0000-4000-8000-000000000007'),
-                leaseExpiresInMs: 15_000,
-                providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
-                jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
-              }
-            : { state: 'absent' as const },
-        cancelOperation: async (operation, prepareAttemptNumber, prepareAttemptKey) => {
+  it.each(FAULT_SCENARIOS)('preserves publication invariants at prepare/$label', async (scenario) => {
+    const { boundary } = scenario;
+    const fault = scenario.label;
+    const state: RemoteOperationState = {
+      prepared: false,
+      guardianAuthorized: false,
+      kernelStarts: 0,
+      ledgerPresent: false,
+      guardianMembershipPresent: false,
+      terminalAwaitingSettlement: false,
+    };
+    let faulted = false;
+    const harness = createHarness({
+      prepareOperation: async () => {
+        if (!faulted && !boundary.includes('sqlite')) {
+          faulted = true;
+          return callAcrossFaultBoundary(
+            scenario,
+            observe,
+            () => {
+              state.prepared = true;
+              state.guardianMembershipPresent = true;
+            },
+            () => ({
+              state: 'pending-activation' as const,
+              reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+              leaseExpiresInMs: 15_000,
+              providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+              jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+            }),
+          );
+        }
+        state.prepared = true;
+        state.guardianMembershipPresent = true;
+        return {
+          state: 'pending-activation' as const,
+          reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+          leaseExpiresInMs: 15_000,
+          providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+          jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+        };
+      },
+      inspectOperation: async () =>
+        state.prepared
+          ? {
+              state: 'prepared' as const,
+              reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+              leaseExpiresInMs: 15_000,
+              providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+              jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+            }
+          : { state: 'absent' as const },
+      cancelOperation: async (operation, prepareAttemptNumber, prepareAttemptKey) => {
+        state.prepared = false;
+        state.guardianAuthorized = false;
+        state.guardianMembershipPresent = false;
+        return { state: 'released-never-started', operation, prepareAttemptNumber, prepareAttemptKey };
+      },
+      authorizeOperation: async () => {
+        state.guardianAuthorized = true;
+        return {
+          state: 'activation-authorized',
+          jointActivationReceipt: asJointActivationReceipt('activation-receipt'),
+        };
+      },
+      activatePreparedOperation: async () => {
+        if (!state.ledgerPresent) state.kernelStarts += 1;
+        state.ledgerPresent = true;
+        return activationAck;
+      },
+    });
+    const observe = (point: FaultBoundary): void => {
+      const record = readProviderOperation(harness.db, harness.record.operation);
+      expect(record?.phase, `prepare/${fault} at ${point}`).toBe('prepare-pending');
+    };
+    const restoreCommitFault = boundary.includes('sqlite')
+      ? installSqliteCommitFault(
+          harness,
+          boundary as 'before-sqlite-commit' | 'after-sqlite-commit',
+          'guardian-activation-pending',
+        )
+      : () => undefined;
+    const publication = harness.begin();
+    await vi.waitFor(() => {
+      if (boundary.includes('sqlite')) {
+        expect(readProviderOperation(harness.db, harness.record.operation)?.revision ?? 0).toBeGreaterThan(0);
+      } else {
+        expect(faulted).toBe(true);
+      }
+    });
+    restoreCommitFault();
+    expectFaultInvariant(harness, state, 'prepare', fault);
+    const final = await driveCurrentRecord(harness);
+    const placement = await publication;
+    expect(final?.phase, `prepare/${fault}: publication did not settle`).toBe('executing');
+    expect(placement).toEqual({ kind: 'remote-executing' });
+    expectFaultInvariant(harness, state, 'prepare', fault);
+  });
+
+  it.each(FAULT_SCENARIOS)('preserves publication invariants at guardian-activation/$label', async (scenario) => {
+    const { boundary } = scenario;
+    const fault = scenario.label;
+    const state: RemoteOperationState = {
+      prepared: true,
+      guardianAuthorized: false,
+      kernelStarts: 0,
+      ledgerPresent: false,
+      guardianMembershipPresent: true,
+      terminalAwaitingSettlement: false,
+    };
+    let faulted = false;
+    const harness = createHarness({
+      authorizeOperation: async () => {
+        const observe = (point: FaultBoundary): void => {
+          const current = readProviderOperation(harness.db, harness.record.operation);
+          expect(current?.phase, `guardian activation/${fault} at ${point}`).toBe('guardian-activation-pending');
+        };
+        if (!faulted && !boundary.includes('sqlite')) {
+          faulted = true;
+          return callAcrossFaultBoundary(
+            scenario,
+            observe,
+            () => {
+              state.guardianAuthorized = true;
+            },
+            () => ({
+              state: 'activation-authorized' as const,
+              jointActivationReceipt: asJointActivationReceipt('activation-receipt'),
+            }),
+          );
+        }
+        state.guardianAuthorized = true;
+        return {
+          state: 'activation-authorized',
+          jointActivationReceipt: asJointActivationReceipt('activation-receipt'),
+        };
+      },
+      activatePreparedOperation: async () => {
+        if (!state.ledgerPresent) state.kernelStarts += 1;
+        state.ledgerPresent = true;
+        return activationAck;
+      },
+      cancelOperation: async (operation, prepareAttemptNumber, prepareAttemptKey) => {
+        state.prepared = false;
+        state.guardianAuthorized = false;
+        state.guardianMembershipPresent = false;
+        return { state: 'released-never-started', operation, prepareAttemptNumber, prepareAttemptKey };
+      },
+    });
+    const initial = providerOperationRecord('guardian-activation-pending');
+    insertProviderOperation(harness.db, initial);
+    const restoreCommitFault = boundary.includes('sqlite')
+      ? installSqliteCommitFault(
+          harness,
+          boundary as 'before-sqlite-commit' | 'after-sqlite-commit',
+          'proxy-activation-pending',
+        )
+      : () => undefined;
+    await harness.reconciler.reconcile(initial, harness.authority);
+    restoreCommitFault();
+    expectFaultInvariant(harness, state, 'guardian activation', fault);
+    const final = await driveCurrentRecord(harness);
+    expect(['executing', undefined], `guardian activation/${fault}: unsafe terminal phase`).toContain(final?.phase);
+    expectFaultInvariant(harness, state, 'guardian activation', fault);
+  });
+
+  it.each(FAULT_SCENARIOS)('preserves publication invariants at proxy-activation/$label', async (scenario) => {
+    const { boundary } = scenario;
+    const fault = scenario.label;
+    const state: RemoteOperationState = {
+      prepared: true,
+      guardianAuthorized: true,
+      kernelStarts: 0,
+      ledgerPresent: false,
+      guardianMembershipPresent: true,
+      terminalAwaitingSettlement: false,
+    };
+    let faulted = false;
+    const harness = createHarness({
+      activatePreparedOperation: async () => {
+        const observe = (point: FaultBoundary): void => {
+          const current = readProviderOperation(harness.db, harness.record.operation);
+          expect(current?.phase, `proxy activation/${fault} at ${point}`).toBe('proxy-activation-pending');
+        };
+        if (!faulted && !boundary.includes('sqlite')) {
+          faulted = true;
+          return callAcrossFaultBoundary(
+            scenario,
+            observe,
+            () => {
+              if (!state.ledgerPresent) state.kernelStarts += 1;
+              state.ledgerPresent = true;
+            },
+            () => activationAck,
+          );
+        }
+        if (!state.ledgerPresent) state.kernelStarts += 1;
+        state.ledgerPresent = true;
+        return activationAck;
+      },
+    });
+    const initial = providerOperationRecord('proxy-activation-pending');
+    insertProviderOperation(harness.db, initial);
+    const restoreCommitFault = boundary.includes('sqlite')
+      ? installSqliteCommitFault(harness, boundary as 'before-sqlite-commit' | 'after-sqlite-commit', 'executing')
+      : () => undefined;
+    await harness.reconciler.reconcile(initial, harness.authority);
+    restoreCommitFault();
+    expectFaultInvariant(harness, state, 'proxy activation', fault);
+    const final = await driveCurrentRecord(harness);
+    expect(final?.phase, `proxy activation/${fault}: activation did not settle`).toBe('executing');
+    expectFaultInvariant(harness, state, 'proxy activation', fault);
+  });
+
+  it.each(FAULT_SCENARIOS)('preserves settlement invariants at settlement/$label', async (scenario) => {
+    const { boundary } = scenario;
+    const fault = scenario.label;
+    const state = { ...startedRemoteState(), terminalAwaitingSettlement: true };
+    let faulted = false;
+    const harness = createHarness({
+      settleOperation: async (_operation, finalProviderSeq) => {
+        const observe = (point: FaultBoundary): void => {
+          const current = readProviderOperation(harness.db, harness.record.operation);
+          expect(current?.phase, `settlement/${fault} at ${point}`).toBe('settlement-pending');
+        };
+        const release = (): void => {
+          state.ledgerPresent = false;
+          state.guardianMembershipPresent = false;
+          state.terminalAwaitingSettlement = false;
+        };
+        if (!faulted && !boundary.includes('sqlite')) {
+          faulted = true;
+          return callAcrossFaultBoundary(scenario, observe, release, () => ({
+            state: 'released-after-terminal' as const,
+            settledThroughProviderSeq: finalProviderSeq,
+          }));
+        }
+        release();
+        return { state: 'released-after-terminal', settledThroughProviderSeq: finalProviderSeq };
+      },
+    });
+    const initial = providerOperationRecord('settlement-pending');
+    insertProviderOperation(harness.db, initial);
+    const restoreCommitFault = boundary.includes('sqlite')
+      ? installSqliteCommitFault(harness, boundary as 'before-sqlite-commit' | 'after-sqlite-commit', null)
+      : () => undefined;
+    await harness.reconciler.reconcile(initial, harness.authority);
+    restoreCommitFault();
+    if (boundary === 'after-send') {
+      expect(
+        readProviderOperation(harness.db, harness.record.operation)?.phase,
+        `settlement/${fault}: ambiguous release lost durable intent`,
+      ).toBe('settlement-pending');
+    }
+    expectFaultInvariant(harness, state, 'settlement', fault);
+    const final = await driveCurrentRecord(harness);
+    expect(final, `settlement/${fault}: tombstone survived confirmed release`).toBeNull();
+    expectFaultInvariant(harness, state, 'settlement', fault);
+  });
+
+  it.each(FAULT_SCENARIOS)('preserves prestart-release invariants at release/$label', async (scenario) => {
+    const { boundary } = scenario;
+    const fault = scenario.label;
+    const state: RemoteOperationState = {
+      prepared: true,
+      guardianAuthorized: false,
+      kernelStarts: 0,
+      ledgerPresent: false,
+      guardianMembershipPresent: true,
+      terminalAwaitingSettlement: false,
+    };
+    let faulted = false;
+    const harness = createHarness({
+      cancelOperation: async (operation, prepareAttemptNumber, prepareAttemptKey) => {
+        const observe = (point: FaultBoundary): void => {
+          const current = readProviderOperation(harness.db, harness.record.operation);
+          expect(current?.phase, `release/${fault} at ${point}`).toBe('prestart-cleanup-pending');
+        };
+        const release = (): void => {
           state.prepared = false;
           state.guardianAuthorized = false;
           state.guardianMembershipPresent = false;
-          return { state: 'released-never-started', operation, prepareAttemptNumber, prepareAttemptKey };
-        },
-        authorizeOperation: async () => {
-          state.guardianAuthorized = true;
-          return {
-            state: 'activation-authorized',
-            jointActivationReceipt: asJointActivationReceipt('activation-receipt'),
-          };
-        },
-        activatePreparedOperation: async () => {
-          if (!state.ledgerPresent) state.kernelStarts += 1;
-          state.ledgerPresent = true;
-          return activationAck;
-        },
-      });
-      const observe = (point: FaultBoundary): void => {
-        const record = readProviderOperation(harness.db, harness.record.operation);
-        expect(record?.phase, `prepare/${boundary} at ${point}`).toBe('prepare-pending');
-      };
-      const restoreCommitFault = boundary.includes('sqlite')
-        ? installSqliteCommitFault(
-            harness,
-            boundary as 'before-sqlite-commit' | 'after-sqlite-commit',
-            'guardian-activation-pending',
-          )
-        : () => undefined;
-      const publication = harness.begin();
-      await vi.waitFor(() =>
-        expect(readProviderOperation(harness.db, harness.record.operation)?.revision ?? 0).toBeGreaterThan(0),
-      );
-      restoreCommitFault();
-      expectFaultInvariant(harness, state, 'prepare', boundary);
-      const final = await driveCurrentRecord(harness);
-      const placement = await publication;
-      expect(final?.phase, `prepare/${boundary}: publication did not settle`).toBe('executing');
-      expect(placement).toEqual({ kind: 'remote-executing' });
-      expectFaultInvariant(harness, state, 'prepare', boundary);
+        };
+        if (!faulted && !boundary.includes('sqlite')) {
+          faulted = true;
+          return callAcrossFaultBoundary(scenario, observe, release, () => ({
+            state: 'released-never-started' as const,
+            operation,
+            prepareAttemptNumber,
+            prepareAttemptKey,
+          }));
+        }
+        release();
+        return { state: 'released-never-started', operation, prepareAttemptNumber, prepareAttemptKey };
+      },
+    });
+    const initial = providerOperationRecord('prestart-cleanup-pending');
+    insertProviderOperation(harness.db, initial);
+    const restoreCommitFault = boundary.includes('sqlite')
+      ? installSqliteCommitFault(harness, boundary as 'before-sqlite-commit' | 'after-sqlite-commit', null)
+      : () => undefined;
+    await harness.reconciler.reconcile(initial, harness.authority);
+    restoreCommitFault();
+    if (boundary === 'after-send') {
+      expect(
+        readProviderOperation(harness.db, harness.record.operation)?.phase,
+        `release/${fault}: ambiguous release lost durable intent`,
+      ).toBe('prestart-cleanup-pending');
     }
-  });
-
-  it('preserves publication invariants across every guardian-activation boundary', async () => {
-    for (const boundary of FAULT_BOUNDARIES) {
-      const state: RemoteOperationState = {
-        prepared: true,
-        guardianAuthorized: false,
-        kernelStarts: 0,
-        ledgerPresent: false,
-        guardianMembershipPresent: true,
-        terminalAwaitingSettlement: false,
-      };
-      let faulted = false;
-      const harness = createHarness({
-        authorizeOperation: async () => {
-          const observe = (point: FaultBoundary): void => {
-            const current = readProviderOperation(harness.db, harness.record.operation);
-            expect(current?.phase, `guardian activation/${boundary} at ${point}`).toBe('guardian-activation-pending');
-          };
-          if (!faulted && !boundary.includes('sqlite')) {
-            faulted = true;
-            return callAcrossFaultBoundary(
-              boundary,
-              observe,
-              () => {
-                state.guardianAuthorized = true;
-              },
-              () => ({
-                state: 'activation-authorized' as const,
-                jointActivationReceipt: asJointActivationReceipt('activation-receipt'),
-              }),
-            );
-          }
-          state.guardianAuthorized = true;
-          return {
-            state: 'activation-authorized',
-            jointActivationReceipt: asJointActivationReceipt('activation-receipt'),
-          };
-        },
-        activatePreparedOperation: async () => {
-          if (!state.ledgerPresent) state.kernelStarts += 1;
-          state.ledgerPresent = true;
-          return activationAck;
-        },
-        cancelOperation: async (operation, prepareAttemptNumber, prepareAttemptKey) => {
-          state.prepared = false;
-          state.guardianAuthorized = false;
-          state.guardianMembershipPresent = false;
-          return { state: 'released-never-started', operation, prepareAttemptNumber, prepareAttemptKey };
-        },
-      });
-      const initial = providerOperationRecord('guardian-activation-pending');
-      insertProviderOperation(harness.db, initial);
-      const restoreCommitFault = boundary.includes('sqlite')
-        ? installSqliteCommitFault(
-            harness,
-            boundary as 'before-sqlite-commit' | 'after-sqlite-commit',
-            'proxy-activation-pending',
-          )
-        : () => undefined;
-      await harness.reconciler.reconcile(initial, harness.authority);
-      restoreCommitFault();
-      expectFaultInvariant(harness, state, 'guardian activation', boundary);
-      const final = await driveCurrentRecord(harness);
-      expect(['executing', undefined], `guardian activation/${boundary}: unsafe terminal phase`).toContain(
-        final?.phase,
-      );
-      expectFaultInvariant(harness, state, 'guardian activation', boundary);
-    }
-  });
-
-  it('preserves publication invariants across every proxy-activation boundary', async () => {
-    for (const boundary of FAULT_BOUNDARIES) {
-      const state: RemoteOperationState = {
-        prepared: true,
-        guardianAuthorized: true,
-        kernelStarts: 0,
-        ledgerPresent: false,
-        guardianMembershipPresent: true,
-        terminalAwaitingSettlement: false,
-      };
-      let faulted = false;
-      const harness = createHarness({
-        activatePreparedOperation: async () => {
-          const observe = (point: FaultBoundary): void => {
-            const current = readProviderOperation(harness.db, harness.record.operation);
-            expect(current?.phase, `proxy activation/${boundary} at ${point}`).toBe('proxy-activation-pending');
-          };
-          if (!faulted && !boundary.includes('sqlite')) {
-            faulted = true;
-            return callAcrossFaultBoundary(
-              boundary,
-              observe,
-              () => {
-                if (!state.ledgerPresent) state.kernelStarts += 1;
-                state.ledgerPresent = true;
-              },
-              () => activationAck,
-            );
-          }
-          if (!state.ledgerPresent) state.kernelStarts += 1;
-          state.ledgerPresent = true;
-          return activationAck;
-        },
-      });
-      const initial = providerOperationRecord('proxy-activation-pending');
-      insertProviderOperation(harness.db, initial);
-      const restoreCommitFault = boundary.includes('sqlite')
-        ? installSqliteCommitFault(harness, boundary as 'before-sqlite-commit' | 'after-sqlite-commit', 'executing')
-        : () => undefined;
-      await harness.reconciler.reconcile(initial, harness.authority);
-      restoreCommitFault();
-      expectFaultInvariant(harness, state, 'proxy activation', boundary);
-      const final = await driveCurrentRecord(harness);
-      expect(final?.phase, `proxy activation/${boundary}: activation did not settle`).toBe('executing');
-      expectFaultInvariant(harness, state, 'proxy activation', boundary);
-    }
-  });
-
-  it('preserves settlement invariants across every boundary', async () => {
-    for (const boundary of FAULT_BOUNDARIES) {
-      const state = { ...startedRemoteState(), terminalAwaitingSettlement: true };
-      let faulted = false;
-      const harness = createHarness({
-        settleOperation: async (_operation, finalProviderSeq) => {
-          const observe = (point: FaultBoundary): void => {
-            const current = readProviderOperation(harness.db, harness.record.operation);
-            expect(current?.phase, `settlement/${boundary} at ${point}`).toBe('settlement-pending');
-          };
-          const release = (): void => {
-            state.ledgerPresent = false;
-            state.guardianMembershipPresent = false;
-            state.terminalAwaitingSettlement = false;
-          };
-          if (!faulted && !boundary.includes('sqlite')) {
-            faulted = true;
-            return callAcrossFaultBoundary(boundary, observe, release, () => ({
-              state: 'released-after-terminal' as const,
-              settledThroughProviderSeq: finalProviderSeq,
-            }));
-          }
-          release();
-          return { state: 'released-after-terminal', settledThroughProviderSeq: finalProviderSeq };
-        },
-      });
-      const initial = providerOperationRecord('settlement-pending');
-      insertProviderOperation(harness.db, initial);
-      const restoreCommitFault = boundary.includes('sqlite')
-        ? installSqliteCommitFault(harness, boundary as 'before-sqlite-commit' | 'after-sqlite-commit', null)
-        : () => undefined;
-      await harness.reconciler.reconcile(initial, harness.authority);
-      restoreCommitFault();
-      expectFaultInvariant(harness, state, 'settlement', boundary);
-      const final = await driveCurrentRecord(harness);
-      expect(final, `settlement/${boundary}: tombstone survived confirmed release`).toBeNull();
-      expectFaultInvariant(harness, state, 'settlement', boundary);
-    }
-  });
-
-  it('preserves prestart-release invariants across every boundary', async () => {
-    for (const boundary of FAULT_BOUNDARIES) {
-      const state: RemoteOperationState = {
-        prepared: true,
-        guardianAuthorized: false,
-        kernelStarts: 0,
-        ledgerPresent: false,
-        guardianMembershipPresent: true,
-        terminalAwaitingSettlement: false,
-      };
-      let faulted = false;
-      const harness = createHarness({
-        cancelOperation: async (operation, prepareAttemptNumber, prepareAttemptKey) => {
-          const observe = (point: FaultBoundary): void => {
-            const current = readProviderOperation(harness.db, harness.record.operation);
-            expect(current?.phase, `release/${boundary} at ${point}`).toBe('prestart-cleanup-pending');
-          };
-          const release = (): void => {
-            state.prepared = false;
-            state.guardianAuthorized = false;
-            state.guardianMembershipPresent = false;
-          };
-          if (!faulted && !boundary.includes('sqlite')) {
-            faulted = true;
-            return callAcrossFaultBoundary(boundary, observe, release, () => ({
-              state: 'released-never-started' as const,
-              operation,
-              prepareAttemptNumber,
-              prepareAttemptKey,
-            }));
-          }
-          release();
-          return { state: 'released-never-started', operation, prepareAttemptNumber, prepareAttemptKey };
-        },
-      });
-      const initial = providerOperationRecord('prestart-cleanup-pending');
-      insertProviderOperation(harness.db, initial);
-      const restoreCommitFault = boundary.includes('sqlite')
-        ? installSqliteCommitFault(harness, boundary as 'before-sqlite-commit' | 'after-sqlite-commit', null)
-        : () => undefined;
-      await harness.reconciler.reconcile(initial, harness.authority);
-      restoreCommitFault();
-      expectFaultInvariant(harness, state, 'release', boundary);
-      const final = await driveCurrentRecord(harness);
-      expect(final, `release/${boundary}: cleanup row survived confirmed release`).toBeNull();
-      expectFaultInvariant(harness, state, 'release', boundary);
-    }
+    expectFaultInvariant(harness, state, 'release', fault);
+    const final = await driveCurrentRecord(harness);
+    expect(final, `release/${fault}: cleanup row survived confirmed release`).toBeNull();
+    expectFaultInvariant(harness, state, 'release', fault);
   });
 });

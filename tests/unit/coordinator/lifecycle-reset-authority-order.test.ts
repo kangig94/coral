@@ -565,8 +565,6 @@ describe('lifecycle reset authority and finalizer order', () => {
     const stopAndReap = vi.fn(async () => ({ disappearanceReceipt: 'r' }));
     const fakeSet: ProviderProxySetAuthority = {
       proxyInstanceId: 'proxy-under-test',
-      snapshotOperations: async () => [],
-      installHandoffGrant: async () => {},
       stopAndReap,
       stopHeartbeats: vi.fn(),
       initiateControlClose: async () => {},

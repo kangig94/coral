@@ -34,7 +34,6 @@ import {
   proxyOperationActivateParamsSchema as activateParamsSchema,
   proxyOperationAttachParamsSchema as attachParamsSchema,
   proxyOperationAttachResultSchema as attachResultSchema,
-  proxyOperationAdoptParamsSchema as adoptParamsSchema,
   proxyOperationPrepareParamsSchema as prepareParamsSchema,
   proxyOperationReservationParamsSchema as reservationParamsSchema,
   proxyControlOpenParamsSchema as openParamsSchema,
@@ -290,26 +289,6 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           return attachResultSchema.parse(
             await supervisor.attach(request.operation, request.committedThroughProviderSeq),
           );
-        },
-      },
-    ],
-    [
-      'operation.adopt.v1',
-      {
-        authority: 'active',
-        handle: (params) => {
-          const request = adoptParamsSchema.parse(params);
-          assertNamedOperation(request.operation);
-          const redemption = grants.redemption();
-          if (redemption === null) {
-            throw new ProxyControlProtocolError('invalid_state', 'No grant has been redeemed on this proxy.');
-          }
-          if (
-            !redemption.grant.operations.some((operation) => operation.operationId === request.operation.operationId)
-          ) {
-            throw new ProxyControlProtocolError('operation_not_found', 'That operation is outside the redeemed set.');
-          }
-          return supervisor.adopt(request.operation, request.committedThroughProviderSeq);
         },
       },
     ],

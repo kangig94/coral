@@ -353,9 +353,7 @@ async function launchThroughRoute(
   } as const;
   const base = {
     proxyInstanceId: set.shared.proxyInstanceId,
-    snapshotOperations: async () => [],
     registerSuccessionOperation: async () => undefined,
-    installHandoffGrant: async () => undefined,
     stopAndReap: async () => ({ disappearanceReceipt: 'gone' }),
     stopHeartbeats: () => undefined,
     initiateControlClose: async () => undefined,
@@ -563,16 +561,6 @@ async function installGrantForOperations(
   // A redeemer never names the timeout or the operation set: both are bound where the grant is installed, so
   // the redeem request is the set tuple plus the credential and nothing else.
   return { ...set_, secret: GRANT_SECRET, successor: set.coordinator };
-}
-
-async function installGrant(set: ProxyUnderTest, operationIds: readonly string[]): Promise<Record<string, unknown>> {
-  const operations = [...operationIds].sort().map((operationId) => ({
-    jobId: randomUUID(),
-    operationId: operationId as ReturnType<typeof randomUUID>,
-    proxyInstanceId: set.shared.proxyInstanceId,
-    buildSetId: set.shared.buildSetId,
-  }));
-  return installGrantForOperations(set, operations);
 }
 
 describe('provider-proxy operation lifecycle', () => {
@@ -922,23 +910,13 @@ describe('provider-proxy operation lifecycle', () => {
     expect(set.stopped).toEqual([]);
   });
 
-  it('refuses adoption before any grant has been redeemed on this proxy', async () => {
-    const set = await startProxy();
-    const { operation, reserved } = await prepare(set);
-    await activate(set, operation, reserved);
-
-    await expect(
-      set.control.call('operation.adopt.v1', { operation, committedThroughProviderSeq: 0 }, 5_000),
-    ).rejects.toThrow(/No grant has been redeemed/u);
-  });
-
-  it('adopts only operations inside the redeemed set', async () => {
+  it('attaches only operations inside the redeemed set', async () => {
     const set = await startProxy();
     const inside = await prepare(set);
     const outside = await prepare(set);
     await activate(set, inside.operation, inside.reserved);
     await activate(set, outside.operation, outside.reserved);
-    const redeem = await installGrant(set, [inside.operation.operationId]);
+    const redeem = await installGrantForOperations(set, [inside.operation]);
     set.control.close();
     set.advanceSilently(5_001);
 
@@ -959,15 +937,15 @@ describe('provider-proxy operation lifecycle', () => {
 
     expect(
       await successor.call(
-        'operation.adopt.v1',
+        'operation.attach.v1',
         { operation: inside.operation, committedThroughProviderSeq: 0 },
         5_000,
       ),
-    ).toEqual({ state: 'executing', replayFromProviderSeq: 1 });
+    ).toEqual({ state: 'attached', replayFromProviderSeq: 1 });
     // An otherwise valid, executing operation outside the redeemed set is one this successor never earned,
     // however good its control tenancy is.
     await expect(
-      successor.call('operation.adopt.v1', { operation: outside.operation, committedThroughProviderSeq: 0 }, 5_000),
+      successor.call('operation.attach.v1', { operation: outside.operation, committedThroughProviderSeq: 0 }, 5_000),
     ).rejects.toThrow(/outside the redeemed set/u);
   });
 
@@ -1024,7 +1002,7 @@ describe('provider-proxy operation lifecycle', () => {
   it("keeps a redeemed successor's first challenge answerable for the full lease, unclamped by any ceiling", async () => {
     const set = await startProxy();
     // A grant that names no operations is enough: only the tenancy this redemption opens is under test.
-    const redeem = await installGrant(set, []);
+    const redeem = await installGrantForOperations(set, []);
     set.control.close();
     set.advanceSilently(5_001);
 
@@ -1036,8 +1014,8 @@ describe('provider-proxy operation lifecycle', () => {
     };
 
     // Right up to — but not reaching — the bare lease boundary measured from redemption itself: operational
-    // control carries no adoption-style ceiling to clamp this any earlier, unlike the enforcer's own first
-    // challenge (see orphan-deadline.test.ts's "caps the first challenge at the adoption deadline").
+    // control carries no recovery ceiling to clamp this any earlier, unlike the enforcer's own first
+    // challenge, which cannot outlive the containment-recovery window.
     set.advanceSilently(PROXY_CONTROL_LEASE_MS - 1);
     const stillLive = (await successor.call(
       'control.heartbeat.v1',
@@ -1149,7 +1127,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     expect(set.proxy.ledger().get(key)?.bufferedEvents).toEqual([]);
   });
 
-  it('keeps an unacknowledged event buffered through a control loss, and delivers it once a successor adopts', async () => {
+  it('keeps an unacknowledged event buffered through control loss and delivers it once a successor attaches', async () => {
     // No handler on this first connection: the proxy's own push is refused, so the event stays buffered
     // exactly as it would if control had gone genuinely unreachable — the recovery path under test does not
     // depend on which failure mode left the event unacknowledged.
@@ -1161,7 +1139,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' }, await set.proxy.reserveProviderEvent(key));
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.bufferedEvents).toHaveLength(1));
 
-    const redeem = await installGrant(set, [operation.operationId]);
+    const redeem = await installGrantForOperations(set, [operation]);
     set.control.close();
     set.advanceSilently(5_001);
 
@@ -1181,12 +1159,12 @@ describe('provider-proxy provider.event.v1 emission', () => {
       5_000,
     );
 
-    const adopted = (await successor.call(
-      'operation.adopt.v1',
+    const attached = (await successor.call(
+      'operation.attach.v1',
       { operation, committedThroughProviderSeq: 0 },
       5_000,
     )) as { replayFromProviderSeq: number };
-    expect(adopted.replayFromProviderSeq).toBe(1);
+    expect(attached.replayFromProviderSeq).toBe(1);
 
     // Waiting on the ledger's own watermark, not `received.length`: the handler runs (and pushes into
     // `received`) before its `ack` reply has even been written back, let alone round-tripped through
@@ -1197,7 +1175,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     ]);
   });
 
-  it('resumes draining every held operation on a same-successor redeem retry, even without an explicit adopt', async () => {
+  it('resumes draining every held operation on a same-successor redeem retry before operation attachment', async () => {
     const set = await startProxy();
     const { operation, reserved } = await prepare(set);
     await activate(set, operation, reserved);
@@ -1205,7 +1183,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' }, await set.proxy.reserveProviderEvent(key));
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.bufferedEvents).toHaveLength(1));
 
-    const redeem = await installGrant(set, [operation.operationId]);
+    const redeem = await installGrantForOperations(set, [operation]);
     set.control.close();
     set.advanceSilently(5_001);
 

@@ -169,10 +169,9 @@ describe('provider-proxy handoff capsule', () => {
     expect(registry.redemption()).toEqual(redeemed);
   });
 
-  it('lets the coordinator that redeemed a grant install a fresh one for its own later handoff', () => {
-    // Generation 1 bequeaths the set; generation 2 redeems it and starts running the set. Role processes
-    // outlive the coordinator, so this same registry is still the one generation 2's *own* future handoff
-    // has to install a grant into — proving the set really can be bequeathed a second time, not just once.
+  it('lets a successor rotate the standing credential for another control epoch', () => {
+    // Role processes outlive each coordinator, so the same registry must allow recovery through multiple
+    // control losses instead of making the first redemption the last recoverable epoch.
     const registry = createGrantRegistry(mintReceipt());
     const first = installedGrantFor(ORDERED);
     registry.install(first);

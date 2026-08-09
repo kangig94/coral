@@ -83,20 +83,14 @@ export class LocalOperationRegistry {
     this.register(record, control, cleanup, 'activated');
   }
 
-  /**
-   * W2.5's second thin entry point onto the same private builder: registers an operation this coordinator
-   * generation never activated but attached after redeeming a predecessor's bequeathed proxy set. The
-   * provider-operation reconciler is the only production caller.
-   *
-   * A generation that restored local admission state can resolve the same identity; one that did not has a
-   * natural no-op at the jobs-layer cleanup port.
-   */
-  adopt(
+  /** A generation that restored local admission state can release the same identity; one that did not has a
+   * natural no-op at the jobs-layer cleanup port. */
+  attach(
     record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
     control: OperationStopControl,
     cleanup: ProviderOperationCleanupIdentity,
   ): void {
-    this.register(record, control, cleanup, 'adopted');
+    this.register(record, control, cleanup, 'attached');
   }
 
   /**

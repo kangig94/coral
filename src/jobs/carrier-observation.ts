@@ -46,7 +46,7 @@ export type CarrierClass =
  * may well still be running. Locally that is `unknown`, never `absent`, because the only thing proven is
  * that *this* process has no entry.
  */
-export type LocalOperationRegistryState = 'activated' | 'adopted' | 'inherited';
+export type LocalOperationRegistryState = 'activated' | 'attached' | 'inherited';
 
 /**
  * The durable CLI's recorded process identity, or why it is missing.
@@ -109,7 +109,7 @@ type Verdict = Readonly<{ liveness: CarrierLiveness; source: CarrierObservationS
 function acquiredVerdict(registryState: LocalOperationRegistryState): Verdict {
   switch (registryState) {
     case 'activated':
-    case 'adopted':
+    case 'attached':
       return { liveness: 'live', source: 'local-operation-registry' };
     case 'inherited':
       return { liveness: 'unknown', source: 'no-local-evidence' };

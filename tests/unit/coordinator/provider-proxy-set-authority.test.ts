@@ -80,11 +80,10 @@ function unreachableClient(): ControlClient {
   };
 }
 
-/** `runtime.ids`/`env`/`storage` for the `stopAndReap`-only describe blocks below: none of them ever reach
- *  `installHandoffGrant`, so touching any of these ports is itself the defect a test here would be catching. */
+/** `runtime.ids`/`env`/`storage` for the `stopAndReap`-only describe blocks below. */
 function unusedRuntimePorts(): Pick<Runtime, 'ids' | 'env' | 'storage'> {
   const fail = (member: string) => (): never => {
-    throw new Error(`unexpected use of runtime.${member} outside installHandoffGrant`);
+    throw new Error(`unexpected use of runtime.${member} during stopAndReap`);
   };
   return {
     ids: { uuid: fail('ids.uuid'), randomBytes: fail('ids.randomBytes') } as unknown as Runtime['ids'],
@@ -137,7 +136,6 @@ function authorityWithGuardianClient(
     coordinatorIdentity: COORDINATOR_IDENTITY,
     handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
     runtime: unusedRuntimePorts(),
-    snapshotProviderOperations: () => [],
     operationRegistry: { operationsFor: () => [], providerRootsFor: () => providerRoots },
   };
   return createProviderProxySetAuthority(deps);
@@ -240,10 +238,12 @@ describe('createProviderProxySetAuthority: stopAndReap providerRoots', () => {
   });
 });
 
-describe('createProviderProxySetAuthority: installHandoffGrant', () => {
-  const OPERATION_KEY = {
+describe('createProviderProxySetAuthority: continuous recovery', () => {
+  const OPERATION = {
     jobId: '88888888-8888-4888-8888-888888888888',
     operationId: '66666666-6666-4666-8666-666666666666',
+    proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+    buildSetId: GUARDIAN_IDENTITY.buildSetId,
   };
   const INSTALL_ACK = { state: 'installed-dormant' as const, grantId: '77777777-7777-4777-8777-777777777777' };
   type InstallCall = { role: string; method: string; params: unknown };
@@ -278,7 +278,6 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
     calls: InstallCall[];
     fail?: 'guardian' | 'reaper' | 'proxy';
     failMethod?: string;
-    snapshotProviderOperations?: ProviderProxySetAuthorityDependencies['snapshotProviderOperations'];
   }): { authority: ReturnType<typeof createProviderProxySetAuthority>; handoffCapsulePath: string } {
     const tempRoot = mkdtempSync(join(tmpdir(), 'coral-install-handoff-grant-'));
     tempRoots.push(tempRoot);
@@ -308,25 +307,17 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
       coordinatorIdentity: COORDINATOR_IDENTITY,
       handoffCapsulePath,
       runtime,
-      snapshotProviderOperations: options.snapshotProviderOperations ?? (() => []),
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
     };
     return { authority: createProviderProxySetAuthority(deps), handoffCapsulePath };
   }
 
-  it('refuses an empty operation set instead of installing a grant over nothing', async () => {
-    const { authority } = authorityForInstall({ calls: [] });
-
-    await expect(authority.installHandoffGrant([], new AbortController().signal)).rejects.toThrow(
-      /at least one operation/u,
-    );
-  });
-
   it('installs one standing credential on all roles and keeps its secret only in the mode-0600 capsule', async () => {
     const calls: InstallCall[] = [];
     const { authority, handoffCapsulePath } = authorityForInstall({ calls });
 
-    await authority.installHandoffGrant([OPERATION_KEY], new AbortController().signal);
+    await authority.installRecoveryCredential(new AbortController().signal);
+    await authority.registerSuccessionOperation(OPERATION);
 
     expect(calls.map((call) => call.method)).toEqual(
       expect.arrayContaining([
@@ -358,9 +349,7 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
     const calls: InstallCall[] = [];
     const { authority, handoffCapsulePath } = authorityForInstall({ calls, fail: 'reaper' });
 
-    await expect(authority.installHandoffGrant([OPERATION_KEY], new AbortController().signal)).rejects.toThrow(
-      /reaper refused/u,
-    );
+    await expect(authority.installRecoveryCredential(new AbortController().signal)).rejects.toThrow(/reaper refused/u);
     expect(() => statSync(handoffCapsulePath)).toThrow();
   });
 
@@ -369,61 +358,17 @@ describe('createProviderProxySetAuthority: installHandoffGrant', () => {
     const pendingOperation = {
       jobId: '88888888-8888-4888-8888-888888888889',
       operationId: '66666666-6666-4666-8666-666666666667',
+      proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+      buildSetId: GUARDIAN_IDENTITY.buildSetId,
     };
-    const { authority } = authorityForInstall({
-      calls,
-      snapshotProviderOperations: () => [pendingOperation],
-    });
+    const { authority } = authorityForInstall({ calls });
 
-    const operations = await authority.snapshotOperations(new AbortController().signal);
-    await authority.installHandoffGrant(operations, new AbortController().signal);
+    await authority.registerSuccessionOperation(pendingOperation);
 
     const proxyRegistration = calls.find((call) => call.method === 'succession.register-operation.v1');
     expect(proxyRegistration?.params).toEqual({
-      operation: {
-        ...pendingOperation,
-        proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
-        buildSetId: GUARDIAN_IDENTITY.buildSetId,
-      },
+      operation: pendingOperation,
     });
-  });
-});
-
-describe('createProviderProxySetAuthority: snapshotOperations', () => {
-  it('byte-sorts the durable journal snapshot without consulting the live registry', async () => {
-    const laterOperation = { jobId: '11111111-1111-4111-8111-111111111112', operationId: 'b'.repeat(36 - 4) + '1111' };
-    const earlierOperation = {
-      jobId: '11111111-1111-4111-8111-111111111113',
-      operationId: 'a'.repeat(36 - 4) + '1111',
-    };
-    const deps: ProviderProxySetAuthorityDependencies = {
-      proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
-      guardianClient: unreachableClient(),
-      proxyClient: unreachableClient(),
-      reaperClient: unreachableClient(),
-      guardianIdentity: GUARDIAN_IDENTITY,
-      reaperIdentity: REAPER_IDENTITY,
-      proxyIdentityFields: PROXY_IDENTITY,
-      heartbeats: [],
-      coordinatorIdentity: COORDINATOR_IDENTITY,
-      handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
-      runtime: unusedRuntimePorts(),
-      snapshotProviderOperations: () => [laterOperation, earlierOperation],
-      operationRegistry: {
-        operationsFor: () => {
-          throw new Error('live registry must not define handoff membership');
-        },
-        providerRootsFor: () => [],
-      },
-    };
-    const authority = createProviderProxySetAuthority(deps);
-
-    const snapshot = await authority.snapshotOperations(new AbortController().signal);
-
-    expect(snapshot).toEqual([
-      { jobId: earlierOperation.jobId, operationId: earlierOperation.operationId },
-      { jobId: laterOperation.jobId, operationId: laterOperation.operationId },
-    ]);
   });
 });
 

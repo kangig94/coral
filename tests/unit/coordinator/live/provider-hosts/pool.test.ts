@@ -28,8 +28,6 @@ const mockedEnsureProxySet = ensureProviderProxySet as unknown as ReturnType<typ
 function fakeProxySet(proxyInstanceId: string): ProviderProxySetAuthority {
   return {
     proxyInstanceId,
-    snapshotOperations: async () => [],
-    installHandoffGrant: async () => {},
     stopAndReap: async () => ({ disappearanceReceipt: 'r' }),
     stopHeartbeats: () => {},
     initiateControlClose: async () => {},
@@ -967,7 +965,7 @@ describe('provider host pool proxy set registry', () => {
 });
 
 describe('provider host pool proxy set registration', () => {
-  // The redemption mechanism itself (reading a bequeathed capsule, adopting its operations) lives in
+  // Exact-set redemption and per-operation attachment live in
   // `coordinator/services/provider-proxy-set-inheritance.ts` and is covered end to end there
   // (`provider-proxy-set-inheritance.test.ts`) — it needs jobs-domain vocabulary this `coordinator/live/`
   // manager may not reach directly. `registerInheritedSet` is the narrow, domain-free seam that mechanism

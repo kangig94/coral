@@ -23,7 +23,6 @@ import {
   type ProxyBootstrapCapsule,
   type ReaperBootstrapCapsule,
 } from '../../../provider-proxy/bootstrap-capsule.js';
-import type { ProviderOperationKey } from '../../../provider-proxy/ledger.js';
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
 import {
   runtimeControlTimer,
@@ -97,8 +96,6 @@ export type ProviderProxyAcquisitionStepsOptions = Readonly<{
   /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe. This file only spawns the
    *  guardian — it never consumes a capsule itself, so it has no strict-identity check to inject. */
   readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
-  /** Reads durable handoff membership only when shutdown snapshots this set. */
-  snapshotProviderOperations: (proxyInstanceId: string) => readonly ProviderOperationKey[];
   /** Supplies the live provider roots used for stop-and-reap agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
   /** Builds the durable-effect handler for `provider.event.v1`, called once `establishControl` is about to
@@ -446,7 +443,6 @@ export function createProviderProxyAcquisitionSteps(
           coordinatorIdentity,
           handoffCapsulePath,
           runtime,
-          snapshotProviderOperations: options.snapshotProviderOperations,
           operationRegistry: options.operationRegistry,
         });
         await base.installRecoveryCredential(new AbortController().signal);

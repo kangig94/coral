@@ -1552,27 +1552,5 @@ describe('ExecutionService launch', () => {
           .filter((event) => event.type === 'terminal'),
       ).toHaveLength(1);
     });
-
-    it.each([
-      ['cancelled', { kind: 'cancelled' as const }],
-      ['failed', { kind: 'failed' as const, reason: 'indeterminate activation' }],
-    ])('never runs the local executor for a %s placement result', async (_name, placement) => {
-      const { provider, execute } = makeAppServerProvider();
-      mockState.getNewProvider.mockReturnValue(provider);
-      const activate = vi.fn(async () => placement);
-      const service = createService(ctx, {
-        appServerProxyRoute: { activate },
-        appServerHostAuthority: fakeAppServerHostAuthority(),
-      });
-
-      const decision = await service.start('codex', { prompt: 'hello' }, ctx);
-      expect(decision.status).toBe('running');
-      if (decision.status !== 'running') throw new Error('expected running launch');
-      trackJob(decision.jobId);
-      await vi.waitFor(() => expect(activate).toHaveBeenCalledOnce());
-      await new Promise((resolve) => setTimeout(resolve, 20));
-
-      expect(execute).not.toHaveBeenCalled();
-    });
   });
 });

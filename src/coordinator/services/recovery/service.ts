@@ -1,4 +1,4 @@
-import type { ProviderRequest, ProviderStopCause } from '../../../providers/contract.js';
+import type { ProviderRequest } from '../../../providers/contract.js';
 import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
@@ -74,10 +74,6 @@ export interface RecoveryServiceDeps {
   launchOrchestrator: RecoveredJobLifecyclePort;
   childPrincipalRegistry: ChildPrincipalRegistry;
   parentPrincipal: Principal;
-  /** The registry's abort-side capability (W2.3) — see `LaunchOrchestratorDeps.operations` in
-   *  `jobs/shell/launch.ts` for the identical shape. `registerInheritedAppServerAbort` is the only method that
-   *  reads this. */
-  operations?: { stop(jobId: string, cause: ProviderStopCause): void };
 }
 
 export class RecoveryService {
@@ -198,10 +194,11 @@ export class RecoveryService {
       );
       return;
     }
-    // A saga-owned host must be inherited before this generation may address it as a local host.
+    // The provider-operation reconciler alone resolves saga-owned hosts; generic recovery must not address
+    // their shared proxy set or infer absence from missing process-local attachment state.
     if (hasProviderOperationForJob(this.deps.progressStore.getDb(), launchRecord.jobId)) {
       backendLog.warn(
-        `Cannot interrupt recovered app-server job ${launchRecord.jobId}: its acquired host names a live provider proxy operation this coordinator generation has not adopted.`,
+        `Cannot interrupt recovered app-server job ${launchRecord.jobId}: its acquired host is owned by a durable provider proxy operation.`,
       );
       return;
     }
@@ -224,10 +221,6 @@ export class RecoveryService {
     backendLog.warn(
       `Cannot interrupt recovered app-server job ${launchRecord.jobId}: the bound host is unavailable or exact provider turn coordinates are absent.`,
     );
-  }
-
-  registerInheritedAppServerAbort(jobId: string): void {
-    this.deps.abortRegistry.register(jobId, () => this.deps.operations?.stop(jobId, 'signal_abort'));
   }
 
   async finalizeInterruptedAppServerJob(

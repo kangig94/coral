@@ -29,7 +29,6 @@ import {
   proxyIdentitySchema,
   proxyOperationActivateParamsSchema,
   proxyOperationActivateResultSchema,
-  proxyOperationAdoptParamsSchema,
   proxyOperationAttachParamsSchema,
   proxyOperationAttachResultSchema,
   proxyOperationCancelParamsSchema,
@@ -612,16 +611,10 @@ describe('proxy control-method request schemas, shared with their coordinator se
     expect(proxyOperationReservationParamsSchema.safeParse(missing).success).toBe(false);
   });
 
-  it('operation.stop.v1 and operation.adopt.v1: reject an extra field', () => {
+  it('operation.stop.v1 rejects an extra field', () => {
     expect(proxyOperationStopParamsSchema.safeParse({ operation, cause: 'signal_abort' }).success).toBe(true);
     expect(
       proxyOperationStopParamsSchema.safeParse({ operation, cause: 'signal_abort', unexpected: true }).success,
-    ).toBe(false);
-
-    expect(proxyOperationAdoptParamsSchema.safeParse({ operation, committedThroughProviderSeq: 3 }).success).toBe(true);
-    expect(
-      proxyOperationAdoptParamsSchema.safeParse({ operation, committedThroughProviderSeq: 3, unexpected: true })
-        .success,
     ).toBe(false);
   });
 

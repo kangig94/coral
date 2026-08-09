@@ -553,18 +553,6 @@ export class OperationSupervisor {
     });
   }
 
-  async adopt(
-    operation: OperationIdentity,
-    committedThroughProviderSeq: number,
-  ): Promise<Readonly<{ state: string; replayFromProviderSeq: number }>> {
-    const result = await this.attach(operation, committedThroughProviderSeq);
-    if (result.state === 'operation-absent') {
-      throw new ProxyControlProtocolError('operation_not_found', 'No such prepared operation.');
-    }
-    const entry = this.#requireLedger(this.#requireRecord(operation).key);
-    return { state: legacyState(entry.state), replayFromProviderSeq: result.replayFromProviderSeq };
-  }
-
   attach(
     operation: OperationIdentity,
     committedThroughProviderSeq: number,

@@ -2,7 +2,6 @@ import { probeProcessStartedAtSeconds } from '../../../infra/node-process.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { CoordinatorIdentity as ProviderProxyCoordinatorIdentity } from '../../../provider-proxy/protocol.js';
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
-import type { ProviderOperationKey } from '../../../provider-proxy/ledger.js';
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
 import { acquireProviderProxySet } from '../provider-proxy/index.js';
 import { createProviderProxyAcquisitionSteps } from '../provider-proxy/acquisition-steps.js';
@@ -37,8 +36,6 @@ export type ProviderProxySetAcquisitionIdentity = Readonly<{
 export type ProviderProxySetAcquisitionConfig = Readonly<{
   pluginRoot: string;
   identity: ProviderProxySetAcquisitionIdentity;
-  /** Reads durable handoff membership after the store has opened. */
-  snapshotProviderOperations?: (proxyInstanceId: string) => readonly ProviderOperationKey[];
   /** Supplies the live provider roots used for stop-and-reap agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
   /**
@@ -114,11 +111,6 @@ export function ensureProviderProxySet(
     pluginRoot: env.pluginRoot,
     coordinatorIdentity,
     hostFingerprint: hostFingerprintFromSpec(entry.spec),
-    snapshotProviderOperations:
-      env.snapshotProviderOperations ??
-      (() => {
-        throw new Error('Durable provider-operation handoff membership is unavailable.');
-      }),
     operationRegistry: env.operationRegistry,
     ...(env.onProviderEvent === undefined ? {} : { onProviderEvent: env.onProviderEvent }),
   });

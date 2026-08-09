@@ -243,7 +243,7 @@ export interface Guardian<Scope extends symbol> {
 }
 
 /**
- * The guardian owns grant-redemption admission and adoption state. It mirrors the reaper's recorded set so
+ * The guardian owns recovery-credential redemption admission. It mirrors the reaper's recorded set so
  * it can enforce the same disappearance condition, but it can neither move nor extend the reaper's deadline.
  */
 export function createGuardian<Scope extends symbol>(options: GuardianOptions<Scope>): Guardian<Scope> {

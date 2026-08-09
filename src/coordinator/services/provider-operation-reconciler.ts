@@ -1,4 +1,5 @@
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
+import { assertNever } from '../../infra/error-format.js';
 import type { AppServerProxyPlacementResult } from '../../jobs/contracts/app-server-proxy-route.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { buildJobEventRefs } from '../../jobs/refs.js';
@@ -100,6 +101,7 @@ type ActivePublication = Readonly<{
   operation: ProviderOperationIdentity;
   attempt: ProviderOperationPrepareAttempt;
   resolve: (result: AppServerProxyPlacementResult) => void;
+  reject: (error: Error) => void;
   disposeAbort: () => void;
 }>;
 
@@ -114,7 +116,7 @@ type ProviderOperationReconcilerDeps = Readonly<{
     | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>
     | null
   >;
-  registry: Pick<LocalOperationRegistry, 'activate' | 'adopt' | 'settled' | 'stop'>;
+  registry: Pick<LocalOperationRegistry, 'activate' | 'attach' | 'settled' | 'stop'>;
   materializePrepare: (
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
   ) => Promise<ProviderOperationPrepareMaterializationResult> | ProviderOperationPrepareMaterializationResult;
@@ -212,10 +214,10 @@ export class ProviderOperationReconciler {
   begin(input: BeginProviderOperationPublication): Promise<AppServerProxyPlacementResult> {
     const key = operationKey(input.record.operation);
     if (this.#publications.has(key)) {
-      return Promise.resolve({ kind: 'failed', reason: 'Provider operation publication is already active.' });
+      return Promise.reject(new Error('Provider operation publication is already active.'));
     }
 
-    return new Promise<AppServerProxyPlacementResult>((resolve) => {
+    return new Promise<AppServerProxyPlacementResult>((resolve, reject) => {
       let inserted = false;
       let abortRequestedAt: string | null = null;
       const onAbort = (): void => {
@@ -228,16 +230,19 @@ export class ProviderOperationReconciler {
         operation: input.record.operation,
         attempt: input.attempt,
         resolve,
+        reject,
         disposeAbort: () => input.signal.removeEventListener('abort', onAbort),
       });
       if (input.signal.aborted) onAbort();
       try {
         insertProviderOperation(this.#deps.getProgressStore().getDb(), input.record);
       } catch (error: unknown) {
-        this.#complete(input.record.operation, {
-          kind: 'failed',
-          reason: `Provider operation journal insert failed: ${providerOperationErrorReason(error)}`,
-        });
+        this.#failPublication(
+          input.record.operation,
+          new Error(`Provider operation journal insert failed: ${providerOperationErrorReason(error)}`, {
+            cause: error,
+          }),
+        );
         return;
       }
       inserted = true;
@@ -368,6 +373,7 @@ export class ProviderOperationReconciler {
         record = await this.#driveSettlement(record, authority);
         continue;
       }
+      assertNever(record);
     }
     if (record !== null) this.#schedule(TIMER_MIN_MS);
   }
@@ -951,21 +957,12 @@ export class ProviderOperationReconciler {
         if (operationKey(result.operation) !== key) {
           throw new Error('Operation-absent proof named a different operation.');
         }
-        const deleted = deleteProviderOperation(this.#deps.getProgressStore().getDb(), record);
-        if (deleted.kind === 'conflict') {
-          if (deleted.current?.phase !== 'executing') {
-            const finished = await this.#finishAttached(record, authority, deleted.current);
-            this.#attachments.delete(key);
-            return finished;
-          }
-          return deleted.current;
-        }
         this.#attachments.delete(key);
-        this.#complete(record.operation, {
-          kind: 'failed',
+        return this.#terminalize(record, {
+          kind: 'terminal-failed',
+          code: 'provider_lost',
           reason: 'The provider proxy proved that the committed operation is absent.',
         });
-        return null;
       }
       if (result.replayFromProviderSeq !== record.committedThroughProviderSeq + 1) {
         throw new Error('Attachment reply named a different replay boundary.');
@@ -1018,7 +1015,7 @@ export class ProviderOperationReconciler {
     if (this.#publications.has(operationKey(record.operation))) {
       this.#deps.registry.activate(record, control, cleanup);
     } else {
-      this.#deps.registry.adopt(record, control, cleanup);
+      this.#deps.registry.attach(record, control, cleanup);
     }
   }
 
@@ -1175,6 +1172,15 @@ export class ProviderOperationReconciler {
     this.#publications.delete(key);
     publication.disposeAbort();
     publication.resolve(result);
+  }
+
+  #failPublication(identity: ProviderOperationIdentity, error: Error): void {
+    const key = operationKey(identity);
+    const publication = this.#publications.get(key);
+    if (publication === undefined) return;
+    this.#publications.delete(key);
+    publication.disposeAbort();
+    publication.reject(error);
   }
 
   async #poll(preferredAuthority?: DurableProviderProxyOperationAuthority): Promise<void> {

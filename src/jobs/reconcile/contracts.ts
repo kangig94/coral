@@ -71,16 +71,6 @@ export interface RecoveryCapableService {
   ): Promise<{ adopted: boolean; cleanup: () => void }>;
   recoverQueuedJob(authority: ProviderRecoveryAuthority): Promise<string>;
   interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void>;
-  /**
-   * Wires the real, operation-registry-backed `onAbort` onto this project's ordinary abort registry for a job
-   * whose operation this coordinator generation adopted from a predecessor rather than activated itself —
-   * mirroring the unconditional registration `activateCommittedProviderLaunch` performs for a job it launches
-   * itself (`jobs/shell/launch.ts`). Without this, `coral-cli abort` for an inherited job has nothing to find
-   * once the recovery-registry's own entry is retired: `interruptAppServerJob` refuses on purpose for a job
-   * whose acquired host names a live provider proxy set (see its own doc), so this is the only path that can
-   * ever make abort do something real for it.
-   */
-  registerInheritedAppServerAbort(jobId: string): void;
   completeRecoveredJob(
     jobId: string,
     sessionId: string,

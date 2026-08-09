@@ -46,8 +46,6 @@ const environment = {
 function fakeSet(): ProviderProxySetAuthority {
   return {
     proxyInstanceId: 'proxy-1',
-    snapshotOperations: async () => [],
-    installHandoffGrant: async () => {},
     stopAndReap: async () => ({ disappearanceReceipt: 'r' }),
     stopHeartbeats: () => {},
     initiateControlClose: async () => {},

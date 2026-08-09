@@ -61,22 +61,22 @@ describe('LocalOperationRegistry', () => {
     expect(registry.stateForJob('never-registered')).toBeNull();
   });
 
-  it('adopt() makes the entry visible as adopted, keyed by job id — W2.5’s second entry point onto the same builder', () => {
+  it('attach() makes a recovered entry visible by job id', () => {
     const registry = new LocalOperationRegistry();
     const m = meta();
     const { control } = fakeControl();
 
-    registry.adopt(m, control, cleanupFor(m));
+    registry.attach(m, control, cleanupFor(m));
 
-    expect(registry.stateForJob(m.operation.jobId)).toBe('adopted');
+    expect(registry.stateForJob(m.operation.jobId)).toBe('attached');
     expect(registry.operationsFor(m.operation.proxyInstanceId)).toEqual([identityFor(m)]);
   });
 
-  it('adopt() releases reconstructed local state exactly once on settlement, like activate()', () => {
+  it('attach() releases reconstructed local state exactly once on settlement, like activate()', () => {
     const { registry, release } = registryWithCleanup();
     const m = meta();
     const { control } = fakeControl();
-    registry.adopt(m, control, cleanupFor(m));
+    registry.attach(m, control, cleanupFor(m));
     registry.settled(identityFor(m));
 
     expect(release).toHaveBeenCalledOnce();
@@ -84,11 +84,11 @@ describe('LocalOperationRegistry', () => {
     expect(registry.stateForJob(m.operation.jobId)).toBeNull();
   });
 
-  it('adopt() wires stop() through the same control capability as activate()', async () => {
+  it('attach() wires stop() through the same control capability as activate()', async () => {
     const registry = new LocalOperationRegistry();
     const m = meta();
     const { control, stopCalls } = fakeControl();
-    registry.adopt(m, control, cleanupFor(m));
+    registry.attach(m, control, cleanupFor(m));
 
     registry.stop(m.operation.jobId, 'signal_abort');
     await Promise.resolve();

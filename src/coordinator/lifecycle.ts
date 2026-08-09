@@ -25,7 +25,6 @@ import { deleteDurableCliProcessRuntimeMeta } from '../jobs/runtime-meta-store.j
 import { elapsedDurationMs } from '../jobs/duration.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { ProviderProxyAuthorityRegistry } from './live/provider-proxy/authority.js';
-import type { ProviderProxySetInheritance } from './services/provider-proxy-set-inheritance.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { RuntimeComponent } from './runtime-components/contract.js';
 import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
@@ -687,10 +686,6 @@ export type LifecycleDeps = {
    * absence identically to an always-empty registry.
    */
   readonly providerProxyAuthority?: ProviderProxyAuthorityRegistry;
-  /** Same absence rule as `providerProxyAuthority` above. Threaded straight into `createRecoveryCoordinator`
-   *  (`services/recovery/index.ts`) so `runRecoveryAdoption` can redeem a standing set for a running app-
-   *  server job before it could otherwise decide that job carrier-detached. */
-  readonly providerProxyInheritance?: ProviderProxySetInheritance;
   readonly kbDaemonSupervisor?: KbDaemonSupervisor;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   readonly disposeLifecycleReactor?: () => void | Promise<void>;
@@ -960,9 +955,6 @@ async function runLifecycleStartup({
         eventBus: deps.eventBus,
         getRecoveryService,
         createInvocationContext,
-        ...(deps.providerProxyInheritance === undefined
-          ? {}
-          : { providerProxyInheritance: deps.providerProxyInheritance }),
         log: identity.log,
       },
       bound,

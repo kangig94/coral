@@ -28,11 +28,6 @@ import { CoralSetupError } from '../../runtime/errors.js';
 import type { BackendDefaultsPlan } from './defaults.js';
 import { createStoreServicesRef, type StoreServicesRef } from './store-services-ref.js';
 import { ChildPrincipalRegistry } from '../child-principal-registry.js';
-import { readProviderOperations } from '../../store/provider-operation-journal.js';
-import {
-  providerOperationCleanupIdentity,
-  readProviderOperationJobLaunch,
-} from '../../jobs/provider-operation-state.js';
 
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
 const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
@@ -261,10 +256,6 @@ export function createCoordinatorWorld(
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
   const storeServicesRef = createStoreServicesRef();
   const operationRegistry = options.operationRegistry ?? new LocalOperationRegistry();
-  const snapshotProviderOperations = (proxyInstanceId: string) =>
-    readProviderOperations(storeServicesRef.get().progressStore.getDb())
-      .filter((record) => record.operation.proxyInstanceId === proxyInstanceId)
-      .map(({ operation }) => ({ jobId: operation.jobId, operationId: operation.operationId }));
   // A caller-supplied `providerHostManager` (every test that fakes provider hosts) never carries live
   // guardian/reaper/proxy sets, so `providerProxyAuthority` stays absent rather than reporting on a
   // substitute it played no part in creating — matching `runShutdownSequence`'s own `undefined` default.
@@ -280,7 +271,6 @@ export function createCoordinatorWorld(
       proxySetAcquisition: {
         pluginRoot,
         identity: { instanceId, buildSetId, flavor },
-        snapshotProviderOperations,
         operationRegistry,
         ...(options.buildProviderEventHandler === undefined
           ? {}
@@ -297,10 +287,7 @@ export function createCoordinatorWorld(
     providerProxyInheritance = createProviderProxySetInheritance({
       runtime,
       identity: { instanceId, buildSetId, flavor },
-      snapshotProviderOperations,
       operationRegistry,
-      cleanupIdentityFor: (jobId) =>
-        providerOperationCleanupIdentity(readProviderOperationJobLaunch(storeServicesRef.get().progressStore, jobId)),
       ...(options.buildProviderEventHandler === undefined
         ? {}
         : { onProviderEvent: options.buildProviderEventHandler }),

@@ -225,7 +225,7 @@ describe('provider proxy enforcer deadline evidence', () => {
     fake.set(12_000);
     guardian.issueFirstChallenge();
 
-    // Change 2 must not lose this clamp: the enforcer's challenge may not outlive its adoption window.
+    // The enforcer's challenge may not outlive the containment-recovery window it protects.
     expectSameInstant(fake.clock, guardian.bounds().firstChallengeExpiresAt!, adoptionDeadline);
   });
 

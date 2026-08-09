@@ -50,7 +50,7 @@ import {
 } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { insertProviderOperation, readProviderOperations } from '#src/store/provider-operation-journal.js';
+import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
 import {
   createProviderBootstrapCapsule,
   type GuardianBootstrapCapsule,
@@ -598,8 +598,6 @@ describe('provider-proxy process topology: acquisition', () => {
       hostFingerprint: shared.hostFingerprint,
       baseDir,
       readProcessStartedAtSeconds: environment.readProcessStartedAtSeconds,
-      // No operation is published in these acquisition tests, so the durable handoff source is empty.
-      snapshotProviderOperations: () => [],
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
     };
   }
@@ -635,8 +633,6 @@ describe('provider-proxy process topology: acquisition', () => {
         ),
       ),
     ).toBe(true);
-    await expect(result.set.snapshotOperations(new AbortController().signal)).resolves.toEqual([]);
-
     result.set.stopHeartbeats();
     const reaped = await result.set.stopAndReap(new AbortController().signal);
     expect(reaped).toHaveProperty('disappearanceReceipt');
@@ -719,12 +715,7 @@ describe('provider-proxy process topology: acquisition', () => {
         runtime: environment.outerRuntime(),
         baseDir,
         coordinatorIdentity: successorIdentity,
-        operationRegistry: { adopt: vi.fn(), operationsFor: () => [], providerRootsFor: () => [] },
-        cleanupIdentityFor: (jobId) => ({ jobId, pool: 'curate' }),
-        snapshotProviderOperations: (proxyInstanceId) =>
-          readProviderOperations(db)
-            .filter((record) => record.operation.proxyInstanceId === proxyInstanceId)
-            .map((record) => ({ jobId: record.operation.jobId, operationId: record.operation.operationId })),
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
       },
       AbortSignal.timeout(15_000),
     );
@@ -735,9 +726,6 @@ describe('provider-proxy process topology: acquisition', () => {
       state: 'operation-absent',
       operation,
     });
-    expect(await recovered.set.snapshotOperations(new AbortController().signal)).toEqual([
-      { jobId: operation.jobId, operationId: operation.operationId },
-    ]);
     recovered.set.stopHeartbeats();
     const reaped = await recovered.set.stopAndReap(new AbortController().signal);
     expect(reaped).toHaveProperty('disappearanceReceipt');

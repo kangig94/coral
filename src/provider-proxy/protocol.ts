@@ -615,10 +615,6 @@ const proxyOperationAttachmentParamsSchema = z
   .object({ operation: operationIdentitySchema, committedThroughProviderSeq: nonNegativeSafeIntegerSchema })
   .strict();
 
-/** Sharing the exact shape prevents the retained compatibility adapter from drifting after attachment cutover. */
-export const proxyOperationAdoptParamsSchema = proxyOperationAttachmentParamsSchema;
-
-/** Sharing the exact shape prevents the attachment path from drifting from its compatibility input. */
 export const proxyOperationAttachParamsSchema = proxyOperationAttachmentParamsSchema;
 
 export const proxyOperationInspectParamsSchema = z
