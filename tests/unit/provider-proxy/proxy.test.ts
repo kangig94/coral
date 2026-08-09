@@ -10,6 +10,7 @@ import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.
 import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
 import {
+  OperationSupervisor,
   OPERATION_RELEASE_RETRY_MS,
   type SemanticOperationHost,
   type SemanticOperationStartHandle,
@@ -345,6 +346,30 @@ describe('provider-proxy proxy: staged-but-never-executed release (BLOCKING B4)'
   });
 });
 
+describe('provider-proxy proxy: prepare result sender validation', () => {
+  it('rejects a supervisor result missing a required wire field before returning it', async () => {
+    const prepare = vi.spyOn(OperationSupervisor.prototype, 'prepare').mockResolvedValueOnce({
+      state: 'pending-activation',
+      reservation: '40000000-0000-4000-8000-000000000001',
+      leaseExpiresInMs: 15_000,
+      jointContainmentReceipt: 'contained',
+    });
+    try {
+      const { control, operation } = await startProxy(fakeHost());
+
+      await expect(
+        control.call(
+          'operation.prepare.v1',
+          { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },
+          5_000,
+        ),
+      ).rejects.toThrow(/invalid_union/u);
+    } finally {
+      prepare.mockRestore();
+    }
+  });
+});
+
 describe('provider-proxy truthful operation authority', () => {
   it('replays the stored activation ACK without starting the host twice', async () => {
     const host = fakeHost();
@@ -513,15 +538,11 @@ describe('provider-proxy truthful operation authority', () => {
     const activating = control.call('operation.activate.v1', activation, 5_000);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('starting'));
 
-    proxy.emitProviderEvent(
-      operation,
-      {
-        kind: 'terminal',
-        terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
-        diagnostics: {},
-      },
-      await proxy.reserveProviderEvent(operation),
-    );
+    await proxy.emitProviderEvent(operation, {
+      kind: 'terminal',
+      terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
+      diagnostics: {},
+    });
     const inspectRequest = proxyOperationInspectParamsSchema.parse({ operation, prepareAttemptKey });
     const inspectResult = proxyOperationInspectResultSchema.parse(
       await control.call('operation.inspect.v2', inspectRequest, 5_000),
@@ -883,11 +904,7 @@ describe('provider-proxy truthful operation authority', () => {
       5_000,
     );
     await control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
-    proxy.emitProviderEvent(
-      operation,
-      { kind: 'progress', message: 'final' },
-      await proxy.reserveProviderEvent(operation),
-    );
+    await proxy.emitProviderEvent(operation, { kind: 'progress', message: 'final' });
     await control.call('operation.stop.v1', { operation, cause: 'signal_abort' }, 5_000);
 
     const settleRequest = proxyOperationSettleParamsSchema.parse({ operation, finalProviderSeq: 1 });

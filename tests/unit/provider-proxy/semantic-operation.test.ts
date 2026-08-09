@@ -44,12 +44,27 @@ import type {
 import type { HostRef, ProviderEventBody, ProviderServerSpec } from '#src/providers/contract.js';
 import {
   MAX_PROVIDER_REPLAY_EVENTS,
+  MAX_PROVIDER_REPLAY_BYTES,
   createOperationLedger,
+  operationPrepareAttemptKey,
   type OperationLedger,
   type ProviderOperationKey,
 } from '#src/provider-proxy/ledger.js';
 import type { Proxy } from '#src/provider-proxy/proxy.js';
-import type { ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
+import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
+import {
+  PROVIDER_EVENT_METHOD,
+  encodeProxyControlFrame,
+  providerEventRequestSchema,
+  proxyOperationPreparePendingResultSchema,
+  type OperationIdentity,
+  type ProxyPreparedAppServerOperation,
+} from '#src/provider-proxy/protocol.js';
+import {
+  OperationSupervisor,
+  type OperationStageHandle,
+  type SemanticOperationHost,
+} from '#src/provider-proxy/operation-supervisor.js';
 import {
   createProxyAppServerHostAuthority,
   createSemanticOperationRuntime,
@@ -62,7 +77,11 @@ import {
 // see the "agrees byte-for-byte" case below for why importing the forbidden-to-production original here is
 // exactly the point).
 import { hostFingerprintFromSpec, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
-import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provider-proxy-correlation.js';
+import {
+  asJointActivationReceipt,
+  asJointContainmentReceipt,
+  asReservation,
+} from '#tests/helpers/provider-proxy-correlation.js';
 
 const runtime: Runtime = createRealRuntime('prod');
 
@@ -185,10 +204,15 @@ function createTestProxy(): {
     listen: async () => {},
     close: async () => {},
     ledger: () => ledger,
-    reserveProviderEvent: (key, signal) => ledger.reserveEvent(key, signal),
-    emitProviderEvent: (key, event, reservation) => {
+    emitProviderEvent: async (key, event, signal) => {
       const providerSeq = ledger.nextProviderSeq(key);
-      ledger.recordEvent(key, { providerSeq, frame: JSON.stringify(event) }, reservation);
+      await ledger.recordEvent(
+        key,
+        { providerSeq, frame: JSON.stringify(event) },
+        event.kind === 'terminal' || event.kind === 'suspended'
+          ? { kind: 'completion' }
+          : { kind: 'ordinary', ...(signal === undefined ? {} : { signal }) },
+      );
       emittedEvents.push({ key, event });
       if (event.kind === 'terminal') ledger.transition(key, 'terminal-awaiting-settlement');
       if (event.kind === 'suspended') ledger.transition(key, 'suspended-awaiting-durable-decision');
@@ -223,14 +247,59 @@ function prepareAndActivate(
   });
 }
 
-async function fillToOneBeforeEventCeiling(
+async function fillToEventCeiling(
   ledger: OperationLedger<ProxyPreparedAppServerOperation>,
   key: ProviderOperationKey,
 ): Promise<void> {
-  for (let seq = 1; seq <= MAX_PROVIDER_REPLAY_EVENTS - 1; seq += 1) {
-    const reservation = await ledger.reserveEvent(key);
-    ledger.recordEvent(key, { providerSeq: seq, frame: 'x' }, reservation);
+  for (let seq = 1; seq <= MAX_PROVIDER_REPLAY_EVENTS; seq += 1) {
+    await ledger.recordEvent(key, { providerSeq: seq, frame: 'x' }, { kind: 'ordinary' });
   }
+}
+
+const supervisorTimer: ControlEndpointTimer = {
+  setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms),
+  clearTimeout: (handle: { unref?: () => void }) => clearTimeout(handle as unknown as NodeJS.Timeout),
+};
+
+function supervisedOperation(index: number): OperationIdentity {
+  const suffix = index.toString().padStart(12, '0');
+  return {
+    jobId: `00000000-0000-4000-8000-${suffix}`,
+    operationId: `10000000-0000-4000-8000-${suffix}`,
+    proxyInstanceId: '20000000-0000-4000-8000-000000000001',
+    buildSetId: '30000000-0000-4000-8000-000000000001',
+  };
+}
+
+function capacityFillingProgressEvent(operation: OperationIdentity, frameId: number): ProviderEventBody {
+  const event: ProviderEventBody = { kind: 'progress', message: '' };
+  const frame = encodeProxyControlFrame({
+    jsonrpc: '2.0',
+    id: frameId,
+    method: PROVIDER_EVENT_METHOD,
+    params: providerEventRequestSchema.parse({ operation, providerSeq: 1, event }),
+  });
+  return { kind: 'progress', message: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES - Buffer.byteLength(frame, 'utf8')) };
+}
+
+type SaturatedCompletion = 'terminal' | 'suspended' | 'throw' | 'eof';
+
+function saturatedExecution(
+  completion: SaturatedCompletion,
+  pulled: () => void,
+): (runtime: BoundProviderAppServerExecutionRuntime) => AsyncIterable<ProviderEventBody> {
+  return async function* () {
+    pulled();
+    if (completion === 'terminal') {
+      yield terminalCompleted;
+      return;
+    }
+    if (completion === 'suspended') {
+      yield { kind: 'suspended', reason: 'interrupt_unconfirmed' };
+      return;
+    }
+    if (completion === 'throw') throw new Error('saturated kernel exploded');
+  };
 }
 
 const terminalCompleted: ProviderEventBody = {
@@ -267,7 +336,42 @@ describe('semantic-operation runtime: pump loop outcomes', () => {
     await expect(start.result).resolves.toEqual({ kind: 'started', hostRef: stagedHostRef });
     await vi.waitFor(() => expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement'));
     expect(emittedEvents).toEqual([{ key, event: terminalCompleted }]);
-    expect(closeStaged).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(closeStaged).toHaveBeenCalledOnce());
+  });
+
+  it('synthesizes a failed terminal when a started provider stream ends without completion', async () => {
+    const { proxy, ledger, emittedEvents } = createTestProxy();
+    const key = testKey();
+    const prepared = preparedFixture();
+    prepareAndActivate(ledger, key, prepared);
+    const closeStaged = vi.fn();
+    const stagedHostRef = fakeHostRef();
+
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        execute: async function* () {},
+        openReplacement: async () => ({ hostRef: stagedHostRef, close: closeStaged }),
+      }),
+    });
+
+    const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
+    await host.ensureProviderRoot(key, prepared);
+    const start = host.host.start({ key, prepared });
+
+    await expect(start.result).resolves.toEqual({ kind: 'started', hostRef: stagedHostRef });
+    await vi.waitFor(() => expect(closeStaged).toHaveBeenCalledOnce());
+    expect.soft(ledger.get(key)?.state).toBe('terminal-awaiting-settlement');
+    expect.soft(emittedEvents).toHaveLength(1);
+    const event = emittedEvents[0]?.event;
+    expect(event).toMatchObject({
+      kind: 'terminal',
+      terminal: { outcome: { kind: 'failed' } },
+      failureCause: providerRequestFailed({
+        provider: 'claude',
+        message: 'Provider event stream ended without terminal or suspension.',
+      }),
+    });
   });
 
   it('synthesizes a failed terminal when the kernel throws with no stop in flight', async () => {
@@ -430,12 +534,12 @@ describe('semantic-operation runtime: stop() racing a still-draining emit', () =
 // --- pre-consumption replay admission ------------------------------------------------------------------------
 
 describe('semantic-operation runtime: replay admission', () => {
-  it('does not advance the provider iterator until a permit is available', async () => {
+  it('pulls one ordinary event before admission and does not pull another until that event is admitted', async () => {
     const { proxy, ledger, emittedEvents } = createTestProxy();
     const key = testKey();
     const prepared = preparedFixture();
     prepareAndActivate(ledger, key, prepared);
-    await fillToOneBeforeEventCeiling(ledger, key);
+    await fillToEventCeiling(ledger, key);
 
     let pullCount = 0;
     const progressEvent: ProviderEventBody = { kind: 'progress', message: 'first' };
@@ -455,17 +559,154 @@ describe('semantic-operation runtime: replay admission', () => {
     await host.ensureProviderRoot(key, prepared);
     host.host.start({ key, prepared });
 
-    await vi.waitFor(() => expect(emittedEvents).toHaveLength(1));
+    await vi.waitFor(() => expect(pullCount).toBe(1));
+    expect(emittedEvents).toHaveLength(0);
     expect(pullCount).toBe(1);
 
-    await Promise.resolve();
-    expect(pullCount).toBe(1);
-
-    ledger.acknowledge(key, MAX_PROVIDER_REPLAY_EVENTS - 1);
+    ledger.acknowledge(key, 1);
     await vi.waitFor(() => expect(pullCount).toBe(2));
     expect(ledger.get(key)?.state).toBe('terminal-awaiting-settlement');
+    expect(ledger.get(key)?.bufferedEvents).toHaveLength(MAX_PROVIDER_REPLAY_EVENTS + 1);
     expect(emittedEvents.at(-1)).toEqual({ key, event: terminalCompleted });
   });
+
+  it.each([
+    ['terminal', 'terminal-awaiting-settlement'],
+    ['suspended', 'suspended-awaiting-durable-decision'],
+    ['throw', 'terminal-awaiting-settlement'],
+    ['eof', 'terminal-awaiting-settlement'],
+  ] as const)(
+    'admits a fifth %s completion while four ordinary frames retain the full proxy budget',
+    async (completion, expectedState) => {
+      const holders = [1, 2, 3, 4].map(supervisedOperation);
+      const target = supervisedOperation(5);
+      const containmentReceipt = asJointContainmentReceipt('contained');
+      let pullCount = 0;
+
+      providerRegistryDouble.rehydrateBinding.mockReturnValue({
+        ok: true,
+        value: fakeBoundProvider({
+          execute: saturatedExecution(completion, () => {
+            pullCount += 1;
+          }),
+        }),
+      });
+
+      const proxy: Proxy = {
+        listen: async () => {},
+        close: async () => {},
+        ledger: () => supervisor.ledger(),
+        emitProviderEvent: (key, event, signal) => supervisor.emitProviderEvent(key, event, signal),
+      };
+      const semantic = createSemanticOperationRuntime({
+        runtime,
+        hostAuthority: fakeHostAuthority(),
+        getProxy: () => proxy,
+      });
+      const semanticHost: SemanticOperationHost = {
+        start: (input) =>
+          input.key.operationId === target.operationId
+            ? semantic.host.start(input)
+            : {
+                result: Promise.resolve({ kind: 'started', hostRef: fakeHostRef() }),
+                abortAndRelease: async () => {},
+              },
+        stop: (input) => (input.key.operationId === target.operationId ? semantic.host.stop(input) : Promise.resolve()),
+      };
+      const stageProviderRoot = (
+        key: ProviderOperationKey,
+        reserved: Readonly<{ prepared: ProxyPreparedAppServerOperation }>,
+      ): OperationStageHandle => ({
+        result:
+          key.operationId === target.operationId
+            ? semantic
+                .ensureProviderRoot(key, reserved.prepared)
+                .then((providerRoot) => ({ providerRoot, receipt: containmentReceipt }))
+            : Promise.resolve({
+                providerRoot: { pid: 4242, processStartedAtSeconds: 1_700_000_000 },
+                receipt: containmentReceipt,
+              }),
+        confirmActivation: async () => {},
+        abortAndRelease: async () => {},
+      });
+
+      const supervisor = new OperationSupervisor({
+        host: semanticHost,
+        timer: supervisorTimer,
+        mintReservation: () => asReservation('40000000-0000-4000-8000-000000000001'),
+        wallClockNow: () => 0,
+        nowMs: () => 0,
+        proxyInstanceId: target.proxyInstanceId,
+        buildSetId: target.buildSetId,
+        stageProviderRoot,
+        pushProviderEvent: async () => {
+          throw new Error('control is deliberately offline');
+        },
+      });
+
+      const prepare = async (operation: OperationIdentity) => {
+        const prepareRequest = {
+          operation,
+          hostFingerprint: 'a'.repeat(64),
+          prepareAttemptNumber: 1,
+          prepared: preparedFixture(),
+        };
+        const prepared = proxyOperationPreparePendingResultSchema.parse(
+          await supervisor.prepare(operation, {
+            prepareAttemptNumber: 1,
+            prepareAttemptKey: operationPrepareAttemptKey(prepareRequest),
+            prepared: prepareRequest.prepared,
+          }),
+        );
+        return prepared;
+      };
+      const activate = async (
+        operation: OperationIdentity,
+        prepared: ReturnType<typeof proxyOperationPreparePendingResultSchema.parse>,
+      ): Promise<void> => {
+        await supervisor.activate(operation, {
+          reservation: prepared.reservation,
+          jointContainmentReceipt: prepared.jointContainmentReceipt,
+          jointActivationReceipt: asJointActivationReceipt('activated'),
+          activationFingerprint: 'f'.repeat(64),
+        });
+        await supervisor.attach(operation, 0);
+      };
+
+      try {
+        const prepared = new Map<OperationIdentity, Awaited<ReturnType<typeof prepare>>>();
+        for (const operation of [...holders, target]) prepared.set(operation, await prepare(operation));
+        for (const [index, holder] of holders.entries()) {
+          const holderPreparation = prepared.get(holder);
+          if (holderPreparation === undefined) throw new Error('missing holder preparation');
+          await activate(holder, holderPreparation);
+          await supervisor.emitProviderEvent(holder, capacityFillingProgressEvent(holder, index + 1));
+          expect(supervisor.ledger().get(holder)?.bufferedBytes).toBe(MAX_PROVIDER_REPLAY_BYTES);
+        }
+
+        const targetPreparation = prepared.get(target);
+        if (targetPreparation === undefined) throw new Error('missing target preparation');
+        await activate(target, targetPreparation);
+        await vi.waitFor(() => expect(pullCount).toBe(1));
+        for (const holder of holders) {
+          expect(supervisor.ledger().get(holder)).toMatchObject({
+            state: 'executing',
+            bufferedBytes: MAX_PROVIDER_REPLAY_BYTES,
+          });
+        }
+        await vi.waitFor(() => expect(supervisor.ledger().get(target)?.state).toBe(expectedState));
+        expect(supervisor.ledger().get(target)?.bufferedEvents).toHaveLength(1);
+      } finally {
+        for (const holder of holders) {
+          if ((supervisor.ledger().get(holder)?.bufferedEvents.length ?? 0) > 0) {
+            supervisor.ledger().acknowledge(holder, 1);
+          }
+        }
+        await Promise.resolve();
+        supervisor.close();
+      }
+    },
+  );
 });
 
 // --- rebuildBoundProvider failure branches ------------------------------------------------------------------

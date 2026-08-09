@@ -9,14 +9,20 @@ export interface ReplayCapacityReservation {
   release(): void;
 }
 
+type ReplayPriority = 'ordinary' | 'completion';
+
 type ActiveReservation = Readonly<{
   identity: string;
+  bytes: number;
+  priority: ReplayPriority;
   signal?: AbortSignal;
   onAbort?: () => void;
 }>;
 
 type ReplayWaiter = Readonly<{
   identity: string;
+  bytes: number;
+  priority: ReplayPriority;
   canProduce: () => boolean;
   signal?: AbortSignal;
   resolve: (reservation: ReplayCapacityReservation) => void;
@@ -30,25 +36,32 @@ function replayCancellationError(reason: unknown): Error {
 
 export class ReplayBudget {
   readonly #capacityBytes: number;
-  readonly #reservationBytes: number;
   readonly #claimedIdentities = new Set<string>();
   readonly #active = new Map<ReplayCapacityReservation, ActiveReservation>();
   readonly #waiters: ReplayWaiter[] = [];
   #bufferedBytes = 0;
   #reservedBytes = 0;
 
-  constructor(capacityBytes: number, reservationBytes: number) {
+  constructor(capacityBytes: number) {
     if (!Number.isSafeInteger(capacityBytes) || capacityBytes <= 0) {
       throw new TypeError('Replay capacity must be a positive safe integer.');
     }
-    if (!Number.isSafeInteger(reservationBytes) || reservationBytes <= 0 || reservationBytes > capacityBytes) {
-      throw new TypeError('Replay reservation must fit inside the capacity.');
-    }
     this.#capacityBytes = capacityBytes;
-    this.#reservationBytes = reservationBytes;
   }
 
-  reserve(identity: string, canProduce: () => boolean, signal?: AbortSignal): Promise<ReplayCapacityReservation> {
+  reserve(
+    input: Readonly<{
+      identity: string;
+      bytes: number;
+      priority: ReplayPriority;
+      canProduce: () => boolean;
+      signal?: AbortSignal;
+    }>,
+  ): Promise<ReplayCapacityReservation> {
+    const { identity, bytes, priority, canProduce, signal } = input;
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+      return Promise.reject(new TypeError('Replay reservation bytes must be a non-negative safe integer.'));
+    }
     if (this.#claimedIdentities.has(identity)) {
       return Promise.reject(new Error(`Replay capacity is already claimed by '${identity}'.`));
     }
@@ -69,6 +82,8 @@ export class ReplayBudget {
             };
       const waiter: ReplayWaiter = {
         identity,
+        bytes,
+        priority,
         canProduce,
         signal,
         resolve,
@@ -82,17 +97,13 @@ export class ReplayBudget {
     });
   }
 
-  commit(reservation: ReplayCapacityReservation, bufferedBytes: number): void {
+  commit(reservation: ReplayCapacityReservation): void {
     const active = this.#active.get(reservation);
     if (active === undefined) throw new Error('Replay reservation is no longer active.');
-    if (!Number.isSafeInteger(bufferedBytes) || bufferedBytes < 0 || bufferedBytes > this.#reservationBytes) {
-      reservation.release();
-      throw new RangeError(`Replay frame must fit inside its ${this.#reservationBytes}-byte reservation.`);
-    }
 
     this.#forgetActive(reservation, active);
-    this.#reservedBytes -= this.#reservationBytes;
-    this.#bufferedBytes += bufferedBytes;
+    this.#reservedBytes -= active.bytes;
+    this.#bufferedBytes += active.bytes;
     this.#drain();
   }
 
@@ -136,7 +147,7 @@ export class ReplayBudget {
     const active = this.#active.get(reservation);
     if (active === undefined) return;
     this.#forgetActive(reservation, active);
-    this.#reservedBytes -= this.#reservationBytes;
+    this.#reservedBytes -= active.bytes;
     this.#drain();
   }
 
@@ -150,12 +161,23 @@ export class ReplayBudget {
 
   #drain(): void {
     while (this.#waiters.length > 0) {
-      const waiter = this.#waiters[0];
+      const priorityIndex = this.#waiters.findIndex(
+        (candidate) => candidate.priority === 'completion' && candidate.canProduce(),
+      );
+      const waiterIndex =
+        priorityIndex >= 0 ? priorityIndex : this.#waiters.findIndex((candidate) => candidate.priority === 'ordinary');
+      if (waiterIndex < 0) return;
+      const waiter = this.#waiters[waiterIndex];
       if (waiter === undefined) return;
       if (!waiter.canProduce()) return;
-      if (this.#bufferedBytes + this.#reservedBytes + this.#reservationBytes > this.#capacityBytes) return;
+      if (
+        waiter.priority === 'ordinary' &&
+        this.#bufferedBytes + this.#reservedBytes + waiter.bytes > this.#capacityBytes
+      ) {
+        return;
+      }
 
-      this.#waiters.shift();
+      this.#waiters.splice(waiterIndex, 1);
       if (waiter.signal !== undefined && waiter.onAbort !== undefined) {
         waiter.signal.removeEventListener('abort', waiter.onAbort);
       }
@@ -169,9 +191,11 @@ export class ReplayBudget {
         identity: waiter.identity,
         release: () => this.#release(reservation),
       });
-      this.#reservedBytes += this.#reservationBytes;
+      this.#reservedBytes += waiter.bytes;
       this.#active.set(reservation, {
         identity: waiter.identity,
+        bytes: waiter.bytes,
+        priority: waiter.priority,
         ...(waiter.signal === undefined ? {} : { signal: waiter.signal, onAbort }),
       });
       if (waiter.signal !== undefined && onAbort !== undefined) {

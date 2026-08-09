@@ -31,7 +31,6 @@ import type {
   SemanticOperationStartHandle,
   SemanticOperationStartResult,
 } from './operation-supervisor.js';
-import type { ReplayCapacityReservation } from './replay-budget.js';
 import type { Proxy } from './proxy.js';
 import type { ProxyPreparedAppServerOperation } from './protocol.js';
 
@@ -542,14 +541,10 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       diagnostics: {},
       failureCause: providerRequestFailed({ provider, message: errorMessage(error) }),
     };
-    let reservation: ReplayCapacityReservation | undefined;
     try {
-      reservation = await proxy.reserveProviderEvent(key);
-      proxy.emitProviderEvent(key, event, reservation);
+      await proxy.emitProviderEvent(key, event);
     } catch {
       /* the ledger entry is gone (already released); nothing left to notify */
-    } finally {
-      reservation?.release();
     }
   };
 
@@ -561,14 +556,10 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       terminal: { content: '', durationMs: 0, outcome: { kind: 'aborted', reason: cause } },
       diagnostics: {},
     };
-    let reservation: ReplayCapacityReservation | undefined;
     try {
-      reservation = await proxy.reserveProviderEvent(key);
-      proxy.emitProviderEvent(key, event, reservation);
+      await proxy.emitProviderEvent(key, event);
     } catch {
       /* ledger entry already gone */
-    } finally {
-      reservation?.release();
     }
   };
 
@@ -585,20 +576,10 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       // The stored activation ACK makes a retry return before reaching `host.start`, so nothing outside this
       // single call ever resolves `entry.done` concurrently with it.
       while (true) {
-        const reservation = await proxy.reserveProviderEvent(key, entry.abortController.signal);
-        let step: IteratorResult<ProviderEventBody>;
-        try {
-          entry.abortController.signal.throwIfAborted();
-          step = await iterator.next();
-          if (step.done) {
-            reservation.release();
-            break;
-          }
-          proxy.emitProviderEvent(key, step.value, reservation);
-        } catch (error: unknown) {
-          reservation.release();
-          throw error;
-        }
+        entry.abortController.signal.throwIfAborted();
+        const step = await iterator.next();
+        if (step.done) throw new Error('Provider event stream ended without terminal or suspension.');
+        await proxy.emitProviderEvent(key, step.value, entry.abortController.signal);
 
         if (step.value.kind === 'terminal') {
           try {

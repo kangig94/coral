@@ -48,8 +48,7 @@ async function recordEvent(
   event: Readonly<{ providerSeq: number; frame: string }>,
   key = KEY,
 ): Promise<void> {
-  const reservation = await ledger.reserveEvent(key);
-  ledger.recordEvent(key, event, reservation);
+  await ledger.recordEvent(key, event, { kind: 'ordinary' });
 }
 
 describe('provider-proxy operation ledger', () => {
@@ -161,16 +160,17 @@ describe('provider-proxy operation ledger', () => {
     }
 
     let wasAdmitted = false;
-    const admitted = ledger.reserveEvent(KEY).then((reservation) => {
-      wasAdmitted = true;
-      return reservation;
-    });
+    const admitted = ledger
+      .recordEvent(KEY, { providerSeq: MAX_PROVIDER_REPLAY_EVENTS + 1, frame: 'x' }, { kind: 'ordinary' })
+      .then(() => {
+        wasAdmitted = true;
+      });
     await Promise.resolve();
     expect(wasAdmitted).toBe(false);
     ledger.acknowledge(KEY, MAX_PROVIDER_REPLAY_EVENTS);
-    (await admitted).release();
+    await admitted;
     expect(wasAdmitted).toBe(true);
-    expect(ledger.get(KEY)?.bufferedBytes).toBe(0);
+    expect(ledger.get(KEY)?.bufferedBytes).toBe(1);
   });
 
   it('refuses an acknowledgement that moves backwards', async () => {
@@ -186,13 +186,22 @@ describe('provider-proxy operation ledger', () => {
     const ledger = createOperationLedger();
     const keys = Array.from({ length: 5 }, (_, index) => ({ jobId: 'job-1', operationId: `op-${index}` }));
     for (const key of keys) executing(ledger, key);
-    const reservations = await Promise.all(keys.slice(0, 4).map((key) => ledger.reserveEvent(key)));
+    await Promise.all(
+      keys
+        .slice(0, 4)
+        .map((key) =>
+          ledger.recordEvent(
+            key,
+            { providerSeq: 1, frame: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES) },
+            { kind: 'ordinary' },
+          ),
+        ),
+    );
     const waitingKey = keys[4];
     if (waitingKey === undefined) throw new Error('Expected a fifth operation.');
     let wasAdmitted = false;
-    const waiting = ledger.reserveEvent(waitingKey).then((reservation) => {
+    const waiting = ledger.recordEvent(waitingKey, { providerSeq: 1, frame: 'x' }, { kind: 'ordinary' }).then(() => {
       wasAdmitted = true;
-      return reservation;
     });
     await Promise.resolve();
     expect(wasAdmitted).toBe(false);
@@ -204,7 +213,7 @@ describe('provider-proxy operation ledger', () => {
     ledger.transition(releasedKey, 'released');
 
     await vi.waitFor(() => expect(wasAdmitted).toBe(true));
-    for (const reservation of [...reservations.slice(1), await waiting]) reservation.release();
+    await waiting;
   });
 
   it('returns the existing reservation for a repeated prepare and refuses a conflicting one', () => {
@@ -236,10 +245,11 @@ describe('provider-proxy operation ledger', () => {
     expect(ledger.get(KEY)?.bufferedBytes).toBeGreaterThanOrEqual(MAX_PROVIDER_REPLAY_BYTES);
     const controller = new AbortController();
     let wasAdmitted = false;
-    const waiting = ledger.reserveEvent(KEY, controller.signal).then((reservation) => {
-      wasAdmitted = true;
-      return reservation;
-    });
+    const waiting = ledger
+      .recordEvent(KEY, { providerSeq: seq + 1, frame: 'x' }, { kind: 'ordinary', signal: controller.signal })
+      .then(() => {
+        wasAdmitted = true;
+      });
     await Promise.resolve();
     expect(wasAdmitted).toBe(false);
     controller.abort();
@@ -255,7 +265,11 @@ describe('provider-proxy operation ledger', () => {
       executing(ledger, key);
       keys.push(key);
     }
-    const reservations = await Promise.all(keys.map((key) => ledger.reserveEvent(key)));
+    await Promise.all(
+      keys.map((key) =>
+        ledger.recordEvent(key, { providerSeq: 1, frame: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES) }, { kind: 'ordinary' }),
+      ),
+    );
 
     const refused = ledger.prepare({
       key: { jobId: 'job-1', operationId: 'late' },
@@ -265,7 +279,6 @@ describe('provider-proxy operation ledger', () => {
     });
 
     expect(refused).toEqual({ kind: 'capacity', retryable: true, reason: 'replay-bytes' });
-    for (const reservation of reservations) reservation.release();
   });
 
   it('reaches released only through the suspend arm once suspended', () => {

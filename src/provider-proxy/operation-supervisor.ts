@@ -10,7 +10,6 @@ import {
   type ProviderOperationState,
   type ProviderRootIdentity,
 } from './ledger.js';
-import type { ReplayCapacityReservation } from './replay-budget.js';
 import {
   PROVIDER_EVENT_METHOD,
   ProxyControlProtocolError,
@@ -627,38 +626,35 @@ export class OperationSupervisor {
     }
   }
 
-  reserveProviderEvent(key: ProviderOperationKey, signal?: AbortSignal): Promise<ReplayCapacityReservation> {
-    return this.#ledger.reserveEvent(key, signal);
-  }
-
-  emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody, reservation: ReplayCapacityReservation): void {
+  async emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody, signal?: AbortSignal): Promise<void> {
     const record = this.#requireRecord(key);
-    try {
-      const providerSeq = this.#ledger.nextProviderSeq(key);
-      const request = providerEventRequestSchema.parse({
-        operation: {
-          jobId: key.jobId,
-          operationId: key.operationId,
-          proxyInstanceId: this.#options.proxyInstanceId,
-          buildSetId: this.#options.buildSetId,
-        },
-        providerSeq,
-        event,
-      });
-      const frame = encodeProxyControlFrame({
-        jsonrpc: '2.0',
-        id: this.#nextProviderEventFrameId,
-        method: PROVIDER_EVENT_METHOD,
-        params: request,
-      });
-      this.#nextProviderEventFrameId += 1;
-      this.#ledger.recordEvent(key, { providerSeq, frame }, reservation);
-      this.#recordCompletion(record, event);
-      void this.#pump(record);
-    } catch (error: unknown) {
-      reservation.release();
-      throw error;
-    }
+    const providerSeq = this.#ledger.nextProviderSeq(key);
+    const request = providerEventRequestSchema.parse({
+      operation: {
+        jobId: key.jobId,
+        operationId: key.operationId,
+        proxyInstanceId: this.#options.proxyInstanceId,
+        buildSetId: this.#options.buildSetId,
+      },
+      providerSeq,
+      event,
+    });
+    const frame = encodeProxyControlFrame({
+      jsonrpc: '2.0',
+      id: this.#nextProviderEventFrameId,
+      method: PROVIDER_EVENT_METHOD,
+      params: request,
+    });
+    this.#nextProviderEventFrameId += 1;
+    await this.#ledger.recordEvent(
+      key,
+      { providerSeq, frame },
+      event.kind === 'terminal' || event.kind === 'suspended'
+        ? { kind: 'completion' }
+        : { kind: 'ordinary', ...(signal === undefined ? {} : { signal }) },
+    );
+    this.#recordCompletion(record, event);
+    void this.#pump(record);
   }
 
   close(): void {

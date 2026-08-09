@@ -1039,7 +1039,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
-    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' }, await set.proxy.reserveProviderEvent(key));
+    await set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' });
 
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.committedThroughProviderSeq).toBe(1));
     expect(received).toEqual([
@@ -1073,7 +1073,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
-    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' }, await set.proxy.reserveProviderEvent(key));
+    await set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' });
 
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.committedThroughProviderSeq).toBe(1));
     // The same event, sent twice — a `replay` reply does not advance providerSeq allocation.
@@ -1087,19 +1087,16 @@ describe('provider-proxy provider.event.v1 emission', () => {
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
     for (let index = 0; index < MAX_PROVIDER_REPLAY_EVENTS; index += 1) {
-      set.proxy.emitProviderEvent(
-        key,
-        { kind: 'progress', message: `tick-${index}` },
-        await set.proxy.reserveProviderEvent(key),
-      );
+      await set.proxy.emitProviderEvent(key, { kind: 'progress', message: `tick-${index}` });
     }
 
     const controller = new AbortController();
     let admitted = false;
-    const waiting = set.proxy.reserveProviderEvent(key, controller.signal).then((reservation) => {
-      admitted = true;
-      return reservation;
-    });
+    const waiting = set.proxy
+      .emitProviderEvent(key, { kind: 'progress', message: 'waiting' }, controller.signal)
+      .then(() => {
+        admitted = true;
+      });
     await Promise.resolve();
     expect(admitted).toBe(false);
     controller.abort();
@@ -1114,11 +1111,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
 
     let caught: unknown;
     try {
-      set.proxy.emitProviderEvent(
-        key,
-        { kind: 'progress', message: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES) },
-        await set.proxy.reserveProviderEvent(key),
-      );
+      await set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES) });
     } catch (error: unknown) {
       caught = error;
     }
@@ -1136,7 +1129,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
-    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' }, await set.proxy.reserveProviderEvent(key));
+    await set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' });
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.bufferedEvents).toHaveLength(1));
 
     const redeem = await installGrantForOperations(set, [operation]);
@@ -1180,7 +1173,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     const { operation, reserved } = await prepare(set);
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
-    set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' }, await set.proxy.reserveProviderEvent(key));
+    await set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'first' });
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.bufferedEvents).toHaveLength(1));
 
     const redeem = await installGrantForOperations(set, [operation]);

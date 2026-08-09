@@ -24,7 +24,6 @@ import {
   type ProviderOperationKey,
 } from './ledger.js';
 import { OperationSupervisor, type OperationStageHandle, type SemanticOperationHost } from './operation-supervisor.js';
-import type { ReplayCapacityReservation } from './replay-budget.js';
 import { PROXY_CONTROL_LEASE_MS } from './orphan-deadline.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
@@ -35,6 +34,8 @@ import {
   proxyOperationAttachParamsSchema as attachParamsSchema,
   proxyOperationAttachResultSchema as attachResultSchema,
   proxyOperationPrepareParamsSchema as prepareParamsSchema,
+  proxyOperationPrepareCapacityResultSchema,
+  proxyOperationPreparePendingResultSchema,
   proxyOperationReservationParamsSchema as reservationParamsSchema,
   proxyControlOpenParamsSchema as openParamsSchema,
   proxyOperationInspectParamsSchema as inspectParamsSchema,
@@ -71,8 +72,7 @@ export interface Proxy {
   listen(): Promise<void>;
   close(): Promise<void>;
   ledger(): OperationLedger<ProxyPreparedAppServerOperation>;
-  reserveProviderEvent(key: ProviderOperationKey, signal?: AbortSignal): Promise<ReplayCapacityReservation>;
-  emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody, reservation: ReplayCapacityReservation): void;
+  emitProviderEvent(key: ProviderOperationKey, event: ProviderEventBody, signal?: AbortSignal): Promise<void>;
 }
 
 function ledgerKey(operation: OperationIdentity): ProviderOperationKey {
@@ -190,17 +190,19 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       {
         authority: 'active',
         budgetMs: 'caller-deadline',
-        handle: (params) => {
+        handle: async (params) => {
           const request = prepareParamsSchema.parse(params);
           assertNamedOperation(request.operation);
           if (request.hostFingerprint !== capsule.hostFingerprint) {
             throw new ProxyControlProtocolError('identity_mismatch', 'Prepare named a different host fingerprint.');
           }
-          return supervisor.prepare(request.operation, {
-            prepareAttemptNumber: request.prepareAttemptNumber,
-            prepareAttemptKey: operationPrepareAttemptKey(request),
-            prepared: request.prepared,
-          });
+          return proxyOperationPreparePendingResultSchema.or(proxyOperationPrepareCapacityResultSchema).parse(
+            await supervisor.prepare(request.operation, {
+              prepareAttemptNumber: request.prepareAttemptNumber,
+              prepareAttemptKey: operationPrepareAttemptKey(request),
+              prepared: request.prepared,
+            }),
+          );
         },
       },
     ],
@@ -376,7 +378,6 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       return endpoint.close();
     },
     ledger: () => supervisor.ledger(),
-    reserveProviderEvent: (key, signal) => supervisor.reserveProviderEvent(key, signal),
-    emitProviderEvent: (key, event, reservation) => supervisor.emitProviderEvent(key, event, reservation),
+    emitProviderEvent: (key, event, signal) => supervisor.emitProviderEvent(key, event, signal),
   };
 }

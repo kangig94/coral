@@ -113,10 +113,15 @@ function createTestProxy(): { proxy: Proxy; ledger: OperationLedger<ProxyPrepare
     listen: async () => {},
     close: async () => {},
     ledger: () => ledger,
-    reserveProviderEvent: (key, signal) => ledger.reserveEvent(key, signal),
-    emitProviderEvent: (key, event, reservation) => {
+    emitProviderEvent: async (key, event, signal) => {
       const providerSeq = ledger.nextProviderSeq(key);
-      ledger.recordEvent(key, { providerSeq, frame: JSON.stringify(event) }, reservation);
+      await ledger.recordEvent(
+        key,
+        { providerSeq, frame: JSON.stringify(event) },
+        event.kind === 'terminal' || event.kind === 'suspended'
+          ? { kind: 'completion' }
+          : { kind: 'ordinary', ...(signal === undefined ? {} : { signal }) },
+      );
       if (event.kind === 'terminal') ledger.transition(key, 'terminal-awaiting-settlement');
       if (event.kind === 'suspended') ledger.transition(key, 'suspended-awaiting-durable-decision');
     },
