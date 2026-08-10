@@ -20,10 +20,138 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 describe('execution services provider-proxy proof composition', () => {
+  it('does not publish a stored-fault authority through the production subscriber', async () => {
+    const time = new VirtualTime();
+    const runtime = { ...createRealRuntime('prod'), time };
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const record = providerOperationRecord('executing');
+    if (record.phase !== 'executing') throw new Error('expected executing fixture');
+    insertProviderOperation(db, record);
+    const claims = new ProviderProxySetClaimMirror();
+    const lifecycleRef = new ProviderProxySetLifecycleRef();
+    const operationRegistry = new LocalOperationRegistry();
+    const world = {
+      storeServicesRef: { tryGet: () => ({ progressStore: { getDb: () => db } }) },
+      operationRegistry,
+      providerProxyClaims: claims,
+      providerProxyLifecycleRef: lifecycleRef,
+      providerHostManager: {},
+    } as never;
+    const services = createExecutionServices({
+      world,
+      runtime,
+      bundleHash: 'execution-services-stored-fault-test',
+      backendNamespace: 'execution-services-stored-fault-test',
+      createExecutionService: (() => {
+        throw new Error('execution service creation was not expected');
+      }) as never,
+    });
+    claims.initialize([record]);
+    const lifecycle = lifecycleRef.get();
+    if (lifecycle === null) throw new Error('provider proxy lifecycle was not composed');
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const fault = {
+      kind: 'control-channel-fault' as const,
+      role: 'proxy' as const,
+      error: new Error('control already closed') as never,
+    };
+    const attachOperation = vi.fn(async () => ({
+      state: 'attached' as const,
+      replayFromProviderSeq: record.committedThroughProviderSeq + 1,
+    }));
+    const authority = {
+      proxyInstanceId: record.operation.proxyInstanceId,
+      setIdentity: providerProxySetIdentityFromRecord(record),
+      faulted: Promise.resolve(fault),
+      onFault: (listener: (observed: ProviderProxyAuthorityFault) => void) => {
+        listener(fault);
+        return () => undefined;
+      },
+      attachOperation,
+      stopAndReap: async () => ({ unconfirmed: 'stored fault' }),
+      stopHeartbeats: () => undefined,
+      initiateControlClose: async () => undefined,
+      registerSuccessionOperation: async () => undefined,
+    } as unknown as DurableProviderProxyOperationAuthority;
+
+    lifecycle.registerInheritedSet(authority);
+    await flushMicrotasks();
+
+    expect({
+      authority: lifecycle.authorityFor(authority.setIdentity),
+      attachOperationCalls: attachOperation.mock.calls.length,
+      states: lifecycle.snapshot().states,
+    }).toEqual({ authority: null, attachOperationCalls: 0, states: ['containing'] });
+    services.stopProviderOperationReconciler();
+  });
+
+  it('publishes an accepted fresh authority once through the production subscriber', async () => {
+    const time = new VirtualTime();
+    const runtime = { ...createRealRuntime('prod'), time };
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const record = providerOperationRecord('executing');
+    if (record.phase !== 'executing') throw new Error('expected executing fixture');
+    insertProviderOperation(db, record);
+    const claims = new ProviderProxySetClaimMirror();
+    const lifecycleRef = new ProviderProxySetLifecycleRef();
+    const operationRegistry = new LocalOperationRegistry();
+    const world = {
+      storeServicesRef: { tryGet: () => ({ progressStore: { getDb: () => db } }) },
+      operationRegistry,
+      providerProxyClaims: claims,
+      providerProxyLifecycleRef: lifecycleRef,
+      providerHostManager: {},
+    } as never;
+    const services = createExecutionServices({
+      world,
+      runtime,
+      bundleHash: 'execution-services-fresh-publication-test',
+      backendNamespace: 'execution-services-fresh-publication-test',
+      createExecutionService: (() => {
+        throw new Error('execution service creation was not expected');
+      }) as never,
+    });
+    claims.initialize([record]);
+    const lifecycle = lifecycleRef.get();
+    if (lifecycle === null) throw new Error('provider proxy lifecycle was not composed');
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const attachOperation = vi.fn(async () => ({
+      state: 'attached' as const,
+      replayFromProviderSeq: record.committedThroughProviderSeq + 1,
+    }));
+    const authority = {
+      proxyInstanceId: record.operation.proxyInstanceId,
+      setIdentity: providerProxySetIdentityFromRecord(record),
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      attachOperation,
+      stopAndReap: async () => ({ unconfirmed: 'not requested' }),
+      stopHeartbeats: () => undefined,
+      initiateControlClose: async () => undefined,
+      registerSuccessionOperation: async () => undefined,
+    } as unknown as DurableProviderProxyOperationAuthority;
+    const admission = lifecycle.beginFreshAcquisition('fresh-publication');
+    if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
+
+    lifecycle.acquisitionSucceeded(admission.slotId, authority);
+    await vi.waitFor(() => expect(attachOperation).toHaveBeenCalledTimes(1));
+    lifecycle.registerInheritedSet(authority);
+    await flushMicrotasks();
+
+    expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
+    expect(attachOperation).toHaveBeenCalledTimes(1);
+    services.stopProviderOperationReconciler();
+  });
+
   it('reaches the public independent proof after a closed control path', async () => {
     const time = new VirtualTime();
     const runtime = { ...createRealRuntime('prod'), time };
-    const db = {} as Database;
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
     const claims = new ProviderProxySetClaimMirror();
     const lifecycleRef = new ProviderProxySetLifecycleRef();
     const operationRegistry = new LocalOperationRegistry();

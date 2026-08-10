@@ -9,7 +9,10 @@ import { aggregateWorkflowUsage } from '../../jobs/workflow-usage.js';
 import { admittedByThisCoordinator, createObserveCarriers } from './carrier-observation.js';
 import { createAppServerProxyRoute } from '../services/provider-proxy-launch-route.js';
 import { ProviderOperationReconciler } from '../services/provider-operation-reconciler.js';
-import { subscribeProviderProxyControlEstablished } from '../live/provider-proxy/operation-route.js';
+import {
+  notifyProviderProxyControlEstablished,
+  subscribeProviderProxyControlEstablished,
+} from '../live/provider-proxy/operation-route.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
@@ -124,6 +127,7 @@ export function createExecutionServices({
   });
   const providerProxyLifecycle: ProviderProxySetLifecycle = new ProviderProxySetLifecycle({
     claims: world.providerProxyClaims,
+    controlEstablished: notifyProviderProxyControlEstablished,
     disappearanceConsumer: providerOperationReconciler,
     time: runtime.time,
     proveContainmentAbsent: (identity, signal) =>

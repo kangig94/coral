@@ -37,16 +37,16 @@ export type ProviderProxyHeartbeatSession = Readonly<{
   instanceId: string;
 }>;
 
-export type ProviderProxyHeartbeatSessions = Readonly<{
-  proxy: ProviderProxyHeartbeatSession;
-  guardian: ProviderProxyHeartbeatSession;
-  reaper: ProviderProxyHeartbeatSession;
-}>;
-
 export type ProviderProxyRoleHeartbeats = Readonly<{
   proxy: HeartbeatLoop;
   guardian: HeartbeatLoop;
   reaper: HeartbeatLoop;
+}>;
+
+export type ProviderProxyAuthorityHeartbeatAssembly = Readonly<{
+  startRole(role: ProviderProxyRole, session: ProviderProxyHeartbeatSession): void;
+  complete(): ProviderProxyRoleHeartbeats;
+  stop(): void;
 }>;
 
 const HEARTBEAT_METHOD_BY_ROLE = {
@@ -104,32 +104,47 @@ function startHeartbeatLoop(
   };
 }
 
-export function startProviderProxyAuthorityHeartbeats(
-  sessions: ProviderProxyHeartbeatSessions,
+export function createProviderProxyAuthorityHeartbeatAssembly(
   runtime: Runtime,
   faults: ProviderProxyAuthorityFaultLatch,
-): ProviderProxyRoleHeartbeats {
-  const start = (role: ProviderProxyRole): HeartbeatLoop => {
-    const session = sessions[role];
+): ProviderProxyAuthorityHeartbeatAssembly {
+  const loops = new Map<ProviderProxyRole, HeartbeatLoop>();
+
+  const startRole = (role: ProviderProxyRole, session: ProviderProxyHeartbeatSession): void => {
+    if (loops.has(role)) throw new Error(`provider_proxy_heartbeat_role_already_started:${role}`);
+    faults.observeControlClient(role, session.client);
     const method = HEARTBEAT_METHOD_BY_ROLE[role];
-    return startHeartbeatLoop(
-      session.client,
-      method,
-      runtime,
-      session.controlEpoch,
-      session.nextHeartbeatChallenge,
-      (error) => {
-        faults.latch({ kind: 'heartbeat-failed', role, method, error });
-        backendLog.warn(
-          `provider-proxy ${role} heartbeat echo failed for ${session.instanceId}: ${errorMessage(error)}`,
-        );
-      },
+    loops.set(
+      role,
+      startHeartbeatLoop(
+        session.client,
+        method,
+        runtime,
+        session.controlEpoch,
+        session.nextHeartbeatChallenge,
+        (error) => {
+          faults.latch({ kind: 'heartbeat-failed', role, method, error });
+          backendLog.warn(
+            `provider-proxy ${role} heartbeat echo failed for ${session.instanceId}: ${errorMessage(error)}`,
+          );
+        },
+      ),
     );
   };
 
   return {
-    proxy: start('proxy'),
-    guardian: start('guardian'),
-    reaper: start('reaper'),
+    startRole,
+    complete() {
+      const proxy = loops.get('proxy');
+      const guardian = loops.get('guardian');
+      const reaper = loops.get('reaper');
+      if (proxy === undefined || guardian === undefined || reaper === undefined) {
+        throw new Error('provider_proxy_heartbeat_roles_incomplete');
+      }
+      return { proxy, guardian, reaper };
+    },
+    stop() {
+      for (const loop of loops.values()) loop.stop();
+    },
   };
 }

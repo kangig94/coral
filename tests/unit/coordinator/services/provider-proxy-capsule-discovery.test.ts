@@ -49,6 +49,7 @@ describe('provider proxy capsule discovery', () => {
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: () => undefined,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: runtime.time,
       proveContainmentAbsent: async () => null,

@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  startProviderProxyAuthorityHeartbeats,
-  type ProviderProxyHeartbeatSessions,
+  createProviderProxyAuthorityHeartbeatAssembly,
+  type ProviderProxyHeartbeatSession,
+  type ProviderProxyRoleHeartbeats,
 } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import {
   createProviderProxyAuthorityFaultLatch,
@@ -15,7 +16,7 @@ import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
-import { PROXY_CONTROL_HEARTBEAT_MS } from '#src/provider-proxy/orphan-deadline.js';
+import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
@@ -50,7 +51,7 @@ function sessions(
     controlEpoch: number;
     heartbeatChallenge: string;
   },
-): ProviderProxyHeartbeatSessions {
+): Record<'proxy' | 'guardian' | 'reaper', ProviderProxyHeartbeatSession> {
   return {
     proxy: {
       client: clients.proxy,
@@ -73,14 +74,35 @@ function sessions(
   };
 }
 
-async function openLeaseEndpoint(onAcceptedEcho?: (leaseIsLive: boolean) => void, onRejectedEcho?: () => void) {
+function startAll(
+  heartbeatSessions: ReturnType<typeof sessions>,
+  runtime: Runtime,
+  faults: ReturnType<typeof createProviderProxyAuthorityFaultLatch>,
+): ProviderProxyRoleHeartbeats {
+  const assembly = createProviderProxyAuthorityHeartbeatAssembly(runtime, faults);
+  assembly.startRole('proxy', heartbeatSessions.proxy);
+  assembly.startRole('guardian', heartbeatSessions.guardian);
+  assembly.startRole('reaper', heartbeatSessions.reaper);
+  return assembly.complete();
+}
+
+async function openLeaseEndpoint(
+  onAcceptedEcho?: (leaseIsLive: boolean) => void,
+  onRejectedEcho?: (reason: string) => void,
+  options: Readonly<{
+    time?: VirtualTime;
+    beforeEcho?: () => void;
+  }> = {},
+) {
   const directory = mkdtempSync(join(tmpdir(), 'coral-heartbeat-'));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const socketPath = join(directory, 'control.sock');
   const clockScope = Symbol('heartbeat-lease');
   let elapsed = 0n;
-  const clock = createMonotonicClock(clockScope, { readMilliseconds: () => elapsed });
-  const lease = new ControlLeaseEvidence(clock, 5_000, clock.now(), () => null);
+  const clock = createMonotonicClock(clockScope, {
+    readMilliseconds: () => (options.time === undefined ? elapsed : BigInt(options.time.now())),
+  });
+  const lease = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, clock.now(), () => null);
   let challengeNumber = 0;
   const mintChallenge = (): string => `challenge-${challengeNumber++}`;
   const challenges: ControlChallengeAuthority = {
@@ -97,10 +119,11 @@ async function openLeaseEndpoint(onAcceptedEcho?: (leaseIsLive: boolean) => void
     },
     controlIsLive: () => lease.isControlLive(clock.now()),
     echoChallenge: (challenge) => {
+      options.beforeEcho?.();
       const nextChallenge = mintChallenge();
       const recorded = lease.echoChallenge(clock.now(), challenge, nextChallenge);
       if (!recorded.accepted) {
-        onRejectedEcho?.();
+        onRejectedEcho?.(recorded.reason);
         return recorded;
       }
       onAcceptedEcho?.(lease.isControlLive(clock.now()));
@@ -123,14 +146,15 @@ async function openLeaseEndpoint(onAcceptedEcho?: (leaseIsLive: boolean) => void
     },
     challenges,
     observer: { onControlLost: () => undefined },
-    timer: realTimer,
+    timer: options.time ?? realTimer,
     requestTimeoutMs: 5_000,
   });
   await endpoint.listen();
   cleanups.push(() => endpoint.close());
-  const client = await connectControlClient(socketPath, realTimer, 5_000);
+  const client = await connectControlClient(socketPath, options.time ?? realTimer, 5_000);
   cleanups.push(() => client.close());
-  elapsed = 1_000n;
+  if (options.time === undefined) elapsed = 1_000n;
+  else options.time.tick(1_000);
   const opened = (await client.call('role.open.v1', {}, 5_000)) as {
     controlEpoch: number;
     heartbeatChallenge: string;
@@ -141,20 +165,84 @@ async function openLeaseEndpoint(onAcceptedEcho?: (leaseIsLive: boolean) => void
     setElapsed: (milliseconds: number) => {
       elapsed = BigInt(milliseconds);
     },
+    controlIsLive: () => lease.isControlLive(clock.now()),
   };
 }
 
 describe('provider proxy heartbeat against the real endpoint', () => {
+  it('accepts two consecutive recurring echoes that each spend 4200ms before endpoint acceptance', async () => {
+    const time = new VirtualTime();
+    let heartbeatRpcCalls = 0;
+    let activeCalls = 0;
+    let maxActiveCalls = 0;
+    let acceptedEchoes = 0;
+    const rejectedReasons: string[] = [];
+    const failures: ProviderProxyAuthorityFault[] = [];
+    const endpoint = await openLeaseEndpoint(
+      () => {
+        acceptedEchoes += 1;
+      },
+      (reason) => rejectedReasons.push(reason),
+      { time, beforeEcho: () => time.tick(4_200) },
+    );
+    const client: ControlClient = {
+      ...endpoint.client,
+      call(method, params, timeoutMs) {
+        if (method !== 'control.heartbeat.v1') return endpoint.client.call(method, params, timeoutMs);
+        heartbeatRpcCalls += 1;
+        activeCalls += 1;
+        maxActiveCalls = Math.max(maxActiveCalls, activeCalls);
+        return endpoint.client.call(method, params, timeoutMs).finally(() => {
+          activeCalls -= 1;
+        });
+      },
+    };
+    const clients = { proxy: client, guardian: passiveClient('guardian'), reaper: passiveClient('reaper') };
+    const faultLatch = createProviderProxyAuthorityFaultLatch();
+    faultLatch.onFault((fault) => failures.push(fault));
+    const heartbeats = startAll(sessions(clients, endpoint.opened), runtimeWithTime(time), faultLatch);
+
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await vi.waitFor(() => expect(acceptedEchoes).toBe(1));
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await vi.waitFor(() => expect(acceptedEchoes + rejectedReasons.length).toBe(2));
+
+    expect({
+      acceptedEchoes,
+      rejectedReasons,
+      controlIsLive: endpoint.controlIsLive(),
+      faults: failures.map((failure) =>
+        failure.kind === 'operation-control-failed' ? failure.kind : `${failure.kind}:${failure.role}`,
+      ),
+      heartbeatRpcCalls,
+      maxActiveCalls,
+    }).toEqual({
+      acceptedEchoes: 2,
+      rejectedReasons: [],
+      controlIsLive: true,
+      faults: [],
+      heartbeatRpcCalls: 2,
+      maxActiveCalls: 1,
+    });
+    heartbeats.proxy.stop();
+    heartbeats.guardian.stop();
+    heartbeats.reaper.stop();
+  });
+
   it('keeps one RPC outstanding while an accepted response spans two intervals', async () => {
     const time = new VirtualTime();
     let heartbeatRpcCalls = 0;
     let acceptedResponses = 0;
     const failures: ProviderProxyAuthorityFault[] = [];
+    const rejectedReasons: string[] = [];
     let heldResponseSnapshot: { calls: number; failures: number; leaseIsLive: boolean } | null = null;
-    const endpoint = await openLeaseEndpoint((leaseIsLive) => {
-      time.tick(PROXY_CONTROL_HEARTBEAT_MS * 2);
-      heldResponseSnapshot = { calls: heartbeatRpcCalls, failures: failures.length, leaseIsLive };
-    });
+    const endpoint = await openLeaseEndpoint(
+      (leaseIsLive) => {
+        time.tick(PROXY_CONTROL_HEARTBEAT_MS * 2);
+        heldResponseSnapshot = { calls: heartbeatRpcCalls, failures: failures.length, leaseIsLive };
+      },
+      (reason) => rejectedReasons.push(reason),
+    );
     const client: ControlClient = {
       ...endpoint.client,
       call(method, params, timeoutMs) {
@@ -172,20 +260,27 @@ describe('provider proxy heartbeat against the real endpoint', () => {
       },
     };
     const clients = { proxy: client, guardian: passiveClient('guardian'), reaper: passiveClient('reaper') };
-    const faultLatch = createProviderProxyAuthorityFaultLatch(clients);
+    const faultLatch = createProviderProxyAuthorityFaultLatch();
     faultLatch.onFault((fault) => failures.push(fault));
     endpoint.setElapsed(4_000);
-    const heartbeats = startProviderProxyAuthorityHeartbeats(
-      sessions(clients, endpoint.opened),
-      runtimeWithTime(time),
-      faultLatch,
-    );
+    const heartbeats = startAll(sessions(clients, endpoint.opened), runtimeWithTime(time), faultLatch);
 
     time.tick(PROXY_CONTROL_HEARTBEAT_MS);
     await vi.waitFor(() => expect(heldResponseSnapshot).not.toBeNull());
-
-    expect(heldResponseSnapshot).toEqual({ calls: 1, failures: 0, leaseIsLive: true });
     await vi.waitFor(() => expect(acceptedResponses).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect({
+      heldResponseSnapshot,
+      rejectedReasons,
+      faults: failures.map((failure) =>
+        failure.kind === 'operation-control-failed' ? failure.kind : `${failure.kind}:${failure.role}`,
+      ),
+    }).toEqual({
+      heldResponseSnapshot: { calls: 1, failures: 0, leaseIsLive: true },
+      rejectedReasons: [],
+      faults: [],
+    });
 
     time.tick(PROXY_CONTROL_HEARTBEAT_MS);
     await vi.waitFor(() => expect(heartbeatRpcCalls).toBe(2));
@@ -211,10 +306,10 @@ describe('provider proxy heartbeat against the real endpoint', () => {
       },
     };
     const clients = { proxy: client, guardian: passiveClient('guardian'), reaper: passiveClient('reaper') };
-    const faultLatch = createProviderProxyAuthorityFaultLatch(clients);
+    const faultLatch = createProviderProxyAuthorityFaultLatch();
     faultLatch.onFault((fault) => failures.push(fault));
     const heartbeatSessions = sessions(clients, endpoint.opened);
-    const heartbeats = startProviderProxyAuthorityHeartbeats(
+    const heartbeats = startAll(
       {
         ...heartbeatSessions,
         proxy: { ...heartbeatSessions.proxy, nextHeartbeatChallenge: 'wrong-challenge' },

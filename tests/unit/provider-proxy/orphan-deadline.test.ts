@@ -22,6 +22,7 @@ import {
   PROXY_STARTUP_ATTACH_RESERVE_MS,
   PROXY_TEARDOWN_RESERVE_MS,
   providerProxyDeadlineConfigurationSchema,
+  recurringHeartbeatFitsLease,
   resolveProviderProxyDeadlineConfiguration,
   type EnforcerChallengePolicy,
   type ProviderProxyDeadlineConfiguration,
@@ -99,11 +100,19 @@ describe('provider proxy orphan deadline configuration', () => {
 
   it('publishes the normative fixed durations and default', () => {
     expect(PROXY_CONTROL_HEARTBEAT_MS).toBe(1_000);
-    expect(PROXY_CONTROL_LEASE_MS).toBe(5_000);
+    expect(PROXY_CONTROL_LEASE_MS).toBe(13_000);
     expect(PROXY_REDEMPTION_DISPATCH_MAX_MS).toBe(1_000);
     expect(PROXY_CONTROL_RPC_TIMEOUT_MS).toBe(5_000);
     expect(PROXY_STARTUP_ATTACH_RESERVE_MS).toBe(4_000);
     expect(configuration().orphanTimeoutMs).toBe(DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS);
+  });
+
+  it('requires two complete heartbeat RPC generations to fit strictly inside the lease', () => {
+    const fits = (leaseMs: number) => recurringHeartbeatFitsLease({ heartbeatMs: 1_000, rpcTimeoutMs: 5_000, leaseMs });
+
+    expect(fits(8_000)).toBe(false);
+    expect(fits(12_000)).toBe(false);
+    expect(fits(13_000)).toBe(true);
   });
 
   it('validates only decimal millisecond input', () => {
@@ -129,9 +138,9 @@ describe('provider proxy orphan deadline configuration', () => {
     const outside = issueMessages(String(PROXY_TEARDOWN_RESERVE_MS + PROXY_CONTROL_LEASE_MS));
     const inside = issueMessages(String(PROXY_TEARDOWN_RESERVE_MS + PROXY_CONTROL_LEASE_MS + 1));
 
-    expect(outside).toContain('must satisfy heartbeat < lease < orphan timeout - teardown reserve');
-    expect(inside).not.toContain('must satisfy heartbeat < lease < orphan timeout - teardown reserve');
-    expect(inside).toContain('must retain the strict redemption RPC and startup attach margin');
+    const issue = 'must satisfy two heartbeat RPC generations < lease < orphan timeout - teardown reserve';
+    expect(outside).toContain(issue);
+    expect(inside).not.toContain(issue);
   });
 
   it('checks the stronger redemption margin on both sides of its strict boundary', () => {
@@ -144,8 +153,13 @@ describe('provider proxy orphan deadline configuration', () => {
     expect(issueMessages(String(boundary))).toContain(
       'must retain the strict redemption RPC and startup attach margin',
     );
-    expect(configuration(String(boundary + 1)).orphanTimeoutMs).toBe(boundary + 1);
-    expect(MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS).toBe(24_001);
+    expect(issueMessages(String(boundary + 1))).not.toContain(
+      'must retain the strict redemption RPC and startup attach margin',
+    );
+    expect(configuration(String(MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS)).orphanTimeoutMs).toBe(
+      MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+    );
+    expect(MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS).toBe(27_001);
   });
 
   it('rejects an unvalidated configuration object at the state-machine boundary', () => {
@@ -229,17 +243,17 @@ describe('provider proxy enforcer deadline evidence', () => {
     expectSameInstant(fake.clock, guardian.bounds().firstChallengeExpiresAt!, adoptionDeadline);
   });
 
-  it('rejects a successor challenge at its strict lease expiry', () => {
+  it('rejects a successor challenge at the earlier adoption cutoff', () => {
     const fake = createFakeClock(reaperClockScope, 1_000);
     const reaper = createEnforcerDeadlineStateMachine(fake.clock, configuration(), policy('c'));
     // A successor is admitted only after control is no longer live, so move past the lease first.
-    fake.set(7_000);
+    fake.set(1_000 + PROXY_CONTROL_LEASE_MS);
     const successor = mustAccept(reaper.admitSuccessor());
-    fake.set(12_001);
+    fake.set(1_000 + DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS - PROXY_TEARDOWN_RESERVE_MS);
 
     expect(reaper.echoChallenge(successor.challenge)).toEqual({
       accepted: false,
-      reason: 'challenge-expired',
+      reason: 'teardown-latched',
     });
   });
 
@@ -403,7 +417,7 @@ describe('provider proxy deadline state machines', () => {
     fake.set(2_000);
     expect(enforcer.admitSuccessor()).toEqual({ accepted: false, reason: 'control-active' });
 
-    fake.set(7_000);
+    fake.set(1_000 + PROXY_CONTROL_LEASE_MS);
     expect(enforcer.admitSuccessor()).toMatchObject({ accepted: true });
   });
 

@@ -115,6 +115,7 @@ function lifecycleForSchedule(
   claims.initialize([record]);
   const lifecycle = new ProviderProxySetLifecycle({
     claims,
+    controlEstablished: () => undefined,
     disappearanceConsumer: reconciler,
     time: {
       now: () => 100,

@@ -15,6 +15,7 @@ import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/pr
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 const noContainmentProof = async (): Promise<null> => null;
+const ignoreControlEstablished = (): void => undefined;
 
 function deferred<T>(): Readonly<{ promise: Promise<T>; resolve(value: T): void }> {
   let resolve!: (value: T) => void;
@@ -133,6 +134,7 @@ describe('ProviderProxySetLifecycle', () => {
     const capsule = capsuleFor(authority);
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
@@ -156,6 +158,28 @@ describe('ProviderProxySetLifecycle', () => {
     ).toEqual({ kind: 'already-represented' });
   });
 
+  it('contains an unmatched zero-claim redemption before evaluating publication', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const established = vi.fn();
+    const lifecycle = new ProviderProxySetLifecycle({
+      claims,
+      controlEstablished: established,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      redeemCapsule: async () => authority,
+    });
+    lifecycle.initializeClaimSlots();
+
+    lifecycle.installDiscoveredCapsules([{ path: '/capsules/unmatched.handoff.json', capsule: capsuleFor(authority) }]);
+    await vi.waitFor(() => expect(lifecycle.snapshot().states).toEqual(['containing']));
+
+    expect(established).not.toHaveBeenCalled();
+    expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
+  });
+
   it('fail-stops duplicate capsule addresses, grants, and claim-binding aliases during discovery', () => {
     const record = providerOperationRecord('executing');
     const authority = fakeAuthority({ record });
@@ -167,6 +191,7 @@ describe('ProviderProxySetLifecycle', () => {
     noClaims.initialize([]);
     const duplicateAddress = new ProviderProxySetLifecycle({
       claims: noClaims,
+      controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
@@ -181,6 +206,7 @@ describe('ProviderProxySetLifecycle', () => {
 
     const duplicateGrant = new ProviderProxySetLifecycle({
       claims: noClaims,
+      controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
@@ -202,6 +228,7 @@ describe('ProviderProxySetLifecycle', () => {
 
     const claimAlias = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
@@ -231,6 +258,7 @@ describe('ProviderProxySetLifecycle', () => {
     };
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: clock,
       proveContainmentAbsent: noContainmentProof,
@@ -271,6 +299,7 @@ describe('ProviderProxySetLifecycle', () => {
     };
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
@@ -309,6 +338,7 @@ describe('ProviderProxySetLifecycle', () => {
     const retireCapsule = vi.fn(async () => undefined);
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: {
         containmentDisappeared: (notice) =>
           notice.operation.jobId === first.operation.jobId
@@ -360,6 +390,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: clock,
       proveContainmentAbsent: noContainmentProof,
@@ -397,6 +428,7 @@ describe('ProviderProxySetLifecycle', () => {
     });
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: clock,
       proveContainmentAbsent: noContainmentProof,
@@ -436,6 +468,7 @@ describe('ProviderProxySetLifecycle', () => {
     const authority = fakeAuthority({ stopAndReap: () => lateProof.promise });
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: consumer },
       time: clock,
       proveContainmentAbsent: noContainmentProof,
@@ -464,6 +497,7 @@ describe('ProviderProxySetLifecycle', () => {
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
@@ -522,6 +556,7 @@ describe('ProviderProxySetLifecycle', () => {
     const authority = fakeAuthority({ record, stopAndReap });
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,

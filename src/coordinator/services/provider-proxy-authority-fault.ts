@@ -46,13 +46,12 @@ export type ProviderProxyRoleClients<TClient> = Readonly<{
 
 export interface ProviderProxyAuthorityFaultLatch {
   readonly faulted: Promise<ProviderProxyAuthorityFault>;
+  observeControlClient(role: ProviderProxyRole, client: Pick<ControlClient, 'onFault'>): void;
   latch(fault: ProviderProxyAuthorityFault): void;
   onFault(listener: (fault: ProviderProxyAuthorityFault) => void): () => void;
 }
 
-export function createProviderProxyAuthorityFaultLatch(
-  clients: ProviderProxyRoleClients<Pick<ControlClient, 'onFault'>>,
-): ProviderProxyAuthorityFaultLatch {
+export function createProviderProxyAuthorityFaultLatch(): ProviderProxyAuthorityFaultLatch {
   let resolveFault!: (fault: ProviderProxyAuthorityFault) => void;
   let latchedFault: ProviderProxyAuthorityFault | null = null;
   const listeners = new Set<(fault: ProviderProxyAuthorityFault) => void>();
@@ -65,13 +64,11 @@ export function createProviderProxyAuthorityFaultLatch(
     resolveFault(fault);
     for (const listener of listeners) listener(fault);
   };
-
-  clients.proxy.onFault((error) => latch({ kind: 'control-channel-fault', role: 'proxy', error }));
-  clients.reaper.onFault((error) => latch({ kind: 'control-channel-fault', role: 'reaper', error }));
-  clients.guardian.onFault((error) => latch({ kind: 'control-channel-fault', role: 'guardian', error }));
-
   return {
     faulted,
+    observeControlClient(role, client) {
+      client.onFault((error) => latch({ kind: 'control-channel-fault', role, error }));
+    },
     latch,
     onFault(listener) {
       if (latchedFault !== null) {

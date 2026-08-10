@@ -508,6 +508,7 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
   claims.initialize([]);
   const lifecycle = new ProviderProxySetLifecycle({
     claims,
+    controlEstablished: () => undefined,
     disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
     time: { ...timer, now: () => 0 },
     proveContainmentAbsent: () => new Promise<never>(() => undefined),
@@ -695,11 +696,15 @@ async function startRotationSet(operationRegistry: LocalOperationRegistry) {
     operationRegistry,
   });
   const clients = { proxy: proxyControl, guardian: set.control, reaper: set.control };
+  const faults = createProviderProxyAuthorityFaultLatch();
+  faults.observeControlClient('proxy', clients.proxy);
+  faults.observeControlClient('guardian', clients.guardian);
+  faults.observeControlClient('reaper', clients.reaper);
   const authority = createProviderProxyOperationAuthority({
     base,
     setIdentity,
     clients,
-    faults: createProviderProxyAuthorityFaultLatch(clients),
+    faults,
     mutationRpcTimeoutMs: 5_000,
   });
 
@@ -1309,6 +1314,7 @@ describe('provider proxy cumulative root rotation', () => {
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: () => undefined,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: runtime.time,
       proveContainmentAbsent: async () => null,

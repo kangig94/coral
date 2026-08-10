@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  createProviderProxyAuthorityHeartbeatAssembly,
   heartbeatOnce,
-  startProviderProxyAuthorityHeartbeats,
-  type ProviderProxyHeartbeatSessions,
+  type ProviderProxyHeartbeatSession,
   type ProviderProxyRoleHeartbeats,
 } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import type {
@@ -64,7 +64,19 @@ function sessions(clients: { proxy: ControlClient; guardian: ControlClient; reap
       nextHeartbeatChallenge: 'reaper-challenge-0',
       instanceId: 'reaper-1',
     },
-  } satisfies ProviderProxyHeartbeatSessions;
+  } satisfies Record<ProviderProxyRole, ProviderProxyHeartbeatSession>;
+}
+
+function startAll(
+  heartbeatSessions: ReturnType<typeof sessions>,
+  runtime: Runtime,
+  faults: ProviderProxyAuthorityFaultLatch,
+): ProviderProxyRoleHeartbeats {
+  const assembly = createProviderProxyAuthorityHeartbeatAssembly(runtime, faults);
+  assembly.startRole('proxy', heartbeatSessions.proxy);
+  assembly.startRole('guardian', heartbeatSessions.guardian);
+  assembly.startRole('reaper', heartbeatSessions.reaper);
+  return assembly.complete();
 }
 
 function recordingFaultLatch(): { latch: ProviderProxyAuthorityFaultLatch; faults: ProviderProxyAuthorityFault[] } {
@@ -72,6 +84,7 @@ function recordingFaultLatch(): { latch: ProviderProxyAuthorityFaultLatch; fault
   return {
     latch: {
       faulted: new Promise<never>(() => undefined),
+      observeControlClient: () => undefined,
       latch: (fault) => faults.push(fault),
       onFault: () => () => undefined,
     },
@@ -86,6 +99,34 @@ function stopAll(heartbeats: ProviderProxyRoleHeartbeats): void {
 }
 
 describe('provider proxy authority heartbeats', () => {
+  it('rejects a duplicate role and refuses to complete a partial assembly', () => {
+    const time = new VirtualTime();
+    const proxy = scriptedClient(['proxy-challenge-1']);
+    const session = sessions({ proxy: proxy.client, guardian: proxy.client, reaper: proxy.client }).proxy;
+    const assembly = createProviderProxyAuthorityHeartbeatAssembly(runtimeWithTime(time), recordingFaultLatch().latch);
+
+    assembly.startRole('proxy', session);
+
+    expect(() => assembly.startRole('proxy', session)).toThrow('provider_proxy_heartbeat_role_already_started:proxy');
+    expect(() => assembly.complete()).toThrow('provider_proxy_heartbeat_roles_incomplete');
+    assembly.stop();
+  });
+
+  it('stops every role enrolled in a partial assembly', () => {
+    const time = new VirtualTime();
+    const clearIntervalSpy = vi.spyOn(time, 'clearInterval');
+    const proxy = scriptedClient(['proxy-challenge-1']);
+    const guardian = scriptedClient(['guardian-challenge-1']);
+    const heartbeatSessions = sessions({ proxy: proxy.client, guardian: guardian.client, reaper: proxy.client });
+    const assembly = createProviderProxyAuthorityHeartbeatAssembly(runtimeWithTime(time), recordingFaultLatch().latch);
+    assembly.startRole('proxy', heartbeatSessions.proxy);
+    assembly.startRole('guardian', heartbeatSessions.guardian);
+
+    assembly.stop();
+
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects an invalid heartbeat before the untyped control client can write it', async () => {
     const call = vi.fn(async () => ({ state: 'active', nextHeartbeatChallenge: 'challenge-1' }));
     const client: ControlClient = {
@@ -106,7 +147,7 @@ describe('provider proxy authority heartbeats', () => {
     const guardian = scriptedClient(['guardian-challenge-1', 'guardian-challenge-2']);
     const reaper = scriptedClient(['reaper-challenge-1', 'reaper-challenge-2']);
     const faults = recordingFaultLatch();
-    const heartbeats = startProviderProxyAuthorityHeartbeats(
+    const heartbeats = startAll(
       sessions({ proxy: proxy.client, guardian: guardian.client, reaper: reaper.client }),
       runtimeWithTime(time),
       faults.latch,
@@ -144,7 +185,7 @@ describe('provider proxy authority heartbeats', () => {
     const guardian = scriptedClient(['guardian-challenge-1']);
     const reaper = scriptedClient(['reaper-challenge-1']);
     const faults = recordingFaultLatch();
-    const heartbeats = startProviderProxyAuthorityHeartbeats(
+    const heartbeats = startAll(
       sessions({ proxy: client, guardian: guardian.client, reaper: reaper.client }),
       runtimeWithTime(time),
       faults.latch,
@@ -179,7 +220,7 @@ describe('provider proxy authority heartbeats', () => {
       reaper: scriptedClient(role === 'reaper' ? [error] : ['reaper-challenge-1']),
     };
     const faults = recordingFaultLatch();
-    const heartbeats = startProviderProxyAuthorityHeartbeats(
+    const heartbeats = startAll(
       sessions({
         proxy: sources.proxy.client,
         guardian: sources.guardian.client,
@@ -210,7 +251,7 @@ describe('provider proxy authority heartbeats', () => {
     const proxy = scriptedClient(['proxy-challenge-1']);
     const guardian = scriptedClient(['guardian-challenge-1']);
     const reaper = scriptedClient(['reaper-challenge-1']);
-    const heartbeats = startProviderProxyAuthorityHeartbeats(
+    const heartbeats = startAll(
       sessions({ proxy: proxy.client, guardian: guardian.client, reaper: reaper.client }),
       runtimeWithTime(time),
       recordingFaultLatch().latch,

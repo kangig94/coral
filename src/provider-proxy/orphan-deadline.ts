@@ -17,7 +17,7 @@ export const MIN_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = 19_001;
 export const MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = 300_000;
 
 export const PROXY_CONTROL_HEARTBEAT_MS = 1_000;
-export const PROXY_CONTROL_LEASE_MS = 5_000;
+export const PROXY_CONTROL_LEASE_MS = 13_000;
 export const PROXY_ENDPOINT_CLEANUP_BUDGET_MS = 1_000;
 export const PROXY_ENFORCER_MAX_WAKE_LATENCY_MS = 1_000;
 export const PROXY_PROCESS_CONTROL_BUDGET_MS = 2 * PROXY_PROCESS_CONTROL_CALL_MAX_MS;
@@ -42,6 +42,16 @@ export const MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = Math.max(
 
 const EXPECTED_PROXY_TEARDOWN_RESERVE_MS = 14_000;
 const providerProxyDeadlineConfigurationBrand: unique symbol = Symbol('coral.provider-proxy-deadline-configuration');
+
+export function recurringHeartbeatFitsLease(
+  timing: Readonly<{
+    heartbeatMs: number;
+    rpcTimeoutMs: number;
+    leaseMs: number;
+  }>,
+): boolean {
+  return 2 * (timing.heartbeatMs + timing.rpcTimeoutMs) < timing.leaseMs;
+}
 
 export type ProviderProxyDeadlineConfiguration = Readonly<{
   orphanTimeoutMs: number;
@@ -85,14 +95,17 @@ export const providerProxyDeadlineConfigurationSchema = providerProxyDeadlineInp
     }
     if (
       !(
-        PROXY_CONTROL_HEARTBEAT_MS < PROXY_CONTROL_LEASE_MS &&
-        PROXY_CONTROL_LEASE_MS < orphanTimeoutMs - PROXY_TEARDOWN_RESERVE_MS
+        recurringHeartbeatFitsLease({
+          heartbeatMs: PROXY_CONTROL_HEARTBEAT_MS,
+          rpcTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
+          leaseMs: PROXY_CONTROL_LEASE_MS,
+        }) && PROXY_CONTROL_LEASE_MS < orphanTimeoutMs - PROXY_TEARDOWN_RESERVE_MS
       )
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['orphanTimeoutMs'],
-        message: 'must satisfy heartbeat < lease < orphan timeout - teardown reserve',
+        message: 'must satisfy two heartbeat RPC generations < lease < orphan timeout - teardown reserve',
       });
     }
     if (

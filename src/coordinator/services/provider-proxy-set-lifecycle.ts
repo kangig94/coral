@@ -22,6 +22,7 @@ export const MAX_COORDINATOR_PROXY_SET_SLOTS = 4;
 const CONTAINMENT_ATTEMPT_MS = 30_000;
 
 type CapacityClass = 'retained' | 'excess';
+type EstablishmentIntent = 'serve' | 'contain-unclaimed-discovery';
 
 type EstablishedSlot = {
   kind: 'available' | 'draining' | 'containing' | 'containment-wait';
@@ -76,6 +77,16 @@ type ProviderProxySetSlot =
       retirementTimer: TimerHandle | null;
     };
 
+type AbsenceDeliveryPendingSlot = Extract<ProviderProxySetSlot, { kind: 'absence-delivery-pending' }>;
+
+type ContainmentAbsenceCommit =
+  | Readonly<{ kind: 'unchanged' }>
+  | Readonly<{
+      kind: 'committed';
+      pending: AbsenceDeliveryPendingSlot;
+      authorityToClose: DurableProviderProxyOperationAuthority | null;
+    }>;
+
 export type ProviderProxySetLifecycleSnapshot = Readonly<{
   startupDiscoveryCompleted: boolean;
   represented: number;
@@ -93,6 +104,7 @@ export type ProviderProxySetLifecycleProgressViolation = Readonly<{
 
 export type ProviderProxySetLifecycleDeps = Readonly<{
   claims: ProviderProxySetClaimMirror;
+  controlEstablished(authority: DurableProviderProxyOperationAuthority): void;
   disappearanceConsumer: ProviderContainmentDisappearanceConsumer;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   proveContainmentAbsent(identity: ProviderProxySetIdentity, signal: AbortSignal): Promise<string | null>;
@@ -224,11 +236,11 @@ export class ProviderProxySetLifecycle {
     const acquiring = this.#slots.get(slotId);
     if (acquiring?.kind !== 'acquiring') throw new Error('provider_proxy_set_acquisition_slot_missing');
     this.#slots.delete(slotId);
-    this.#establish(authority, acquiring.routeKey, capsulePath);
+    this.#establish(authority, acquiring.routeKey, capsulePath, 'serve');
   }
 
   registerInheritedSet(authority: DurableProviderProxyOperationAuthority, capsulePath: string | null = null): void {
-    this.#establish(authority, null, capsulePath);
+    this.#establish(authority, null, capsulePath, 'serve');
   }
 
   routeFor(routeKey: string): DurableProviderProxyOperationAuthority | null {
@@ -300,6 +312,30 @@ export class ProviderProxySetLifecycle {
   }
 
   containmentAbsent(identity: ProviderProxySetIdentity, disappearanceReceipt: string): void {
+    const commit = this.#commitContainmentAbsence(identity, disappearanceReceipt);
+    if (commit.kind === 'unchanged') return;
+    const { pending, authorityToClose } = commit;
+
+    if (authorityToClose !== null) {
+      void authorityToClose
+        .initiateControlClose()
+        .catch((error: unknown) =>
+          this.#deps.onError?.(
+            `Provider proxy control close after containment failed: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+    }
+    if (pending.pendingOperations.size === 0) {
+      void this.#retireAndRelease(pending);
+      return;
+    }
+    for (const operation of pending.pendingOperations.values()) void this.#deliverDisappearance(pending, operation);
+  }
+
+  #commitContainmentAbsence(
+    identity: ProviderProxySetIdentity,
+    disappearanceReceipt: string,
+  ): ContainmentAbsenceCommit {
     const key = providerProxySetKey(identity);
     if (typeof disappearanceReceipt !== 'string' || disappearanceReceipt.length === 0) {
       throw new Error('provider_proxy_containment_absence_receipt_invalid');
@@ -317,7 +353,7 @@ export class ProviderProxySetLifecycle {
       if (slot.disappearanceReceipt !== disappearanceReceipt) {
         throw new Error('provider_proxy_containment_absence_conflict');
       }
-      return;
+      return { kind: 'unchanged' };
     }
     if (slot.kind === 'available' || slot.kind === 'draining') {
       throw new Error('provider_proxy_containment_absence_before_authority_fault');
@@ -326,7 +362,7 @@ export class ProviderProxySetLifecycle {
     const pendingOperations = new Map(
       this.#deps.claims.claimsFor(slot.identity).map((claim) => [operationKey(claim.operation), claim.operation]),
     );
-    const pending: Extract<ProviderProxySetSlot, { kind: 'absence-delivery-pending' }> = {
+    const pending: AbsenceDeliveryPendingSlot = {
       kind: 'absence-delivery-pending',
       key: slot.key,
       identity: slot.identity,
@@ -342,22 +378,9 @@ export class ProviderProxySetLifecycle {
       slot.attemptToken += 1;
       if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
     }
+    const authorityToClose = slot.kind === 'recovering' ? null : slot.authority;
     this.#slots.set(key, pending);
-
-    if (slot.kind !== 'recovering') {
-      void slot.authority
-        .initiateControlClose()
-        .catch((error: unknown) =>
-          this.#deps.onError?.(
-            `Provider proxy control close after containment failed: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
-    }
-    if (pendingOperations.size === 0) {
-      void this.#retireAndRelease(pending);
-      return;
-    }
-    for (const operation of pendingOperations.values()) void this.#deliverDisappearance(pending, operation);
+    return { kind: 'committed', pending, authorityToClose };
   }
 
   snapshot(): ProviderProxySetLifecycleSnapshot {
@@ -445,8 +468,7 @@ export class ProviderProxySetLifecycle {
       }
       this.#slots.delete(slot.slotId);
       this.#capsuleAddresses.delete(providerProxySetAddressKey(slot.address));
-      this.#establish(authority, null, slot.capsulePath);
-      this.faultAuthority(authority.setIdentity);
+      this.#establish(authority, null, slot.capsulePath, 'contain-unclaimed-discovery');
     } catch (error: unknown) {
       if (this.#slots.get(slot.slotId) !== slot) return;
       slot.completedAttempts += 1;
@@ -468,6 +490,7 @@ export class ProviderProxySetLifecycle {
     authority: DurableProviderProxyOperationAuthority,
     routeKey: string | null,
     capsulePath: string | null,
+    intent: EstablishmentIntent,
   ): void {
     const identity = authority.setIdentity;
     const key = this.#identityIndex.add(identity);
@@ -500,8 +523,14 @@ export class ProviderProxySetLifecycle {
     this.#slots.set(key, slot);
     authority.onFault(() => this.faultAuthority(identity));
     this.#classifyCapacity();
+    if (intent === 'contain-unclaimed-discovery' && slot.kind === 'available') {
+      this.#beginContainment(slot, 'unclaimed_discovery');
+    }
     if (slot.kind === 'available' && routeKey !== null) {
       this.#routeIndex.set(routeKey, key);
+    }
+    if (this.authorityFor(identity) === authority) {
+      this.#deps.controlEstablished(authority);
     }
   }
 
@@ -530,7 +559,7 @@ export class ProviderProxySetLifecycle {
 
   #beginContainment(
     slot: EstablishedSlot,
-    _reason: 'provider_authority_lost' | 'graceful_idle' | 'excess_capacity',
+    _reason: 'provider_authority_lost' | 'graceful_idle' | 'excess_capacity' | 'unclaimed_discovery',
   ): void {
     this.#removeRoute(slot);
     slot.kind = 'containing';

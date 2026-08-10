@@ -20,6 +20,9 @@ import { readHandoffCapsuleFile, type HandoffCapsule } from '#src/provider-proxy
 import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { connectControlClient, ControlClientError } from '#src/provider-proxy/control-client.js';
+import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
+import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
+import { PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
 import { connectRoleControlWithRetry, runtimeControlTimer } from '#src/provider-proxy/role-spawn.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
@@ -35,6 +38,7 @@ import {
 } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
 import {
   isProviderProxyOperationAuthority,
+  notifyProviderProxyControlEstablished,
   subscribeProviderProxyControlEstablished,
   type ProviderProxyOperationAuthority,
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
@@ -290,6 +294,102 @@ function faultableClient(
       for (const listener of listeners) listener(error);
     },
   };
+}
+
+async function guardianLeaseClient(
+  time: VirtualTime,
+  openResponse: Record<string, unknown>,
+): Promise<
+  Readonly<{
+    client: ControlClient;
+    acceptedEchoes(): number;
+    controlIsLive(): boolean;
+    close(): Promise<void>;
+  }>
+> {
+  const socketPath = `/tmp/coral-inheritance-heartbeat-${randomUUID()}.sock`;
+  const scope = Symbol('inheritance-heartbeat');
+  const clock = createMonotonicClock(scope, { readMilliseconds: () => BigInt(time.now()) });
+  const lease = new ControlLeaseEvidence(clock, PROXY_CONTROL_LEASE_MS, clock.now(), () => null);
+  let challengeNumber = 0;
+  let acceptedEchoes = 0;
+  const mintChallenge = () => `inheritance-challenge-${challengeNumber++}`;
+  const challenges: ControlChallengeAuthority = {
+    issueFirstChallenge: () => {
+      const challenge = mintChallenge();
+      return lease.issueFirstChallenge(challenge, clock.now())
+        ? { accepted: true, challenge }
+        : { accepted: false, reason: 'already-issued' };
+    },
+    admitSuccessor: () => ({ accepted: false, reason: 'not-used' }),
+    reattachControl: () => ({ accepted: true }),
+    controlIsLive: () => lease.isControlLive(clock.now()),
+    echoChallenge: (challenge) => {
+      const nextChallenge = mintChallenge();
+      const result = lease.echoChallenge(clock.now(), challenge, nextChallenge);
+      if (!result.accepted) return result;
+      acceptedEchoes += 1;
+      return { accepted: true, nextChallenge };
+    },
+  };
+  const endpoint = createControlEndpoint({
+    socketPath,
+    role: {
+      heartbeatMethod: 'guardian.heartbeat.v1',
+      methods: new Map([
+        [
+          'role.open.v1',
+          { authority: 'establishes-control' as const, handle: async () => ({ holder: 'coordinator', fields: {} }) },
+        ],
+      ]),
+    },
+    challenges,
+    observer: { onControlLost: () => undefined },
+    timer: time,
+    requestTimeoutMs: 5_000,
+  });
+  await endpoint.listen();
+  const realClient = await connectControlClient(socketPath, time, 5_000);
+  const opened = (await realClient.call('role.open.v1', {}, 5_000)) as {
+    controlEpoch: number;
+    heartbeatChallenge: string;
+  };
+  const client: ControlClient = {
+    call: (method, params, timeoutMs) =>
+      method === 'guardian.handoff-redeem.v1'
+        ? Promise.resolve({
+            ...openResponse,
+            controlEpoch: opened.controlEpoch,
+            heartbeatChallenge: opened.heartbeatChallenge,
+          })
+        : realClient.call(method, params, timeoutMs),
+    faulted: realClient.faulted,
+    onFault: (listener) => realClient.onFault(listener),
+    close: () => realClient.close(),
+  };
+  const watchdog = time.setInterval(() => {
+    if (!lease.isControlLive(clock.now())) void endpoint.close();
+  }, 1_000);
+  return {
+    client,
+    acceptedEchoes: () => acceptedEchoes,
+    controlIsLive: () => lease.isControlLive(clock.now()),
+    close: async () => {
+      time.clearInterval(watchdog);
+      realClient.close();
+      await endpoint.close();
+    },
+  };
+}
+
+async function advanceInheritanceEndpointClock(time: VirtualTime, durationMs: number): Promise<void> {
+  let remaining = durationMs;
+  while (remaining > 0) {
+    const step = Math.min(1_000, remaining);
+    time.tick(step);
+    remaining -= step;
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  }
 }
 
 function stubConnect(client: ControlClient): void {
@@ -964,14 +1064,30 @@ describe('createProviderProxySetInheritance', () => {
     expect(registerInheritedSet).not.toHaveBeenCalled();
   });
 
-  it('registers and announces a redeemed set so pending journal phases resume', async () => {
+  it('announces once when a claim-backed discovered capsule is later registered from its durable row', async () => {
     const loc = locator();
-    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const capsule = capsuleFor(loc);
+    mockedReadCapsule.mockReturnValueOnce(capsule);
     const client = fakeClient(redemptionResponses(loc, matchingOperationSets([])), []);
     stubConnect(client);
-    const registerInheritedSet = vi.fn<(set: ProviderProxyOperationAuthority) => void>();
     const established = vi.fn();
     const unsubscribe = subscribeProviderProxyControlEstablished(established);
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([providerOperationRecord('executing', { operation: loc.operation, locator: loc.locator })]);
+    const lifecycle = new ProviderProxySetLifecycle({
+      claims,
+      controlEstablished: notifyProviderProxyControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: runtime.time,
+      proveContainmentAbsent: async () => null,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.installDiscoveredCapsules([{ path: '/capsules/claim-backed.handoff.json', capsule }]);
+    expect(established).not.toHaveBeenCalled();
+    const registerInheritedSet = vi.fn((set: ProviderProxyOperationAuthority) => {
+      if (!isProviderProxyOperationAuthority(set)) throw new Error('expected durable authority');
+      lifecycle.registerInheritedSet(set);
+    });
 
     const inheritance = createProviderProxySetInheritance({
       runtime,
@@ -992,7 +1108,68 @@ describe('createProviderProxySetInheritance', () => {
     }
   });
 
-  it('observes a guardian fault inline before an inherited route can be published', async () => {
+  it('keeps guardian control live while reaper and proxy each consume 8500ms', async () => {
+    const loc = locator();
+    const capsule = capsuleFor(loc);
+    mockedReadCapsule.mockReturnValueOnce(capsule);
+    const responses = redemptionResponses(loc, matchingOperationSets([]));
+    const guardianOpen = responses['guardian.handoff-redeem.v1'];
+    if (typeof guardianOpen !== 'object' || guardianOpen === null) throw new Error('expected guardian response');
+    const time = new VirtualTime();
+    const guardian = await guardianLeaseClient(time, guardianOpen as Record<string, unknown>);
+    const otherClient = fakeClient(responses, []);
+    mockedConnect.mockImplementation(async (socketPath: string) => {
+      if (socketPath === loc.locator.guardian.controlEndpoint) return guardian.client;
+      if (socketPath === loc.locator.reaper.controlEndpoint) {
+        await advanceInheritanceEndpointClock(time, 8_500);
+        return otherClient;
+      }
+      if (socketPath === loc.locator.proxy.controlEndpoint) {
+        await advanceInheritanceEndpointClock(time, 8_500);
+        return otherClient;
+      }
+      throw new Error(`unexpected connection to ${socketPath}`);
+    });
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const established = vi.fn();
+    const lifecycle = new ProviderProxySetLifecycle({
+      claims,
+      controlEstablished: established,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time,
+      proveContainmentAbsent: async () => null,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const inheritance = createProviderProxySetInheritance({
+      runtime: { ...runtime, time },
+      identity,
+      operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      registerInheritedSet: (set) => {
+        if (!isProviderProxyOperationAuthority(set)) throw new Error('expected durable authority');
+        lifecycle.registerInheritedSet(set);
+      },
+    });
+
+    const outcome = await inheritance.inheritProviderProxySet(loc, unusedDb, neverAborts);
+    if (outcome.kind !== 'inherited') throw new Error('expected inherited set');
+    const observation = {
+      recurringEchoes: guardian.acceptedEchoes() - 1,
+      controlIsLive: guardian.controlIsLive(),
+      announcements: established.mock.calls.length,
+    };
+    outcome.set.stopHeartbeats();
+    await guardian.close();
+
+    expect({
+      acceptedRecurringEchoes: observation.recurringEchoes > 1,
+      controlIsLive: observation.controlIsLive,
+      announcements: observation.announcements,
+    }).toEqual({ acceptedRecurringEchoes: true, controlIsLive: true, announcements: 1 });
+  });
+
+  it('observes a stored reaper fault inline before an inherited authority can be published', async () => {
     const loc = locator();
     mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
     const calls: { method: string; params: unknown }[] = [];
@@ -1006,8 +1183,8 @@ describe('createProviderProxySetInheritance', () => {
     mockedConnect.mockImplementation(async (socketPath: string) => {
       if (socketPath === loc.locator.guardian.controlEndpoint) return guardian.client;
       if (socketPath === loc.locator.reaper.controlEndpoint) {
-        guardian.fault(new ControlClientError('control_client_closed', 'The guardian control channel closed.'));
-        await guardian.client.faulted;
+        reaper.fault(new ControlClientError('control_client_closed', 'The reaper control channel closed.'));
+        await reaper.client.faulted;
         return reaper.client;
       }
       if (socketPath === loc.locator.proxy.controlEndpoint) return proxy.client;
@@ -1015,8 +1192,10 @@ describe('createProviderProxySetInheritance', () => {
     });
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
+    const established = vi.fn();
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: established,
       disappearanceConsumer: {
         containmentDisappeared: async (notice) => ({
           kind: 'accepted',
@@ -1048,7 +1227,10 @@ describe('createProviderProxySetInheritance', () => {
     const outcome = await inheritance.inheritProviderProxySet(loc, unusedDb, neverAborts);
 
     expect(outcome.kind).toBe('inherited');
-    expect(authorityInsideRegistration).toBeNull();
+    expect({
+      authorityAcceptedDuringRegistration: authorityInsideRegistration !== null,
+      announcements: established.mock.calls.length,
+    }).toEqual({ authorityAcceptedDuringRegistration: false, announcements: 0 });
     if (outcome.kind === 'inherited') {
       expect(lifecycle.authorityFor(outcome.set.setIdentity)).toBeNull();
       outcome.set.stopHeartbeats();
@@ -1079,6 +1261,7 @@ describe('createProviderProxySetInheritance', () => {
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: () => undefined,
       disappearanceConsumer: {
         containmentDisappeared: async (notice) => ({
           kind: 'accepted',

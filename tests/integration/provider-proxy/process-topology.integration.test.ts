@@ -656,6 +656,7 @@ describe('provider-proxy process topology: acquisition', () => {
     claims.initialize([]);
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
+      controlEstablished: () => undefined,
       disappearanceConsumer: {
         containmentDisappeared: async (notice) => ({
           kind: 'accepted',

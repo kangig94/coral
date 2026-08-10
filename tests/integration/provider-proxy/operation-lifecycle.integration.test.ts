@@ -534,11 +534,15 @@ async function launchThroughRoute(
       close: () => undefined,
     };
     const clients = { proxy, guardian, reaper: guardian };
+    const faults = createProviderProxyAuthorityFaultLatch();
+    faults.observeControlClient('proxy', clients.proxy);
+    faults.observeControlClient('guardian', clients.guardian);
+    faults.observeControlClient('reaper', clients.reaper);
     return createProviderProxyOperationAuthority({
       base,
       setIdentity,
       clients,
-      faults: createProviderProxyAuthorityFaultLatch(clients),
+      faults,
       mutationRpcTimeoutMs: 5_000,
     });
   };

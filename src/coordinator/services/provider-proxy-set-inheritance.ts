@@ -38,13 +38,9 @@ import {
 } from '../live/provider-proxy/acquisition-steps.js';
 import { establishRoleControl } from '../live/provider-proxy/role-control.js';
 import { createProviderProxySetAuthority } from '../live/provider-proxy/set-authority.js';
-import {
-  startProviderProxyAuthorityHeartbeats,
-  type ProviderProxyRoleHeartbeats,
-} from '../live/provider-proxy/heartbeat.js';
+import { createProviderProxyAuthorityHeartbeatAssembly } from '../live/provider-proxy/heartbeat.js';
 import {
   createProviderProxyOperationAuthority,
-  notifyProviderProxyControlEstablished,
   type DurableProviderProxyOperationAuthority,
   type ProviderProxyOperationAuthority,
 } from '../live/provider-proxy/operation-route.js';
@@ -266,9 +262,8 @@ async function redeemCapsule(
     sleep: (ms: number) => runtime.time.sleep(ms),
   };
   const opened: ControlClient[] = [];
-  // Declared outside the `try` so the `catch` below can stop whatever this attempt already started, however
-  // far it got — an empty array is the correct, safe value for a failure before any heartbeat loop exists.
-  let heartbeats: ProviderProxyRoleHeartbeats | null = null;
+  const faults = createProviderProxyAuthorityFaultLatch();
+  const heartbeatAssembly = createProviderProxyAuthorityHeartbeatAssembly(runtime, faults);
 
   try {
     // Plan order: guardian first — it is the sole linearization point for the plaintext secret and the party
@@ -283,6 +278,12 @@ async function redeemCapsule(
       identity: (opened) => opened.guardian,
       heartbeatMethod: 'guardian.heartbeat.v1',
       expectedIdentity: {},
+    });
+    heartbeatAssembly.startRole('guardian', {
+      client: guardianSession.client,
+      controlEpoch: guardianSession.opened.controlEpoch,
+      nextHeartbeatChallenge: guardianSession.nextHeartbeatChallenge,
+      instanceId: guardianSession.opened.guardian.guardianInstanceId,
     });
     signal.throwIfAborted();
 
@@ -302,6 +303,12 @@ async function redeemCapsule(
       identity: (opened) => opened.reaper,
       heartbeatMethod: 'reaper.heartbeat.v1',
       expectedIdentity: {},
+    });
+    heartbeatAssembly.startRole('reaper', {
+      client: reaperSession.client,
+      controlEpoch: reaperSession.opened.controlEpoch,
+      nextHeartbeatChallenge: reaperSession.nextHeartbeatChallenge,
+      instanceId: reaperSession.opened.reaper.reaperInstanceId,
     });
     signal.throwIfAborted();
 
@@ -327,6 +334,12 @@ async function redeemCapsule(
       heartbeatMethod: 'control.heartbeat.v1',
       expectedIdentity: {},
       ...(deps.onProviderEvent === undefined ? {} : { onProviderEvent: deps.onProviderEvent() }),
+    });
+    heartbeatAssembly.startRole('proxy', {
+      client: proxySession.client,
+      controlEpoch: proxySession.opened.controlEpoch,
+      nextHeartbeatChallenge: proxySession.nextHeartbeatChallenge,
+      instanceId: proxySession.opened.proxy.proxyInstanceId,
     });
 
     if (
@@ -385,31 +398,7 @@ async function redeemCapsule(
       guardian: guardianSession.client,
       reaper: reaperSession.client,
     };
-    const faults = createProviderProxyAuthorityFaultLatch(clients);
-    heartbeats = startProviderProxyAuthorityHeartbeats(
-      {
-        proxy: {
-          client: clients.proxy,
-          controlEpoch: proxySession.opened.controlEpoch,
-          nextHeartbeatChallenge: proxySession.nextHeartbeatChallenge,
-          instanceId: proxyIdentity.proxyInstanceId,
-        },
-        guardian: {
-          client: clients.guardian,
-          controlEpoch: guardianSession.opened.controlEpoch,
-          nextHeartbeatChallenge: guardianSession.nextHeartbeatChallenge,
-          instanceId: guardianIdentity.guardianInstanceId,
-        },
-        reaper: {
-          client: clients.reaper,
-          controlEpoch: reaperSession.opened.controlEpoch,
-          nextHeartbeatChallenge: reaperSession.nextHeartbeatChallenge,
-          instanceId: reaperIdentity.reaperInstanceId,
-        },
-      },
-      runtime,
-      faults,
-    );
+    const heartbeats = heartbeatAssembly.complete();
     signal.throwIfAborted();
 
     // Reusing the verified capsule keeps every later epoch bound to the same exact set and protected secret.
@@ -445,9 +434,7 @@ async function redeemCapsule(
     // loop left running against a closed client would call `client.call` into an `onError` that logs and
     // continues, forever, on every future heartbeat interval — this attempt failed, so nothing is left to
     // keep alive.
-    heartbeats?.proxy.stop();
-    heartbeats?.guardian.stop();
-    heartbeats?.reaper.stop();
+    heartbeatAssembly.stop();
     for (const client of opened) client.close();
     throw error;
   }
@@ -609,9 +596,6 @@ export function createProviderProxySetInheritance(
             // startup reconciliation.
             const bounded = AbortSignal.any([signal, AbortSignal.timeout(INHERITANCE_REDEMPTION_DEADLINE_MS)]);
             outcome = await attemptProviderProxySetInheritance(locator, db, inheritanceDeps, bounded);
-          }
-          if (outcome.kind === 'inherited') {
-            notifyProviderProxyControlEstablished(outcome.set);
           }
           return outcome;
         } finally {

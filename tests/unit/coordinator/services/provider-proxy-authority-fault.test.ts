@@ -8,14 +8,20 @@ import {
 
 function faultSource() {
   const listeners = new Set<(error: ControlClientError) => void>();
+  let faulted: ControlClientError | null = null;
   return {
     client: {
       onFault(listener: (error: ControlClientError) => void) {
+        if (faulted !== null) {
+          listener(faulted);
+          return () => undefined;
+        }
         listeners.add(listener);
         return () => listeners.delete(listener);
       },
     },
     fault(error: ControlClientError) {
+      faulted = error;
       for (const listener of listeners) listener(error);
     },
   };
@@ -28,11 +34,10 @@ describe('provider proxy authority fault latch', () => {
       guardian: faultSource(),
       reaper: faultSource(),
     };
-    const latch = createProviderProxyAuthorityFaultLatch({
-      proxy: sources.proxy.client,
-      guardian: sources.guardian.client,
-      reaper: sources.reaper.client,
-    });
+    const latch = createProviderProxyAuthorityFaultLatch();
+    latch.observeControlClient('proxy', sources.proxy.client);
+    latch.observeControlClient('guardian', sources.guardian.client);
+    latch.observeControlClient('reaper', sources.reaper.client);
     let observed: { role: ProviderProxyRole; code: string } | null = null;
     latch.onFault((fault) => {
       if (fault.kind === 'control-channel-fault') {
@@ -51,11 +56,10 @@ describe('provider proxy authority fault latch', () => {
       guardian: faultSource(),
       reaper: faultSource(),
     };
-    const latch = createProviderProxyAuthorityFaultLatch({
-      proxy: sources.proxy.client,
-      guardian: sources.guardian.client,
-      reaper: sources.reaper.client,
-    });
+    const latch = createProviderProxyAuthorityFaultLatch();
+    latch.observeControlClient('proxy', sources.proxy.client);
+    latch.observeControlClient('guardian', sources.guardian.client);
+    latch.observeControlClient('reaper', sources.reaper.client);
     const first = new ControlClientError('control_client_closed', 'guardian channel closed');
     sources.guardian.fault(first);
     sources.proxy.fault(new ControlClientError('control_client_closed', 'proxy channel closed'));
@@ -66,5 +70,20 @@ describe('provider proxy authority fault latch', () => {
     });
 
     expect(observed).toEqual({ kind: 'control-channel-fault', role: 'guardian', error: first });
+  });
+
+  it('observes a client fault that was stored before enrollment inline', () => {
+    const source = faultSource();
+    const error = new ControlClientError('control_client_closed', 'reaper channel already closed');
+    source.fault(error);
+    const latch = createProviderProxyAuthorityFaultLatch();
+    let observed: unknown = null;
+    latch.onFault((fault) => {
+      observed = fault;
+    });
+
+    latch.observeControlClient('reaper', source.client);
+
+    expect(observed).toEqual({ kind: 'control-channel-fault', role: 'reaper', error });
   });
 });
