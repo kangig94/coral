@@ -20,6 +20,6 @@
   ],
   "category": "productivity",
   "skills": "./skills/",
-  "agents": [],
+  "agents": "./agents/",
   "hooks": "./hooks/copilot.json"
 }
