@@ -1,7 +1,18 @@
-import type { HostRef, ProviderEventBody, ProviderStopCause } from '../providers/contract.js';
+import type {
+  HostRef,
+  ProviderContinuityEventBody,
+  ProviderEventBody,
+  ProviderStopCause,
+} from '../providers/contract.js';
 import { isInterruptionStopCause } from '../providers/contract.js';
+import { commitContinuityEvent, rejectContinuityEvent } from '../providers/internal/continuity-commit.js';
 import { providerProxyEmergencyEvent, type ProviderProxyReplayFailureReason } from '../providers/proxy-failure.js';
-import type { ControlEndpointTimer } from './control-endpoint.js';
+import {
+  ControlEndpointError,
+  type ControlEndpointTimer,
+  type ControlEpoch,
+  type ControlTenancyPush,
+} from './control-endpoint.js';
 import {
   LedgerError,
   MAX_PROVIDER_REPLAY_BYTES,
@@ -15,6 +26,7 @@ import {
 import { ReplayAdmissionError } from './replay-budget.js';
 import {
   PROVIDER_EVENT_METHOD,
+  PROXY_EVENT_COMMIT_TIMEOUT_MS,
   ProxyControlProtocolError,
   encodedProxyControlFrameByteLength,
   encodeProxyControlFrame,
@@ -44,7 +56,51 @@ import {
 
 export const OPERATION_RELEASE_RETRY_MS = 1_000;
 
-export type ProviderEventEmissionResult = 'recorded' | 'proxy-emergency-terminal';
+export type ContinuityCommitDeliveryErrorCode =
+  | 'continuity_commit_replaced_by_proxy_terminal'
+  | 'continuity_commit_operation_released'
+  | 'continuity_commit_operation_cancelled'
+  | 'continuity_commit_attempt_superseded'
+  | 'continuity_commit_proxy_shutdown';
+
+export class ContinuityCommitDeliveryError extends Error {
+  readonly code: ContinuityCommitDeliveryErrorCode;
+
+  constructor(code: ContinuityCommitDeliveryErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ContinuityCommitDeliveryError';
+    this.code = code;
+    Object.setPrototypeOf(this, ContinuityCommitDeliveryError.prototype);
+  }
+}
+
+export type ContinuityCommitSettlement = Readonly<{
+  providerSeq: number;
+  committed: Promise<void>;
+  reject(error: ContinuityCommitDeliveryError): void;
+}>;
+
+export type ProviderEventEmissionResult =
+  | Readonly<{ kind: 'recorded'; providerSeq: number }>
+  | Readonly<{
+      kind: 'continuity-recorded';
+      providerSeq: number;
+      settlement: ContinuityCommitSettlement;
+    }>
+  | Readonly<{ kind: 'proxy-emergency-terminal' }>;
+
+export type ProviderEventControlFaultReason =
+  | 'provider_event_ack_timeout'
+  | 'provider_event_response_refused'
+  | 'provider_event_response_invalid'
+  | 'provider_event_ack_invalid';
+
+export type ProviderEventControlFault = Readonly<{
+  reason: ProviderEventControlFaultReason;
+  operation: OperationIdentity;
+  providerSeq: number;
+  expectedControlEpoch: ControlEpoch;
+}>;
 
 export type SemanticOperationStartResult =
   | Readonly<{ kind: 'started'; hostRef: HostRef }>
@@ -90,6 +146,31 @@ type ReleaseIntent = Readonly<{
   finalProviderSeq?: number;
 }>;
 
+type OperationOwnershipEpoch = Readonly<{
+  prepareAttemptNumber: number;
+  prepareAttemptKey: string;
+  ordinal: number;
+}>;
+
+type PendingContinuityCommit = {
+  readonly ownership: OperationOwnershipEpoch;
+  readonly providerSeq: number;
+  readonly event: ProviderContinuityEventBody;
+  state: 'pending' | 'committed' | 'rejected';
+  readonly settlement: ContinuityCommitSettlement;
+  resolveCommitted(): void;
+  rejectCommitted(error: ContinuityCommitDeliveryError): void;
+};
+
+type ProviderEventAmbiguityDeadline = {
+  readonly controlEpoch: ControlEpoch;
+  readonly providerSeq: number;
+  readonly requestedAtMs: number;
+  readonly expiresAtMs: number;
+  timer: { unref?: () => void } | null;
+  fault: ProviderEventControlFaultReason | null;
+};
+
 type SupervisedOperation = {
   readonly key: ProviderOperationKey;
   readonly operation: OperationIdentity;
@@ -107,7 +188,12 @@ type SupervisedOperation = {
   stageAbort: Promise<void> | null;
   deadlineTimer: { unref?: () => void } | null;
   releaseRetryTimer: { unref?: () => void } | null;
+  ownershipOrdinal: number;
+  continuityCommits: Map<number, PendingContinuityCommit>;
+  providerEventAmbiguity: ProviderEventAmbiguityDeadline | null;
+  pumpRequested: boolean;
   pumping: boolean;
+  closed: boolean;
   pendingCompletion: 'terminal-awaiting-settlement' | 'suspended-awaiting-durable-decision' | null;
 };
 
@@ -123,7 +209,8 @@ type OperationSupervisorOptions = Readonly<{
     key: ProviderOperationKey,
     reserved: Readonly<{ reservation: Reservation; prepared: ProxyPreparedAppServerOperation }>,
   ): OperationStageHandle;
-  pushProviderEvent(frame: string): Promise<unknown>;
+  pushProviderEvent(frame: string): ControlTenancyPush;
+  faultProviderEventControl(fault: ProviderEventControlFault): void;
 }>;
 
 const LEDGER_WIRE_CODES = new Set(['operation_not_found', 'reservation_expired']);
@@ -674,6 +761,12 @@ export class OperationSupervisor {
       }
       try {
         this.#ledger.acknowledge(record.key, committedThroughProviderSeq);
+        const ownership = this.#ownership(record);
+        const ambiguity = record.providerEventAmbiguity;
+        if (ambiguity !== null && ambiguity.fault === null && ambiguity.providerSeq <= committedThroughProviderSeq) {
+          this.#clearProviderEventAmbiguity(record, ambiguity);
+        }
+        this.#commitCoveredContinuity(record, ownership, committedThroughProviderSeq);
         if (entry.state === 'started-awaiting-publication') {
           if (entry.activationFingerprint === null) {
             throw new ProxyControlProtocolError('invalid_state', 'Started operation lacks activation evidence.');
@@ -687,7 +780,7 @@ export class OperationSupervisor {
       } catch (error: unknown) {
         asProtocolError(error);
       }
-      void this.#pump(record);
+      this.#requestPump(record);
       return proxyOperationAttachResultSchema.parse({
         state: 'attached',
         replayFromProviderSeq: committedThroughProviderSeq + 1,
@@ -695,10 +788,24 @@ export class OperationSupervisor {
     });
   }
 
-  reattachControl(): void {
+  controlActivated(controlEpoch: ControlEpoch): void {
     for (const key of this.#ledger.keys()) {
       const record = this.#operations.get(operationToken(key));
-      if (record !== undefined) void this.#pump(record);
+      if (record === undefined) continue;
+      const deadline = record.providerEventAmbiguity;
+      if (deadline?.controlEpoch === controlEpoch && deadline.fault !== null) {
+        this.#options.faultProviderEventControl({
+          reason: deadline.fault,
+          operation: record.operation,
+          providerSeq: deadline.providerSeq,
+          expectedControlEpoch: controlEpoch,
+        });
+        continue;
+      }
+      if (deadline !== null && deadline.controlEpoch !== controlEpoch) {
+        this.#clearProviderEventAmbiguity(record, deadline);
+      }
+      this.#requestPump(record);
     }
   }
 
@@ -722,12 +829,22 @@ export class OperationSupervisor {
       params: request,
     } as const;
     if (encodedProxyControlFrameByteLength(message) > MAX_PROVIDER_REPLAY_BYTES) {
-      return this.#recordProxyEmergencyCompletion(
+      const emission = this.#recordProxyEmergencyCompletion(
         record,
         event.kind === 'terminal' || event.kind === 'suspended'
           ? 'provider_completion_too_large'
           : 'provider_replay_operation_bytes_exhausted',
       );
+      if (event.kind === 'continuity') {
+        rejectContinuityEvent(
+          event,
+          new ContinuityCommitDeliveryError(
+            'continuity_commit_replaced_by_proxy_terminal',
+            'The continuity checkpoint was replaced by a proxy emergency terminal.',
+          ),
+        );
+      }
+      return emission;
     }
 
     const frame = encodeProxyControlFrame(message);
@@ -739,19 +856,48 @@ export class OperationSupervisor {
       );
     } catch (error: unknown) {
       if (!(error instanceof ReplayAdmissionError)) throw error;
-      return this.#recordProxyEmergencyCompletion(record, this.#replayFailureReason(event, error));
+      const emission = this.#recordProxyEmergencyCompletion(record, this.#replayFailureReason(event, error));
+      if (event.kind === 'continuity') {
+        rejectContinuityEvent(
+          event,
+          new ContinuityCommitDeliveryError(
+            'continuity_commit_replaced_by_proxy_terminal',
+            'The continuity checkpoint was replaced by a proxy emergency terminal.',
+            { cause: error },
+          ),
+        );
+      }
+      return emission;
     }
     this.#nextProviderEventFrameId += 1;
     this.#recordCompletion(record, event);
-    void this.#pump(record);
-    return 'recorded';
+    if (event.kind === 'continuity') {
+      const pending = this.#createPendingContinuityCommit(record, providerSeq, event);
+      record.continuityCommits.set(providerSeq, pending);
+      this.#requestPump(record);
+      return { kind: 'continuity-recorded', providerSeq, settlement: pending.settlement };
+    }
+    this.#requestPump(record);
+    return { kind: 'recorded', providerSeq };
   }
 
   close(): void {
     for (const record of this.#operations.values()) {
+      if (record.closed) continue;
+      record.closed = true;
+      record.ownershipOrdinal += 1;
       this.#clearDeadline(record);
+      const ambiguity = record.providerEventAmbiguity;
+      if (ambiguity !== null) this.#clearProviderEventAmbiguity(record, ambiguity);
       if (record.releaseRetryTimer !== null) this.#options.timer.clearTimeout(record.releaseRetryTimer);
       record.releaseRetryTimer = null;
+      this.#rejectAllContinuityCommits(
+        record,
+        new ContinuityCommitDeliveryError(
+          'continuity_commit_proxy_shutdown',
+          'The provider proxy shut down before the continuity checkpoint was committed.',
+        ),
+      );
     }
   }
 
@@ -788,6 +934,14 @@ export class OperationSupervisor {
     if (this.#ledger.get(current.key) !== null || current.releaseIntent !== null) {
       throw new ProxyControlProtocolError('invalid_state', 'The previous prepare attempt is not released.');
     }
+    current.ownershipOrdinal += 1;
+    this.#rejectAllContinuityCommits(
+      current,
+      new ContinuityCommitDeliveryError(
+        'continuity_commit_attempt_superseded',
+        'The prepare attempt owning the continuity checkpoint was superseded.',
+      ),
+    );
     current.prepareAttemptNumber = prepareAttemptNumber;
     current.prepareAttemptKey = prepareAttemptKey;
     current.fenced = false;
@@ -844,7 +998,12 @@ export class OperationSupervisor {
       stageAbort: null,
       deadlineTimer: null,
       releaseRetryTimer: null,
+      ownershipOrdinal: 1,
+      continuityCommits: new Map(),
+      providerEventAmbiguity: null,
+      pumpRequested: false,
       pumping: false,
+      closed: false,
       pendingCompletion: null,
     };
   }
@@ -897,13 +1056,26 @@ export class OperationSupervisor {
     if (record.releaseIntent !== null && !releaseIntentsMatch(record.releaseIntent, intent)) {
       throw new ProxyControlProtocolError('invalid_state', 'This operation is already releasing for another reason.');
     }
+    const beginsRelease = record.releaseIntent === null;
     record.releaseIntent ??= intent;
     record.fenced = true;
+    if (beginsRelease) record.ownershipOrdinal += 1;
     this.#clearDeadline(record);
     try {
       this.#ledger.beginRelease(record.key);
     } catch (error: unknown) {
       asProtocolError(error);
+    }
+    if (beginsRelease) {
+      this.#rejectAllContinuityCommits(
+        record,
+        new ContinuityCommitDeliveryError(
+          'continuity_commit_operation_released',
+          'The operation was released before the continuity checkpoint was committed.',
+        ),
+      );
+      const ambiguity = record.providerEventAmbiguity;
+      if (ambiguity !== null) this.#clearProviderEventAmbiguity(record, ambiguity);
     }
     this.#abortOwnedHandles(record);
   }
@@ -1081,8 +1253,15 @@ export class OperationSupervisor {
     this.#ledger.recordProxyEmergencyCompletion(record.key, event, this.#nextProviderEventFrameId);
     this.#nextProviderEventFrameId += 1;
     this.#recordCompletion(record, event);
-    void this.#pump(record);
-    return 'proxy-emergency-terminal';
+    this.#rejectAllContinuityCommits(
+      record,
+      new ContinuityCommitDeliveryError(
+        'continuity_commit_replaced_by_proxy_terminal',
+        'The continuity checkpoint was replaced by a proxy emergency terminal.',
+      ),
+    );
+    this.#requestPump(record);
+    return { kind: 'proxy-emergency-terminal' };
   }
 
   #recordCompletion(record: SupervisedOperation, event: ProviderEventBody): void {
@@ -1098,11 +1277,171 @@ export class OperationSupervisor {
     else if (state === 'starting' || state === 'started-awaiting-publication') record.pendingCompletion = next;
   }
 
+  #ownership(record: SupervisedOperation): OperationOwnershipEpoch {
+    return {
+      prepareAttemptNumber: record.prepareAttemptNumber,
+      prepareAttemptKey: record.prepareAttemptKey,
+      ordinal: record.ownershipOrdinal,
+    };
+  }
+
+  #owns(record: SupervisedOperation, ownership: OperationOwnershipEpoch): boolean {
+    return (
+      record.prepareAttemptNumber === ownership.prepareAttemptNumber &&
+      record.prepareAttemptKey === ownership.prepareAttemptKey &&
+      record.ownershipOrdinal === ownership.ordinal
+    );
+  }
+
+  #sameOwnership(left: OperationOwnershipEpoch, right: OperationOwnershipEpoch): boolean {
+    return (
+      left.prepareAttemptNumber === right.prepareAttemptNumber &&
+      left.prepareAttemptKey === right.prepareAttemptKey &&
+      left.ordinal === right.ordinal
+    );
+  }
+
+  #createPendingContinuityCommit(
+    record: SupervisedOperation,
+    providerSeq: number,
+    event: ProviderContinuityEventBody,
+  ): PendingContinuityCommit {
+    let resolveCommitted!: () => void;
+    let rejectCommitted!: (error: ContinuityCommitDeliveryError) => void;
+    const committed = new Promise<void>((resolve, reject) => {
+      resolveCommitted = resolve;
+      rejectCommitted = reject;
+    });
+    const rejectSettlement = (error: ContinuityCommitDeliveryError): void =>
+      this.#rejectContinuityCommit(record, pending, error);
+    const settlement: ContinuityCommitSettlement = Object.freeze({
+      providerSeq,
+      committed,
+      reject: rejectSettlement,
+    });
+    const pending: PendingContinuityCommit = {
+      ownership: this.#ownership(record),
+      providerSeq,
+      event,
+      state: 'pending',
+      settlement,
+      resolveCommitted,
+      rejectCommitted,
+    };
+    return pending;
+  }
+
+  #commitContinuityCommit(record: SupervisedOperation, pending: PendingContinuityCommit): void {
+    if (record.continuityCommits.get(pending.providerSeq) !== pending || pending.state !== 'pending') return;
+    pending.state = 'committed';
+    record.continuityCommits.delete(pending.providerSeq);
+    commitContinuityEvent(pending.event);
+    pending.resolveCommitted();
+  }
+
+  #rejectContinuityCommit(
+    record: SupervisedOperation,
+    pending: PendingContinuityCommit,
+    error: ContinuityCommitDeliveryError,
+  ): void {
+    if (record.continuityCommits.get(pending.providerSeq) !== pending || pending.state !== 'pending') return;
+    pending.state = 'rejected';
+    record.continuityCommits.delete(pending.providerSeq);
+    const deadline = record.providerEventAmbiguity;
+    if (deadline?.providerSeq === pending.providerSeq) this.#clearProviderEventAmbiguity(record, deadline);
+    rejectContinuityEvent(pending.event, error);
+    pending.rejectCommitted(error);
+  }
+
+  #rejectAllContinuityCommits(record: SupervisedOperation, error: ContinuityCommitDeliveryError): void {
+    for (const pending of [...record.continuityCommits.values()]) {
+      this.#rejectContinuityCommit(record, pending, error);
+    }
+  }
+
+  #commitCoveredContinuity(
+    record: SupervisedOperation,
+    ownership: OperationOwnershipEpoch,
+    committedThroughProviderSeq: number,
+  ): void {
+    for (const pending of [...record.continuityCommits.values()]) {
+      if (pending.providerSeq > committedThroughProviderSeq) continue;
+      if (!this.#sameOwnership(pending.ownership, ownership)) continue;
+      this.#commitContinuityCommit(record, pending);
+    }
+  }
+
+  #ensureProviderEventAmbiguity(
+    record: SupervisedOperation,
+    providerSeq: number,
+    controlEpoch: ControlEpoch,
+  ): ProviderEventAmbiguityDeadline {
+    const current = record.providerEventAmbiguity;
+    if (current !== null && current.controlEpoch === controlEpoch) {
+      if (current.providerSeq !== providerSeq) {
+        throw new Error('One control epoch attempted a later provider frame before resolving its ambiguity.');
+      }
+      return current;
+    }
+    if (current !== null) this.#clearProviderEventAmbiguity(record, current);
+    const requestedAtMs = this.#options.nowMs();
+    const deadline: ProviderEventAmbiguityDeadline = {
+      controlEpoch,
+      providerSeq,
+      requestedAtMs,
+      expiresAtMs: requestedAtMs + PROXY_EVENT_COMMIT_TIMEOUT_MS,
+      timer: null,
+      fault: null,
+    };
+    const timer = this.#options.timer.setTimeout(
+      () => this.#expireProviderEventAmbiguity(record, deadline),
+      PROXY_EVENT_COMMIT_TIMEOUT_MS,
+    );
+    timer.unref?.();
+    deadline.timer = timer;
+    record.providerEventAmbiguity = deadline;
+    return deadline;
+  }
+
+  #expireProviderEventAmbiguity(record: SupervisedOperation, deadline: ProviderEventAmbiguityDeadline): void {
+    this.#faultProviderEventAmbiguity(record, deadline, 'provider_event_ack_timeout');
+  }
+
+  #faultProviderEventAmbiguity(
+    record: SupervisedOperation,
+    deadline: ProviderEventAmbiguityDeadline,
+    reason: ProviderEventControlFaultReason,
+  ): void {
+    if (record.providerEventAmbiguity !== deadline || deadline.fault !== null) return;
+    deadline.fault = reason;
+    if (deadline.timer !== null) this.#options.timer.clearTimeout(deadline.timer);
+    deadline.timer = null;
+    this.#options.faultProviderEventControl({
+      reason,
+      operation: record.operation,
+      providerSeq: deadline.providerSeq,
+      expectedControlEpoch: deadline.controlEpoch,
+    });
+  }
+
+  #clearProviderEventAmbiguity(record: SupervisedOperation, deadline: ProviderEventAmbiguityDeadline): void {
+    if (record.providerEventAmbiguity !== deadline) return;
+    if (deadline.timer !== null) this.#options.timer.clearTimeout(deadline.timer);
+    deadline.timer = null;
+    record.providerEventAmbiguity = null;
+  }
+
+  #requestPump(record: SupervisedOperation): void {
+    record.pumpRequested = true;
+    if (!record.pumping) void this.#pump(record);
+  }
+
   async #pump(record: SupervisedOperation): Promise<void> {
     if (record.pumping) return;
     record.pumping = true;
     try {
       while (true) {
+        record.pumpRequested = false;
         const entry = this.#ledger.get(record.key);
         if (
           entry?.state === 'preparing' ||
@@ -1114,28 +1453,78 @@ export class OperationSupervisor {
         }
         const next = entry?.bufferedEvents[0];
         if (next === undefined) return;
+        const ownership = this.#ownership(record);
+        let push: ControlTenancyPush;
+        try {
+          push = this.#options.pushProviderEvent(next.frame);
+        } catch (error: unknown) {
+          if (
+            error instanceof ControlEndpointError &&
+            (error.code === 'control_endpoint_push_no_tenancy' || error.code === 'control_endpoint_closed')
+          ) {
+            return;
+          }
+          throw error;
+        }
+        const deadline = this.#ensureProviderEventAmbiguity(record, next.providerSeq, push.controlEpoch);
         let response: unknown;
         try {
-          response = await this.#options.pushProviderEvent(next.frame);
-        } catch {
+          response = await push.response;
+        } catch (error: unknown) {
+          if (error instanceof ControlEndpointError) {
+            if (error.code === 'control_endpoint_push_timeout') {
+              this.#expireProviderEventAmbiguity(record, deadline);
+              return;
+            }
+            if (error.code === 'control_endpoint_push_refused') {
+              this.#faultProviderEventAmbiguity(record, deadline, 'provider_event_response_refused');
+              return;
+            }
+            if (error.code === 'control_endpoint_push_lost' || error.code === 'control_endpoint_closed') {
+              if (record.pumpRequested) continue;
+              return;
+            }
+          }
           return;
         }
         let result: ProviderEventResult;
         try {
           result = providerEventResultSchema.parse(response);
         } catch {
+          this.#faultProviderEventAmbiguity(record, deadline, 'provider_event_response_invalid');
           return;
         }
         if (result.kind === 'ack') {
+          const current = this.#operations.get(operationToken(record.operation));
+          const guardedEntry = this.#ledger.get(record.key);
+          if (
+            current !== record ||
+            !this.#owns(record, ownership) ||
+            record.providerEventAmbiguity !== deadline ||
+            deadline.fault !== null ||
+            record.fenced ||
+            record.releaseIntent !== null ||
+            guardedEntry?.state === 'releasing'
+          ) {
+            return;
+          }
+          if (result.committedThroughProviderSeq < next.providerSeq) {
+            this.#faultProviderEventAmbiguity(record, deadline, 'provider_event_ack_invalid');
+            return;
+          }
           try {
             this.#ledger.acknowledge(record.key, result.committedThroughProviderSeq);
           } catch {
+            this.#faultProviderEventAmbiguity(record, deadline, 'provider_event_ack_invalid');
             return;
           }
+          this.#clearProviderEventAmbiguity(record, deadline);
+          this.#commitCoveredContinuity(record, ownership, result.committedThroughProviderSeq);
         }
       }
     } finally {
       record.pumping = false;
+      if (record.pumpRequested) this.#requestPump(record);
     }
   }
 

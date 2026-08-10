@@ -5,12 +5,50 @@ import { describe, expect, it } from 'vitest';
 import {
   ProviderProxySetIdentityIndex,
   providerProxySetIdentitiesEqual,
+  providerProxySetIdentityFromCapsule,
   providerProxySetIdentityFromRecord,
   providerProxySetKey,
 } from '#src/coordinator/services/provider-proxy-set-identity.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 describe('complete provider proxy set identity', () => {
+  it('derives all sixteen identity facts from a v2 capsule', () => {
+    const identity = providerProxySetIdentityFromCapsule({
+      version: 2,
+      grantId: '11111111-1111-4111-8111-111111111111',
+      secret: 'a'.repeat(64),
+      generation: 'gen2',
+      flavor: 'prod',
+      buildSetId: '22222222-2222-4222-8222-222222222222',
+      hostFingerprint: 'b'.repeat(64),
+      guardianInstanceId: '33333333-3333-4333-8333-333333333333',
+      guardianPid: 101,
+      guardianProcessStartedAtSeconds: 1_001,
+      guardianControlEndpoint: '/tmp/guardian.sock',
+      proxyInstanceId: '44444444-4444-4444-8444-444444444444',
+      proxyPid: 102,
+      reaperInstanceId: '55555555-5555-4555-8555-555555555555',
+      reaperPid: 103,
+      reaperProcessStartedAtSeconds: 1_003,
+      reaperControlEndpoint: '/tmp/reaper.sock',
+      containmentKind: 'detached-process-group',
+      proxyProcessStartedAtSeconds: 1_002,
+      proxyProcessGroupId: 102,
+      proxyEndpoint: '/tmp/proxy.sock',
+      orphanTimeoutMs: 30_000,
+      teardownReserveMs: 14_000,
+    });
+
+    expect(Object.keys(identity)).toHaveLength(16);
+    expect(identity).toMatchObject({
+      guardianPid: 101,
+      proxyPid: 102,
+      reaperPid: 103,
+      proxyProcessGroupId: 102,
+      canonicalEndpoint: '/tmp/proxy.sock',
+    });
+  });
+
   it('derives every live identity field from one durable record and serializes it canonically', () => {
     const record = providerOperationRecord('executing');
     const identity = providerProxySetIdentityFromRecord(record);

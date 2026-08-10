@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { canonicalEndpointSchema, canonicalUuidSchema, hostFingerprintSchema } from '../../provider-proxy/protocol.js';
+import type { HandoffCapsuleV2 } from '../../provider-proxy/handoff-capsule.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
 
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
@@ -108,6 +109,27 @@ export function providerProxySetIdentityFromRecord(
     proxyProcessStartedAtSeconds: record.locator.proxy.processStartedAtSeconds,
     proxyProcessGroupId: record.locator.containment.processGroupId,
     canonicalEndpoint: record.locator.proxy.controlEndpoint,
+  });
+}
+
+export function providerProxySetIdentityFromCapsule(capsule: HandoffCapsuleV2): ProviderProxySetIdentity {
+  return providerProxySetIdentitySchema.parse({
+    buildSetId: capsule.buildSetId,
+    hostFingerprint: capsule.hostFingerprint,
+    guardianInstanceId: capsule.guardianInstanceId,
+    guardianPid: capsule.guardianPid,
+    guardianProcessStartedAtSeconds: capsule.guardianProcessStartedAtSeconds,
+    guardianControlEndpoint: capsule.guardianControlEndpoint,
+    proxyInstanceId: capsule.proxyInstanceId,
+    proxyPid: capsule.proxyPid,
+    reaperInstanceId: capsule.reaperInstanceId,
+    reaperPid: capsule.reaperPid,
+    reaperProcessStartedAtSeconds: capsule.reaperProcessStartedAtSeconds,
+    reaperControlEndpoint: capsule.reaperControlEndpoint,
+    containmentKind: capsule.containmentKind,
+    proxyProcessStartedAtSeconds: capsule.proxyProcessStartedAtSeconds,
+    proxyProcessGroupId: capsule.proxyProcessGroupId,
+    canonicalEndpoint: capsule.proxyEndpoint,
   });
 }
 

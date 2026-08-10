@@ -16,7 +16,11 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   return { ...original, probeProcessStartedAtSeconds: vi.fn(() => 1_700_000_000) };
 });
 
-import { readHandoffCapsuleFile, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
+import {
+  readHandoffCapsuleFile,
+  type HandoffCapsule,
+  type HandoffCapsuleV1,
+} from '#src/provider-proxy/handoff-capsule.js';
 import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { connectControlClient, ControlClientError } from '#src/provider-proxy/control-client.js';
@@ -190,7 +194,7 @@ beforeEach(() => {
   mockedProbe.mockImplementation(() => 1_700_000_000);
 });
 
-function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<HandoffCapsule> = {}): HandoffCapsule {
+function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<HandoffCapsuleV1> = {}): HandoffCapsule {
   const { operation, locator: set } = reference;
   return {
     version: 1,
@@ -1088,6 +1092,11 @@ describe('createProviderProxySetInheritance', () => {
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: runtime.time,
       proveContainmentAbsent: async () => null,
+      retireCapsule: () => ({ kind: 'retired' }),
+      rewriteCapsule: () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
     });
     lifecycle.initializeClaimSlots();
     lifecycle.installDiscoveredCapsules([{ path: '/capsules/claim-backed.handoff.json', capsule }]);
@@ -1148,6 +1157,11 @@ describe('createProviderProxySetInheritance', () => {
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time,
       proveContainmentAbsent: async () => null,
+      retireCapsule: () => ({ kind: 'retired' }),
+      rewriteCapsule: () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -1208,8 +1222,7 @@ describe('createProviderProxySetInheritance', () => {
       disappearanceConsumer: {
         containmentDisappeared: async (notice) => ({
           kind: 'accepted',
-          operation: notice.operation,
-          disposition: 'record-absent',
+          acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       },
       time: {
@@ -1218,6 +1231,11 @@ describe('createProviderProxySetInheritance', () => {
         clearTimeout: () => undefined,
       },
       proveContainmentAbsent: async () => null,
+      retireCapsule: () => ({ kind: 'retired' }),
+      rewriteCapsule: () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -1274,12 +1292,16 @@ describe('createProviderProxySetInheritance', () => {
       disappearanceConsumer: {
         containmentDisappeared: async (notice) => ({
           kind: 'accepted',
-          operation: notice.operation,
-          disposition: 'record-absent',
+          acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       },
       time,
       proveContainmentAbsent: async () => null,
+      retireCapsule: () => ({ kind: 'retired' }),
+      rewriteCapsule: () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();

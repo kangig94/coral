@@ -43,6 +43,9 @@ describe('execution services provider-proxy proof composition', () => {
       runtime,
       bundleHash: 'execution-services-stored-fault-test',
       backendNamespace: 'execution-services-stored-fault-test',
+      onProviderProxyLifecycleFatal: (error) => {
+        throw error;
+      },
       createExecutionService: (() => {
         throw new Error('execution service creation was not expected');
       }) as never,
@@ -110,6 +113,9 @@ describe('execution services provider-proxy proof composition', () => {
       runtime,
       bundleHash: 'execution-services-fresh-publication-test',
       backendNamespace: 'execution-services-fresh-publication-test',
+      onProviderProxyLifecycleFatal: (error) => {
+        throw error;
+      },
       createExecutionService: (() => {
         throw new Error('execution service creation was not expected');
       }) as never,
@@ -179,6 +185,9 @@ describe('execution services provider-proxy proof composition', () => {
       runtime,
       bundleHash: 'execution-services-test',
       backendNamespace: 'execution-services-test',
+      onProviderProxyLifecycleFatal: (error) => {
+        throw error;
+      },
       createExecutionService: (() => {
         throw new Error('execution service creation was not expected');
       }) as never,
@@ -281,6 +290,9 @@ describe('execution services provider-proxy proof composition', () => {
       runtime,
       bundleHash: 'execution-services-inheritance-test',
       backendNamespace: 'execution-services-inheritance-test',
+      onProviderProxyLifecycleFatal: (error) => {
+        throw error;
+      },
       createExecutionService: (() => {
         throw new Error('execution service creation was not expected');
       }) as never,

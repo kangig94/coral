@@ -1,0 +1,268 @@
+import { randomUUID } from 'node:crypto';
+
+import { describe, expect, it, vi } from 'vitest';
+
+import type { HostRef } from '#src/providers/contract.js';
+import { attachContinuityCommit } from '#src/providers/internal/continuity-commit.js';
+import { ControlEndpointError, type ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
+import { operationPrepareAttemptKey } from '#src/provider-proxy/ledger.js';
+import {
+  OperationSupervisor,
+  type OperationStageHandle,
+  type ProviderEventControlFault,
+  type SemanticOperationHost,
+} from '#src/provider-proxy/operation-supervisor.js';
+import { PROXY_EVENT_COMMIT_TIMEOUT_MS, type OperationIdentity } from '#src/provider-proxy/protocol.js';
+import type { ProxyPreparedAppServerOperation } from '#src/provider-proxy/protocol.js';
+import {
+  asJointActivationReceipt,
+  asJointContainmentReceipt,
+  asReservation,
+} from '#tests/helpers/provider-proxy-correlation.js';
+
+const PREPARED: ProxyPreparedAppServerOperation = {
+  version: 1,
+  provider: 'codex',
+  binding: { provider: 'codex', kind: 'account', binding: {} },
+  request: {
+    action: 'exec',
+    sessionId: 'session-1',
+    prompt: 'hi',
+    cwd: '/tmp',
+    bypassPermissions: false,
+    coralEnv: {},
+  },
+  persistedContinuity: null,
+  baseEnv: {},
+  protectedEnv: {},
+  platform: 'linux',
+};
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: Error): void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((settle, fail) => {
+    resolve = settle;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+function controlledTimer(): {
+  timer: ControlEndpointTimer;
+  nowMs(): number;
+  advance(ms: number): void;
+} {
+  let elapsedMs = 0;
+  let nextId = 0;
+  type Handle = { id: number; dueAtMs: number; callback: () => void; unref(): void };
+  const pending = new Map<number, Handle>();
+  return {
+    timer: {
+      setTimeout: (callback, ms) => {
+        const handle: Handle = {
+          id: (nextId += 1),
+          dueAtMs: elapsedMs + ms,
+          callback,
+          unref: () => {},
+        };
+        pending.set(handle.id, handle);
+        return handle;
+      },
+      clearTimeout: (rawHandle) => pending.delete((rawHandle as Handle).id),
+    },
+    nowMs: () => elapsedMs,
+    advance: (ms) => {
+      elapsedMs += ms;
+      while (true) {
+        const due = [...pending.values()]
+          .filter((handle) => handle.dueAtMs <= elapsedMs)
+          .sort((left, right) => left.dueAtMs - right.dueAtMs)[0];
+        if (due === undefined) return;
+        pending.delete(due.id);
+        due.callback();
+      }
+    },
+  };
+}
+
+function hostRef(): HostRef {
+  return {
+    provider: 'codex',
+    fingerprint: 'a'.repeat(64),
+    instanceId: 'host-1',
+    leaseMode: 'shared',
+  };
+}
+
+async function executingSupervisor(
+  pushProviderEvent: ConstructorParameters<typeof OperationSupervisor>[0]['pushProviderEvent'],
+): Promise<{
+  supervisor: OperationSupervisor;
+  operation: OperationIdentity;
+  faults: ProviderEventControlFault[];
+  clock: ReturnType<typeof controlledTimer>;
+}> {
+  const operation: OperationIdentity = {
+    jobId: randomUUID(),
+    operationId: randomUUID(),
+    proxyInstanceId: randomUUID(),
+    buildSetId: randomUUID(),
+  };
+  const clock = controlledTimer();
+  const faults: ProviderEventControlFault[] = [];
+  const host: SemanticOperationHost = {
+    start: () => ({
+      result: Promise.resolve({ kind: 'started', hostRef: hostRef() }),
+      abortAndRelease: async () => {},
+    }),
+    stop: async () => {},
+  };
+  const receipt = asJointContainmentReceipt('containment');
+  const stage: OperationStageHandle = {
+    result: Promise.resolve({
+      state: 'staged',
+      providerRoot: { pid: 4_242, processStartedAtSeconds: 1_700_000_000 },
+      receipt,
+    }),
+    confirmActivation: async () => {},
+    abortAndRelease: async () => {},
+  };
+  const supervisor = new OperationSupervisor({
+    host,
+    timer: clock.timer,
+    mintReservation: () => asReservation('40000000-0000-4000-8000-000000000001'),
+    wallClockNow: () => 0,
+    nowMs: clock.nowMs,
+    proxyInstanceId: operation.proxyInstanceId,
+    buildSetId: operation.buildSetId,
+    stageProviderRoot: () => stage,
+    pushProviderEvent,
+    faultProviderEventControl: (fault) => faults.push(fault),
+  });
+  const prepareRequest = {
+    operation,
+    hostFingerprint: 'a'.repeat(64),
+    prepareAttemptNumber: 1,
+    prepared: PREPARED,
+  };
+  const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
+  const prepared = (await supervisor.prepare(operation, {
+    prepareAttemptNumber: 1,
+    prepareAttemptKey,
+    prepared: PREPARED,
+  })) as { reservation: string; jointContainmentReceipt: string };
+  await supervisor.activate(operation, {
+    reservation: asReservation(prepared.reservation),
+    jointContainmentReceipt: asJointContainmentReceipt(prepared.jointContainmentReceipt),
+    jointActivationReceipt: asJointActivationReceipt('activation'),
+    activationFingerprint: prepareAttemptKey,
+  });
+  await supervisor.attach(operation, 0);
+  return { supervisor, operation, faults, clock };
+}
+
+describe('provider-event supervisor pump', () => {
+  it('retains a control-activation wake while the old push is in flight', async () => {
+    const first = deferred<unknown>();
+    let pushCalls = 0;
+    const fixture = await executingSupervisor(() => {
+      pushCalls += 1;
+      return {
+        controlEpoch: 1,
+        response: pushCalls === 1 ? first.promise : Promise.resolve({ kind: 'ack', committedThroughProviderSeq: 1 }),
+      };
+    });
+
+    fixture.supervisor.emitProviderEvent(fixture.operation, { kind: 'progress', message: 'held' });
+    expect(pushCalls).toBe(1);
+
+    fixture.supervisor.controlActivated(1);
+    first.reject(
+      new ControlEndpointError('control_endpoint_push_lost', 'The stale socket closed before its ACK arrived.'),
+    );
+
+    await vi.waitFor(() => expect(pushCalls).toBe(2));
+    await vi.waitFor(() =>
+      expect(fixture.supervisor.ledger().get(fixture.operation)?.committedThroughProviderSeq).toBe(1),
+    );
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.bufferedEvents).toEqual([]);
+  });
+
+  it('faults control after one unanswered ACK budget while retaining the frame', async () => {
+    const held = deferred<unknown>();
+    const fixture = await executingSupervisor(() => ({ controlEpoch: 7, response: held.promise }));
+
+    fixture.supervisor.emitProviderEvent(fixture.operation, { kind: 'progress', message: 'ambiguous' });
+    fixture.clock.advance(PROXY_EVENT_COMMIT_TIMEOUT_MS);
+
+    expect(fixture.faults).toEqual([
+      {
+        reason: 'provider_event_ack_timeout',
+        operation: fixture.operation,
+        providerSeq: 1,
+        expectedControlEpoch: 7,
+      },
+    ]);
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.bufferedEvents).toHaveLength(1);
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.committedThroughProviderSeq).toBe(0);
+  });
+
+  it('faults control on a malformed provider-event response', async () => {
+    const fixture = await executingSupervisor(() => ({ controlEpoch: 3, response: Promise.resolve({}) }));
+
+    fixture.supervisor.emitProviderEvent(fixture.operation, { kind: 'progress', message: 'malformed ACK' });
+
+    await vi.waitFor(() => expect(fixture.faults).toHaveLength(1));
+    expect(fixture.faults[0]).toMatchObject({
+      reason: 'provider_event_response_invalid',
+      providerSeq: 1,
+      expectedControlEpoch: 3,
+    });
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.bufferedEvents).toHaveLength(1);
+  });
+
+  it('commits the original continuity object only after the cumulative ACK', async () => {
+    const held = deferred<unknown>();
+    const commit = vi.fn();
+    const reject = vi.fn();
+    const fixture = await executingSupervisor(() => ({ controlEpoch: 1, response: held.promise }));
+    const event = attachContinuityCommit(
+      {
+        kind: 'continuity',
+        conversationRef: 'thread-1',
+        resumable: true,
+        providerContinuity: { provider: 'codex', state: { threadId: 'thread-1' } },
+      },
+      { commit, reject },
+    );
+
+    const emission = fixture.supervisor.emitProviderEvent(fixture.operation, event);
+    if (emission.kind !== 'continuity-recorded') throw new Error('expected a continuity settlement');
+    expect(commit).not.toHaveBeenCalled();
+
+    held.resolve({ kind: 'ack', committedThroughProviderSeq: 1 });
+    await emission.settlement.committed;
+
+    expect(commit).toHaveBeenCalledOnce();
+    expect(reject).not.toHaveBeenCalled();
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.committedThroughProviderSeq).toBe(1);
+  });
+
+  it('discards an ACK that arrives after the owning supervisor closes', async () => {
+    const held = deferred<unknown>();
+    const fixture = await executingSupervisor(() => ({ controlEpoch: 1, response: held.promise }));
+    fixture.supervisor.emitProviderEvent(fixture.operation, { kind: 'progress', message: 'late ACK' });
+
+    fixture.supervisor.close();
+    held.resolve({ kind: 'ack', committedThroughProviderSeq: 1 });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.committedThroughProviderSeq).toBe(0);
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.bufferedEvents).toHaveLength(1);
+  });
+});

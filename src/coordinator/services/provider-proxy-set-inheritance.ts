@@ -5,6 +5,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import { reapRecordedContainment } from '../../infra/process-containment.js';
 import {
   readHandoffCapsuleFile,
+  HandoffCapsuleError,
   type HandoffCapsule,
   guardianHandoffRedeemFieldsSchema,
   guardianHandoffRedeemParamsSchema,
@@ -122,6 +123,14 @@ export type ProviderProxySetInheritanceOutcome =
   | Readonly<{ kind: 'inherited'; set: DurableProviderProxyOperationAuthority }>
   | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>
   | Readonly<{ kind: 'not-bequeathed'; reason: string }>;
+
+export class ProviderProxySetInheritanceOperationalError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ProviderProxySetInheritanceOperationalError';
+    Object.setPrototypeOf(this, ProviderProxySetInheritanceOperationalError.prototype);
+  }
+}
 
 const NOTHING_TO_INHERIT_REASON = 'no capsule at this address';
 
@@ -486,19 +495,19 @@ export async function attemptProviderProxySetInheritance(
   try {
     outcome = await redeem(locator, deps, signal);
   } catch (error: unknown) {
+    if (error instanceof HandoffCapsuleError) throw error;
     try {
       const disappearanceReceipt = await deps.proveContainmentAbsent?.(identity, db, signal);
       if (disappearanceReceipt !== undefined && disappearanceReceipt !== null) {
         return { kind: 'containment-disappeared', disappearanceReceipt };
       }
     } catch (proofError: unknown) {
-      throw new AggregateError(
-        [error, proofError],
+      throw new ProviderProxySetInheritanceOperationalError(
         `Provider proxy redemption failed and containment disappearance was not proven: ${errorMessage(proofError)}`,
-        { cause: proofError },
+        { cause: new AggregateError([error, proofError]) },
       );
     }
-    throw error;
+    throw new ProviderProxySetInheritanceOperationalError(errorMessage(error), { cause: error });
   }
   if (outcome.kind !== 'not-bequeathed') return outcome;
   try {
@@ -507,9 +516,10 @@ export async function attemptProviderProxySetInheritance(
       ? outcome
       : { kind: 'containment-disappeared', disappearanceReceipt };
   } catch (error: unknown) {
-    throw new Error(`${outcome.reason}; containment disappearance was not proven: ${errorMessage(error)}`, {
-      cause: error,
-    });
+    throw new ProviderProxySetInheritanceOperationalError(
+      `${outcome.reason}; containment disappearance was not proven: ${errorMessage(error)}`,
+      { cause: error },
+    );
   }
 }
 

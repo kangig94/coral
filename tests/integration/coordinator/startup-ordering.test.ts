@@ -60,6 +60,7 @@ describe('coordinator startup ordering', () => {
       .spyOn(ProviderOperationReconciler.prototype, 'reconcileAtStartup')
       .mockImplementation(async () => {
         order.push('providerOperationReconciler.reconcileAtStartup');
+        return { setsVisited: 0, operationsVisited: 0, incidents: [] };
       });
     const startProviderOperationReconciler = vi
       .spyOn(ProviderOperationReconciler.prototype, 'start')

@@ -103,7 +103,7 @@ export function createProviderProxySetAuthority(
     if (recoveryCapsule !== null) return recoveryCapsule;
     const deadlineConfig = resolveProviderProxyDeadlineConfiguration(runtime.env);
     recoveryCapsule = {
-      version: 1,
+      version: 2,
       grantId: runtime.ids.uuid(),
       secret: runtime.ids.randomBytes(32).toString('hex'),
       generation: guardianIdentity.generation,
@@ -118,6 +118,14 @@ export function createProviderProxySetAuthority(
       proxyEndpoint: proxyIdentityFields.canonicalEndpoint,
       orphanTimeoutMs: deadlineConfig.orphanTimeoutMs,
       teardownReserveMs: deadlineConfig.teardownReserveMs,
+      guardianPid: guardianIdentity.pid,
+      guardianProcessStartedAtSeconds: guardianIdentity.processStartedAtSeconds,
+      proxyPid: proxyIdentityFields.pid,
+      reaperPid: reaperIdentity.pid,
+      reaperProcessStartedAtSeconds: reaperIdentity.processStartedAtSeconds,
+      containmentKind: reaperIdentity.containmentKind,
+      proxyProcessStartedAtSeconds: proxyIdentityFields.processStartedAtSeconds,
+      proxyProcessGroupId: proxyIdentityFields.processGroupId,
     };
     return recoveryCapsule;
   };

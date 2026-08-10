@@ -108,6 +108,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     buildSetId: capsule.buildSetId,
     stageProviderRoot: options.containment.stageProviderRoot,
     pushProviderEvent: (frame) => endpoint.pushOnTenancy(frame, PROXY_EVENT_COMMIT_TIMEOUT_MS),
+    faultProviderEventControl: (fault) => endpoint.faultControlTenancy(fault.expectedControlEpoch),
   });
 
   const challenges: ControlChallengeAuthority = {
@@ -128,7 +129,6 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     },
     reattachControl: () => {
       evidence.reattachControl();
-      supervisor.reattachControl();
       return { accepted: true };
     },
     echoChallenge: (challenge) => {
@@ -371,7 +371,10 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     socketPath: capsule.canonicalEndpoint,
     role: { heartbeatMethod: 'control.heartbeat.v1', methods },
     challenges,
-    observer: { onControlLost: () => evidence.observeEof(clock.now()) },
+    observer: {
+      onControlActive: (epoch) => supervisor.controlActivated(epoch),
+      onControlLost: () => evidence.observeEof(clock.now()),
+    },
     timer,
     requestTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
   });

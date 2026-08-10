@@ -4,6 +4,6 @@
     "noEmit": true,
     "rootDir": ".."
   },
-  "include": ["simulation/**/*.ts", "testing/**/*.ts", "../src/types/**/*.d.ts"],
+  "include": ["provider-proxy-smoke-release-gate.ts", "simulation/**/*.ts", "testing/**/*.ts", "../src/types/**/*.d.ts"],
   "exclude": ["../node_modules", "../dist", "../bridge", "../build"]
 }

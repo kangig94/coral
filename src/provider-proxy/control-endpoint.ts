@@ -187,8 +187,15 @@ export interface ControlChallengeAuthority {
 export type ControlEndpointObserver = Readonly<{
   /** The control connection ended. The owner may treat this as its local `eofAt`. */
   onControlLost(epoch: ControlEpoch): void;
+  /** The first accepted heartbeat on a newly attached socket made this tenancy push-capable. */
+  onControlActive?(epoch: ControlEpoch): void;
   /** The paired peer channel ended. Pairing loss accelerates an already-armed enforcer. */
   onPairingLost?(): void;
+}>;
+
+export type ControlTenancyPush = Readonly<{
+  controlEpoch: ControlEpoch;
+  response: Promise<unknown>;
 }>;
 
 export type ControlEndpointOptions = Readonly<{
@@ -211,7 +218,8 @@ export interface ControlEndpoint {
    * endpoint's own request/response loop never drives on its own — every other write it makes answers
    * something the peer just asked. See the implementation for the full id-space and non-blocking argument.
    */
-  pushOnTenancy(frame: string, timeoutMs: number): Promise<unknown>;
+  pushOnTenancy(frame: string, timeoutMs: number): ControlTenancyPush;
+  faultControlTenancy(expectedControlEpoch: ControlEpoch): void;
 }
 
 type Tenancy = {
@@ -377,7 +385,9 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
         `Heartbeat echo was not accepted (${recorded.reason ?? 'rejected'}).`,
       );
     }
+    const becameActive = !live.active;
     live.active = true;
+    if (becameActive) observer.onControlActive?.(live.epoch);
     return controlHeartbeatResultSchema.parse({ state: 'active', nextHeartbeatChallenge: recorded.nextChallenge });
   };
 
@@ -632,7 +642,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
      * stall the endpoint's own request handling; only the caller's own pacing (the ledger's replay-capacity
      * gate) slows further pushes.
      */
-    async pushOnTenancy(frame: string, timeoutMs: number): Promise<unknown> {
+    pushOnTenancy(frame: string, timeoutMs: number): ControlTenancyPush {
       if (closed) throw new ControlEndpointError('control_endpoint_closed', 'This control endpoint was closed.');
       const live = tenancy;
       if (live === null || !live.active || !challenges.controlIsLive()) {
@@ -652,7 +662,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       }
       const id = String(decoded.id);
       const socket = live.socket;
-      return new Promise<unknown>((resolve, reject) => {
+      const response = new Promise<unknown>((resolve, reject) => {
         const budget = timer.setTimeout(() => {
           pendingPushes.delete(id);
           reject(new ControlEndpointError('control_endpoint_push_timeout', `Push exceeded its ${timeoutMs}ms budget.`));
@@ -672,6 +682,15 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
         }
         socket.write(frame);
       });
+      return { controlEpoch: live.epoch, response };
+    },
+    faultControlTenancy(expectedControlEpoch: ControlEpoch): void {
+      const live = tenancy;
+      if (live === null || live.epoch !== expectedControlEpoch) return;
+      tenancy = null;
+      live.active = false;
+      observer.onControlLost(live.epoch);
+      live.socket.destroy();
     },
   };
 }

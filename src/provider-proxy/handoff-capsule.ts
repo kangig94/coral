@@ -192,7 +192,7 @@ export const guardianHandoffRedeemParamsSchema = z
  *   instant. A successor resumes from the store's own watermark plus one; it must never resume from a number
  *   this file could hand it instead.
  */
-export const handoffCapsuleSchema = z
+export const handoffCapsuleV1Schema = z
   .object({
     version: z.literal(1),
     grantId: canonicalUuidSchema,
@@ -212,7 +212,28 @@ export const handoffCapsuleSchema = z
   })
   .strict();
 
-export type HandoffCapsule = z.infer<typeof handoffCapsuleSchema>;
+const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
+
+export const handoffCapsuleV2Schema = handoffCapsuleV1Schema
+  .omit({ version: true })
+  .extend({
+    version: z.literal(2),
+    guardianPid: nonNegativeSafeIntegerSchema,
+    guardianProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    proxyPid: nonNegativeSafeIntegerSchema,
+    reaperPid: nonNegativeSafeIntegerSchema,
+    reaperProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    containmentKind: z.string().min(1).max(64),
+    proxyProcessStartedAtSeconds: nonNegativeSafeIntegerSchema,
+    proxyProcessGroupId: nonNegativeSafeIntegerSchema,
+  })
+  .strict();
+
+export const handoffCapsuleSchema = z.discriminatedUnion('version', [handoffCapsuleV1Schema, handoffCapsuleV2Schema]);
+
+export type HandoffCapsuleV1 = z.output<typeof handoffCapsuleV1Schema>;
+export type HandoffCapsuleV2 = z.output<typeof handoffCapsuleV2Schema>;
+export type HandoffCapsule = HandoffCapsuleV1 | HandoffCapsuleV2;
 
 /**
  * What the three authorities retain. The secret itself is never stored beside the digest, and the identity

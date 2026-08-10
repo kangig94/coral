@@ -122,6 +122,7 @@ describe('provider operation journal', () => {
       insertProviderOperation(db, executing);
       expect(sagaRows(db).map(({ key }) => key)).toEqual([
         expect.stringMatching(/^provider_operation_saga\.v1:due:/u),
+        expect.stringMatching(/^provider_operation_saga\.v1:due:/u),
         expect.stringMatching(/^provider_operation_saga\.v1:record:/u),
         expect.stringMatching(/^provider_operation_saga\.v1:record:/u),
       ]);
@@ -264,7 +265,7 @@ describe('provider operation journal', () => {
         .map(({ value }) => decodeProviderOperationRecord(value))
         .filter((record) => record.phase !== 'executing' && record.retryNotBeforeMs <= 100);
       expect(naivelyLimited).toEqual([]);
-      expect(readProviderOperationsDue(db, 100, 2)).toEqual([localRecoveryDue, due]);
+      expect(readProviderOperationsDue(db, 100, 3)).toEqual([executing, localRecoveryDue, due]);
 
       const plan = db
         .prepare<[string, string, number], { detail: string }>(

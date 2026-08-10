@@ -45,6 +45,7 @@
     "test:e2e:store-reset:release": "node scripts/run-store-reset-e2e.mjs clients/bridge",
     "test:e2e:build": "node scripts/run-store-reset-e2e.mjs clients/build --all",
     "test:e2e:release": "node scripts/run-store-reset-e2e.mjs clients/bridge --all",
+    "test:smoke:provider-proxy:codex": "node scripts/provider-proxy-codex-smoke.mjs",
     "verify:store-reset-build": "node scripts/verify-store-reset-build-contract.mjs clients/build",
     "verify:store-reset-release": "node scripts/verify-store-reset-build-contract.mjs clients/bridge clients/build",
     "verify:kiwi-runtime-build": "node scripts/verify-kiwi-runtime-build-contract.mjs clients/build",

@@ -532,15 +532,18 @@ export function createCoordinatorCore(
   const streamResponses = new Set<ServerResponse>();
   const eventStreamSubscriptions = new WeakMap<EventStreamHandlers, () => void>();
   let readIpcOpenSockets = () => 0;
+  let lifecycleController: LifecycleController | null = null;
   const services = createExecutionServices({
     world,
     runtime,
     bundleHash: world.identity.bundleHash,
     backendNamespace: world.namespace,
     createExecutionService: defaults.createExecutionService,
+    onProviderProxyLifecycleFatal: (error) => {
+      world.log(`Fatal provider proxy lifecycle error: ${formatError(error)}\n`);
+      void lifecycleController?.shutdown('provider-proxy-lifecycle-fatal').catch(() => undefined);
+    },
   });
-
-  let lifecycleController: LifecycleController | null = null;
 
   const discuss = createDiscussRuntime({
     world,

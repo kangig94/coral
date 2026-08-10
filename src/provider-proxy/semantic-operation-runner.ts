@@ -19,10 +19,12 @@ import type {
   BoundProviderHostPreparationInput,
 } from '../providers/bound-provider-contract.js';
 import type { ProviderOperationKey, ProviderRootIdentity } from './ledger.js';
-import type {
-  SemanticOperationHost,
-  SemanticOperationStartHandle,
-  SemanticOperationStartResult,
+import {
+  ContinuityCommitDeliveryError,
+  type ContinuityCommitSettlement,
+  type SemanticOperationHost,
+  type SemanticOperationStartHandle,
+  type SemanticOperationStartResult,
 } from './operation-supervisor.js';
 import {
   type ProxyAppServerHostAuthority,
@@ -308,6 +310,7 @@ type StagedOperation = {
   startHandle: SemanticOperationStartHandle | null;
   startCommitted: boolean;
   releaseRequested: boolean;
+  activeContinuitySettlement: ContinuityCommitSettlement | null;
   closed: boolean;
   hostRef: HostRef | null;
   transportClosed: Promise<Error | void>;
@@ -467,6 +470,17 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
   ): Promise<void> => {
     if (reason.kind === 'release') entry.releaseRequested = true;
     else entry.pendingStopCause = reason.cause;
+    entry.activeContinuitySettlement?.reject(
+      reason.kind === 'release'
+        ? new ContinuityCommitDeliveryError(
+            'continuity_commit_operation_released',
+            'The operation was released before the continuity checkpoint was committed.',
+          )
+        : new ContinuityCommitDeliveryError(
+            'continuity_commit_operation_cancelled',
+            'The operation was cancelled before the continuity checkpoint was committed.',
+          ),
+    );
     entry.abortController.abort(reason.cause);
 
     const completion: Promise<void> =
@@ -590,7 +604,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         }
         const emission = proxy.emitProviderEvent(key, step.value);
 
-        if (emission === 'proxy-emergency-terminal') {
+        if (emission.kind === 'proxy-emergency-terminal') {
           try {
             await iterator.return?.();
           } catch (error: unknown) {
@@ -600,6 +614,16 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
             );
           }
           break;
+        }
+
+        if (emission.kind === 'continuity-recorded') {
+          const settlement = emission.settlement;
+          entry.activeContinuitySettlement = settlement;
+          try {
+            await settlement.committed;
+          } finally {
+            if (entry.activeContinuitySettlement === settlement) entry.activeContinuitySettlement = null;
+          }
         }
 
         if (step.value.kind === 'terminal') {
@@ -757,6 +781,7 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       startHandle: null,
       startCommitted: false,
       releaseRequested: false,
+      activeContinuitySettlement: null,
       closed: false,
       hostRef: null,
       transportClosed,
@@ -851,6 +876,14 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       if (shutdownPromise !== null) return shutdownPromise;
       closing = true;
       const entries = [...staged.values()];
+      for (const entry of entries) {
+        entry.activeContinuitySettlement?.reject(
+          new ContinuityCommitDeliveryError(
+            'continuity_commit_proxy_shutdown',
+            'The provider proxy shut down before the continuity checkpoint was committed.',
+          ),
+        );
+      }
       shutdownPromise = (async () => {
         const results = await Promise.allSettled(
           entries.map((entry) =>

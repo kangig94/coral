@@ -8,7 +8,11 @@ import { prepareCached } from '../../store/db.js';
 import { aggregateWorkflowUsage } from '../../jobs/workflow-usage.js';
 import { admittedByThisCoordinator, createObserveCarriers } from './carrier-observation.js';
 import { createAppServerProxyRoute } from '../services/provider-proxy-launch-route.js';
-import { ProviderOperationReconciler } from '../services/provider-operation-reconciler.js';
+import {
+  ProviderOperationReconciler,
+  StartupSetRecoveryProducer,
+  type StartupReconciliationReport,
+} from '../services/provider-operation-reconciler.js';
 import {
   notifyProviderProxyControlEstablished,
   subscribeProviderProxyControlEstablished,
@@ -22,13 +26,27 @@ import { readProjectionProviderSession } from '../../sessions/projections.js';
 import { materializeProviderOperationPrepare } from '../services/provider-operation-prepare.js';
 import { terminalizeProviderOperation } from '../../jobs/provider-operation-terminalization.js';
 import type { RecoveryCoordinator } from '../services/recovery/index.js';
-import { readProviderOperations, subscribeProviderOperationMutations } from '../../store/provider-operation-journal.js';
-import { providerProxySetIdentityFromRecord } from '../services/provider-proxy-set-identity.js';
+import {
+  readProviderOperation,
+  readProviderOperations,
+  subscribeProviderOperationMutations,
+} from '../../store/provider-operation-journal.js';
+import {
+  providerProxySetIdentitiesEqual,
+  providerProxySetIdentityFromRecord,
+} from '../services/provider-proxy-set-identity.js';
 import { ProviderProxySetLifecycle } from '../services/provider-proxy-set-lifecycle.js';
 import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,
 } from '../services/provider-proxy-capsule-discovery.js';
+import {
+  readHandoffCapsuleFile,
+  writeHandoffCapsuleFile,
+  type HandoffCapsuleV2,
+} from '../../provider-proxy/handoff-capsule.js';
+import type { ProviderProxySetLifecycleFatalError } from '../services/provider-proxy-set-lifecycle.js';
+import { ProviderProxySetInheritanceOperationalError } from '../services/provider-proxy-set-inheritance.js';
 
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
@@ -36,6 +54,7 @@ type CreateExecutionServicesDeps = {
   bundleHash: string;
   backendNamespace: string;
   createExecutionService: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
+  onProviderProxyLifecycleFatal(error: ProviderProxySetLifecycleFatalError): void;
 };
 
 function listInstantiatedExecutionServices(services: ReadonlyMap<string, ProjectRequestPort>): ProjectRequestPort[] {
@@ -48,12 +67,13 @@ export function createExecutionServices({
   bundleHash,
   backendNamespace,
   createExecutionService,
+  onProviderProxyLifecycleFatal,
 }: CreateExecutionServicesDeps): {
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];
   connectProviderOperationRecovery: (recoveryCoordinator: RecoveryCoordinator) => void;
-  reconcileProviderOperationsAtStartup: (signal: AbortSignal) => Promise<void>;
+  reconcileProviderOperationsAtStartup: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
   startProviderOperationReconciler: () => void;
   stopProviderOperationReconciler: () => void;
 } {
@@ -70,6 +90,57 @@ export function createExecutionServices({
   const providerProxyInheritance = world.providerProxyInheritance;
   const authorityFor = (record: ProviderOperationRecord) =>
     providerProxyLifecycle.authorityFor(providerProxySetIdentityFromRecord(record));
+  const startupSetRecovery = new StartupSetRecoveryProducer(async (work, signal) => {
+    const representative = work.operations
+      .map((operation) => readProviderOperation(getProgressStore().getDb(), operation))
+      .find((record): record is ProviderOperationRecord => record !== null);
+    if (representative === undefined) {
+      throw new Error(`provider_proxy_startup_set_representative_missing:${work.key}`);
+    }
+    if (!providerProxySetIdentitiesEqual(providerProxySetIdentityFromRecord(representative), work.identity)) {
+      throw new Error(`provider_proxy_startup_set_identity_changed:${work.key}`);
+    }
+    const live = authorityFor(representative);
+    if (live !== null) return { kind: 'authority', authority: live };
+    if (providerProxyInheritance === undefined) {
+      return {
+        kind: 'retry-scheduled',
+        reason: 'Provider proxy set inheritance is not configured.',
+        nextAttemptAtMs: runtime.time.now() + 25,
+      };
+    }
+    try {
+      const outcome = await providerProxyInheritance.inheritProviderProxySet(
+        representative,
+        getProgressStore().getDb(),
+        signal,
+      );
+      switch (outcome.kind) {
+        case 'inherited':
+          return { kind: 'authority', authority: outcome.set };
+        case 'containment-disappeared':
+          return {
+            kind: 'absence-accepted',
+            acceptance: providerProxyLifecycle.containmentAbsent(work.identity, outcome.disappearanceReceipt),
+          };
+        case 'not-bequeathed':
+          return {
+            kind: 'retry-scheduled',
+            reason: outcome.reason,
+            nextAttemptAtMs: runtime.time.now() + 25,
+          };
+        default:
+          return assertNever(outcome);
+      }
+    } catch (error: unknown) {
+      if (!(error instanceof ProviderProxySetInheritanceOperationalError)) throw error;
+      return {
+        kind: 'retry-scheduled',
+        reason: error.message,
+        nextAttemptAtMs: runtime.time.now() + 25,
+      };
+    }
+  });
   const providerOperationReconciler = new ProviderOperationReconciler({
     getProgressStore,
     authorityFor,
@@ -96,6 +167,7 @@ export function createExecutionServices({
           return assertNever(outcome);
       }
     },
+    startupSetRecovery,
     registry: world.operationRegistry,
     materializePrepare: (record) =>
       materializeProviderOperationPrepare(
@@ -128,13 +200,55 @@ export function createExecutionServices({
   const providerProxyLifecycle: ProviderProxySetLifecycle = new ProviderProxySetLifecycle({
     claims: world.providerProxyClaims,
     controlEstablished: notifyProviderProxyControlEstablished,
-    disappearanceConsumer: providerOperationReconciler,
+    disappearanceConsumer: {
+      containmentDisappeared: async (notice) => {
+        try {
+          const acceptance = await providerOperationReconciler.containmentDisappeared(notice);
+          return { kind: 'accepted' as const, acceptance };
+        } catch (error: unknown) {
+          const current = readProviderOperation(getProgressStore().getDb(), notice.operation);
+          if (
+            current !== null &&
+            providerProxySetIdentitiesEqual(providerProxySetIdentityFromRecord(current), notice.setIdentity)
+          ) {
+            return {
+              kind: 'operational-failure' as const,
+              code: 'disappearance_consumer_unavailable' as const,
+              reason: error instanceof Error ? error.message : String(error),
+            };
+          }
+          throw error;
+        }
+      },
+    },
     time: runtime.time,
     proveContainmentAbsent: (identity, signal) =>
       providerProxyInheritance === undefined
         ? Promise.resolve(null)
         : providerProxyInheritance.proveContainmentAbsent(identity, getProgressStore().getDb(), signal),
-    retireCapsule: (path) => retireProviderHandoffCapsule(runtime.storage, path),
+    retireCapsule: (path) => {
+      try {
+        retireProviderHandoffCapsule(runtime.storage, path);
+        return { kind: 'retired' };
+      } catch (error: unknown) {
+        const capsule = readHandoffCapsuleFile(path, {
+          storage: runtime.storage,
+          uid: process.getuid?.() ?? 0,
+        });
+        if (capsule === null) throw error;
+        return {
+          kind: 'operational-failure',
+          code: 'capsule_retirement_unavailable',
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    rewriteCapsule: (path, capsule: HandoffCapsuleV2) =>
+      writeHandoffCapsuleFile(path, capsule, {
+        storage: runtime.storage,
+        uid: process.getuid?.() ?? 0,
+      }),
+    onFatal: onProviderProxyLifecycleFatal,
     ...(providerProxyInheritance === undefined
       ? {}
       : {

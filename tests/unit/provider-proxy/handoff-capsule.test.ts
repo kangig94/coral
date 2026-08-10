@@ -14,6 +14,8 @@ import {
   readHandoffCapsuleFile,
   writeHandoffCapsuleFile,
   type HandoffCapsule,
+  type HandoffCapsuleV1,
+  type HandoffCapsuleV2,
   type HandoffCapsuleFileEnvironment,
   type InstalledGrant,
 } from '#src/provider-proxy/handoff-capsule.js';
@@ -22,7 +24,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 
 const SECRET = 'c'.repeat(64);
 
-function capsuleFor(): HandoffCapsule {
+function capsuleFor(): HandoffCapsuleV1 {
   return {
     version: 1,
     grantId: '11111111-1111-4111-8111-111111111111',
@@ -39,6 +41,21 @@ function capsuleFor(): HandoffCapsule {
     proxyEndpoint: '/tmp/p.sock',
     orphanTimeoutMs: 30_000,
     teardownReserveMs: 14_000,
+  };
+}
+
+function capsuleV2For(): HandoffCapsuleV2 {
+  return {
+    ...capsuleFor(),
+    version: 2,
+    guardianPid: 101,
+    guardianProcessStartedAtSeconds: 1_001,
+    proxyPid: 102,
+    reaperPid: 103,
+    reaperProcessStartedAtSeconds: 1_003,
+    containmentKind: 'detached-process-group',
+    proxyProcessStartedAtSeconds: 1_002,
+    proxyProcessGroupId: 102,
   };
 }
 
@@ -108,6 +125,10 @@ describe('provider-proxy handoff capsule', () => {
     const decoded = decodeHandoffCapsule(encode(capsuleFor()));
 
     expect(decoded.grantId).toBe('11111111-1111-4111-8111-111111111111');
+  });
+
+  it('decodes a v2 capsule with the complete containment identity', () => {
+    expect(decodeHandoffCapsule(encode(capsuleV2For()))).toEqual(capsuleV2For());
   });
 
   it('refuses an oversize capsule before parsing it', () => {

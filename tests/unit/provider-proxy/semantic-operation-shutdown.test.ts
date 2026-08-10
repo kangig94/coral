@@ -129,7 +129,7 @@ function createTestProxy(): { proxy: Proxy; ledger: OperationLedger<ProxyPrepare
       );
       if (event.kind === 'terminal') ledger.transition(key, 'terminal-awaiting-settlement');
       if (event.kind === 'suspended') ledger.transition(key, 'suspended-awaiting-durable-decision');
-      return 'recorded';
+      return { kind: 'recorded', providerSeq };
     },
   };
   return { proxy, ledger };

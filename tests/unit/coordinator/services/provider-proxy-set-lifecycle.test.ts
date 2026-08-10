@@ -3,12 +3,15 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { TimerHandle } from '#src/infra/port-types.js';
-import type { HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
+import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV2 } from '#src/provider-proxy/handoff-capsule.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { ProviderProxyAuthorityFault } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
 import {
   ProviderProxySetLifecycle,
+  type CapsuleRetirementAttemptOutcome,
+  type DisappearanceDeliveryAttemptOutcome,
+  type ProviderProxySetLifecycleDeps,
   type ProviderProxySetLifecycleProgressViolation,
 } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set-identity.js';
@@ -16,6 +19,20 @@ import { providerOperationRecord } from '#tests/unit/store/provider-operation-fi
 
 const noContainmentProof = async (): Promise<null> => null;
 const ignoreControlEstablished = (): void => undefined;
+
+function lifecycleFor(
+  deps: Omit<ProviderProxySetLifecycleDeps, 'retireCapsule' | 'rewriteCapsule' | 'onFatal'> &
+    Partial<Pick<ProviderProxySetLifecycleDeps, 'retireCapsule' | 'rewriteCapsule' | 'onFatal'>>,
+): ProviderProxySetLifecycle {
+  return new ProviderProxySetLifecycle({
+    retireCapsule: () => ({ kind: 'retired' }),
+    rewriteCapsule: () => undefined,
+    onFatal: (error) => {
+      throw error;
+    },
+    ...deps,
+  });
+}
 
 function deferred<T>(): Readonly<{ promise: Promise<T>; resolve(value: T): void }> {
   let resolve!: (value: T) => void;
@@ -103,7 +120,7 @@ function fakeAuthority(
 
 function capsuleFor(
   authority: DurableProviderProxyOperationAuthority,
-  overrides: Partial<HandoffCapsule> = {},
+  overrides: Partial<HandoffCapsuleV1> = {},
 ): HandoffCapsule {
   const identity = authority.setIdentity;
   return {
@@ -126,18 +143,35 @@ function capsuleFor(
   };
 }
 
+function capsuleV2For(authority: DurableProviderProxyOperationAuthority): HandoffCapsuleV2 {
+  const identity = authority.setIdentity;
+  return {
+    ...capsuleFor(authority),
+    version: 2,
+    guardianPid: identity.guardianPid,
+    guardianProcessStartedAtSeconds: identity.guardianProcessStartedAtSeconds,
+    proxyPid: identity.proxyPid,
+    reaperPid: identity.reaperPid,
+    reaperProcessStartedAtSeconds: identity.reaperProcessStartedAtSeconds,
+    containmentKind: identity.containmentKind,
+    proxyProcessStartedAtSeconds: identity.proxyProcessStartedAtSeconds,
+    proxyProcessGroupId: identity.proxyProcessGroupId,
+  };
+}
+
 describe('ProviderProxySetLifecycle', () => {
   it('reconstructs a zero-claim capsule before admitting an overlapping fresh set', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const authority = fakeAuthority();
     const capsule = capsuleFor(authority);
-    const lifecycle = new ProviderProxySetLifecycle({
+    const proveContainmentAbsent = vi.fn(noContainmentProof);
+    const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
-      proveContainmentAbsent: noContainmentProof,
+      proveContainmentAbsent,
       redeemCapsule: async () => {
         throw new Error('unconfirmed redemption');
       },
@@ -148,7 +182,7 @@ describe('ProviderProxySetLifecycle', () => {
     await Promise.resolve();
 
     expect(lifecycle.snapshot()).toEqual(
-      expect.objectContaining({ startupDiscoveryCompleted: true, represented: 1, states: ['capsule-recovering'] }),
+      expect.objectContaining({ startupDiscoveryCompleted: true, represented: 1, states: ['capsule-opaque'] }),
     );
     expect(
       lifecycle.beginFreshAcquisition('same-host-route', {
@@ -156,6 +190,7 @@ describe('ProviderProxySetLifecycle', () => {
         hostFingerprint: capsule.hostFingerprint,
       }),
     ).toEqual({ kind: 'already-represented' });
+    expect(proveContainmentAbsent).not.toHaveBeenCalled();
   });
 
   it('contains an unmatched zero-claim redemption before evaluating publication', async () => {
@@ -163,13 +198,21 @@ describe('ProviderProxySetLifecycle', () => {
     claims.initialize([]);
     const authority = fakeAuthority();
     const established = vi.fn();
-    const lifecycle = new ProviderProxySetLifecycle({
+    const rewriteCapsule = vi.fn(async (_path: string, capsule: HandoffCapsuleV2) => {
+      expect(capsule).toMatchObject({
+        version: 2,
+        guardianPid: authority.setIdentity.guardianPid,
+        proxyProcessGroupId: authority.setIdentity.proxyProcessGroupId,
+      });
+    });
+    const lifecycle = lifecycleFor({
       claims,
       controlEstablished: established,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
       redeemCapsule: async () => authority,
+      rewriteCapsule,
     });
     lifecycle.initializeClaimSlots();
 
@@ -178,6 +221,35 @@ describe('ProviderProxySetLifecycle', () => {
 
     expect(established).not.toHaveBeenCalled();
     expect(lifecycle.authorityFor(authority.setIdentity)).toBeNull();
+    expect(rewriteCapsule).toHaveBeenCalledOnce();
+  });
+
+  it('retires an unmatched exact v2 capsule after independent absence proof', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority();
+    const proveContainmentAbsent = vi.fn(async () => 'exact-v2-absence');
+    const retireCapsule = vi.fn(async () => ({ kind: 'retired' as const }));
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent,
+      redeemCapsule: async () => {
+        throw new Error('redemption unavailable');
+      },
+      retireCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+
+    lifecycle.installDiscoveredCapsules([
+      { path: '/capsules/unmatched-v2.handoff.json', capsule: capsuleV2For(authority) },
+    ]);
+    await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
+
+    expect(proveContainmentAbsent).toHaveBeenCalledOnce();
+    expect(retireCapsule).toHaveBeenCalledWith('/capsules/unmatched-v2.handoff.json');
   });
 
   it('fail-stops duplicate capsule addresses, grants, and claim-binding aliases during discovery', () => {
@@ -189,7 +261,7 @@ describe('ProviderProxySetLifecycle', () => {
 
     const noClaims = new ProviderProxySetClaimMirror();
     noClaims.initialize([]);
-    const duplicateAddress = new ProviderProxySetLifecycle({
+    const duplicateAddress = lifecycleFor({
       claims: noClaims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
@@ -204,7 +276,7 @@ describe('ProviderProxySetLifecycle', () => {
       ]),
     ).toThrow('provider_proxy_capsule_address_alias');
 
-    const duplicateGrant = new ProviderProxySetLifecycle({
+    const duplicateGrant = lifecycleFor({
       claims: noClaims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
@@ -226,7 +298,7 @@ describe('ProviderProxySetLifecycle', () => {
       ]),
     ).toThrow('provider_proxy_capsule_grant_alias');
 
-    const claimAlias = new ProviderProxySetLifecycle({
+    const claimAlias = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
@@ -256,7 +328,7 @@ describe('ProviderProxySetLifecycle', () => {
         return () => faultListeners.delete(listener);
       },
     };
-    const lifecycle = new ProviderProxySetLifecycle({
+    const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
@@ -297,7 +369,7 @@ describe('ProviderProxySetLifecycle', () => {
         return Promise.resolve();
       },
     };
-    const lifecycle = new ProviderProxySetLifecycle({
+    const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared },
@@ -330,13 +402,9 @@ describe('ProviderProxySetLifecycle', () => {
     });
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([first, second]);
-    const secondAcceptance = deferred<{
-      kind: 'accepted';
-      operation: typeof second.operation;
-      disposition: 'terminalization-committed';
-    }>();
-    const retireCapsule = vi.fn(async () => undefined);
-    const lifecycle = new ProviderProxySetLifecycle({
+    const secondAcceptance = deferred<DisappearanceDeliveryAttemptOutcome>();
+    const retireCapsule = vi.fn(async () => ({ kind: 'retired' as const }));
+    const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: {
@@ -344,8 +412,11 @@ describe('ProviderProxySetLifecycle', () => {
           notice.operation.jobId === first.operation.jobId
             ? Promise.resolve({
                 kind: 'accepted',
-                operation: notice.operation,
-                disposition: 'terminalization-committed',
+                acceptance: {
+                  kind: 'accepted',
+                  operation: notice.operation,
+                  disposition: 'terminalization-committed',
+                },
               })
             : secondAcceptance.promise,
       },
@@ -368,8 +439,11 @@ describe('ProviderProxySetLifecycle', () => {
 
     secondAcceptance.resolve({
       kind: 'accepted',
-      operation: second.operation,
-      disposition: 'terminalization-committed',
+      acceptance: {
+        kind: 'accepted',
+        operation: second.operation,
+        disposition: 'terminalization-committed',
+      },
     });
     await vi.waitFor(() => expect(lifecycle.snapshot().represented).toBe(0));
 
@@ -380,33 +454,44 @@ describe('ProviderProxySetLifecycle', () => {
     const clock = new ManualClock();
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
-    const retirementErrors: string[] = [];
     const retireCapsule = vi
-      .fn<(path: string) => Promise<void>>()
-      .mockRejectedValueOnce(new Error('capsule still durable'))
-      .mockResolvedValue(undefined);
+      .fn(async (): Promise<CapsuleRetirementAttemptOutcome> => ({ kind: 'retired' }))
+      .mockResolvedValueOnce({
+        kind: 'operational-failure',
+        code: 'capsule_retirement_unavailable',
+        reason: 'capsule still durable',
+      });
     const authority = fakeAuthority({
       stopAndReap: async () => ({ disappearanceReceipt: 'exact-absence' }),
     });
-    const lifecycle = new ProviderProxySetLifecycle({
+    const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: clock,
       proveContainmentAbsent: noContainmentProof,
       retireCapsule,
-      onError: (message) => retirementErrors.push(message),
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
     lifecycle.registerInheritedSet(authority, '/capsules/set.handoff.json');
 
     lifecycle.faultAuthority(authority.setIdentity);
+    const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'exact-absence');
     await vi.waitFor(() => expect(retireCapsule).toHaveBeenCalledOnce());
     expect(lifecycle.snapshot()).toEqual(
       expect.objectContaining({ represented: 1, states: ['absence-delivery-pending'] }),
     );
-    expect(retirementErrors).toEqual(['Provider handoff capsule retirement failed: capsule still durable']);
+    await expect(acceptance.initialDisposition).resolves.toEqual({
+      kind: 'operational-retry-owned',
+      incidents: [
+        expect.objectContaining({
+          stage: 'capsule-retirement',
+          code: 'capsule_retirement_unavailable',
+          reason: 'capsule still durable',
+        }),
+      ],
+    });
 
     clock.elapse(1_000);
     clock.runDue();
@@ -426,7 +511,7 @@ describe('ProviderProxySetLifecycle', () => {
         return { unconfirmed: 'still ambiguous' };
       },
     });
-    const lifecycle = new ProviderProxySetLifecycle({
+    const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
@@ -466,7 +551,7 @@ describe('ProviderProxySetLifecycle', () => {
     const lateProof = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['stopAndReap']>>>();
     const consumer = vi.fn(async () => ({}) as never);
     const authority = fakeAuthority({ stopAndReap: () => lateProof.promise });
-    const lifecycle = new ProviderProxySetLifecycle({
+    const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: consumer },
@@ -495,7 +580,7 @@ describe('ProviderProxySetLifecycle', () => {
   it('represents a fifth inherited set as excess without admitting fresh capacity', () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
-    const lifecycle = new ProviderProxySetLifecycle({
+    const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
@@ -554,7 +639,7 @@ describe('ProviderProxySetLifecycle', () => {
     claims.initialize([record]);
     const stopAndReap = vi.fn(async () => ({ unconfirmed: 'still claimed' }) as const);
     const authority = fakeAuthority({ record, stopAndReap });
-    const lifecycle = new ProviderProxySetLifecycle({
+    const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },

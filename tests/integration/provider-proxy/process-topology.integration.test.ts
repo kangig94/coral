@@ -1111,12 +1111,16 @@ describe('provider-proxy process topology: acquisition', () => {
       disappearanceConsumer: {
         containmentDisappeared: async (notice) => ({
           kind: 'accepted',
-          operation: notice.operation,
-          disposition: 'record-absent',
+          acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
         }),
       },
       time: environment.outerRuntime().time,
       proveContainmentAbsent: async () => null,
+      retireCapsule: () => ({ kind: 'retired' }),
+      rewriteCapsule: () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();

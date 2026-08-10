@@ -60,7 +60,7 @@ async function startEndpoint(
 ): Promise<{
   endpoint: ControlEndpoint;
   socketPath: string;
-  observer: { onControlLost: ReturnType<typeof vi.fn> };
+  observer: { onControlLost: ReturnType<typeof vi.fn>; onControlActive: ReturnType<typeof vi.fn> };
   challenges: ControlChallenge[];
   accepted: ControlChallenge[];
   /** Lapses the lease without an EOF, which is how a wedged coordinator loses control. */
@@ -78,7 +78,10 @@ async function startEndpoint(
   let teardownLatched = false;
   let minted = 0;
   // Mirrors the real wiring: an observed EOF is control loss, and the deadline machine is what records it.
-  const observer = { onControlLost: vi.fn(() => (controlLive = false)) };
+  const observer = {
+    onControlLost: vi.fn(() => (controlLive = false)),
+    onControlActive: vi.fn(),
+  };
 
   const mint = (): ControlChallenge => {
     minted += 1;
@@ -302,6 +305,7 @@ describe('provider-proxy control endpoint', () => {
 
     expect(beat.result).toEqual({ state: 'active', nextHeartbeatChallenge: 'challenge-2' });
     expect(set.accepted).toEqual(['challenge-1']);
+    expect(set.observer.onControlActive).toHaveBeenCalledExactlyOnceWith(1);
 
     // The consumed challenge cannot re-earn evidence. "not accepted" is the wrapper text every refusal
     // reason shares, so assert the specific reason this authority actually reported instead.
@@ -309,6 +313,7 @@ describe('provider-proxy control endpoint', () => {
     expect(replay.error?.message).toContain('challenge-mismatch');
     expect(replay.error?.data?.code).toBe('invalid_request');
     expect(set.accepted).toEqual(['challenge-1']);
+    expect(set.observer.onControlActive).toHaveBeenCalledOnce();
   });
 
   it('rejects a heartbeat carrying a foreign epoch', async () => {
@@ -590,8 +595,10 @@ describe('provider-proxy control endpoint', () => {
     // And proof the outstanding challenge itself survived, not just the reply: the exact challenge from the
     // *first* redemption is still the one this tenancy answers to.
     const { controlEpoch, heartbeatChallenge } = opened.result as { controlEpoch: number; heartbeatChallenge: string };
+    expect(set.observer.onControlActive).not.toHaveBeenCalled();
     const beat = await retry.call('role.heartbeat.v1', { controlEpoch, heartbeatChallenge });
     expect(beat.result).toMatchObject({ state: 'active' });
+    expect(set.observer.onControlActive).toHaveBeenCalledExactlyOnceWith(controlEpoch);
 
     // The superseded first connection is retired without being read as a loss of the tenancy it opened.
     await vi.waitFor(() => expect(first.socket.destroyed).toBe(true));
@@ -786,6 +793,14 @@ function pushFrame(id: number): string {
   return `${JSON.stringify({ jsonrpc: '2.0', id, method: 'provider.event.v1', params: { hello: 'world' } })}\n`;
 }
 
+function pushResponse(endpoint: ControlEndpoint, frame: string, timeoutMs: number): Promise<unknown> {
+  try {
+    return endpoint.pushOnTenancy(frame, timeoutMs).response;
+  } catch (error: unknown) {
+    return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
 /** Answers the next raw frame the far end of `socket` receives as if it were the peer replying to a push —
  *  below `Client.call()`'s own abstraction, since a push is unsolicited from the peer's point of view and
  *  `Client` only ever matches replies to ids it minted itself. */
@@ -797,10 +812,29 @@ function respondToPush(socket: Socket, buildResult: (id: number | string) => unk
 }
 
 describe('provider-proxy control endpoint: pushOnTenancy', () => {
+  it('faults only the exact active control epoch and closes admission before reporting loss', async () => {
+    const set = await startEndpoint();
+    const client = await connect(set.socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
+
+    set.endpoint.faultControlTenancy(2);
+    expect(client.socket.destroyed).toBe(false);
+    expect(set.observer.onControlLost).not.toHaveBeenCalled();
+
+    set.endpoint.faultControlTenancy(1);
+
+    expect(set.observer.onControlLost).toHaveBeenCalledExactlyOnceWith(1);
+    expect(() => set.endpoint.pushOnTenancy(pushFrame(1), 200)).toThrowError(
+      expect.objectContaining({ code: 'control_endpoint_push_no_tenancy' }),
+    );
+    await vi.waitFor(() => expect(client.socket.destroyed).toBe(true));
+  });
+
   it('rejects a push when no tenancy has ever opened', async () => {
     const { endpoint } = await startEndpoint();
 
-    await expect(endpoint.pushOnTenancy(pushFrame(1), 200)).rejects.toMatchObject({
+    await expect(pushResponse(endpoint, pushFrame(1), 200)).rejects.toMatchObject({
       code: 'control_endpoint_push_no_tenancy',
     });
   });
@@ -810,7 +844,7 @@ describe('provider-proxy control endpoint: pushOnTenancy', () => {
     const client = await connect(socketPath);
     await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
 
-    await expect(endpoint.pushOnTenancy(pushFrame(1), 200)).rejects.toMatchObject({
+    await expect(pushResponse(endpoint, pushFrame(1), 200)).rejects.toMatchObject({
       code: 'control_endpoint_push_no_tenancy',
     });
   });
@@ -823,7 +857,7 @@ describe('provider-proxy control endpoint: pushOnTenancy', () => {
 
     set.lapseControl();
 
-    await expect(set.endpoint.pushOnTenancy(pushFrame(1), 200)).rejects.toMatchObject({
+    await expect(pushResponse(set.endpoint, pushFrame(1), 200)).rejects.toMatchObject({
       code: 'control_endpoint_push_no_tenancy',
     });
   });
@@ -834,9 +868,11 @@ describe('provider-proxy control endpoint: pushOnTenancy', () => {
     await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
     await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
 
-    const pushed = endpoint.pushOnTenancy(pushFrame(42), 5_000);
+    const push = endpoint.pushOnTenancy(pushFrame(42), 5_000);
+    const pushed = push.response;
     respondToPush(client.socket, () => ({ committed: true }));
 
+    expect(push.controlEpoch).toBe(1);
     await expect(pushed).resolves.toEqual({ committed: true });
   });
 
@@ -846,7 +882,7 @@ describe('provider-proxy control endpoint: pushOnTenancy', () => {
     await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
     await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
 
-    const pushed = endpoint.pushOnTenancy(pushFrame(1), 5_000);
+    const pushed = endpoint.pushOnTenancy(pushFrame(1), 5_000).response;
     client.socket.once('data', (chunk: Buffer) => {
       const message = JSON.parse(chunk.toString('utf8').split('\n')[0]) as { id: number };
       client.socket.write(
@@ -863,7 +899,7 @@ describe('provider-proxy control endpoint: pushOnTenancy', () => {
     await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
     await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
 
-    await expect(endpoint.pushOnTenancy(pushFrame(1), 50)).rejects.toMatchObject({
+    await expect(pushResponse(endpoint, pushFrame(1), 50)).rejects.toMatchObject({
       code: 'control_endpoint_push_timeout',
     });
   });
@@ -874,7 +910,7 @@ describe('provider-proxy control endpoint: pushOnTenancy', () => {
     await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
     await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
 
-    const pushed = endpoint.pushOnTenancy(pushFrame(1), 5_000);
+    const pushed = endpoint.pushOnTenancy(pushFrame(1), 5_000).response;
     client.close();
 
     await expect(pushed).rejects.toMatchObject({ code: 'control_endpoint_push_lost' });
@@ -887,7 +923,7 @@ describe('provider-proxy control endpoint: pushOnTenancy', () => {
     await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
     await incumbent.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
 
-    const pushed = endpoint.pushOnTenancy(pushFrame(1), 5_000);
+    const pushed = endpoint.pushOnTenancy(pushFrame(1), 5_000).response;
     // Attached in the same tick `pushed` is created: the rejection this test provokes below fires from a
     // socket 'close' callback several ticks later, and Node flags a promise as unhandled by whether a handler
     // was attached *before* that callback runs — not by whether one is attached eventually.
@@ -911,7 +947,7 @@ describe('provider-proxy control endpoint: pushOnTenancy', () => {
     await client.call('role.heartbeat.v1', { controlEpoch: 1, heartbeatChallenge: 'challenge-1' });
 
     // Left outstanding for the rest of the test — settled only by `endpoint.close()` in the shared afterEach.
-    void endpoint.pushOnTenancy(pushFrame(1), 5_000).catch(() => {});
+    void endpoint.pushOnTenancy(pushFrame(1), 5_000).response.catch(() => {});
 
     const worked = await client.call('role.work.v1', {});
     expect(worked.result).toEqual({ state: 'worked' });

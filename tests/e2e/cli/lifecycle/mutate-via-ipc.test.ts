@@ -1,11 +1,12 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import {
   chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -25,6 +26,8 @@ import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { storePaths } from '#src/infra/path/store.js';
+import { readProviderOperationForJob } from '#src/store/provider-operation-journal.js';
+import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-backend.cjs');
@@ -40,10 +43,13 @@ type Fixture = {
   home: string;
   projectRoot: string;
   binDir: string;
+  fakeStateDir: string;
   flavor: 'prod' | 'dev';
 };
 
 const FAKE_CODEX_APP_SERVER = `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
 const readline = require('node:readline');
 
 if (process.argv[2] === 'app-server' && process.argv[3] === '--help') {
@@ -54,6 +60,34 @@ if (process.argv[2] === 'app-server' && process.argv[3] === '--help') {
 if (process.argv[2] !== 'app-server') {
   process.stderr.write('unsupported fake codex command\\n');
   process.exit(1);
+}
+
+const stateHome = process.env.HOME;
+if (!stateHome) {
+  process.stderr.write('HOME is required\\n');
+  process.exit(1);
+}
+const stateDir = path.join(stateHome, '.fake-codex-state');
+let secondOperation = false;
+
+function signal(name) {
+  fs.writeFileSync(path.join(stateDir, name), 'ready');
+}
+
+function afterGate(name, action) {
+  const gatePath = path.join(stateDir, name);
+  const poll = () => {
+    if (fs.existsSync(gatePath)) {
+      action();
+      return;
+    }
+    setTimeout(poll, 10);
+  };
+  poll();
+}
+
+function trace(event) {
+  fs.appendFileSync(path.join(stateDir, 'ordered-trace'), event + '\\n');
 }
 
 const threadId = 'scripted-codex-session';
@@ -75,48 +109,63 @@ rl.on('line', (line) => {
       send({ id: message.id, result: { config: {} } });
       break;
     case 'thread/start':
-      send({
-        method: 'thread/started',
-        params: {
-          thread: { id: threadId },
-        },
+      secondOperation = fs.existsSync(path.join(stateDir, 'second-operation-armed'));
+      signal('thread-start-pending-' + (secondOperation ? 2 : 1));
+      afterGate('thread-start-gate-' + (secondOperation ? 2 : 1), () => {
+        if (secondOperation) trace('fake thread/start');
+        send({
+          method: 'thread/started',
+          params: {
+            thread: { id: threadId },
+          },
+        });
+        send({ id: message.id, result: { thread: { id: threadId } } });
       });
-      send({ id: message.id, result: { thread: { id: threadId } } });
       break;
     case 'turn/start':
-      send({
-        method: 'turn/started',
-        params: {
-          threadId,
-          turn: {
-            id: turnId,
-            status: 'inProgress',
+      const answerTurn = () => {
+        if (secondOperation) trace('fake turn/start');
+        send({
+          method: 'turn/started',
+          params: {
+            threadId,
+            turn: {
+              id: turnId,
+              status: 'inProgress',
+            },
           },
-        },
-      });
-      send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });
-      send({
-        method: 'item/completed',
-        params: {
-          threadId,
-          turnId,
-          item: {
-            type: 'agentMessage',
-            phase: 'final_answer',
-            text: 'scripted terminal output',
+        });
+        send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });
+        send({
+          method: 'item/completed',
+          params: {
+            threadId,
+            turnId,
+            item: {
+              type: 'agentMessage',
+              phase: 'final_answer',
+              text: 'scripted terminal output',
+            },
           },
-        },
-      });
-      send({
-        method: 'turn/completed',
-        params: {
-          threadId,
-          turn: {
-            id: turnId,
-            status: 'completed',
+        });
+        send({
+          method: 'turn/completed',
+          params: {
+            threadId,
+            turn: {
+              id: turnId,
+              status: 'completed',
+            },
           },
-        },
-      });
+        });
+        if (secondOperation) fs.appendFileSync(path.join(stateDir, 'terminal-events'), 'terminal\\n');
+      };
+      if (secondOperation) {
+        signal('turn-start-pending-2');
+        afterGate('turn-start-gate-2', answerTurn);
+      } else {
+        answerTurn();
+      }
       break;
     case 'turn/interrupt':
       send({ id: message.id, result: { threadId, turnId } });
@@ -133,12 +182,14 @@ function createFixture(): Fixture {
   const home = mkdtempSync(join(tmpdir(), 'coral-ipc-mutate-home-'));
   const projectRoot = join(root, 'project');
   const binDir = join(root, 'bin');
+  const fakeStateDir = join(home, '.fake-codex-state');
 
   tempRoots.push(root, home);
 
   mkdirSync(join(root, 'bridge'), { recursive: true });
   mkdirSync(projectRoot, { recursive: true });
   mkdirSync(binDir, { recursive: true });
+  mkdirSync(fakeStateDir, { recursive: true });
   mkdirSync(join(home, '.codex'), { recursive: true });
   copyFileSync(SOURCE_BACKEND_BUNDLE, join(root, 'bridge', 'coral-backend.cjs'));
   copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli.cjs'));
@@ -165,6 +216,7 @@ function createFixture(): Fixture {
     home,
     projectRoot,
     binDir,
+    fakeStateDir,
     flavor: readBuildFlavor(root),
   };
 }
@@ -195,6 +247,128 @@ async function waitForCondition(check: () => boolean, timeoutMs = 10_000): Promi
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`Timed out waiting for condition after ${timeoutMs}ms`);
+}
+
+type CliRun = Readonly<{
+  stdout(): string;
+  stderr(): string;
+  completed: Promise<number>;
+}>;
+
+function startCli(fixture: Fixture, promptPath: string): CliRun {
+  const {
+    CORAL_CHILD: _coralChild,
+    CORAL_CHILD_PRINCIPAL_HANDLE: _childPrincipal,
+    CORAL_JOB_ID: _coralJobId,
+    CORAL_SESSION_ID: _coralSessionId,
+    ...topLevelEnv
+  } = process.env;
+  const child = spawn('node', [join(fixture.root, 'bridge', 'coral-cli.cjs'), 'codex', '-i', promptPath], {
+    cwd: fixture.projectRoot,
+    env: {
+      ...topLevelEnv,
+      HOME: fixture.home,
+      TMPDIR: fixture.home,
+      PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk: string) => {
+    stderr += chunk;
+  });
+  const completed = new Promise<number>((resolve, reject) => {
+    let timeoutFailure: Error | null = null;
+    const timeout = setTimeout(() => {
+      timeoutFailure = new Error(`coral-cli timed out\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+      child.kill('SIGKILL');
+    }, 90_000);
+    child.once('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once('close', (status) => {
+      clearTimeout(timeout);
+      if (timeoutFailure !== null) reject(timeoutFailure);
+      else resolve(status ?? -1);
+    });
+  });
+  return { stdout: () => stdout, stderr: () => stderr, completed };
+}
+
+function launchedJobId(stdout: string): string | null {
+  return stdout.match(/^Provider job (\S+) (?:launch accepted|queued) \(provider session \S+\)$/m)?.[1] ?? null;
+}
+
+async function waitForCliGate(run: CliRun, check: () => boolean, label: string): Promise<void> {
+  await Promise.race([
+    waitForCondition(check, 30_000),
+    run.completed.then((status) => {
+      throw new Error(
+        `${label} was never reached before coral-cli exited with status ${String(status)}\nstdout:\n${run.stdout()}\nstderr:\n${run.stderr()}`,
+      );
+    }),
+  ]);
+}
+
+function readDurableOperation(fixture: Fixture, jobId: string): ProviderOperationRecord | null {
+  const runtime = createRealRuntime('prod');
+  const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
+    path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
+    storage: runtime.storage,
+    readonly: true,
+  });
+  try {
+    return readProviderOperationForJob(db, jobId);
+  } finally {
+    db.close();
+  }
+}
+
+function requireDurableOperation(fixture: Fixture, jobId: string): ProviderOperationRecord {
+  const record = readDurableOperation(fixture, jobId);
+  if (record === null) throw new Error(`provider operation for ${jobId} was not durably readable`);
+  return record;
+}
+
+async function waitForExactProviderWatermark(
+  fixture: Fixture,
+  jobId: string,
+  watermark: number,
+): Promise<ProviderOperationRecord & { phase: 'executing' }> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const record = readDurableOperation(fixture, jobId);
+    if (record?.phase === 'executing') {
+      if (record.committedThroughProviderSeq === watermark) return record;
+      if (record.committedThroughProviderSeq > watermark) {
+        throw new Error(
+          `provider watermark advanced to ${record.committedThroughProviderSeq} before ${watermark} was observed`,
+        );
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error(`Timed out waiting for provider watermark ${watermark}`);
+}
+
+function appendOrderedTrace(fixture: Fixture, event: string): void {
+  writeFileSync(join(fixture.fakeStateDir, 'ordered-trace'), `${event}\n`, { flag: 'a' });
+}
+
+function providerSocketCount(fixture: Fixture): number {
+  const coralRoot = join(fixture.home, '.coral');
+  if (!existsSync(coralRoot)) return 0;
+  return readdirSync(coralRoot, { recursive: true }).filter(
+    (entry) => typeof entry === 'string' && entry.includes('provider-') && entry.endsWith('.sock'),
+  ).length;
 }
 
 async function shutdownBackend(record: CoordinatorDiscoveryRecord | null): Promise<void> {
@@ -238,7 +412,7 @@ afterEach(async () => {
 });
 
 describe('mutating commands via IPC', () => {
-  it('auto-launches the coordinator and completes coral-cli codex through a fake Codex app-server', async () => {
+  it('routes two durable operations through the discovered proxy before each faithful Codex checkpoint', async () => {
     if (
       !existsSync(SOURCE_BACKEND_BUNDLE) ||
       !existsSync(SOURCE_CLI_BUNDLE) ||
@@ -249,48 +423,106 @@ describe('mutating commands via IPC', () => {
     }
 
     const fixture = createFixture();
-    const promptPath = join(fixture.projectRoot, 'prompt.txt');
-    writeFileSync(promptPath, 'hello over ipc', 'utf-8');
+    const firstPromptPath = join(fixture.projectRoot, 'first-prompt.txt');
+    const secondPromptPath = join(fixture.projectRoot, 'second-prompt.txt');
+    writeFileSync(firstPromptPath, 'first hello over ipc', 'utf-8');
+    writeFileSync(secondPromptPath, 'second hello over ipc', 'utf-8');
 
     expect(readDiscoveryRecord(fixture.home, fixture.flavor)).toBeNull();
 
     let discoveryRecord: CoordinatorDiscoveryRecord | null = null;
     try {
-      const result = spawnSync('node', [join(fixture.root, 'bridge', 'coral-cli.cjs'), 'codex', '-i', promptPath], {
-        cwd: fixture.projectRoot,
-        env: {
-          ...process.env,
-          HOME: fixture.home,
-          TMPDIR: fixture.home,
-          PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
-        },
-        encoding: 'utf-8',
-        timeout: 90_000,
-      });
+      const first = startCli(fixture, firstPromptPath);
+      await waitForCliGate(
+        first,
+        () =>
+          existsSync(join(fixture.fakeStateDir, 'thread-start-pending-1')) && launchedJobId(first.stdout()) !== null,
+        'first thread/start gate',
+      );
+      const firstJobId = launchedJobId(first.stdout());
+      if (firstJobId === null) throw new Error('first CLI never reported its provider job id');
+      writeFileSync(join(fixture.fakeStateDir, 'thread-start-gate-1'), 'continue');
 
-      if (result.error) {
-        throw result.error;
-      }
-
-      if (result.status !== 0) {
+      const firstStatus = await first.completed;
+      if (firstStatus !== 0) {
         throw new Error(
-          `coral-cli exited with status ${String(result.status)}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+          `first coral-cli exited with status ${String(firstStatus)}\nstdout:\n${first.stdout()}\nstderr:\n${first.stderr()}`,
         );
       }
+      expect(first.stderr()).toBe('');
+      expect(first.stdout()).toContain('Thread ready (scripted-codex-session).');
+      expect(first.stdout()).toMatch(new RegExp(`^Job ${firstJobId} completed$`, 'm'));
 
-      expect(result.stderr).toBe('');
-      expect(result.stdout).toContain('Thread ready (scripted-codex-session).');
-
-      const launchMatch = result.stdout.match(
-        /^Provider job (\S+) (launch accepted|queued) \(provider session (\S+)\)$/m,
+      await waitForCondition(() => providerSocketCount(fixture) >= 3, 10_000);
+      writeFileSync(join(fixture.fakeStateDir, 'second-operation-armed'), 'armed');
+      const second = startCli(fixture, secondPromptPath);
+      await waitForCliGate(
+        second,
+        () =>
+          existsSync(join(fixture.fakeStateDir, 'thread-start-pending-2')) && launchedJobId(second.stdout()) !== null,
+        'second thread/start gate',
       );
-      expect(launchMatch).not.toBeNull();
+      const secondJobId = launchedJobId(second.stdout());
+      if (secondJobId === null) throw new Error('second CLI never reported its provider job id');
+      await waitForCondition(() => readDurableOperation(fixture, secondJobId) !== null, 10_000);
+      const secondOperationBeforeThread = requireDurableOperation(fixture, secondJobId);
+      expect(secondOperationBeforeThread.operation).toMatchObject({
+        jobId: secondJobId,
+        proxyInstanceId: secondOperationBeforeThread.locator.proxy.instanceId,
+      });
+      expect(Object.keys(secondOperationBeforeThread.locator).sort()).toEqual([
+        'containment',
+        'guardian',
+        'hostFingerprint',
+        'proxy',
+        'reaper',
+      ]);
+      expect(isProcessAlive(secondOperationBeforeThread.locator.proxy.pid)).toBe(true);
+      expect(isProcessAlive(secondOperationBeforeThread.locator.guardian.pid)).toBe(true);
+      expect(isProcessAlive(secondOperationBeforeThread.locator.reaper.pid)).toBe(true);
+      expect(secondOperationBeforeThread.locator.containment).toMatchObject({
+        pid: secondOperationBeforeThread.locator.proxy.pid,
+        processStartedAtSeconds: secondOperationBeforeThread.locator.proxy.processStartedAtSeconds,
+      });
+      appendOrderedTrace(fixture, 'second operation durable proxy locator');
+      const durableContinuityAck = waitForExactProviderWatermark(fixture, secondJobId, 1);
+      writeFileSync(join(fixture.fakeStateDir, 'thread-start-gate-2'), 'continue');
 
-      const terminalMatch = result.stdout.match(/^Job (\S+) completed$/m);
-      expect(terminalMatch).not.toBeNull();
+      await durableContinuityAck;
+      appendOrderedTrace(fixture, 'durable provider watermark 1 / ACK');
+      await waitForCliGate(
+        second,
+        () => existsSync(join(fixture.fakeStateDir, 'turn-start-pending-2')),
+        'second turn/start gate',
+      );
+      const secondOperationAtTurn = requireDurableOperation(fixture, secondJobId);
+      if (secondOperationAtTurn.phase !== 'executing') {
+        throw new Error(`second operation reached turn/start from phase ${secondOperationAtTurn.phase}`);
+      }
+      expect(secondOperationAtTurn.committedThroughProviderSeq).toBeGreaterThanOrEqual(1);
+      writeFileSync(join(fixture.fakeStateDir, 'turn-start-gate-2'), 'continue');
 
-      const resultPathMatch = result.stdout.match(/^Result path: (.+)$/m);
-      expect(resultPathMatch).not.toBeNull();
+      const secondStatus = await second.completed;
+      if (secondStatus !== 0) {
+        throw new Error(
+          `second coral-cli exited with status ${String(secondStatus)}\nstdout:\n${second.stdout()}\nstderr:\n${second.stderr()}`,
+        );
+      }
+      expect(second.stderr()).toBe('');
+      expect(second.stdout()).toContain('Thread ready (scripted-codex-session).');
+      expect(second.stdout()).toMatch(new RegExp(`^Job ${secondJobId} completed$`, 'm'));
+      await waitForCondition(() => readDurableOperation(fixture, secondJobId) === null, 10_000);
+
+      const terminalEvents = readFileSync(join(fixture.fakeStateDir, 'terminal-events'), 'utf8').trim().split('\n');
+      expect(terminalEvents).toEqual(['terminal']);
+      appendOrderedTrace(fixture, 'one terminal and settled row');
+      expect(readFileSync(join(fixture.fakeStateDir, 'ordered-trace'), 'utf8').trim().split('\n')).toEqual([
+        'second operation durable proxy locator',
+        'fake thread/start',
+        'durable provider watermark 1 / ACK',
+        'fake turn/start',
+        'one terminal and settled row',
+      ]);
 
       await waitForCondition(() => readDiscoveryRecord(fixture.home, fixture.flavor) !== null, 10_000);
       discoveryRecord = readDiscoveryRecord(fixture.home, fixture.flavor);
@@ -310,24 +542,16 @@ describe('mutating commands via IPC', () => {
       try {
         const store = new CoralStore(db, createDefaultStoreReadContext());
         const jobs = store.jobs.list({ projectRoot: fixture.projectRoot, all: true });
-        expect(jobs).toHaveLength(1);
+        expect(jobs).toHaveLength(2);
 
-        const jobId = jobs[0]?.jobId;
-        const detail = jobId ? store.jobs.detail(jobId) : null;
-        const sessionId = detail?.status.sessionId;
-        const resultPath = jobId ? resultArtifactPath(fixture.home, fixture.flavor, jobId) : null;
-
-        expect(detail?.status.phase).toBe('completed');
-        expect(detail?.status.sessionId).toBe(sessionId);
-        expect(detail?.status.result?.content).toBe('scripted terminal output');
-        expect(resultPath).toBeDefined();
-        expect(resultPath && existsSync(resultPath)).toBe(true);
-        expect(resultPath && readFileSync(resultPath, 'utf-8')).toBe('scripted terminal output');
-
-        expect(launchMatch?.[1]).toBe(jobId);
-        expect(launchMatch?.[3]).toBe(sessionId);
-        expect(terminalMatch?.[1]).toBe(jobId);
-        expect(resultPathMatch?.[1]).toBe(resultPath);
+        for (const jobId of [firstJobId, secondJobId]) {
+          const detail = store.jobs.detail(jobId);
+          const resultPath = resultArtifactPath(fixture.home, fixture.flavor, jobId);
+          expect(detail?.status.phase).toBe('completed');
+          expect(detail?.status.result?.content).toBe('scripted terminal output');
+          expect(existsSync(resultPath)).toBe(true);
+          expect(readFileSync(resultPath, 'utf-8').trimEnd()).toBe('scripted terminal output');
+        }
       } finally {
         db.close();
       }

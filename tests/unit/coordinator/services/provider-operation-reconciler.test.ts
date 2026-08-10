@@ -116,13 +116,23 @@ function lifecycleForSchedule(
   const lifecycle = new ProviderProxySetLifecycle({
     claims,
     controlEstablished: () => undefined,
-    disappearanceConsumer: reconciler,
+    disappearanceConsumer: {
+      containmentDisappeared: async (notice) => ({
+        kind: 'accepted',
+        acceptance: await reconciler.containmentDisappeared(notice),
+      }),
+    },
     time: {
       now: () => 100,
       setTimeout: () => ({ unref: () => undefined }),
       clearTimeout: () => undefined,
     },
     proveContainmentAbsent: async () => null,
+    retireCapsule: () => ({ kind: 'retired' }),
+    rewriteCapsule: () => undefined,
+    onFatal: (error) => {
+      throw error;
+    },
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
@@ -291,7 +301,11 @@ async function activationAckFromRealProxy(provider: string, operation: ProviderO
       confirmActivation: async () => undefined,
       abortAndRelease: async () => undefined,
     }),
-    pushProviderEvent: async () => ({ kind: 'ack', committedThroughProviderSeq: 0 }),
+    pushProviderEvent: () => ({
+      controlEpoch: 1,
+      response: Promise.resolve({ kind: 'ack', committedThroughProviderSeq: 0 }),
+    }),
+    faultProviderEventControl: () => undefined,
   });
   await supervisor.prepare(operation, {
     prepareAttemptNumber: 1,
@@ -499,6 +513,9 @@ function createHarness(
     getProgressStore: () => progressStore,
     authorityFor: overrides.authorityFor ?? (() => authority),
     ...(overrides.acquireAuthority === undefined ? {} : { acquireAuthority: overrides.acquireAuthority }),
+    startupSetRecovery: {
+      recoverSetAtStartup: async () => ({ kind: 'authority', authority }),
+    },
     registry,
     materializePrepare: overrides.materializePrepare ?? (() => ({ state: 'prepared', prepared })),
     recoverLocalJob:
@@ -1031,7 +1048,7 @@ describe('ProviderOperationReconciler publication', () => {
         return harness.authority.prepareOperation(attempt);
       },
     };
-    const acquireAuthority = vi.fn(async () => {
+    const acquireAuthority = vi.fn(async (_record: ProviderOperationRecord, _signal: AbortSignal) => {
       modeledProxyState.redeem({
         grantId: capsule.grantId,
         secret: capsule.secret,
@@ -1052,6 +1069,15 @@ describe('ProviderOperationReconciler publication', () => {
       getProgressStore: () => harness.progressStore,
       authorityFor: () => null,
       acquireAuthority,
+      startupSetRecovery: {
+        recoverSetAtStartup: async (work, signal) => {
+          const startupRecord = readProviderOperation(harness.db, work.operations[0]);
+          if (startupRecord === null) throw new Error('startup record disappeared');
+          const startupAuthority = await acquireAuthority(startupRecord, signal);
+          if (startupAuthority === null) throw new Error('startup authority unexpectedly absent');
+          return { kind: 'authority', authority: startupAuthority };
+        },
+      },
       registry: harness.registry,
       materializePrepare: () => MATERIALIZED_PREPARED,
       recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
@@ -1109,11 +1135,20 @@ describe('ProviderOperationReconciler publication', () => {
     const harness = createHarness({ activatePreparedOperation, inspectOperation });
     const recovered = providerOperationRecord('proxy-activation-pending');
     insertProviderOperation(harness.db, recovered);
-    const acquireAuthority = vi.fn(async () => harness.authority);
+    const acquireAuthority = vi.fn(async (_record: ProviderOperationRecord, _signal: AbortSignal) => harness.authority);
     const reconciler = new ProviderOperationReconciler({
       getProgressStore: () => harness.progressStore,
       authorityFor: () => null,
       acquireAuthority,
+      startupSetRecovery: {
+        recoverSetAtStartup: async (work, signal) => {
+          const startupRecord = readProviderOperation(harness.db, work.operations[0]);
+          if (startupRecord === null) throw new Error('startup record disappeared');
+          const startupAuthority = await acquireAuthority(startupRecord, signal);
+          if (startupAuthority === null) throw new Error('startup authority unexpectedly absent');
+          return { kind: 'authority', authority: startupAuthority };
+        },
+      },
       registry: harness.registry,
       materializePrepare: () => MATERIALIZED_PREPARED,
       recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
@@ -1141,12 +1176,24 @@ describe('ProviderOperationReconciler publication', () => {
     const harness = createHarness();
     const recovered = providerOperationRecord('proxy-activation-pending');
     insertProviderOperation(harness.db, recovered);
-    const acquireAuthority = vi.fn(async () => null);
+    const acquireAuthority = vi.fn(async (_record: ProviderOperationRecord, _signal: AbortSignal) => null);
     const registry = { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() };
     const reconciler = new ProviderOperationReconciler({
       getProgressStore: () => harness.progressStore,
       authorityFor: () => null,
       acquireAuthority,
+      startupSetRecovery: {
+        recoverSetAtStartup: async (work, signal) => {
+          const startupRecord = readProviderOperation(harness.db, work.operations[0]);
+          if (startupRecord === null) throw new Error('startup record disappeared');
+          await acquireAuthority(startupRecord, signal);
+          return {
+            kind: 'retry-scheduled',
+            reason: 'No live control authority is available for this proxy set.',
+            nextAttemptAtMs: 125,
+          };
+        },
+      },
       registry,
       materializePrepare: () => MATERIALIZED_PREPARED,
       recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),

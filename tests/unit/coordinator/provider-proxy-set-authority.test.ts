@@ -364,8 +364,16 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
       teardownReserveMs: number;
       operations?: readonly unknown[];
       committedThroughProviderSeq?: number;
+      guardianPid: number;
+      guardianProcessStartedAtSeconds: number;
+      proxyPid: number;
+      reaperPid: number;
+      reaperProcessStartedAtSeconds: number;
+      containmentKind: string;
+      proxyProcessStartedAtSeconds: number;
+      proxyProcessGroupId: number;
     };
-    expect(written.version).toBe(1);
+    expect(written.version).toBe(2);
     expect(written.buildSetId).toBe(GUARDIAN_IDENTITY.buildSetId);
     expect(written.orphanTimeoutMs).toBe(DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS);
     expect(written.teardownReserveMs).toBe(PROXY_TEARDOWN_RESERVE_MS);
@@ -373,6 +381,16 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     // durable artifact a successor might one day trust in place of the store or the proxy's live ledger.
     expect(written.operations).toBeUndefined();
     expect(written.committedThroughProviderSeq).toBeUndefined();
+    expect(written).toMatchObject({
+      guardianPid: GUARDIAN_IDENTITY.pid,
+      guardianProcessStartedAtSeconds: GUARDIAN_IDENTITY.processStartedAtSeconds,
+      proxyPid: PROXY_IDENTITY.pid,
+      reaperPid: REAPER_IDENTITY.pid,
+      reaperProcessStartedAtSeconds: REAPER_IDENTITY.processStartedAtSeconds,
+      containmentKind: REAPER_IDENTITY.containmentKind,
+      proxyProcessStartedAtSeconds: PROXY_IDENTITY.processStartedAtSeconds,
+      proxyProcessGroupId: PROXY_IDENTITY.processGroupId,
+    });
     expect((statSync(handoffCapsulePath).mode & 0o777).toString(8)).toBe('600');
   });
 

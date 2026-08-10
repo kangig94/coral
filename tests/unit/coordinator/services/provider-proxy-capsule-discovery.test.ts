@@ -54,6 +54,11 @@ describe('provider proxy capsule discovery', () => {
       time: runtime.time,
       proveContainmentAbsent: async () => null,
       redeemCapsule: () => new Promise<never>(() => undefined),
+      retireCapsule: () => ({ kind: 'retired' }),
+      rewriteCapsule: () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
     });
     lifecycle.initializeClaimSlots();
     lifecycle.installDiscoveredCapsules(discovered);
@@ -71,7 +76,7 @@ describe('provider proxy capsule discovery', () => {
     }).toEqual({
       canonicalBasename: true,
       discovered: [{ path, capsule }],
-      snapshotBeforeAdmission: expect.objectContaining({ represented: 1, states: ['capsule-recovering'] }),
+      snapshotBeforeAdmission: expect.objectContaining({ represented: 1, states: ['capsule-opaque'] }),
       admission: { kind: 'already-represented' },
     });
   });

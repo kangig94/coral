@@ -512,6 +512,11 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
     disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
     time: { ...timer, now: () => 0 },
     proveContainmentAbsent: () => new Promise<never>(() => undefined),
+    retireCapsule: () => ({ kind: 'retired' }),
+    rewriteCapsule: () => undefined,
+    onFatal: (error) => {
+      throw error;
+    },
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
@@ -773,6 +778,7 @@ async function completeCapacityLocalHandoff(
       }),
     }),
     authorityFor: () => capacityAuthority,
+    startupSetRecovery: { recoverSetAtStartup: async () => ({ kind: 'authority', authority: capacityAuthority }) },
     registry,
     materializePrepare: () => ({ state: 'prepared', prepared: PREPARED }),
     recoverLocalJob: async () => undefined,
@@ -1190,7 +1196,7 @@ describe('provider proxy cancellation relinquishment against a real guardian pai
       listen: async () => {},
       close: async () => {},
       ledger: () => ledger,
-      emitProviderEvent: () => 'recorded' as const,
+      emitProviderEvent: () => ({ kind: 'recorded' as const, providerSeq: 1 }),
     } as ReturnType<typeof createProxy>;
     let resolvePairingClosed!: () => void;
     const pairingClosed = new Promise<void>((resolve) => {
@@ -1318,6 +1324,11 @@ describe('provider proxy cumulative root rotation', () => {
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: runtime.time,
       proveContainmentAbsent: async () => null,
+      retireCapsule: () => ({ kind: 'retired' }),
+      rewriteCapsule: () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
       onSlotReleased: (routeKey) => manager.providerProxySlotReleased(routeKey),
     });
     lifecycle.initializeClaimSlots();

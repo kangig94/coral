@@ -26,6 +26,7 @@ import { elapsedDurationMs } from '../jobs/duration.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { ProviderProxyAuthorityRegistry } from './live/provider-proxy/authority.js';
 import type { Runtime } from '../runtime/ports.js';
+import type { StartupReconciliationReport } from './services/provider-operation-reconciler.js';
 import type { RuntimeComponent } from './runtime-components/contract.js';
 import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
 import { createRecoveryComponent } from './runtime-components/recovery-component.js';
@@ -671,7 +672,7 @@ export type LifecycleDeps = {
   readonly getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   readonly listExecutionServices: () => ProjectRequestPort[];
   readonly connectProviderOperationRecovery?: (recoveryCoordinator: RecoveryCoordinator) => void;
-  readonly reconcileProviderOperationsAtStartup?: (signal: AbortSignal) => Promise<void>;
+  readonly reconcileProviderOperationsAtStartup?: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
   readonly startProviderOperationReconciler?: () => void;
   readonly stopProviderOperationReconciler?: () => void;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;

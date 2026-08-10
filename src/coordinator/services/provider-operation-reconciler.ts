@@ -48,11 +48,17 @@ import {
 import type { ProviderOperationPrepareMaterializationResult } from './provider-operation-prepare.js';
 import {
   providerProxySetIdentitiesEqual,
+  ProviderProxySetIdentityIndex,
   providerProxySetIdentitySchema,
   providerProxySetIdentityFromRecord,
+  type ProviderProxySetKey,
   type ProviderProxySetIdentity,
 } from './provider-proxy-set-identity.js';
 import type { ProviderOperationRecoveryAcceptance } from './recovery/index.js';
+import type {
+  ContainmentAbsenceAcceptance,
+  ContainmentAbsenceOperationalIncident,
+} from './provider-proxy-set-lifecycle.js';
 
 export type ProviderOperationReconciliationEvidence =
   | Readonly<{ kind: 'unresolved' }>
@@ -83,6 +89,79 @@ export type ContainmentDisappearanceAcceptance = Readonly<{
 
 export interface ProviderContainmentDisappearanceConsumer {
   containmentDisappeared(notice: ContainmentDisappearanceNotice): Promise<ContainmentDisappearanceAcceptance>;
+}
+
+export type StartupProviderSetWork = Readonly<{
+  key: ProviderProxySetKey;
+  identity: ProviderProxySetIdentity;
+  operations: readonly ProviderOperationIdentity[];
+}>;
+
+export type StartupSetRecoveryResult =
+  | Readonly<{ kind: 'authority'; authority: DurableProviderProxyOperationAuthority }>
+  | Readonly<{ kind: 'absence-accepted'; acceptance: ContainmentAbsenceAcceptance }>
+  | Readonly<{ kind: 'retry-scheduled'; reason: string; nextAttemptAtMs: number }>;
+
+export type StartupOperationReconciliationResult =
+  | Readonly<{ kind: 'pass-completed' }>
+  | Readonly<{
+      kind: 'retry-scheduled';
+      operation: ProviderOperationIdentity;
+      reason: string;
+      nextAttemptAtMs: number;
+    }>;
+
+export type StartupReconciliationIncident =
+  | Readonly<{
+      kind: 'set-retry-scheduled';
+      setIdentity: ProviderProxySetIdentity;
+      operations: readonly ProviderOperationIdentity[];
+      reason: string;
+      nextAttemptAtMs: number;
+    }>
+  | Readonly<{
+      kind: 'operation-retry-scheduled';
+      setIdentity: ProviderProxySetIdentity;
+      operation: ProviderOperationIdentity;
+      reason: string;
+      nextAttemptAtMs: number;
+    }>
+  | Readonly<{
+      kind: 'absence-retry-owned';
+      setIdentity: ProviderProxySetIdentity;
+      disappearanceReceipt: string;
+      incident: ContainmentAbsenceOperationalIncident;
+    }>;
+
+export type StartupReconciliationReport = Readonly<{
+  setsVisited: number;
+  operationsVisited: number;
+  incidents: readonly StartupReconciliationIncident[];
+}>;
+
+export interface StartupSetRecoveryPort {
+  recoverSetAtStartup(work: StartupProviderSetWork, signal: AbortSignal): Promise<StartupSetRecoveryResult>;
+}
+
+export class StartupSetRecoveryProducer implements StartupSetRecoveryPort {
+  readonly #recoveries = new Map<ProviderProxySetKey, Promise<StartupSetRecoveryResult>>();
+  readonly #recoverSet: (work: StartupProviderSetWork, signal: AbortSignal) => Promise<StartupSetRecoveryResult>;
+
+  constructor(recoverSet: (work: StartupProviderSetWork, signal: AbortSignal) => Promise<StartupSetRecoveryResult>) {
+    this.#recoverSet = recoverSet;
+  }
+
+  recoverSetAtStartup(work: StartupProviderSetWork, signal: AbortSignal): Promise<StartupSetRecoveryResult> {
+    const existing = this.#recoveries.get(work.key);
+    if (existing !== undefined) return existing;
+    const started = this.#recover(work, signal);
+    this.#recoveries.set(work.key, started);
+    return started;
+  }
+
+  #recover(work: StartupProviderSetWork, signal: AbortSignal): Promise<StartupSetRecoveryResult> {
+    return awaitStartup(this.#recoverSet(work, signal), signal);
+  }
 }
 
 const containmentDisappearanceNoticeSchema = z
@@ -147,6 +226,7 @@ type ProviderOperationReconcilerDeps = Readonly<{
     record: ProviderOperationRecord,
     signal: AbortSignal,
   ) => Promise<DurableProviderProxyOperationAuthority | null>;
+  startupSetRecovery: StartupSetRecoveryPort;
   registry: Pick<LocalOperationRegistry, 'activate' | 'attach' | 'settled' | 'stop'>;
   materializePrepare: (
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
@@ -181,6 +261,29 @@ const TIMER_MIN_MS = 25;
 const TIMER_MAX_MS = 2_000;
 const NEVER_ABORTS = new AbortController().signal;
 const CONTAINMENT_DRIVE_FENCE = Symbol('provider-containment-drive-fence');
+
+function awaitStartup<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void =>
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error('Provider operation startup reconciliation was aborted.', { cause: signal.reason }),
+      );
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    operation.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
 
 class ContainmentDriveFencedError extends Error {
   readonly reason = CONTAINMENT_DRIVE_FENCE;
@@ -289,12 +392,155 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     }
   }
 
-  async reconcileAtStartup(signal: AbortSignal): Promise<void> {
+  async reconcileAtStartup(signal: AbortSignal): Promise<StartupReconciliationReport> {
     const records = readProviderOperations(this.#deps.getProgressStore().getDb());
+    const identityIndex = new ProviderProxySetIdentityIndex();
+    const groups = new Map<
+      ProviderProxySetKey,
+      { identity: ProviderProxySetIdentity; operations: ProviderOperationIdentity[] }
+    >();
     for (const record of records) {
-      signal.throwIfAborted();
       if (record.phase === 'local-recovery-pending') continue;
-      await this.reconcile(record, undefined, signal);
+      const identity = providerProxySetIdentityFromRecord(record);
+      const key = identityIndex.add(identity);
+      const group = groups.get(key);
+      if (group === undefined) {
+        groups.set(key, { identity, operations: [record.operation] });
+      } else {
+        group.operations.push(record.operation);
+      }
+    }
+
+    const incidents: StartupReconciliationIncident[] = [];
+    let setsVisited = 0;
+    let operationsVisited = 0;
+    for (const [key, grouped] of [...groups].sort(([left], [right]) => left.localeCompare(right))) {
+      signal.throwIfAborted();
+      const currentRecords: ProviderOperationRecord[] = [];
+      for (const operation of [...grouped.operations].sort((left, right) =>
+        operationKey(left).localeCompare(operationKey(right)),
+      )) {
+        const current = readProviderOperation(this.#deps.getProgressStore().getDb(), operation);
+        if (current === null || current.phase === 'local-recovery-pending') continue;
+        const currentIdentity = providerProxySetIdentityFromRecord(current);
+        if (!providerProxySetIdentitiesEqual(currentIdentity, grouped.identity)) {
+          throw new Error(`provider_proxy_startup_set_identity_changed:${operationKey(operation)}`);
+        }
+        currentRecords.push(current);
+      }
+      if (currentRecords.length === 0) continue;
+
+      setsVisited += 1;
+      operationsVisited += currentRecords.length;
+      const work: StartupProviderSetWork = {
+        key,
+        identity: grouped.identity,
+        operations: currentRecords.map((record) => record.operation),
+      };
+      const recovery = await awaitStartup(this.#deps.startupSetRecovery.recoverSetAtStartup(work, signal), signal);
+      if (recovery.kind === 'absence-accepted') {
+        const disposition = await awaitStartup(recovery.acceptance.initialDisposition, signal);
+        if (disposition.kind === 'operational-retry-owned') {
+          incidents.push(
+            ...disposition.incidents.map(
+              (incident): StartupReconciliationIncident => ({
+                kind: 'absence-retry-owned',
+                setIdentity: grouped.identity,
+                disappearanceReceipt: recovery.acceptance.disappearanceReceipt,
+                incident,
+              }),
+            ),
+          );
+        }
+        continue;
+      }
+      if (recovery.kind === 'retry-scheduled') {
+        for (const record of currentRecords) {
+          this.#scheduleStartupSetRetry(record, recovery.reason, recovery.nextAttemptAtMs);
+        }
+        incidents.push({
+          kind: 'set-retry-scheduled',
+          setIdentity: grouped.identity,
+          operations: currentRecords.map((record) => record.operation),
+          reason: recovery.reason,
+          nextAttemptAtMs: recovery.nextAttemptAtMs,
+        });
+        continue;
+      }
+
+      for (const record of currentRecords) {
+        const result = await awaitStartup(this.#reconcileStartupOperation(record, recovery.authority, signal), signal);
+        if (result.kind === 'retry-scheduled') {
+          incidents.push({
+            kind: 'operation-retry-scheduled',
+            setIdentity: grouped.identity,
+            operation: result.operation,
+            reason: result.reason,
+            nextAttemptAtMs: result.nextAttemptAtMs,
+          });
+        }
+      }
+    }
+    return { setsVisited, operationsVisited, incidents };
+  }
+
+  async #reconcileStartupOperation(
+    record: ProviderOperationRecord,
+    authority: DurableProviderProxyOperationAuthority,
+    signal: AbortSignal,
+  ): Promise<StartupOperationReconciliationResult> {
+    await this.reconcile(record, authority, signal);
+    const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
+    if (current === null) return { kind: 'pass-completed' };
+    if (!providerProxySetIdentitiesEqual(providerProxySetIdentityFromRecord(current), authority.setIdentity)) {
+      throw new Error(`provider_proxy_startup_set_identity_changed:${operationKey(record.operation)}`);
+    }
+    if (current.retryCount <= record.retryCount || current.lastError === null) return { kind: 'pass-completed' };
+    this.#verifyStartupRetry(current);
+    return {
+      kind: 'retry-scheduled',
+      operation: current.operation,
+      reason: current.lastError.message,
+      nextAttemptAtMs: current.retryNotBeforeMs,
+    };
+  }
+
+  #scheduleStartupSetRetry(record: ProviderOperationRecord, reason: string, nextAttemptAtMs: number): void {
+    const now = this.#deps.time.now();
+    const next = providerOperationRecordSchema.parse({
+      ...record,
+      revision: record.revision + 1,
+      retryCount: record.retryCount + 1,
+      retryNotBeforeMs: nextAttemptAtMs,
+      lastError: {
+        observedAtMs: now,
+        code: 'provider_proxy_set_recovery_unavailable',
+        message: reason,
+      },
+    });
+    const result = compareAndSwapProviderOperation(this.#deps.getProgressStore().getDb(), record, next);
+    if (result.kind !== 'updated') {
+      throw new Error(`provider_proxy_startup_retry_mutation_conflict:${operationKey(record.operation)}`);
+    }
+    this.#verifyStartupRetry(result.record);
+  }
+
+  #verifyStartupRetry(record: ProviderOperationRecord): void {
+    const db = this.#deps.getProgressStore().getDb();
+    const current = readProviderOperation(db, record.operation);
+    if (
+      current === null ||
+      current.revision !== record.revision ||
+      current.retryNotBeforeMs !== record.retryNotBeforeMs ||
+      current.lastError === null
+    ) {
+      throw new Error(`provider_proxy_startup_retry_record_missing:${operationKey(record.operation)}`);
+    }
+    const recordCount = readProviderOperations(db).length;
+    const verificationCutoff = Math.min(record.retryNotBeforeMs + 1, Number.MAX_SAFE_INTEGER);
+    const due = readProviderOperationsDue(db, verificationCutoff, Math.max(recordCount, 1));
+    if (!due.some((candidate) => operationKey(candidate.operation) === operationKey(record.operation))) {
+      throw new Error(`provider_proxy_startup_retry_due_index_missing:${operationKey(record.operation)}`);
     }
   }
 

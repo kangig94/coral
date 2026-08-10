@@ -131,6 +131,11 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
     disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
     time: runtime.time,
     proveContainmentAbsent: async () => null,
+    retireCapsule: () => ({ kind: 'retired' }),
+    rewriteCapsule: () => undefined,
+    onFatal: (error) => {
+      throw error;
+    },
     ...(onSlotReleased === undefined ? {} : { onSlotReleased }),
   });
   lifecycle.initializeClaimSlots();

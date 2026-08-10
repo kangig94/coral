@@ -19,6 +19,7 @@ import { insertProviderOperation, readProviderOperation } from '#src/store/provi
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set-identity.js';
 
 import { providerOperationRecord } from '../../../store/provider-operation-fixtures.js';
 
@@ -276,16 +277,19 @@ describe('runStartupRecovery provider-operation ownership', () => {
       () =>
         ({
           proxyInstanceId: saga.operation.proxyInstanceId,
-          setIdentity: {
-            buildSetId: saga.operation.buildSetId,
-            hostFingerprint: saga.locator.hostFingerprint,
-          },
+          setIdentity: providerProxySetIdentityFromRecord(saga),
           cancelOperation,
         }) as unknown as DurableProviderProxyOperationAuthority,
     );
     const reconciler = new ProviderOperationReconciler({
       getProgressStore: () => progressStore,
       authorityFor,
+      startupSetRecovery: {
+        recoverSetAtStartup: async () => {
+          const authority = authorityFor();
+          return { kind: 'authority', authority };
+        },
+      },
       registry: { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() },
       materializePrepare: () => {
         throw new Error('race test unexpectedly materialized a prepare');

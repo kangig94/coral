@@ -610,6 +610,7 @@ async function launchThroughRoute(
       }),
     }),
     authorityFor: () => activeAuthority,
+    startupSetRecovery: { recoverSetAtStartup: async () => ({ kind: 'authority', authority: activeAuthority }) },
     registry,
     materializePrepare: () => ({ state: 'prepared', prepared: PREPARED }),
     recoverLocalJob: async () => undefined,
@@ -1406,7 +1407,9 @@ describe('provider-proxy provider.event.v1 emission', () => {
       set.proxy.emitProviderEvent(key, { kind: 'progress', message: `tick-${index}` });
     }
 
-    expect(set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'refused' })).toBe('proxy-emergency-terminal');
+    expect(set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'refused' })).toEqual({
+      kind: 'proxy-emergency-terminal',
+    });
     const entry = set.proxy.ledger().get(key);
     expect(entry?.state).toBe('terminal-awaiting-settlement');
     expect(entry?.bufferedEvents).toHaveLength(MAX_PROVIDER_REPLAY_EVENTS + 1);
@@ -1434,9 +1437,9 @@ describe('provider-proxy provider.event.v1 emission', () => {
     await activate(set, operation, reserved);
     const key = { jobId: operation.jobId, operationId: operation.operationId };
 
-    expect(set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES) })).toBe(
-      'proxy-emergency-terminal',
-    );
+    expect(
+      set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'x'.repeat(MAX_PROVIDER_REPLAY_BYTES) }),
+    ).toEqual({ kind: 'proxy-emergency-terminal' });
     const [emergency] = set.proxy.ledger().get(key)?.bufferedEvents ?? [];
     if (emergency === undefined) throw new Error('Expected a proxy-emergency terminal.');
     const decoded = decodeProxyControlFrame(emergency.frame);
@@ -1471,9 +1474,13 @@ describe('provider-proxy provider.event.v1 emission', () => {
     set.advanceSilently(5_001);
 
     const received: unknown[] = [];
+    let resolveSuccessorAck!: (value: { kind: 'ack'; committedThroughProviderSeq: number }) => void;
+    const successorAck = new Promise<{ kind: 'ack'; committedThroughProviderSeq: number }>((resolve) => {
+      resolveSuccessorAck = resolve;
+    });
     const successor = await connectControlClient(set.endpoint, timer, 5_000, (request) => {
       received.push(request);
-      return { kind: 'ack', committedThroughProviderSeq: request.providerSeq };
+      return successorAck;
     });
     cleanups.push(() => successor.close());
     const redeemed = (await successor.call('handoff.redeem.v1', redeem, 5_000)) as {
@@ -1492,6 +1499,8 @@ describe('provider-proxy provider.event.v1 emission', () => {
       5_000,
     )) as { replayFromProviderSeq: number };
     expect(attached.replayFromProviderSeq).toBe(1);
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    resolveSuccessorAck({ kind: 'ack', committedThroughProviderSeq: 1 });
 
     // Waiting on the ledger's own watermark, not `received.length`: the handler runs (and pushes into
     // `received`) before its `ack` reply has even been written back, let alone round-tripped through

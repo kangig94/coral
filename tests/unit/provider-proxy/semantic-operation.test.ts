@@ -61,6 +61,7 @@ import {
   type OperationLedger,
   type ProviderOperationKey,
 } from '#src/provider-proxy/ledger.js';
+import { ControlEndpointError } from '#src/provider-proxy/control-endpoint.js';
 import type { Proxy } from '#src/provider-proxy/proxy.js';
 import { ReplayAdmissionError } from '#src/provider-proxy/replay-budget.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
@@ -261,12 +262,12 @@ function createTestProxy(): {
         ledger.recordProxyEmergencyCompletion(key, emergency, 1);
         emittedEvents.push({ key, event: emergency });
         ledger.transition(key, 'terminal-awaiting-settlement');
-        return 'proxy-emergency-terminal';
+        return { kind: 'proxy-emergency-terminal' };
       }
       emittedEvents.push({ key, event });
       if (event.kind === 'terminal') ledger.transition(key, 'terminal-awaiting-settlement');
       if (event.kind === 'suspended') ledger.transition(key, 'suspended-awaiting-durable-decision');
-      return 'recorded';
+      return { kind: 'recorded', providerSeq };
     },
   };
   return { proxy, ledger, emittedEvents };
@@ -1112,9 +1113,10 @@ describe('semantic-operation runtime: replay admission', () => {
           confirmActivation: async () => {},
           abortAndRelease: async () => {},
         }),
-        pushProviderEvent: async () => {
-          throw new Error('control is deliberately offline');
+        pushProviderEvent: () => {
+          throw new ControlEndpointError('control_endpoint_push_no_tenancy', 'control is deliberately offline');
         },
+        faultProviderEventControl: () => {},
       });
       Object.assign(proxy, {
         listen: async () => {},
@@ -1262,9 +1264,10 @@ describe('semantic-operation runtime: replay admission', () => {
         proxyInstanceId: target.proxyInstanceId,
         buildSetId: target.buildSetId,
         stageProviderRoot,
-        pushProviderEvent: async () => {
-          throw new Error('control is deliberately offline');
+        pushProviderEvent: () => {
+          throw new ControlEndpointError('control_endpoint_push_no_tenancy', 'control is deliberately offline');
         },
+        faultProviderEventControl: () => {},
       });
 
       const prepare = async (operation: OperationIdentity) => {

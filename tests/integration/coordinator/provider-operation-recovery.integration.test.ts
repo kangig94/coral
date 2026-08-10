@@ -128,6 +128,7 @@ describe('provider-operation startup recovery ownership', () => {
     const reconciler = new ProviderOperationReconciler({
       getProgressStore: () => progressStore,
       authorityFor: () => authority,
+      startupSetRecovery: { recoverSetAtStartup: async () => ({ kind: 'authority', authority }) },
       registry: { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() },
       materializePrepare: () => {
         throw new Error('startup ownership test unexpectedly materialized a prepare');

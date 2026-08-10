@@ -113,7 +113,6 @@ export function providerOperationRecordKeyPrefix(jobId: string): string {
 }
 
 function dueEntryFor(record: ProviderOperationRecord): MetaRow | null {
-  if (record.phase === 'executing') return null;
   return {
     key:
       `${PROVIDER_OPERATION_DUE_PREFIX}${encodeFixedWidthInteger(record.retryNotBeforeMs, 'retryNotBeforeMs')}:` +
@@ -208,8 +207,7 @@ function dueEntryMatchesRecord(due: ProviderOperationDueEntry, record: ProviderO
   return (
     sameIdentity(due.identity, record.operation) &&
     due.revision === record.revision &&
-    due.retryNotBeforeMs === record.retryNotBeforeMs &&
-    record.phase !== 'executing'
+    due.retryNotBeforeMs === record.retryNotBeforeMs
   );
 }
 

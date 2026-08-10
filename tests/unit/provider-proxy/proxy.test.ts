@@ -887,6 +887,47 @@ describe('provider-proxy truthful operation authority', () => {
     expect(host.released).toEqual([{ jobId: operation.jobId, operationId: operation.operationId }]);
   });
 
+  it('retains the old attempt identity until activated release', async () => {
+    const { control, operation } = await startProxy(fakeHost());
+    const firstRequest = {
+      operation,
+      hostFingerprint: FINGERPRINT,
+      prepareAttemptNumber: 1,
+      prepared: PREPARED,
+    };
+    const firstAttemptKey = operationPrepareAttemptKey(firstRequest);
+    const prepared = (await control.call('operation.prepare.v1', firstRequest, 5_000)) as {
+      reservation: Reservation;
+      jointContainmentReceipt: JointContainmentReceipt;
+    };
+    await control.call(
+      'operation.activate.v1',
+      {
+        operation,
+        reservation: prepared.reservation,
+        jointContainmentReceipt: prepared.jointContainmentReceipt,
+        jointActivationReceipt: asJointActivationReceipt('activation-1'),
+      },
+      5_000,
+    );
+    await control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
+
+    await expect(
+      control.call(
+        'operation.cancel.v2',
+        { operation, prepareAttemptNumber: 1, prepareAttemptKey: firstAttemptKey },
+        5_000,
+      ),
+    ).rejects.toThrow(/Activation has begun/u);
+    await expect(
+      control.call('operation.prepare.v1', { ...firstRequest, prepareAttemptNumber: 2 }, 5_000),
+    ).rejects.toThrow();
+
+    await expect(
+      control.call('operation.inspect.v2', { operation, prepareAttemptKey: firstAttemptKey }, 5_000),
+    ).resolves.toMatchObject({ state: 'executing' });
+  });
+
   it('joins cancellation to in-flight staging before certifying never-started', async () => {
     const staging = deferred<{
       state: 'staged';
@@ -986,7 +1027,10 @@ describe('provider-proxy truthful operation authority', () => {
     const settleResultParses = vi.spyOn(proxyOperationSettleResultSchema, 'parse');
     const releaseMembership = vi.fn(async () => {});
     const host = fakeHost();
-    const { control, operation, proxy } = await startProxy(host, timer, { releaseMembership });
+    const { control, operation, proxy } = await startProxy(host, timer, {
+      releaseMembership,
+      onProviderEvent: (request) => ({ kind: 'ack', committedThroughProviderSeq: request.providerSeq }),
+    });
     const prepared = (await control.call(
       'operation.prepare.v1',
       { operation, hostFingerprint: FINGERPRINT, prepareAttemptNumber: 1, prepared: PREPARED },

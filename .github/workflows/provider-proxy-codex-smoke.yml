@@ -1,0 +1,49 @@
+name: Provider Proxy Codex Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: 'Exact commit SHA to qualify for release'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    environment: provider-proxy-codex-smoke
+    runs-on: [self-hosted, linux, codex-smoke]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 0
+
+      - name: Require exact candidate checkout
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Run mandatory real Codex continuity smoke
+        env:
+          CORAL_REQUIRE_CODEX_SMOKE: '1'
+          CORAL_SMOKE_HEAD_SHA: ${{ inputs.candidate_sha }}
+        run: npm run test:smoke:provider-proxy:codex
+
+      - name: Upload exact smoke evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-proxy-codex-smoke
+          path: provider-proxy-codex-smoke.json
+          if-no-files-found: error
+          retention-days: 30
