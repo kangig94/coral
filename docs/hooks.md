@@ -24,7 +24,7 @@ All hook scripts are Node.js ESM files that read JSON from stdin, write JSON to 
 
 ## Copilot CLI contract deltas
 
-Copilot reuses Claude Code's hook vocabulary, but five details differ. All were verified against Copilot CLI 1.0.78.
+Copilot reuses Claude Code's hook vocabulary, but seven details differ. All were verified against Copilot CLI 1.0.78.
 
 **Manifest precedence.** Copilot resolves `.github/plugin/plugin.json` before `.claude-plugin/plugin.json` (and never reads `.codex-plugin/`). That is the only reason Copilot loads `copilot.json` rather than Claude's `claude.json` — deleting `clients/.github/plugin/` would silently hand Copilot the Claude registration.
 
@@ -35,6 +35,10 @@ Copilot reuses Claude Code's hook vocabulary, but five details differ. All were 
 **Matchers and tool names.** Under PascalCase events Copilot maps its native tool names onto Claude's where an equivalent exists (`bash` → `Bash`, `view` → `Read`), but `skill` has no alias and stays lowercase — hence `PreToolUse` matches `skill`, not `Skill`. `Monitor` is Claude-only and is omitted. `SessionStart` matchers are *not* filtered (a `compact` matcher fires on every session start), so `copilot.json` keeps one unmatched `SessionStart` group containing only `session-start.mjs`.
 
 **Skill field values.** `tool_input.skill` carries the *bare* skill name under Copilot (`ralph`), not `coral:ralph`; Copilot namespaces it only when two installed plugins ship the same skill name. `isCoralSkillField()` / `isKbSkillField()` accept the bare form **only** when the host is Copilot — on Claude and Codex a bare `plan` is a user's own skill of that name, and matching it would fire Coral's hooks for a skill Coral does not own.
+
+**Agents.** Copilot discovers a plugin's `agents/` directory even when the manifest omits the key, and exposes each as `coral:<name>` — the same identifier the skills spawn — so `agents` is declared rather than suppressed in `clients/.github/plugin/plugin.json`. Backend-only agents (`workflow-literal`, `persona-generator`) become visible as a side effect; both are harmless to spawn. **Caveat**: because Copilot fires no `SubagentStart` (see "Compact recovery and subagent inject are Claude/Codex-only" below), a `coral:*` subagent on Copilot runs **without** Coral's inject bundle, so neither `CORAL_METHODS` (`clients/hooks/coral-skill-vars.mjs`, `clients/hooks/lib/inject-render.mjs`) nor `CORAL_PROJECT` resolves inside it. Every agent that reads its methodology from `CORAL_METHODS/` — `architect`, `critic`, `debugger`, `gap-finder`, `scanner`, `resolver` — is therefore spawnable but methodology-degraded there. Declaring `agents` restores *spawn-ability*, not full parity. The `coral-cli` job path is unaffected: `src/providers/inject.ts` substitutes the same aliases for provider-run agents.
+
+**Model tier is ignored.** Copilot does not honour the abstract `model:` tier in agent frontmatter and silently falls back to the session model, with no error. All 10 files in `clients/agents/` declare a tier, so the declaration is ignored in every case; the observable delta is on the **7** that declare `opus` (`architect`, `critic`, `debugger`, `gap-finder`, `pioneer`, `resolver`, `scanner`), which do not get the opus-tier model a Claude Code user gets. The other three declare `sonnet`, near enough a typical session model that there is nothing to observe.
 
 Host detection lives in `hostKind()` and keys on `COPILOT_PLUGIN_ROOT`, not `COPILOT_CLI`: Copilot exports `COPILOT_CLI` into *every* shell it spawns, so it leaks into unrelated child processes, while `COPILOT_PLUGIN_ROOT` is set only for plugin hook invocations.
 
