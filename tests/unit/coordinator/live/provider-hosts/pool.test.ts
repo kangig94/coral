@@ -30,6 +30,7 @@ import {
   createSpawnProviderServerMock,
   runtime,
 } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 const mockedEnsureProxySet = ensureProviderProxySet as unknown as ReturnType<typeof vi.fn>;
 
@@ -130,12 +131,9 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
     controlEstablished: () => undefined,
     disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
     time: runtime.time,
-    proveContainmentAbsent: async () => null,
-    retireCapsule: () => ({ kind: 'retired' }),
-    rewriteCapsule: () => undefined,
-    onFatal: (error) => {
-      throw error;
-    },
+    recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+      'containment-proof': async () => null,
+    }),
     ...(onSlotReleased === undefined ? {} : { onSlotReleased }),
   });
   lifecycle.initializeClaimSlots();

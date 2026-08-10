@@ -4,10 +4,13 @@ import {
   completeExecutingProviderOperationAttachment,
   compareAndSwapProviderOperation,
   deleteProviderOperation,
+  finishProviderOperationDueSelection,
   insertProviderOperation,
   readProviderOperation,
+  readProviderOperationDueSelections,
   readProviderOperations,
   readProviderOperationsDue,
+  subscribeProviderOperationMutations,
 } from '#src/store/provider-operation-journal.js';
 import {
   decodeProviderOperationRecord,
@@ -49,6 +52,22 @@ function sagaRows(db: Database): readonly { key: string; value: string }[] {
       { key: string; value: string }
     >('SELECT key, value FROM meta WHERE key >= ? AND key < ? ORDER BY key')
     .all(SAGA_PREFIX, `${SAGA_PREFIX}\uffff`);
+}
+
+function dueKey(record: ProviderOperationRecord): string {
+  const fixed = (value: number): string => String(value).padStart(String(Number.MAX_SAFE_INTEGER).length, '0');
+  return (
+    `${DUE_PREFIX}${fixed(record.retryNotBeforeMs)}:` +
+    `${record.operation.jobId}:${record.operation.operationId}:${record.operation.proxyInstanceId}:` +
+    `${record.operation.buildSetId}:${fixed(record.revision)}`
+  );
+}
+
+function recordKey(record: ProviderOperationRecord): string {
+  return (
+    `${RECORD_PREFIX}${record.operation.jobId}:${record.operation.operationId}:` +
+    `${record.operation.proxyInstanceId}:${record.operation.buildSetId}`
+  );
 }
 
 describe('provider operation journal', () => {
@@ -331,6 +350,105 @@ describe('provider operation journal', () => {
         ),
       ).toEqual({ kind: 'retry-superseded', current: superseding });
       expect(readProviderOperationsDue(db, 200, 1)).toEqual([superseding]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('atomically yields a selected due row and keeps the strict reader consistent', () => {
+    const db = createDb();
+    try {
+      const initial = providerOperationRecord('prepare-pending', { retryNotBeforeMs: 100 });
+      insertProviderOperation(db, initial);
+      const selection = readProviderOperationDueSelections(db, 100, 1)[0];
+      if (selection === undefined) throw new Error('expected one due selection');
+      const mutations: ProviderOperationRecord[] = [];
+      const unsubscribe = subscribeProviderOperationMutations(db, (mutation) => {
+        if (mutation.kind === 'upserted') mutations.push(mutation.record);
+      });
+
+      const result = finishProviderOperationDueSelection(db, selection, 100, 125);
+      if (result.kind !== 'yielded') throw new Error('expected the selected due row to yield');
+      const canonical = readProviderOperation(db, initial.operation);
+      expect.soft(canonical).toEqual(result.record);
+
+      const replacements = readProviderOperationDueSelections(db, 126, 1);
+      expect(replacements).toHaveLength(1);
+      expect(replacements[0]?.record).toEqual(canonical);
+      expect(replacements[0]).toMatchObject({
+        rawKey: dueKey(result.record),
+        rawValue: recordKey(result.record),
+      });
+      expect(result.record).toEqual({ ...initial, revision: 1, retryNotBeforeMs: 125 });
+      expect(mutations).toEqual([result.record]);
+      unsubscribe();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('finishes absent, already-advanced, and healthy legacy due selections', () => {
+    const db = createDb();
+    try {
+      const removed = providerOperationRecord('prepare-pending', { job: 1, retryNotBeforeMs: 100 });
+      insertProviderOperation(db, removed);
+      const removedSelection = readProviderOperationDueSelections(db, 100, 1)[0];
+      if (removedSelection === undefined) throw new Error('expected a removable due selection');
+      expect(deleteProviderOperation(db, removed)).toEqual({ kind: 'deleted' });
+      expect(finishProviderOperationDueSelection(db, removedSelection, 100, 125)).toEqual({ kind: 'removed' });
+
+      const advancing = providerOperationRecord('prepare-pending', { job: 2, retryNotBeforeMs: 100 });
+      insertProviderOperation(db, advancing);
+      const advancingSelection = readProviderOperationDueSelections(db, 100, 1)[0];
+      if (advancingSelection === undefined) throw new Error('expected an advancing due selection');
+      const advanced = { ...advancing, revision: 1, retryNotBeforeMs: 200 };
+      expect(compareAndSwapProviderOperation(db, advancing, advanced)).toEqual({ kind: 'updated', record: advanced });
+      expect(finishProviderOperationDueSelection(db, advancingSelection, 100, 125)).toEqual({
+        kind: 'already-advanced',
+      });
+      expect(readProviderOperationDueSelections(db, 200, 1)[0]?.record).toEqual(advanced);
+
+      const healthy = providerOperationRecord('executing', { job: 3, retryNotBeforeMs: 100 });
+      insertProviderOperation(db, healthy);
+      db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+        dueKey(healthy),
+        recordKey(healthy),
+      );
+      const healthySelection = readProviderOperationDueSelections(db, 100, 1)[0];
+      if (healthySelection === undefined) throw new Error('expected a healthy legacy due selection');
+      expect(finishProviderOperationDueSelection(db, healthySelection, 100, 125)).toEqual({ kind: 'removed' });
+      expect(readProviderOperation(db, healthy.operation)).toEqual(healthy);
+      expect(readProviderOperationDueSelections(db, 100, 1)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('removes both the selected legacy key and a distinct current legacy key before membership returns', () => {
+    const db = createDb();
+    try {
+      const initial = providerOperationRecord('prepare-pending', { retryNotBeforeMs: 100 });
+      insertProviderOperation(db, initial);
+      const selection = readProviderOperationDueSelections(db, 100, 1)[0];
+      if (selection === undefined) throw new Error('expected a legacy due selection');
+      const current = providerOperationRecordSchema.parse({
+        ...providerOperationRecord('executing', { retryNotBeforeMs: 100 }),
+        operation: initial.operation,
+        revision: 1,
+      });
+      db.prepare<[string, string, string]>('UPDATE meta SET value = ? WHERE key = ? AND value = ?').run(
+        encodeProviderOperationRecord(current),
+        recordKey(initial),
+        encodeProviderOperationRecord(initial),
+      );
+      db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(
+        dueKey(current),
+        recordKey(current),
+      );
+
+      expect(finishProviderOperationDueSelection(db, selection, 100, 125)).toEqual({ kind: 'removed' });
+      expect(readProviderOperation(db, initial.operation)).toEqual(current);
+      expect(sagaRows(db)).toEqual([{ key: recordKey(current), value: encodeProviderOperationRecord(current) }]);
     } finally {
       db.close();
     }

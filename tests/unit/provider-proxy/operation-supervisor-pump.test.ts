@@ -55,12 +55,15 @@ function deferred<T>(): {
 function controlledTimer(): {
   timer: ControlEndpointTimer;
   nowMs(): number;
+  runNext(): boolean;
   advance(ms: number): void;
 } {
   let elapsedMs = 0;
   let nextId = 0;
   type Handle = { id: number; dueAtMs: number; callback: () => void; unref(): void };
   const pending = new Map<number, Handle>();
+  const nextDue = (): Handle | undefined =>
+    [...pending.values()].sort((left, right) => left.dueAtMs - right.dueAtMs || left.id - right.id)[0];
   return {
     timer: {
       setTimeout: (callback, ms) => {
@@ -76,13 +79,18 @@ function controlledTimer(): {
       clearTimeout: (rawHandle) => pending.delete((rawHandle as Handle).id),
     },
     nowMs: () => elapsedMs,
+    runNext: () => {
+      const due = nextDue();
+      if (due === undefined || due.dueAtMs > elapsedMs) return false;
+      pending.delete(due.id);
+      due.callback();
+      return true;
+    },
     advance: (ms) => {
       elapsedMs += ms;
       while (true) {
-        const due = [...pending.values()]
-          .filter((handle) => handle.dueAtMs <= elapsedMs)
-          .sort((left, right) => left.dueAtMs - right.dueAtMs)[0];
-        if (due === undefined) return;
+        const due = nextDue();
+        if (due === undefined || due.dueAtMs > elapsedMs) return;
         pending.delete(due.id);
         due.callback();
       }
@@ -179,6 +187,8 @@ describe('provider-event supervisor pump', () => {
     });
 
     fixture.supervisor.emitProviderEvent(fixture.operation, { kind: 'progress', message: 'held' });
+    expect(pushCalls).toBe(0);
+    expect(fixture.clock.runNext()).toBe(true);
     expect(pushCalls).toBe(1);
 
     fixture.supervisor.controlActivated(1);
@@ -186,10 +196,94 @@ describe('provider-event supervisor pump', () => {
       new ControlEndpointError('control_endpoint_push_lost', 'The stale socket closed before its ACK arrived.'),
     );
 
-    await vi.waitFor(() => expect(pushCalls).toBe(2));
-    await vi.waitFor(() =>
-      expect(fixture.supervisor.ledger().get(fixture.operation)?.committedThroughProviderSeq).toBe(1),
-    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fixture.clock.runNext()).toBe(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(pushCalls).toBe(2);
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.committedThroughProviderSeq).toBe(1);
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.bufferedEvents).toEqual([]);
+  });
+
+  it('retains replay without a successor pump turn', async () => {
+    const held = deferred<unknown>();
+    let pushCalls = 0;
+    const fixture = await executingSupervisor(() => {
+      pushCalls += 1;
+      return {
+        controlEpoch: 1,
+        response:
+          pushCalls <= 1_024
+            ? Promise.resolve({ kind: 'replay', replayFromProviderSeq: 1, reason: 'sequence_gap' })
+            : held.promise,
+      };
+    });
+
+    fixture.supervisor.emitProviderEvent(fixture.operation, { kind: 'progress', message: 'replay' });
+    let probePushCalls = -1;
+    fixture.clock.timer.setTimeout(() => {
+      probePushCalls = pushCalls;
+    }, 0);
+
+    expect(fixture.clock.runNext()).toBe(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fixture.clock.runNext()).toBe(true);
+
+    expect(probePushCalls).toBe(1);
+    expect(pushCalls).toBe(1);
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.bufferedEvents).toHaveLength(1);
+
+    fixture.supervisor.controlActivated(1);
+    expect(fixture.clock.runNext()).toBe(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(pushCalls).toBe(2);
+
+    fixture.clock.advance(PROXY_EVENT_COMMIT_TIMEOUT_MS);
+    expect(fixture.faults).toHaveLength(1);
+    expect(fixture.faults[0]).toMatchObject({
+      reason: 'provider_event_ack_timeout',
+      providerSeq: 1,
+      expectedControlEpoch: 1,
+    });
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.bufferedEvents).toHaveLength(1);
+  });
+
+  it('yields between immediately acknowledged ordinary event refills', async () => {
+    const totalEvents = 2_048;
+    let pushCalls = 0;
+    const fixture = await executingSupervisor(() => {
+      pushCalls += 1;
+      if (pushCalls < totalEvents) {
+        fixture.supervisor.emitProviderEvent(fixture.operation, {
+          kind: 'progress',
+          message: `refill-${pushCalls + 1}`,
+        });
+      }
+      return {
+        controlEpoch: 1,
+        response: Promise.resolve({ kind: 'ack', committedThroughProviderSeq: pushCalls }),
+      };
+    });
+
+    fixture.supervisor.emitProviderEvent(fixture.operation, { kind: 'progress', message: 'refill-1' });
+    let timerObservedAt = -1;
+    fixture.clock.timer.setTimeout(() => {
+      timerObservedAt = pushCalls;
+    }, 0);
+
+    expect(fixture.clock.runNext()).toBe(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(fixture.clock.runNext()).toBe(true);
+
+    expect(timerObservedAt).toBe(1);
+    expect(pushCalls).toBe(1);
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.committedThroughProviderSeq).toBe(1);
+
+    while ((fixture.supervisor.ledger().get(fixture.operation)?.committedThroughProviderSeq ?? 0) < totalEvents) {
+      expect(fixture.clock.runNext()).toBe(true);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    expect(pushCalls).toBe(totalEvents);
     expect(fixture.supervisor.ledger().get(fixture.operation)?.bufferedEvents).toEqual([]);
   });
 
@@ -198,6 +292,7 @@ describe('provider-event supervisor pump', () => {
     const fixture = await executingSupervisor(() => ({ controlEpoch: 7, response: held.promise }));
 
     fixture.supervisor.emitProviderEvent(fixture.operation, { kind: 'progress', message: 'ambiguous' });
+    expect(fixture.clock.runNext()).toBe(true);
     fixture.clock.advance(PROXY_EVENT_COMMIT_TIMEOUT_MS);
 
     expect(fixture.faults).toEqual([
@@ -216,6 +311,7 @@ describe('provider-event supervisor pump', () => {
     const fixture = await executingSupervisor(() => ({ controlEpoch: 3, response: Promise.resolve({}) }));
 
     fixture.supervisor.emitProviderEvent(fixture.operation, { kind: 'progress', message: 'malformed ACK' });
+    expect(fixture.clock.runNext()).toBe(true);
 
     await vi.waitFor(() => expect(fixture.faults).toHaveLength(1));
     expect(fixture.faults[0]).toMatchObject({
@@ -243,6 +339,7 @@ describe('provider-event supervisor pump', () => {
 
     const emission = fixture.supervisor.emitProviderEvent(fixture.operation, event);
     if (emission.kind !== 'continuity-recorded') throw new Error('expected a continuity settlement');
+    expect(fixture.clock.runNext()).toBe(true);
     expect(commit).not.toHaveBeenCalled();
 
     held.resolve({ kind: 'ack', committedThroughProviderSeq: 1 });
@@ -257,6 +354,7 @@ describe('provider-event supervisor pump', () => {
     const held = deferred<unknown>();
     const fixture = await executingSupervisor(() => ({ controlEpoch: 1, response: held.promise }));
     fixture.supervisor.emitProviderEvent(fixture.operation, { kind: 'progress', message: 'late ACK' });
+    expect(fixture.clock.runNext()).toBe(true);
 
     fixture.supervisor.close();
     held.resolve({ kind: 'ack', committedThroughProviderSeq: 1 });

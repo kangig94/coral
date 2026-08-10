@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
+import type { TimePort } from '#src/infra/port-types.js';
+import type { ProviderProxyRecoveryProducerPorts } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { providerOperationPrepareAttempt } from '#src/coordinator/services/provider-proxy-operation-activation.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set-identity.js';
@@ -14,12 +16,14 @@ import {
   providerOperationTerminationVerdict,
   type ProviderOperationReconciliationEvidence,
 } from '#src/coordinator/services/provider-operation-reconciler.js';
+import type { ProviderOperationReconcilerFatalError } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import {
   compareAndSwapProviderOperation,
   insertProviderOperation,
   readProviderOperation,
+  readProviderOperationDueSelections,
   readProviderOperationsDue,
   subscribeProviderOperationMutations,
 } from '#src/store/provider-operation-journal.js';
@@ -27,8 +31,13 @@ import { providerOperationRecordSchema, type ProviderOperationRecord } from '#sr
 import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
 import { proxyOperationAttachResultSchema } from '#src/provider-proxy/protocol.js';
 import { createGrantRegistry, handoffSecretDigest, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
-import { terminalizeProviderOperation } from '#src/jobs/provider-operation-terminalization.js';
+import {
+  ProviderOperationAtomicTerminalizationError,
+  terminalizeProviderOperation,
+  type ProviderOperationTerminalizationPort,
+} from '#src/jobs/provider-operation-terminalization.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import {
   asJointActivationReceipt,
   asJointContainmentReceipt,
@@ -119,22 +128,19 @@ function lifecycleForSchedule(
     claims,
     controlEstablished: () => undefined,
     disappearanceConsumer: {
-      containmentDisappeared: async (notice) => ({
-        kind: 'accepted',
-        acceptance: await reconciler.containmentDisappeared(notice),
-      }),
+      containmentDisappeared: (notice) => reconciler.containmentDisappeared(notice),
     },
     time: {
       now: () => 100,
       setTimeout: () => ({ unref: () => undefined }),
       clearTimeout: () => undefined,
     },
-    proveContainmentAbsent: async () => null,
-    retireCapsule: () => ({ kind: 'retired' }),
-    rewriteCapsule: () => undefined,
-    onFatal: (error) => {
-      throw error;
-    },
+    recoveryDispatcher: createTestProviderProxyRecoveryDispatcher(
+      { 'containment-proof': async () => null },
+      (error) => {
+        throw error;
+      },
+    ),
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
@@ -375,6 +381,10 @@ function createHarness(
     stopOperation?: (
       cause: Parameters<ReturnType<DurableProviderProxyOperationAuthority['buildOperationControl']>['stop']>[0],
     ) => Promise<void>;
+    terminalize?: ProviderOperationTerminalizationPort['terminalize'];
+    disappearanceTerminalization?: ProviderProxyRecoveryProducerPorts['disappearance-terminalization'];
+    time?: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
+    onError?: (message: string) => void;
     beforeCommitOnce?: () => void;
     failCommitOnce?: boolean;
   } = {},
@@ -530,11 +540,20 @@ function createHarness(
   const registry = { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() };
   let now = 100;
   const terminalization = {
-    terminalize: (
-      terminalRecord: ProviderOperationRecord,
-      directive: Parameters<typeof terminalizeProviderOperation>[2],
-    ) => terminalizeProviderOperation(progressStore, terminalRecord, directive, now),
+    terminalize:
+      overrides.terminalize ??
+      ((terminalRecord: ProviderOperationRecord, directive: Parameters<typeof terminalizeProviderOperation>[2]) =>
+        terminalizeProviderOperation(progressStore, terminalRecord, directive, now)),
   };
+  const fatalErrors: Error[] = [];
+  const recoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
+    {
+      'disappearance-terminalization':
+        overrides.disappearanceTerminalization ??
+        (({ record, directive }) => terminalization.terminalize(record, directive)),
+    },
+    (error) => fatalErrors.push(error),
+  );
   const reconciler = new ProviderOperationReconciler({
     getProgressStore: () => progressStore,
     authorityFor: overrides.authorityFor ?? (() => authority),
@@ -548,11 +567,14 @@ function createHarness(
       overrides.recoverLocalJob ?? (async (localRecord) => providerRecoveryAccepted(localRecord.operation.jobId)),
     completeLocalRecovery: overrides.completeLocalRecovery ?? (() => undefined),
     terminalization,
+    recoveryDispatcher,
     backendNamespace: 'tests',
+    onFatal: (error) => fatalErrors.push(error),
+    ...(overrides.onError === undefined ? {} : { onError: overrides.onError }),
     time: {
       now: () => now,
-      setTimeout: () => ({ unref: () => undefined }),
-      clearTimeout: () => undefined,
+      setTimeout: overrides.time?.setTimeout ?? (() => ({ unref: () => undefined })),
+      clearTimeout: overrides.time?.clearTimeout ?? (() => undefined),
     },
   });
   const begin = (signal = new AbortController().signal) => {
@@ -574,6 +596,8 @@ function createHarness(
     registry,
     terminalization,
     reconciler,
+    recoveryDispatcher,
+    fatalErrors,
     phasesBeforeMutation,
     begin,
     advance: (ms: number) => {
@@ -867,6 +891,206 @@ describe('ProviderOperationReconciler publication', () => {
     }).toEqual({ predecessorAttachmentCalls: 32, targetPrepareCalls: 1, earlierDueRows: 0 });
   });
 
+  it('finishes every selected disappearance-owned due turn', async () => {
+    const rejectTerminalization: Array<() => void> = [];
+    let targetRecoveries = 0;
+    const harness = createHarness({
+      disappearanceTerminalization: ({ record }) =>
+        new Promise((_, reject) => {
+          rejectTerminalization.push(() =>
+            reject(
+              new ProviderOperationAtomicTerminalizationError(
+                record.operation,
+                new Error('held-disappearance-terminalization'),
+              ),
+            ),
+          );
+        }),
+      recoverLocalJob: async (record) => {
+        targetRecoveries += 1;
+        return providerRecoveryAccepted(record.operation.jobId);
+      },
+    });
+    const base = providerOperationRecord('executing');
+    const predecessors = Array.from({ length: 32 }, (_, index) => ({
+      ...providerOperationRecord('executing', {
+        operation: { ...base.operation, operationId: operationUuid(300 + index) },
+        retryCount: 1,
+        retryNotBeforeMs: 0,
+      }),
+      lastError: { observedAtMs: 1, code: 'attach_failed', message: 'retry attachment' },
+    })) as readonly Extract<ProviderOperationRecord, { phase: 'executing' }>[];
+    const target = providerOperationRecord('local-recovery-pending', {
+      operation: { ...base.operation, operationId: operationUuid(999) },
+      retryNotBeforeMs: 1,
+    });
+    for (const record of predecessors) insertProviderOperation(harness.db, record);
+    insertProviderOperation(harness.db, target);
+
+    const deliveries = predecessors.map((record) =>
+      harness.reconciler.containmentDisappeared({
+        operation: record.operation,
+        setIdentity: providerProxySetIdentityFromRecord(record),
+        disappearanceReceipt: `selected-ready-${record.operation.operationId}`,
+      }),
+    );
+    const yielded: ProviderOperationRecord[] = [];
+    const unsubscribe = subscribeProviderOperationMutations(harness.db, (mutation) => {
+      if (
+        mutation.kind === 'upserted' &&
+        predecessors.some(
+          (predecessor) => predecessor.operation.operationId === mutation.record.operation.operationId,
+        ) &&
+        mutation.record.retryNotBeforeMs === 125
+      ) {
+        yielded.push(mutation.record);
+      }
+    });
+
+    harness.reconciler.wake();
+    await nextEventLoopTurn();
+    expect(rejectTerminalization).toHaveLength(32);
+    expect(targetRecoveries).toBe(0);
+    for (const reject of rejectTerminalization) reject();
+    await Promise.all(deliveries);
+    await nextEventLoopTurn();
+    expect.soft(yielded).toHaveLength(32);
+
+    for (let scan = 1; scan < 4; scan += 1) {
+      harness.reconciler.wake();
+      await nextEventLoopTurn();
+    }
+    expect(targetRecoveries).toBe(1);
+    await vi.waitFor(() => expect(readProviderOperation(harness.db, target.operation)).toBeNull());
+    harness.advance(26);
+    const replacements = readProviderOperationDueSelections(harness.db, 126, 32);
+    unsubscribe();
+
+    expect(replacements).toHaveLength(32);
+    for (const replacement of replacements) {
+      const canonical = readProviderOperation(harness.db, replacement.record.operation);
+      expect(replacement.record).toEqual(canonical);
+      expect(replacement.record).toMatchObject({ revision: 1, retryNotBeforeMs: 125 });
+    }
+    expect(harness.fatalErrors).toEqual([]);
+  });
+
+  it('retires healthy legacy occupants before due membership returns', async () => {
+    let targetRecoveries = 0;
+    const harness = createHarness({
+      terminalize: () => {
+        throw new ProviderOperationAtomicTerminalizationError(base.operation, new Error('legacy-disappearance-reset'));
+      },
+      recoverLocalJob: async (record) => {
+        targetRecoveries += 1;
+        return providerRecoveryAccepted(record.operation.jobId);
+      },
+    });
+    const base = providerOperationRecord('executing');
+    const predecessors = Array.from({ length: 32 }, (_, index) =>
+      providerOperationRecord('executing', {
+        operation: { ...base.operation, operationId: operationUuid(200 + index) },
+        retryNotBeforeMs: 0,
+      }),
+    );
+    const target = providerOperationRecord('local-recovery-pending', {
+      operation: { ...base.operation, operationId: operationUuid(999) },
+      retryNotBeforeMs: 1,
+    });
+    for (const record of predecessors) {
+      insertProviderOperation(harness.db, record);
+      harness.db
+        .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+        .run(legacyDueKey(record), canonicalOperationKey(record));
+    }
+    insertProviderOperation(harness.db, target);
+    await Promise.allSettled(
+      predecessors.map((record) =>
+        harness.reconciler.containmentDisappeared({
+          operation: record.operation,
+          setIdentity: providerProxySetIdentityFromRecord(record),
+          disappearanceReceipt: `legacy-ready-${record.operation.operationId}`,
+        }),
+      ),
+    );
+    await nextEventLoopTurn();
+
+    for (let scan = 0; scan < 4; scan += 1) {
+      harness.reconciler.wake();
+      await nextEventLoopTurn();
+    }
+
+    expect(targetRecoveries).toBe(1);
+    expect(readProviderOperationDueSelections(harness.db, 100, 32)).toEqual([]);
+  });
+
+  it('fail-stops when selected due work cannot be durably finished', async () => {
+    type ControlledTimer = ReturnType<TimePort['setTimeout']> & { callback: () => void };
+    const timers = new Set<ControlledTimer>();
+    const warnings: string[] = [];
+    const harness = createHarness({
+      terminalize: () => {
+        throw new ProviderOperationAtomicTerminalizationError(
+          selected.operation,
+          new Error('repair-disappearance-reset'),
+        );
+      },
+      onError: (message) => warnings.push(message),
+      time: {
+        setTimeout: (callback) => {
+          const timer: ControlledTimer = { callback, unref: () => undefined };
+          timers.add(timer);
+          return timer;
+        },
+        clearTimeout: (timer) => {
+          if (timer !== null) timers.delete(timer as ControlledTimer);
+        },
+      },
+    });
+    const selected = {
+      ...providerOperationRecord('executing', { retryCount: 1, retryNotBeforeMs: 0 }),
+      lastError: { observedAtMs: 1, code: 'attach_failed', message: 'retry attachment' },
+    } as Extract<ProviderOperationRecord, { phase: 'executing' }>;
+    insertProviderOperation(harness.db, selected);
+    await expect(
+      harness.reconciler.containmentDisappeared({
+        operation: selected.operation,
+        setIdentity: providerProxySetIdentityFromRecord(selected),
+        disappearanceReceipt: 'repair-ready',
+      }),
+    ).resolves.toMatchObject({ kind: 'operational-failure' });
+    await nextEventLoopTurn();
+    const dueSelection = readProviderOperationDueSelections(harness.db, 100, 1)[0];
+    if (dueSelection === undefined) throw new Error('expected one selected due row');
+    harness.db.exec(`
+      CREATE TEMP TRIGGER fail_due_turn_repair
+      BEFORE DELETE ON meta
+      WHEN OLD.key = '${dueSelection.rawKey}' AND OLD.value = '${dueSelection.rawValue}'
+      BEGIN
+        SELECT RAISE(ABORT, 'due-turn-repair-sentinel');
+      END
+    `);
+
+    harness.reconciler.start();
+    expect(timers.size).toBe(1);
+    harness.reconciler.wake();
+    await vi.waitFor(() => expect(warnings.length + harness.fatalErrors.length).toBe(1));
+    harness.reconciler.wake();
+    await nextEventLoopTurn();
+
+    expect({ fatalCount: harness.fatalErrors.length, warnings, activeTimers: timers.size }).toEqual({
+      fatalCount: 1,
+      warnings: [],
+      activeTimers: 0,
+    });
+    expect(harness.fatalErrors[0]).toMatchObject({
+      name: 'ProviderOperationReconcilerFatalError',
+      stage: 'due-turn-repair',
+      operation: selected.operation,
+      rawKey: dueSelection.rawKey,
+    } satisfies Partial<ProviderOperationReconcilerFatalError>);
+  });
+
   it('does not convert attachment completion failures into provider retry ownership', async () => {
     const sentinel = new Error('completion observer sentinel');
     const harness = createHarness();
@@ -927,7 +1151,8 @@ describe('ProviderOperationReconciler publication', () => {
 
     expect(accepted).not.toBe('acceptance-timed-out');
     if (accepted === 'acceptance-timed-out') throw new Error('disappearance acceptance did not preempt attach');
-    expect(accepted.disposition).toBe('terminalization-committed');
+    if (accepted.kind !== 'accepted') throw new Error('disappearance terminalization unexpectedly requested retry');
+    expect(accepted.acceptance.disposition).toBe('terminalization-committed');
     expect(readProviderOperation(harness.db, recovered.operation)).toBeNull();
     expect(harness.registry.attach).not.toHaveBeenCalled();
 
@@ -939,13 +1164,16 @@ describe('ProviderOperationReconciler publication', () => {
     expect(readProviderOperation(harness.db, recovered.operation)).toBeNull();
   });
 
-  it('retries rejected disappearance delivery without forgetting the notice', async () => {
+  it('retains retry-safe disappearance delivery without forgetting the notice', async () => {
     const harness = createHarness();
     const terminalize = harness.terminalization.terminalize;
     const terminalizeCalls = vi
       .spyOn(harness.terminalization, 'terminalize')
       .mockImplementationOnce(() => {
-        throw new Error('transient terminalization failure');
+        throw new ProviderOperationAtomicTerminalizationError(
+          harness.record.operation,
+          new Error('transient terminalization failure'),
+        );
       })
       .mockImplementation(terminalize);
     const recovered = providerOperationRecord('executing');
@@ -956,9 +1184,9 @@ describe('ProviderOperationReconciler publication', () => {
       disappearanceReceipt: 'retryable-absence-receipt',
     };
 
-    await expect(harness.reconciler.containmentDisappeared(notice)).rejects.toThrow(
-      'transient terminalization failure',
-    );
+    await expect(harness.reconciler.containmentDisappeared(notice)).resolves.toMatchObject({
+      kind: 'operational-failure',
+    });
     expect(terminalizeCalls).toHaveBeenCalledTimes(1);
     expect(readProviderOperation(harness.db, recovered.operation)?.phase).toBe('executing');
 
@@ -976,7 +1204,10 @@ describe('ProviderOperationReconciler publication', () => {
   it('rejects a conflicting disappearance receipt after delivery failure', async () => {
     const harness = createHarness();
     const terminalizeCalls = vi.spyOn(harness.terminalization, 'terminalize').mockImplementationOnce(() => {
-      throw new Error('transient terminalization failure');
+      throw new ProviderOperationAtomicTerminalizationError(
+        harness.record.operation,
+        new Error('transient terminalization failure'),
+      );
     });
     const recovered = providerOperationRecord('executing');
     insertProviderOperation(harness.db, recovered);
@@ -986,9 +1217,9 @@ describe('ProviderOperationReconciler publication', () => {
       disappearanceReceipt: 'first-absence-receipt',
     };
 
-    await expect(harness.reconciler.containmentDisappeared(notice)).rejects.toThrow(
-      'transient terminalization failure',
-    );
+    await expect(harness.reconciler.containmentDisappeared(notice)).resolves.toMatchObject({
+      kind: 'operational-failure',
+    });
     await expect(
       harness.reconciler.containmentDisappeared({
         ...notice,
@@ -1243,7 +1474,11 @@ describe('ProviderOperationReconciler publication', () => {
       recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
       completeLocalRecovery: () => undefined,
       terminalization: harness.terminalization,
+      recoveryDispatcher: harness.recoveryDispatcher,
       backendNamespace: 'tests',
+      onFatal: (error) => {
+        throw error;
+      },
       time: {
         now: () => 100,
         setTimeout: () => ({ unref: () => undefined }),
@@ -1314,7 +1549,11 @@ describe('ProviderOperationReconciler publication', () => {
       recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
       completeLocalRecovery: () => undefined,
       terminalization: harness.terminalization,
+      recoveryDispatcher: harness.recoveryDispatcher,
       backendNamespace: 'tests',
+      onFatal: (error) => {
+        throw error;
+      },
       time: {
         now: () => 100,
         setTimeout: () => ({ unref: () => undefined }),
@@ -1359,7 +1598,11 @@ describe('ProviderOperationReconciler publication', () => {
       recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
       completeLocalRecovery: () => undefined,
       terminalization: harness.terminalization,
+      recoveryDispatcher: harness.recoveryDispatcher,
       backendNamespace: 'tests',
+      onFatal: (error) => {
+        throw error;
+      },
       time: {
         now: () => 100,
         setTimeout: () => ({ unref: () => undefined }),

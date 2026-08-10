@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
@@ -302,7 +303,11 @@ describe('runStartupRecovery provider-operation ownership', () => {
           throw new Error('race test unexpectedly terminalized the provider operation');
         },
       },
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({}),
       backendNamespace: BACKEND_NAMESPACE,
+      onFatal: (error) => {
+        throw error;
+      },
       time: {
         now: () => 100,
         setTimeout: () => ({ unref: () => undefined }),

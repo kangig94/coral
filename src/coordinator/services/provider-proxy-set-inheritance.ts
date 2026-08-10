@@ -57,6 +57,12 @@ import {
 } from './provider-proxy-set-identity.js';
 import type { ProviderProxyOperationSnapshot } from './operation-registry.js';
 import { createProviderProxyAuthorityFaultLatch } from './provider-proxy-authority-fault.js';
+import {
+  runProviderProxyRecoveryDeadline,
+  type ProviderProxyRecoveryArbiter,
+  type ProviderProxyRecoveryDispatcher,
+  type ProviderProxyRecoveryTurnSinks,
+} from './provider-proxy-recovery-policy.js';
 
 /**
  * The branch of proxy-set acquisition that redeems a predecessor's continuously recoverable set instead of
@@ -134,6 +140,64 @@ export type ProviderProxySetRedemptionOutcome =
 export type ProviderProxySetAvailabilityIncident =
   | ProviderProxyRoleControlAvailabilityIncident
   | Readonly<{ kind: 'recovery-deadline'; timeoutMs: 45_000 }>;
+
+function dispatchProviderProxySetInheritance(
+  createTurn: (sinks: ProviderProxyRecoveryTurnSinks) => ProviderProxyRecoveryArbiter,
+  locator: ProviderProxySetLocator,
+  db: Database,
+  signal: AbortSignal,
+): Promise<ProviderProxySetInheritanceOutcome> {
+  return new Promise((resolve, reject) => {
+    const turn = createTurn({
+      evidence: (value) => resolve(value as ProviderProxySetInheritanceOutcome),
+      retry: (retry) =>
+        resolve({
+          kind: 'temporarily-unavailable',
+          incident: retry.incident as Extract<
+            ProviderProxySetInheritanceOutcome,
+            { kind: 'temporarily-unavailable' }
+          >['incident'],
+        }),
+      fatal: reject,
+      cancel: reject,
+    });
+    turn.start({
+      sourceId: 'inheritance',
+      producerId: 'set-inheritance',
+      input: { locator, db, signal },
+    });
+  });
+}
+
+export function recoverProviderProxySetAtStartup(
+  dispatcher: ProviderProxyRecoveryDispatcher,
+  locator: ProviderProxySetLocator,
+  db: Database,
+  signal: AbortSignal,
+): Promise<ProviderProxySetInheritanceOutcome> {
+  return dispatchProviderProxySetInheritance(
+    (sinks) =>
+      dispatcher.begin('startup-set-inheritance', { setIdentity: providerProxySetIdentityFromRecord(locator) }, sinks),
+    locator,
+    db,
+    signal,
+  );
+}
+
+export function recoverProviderProxySetOrdinarily(
+  dispatcher: ProviderProxyRecoveryDispatcher,
+  locator: ProviderProxySetLocator,
+  db: Database,
+  signal: AbortSignal,
+): Promise<ProviderProxySetInheritanceOutcome> {
+  return dispatchProviderProxySetInheritance(
+    (sinks) =>
+      dispatcher.begin('ordinary-set-inheritance', { setIdentity: providerProxySetIdentityFromRecord(locator) }, sinks),
+    locator,
+    db,
+    signal,
+  );
+}
 
 export class ProviderProxySetInheritanceCorruptionError extends Error {
   readonly code:
@@ -641,20 +705,16 @@ export function createProviderProxySetInheritance(
           if (inheritanceDeps === null) {
             outcome = { kind: 'not-bequeathed', reason: 'could not read this coordinator process’s own start time' };
           } else {
-            // A per-address deadline bounds each redemption without letting one stalled carrier monopolize
-            // startup reconciliation.
-            const deadline = AbortSignal.timeout(INHERITANCE_REDEMPTION_DEADLINE_MS);
-            const bounded = AbortSignal.any([signal, deadline]);
-            try {
-              outcome = await attemptProviderProxySetInheritance(locator, db, inheritanceDeps, bounded);
-            } catch (error: unknown) {
-              if (signal.aborted) throw signal.reason;
-              if (!deadline.aborted) throw error;
-              outcome = {
-                kind: 'temporarily-unavailable',
-                incident: { kind: 'recovery-deadline', timeoutMs: INHERITANCE_REDEMPTION_DEADLINE_MS },
-              };
-            }
+            const deadline = await runProviderProxyRecoveryDeadline({
+              time: options.runtime.time,
+              signal,
+              timeoutMs: INHERITANCE_REDEMPTION_DEADLINE_MS,
+              produce: (bounded) => attemptProviderProxySetInheritance(locator, db, inheritanceDeps, bounded),
+            });
+            outcome =
+              deadline.kind === 'settled'
+                ? deadline.value
+                : { kind: 'temporarily-unavailable', incident: deadline.incident };
           }
           return outcome;
         } finally {
@@ -669,29 +729,15 @@ export function createProviderProxySetInheritance(
       if (inheritanceDeps === null) {
         throw new Error('could not read this coordinator process’s own start time');
       }
-      const deadline = AbortSignal.timeout(INHERITANCE_REDEMPTION_DEADLINE_MS);
-      try {
-        const set = await redeemCapsule(
-          capsulePath,
-          capsule,
-          null,
-          inheritanceDeps,
-          AbortSignal.any([signal, deadline]),
-        );
-        return { kind: 'redeemed', set };
-      } catch (error: unknown) {
-        if (signal.aborted) throw signal.reason;
-        if (deadline.aborted) {
-          return {
-            kind: 'temporarily-unavailable',
-            incident: { kind: 'recovery-deadline', timeoutMs: INHERITANCE_REDEMPTION_DEADLINE_MS },
-          };
-        }
-        if (error instanceof ProviderProxyRoleControlUnavailableError) {
-          return { kind: 'temporarily-unavailable', incident: error.incident };
-        }
-        throw error;
-      }
+      const deadline = await runProviderProxyRecoveryDeadline({
+        time: options.runtime.time,
+        signal,
+        timeoutMs: INHERITANCE_REDEMPTION_DEADLINE_MS,
+        produce: (bounded) => redeemCapsule(capsulePath, capsule, null, inheritanceDeps, bounded),
+      });
+      return deadline.kind === 'settled'
+        ? { kind: 'redeemed', set: deadline.value }
+        : { kind: 'temporarily-unavailable', incident: deadline.incident };
     },
     proveContainmentAbsent: (identity, db, signal) =>
       proveProviderProxySetContainmentAbsent(identity, db, options.runtime, signal),

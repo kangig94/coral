@@ -52,6 +52,7 @@ import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-pr
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 const mockedReadCapsule = vi.mocked(readHandoffCapsuleFile);
 const mockedConnect = vi.mocked(connectRoleControlWithRetry);
@@ -1091,12 +1092,9 @@ describe('createProviderProxySetInheritance', () => {
       controlEstablished: notifyProviderProxyControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: runtime.time,
-      proveContainmentAbsent: async () => null,
-      retireCapsule: () => ({ kind: 'retired' }),
-      rewriteCapsule: () => undefined,
-      onFatal: (error) => {
-        throw error;
-      },
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+        'containment-proof': async () => null,
+      }),
     });
     lifecycle.initializeClaimSlots();
     lifecycle.installDiscoveredCapsules([{ path: '/capsules/claim-backed.handoff.json', capsule }]);
@@ -1156,12 +1154,9 @@ describe('createProviderProxySetInheritance', () => {
       controlEstablished: established,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time,
-      proveContainmentAbsent: async () => null,
-      retireCapsule: () => ({ kind: 'retired' }),
-      rewriteCapsule: () => undefined,
-      onFatal: (error) => {
-        throw error;
-      },
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+        'containment-proof': async () => null,
+      }),
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -1230,12 +1225,9 @@ describe('createProviderProxySetInheritance', () => {
         setTimeout: () => ({ unref: () => undefined }),
         clearTimeout: () => undefined,
       },
-      proveContainmentAbsent: async () => null,
-      retireCapsule: () => ({ kind: 'retired' }),
-      rewriteCapsule: () => undefined,
-      onFatal: (error) => {
-        throw error;
-      },
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+        'containment-proof': async () => null,
+      }),
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -1296,12 +1288,9 @@ describe('createProviderProxySetInheritance', () => {
         }),
       },
       time,
-      proveContainmentAbsent: async () => null,
-      retireCapsule: () => ({ kind: 'retired' }),
-      rewriteCapsule: () => undefined,
-      onFatal: (error) => {
-        throw error;
-      },
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+        'containment-proof': async () => null,
+      }),
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();

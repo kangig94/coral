@@ -715,6 +715,7 @@ async function createHarness(
         ),
         () => ({ trace, ledger: proxy.ledger().get(operation) }),
       );
+      timer.advance(0);
     },
     close: async () => {
       for (const client of controls) client.close();
@@ -830,6 +831,7 @@ describe('provider proxy continuity commit bridge', () => {
     await harness.firstProviderEventSeen;
     const stale = await harness.reattachHandoffControl();
     await expect(stale.faulted).resolves.toBeInstanceOf(Error);
+    harness.timer.advance(0);
 
     await vi.waitFor(() => expect(ledgerEntry(harness).committedThroughProviderSeq).toBe(1));
     await vi.waitFor(() => expect(harness.trace.turnStarts).toBe(1));
@@ -976,6 +978,7 @@ describe('provider proxy continuity commit bridge', () => {
     });
 
     supervisor.controlActivated(1);
+    timer.advance(0);
     await pushed.promise;
     response.resolve({ kind: 'ack', committedThroughProviderSeq: 1 });
     await drainMicrotasks();

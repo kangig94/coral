@@ -41,6 +41,7 @@ import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provide
 import type { CoordinatorIdentity } from '#src/provider-proxy/protocol.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 const mockedEstablishRoleControl = vi.mocked(establishRoleControl);
 const mockedCreateSetAuthority = vi.mocked(createProviderProxySetAuthority);
@@ -294,12 +295,9 @@ describe('createProviderProxyAcquisitionSteps', () => {
         }),
       },
       time,
-      proveContainmentAbsent: async () => null,
-      retireCapsule: () => ({ kind: 'retired' }),
-      rewriteCapsule: () => undefined,
-      onFatal: (error) => {
-        throw error;
-      },
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+        'containment-proof': async () => null,
+      }),
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();

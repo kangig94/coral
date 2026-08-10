@@ -14,23 +14,65 @@ import {
   type ProviderProxySetLifecycleDeps,
   type ProviderProxySetLifecycleProgressViolation,
 } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import type {
+  ProviderProxyRecoveryDispatcher,
+  ProviderProxySetLifecycleFatalError,
+} from '#src/coordinator/services/provider-proxy-recovery-policy.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set-identity.js';
+import type { ProviderProxySetRedemptionOutcome } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 const noContainmentProof = async (): Promise<null> => null;
 const ignoreControlEstablished = (): void => undefined;
 
-function lifecycleFor(
-  deps: Omit<ProviderProxySetLifecycleDeps, 'retireCapsule' | 'rewriteCapsule' | 'onFatal'> &
-    Partial<Pick<ProviderProxySetLifecycleDeps, 'retireCapsule' | 'rewriteCapsule' | 'onFatal'>>,
-): ProviderProxySetLifecycle {
-  return new ProviderProxySetLifecycle({
-    retireCapsule: () => ({ kind: 'retired' }),
-    rewriteCapsule: () => undefined,
-    onFatal: (error) => {
-      throw error;
+type ProviderProxySetLifecycleFixtureDeps = Omit<ProviderProxySetLifecycleDeps, 'recoveryDispatcher'> &
+  Readonly<{
+    recoveryDispatcher?: ProviderProxyRecoveryDispatcher;
+    proveContainmentAbsent(
+      identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
+      signal: AbortSignal,
+    ): Promise<string | null>;
+    retireCapsule?(path: string): Promise<CapsuleRetirementAttemptOutcome> | CapsuleRetirementAttemptOutcome;
+    rewriteCapsule?(path: string, capsule: HandoffCapsuleV2): Promise<void> | void;
+    onFatal?(error: ProviderProxySetLifecycleFatalError): void;
+    redeemCapsule?(
+      capsule: HandoffCapsule,
+      capsulePath: string,
+      signal: AbortSignal,
+    ): Promise<ProviderProxySetRedemptionOutcome>;
+  }>;
+
+function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxySetLifecycle {
+  const retireCapsule = deps.retireCapsule ?? (() => ({ kind: 'retired' as const }));
+  const rewriteCapsule = deps.rewriteCapsule ?? (() => undefined);
+  const onFatal = deps.onFatal ?? (() => undefined);
+  const recoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
+    {
+      ...(deps.redeemCapsule === undefined
+        ? {}
+        : {
+            'capsule-redemption': ({ capsule, capsulePath, signal }) =>
+              deps.redeemCapsule?.(capsule, capsulePath, signal) ?? Promise.reject(new Error('unconfigured')),
+          }),
+      'containment-proof': ({ identity, signal }) => deps.proveContainmentAbsent(identity, signal),
+      'capsule-rewrite': ({ path, capsule }) => rewriteCapsule(path, capsule),
+      'capsule-retirement': ({ path }) => retireCapsule(path),
     },
-    ...deps,
+    onFatal,
+  );
+  const {
+    proveContainmentAbsent: _proveContainmentAbsent,
+    retireCapsule: _retireCapsule,
+    rewriteCapsule: _rewriteCapsule,
+    onFatal: _onFatal,
+    redeemCapsule: _redeemCapsule,
+    recoveryDispatcher: suppliedDispatcher,
+    ...lifecycleDeps
+  } = deps;
+  return new ProviderProxySetLifecycle({
+    ...lifecycleDeps,
+    recoveryDispatcher: suppliedDispatcher ?? recoveryDispatcher,
   });
 }
 
@@ -300,6 +342,90 @@ describe('ProviderProxySetLifecycle', () => {
       snapshot: { represented: 1, states: ['capsule-recovering'] },
       activeTimers: 0,
     });
+  });
+
+  it('dispatches exact capsule fatal evidence on arrival', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const authority = fakeAuthority();
+    const redemption = deferred<ProviderProxySetRedemptionOutcome>();
+    const neverProvesAbsence = new Promise<null>(() => undefined);
+    const fatals = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: () => neverProvesAbsence,
+      redeemCapsule: () => redemption.promise,
+      onFatal: fatals,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.installDiscoveredCapsules([
+      { path: '/capsules/arrival-fatal-v2.handoff.json', capsule: capsuleV2For(authority) },
+    ]);
+    const corrupted = {
+      ...authority,
+      setIdentity: { ...authority.setIdentity, guardianPid: authority.setIdentity.guardianPid + 1 },
+    };
+
+    redemption.resolve({ kind: 'redeemed', set: corrupted });
+    await drainMicrotasks();
+
+    expect({
+      fatalCalls: fatals.mock.calls.length,
+      snapshot: lifecycle.snapshot(),
+      activeTimers: clock.timers.filter((timer) => timer.active).length,
+    }).toEqual({
+      fatalCalls: 1,
+      snapshot: {
+        startupDiscoveryCompleted: true,
+        represented: 1,
+        available: 0,
+        states: ['capsule-recovering'],
+        pendingOperationCounts: [],
+      },
+      activeTimers: 0,
+    });
+  });
+
+  it('fails opaque capsule recovery on redeemed identity corruption', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const authority = fakeAuthority();
+    const redemption = deferred<ProviderProxySetRedemptionOutcome>();
+    const rewriteCapsule = vi.fn();
+    const fatals = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      redeemCapsule: () => redemption.promise,
+      rewriteCapsule,
+      onFatal: fatals,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.installDiscoveredCapsules([
+      { path: '/capsules/opaque-corrupt-v1.handoff.json', capsule: capsuleFor(authority) },
+    ]);
+    const corrupted = {
+      ...authority,
+      setIdentity: { ...authority.setIdentity, guardianInstanceId: randomUUID() },
+    };
+
+    redemption.resolve({ kind: 'redeemed', set: corrupted });
+    await drainMicrotasks();
+
+    expect({
+      fatalCalls: fatals.mock.calls.length,
+      states: lifecycle.snapshot().states,
+      rewriteCalls: rewriteCapsule.mock.calls.length,
+      activeTimers: clock.timers.filter((timer) => timer.active).length,
+    }).toEqual({ fatalCalls: 1, states: ['capsule-opaque'], rewriteCalls: 0, activeTimers: 0 });
   });
 
   it('fail-stops duplicate capsule addresses, grants, and claim-binding aliases during discovery', () => {

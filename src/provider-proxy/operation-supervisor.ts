@@ -204,8 +204,9 @@ type SupervisedOperation = {
   ownershipOrdinal: number;
   continuityCommits: Map<number, PendingContinuityCommit>;
   providerEventAmbiguity: ProviderEventAmbiguityDeadline | null;
-  pumpRequested: boolean;
-  pumping: boolean;
+  pumpDemand: boolean;
+  pumpTurn: { unref?: () => void } | null;
+  pumpRunning: boolean;
   closed: boolean;
   pendingCompletion: 'terminal-awaiting-settlement' | 'suspended-awaiting-durable-decision' | null;
 };
@@ -752,7 +753,8 @@ export class OperationSupervisor {
           record.deadlineTimer !== null ||
           record.releaseRetryTimer !== null ||
           record.pendingCompletion !== null ||
-          record.pumping
+          record.pumpRunning ||
+          record.pumpTurn !== null
         ) {
           throw new ProxyControlProtocolError('invalid_state', 'Operation ownership is still being resolved.');
         }
@@ -904,6 +906,9 @@ export class OperationSupervisor {
       if (ambiguity !== null) this.#clearProviderEventAmbiguity(record, ambiguity);
       if (record.releaseRetryTimer !== null) this.#options.timer.clearTimeout(record.releaseRetryTimer);
       record.releaseRetryTimer = null;
+      record.pumpDemand = false;
+      if (record.pumpTurn !== null) this.#options.timer.clearTimeout(record.pumpTurn);
+      record.pumpTurn = null;
       this.#rejectAllContinuityCommits(
         record,
         new ContinuityCommitDeliveryError(
@@ -1014,8 +1019,9 @@ export class OperationSupervisor {
       ownershipOrdinal: 1,
       continuityCommits: new Map(),
       providerEventAmbiguity: null,
-      pumpRequested: false,
-      pumping: false,
+      pumpDemand: false,
+      pumpTurn: null,
+      pumpRunning: false,
       closed: false,
       pendingCompletion: null,
     };
@@ -1445,8 +1451,19 @@ export class OperationSupervisor {
   }
 
   #requestPump(record: SupervisedOperation): void {
-    record.pumpRequested = true;
-    if (!record.pumping) void this.#pump(record);
+    record.pumpDemand = true;
+    this.#schedulePumpTurn(record);
+  }
+
+  #schedulePumpTurn(record: SupervisedOperation): void {
+    if (record.pumpTurn !== null || record.pumpRunning || record.closed) return;
+    let handle: { unref?: () => void } | null = null;
+    handle = this.#options.timer.setTimeout(() => {
+      if (record.pumpTurn !== handle) return;
+      record.pumpTurn = null;
+      void this.#runPumpTurn(record);
+    }, 0);
+    record.pumpTurn = handle;
   }
 
   #beginProviderEventPush(record: SupervisedOperation, next: ReplayEvent): BegunProviderEventPush | null {
@@ -1484,7 +1501,7 @@ export class OperationSupervisor {
           return { kind: 'stop' };
         }
         if (error.code === 'control_endpoint_push_lost' || error.code === 'control_endpoint_closed') {
-          return { kind: record.pumpRequested ? 'retry' : 'stop' };
+          return { kind: record.pumpDemand ? 'retry' : 'stop' };
         }
       }
       return { kind: 'stop' };
@@ -1495,7 +1512,7 @@ export class OperationSupervisor {
     record: SupervisedOperation,
     begun: BegunProviderEventPush,
     response: unknown,
-  ): 'continue' | 'stop' {
+  ): 'advanced' | 'retained' | 'stop' {
     let result: ProviderEventResult;
     try {
       result = providerEventResultSchema.parse(response);
@@ -1503,7 +1520,7 @@ export class OperationSupervisor {
       this.#faultProviderEventAmbiguity(record, begun.deadline, 'provider_event_response_invalid');
       return 'stop';
     }
-    if (result.kind === 'replay') return 'continue';
+    if (result.kind === 'replay') return 'retained';
 
     const current = this.#operations.get(operationToken(record.operation));
     const guardedEntry = this.#ledger.get(record.key);
@@ -1530,36 +1547,36 @@ export class OperationSupervisor {
     }
     this.#clearProviderEventAmbiguity(record, begun.deadline);
     this.#commitCoveredContinuity(record, begun.ownership, result.committedThroughProviderSeq);
-    return 'continue';
+    if ((this.#ledger.get(record.key)?.bufferedEvents.length ?? 0) > 0) this.#requestPump(record);
+    return 'advanced';
   }
 
-  async #pump(record: SupervisedOperation): Promise<void> {
-    if (record.pumping) return;
-    record.pumping = true;
+  async #runPumpTurn(record: SupervisedOperation): Promise<void> {
+    if (this.#operations.get(operationToken(record.operation)) !== record || record.pumpRunning || record.closed) {
+      return;
+    }
+    record.pumpRunning = true;
+    record.pumpDemand = false;
     try {
-      while (true) {
-        record.pumpRequested = false;
-        const entry = this.#ledger.get(record.key);
-        if (
-          entry?.state === 'preparing' ||
-          entry?.state === 'prepared' ||
-          entry?.state === 'starting' ||
-          entry?.state === 'started-awaiting-publication'
-        ) {
-          return;
-        }
-        const next = entry?.bufferedEvents[0];
-        if (next === undefined) return;
-        const begun = this.#beginProviderEventPush(record, next);
-        if (begun === null) return;
-        const pushed = await this.#awaitProviderEventPush(record, begun);
-        if (pushed.kind === 'retry') continue;
-        if (pushed.kind === 'stop') return;
-        if (this.#applyProviderEventResponse(record, begun, pushed.response) === 'stop') return;
+      const entry = this.#ledger.get(record.key);
+      if (
+        entry?.state === 'preparing' ||
+        entry?.state === 'prepared' ||
+        entry?.state === 'starting' ||
+        entry?.state === 'started-awaiting-publication'
+      ) {
+        return;
       }
+      const next = entry?.bufferedEvents[0];
+      if (next === undefined) return;
+      const begun = this.#beginProviderEventPush(record, next);
+      if (begun === null) return;
+      const pushed = await this.#awaitProviderEventPush(record, begun);
+      if (pushed.kind !== 'received') return;
+      this.#applyProviderEventResponse(record, begun, pushed.response);
     } finally {
-      record.pumping = false;
-      if (record.pumpRequested) this.#requestPump(record);
+      record.pumpRunning = false;
+      if (record.pumpDemand) this.#schedulePumpTurn(record);
     }
   }
 

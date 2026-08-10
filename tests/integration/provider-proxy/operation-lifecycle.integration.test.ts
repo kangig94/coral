@@ -41,6 +41,7 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { compareAndSwapProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema } from '#src/store/provider-operation-record.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
@@ -624,7 +625,11 @@ async function launchThroughRoute(
         throw new Error('integration publication unexpectedly requested coordinator terminalization');
       },
     },
+    recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({}),
     backendNamespace: 'tests',
+    onFatal: (error) => {
+      throw error;
+    },
     time,
   });
   reconciler.start();
@@ -1379,7 +1384,7 @@ describe('provider-proxy provider.event.v1 emission', () => {
     expect(set.proxy.ledger().get(key)?.bufferedEvents).toEqual([]);
   });
 
-  it('resends the identical event when told to replay, until it is genuinely acknowledged', async () => {
+  it('resends the identical retained event when a fresh attach requests replay', async () => {
     const receivedSeqs: number[] = [];
     const set = await startProxy({
       onProviderEvent: (request) => {
@@ -1396,6 +1401,8 @@ describe('provider-proxy provider.event.v1 emission', () => {
 
     set.proxy.emitProviderEvent(key, { kind: 'progress', message: 'tick' });
 
+    await vi.waitFor(() => expect(receivedSeqs).toEqual([1]));
+    await set.control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
     await vi.waitFor(() => expect(set.proxy.ledger().get(key)?.committedThroughProviderSeq).toBe(1));
     // The same event, sent twice — a `replay` reply does not advance providerSeq allocation.
     expect(receivedSeqs).toEqual([1, 1]);

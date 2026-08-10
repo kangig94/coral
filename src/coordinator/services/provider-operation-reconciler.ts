@@ -8,6 +8,7 @@ import type { AppServerProxyPlacementResult } from '../../jobs/contracts/app-ser
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { buildJobEventRefs } from '../../jobs/refs.js';
 import type { ProviderOperationTerminalizationPort } from '../../jobs/provider-operation-terminalization.js';
+import type { ProviderOperationTerminalizationResult } from '../../jobs/provider-operation-terminalization.js';
 import { isAbortStopCause, type ProviderStopCause } from '../../providers/contract.js';
 import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
@@ -23,11 +24,15 @@ import {
   compareAndSwapProviderOperation,
   completeExecutingProviderOperationAttachment,
   deleteProviderOperation,
+  finishProviderOperationDueSelection,
   insertProviderOperation,
   readProviderOperation,
+  readProviderOperationDueSelections,
   readProviderOperationForJob,
   readProviderOperations,
   readProviderOperationsDue,
+  ProviderOperationJournalError,
+  type ProviderOperationDueSelection,
   type ProviderOperationRetryOwnership,
 } from '../../store/provider-operation-journal.js';
 import {
@@ -37,6 +42,7 @@ import {
   type ProviderOperationIdentity,
   type ProviderOperationNeverStartedDirective,
   type ProviderOperationRecord,
+  type ProviderOperationTerminalDirective,
 } from '../../store/provider-operation-record.js';
 import type { DurableProviderProxyOperationAuthority } from '../live/provider-proxy/operation-route.js';
 import type { LocalOperationRegistry } from './operation-registry.js';
@@ -60,7 +66,9 @@ import type { ProviderOperationRecoveryAcceptance } from './recovery/index.js';
 import type {
   ContainmentAbsenceAcceptance,
   ContainmentAbsenceOperationalIncident,
+  DisappearanceDeliveryAttemptOutcome,
 } from './provider-proxy-set-lifecycle.js';
+import type { ProviderProxyRecoveryDispatcher } from './provider-proxy-recovery-policy.js';
 
 export type ProviderOperationReconciliationEvidence =
   | Readonly<{ kind: 'unresolved' }>
@@ -90,7 +98,7 @@ export type ContainmentDisappearanceAcceptance = Readonly<{
 }>;
 
 export interface ProviderContainmentDisappearanceConsumer {
-  containmentDisappeared(notice: ContainmentDisappearanceNotice): Promise<ContainmentDisappearanceAcceptance>;
+  containmentDisappeared(notice: ContainmentDisappearanceNotice): Promise<DisappearanceDeliveryAttemptOutcome>;
 }
 
 export type StartupProviderSetWork = Readonly<{
@@ -272,9 +280,11 @@ type ProviderOperationReconcilerDeps = Readonly<{
   ): Promise<unknown>;
   completeLocalRecovery(jobId: string): void;
   terminalization: ProviderOperationTerminalizationPort;
+  recoveryDispatcher: ProviderProxyRecoveryDispatcher;
   backendNamespace: string;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   batchSize?: number;
+  onFatal(error: ProviderOperationReconcilerFatalError): void;
   onError?: (message: string) => void;
 }>;
 
@@ -296,6 +306,25 @@ const TIMER_MIN_MS = 25;
 const TIMER_MAX_MS = 2_000;
 const NEVER_ABORTS = new AbortController().signal;
 const CONTAINMENT_DRIVE_FENCE = Symbol('provider-containment-drive-fence');
+
+export class ProviderOperationReconcilerFatalError extends Error {
+  readonly stage: 'due-index-corruption' | 'due-turn-repair';
+  readonly operation?: ProviderOperationIdentity;
+  readonly rawKey?: string;
+
+  constructor(
+    stage: ProviderOperationReconcilerFatalError['stage'],
+    message: string,
+    options?: ErrorOptions & { operation?: ProviderOperationIdentity; rawKey?: string },
+  ) {
+    super(message, options);
+    this.name = 'ProviderOperationReconcilerFatalError';
+    this.stage = stage;
+    if (options?.operation !== undefined) this.operation = options.operation;
+    if (options?.rawKey !== undefined) this.rawKey = options.rawKey;
+    Object.setPrototypeOf(this, ProviderOperationReconcilerFatalError.prototype);
+  }
+}
 
 function awaitStartup<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -340,7 +369,7 @@ type ContainmentDisappearanceDeliveryState =
   | Readonly<{ kind: 'ready' }>
   | Readonly<{
       kind: 'delivering';
-      promise: Promise<ContainmentDisappearanceAcceptance>;
+      promise: Promise<DisappearanceDeliveryAttemptOutcome>;
     }>
   | Readonly<{
       kind: 'consumed';
@@ -407,6 +436,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   #started = false;
   #polling = false;
   #pollRequested = false;
+  #fatal = false;
 
   constructor(deps: ProviderOperationReconcilerDeps) {
     const batchSize = deps.batchSize ?? 32;
@@ -418,7 +448,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   }
 
   start(): void {
-    if (this.#started) return;
+    if (this.#started || this.#fatal) return;
     this.#started = true;
     const listener = (identity: ProviderOperationIdentity): void => this.settlementPending(identity);
     settlementListeners.add(listener);
@@ -653,6 +683,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   }
 
   wake(): void {
+    if (this.#fatal) return;
     if (this.#polling) {
       this.#pollRequested = true;
       return;
@@ -660,7 +691,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     void this.#poll();
   }
 
-  containmentDisappeared(notice: ContainmentDisappearanceNotice): Promise<ContainmentDisappearanceAcceptance> {
+  containmentDisappeared(notice: ContainmentDisappearanceNotice): Promise<DisappearanceDeliveryAttemptOutcome> {
     const parsed = containmentDisappearanceNoticeSchema.parse(notice);
     if (
       parsed.operation.buildSetId !== parsed.setIdentity.buildSetId ||
@@ -681,7 +712,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     const disappearance = serializer.disappearance;
     switch (disappearance.delivery.kind) {
       case 'consumed':
-        return Promise.resolve(disappearance.delivery.acceptance);
+        return Promise.resolve({ kind: 'accepted', acceptance: disappearance.delivery.acceptance });
       case 'delivering':
         return disappearance.delivery.promise;
       case 'ready':
@@ -689,14 +720,20 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     }
 
     const active = serializer.inFlight ?? Promise.resolve();
-    const consume = (): Promise<ContainmentDisappearanceAcceptance> =>
-      this.#driveContext.exit(() => this.#consumeContainmentDisappearance(parsed));
+    const consume = async (): Promise<DisappearanceDeliveryAttemptOutcome> => {
+      const outcome = await this.#driveContext.exit(() => this.#consumeContainmentDisappearance(parsed));
+      return outcome.kind === 'operational-failure' ? outcome : { kind: 'accepted', acceptance: outcome };
+    };
     const promise = active.then(consume, consume);
     disappearance.delivery = { kind: 'delivering', promise };
     void promise.then(
-      (acceptance) => {
+      (outcome) => {
         if (disappearance.delivery.kind !== 'delivering' || disappearance.delivery.promise !== promise) return;
-        disappearance.delivery = { kind: 'consumed', acceptance };
+        if (outcome.kind === 'operational-failure') {
+          disappearance.delivery = { kind: 'ready' };
+          return;
+        }
+        disappearance.delivery = { kind: 'consumed', acceptance: outcome.acceptance };
         this.wake();
       },
       () => {
@@ -1442,7 +1479,9 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
 
   async #consumeContainmentDisappearance(
     notice: ContainmentDisappearanceNotice,
-  ): Promise<ContainmentDisappearanceAcceptance> {
+  ): Promise<
+    ContainmentDisappearanceAcceptance | Extract<DisappearanceDeliveryAttemptOutcome, { kind: 'operational-failure' }>
+  > {
     for (;;) {
       const record = readProviderOperation(this.#deps.getProgressStore().getDb(), notice.operation);
       if (record === null) {
@@ -1476,13 +1515,15 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
                   code: 'provider_lost',
                   reason: `Provider execution was interrupted when its containment disappeared (${notice.disappearanceReceipt}).`,
                 };
-        const terminalized = this.#deps.terminalization.terminalize(record, directive);
+        const terminalized = await this.#terminalizeDisappearance(record, directive);
+        if (terminalized.kind === 'operational-failure') return terminalized;
         if (terminalized.kind === 'conflict') continue;
         this.#complete(record.operation, { kind: 'terminalized' });
         return { kind: 'accepted', operation: notice.operation, disposition: 'terminalization-committed' };
       }
       if (record.phase === 'prestart-cleanup-pending' && record.afterRelease.kind !== 'local-authorized') {
-        const terminalized = this.#deps.terminalization.terminalize(record, record.afterRelease);
+        const terminalized = await this.#terminalizeDisappearance(record, record.afterRelease);
+        if (terminalized.kind === 'operational-failure') return terminalized;
         if (terminalized.kind === 'conflict') continue;
         this.#complete(record.operation, { kind: 'terminalized' });
         return { kind: 'accepted', operation: notice.operation, disposition: 'terminalization-committed' };
@@ -1501,6 +1542,37 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       if (transitioned?.phase !== 'local-recovery-pending') continue;
       return { kind: 'accepted', operation: notice.operation, disposition: 'local-recovery-committed' };
     }
+  }
+
+  #terminalizeDisappearance(
+    record: ProviderOperationRecord,
+    directive: ProviderOperationTerminalDirective,
+  ): Promise<
+    | ProviderOperationTerminalizationResult
+    | Extract<DisappearanceDeliveryAttemptOutcome, { kind: 'operational-failure' }>
+  > {
+    return new Promise((resolve, reject) => {
+      const turn = this.#deps.recoveryDispatcher.begin(
+        'disappearance-delivery',
+        { operation: record.operation, setIdentity: providerProxySetIdentityFromRecord(record) },
+        {
+          evidence: (value) => resolve(value as ProviderOperationTerminalizationResult),
+          retry: () =>
+            resolve({
+              kind: 'operational-failure',
+              code: 'disappearance_consumer_unavailable',
+              reason: 'Provider operation terminalization is temporarily unavailable.',
+            }),
+          fatal: reject,
+          cancel: reject,
+        },
+      );
+      turn.start({
+        sourceId: 'terminalization',
+        producerId: 'disappearance-terminalization',
+        input: { record, directive },
+      });
+    });
   }
 
   async #commitExecuting(
@@ -1889,6 +1961,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   }
 
   async #poll(preferredAuthority?: DurableProviderProxyOperationAuthority): Promise<void> {
+    if (this.#fatal) return;
     if (this.#polling) {
       this.#pollRequested = true;
       return;
@@ -1896,11 +1969,28 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     this.#polling = true;
     try {
       const progressStore = this.#deps.getProgressStore();
-      const records = readProviderOperationsDue(progressStore.getDb(), this.#deps.time.now(), this.#batchSize);
-      for (const record of records) {
-        if (preferredAuthority !== undefined && !sameAuthority(record, preferredAuthority)) continue;
-        await this.reconcile(record, preferredAuthority);
+      const scanCutoffMs = this.#deps.time.now();
+      let selections: readonly ProviderOperationDueSelection[];
+      try {
+        selections = readProviderOperationDueSelections(progressStore.getDb(), scanCutoffMs, this.#batchSize);
+      } catch (error: unknown) {
+        if (error instanceof ProviderOperationJournalError) {
+          this.#latchFatal(
+            new ProviderOperationReconcilerFatalError(
+              'due-index-corruption',
+              `Provider operation due-index selection failed: ${providerOperationErrorReason(error)}`,
+              { cause: error },
+            ),
+          );
+          return;
+        }
+        throw error;
       }
+      for (const selection of selections) {
+        const result = await this.#reconcileDueSelection(selection, scanCutoffMs, preferredAuthority);
+        if (result === 'fatal') return;
+      }
+      if (this.#fatal) return;
       for (const [key, identity] of this.#settlements) {
         const record = readProviderOperation(progressStore.getDb(), identity);
         if (record === null) {
@@ -1922,17 +2012,91 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
         await this.reconcile(record, preferredAuthority);
       }
     } catch (error: unknown) {
-      this.#deps.onError?.(`Provider operation reconciliation failed: ${providerOperationErrorReason(error)}`);
+      if (!this.#fatal) {
+        this.#deps.onError?.(`Provider operation reconciliation failed: ${providerOperationErrorReason(error)}`);
+      }
     } finally {
       this.#polling = false;
       const pollRequested = this.#pollRequested;
       this.#pollRequested = false;
-      if (pollRequested) {
-        void this.#poll();
-      } else if (this.#started) {
-        this.#schedule(TIMER_MAX_MS);
+      if (!this.#fatal) {
+        if (pollRequested) {
+          void this.#poll();
+        } else if (this.#started) {
+          this.#schedule(TIMER_MAX_MS);
+        }
       }
     }
+  }
+
+  async #reconcileDueSelection(
+    selection: ProviderOperationDueSelection,
+    scanCutoffMs: number,
+    preferredAuthority?: DurableProviderProxyOperationAuthority,
+  ): Promise<'finished' | 'finished-with-drive-error' | 'fatal'> {
+    let driveError: unknown;
+    try {
+      if (preferredAuthority === undefined || sameAuthority(selection.record, preferredAuthority)) {
+        const serializer = this.#serializerFor(operationKey(selection.record.operation));
+        const precedingDrive = serializer.inFlight;
+        await this.reconcile(selection.record, preferredAuthority);
+        if (precedingDrive !== null) {
+          const current = readProviderOperation(this.#deps.getProgressStore().getDb(), selection.record.operation);
+          if (current !== null && current.retryNotBeforeMs <= scanCutoffMs) {
+            await this.reconcile(current, preferredAuthority);
+          }
+        }
+      }
+    } catch (error: unknown) {
+      driveError = error;
+    }
+
+    try {
+      finishProviderOperationDueSelection(
+        this.#deps.getProgressStore().getDb(),
+        selection,
+        scanCutoffMs,
+        scanCutoffMs + TIMER_MIN_MS,
+      );
+    } catch (repairError: unknown) {
+      const cause =
+        driveError === undefined
+          ? repairError
+          : new AggregateError([repairError, driveError], 'Due-turn repair failed after a domain drive error.', {
+              cause: repairError,
+            });
+      this.#latchFatal(
+        new ProviderOperationReconcilerFatalError(
+          'due-turn-repair',
+          `Provider operation due-turn repair failed: ${providerOperationErrorReason(repairError)}`,
+          { cause, operation: selection.record.operation, rawKey: selection.rawKey },
+        ),
+      );
+      return 'fatal';
+    }
+
+    if (driveError === undefined) return 'finished';
+    if (this.#fatal) return 'fatal';
+    if (driveError instanceof ProviderOperationReconcilerFatalError) {
+      this.#latchFatal(driveError);
+      return 'fatal';
+    }
+    this.#deps.onError?.(
+      `Provider operation reconciliation failed for '${operationKey(selection.record.operation)}': ${providerOperationErrorReason(driveError)}`,
+    );
+    return 'finished-with-drive-error';
+  }
+
+  #latchFatal(error: ProviderOperationReconcilerFatalError): void {
+    if (this.#fatal) return;
+    this.#fatal = true;
+    this.#started = false;
+    if (this.#timer !== null) {
+      this.#deps.time.clearTimeout(this.#timer);
+      this.#timer = null;
+    }
+    this.#pollRequested = false;
+    this.#deps.onFatal(error);
   }
 
   async #reconcileActiveForAuthority(authority: DurableProviderProxyOperationAuthority): Promise<void> {
@@ -1943,7 +2107,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   }
 
   #schedule(delayMs: number): void {
-    if (!this.#started) return;
+    if (!this.#started || this.#fatal) return;
     if (this.#timer !== null) this.#deps.time.clearTimeout(this.#timer);
     this.#timer = this.#deps.time.setTimeout(
       () => {

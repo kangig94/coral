@@ -6,7 +6,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { createExecutionServices } from '#src/coordinator/composition/execution-services.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
-import { attemptProviderProxySetInheritance } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
+import {
+  attemptProviderProxySetInheritance,
+  createProviderProxySetInheritance,
+  type ProviderProxySetRedemptionOutcome,
+} from '#src/coordinator/services/provider-proxy-set-inheritance.js';
 import {
   ProviderOperationReconciler,
   StartupSetRecoveryProducer,
@@ -15,9 +19,9 @@ import {
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
 import {
   ProviderProxySetLifecycle,
-  ProviderProxySetLifecycleFatalError,
   type DisappearanceDeliveryAttemptOutcome,
 } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import { ProviderProxySetLifecycleFatalError } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
 import {
   providerProxySetIdentityFromRecord,
   providerProxySetKey,
@@ -34,12 +38,15 @@ import type { ProviderOperationRecord } from '#src/store/provider-operation-reco
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS, ProxyControlProtocolError } from '#src/provider-proxy/protocol.js';
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
-import type { StorageBigIntStat, StoragePort } from '#src/infra/port-types.js';
+import type { StorageBigIntStat, StoragePort, TimePort, TimerHandle } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { ProviderOperationTerminalizationUnavailableError } from '#src/jobs/provider-operation-terminalization.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
+import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 
 function deferred<T>(): Readonly<{ promise: Promise<T>; resolve(value: T): void }> {
   let resolve!: (value: T) => void;
@@ -47,6 +54,44 @@ function deferred<T>(): Readonly<{ promise: Promise<T>; resolve(value: T): void 
     resolve = accept;
   });
   return { promise, resolve };
+}
+
+function controlledRecoveryDeadline(base: VirtualTime): Readonly<{
+  time: TimePort;
+  armed: Promise<void>;
+  fire(): void;
+}> {
+  const armed = deferred<void>();
+  const deadlineHandle: TimerHandle = { unref: () => undefined };
+  let deadlineCallback: (() => void) | null = null;
+  const time: TimePort = {
+    now: () => base.now(),
+    sleep: (ms, options) => base.sleep(ms, options),
+    setTimeout: (callback, ms) => {
+      if (ms !== 45_000) return base.setTimeout(callback, ms);
+      deadlineCallback = callback;
+      armed.resolve(undefined);
+      return deadlineHandle;
+    },
+    clearTimeout: (handle) => {
+      if (handle === deadlineHandle) {
+        deadlineCallback = null;
+        return;
+      }
+      base.clearTimeout(handle);
+    },
+    setInterval: (callback, ms) => base.setInterval(callback, ms),
+    clearInterval: (handle) => base.clearInterval(handle),
+  };
+  return {
+    time,
+    armed: armed.promise,
+    fire: () => {
+      const callback = deadlineCallback;
+      if (callback === null) throw new Error('provider proxy recovery deadline was not armed');
+      callback();
+    },
+  };
 }
 
 async function drainMicrotasks(count = 20): Promise<void> {
@@ -92,10 +137,24 @@ function secondSetRecord(): ProviderOperationRecord {
   });
 }
 
+function deadlinePrecedenceRecord(): ProviderOperationRecord {
+  const base = providerOperationRecord('executing');
+  const suffix = randomUUID();
+  return providerOperationRecord('executing', {
+    operation: base.operation,
+    locator: {
+      ...base.locator,
+      guardian: { ...base.locator.guardian, controlEndpoint: `/tmp/coral-r17-guardian-${suffix}.sock` },
+      reaper: { ...base.locator.reaper, controlEndpoint: `/tmp/coral-r17-reaper-${suffix}.sock` },
+      proxy: { ...base.locator.proxy, controlEndpoint: `/tmp/coral-r17-proxy-${suffix}.sock` },
+    },
+  });
+}
+
 function lifecycleFor(
   records: readonly ProviderOperationRecord[],
   options: Readonly<{
-    time: VirtualTime;
+    time: TimePort;
     containmentDisappeared(notice: {
       operation: ProviderOperationRecord['operation'];
     }): Promise<DisappearanceDeliveryAttemptOutcome>;
@@ -112,21 +171,36 @@ function lifecycleFor(
               incident: Readonly<{ kind: 'capsule-directory-durability-unavailable' }>;
             }>
         >;
-    proveContainmentAbsent?: ProviderProxySetLifecycle['containmentAbsent'] extends never
-      ? never
-      : () => Promise<string | null>;
-    redeemCapsule?: () => Promise<
-      | Readonly<{ kind: 'redeemed'; set: never }>
-      | Readonly<{
-          kind: 'temporarily-unavailable';
-          incident: Readonly<{ kind: 'recovery-deadline'; timeoutMs: 45_000 }>;
-        }>
-    >;
+    proveContainmentAbsent?: (
+      identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
+      signal: AbortSignal,
+    ) => Promise<string | null>;
+    redeemCapsule?: (
+      capsule: HandoffCapsuleV1 | HandoffCapsuleV2,
+      path: string,
+      signal: AbortSignal,
+    ) => Promise<ProviderProxySetRedemptionOutcome>;
     onFatal?: (error: ProviderProxySetLifecycleFatalError) => void;
   }>,
 ): ProviderProxySetLifecycle {
   const claims = new ProviderProxySetClaimMirror();
   claims.initialize(records);
+  const proveContainmentAbsent = options.proveContainmentAbsent ?? (async () => null);
+  const retireCapsule = () => options.retireCapsule?.() ?? { kind: 'retired' as const };
+  const rewriteCapsule = () => undefined;
+  const onFatal = options.onFatal ?? (() => undefined);
+  const redeemCapsule = options.redeemCapsule;
+  const recoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
+    {
+      'containment-proof': ({ identity, signal }) => proveContainmentAbsent(identity, signal),
+      'capsule-retirement': retireCapsule,
+      'capsule-rewrite': rewriteCapsule,
+      ...(redeemCapsule === undefined
+        ? {}
+        : { 'capsule-redemption': ({ capsule, capsulePath, signal }) => redeemCapsule(capsule, capsulePath, signal) }),
+    },
+    onFatal,
+  );
   const lifecycle = new ProviderProxySetLifecycle({
     claims,
     controlEstablished: () => undefined,
@@ -134,11 +208,7 @@ function lifecycleFor(
       containmentDisappeared: (notice) => options.containmentDisappeared(notice),
     },
     time: options.time,
-    proveContainmentAbsent: options.proveContainmentAbsent ?? (async () => null),
-    retireCapsule: () => options.retireCapsule?.() ?? { kind: 'retired' },
-    rewriteCapsule: () => undefined,
-    onFatal: options.onFatal ?? (() => undefined),
-    ...(options.redeemCapsule === undefined ? {} : { redeemCapsule: options.redeemCapsule }),
+    recoveryDispatcher,
   });
   lifecycle.initializeClaimSlots();
   return lifecycle;
@@ -173,7 +243,11 @@ function reconcilerFor(
         throw new Error('startup fixture unexpectedly terminalized through an authority');
       },
     },
+    recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({}),
     backendNamespace: 'provider-proxy-startup-integration',
+    onFatal: (error) => {
+      throw error;
+    },
     time,
   });
 }
@@ -217,7 +291,7 @@ function v2CapsuleFor(record: ProviderOperationRecord): HandoffCapsuleV2 {
 
 type ProductionStartupHarness = Readonly<{
   db: Database;
-  time: VirtualTime;
+  time: TimePort;
   fatals: ReturnType<typeof vi.fn>;
   lifecycleRef: ProviderProxySetLifecycleRef;
   services: ReturnType<typeof createExecutionServices>;
@@ -230,10 +304,13 @@ function noCapsuleStorage(base: StoragePort): StoragePort {
 function composeProductionStartup(
   record: ProviderOperationRecord,
   inheritance: unknown,
-  options: Readonly<{ runtime?: Runtime }> = {},
+  options: Readonly<{
+    runtime?: Runtime;
+    progressStore?: Partial<Pick<JobProgressStore, 'commit' | 'readStatus' | 'readLaunchProjection'>>;
+  }> = {},
 ): ProductionStartupHarness {
   const db = createDb([record]);
-  const time = options.runtime === undefined ? new VirtualTime() : (options.runtime.time as VirtualTime);
+  const time = options.runtime?.time ?? new VirtualTime();
   const baseRuntime = createRealRuntime('prod');
   const runtime =
     options.runtime ?? ({ ...baseRuntime, time, storage: noCapsuleStorage(baseRuntime.storage) } satisfies Runtime);
@@ -246,6 +323,7 @@ function composeProductionStartup(
     },
     readStatus: () => null,
     readLaunchProjection: () => null,
+    ...options.progressStore,
   };
   const world = {
     storeServicesRef: { tryGet: () => ({ progressStore }) },
@@ -456,7 +534,7 @@ async function startRoleEndpoint(
 async function roleRecoveryStartupCase(
   mode: 'operation-set-disagreement' | 'protocol-violation' | 'grant-replayed' | 'timeout',
 ) {
-  const record = providerOperationRecord('executing');
+  const record = deadlinePrecedenceRecord();
   const time = new VirtualTime();
   const realRuntime = createRealRuntime('prod');
   const capsule = v1CapsuleFor(record);
@@ -550,6 +628,156 @@ async function roleRecoveryStartupCase(
   return result;
 }
 
+async function inheritanceDeadlinePrecedenceStartupCase(mode: 'disagreement' | 'deadline-only') {
+  const record = deadlinePrecedenceRecord();
+  const endpointTime = new VirtualTime();
+  const deadline = controlledRecoveryDeadline(endpointTime);
+  const realRuntime = createRealRuntime('prod');
+  const capsule = v1CapsuleFor(record);
+  const capsuleStorage = capsuleBackedStorage(realRuntime.storage, realRuntime.paths.coral.generation.root, capsule, {
+    discover: false,
+    unlink: () => undefined,
+    syncDirectoryDurableSync: () => true,
+  });
+  const runtime = { ...realRuntime, time: deadline.time, storage: capsuleStorage.storage } satisfies Runtime;
+  const alternateOperation = { ...record.operation, jobId: randomUUID(), operationId: randomUUID() };
+  const releaseFinalResponse = deferred<void>();
+  const guardianOpen = vi.fn(async () => undefined);
+  const reaperOpen = vi.fn(async () => undefined);
+  const proxyOpen = vi.fn(async () => releaseFinalResponse.promise);
+  const endpoints = await Promise.all([
+    startRoleEndpoint({
+      path: record.locator.guardian.controlEndpoint,
+      heartbeatMethod: 'guardian.heartbeat.v1',
+      openMethod: 'guardian.handoff-redeem.v1',
+      fields: guardianFields(record, [record.operation]),
+      time: endpointTime,
+      open: guardianOpen,
+    }),
+    startRoleEndpoint({
+      path: record.locator.reaper.controlEndpoint,
+      heartbeatMethod: 'reaper.heartbeat.v1',
+      openMethod: 'reaper.handoff-rotate.v1',
+      fields: reaperFields(record, [record.operation]),
+      time: endpointTime,
+      open: reaperOpen,
+    }),
+    startRoleEndpoint({
+      path: record.locator.proxy.controlEndpoint,
+      heartbeatMethod: 'control.heartbeat.v1',
+      openMethod: 'handoff.redeem.v1',
+      fields: proxyFields(record, mode === 'disagreement' ? [alternateOperation] : [record.operation]),
+      time: endpointTime,
+      open: proxyOpen,
+    }),
+  ]);
+  const operationRegistry = new LocalOperationRegistry();
+  const inheritance = createProviderProxySetInheritance({
+    runtime,
+    identity: {
+      instanceId: randomUUID(),
+      buildSetId: record.operation.buildSetId,
+      flavor: 'prod',
+    },
+    operationRegistry,
+    registerInheritedSet: () => undefined,
+  });
+  const harness = composeProductionStartup(record, inheritance, { runtime });
+  const startup = productionStartupOutcome(harness);
+  await vi.waitFor(() => expect(proxyOpen).toHaveBeenCalledOnce());
+  await deadline.armed;
+  deadline.fire();
+  releaseFinalResponse.resolve(undefined);
+  const outcome = await startup;
+  const result = {
+    outcome,
+    fatalCalls: harness.fatals.mock.calls.length,
+    openCalls: [guardianOpen.mock.calls.length, reaperOpen.mock.calls.length, proxyOpen.mock.calls.length],
+    retryOwnedRows: readProviderOperationsDue(harness.db, Number.MAX_SAFE_INTEGER, 4).length,
+  };
+  harness.services.stopProviderOperationReconciler();
+  for (const endpoint of endpoints) await endpoint.close();
+  harness.db.close();
+  return result;
+}
+
+async function discoveredCapsuleDeadlinePrecedenceCase(mode: 'disagreement' | 'deadline-only') {
+  const record = deadlinePrecedenceRecord();
+  const endpointTime = new VirtualTime();
+  const scheduled = vi.spyOn(endpointTime, 'setTimeout');
+  const deadline = controlledRecoveryDeadline(endpointTime);
+  const runtime = { ...createRealRuntime('prod'), time: deadline.time } satisfies Runtime;
+  const capsule = v1CapsuleFor(record);
+  const alternateOperation = { ...record.operation, jobId: randomUUID(), operationId: randomUUID() };
+  const releaseFinalResponse = deferred<void>();
+  const guardianOpen = vi.fn(async () => undefined);
+  const reaperOpen = vi.fn(async () => undefined);
+  const proxyOpen = vi.fn(async () => releaseFinalResponse.promise);
+  const endpoints = await Promise.all([
+    startRoleEndpoint({
+      path: record.locator.guardian.controlEndpoint,
+      heartbeatMethod: 'guardian.heartbeat.v1',
+      openMethod: 'guardian.handoff-redeem.v1',
+      fields: guardianFields(record, [record.operation]),
+      time: endpointTime,
+      open: guardianOpen,
+    }),
+    startRoleEndpoint({
+      path: record.locator.reaper.controlEndpoint,
+      heartbeatMethod: 'reaper.heartbeat.v1',
+      openMethod: 'reaper.handoff-rotate.v1',
+      fields: reaperFields(record, [record.operation]),
+      time: endpointTime,
+      open: reaperOpen,
+    }),
+    startRoleEndpoint({
+      path: record.locator.proxy.controlEndpoint,
+      heartbeatMethod: 'control.heartbeat.v1',
+      openMethod: 'handoff.redeem.v1',
+      fields: proxyFields(record, mode === 'disagreement' ? [alternateOperation] : [record.operation]),
+      time: endpointTime,
+      open: proxyOpen,
+    }),
+  ]);
+  const inheritance = createProviderProxySetInheritance({
+    runtime,
+    identity: {
+      instanceId: randomUUID(),
+      buildSetId: record.operation.buildSetId,
+      flavor: 'prod',
+    },
+    operationRegistry: new LocalOperationRegistry(),
+    registerInheritedSet: () => undefined,
+  });
+  const fatals = vi.fn();
+  const lifecycle = lifecycleFor([], {
+    time: deadline.time,
+    containmentDisappeared: async () => {
+      throw new Error('discovered capsule fixture has no durable claim');
+    },
+    redeemCapsule: (candidate, path, signal) => inheritance.redeemDiscoveredCapsule(candidate, path, signal),
+    onFatal: fatals,
+  });
+  lifecycle.installDiscoveredCapsules([{ path: '/capsules/deadline-precedence.handoff.json', capsule }]);
+  await vi.waitFor(() => expect(proxyOpen).toHaveBeenCalledOnce());
+  await deadline.armed;
+  deadline.fire();
+  releaseFinalResponse.resolve(undefined);
+  if (mode === 'disagreement') {
+    await vi.waitFor(() => expect(fatals).toHaveBeenCalledOnce());
+  } else {
+    await vi.waitFor(() => expect(scheduled.mock.calls.some((call) => call[1] === 1_000)).toBe(true));
+  }
+  const result = {
+    fatalCalls: fatals.mock.calls.length,
+    openCalls: [guardianOpen.mock.calls.length, reaperOpen.mock.calls.length, proxyOpen.mock.calls.length],
+    retryTimers: scheduled.mock.calls.filter((call) => call[1] === 1_000).length,
+    states: lifecycle.snapshot().states,
+  };
+  for (const endpoint of endpoints) await endpoint.close();
+  return result;
+}
+
 async function capsuleRetirementStartupCase(mode: 'unlink-throws' | 'directory-sync-unavailable') {
   const record = providerOperationRecord('settlement-pending');
   const time = new VirtualTime();
@@ -584,6 +812,85 @@ async function capsuleRetirementStartupCase(mode: 'unlink-throws' | 'directory-s
     unlinkCalls: unlink.mock.calls.length,
     syncCalls: syncDirectoryDurableSync.mock.calls.length,
     capsuleExists: capsuleStorage.exists(),
+  };
+  harness.services.stopProviderOperationReconciler();
+  harness.db.close();
+  return result;
+}
+
+async function terminalizationUncertaintyStartupCase(mode: 'atomic-unknown' | 'unavailable' | 'metadata') {
+  const record = providerOperationRecord('executing');
+  const time = new VirtualTime();
+  const scheduled = vi.spyOn(time, 'setTimeout');
+  const sessionId = randomUUID();
+  const inheritance = {
+    inheritProviderProxySet: async () => ({
+      kind: 'containment-disappeared' as const,
+      disappearanceReceipt: `terminalization-${mode}-proof`,
+    }),
+    redeemDiscoveredCapsule: async () => {
+      throw new Error('capsule redemption was not expected');
+    },
+    proveContainmentAbsent: async () => null,
+  };
+  const validMetadata = {
+    readStatus: () => ({
+      jobId: record.operation.jobId,
+      owner: { kind: 'provider-session' as const, id: sessionId },
+      sessionId,
+      provider: 'codex',
+      projectRoot: '/workspace',
+      backendNamespace: 'tests',
+      jobKind: 'provider' as const,
+      phase: 'running' as const,
+      updatedAt: '2026-08-09T12:34:55.000Z',
+    }),
+    readLaunchProjection: () => ({
+      jobId: record.operation.jobId,
+      owner: { kind: 'provider-session' as const, id: sessionId },
+      sessionId,
+      provider: 'codex',
+      projectRoot: '/workspace',
+      backendNamespace: 'tests',
+      pool: 'default',
+      enqueueSequence: 1,
+      createdAt: '2026-08-09T12:34:55.000Z',
+      jobKind: 'provider' as const,
+      providerAction: 'exec' as const,
+      request: {
+        prompt: 'terminalization classification fixture',
+        cwd: '/workspace',
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+    }),
+  };
+  const progressStore =
+    mode === 'metadata'
+      ? {}
+      : {
+          ...validMetadata,
+          commit: () => {
+            if (mode === 'unavailable') throw new ProviderOperationTerminalizationUnavailableError();
+            throw new Error('atomic-terminalization-sentinel');
+          },
+        };
+  const harness = composeProductionStartup(record, inheritance, {
+    runtime: { ...createRealRuntime('prod'), time },
+    progressStore,
+  });
+  const outcome = await productionStartupOutcome(harness);
+  const snapshot = harness.lifecycleRef.get()?.snapshot();
+  const result = {
+    outcome,
+    fatalCalls: harness.fatals.mock.calls.length,
+    rowSurvives: readProviderOperation(harness.db, record.operation) !== null,
+    slotRetained: snapshot?.states.includes('absence-delivery-pending') ?? false,
+    absenceRetryIncidents:
+      outcome.kind === 'fulfilled'
+        ? outcome.report.incidents.filter((incident) => incident.kind === 'absence-retry-owned').length
+        : 0,
+    deliveryTimers: scheduled.mock.calls.filter((call) => call[1] === 1_000).length,
   };
   harness.services.stopProviderOperationReconciler();
   harness.db.close();
@@ -905,11 +1212,120 @@ describe('provider proxy startup set recovery', () => {
       fatal: outcome.fatal,
       fatalPortCalls: fatals.mock.calls.length,
       setBVisits: setBVisits.mock.calls.length,
-    }).toEqual({ outcome: 'rejected', fatal: true, fatalPortCalls: 1, setBVisits: 0 });
+    }).toEqual({ outcome: 'rejected', fatal: true, fatalPortCalls: 0, setBVisits: 0 });
   });
 });
 
 describe('production provider proxy startup classification', () => {
+  it('classifies terminalization uncertainty only with causal retry safety', async () => {
+    const atomic = await terminalizationUncertaintyStartupCase('atomic-unknown');
+    const unavailable = await terminalizationUncertaintyStartupCase('unavailable');
+    const metadata = await terminalizationUncertaintyStartupCase('metadata');
+    const role = await roleRecoveryStartupCase('protocol-violation');
+
+    expect({
+      atomic: {
+        outcome: atomic.outcome.kind,
+        fatalCalls: atomic.fatalCalls,
+        rowSurvives: atomic.rowSurvives,
+        slotRetained: atomic.slotRetained,
+        absenceRetryIncidents: atomic.absenceRetryIncidents,
+        deliveryTimers: atomic.deliveryTimers,
+      },
+      unavailable: {
+        outcome: unavailable.outcome.kind,
+        fatalCalls: unavailable.fatalCalls,
+        rowSurvives: unavailable.rowSurvives,
+        slotRetained: unavailable.slotRetained,
+        absenceRetryIncidents: unavailable.absenceRetryIncidents,
+        deliveryTimers: unavailable.deliveryTimers,
+      },
+      metadata: {
+        outcome: metadata.outcome.kind,
+        fatalCalls: metadata.fatalCalls,
+        absenceRetryIncidents: metadata.absenceRetryIncidents,
+        deliveryTimers: metadata.deliveryTimers,
+      },
+      role: {
+        outcome: role.outcome.kind,
+        fatalCalls: role.fatalCalls,
+        retryOwned: role.dueRows.length,
+      },
+    }).toEqual({
+      atomic: {
+        outcome: 'fulfilled',
+        fatalCalls: 0,
+        rowSurvives: true,
+        slotRetained: true,
+        absenceRetryIncidents: 1,
+        deliveryTimers: 1,
+      },
+      unavailable: {
+        outcome: 'fulfilled',
+        fatalCalls: 0,
+        rowSurvives: true,
+        slotRetained: true,
+        absenceRetryIncidents: 1,
+        deliveryTimers: 1,
+      },
+      metadata: { outcome: 'rejected', fatalCalls: 1, absenceRetryIncidents: 0, deliveryTimers: 0 },
+      role: { outcome: 'rejected', fatalCalls: 1, retryOwned: 0 },
+    });
+  });
+
+  it('preserves inheritance corruption after the deadline fires', async () => {
+    const disagreement = await inheritanceDeadlinePrecedenceStartupCase('disagreement');
+    const deadlineOnly = await inheritanceDeadlinePrecedenceStartupCase('deadline-only');
+
+    expect({
+      disagreement: {
+        outcome: disagreement.outcome.kind,
+        fatalCalls: disagreement.fatalCalls,
+        openCalls: disagreement.openCalls,
+        retryOwnedRows: disagreement.retryOwnedRows,
+      },
+      deadlineOnly: {
+        outcome: deadlineOnly.outcome.kind,
+        fatalCalls: deadlineOnly.fatalCalls,
+        openCalls: deadlineOnly.openCalls,
+        retryOwnedRows: deadlineOnly.retryOwnedRows,
+      },
+    }).toEqual({
+      disagreement: {
+        outcome: 'rejected',
+        fatalCalls: 1,
+        openCalls: [1, 1, 1],
+        retryOwnedRows: 0,
+      },
+      deadlineOnly: {
+        outcome: 'fulfilled',
+        fatalCalls: 0,
+        openCalls: [1, 1, 1],
+        retryOwnedRows: 1,
+      },
+    });
+  });
+
+  it('preserves discovered capsule corruption after the deadline fires', async () => {
+    const disagreement = await discoveredCapsuleDeadlinePrecedenceCase('disagreement');
+    const deadlineOnly = await discoveredCapsuleDeadlinePrecedenceCase('deadline-only');
+
+    expect({ disagreement, deadlineOnly }).toEqual({
+      disagreement: {
+        fatalCalls: 1,
+        openCalls: [1, 1, 1],
+        retryTimers: 0,
+        states: ['capsule-opaque'],
+      },
+      deadlineOnly: {
+        fatalCalls: 0,
+        openCalls: [1, 1, 1],
+        retryTimers: 1,
+        states: ['capsule-opaque'],
+      },
+    });
+  });
+
   it('fails startup when disappearance terminal metadata is corrupt', async () => {
     const record = providerOperationRecord('executing');
     const inheritance = {

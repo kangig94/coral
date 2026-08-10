@@ -8,6 +8,7 @@ import { z } from 'zod';
 
 import type { createEnforcerDeadlineStateMachine } from '#src/provider-proxy/orphan-deadline.js';
 import { runtimeControlTimer, type connectRoleControlWithRetry } from '#src/provider-proxy/role-spawn.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 type CreateEnforcerDeadlineStateMachine = typeof createEnforcerDeadlineStateMachine;
 type ConnectRoleControlWithRetry = typeof connectRoleControlWithRetry;
@@ -1115,12 +1116,9 @@ describe('provider-proxy process topology: acquisition', () => {
         }),
       },
       time: environment.outerRuntime().time,
-      proveContainmentAbsent: async () => null,
-      retireCapsule: () => ({ kind: 'retired' }),
-      rewriteCapsule: () => undefined,
-      onFatal: (error) => {
-        throw error;
-      },
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+        'containment-proof': async () => null,
+      }),
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();

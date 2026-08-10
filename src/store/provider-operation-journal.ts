@@ -37,6 +37,17 @@ export type ProviderOperationMutation =
 
 export type ProviderOperationMutationObserver = (mutation: ProviderOperationMutation) => void;
 
+export type ProviderOperationDueSelection = Readonly<{
+  rawKey: string;
+  rawValue: string;
+  record: ProviderOperationRecord;
+}>;
+
+export type FinishProviderOperationDueSelectionResult =
+  | Readonly<{ kind: 'removed' }>
+  | Readonly<{ kind: 'already-advanced' }>
+  | Readonly<{ kind: 'yielded'; record: ProviderOperationRecord }>;
+
 const mutationObservers = new WeakMap<Database, Set<ProviderOperationMutationObserver>>();
 
 export function subscribeProviderOperationMutations(
@@ -367,6 +378,14 @@ export function readProviderOperationsDue(
   nowMs: number,
   limit: number,
 ): readonly ProviderOperationRecord[] {
+  return readProviderOperationDueSelections(db, nowMs, limit).map((selection) => selection.record);
+}
+
+export function readProviderOperationDueSelections(
+  db: Database,
+  nowMs: number,
+  limit: number,
+): readonly ProviderOperationDueSelection[] {
   const encodedNow = encodeFixedWidthInteger(nowMs, 'nowMs');
   if (!Number.isSafeInteger(limit) || limit <= 0) throw new RangeError('limit must be a positive safe integer.');
   const rows = db
@@ -390,8 +409,91 @@ export function readProviderOperationsDue(
         `Provider operation due row '${due.key}' is stale or disagrees with its canonical record.`,
       );
     }
-    return record;
+    return { rawKey: row.key, rawValue: row.value, record };
   });
+}
+
+export function finishProviderOperationDueSelection(
+  db: Database,
+  selection: ProviderOperationDueSelection,
+  scanCutoffMs: number,
+  nextDueAtMs: number,
+): FinishProviderOperationDueSelectionResult {
+  encodeFixedWidthInteger(scanCutoffMs, 'scanCutoffMs');
+  encodeFixedWidthInteger(nextDueAtMs, 'nextDueAtMs');
+  if (nextDueAtMs <= scanCutoffMs) {
+    throw new RangeError('nextDueAtMs must be greater than scanCutoffMs.');
+  }
+
+  const result: FinishProviderOperationDueSelectionResult = inWriteTransaction(db, () => {
+    const selectedDelete = db
+      .prepare<[string, string]>('DELETE FROM meta WHERE key = ? AND value = ?')
+      .run(selection.rawKey, selection.rawValue);
+    if (
+      selectedDelete.changes !== 0 &&
+      selectedDelete.changes !== 0n &&
+      selectedDelete.changes !== 1 &&
+      selectedDelete.changes !== 1n
+    ) {
+      throw new ProviderOperationJournalError(
+        `Provider operation selected due-key delete changed ${String(selectedDelete.changes)} rows instead of zero or one.`,
+      );
+    }
+
+    const key = canonicalRecordKey(selection.record.operation);
+    const current = readCanonicalRecord(db, key);
+    if (current === undefined) return { kind: 'removed' };
+    const currentDue = providerOperationDueEntry(current);
+
+    if (!providerOperationHasDueWork(current)) {
+      deleteDueEntry(db, current);
+      return { kind: 'removed' };
+    }
+
+    if (current.retryNotBeforeMs > scanCutoffMs) {
+      const currentDueValue = readCanonicalValue(db, currentDue.key);
+      if (currentDueValue !== currentDue.value) {
+        throw new ProviderOperationJournalError(
+          `Provider operation due row '${currentDue.key}' is missing or disagrees after advancing.`,
+        );
+      }
+      return { kind: 'already-advanced' };
+    }
+
+    const next: ProviderOperationRecord = {
+      ...current,
+      revision: current.revision + 1,
+      retryNotBeforeMs: nextDueAtMs,
+    };
+    const currentEncoded = encodeProviderOperationRecord(current);
+    const nextEncoded = encodeProviderOperationRecord(next);
+    const write = db
+      .prepare<[string, string, string]>('UPDATE meta SET value = ? WHERE key = ? AND value = ?')
+      .run(nextEncoded, key, currentEncoded);
+    if (write.changes !== 1) {
+      throw new ProviderOperationJournalError(
+        `Provider operation due-turn canonical update changed ${String(write.changes)} rows instead of one.`,
+      );
+    }
+
+    const currentDelete = db
+      .prepare<[string, string]>('DELETE FROM meta WHERE key = ? AND value = ?')
+      .run(currentDue.key, currentDue.value);
+    const currentWasSelected = currentDue.key === selection.rawKey && currentDue.value === selection.rawValue;
+    const expectedDeleteChanges = currentWasSelected ? 0 : 1;
+    if (currentDelete.changes !== expectedDeleteChanges && currentDelete.changes !== BigInt(expectedDeleteChanges)) {
+      throw new ProviderOperationJournalError(
+        `Provider operation current due-key delete changed ${String(currentDelete.changes)} rows instead of ${expectedDeleteChanges}.`,
+      );
+    }
+
+    insertDueEntry(db, next);
+    return { kind: 'yielded', record: next };
+  });
+  if (result.kind === 'yielded') {
+    notifyProviderOperationMutation(db, { kind: 'upserted', record: result.record });
+  }
+  return result;
 }
 
 export function compareAndSwapProviderOperation(

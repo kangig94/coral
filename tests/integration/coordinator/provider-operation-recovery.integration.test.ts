@@ -6,6 +6,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { JobStore } from '#src/jobs/store.js';
@@ -144,7 +145,11 @@ describe('provider-operation startup recovery ownership', () => {
           throw new Error('startup ownership test unexpectedly terminalized the saga');
         },
       },
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({}),
       backendNamespace: NAMESPACE,
+      onFatal: (error) => {
+        throw error;
+      },
       time: runtime.time,
     });
 

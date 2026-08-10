@@ -124,6 +124,7 @@ import {
   asReservation,
 } from '#tests/helpers/provider-proxy-correlation.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { createFakeProviderServerHandle } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 /**
@@ -511,12 +512,9 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
     controlEstablished: () => undefined,
     disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
     time: { ...timer, now: () => 0 },
-    proveContainmentAbsent: () => new Promise<never>(() => undefined),
-    retireCapsule: () => ({ kind: 'retired' }),
-    rewriteCapsule: () => undefined,
-    onFatal: (error) => {
-      throw error;
-    },
+    recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+      'containment-proof': () => new Promise<never>(() => undefined),
+    }),
   });
   lifecycle.initializeClaimSlots();
   lifecycle.completeStartupDiscovery();
@@ -790,7 +788,11 @@ async function completeCapacityLocalHandoff(
         throw new Error('capacity handoff unexpectedly terminalized the job');
       },
     },
+    recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({}),
     backendNamespace: 'tests',
+    onFatal: (error) => {
+      throw error;
+    },
     time,
   });
   reconciler.start();
@@ -1323,12 +1325,9 @@ describe('provider proxy cumulative root rotation', () => {
       controlEstablished: () => undefined,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: runtime.time,
-      proveContainmentAbsent: async () => null,
-      retireCapsule: () => ({ kind: 'retired' }),
-      rewriteCapsule: () => undefined,
-      onFatal: (error) => {
-        throw error;
-      },
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+        'containment-proof': async () => null,
+      }),
       onSlotReleased: (routeKey) => manager.providerProxySlotReleased(routeKey),
     });
     lifecycle.initializeClaimSlots();

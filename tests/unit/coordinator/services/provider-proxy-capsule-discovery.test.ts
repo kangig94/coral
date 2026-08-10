@@ -14,6 +14,7 @@ import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,
 } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 
 function retirementStorage(unlinkSync: () => void, syncDirectoryDurableSync: () => boolean): StoragePort {
   return { unlinkSync, syncDirectoryDurableSync } as unknown as StoragePort;
@@ -107,13 +108,9 @@ describe('provider proxy capsule discovery', () => {
       controlEstablished: () => undefined,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: runtime.time,
-      proveContainmentAbsent: async () => null,
-      redeemCapsule: () => new Promise<never>(() => undefined),
-      retireCapsule: () => ({ kind: 'retired' }),
-      rewriteCapsule: () => undefined,
-      onFatal: (error) => {
-        throw error;
-      },
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+        'capsule-redemption': () => new Promise<never>(() => undefined),
+      }),
     });
     lifecycle.initializeClaimSlots();
     lifecycle.installDiscoveredCapsules(discovered);
