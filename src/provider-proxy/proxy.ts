@@ -115,7 +115,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
     issueFirstChallenge: () => {
       const now = clock.now();
       const challenge = mintChallenge();
-      return evidence.issueFirstChallenge(challenge, now)
+      return evidence.issueFirstChallenge(challenge, now, 'recurring')
         ? { accepted: true, challenge }
         : { accepted: false, reason: 'invalid-state' };
     },

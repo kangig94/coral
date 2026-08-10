@@ -31,6 +31,7 @@ import {
 } from '../../../provider-proxy/role-spawn.js';
 import { DETACHED_CONTAINMENT_KIND } from '../../../provider-proxy/guardian.js';
 import type { ControlClient, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
+import { PROXY_CONTROL_ESTABLISH_READY_MS } from '../../../provider-proxy/orphan-deadline.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   guardianIdentitySchema,
@@ -70,7 +71,7 @@ import { createProviderProxyAuthorityFaultLatch } from '../../services/provider-
 // freshly spawned one time out the same way rather than silently drifting apart.
 export const ESTABLISH_CONTROL_CONNECT_TIMEOUT_MS = 2_000;
 export const ESTABLISH_CONTROL_RETRY_INTERVAL_MS = 20;
-export const ESTABLISH_CONTROL_READY_DEADLINE_MS = 10_000;
+export const ESTABLISH_CONTROL_READY_DEADLINE_MS = PROXY_CONTROL_ESTABLISH_READY_MS;
 
 // Prepare can consume a full app-server cold start plus guardian staging. A shorter caller deadline would turn
 // an ordinary cold start into an ambiguous mutation and delay the reconciler until inspection or replay proves it.

@@ -42,7 +42,7 @@ describe('ControlLeaseEvidence', () => {
     const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), ceiling.expiryCeiling);
     fake.set(1_000);
     const issuedAt = fake.clock.now();
-    evidence.issueFirstChallenge('c1', issuedAt);
+    evidence.issueFirstChallenge('c1', issuedAt, 'recurring');
     const leaseExpiry = fake.clock.shiftMilliseconds(issuedAt, 5_000);
     const earlyCeiling = fake.clock.shiftMilliseconds(issuedAt, 2_000);
     const lateCeiling = fake.clock.shiftMilliseconds(issuedAt, 9_000);
@@ -63,7 +63,7 @@ describe('ControlLeaseEvidence', () => {
     const ceiling = createMutableCeiling<typeof scope>();
     const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), ceiling.expiryCeiling);
     fake.set(1_000);
-    evidence.issueFirstChallenge('c1', fake.clock.now());
+    evidence.issueFirstChallenge('c1', fake.clock.now(), 'recurring');
     ceiling.setCeiling(fake.clock.shiftMilliseconds(fake.clock.now(), 2_000));
     fake.set(3_001);
 
@@ -77,7 +77,7 @@ describe('ControlLeaseEvidence', () => {
     const fake = createFakeClock(scope, 0);
     const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), () => null);
     fake.set(1_000);
-    evidence.issueFirstChallenge('c1', fake.clock.now());
+    evidence.issueFirstChallenge('c1', fake.clock.now(), 'recurring');
     fake.set(1_100);
     evidence.echoChallenge(fake.clock.now(), 'c1', 'c2');
     fake.set(20_000);
@@ -97,12 +97,77 @@ describe('ControlLeaseEvidence', () => {
     });
   });
 
+  it('allows only a bootstrap first echo after ordinary control loss and clamps it to the strict ceiling', () => {
+    const fake = createFakeClock(scope, 0);
+    const ceiling = createMutableCeiling<typeof scope>();
+    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), ceiling.expiryCeiling);
+    ceiling.setCeiling(fake.clock.shiftMilliseconds(fake.clock.now(), 8_000));
+    fake.set(6_000);
+    evidence.issueFirstChallenge('bootstrap-1', fake.clock.now(), 'bootstrap-first');
+
+    fake.set(7_999);
+    expect(evidence.echoChallenge(fake.clock.now(), 'bootstrap-1', 'bootstrap-2')).toEqual({ accepted: true });
+    expect(fake.clock.compare(evidence.lastRoundTripEvidenceAt(), fake.clock.now())).toBe(0);
+
+    const equality = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), ceiling.expiryCeiling);
+    equality.issueFirstChallenge('equality-1', fake.clock.now(), 'bootstrap-first');
+    const before = equality.lastRoundTripEvidenceAt();
+    fake.set(8_000);
+    expect(equality.echoChallenge(fake.clock.now(), 'equality-1', 'equality-2')).toEqual({
+      accepted: false,
+      reason: 'challenge-expired',
+    });
+    expect(fake.clock.compare(equality.lastRoundTripEvidenceAt(), before)).toBe(0);
+  });
+
+  it('keeps an ordinary first challenge subject to live control', () => {
+    const fake = createFakeClock(scope, 0);
+    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), () => null);
+    fake.set(1_000);
+    evidence.issueFirstChallenge('ordinary-1', fake.clock.now(), 'recurring');
+    const before = evidence.lastRoundTripEvidenceAt();
+    fake.set(5_500);
+
+    expect(evidence.echoChallenge(fake.clock.now(), 'ordinary-1', 'ordinary-2')).toEqual({
+      accepted: false,
+      reason: 'control-lost',
+    });
+    expect(fake.clock.compare(evidence.lastRoundTripEvidenceAt(), before)).toBe(0);
+  });
+
+  it('records the local acceptance instant and leaves every exposed bound unchanged on mismatch', () => {
+    const fake = createFakeClock(scope, 0);
+    const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), () => null);
+    fake.set(1_000);
+    evidence.issueFirstChallenge('c1', fake.clock.now(), 'recurring');
+    fake.set(1_900);
+    expect(evidence.echoChallenge(fake.clock.now(), 'c1', 'c2')).toEqual({ accepted: true });
+    const acceptedAt = fake.clock.now();
+    const beforeMismatch = {
+      evidenceAt: evidence.lastRoundTripEvidenceAt(),
+      controlLossAt: evidence.controlLossAt(),
+      eofAt: evidence.eofAt(),
+      firstChallengeExpiresAt: evidence.challengeExpiresAt(),
+    };
+    expect(fake.clock.compare(beforeMismatch.evidenceAt, acceptedAt)).toBe(0);
+
+    fake.set(2_000);
+    expect(evidence.echoChallenge(fake.clock.now(), 'wrong', 'c3')).toEqual({
+      accepted: false,
+      reason: 'challenge-mismatch',
+    });
+    expect(evidence.eofAt()).toBe(beforeMismatch.eofAt);
+    expect(fake.clock.compare(evidence.lastRoundTripEvidenceAt(), beforeMismatch.evidenceAt)).toBe(0);
+    expect(fake.clock.compare(evidence.controlLossAt(), beforeMismatch.controlLossAt)).toBe(0);
+    expect(fake.clock.compare(evidence.challengeExpiresAt()!, beforeMismatch.firstChallengeExpiresAt!)).toBe(0);
+  });
+
   it('evicts the oldest remembered challenge once history exceeds its bound, freeing it for reuse', () => {
     const fake = createFakeClock(scope, 0);
     // A lease this long keeps every round trip in this test well inside it, so only the history bound is
     // under test, not expiry.
     const evidence = new ControlLeaseEvidence(fake.clock, 1_000_000, fake.clock.now(), () => null);
-    evidence.issueFirstChallenge('c0', fake.clock.now());
+    evidence.issueFirstChallenge('c0', fake.clock.now(), 'recurring');
 
     let previous = 'c0';
     for (let index = 1; index <= RECENT_CHALLENGE_HISTORY; index += 1) {
@@ -123,15 +188,15 @@ describe('ControlLeaseEvidence', () => {
     const fake = createFakeClock(scope, 0);
     const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), () => null);
 
-    expect(evidence.issueFirstChallenge('c1', fake.clock.now())).toBe(true);
-    expect(evidence.issueFirstChallenge('c2', fake.clock.now())).toBe(false);
+    expect(evidence.issueFirstChallenge('c1', fake.clock.now(), 'recurring')).toBe(true);
+    expect(evidence.issueFirstChallenge('c2', fake.clock.now(), 'recurring')).toBe(false);
   });
 
   it('clears an observed EOF when a live connection carries the tenancy forward again', () => {
     const fake = createFakeClock(scope, 0);
     const evidence = new ControlLeaseEvidence(fake.clock, 5_000, fake.clock.now(), () => null);
     fake.set(1_000);
-    evidence.issueFirstChallenge('c1', fake.clock.now());
+    evidence.issueFirstChallenge('c1', fake.clock.now(), 'recurring');
     fake.set(1_500);
     evidence.observeEof(fake.clock.now());
     expect(evidence.eofAt()).not.toBeNull();

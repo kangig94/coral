@@ -118,6 +118,8 @@ async function startProxy(
     failStart?: boolean;
     timer?: ControlEndpointTimer;
     onProviderEvent?: ProviderEventHandler;
+    openingDelayMs?: number;
+    skipInitialHeartbeat?: boolean;
   } = {},
 ) {
   const directory = mkdtempSync(join(tmpdir(), 'coral-proxy-'));
@@ -326,15 +328,19 @@ async function startProxy(
   await proxy.listen();
   cleanups.push(() => proxy.close());
 
+  elapsed += BigInt(options.openingDelayMs ?? 0);
   const control = await connectControlClient(endpoint, timer, 5_000, options.onProviderEvent);
   cleanups.push(() => control.close());
   const opened = (await control.call('control.open.v1', { bootstrapNonce: NONCE, coordinator }, 5_000)) as {
     controlEpoch: number;
     heartbeatChallenge: string;
   };
-  let heartbeatChallenge = (
-    await heartbeatOnce(control, 'control.heartbeat.v1', opened.controlEpoch, opened.heartbeatChallenge)
-  ).nextHeartbeatChallenge;
+  let heartbeatChallenge = opened.heartbeatChallenge;
+  if (options.skipInitialHeartbeat !== true) {
+    heartbeatChallenge = (
+      await heartbeatOnce(control, 'control.heartbeat.v1', opened.controlEpoch, opened.heartbeatChallenge)
+    ).nextHeartbeatChallenge;
+  }
 
   const advanceWithHeartbeat = async (ms: number): Promise<void> => {
     let remainingMs = ms;
@@ -368,6 +374,7 @@ async function startProxy(
     shared,
     coordinator,
     identity,
+    opened,
     operationFor,
     started,
     stopped,
@@ -1290,6 +1297,22 @@ describe('provider-proxy operation lifecycle', () => {
     await expect(install([first, second])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
     // Duplicated is refused for the same reason, not merely unsorted.
     await expect(install([first, first])).rejects.toMatchObject({ protocolCode: 'protocol_violation' });
+  });
+
+  it('keeps the standalone proxy first challenge subject to ordinary construction-anchored live control', async () => {
+    const set = await startProxy({ openingDelayMs: 1_000, skipInitialHeartbeat: true });
+    set.advanceSilently(PROXY_CONTROL_LEASE_MS - 500);
+
+    await expect(
+      set.control.call(
+        'control.heartbeat.v1',
+        {
+          controlEpoch: set.opened.controlEpoch,
+          heartbeatChallenge: set.opened.heartbeatChallenge,
+        },
+        5_000,
+      ),
+    ).rejects.toThrow('control-lost');
   });
 
   it("keeps a redeemed successor's first challenge answerable for the full lease, unclamped by any ceiling", async () => {

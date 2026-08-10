@@ -461,6 +461,37 @@ describe('provider-proxy control endpoint', () => {
     expect(refused.error?.data?.reason).toBe('control-active');
   });
 
+  it('lets successor admission win the bootstrap race and prevents the displaced first echo from renewing', async () => {
+    const set = await startEndpoint();
+    const incumbent = await connect(set.socketPath);
+    const opened = await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    set.lapseControl();
+
+    const successor = await connect(set.socketPath);
+    const redeemed = await successor.call('role.redeem.v1', {});
+    await vi.waitFor(() => expect(incumbent.socket.destroyed).toBe(true));
+    incumbent.socket.write(
+      `${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'role.heartbeat.v1',
+        params: {
+          controlEpoch: (opened.result as { controlEpoch: number }).controlEpoch,
+          heartbeatChallenge: (opened.result as { heartbeatChallenge: string }).heartbeatChallenge,
+        },
+      })}\n`,
+    );
+
+    expect(redeemed.result).toEqual({
+      role: 'successor',
+      redemptionReceipt: 'receipt-1',
+      controlEpoch: 2,
+      heartbeatChallenge: 'challenge-2',
+    });
+    expect(set.accepted).toEqual([]);
+    expect(set.challenges).toEqual(['challenge-1', 'challenge-2']);
+  });
+
   it('hands a successor the next epoch once control has lapsed, without reporting the new tenancy lost', async () => {
     const { socketPath, observer } = await startEndpoint();
     const incumbent = await connect(socketPath);

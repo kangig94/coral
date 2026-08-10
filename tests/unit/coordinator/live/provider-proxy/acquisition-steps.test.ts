@@ -37,7 +37,7 @@ import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
-import { PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
+import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import type { CoordinatorIdentity } from '#src/provider-proxy/protocol.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
@@ -65,7 +65,7 @@ async function proxyLeaseSession(time: VirtualTime) {
   const challenges: ControlChallengeAuthority = {
     issueFirstChallenge: () => {
       const challenge = mintChallenge();
-      return lease.issueFirstChallenge(challenge, clock.now())
+      return lease.issueFirstChallenge(challenge, clock.now(), 'recurring')
         ? { accepted: true, challenge }
         : { accepted: false, reason: 'already-issued' };
     },
@@ -124,13 +124,21 @@ async function proxyLeaseSession(time: VirtualTime) {
   };
 }
 
-async function advanceEndpointClock(time: VirtualTime, durationMs: number): Promise<void> {
+async function advanceEndpointClock(
+  time: VirtualTime,
+  durationMs: number,
+  heartbeatOriginMs: number,
+  acceptedEchoes: () => number,
+): Promise<void> {
   let remaining = durationMs;
   while (remaining > 0) {
     const step = Math.min(1_000, remaining);
     time.tick(step);
     remaining -= step;
-    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    const expectedEchoes = 1 + Math.floor((time.now() - heartbeatOriginMs) / PROXY_CONTROL_HEARTBEAT_MS);
+    if (acceptedEchoes() < expectedEchoes) {
+      await vi.waitFor(() => expect(acceptedEchoes()).toBe(expectedEchoes));
+    }
   }
 }
 
@@ -141,10 +149,11 @@ describe('createProviderProxyAcquisitionSteps', () => {
     const proxy = await proxyLeaseSession(time);
     const guardian = passiveClient();
     const reaper = passiveClient();
+    const heartbeatOriginMs = time.now();
     mockedEstablishRoleControl.mockImplementation(async (opened, _timer, _retry, plan) => {
       const role = plan.role;
-      if (role === 'guardian') await advanceEndpointClock(time, 8_500);
-      if (role === 'reaper') await advanceEndpointClock(time, 8_500);
+      if (role === 'guardian') await advanceEndpointClock(time, 8_500, heartbeatOriginMs, proxy.acceptedEchoes);
+      if (role === 'reaper') await advanceEndpointClock(time, 8_500, heartbeatOriginMs, proxy.acceptedEchoes);
       const client = role === 'proxy' ? proxy.client : role === 'guardian' ? guardian : reaper;
       opened.push(client);
       const identity =

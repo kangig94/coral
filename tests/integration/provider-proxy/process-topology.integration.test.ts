@@ -1,9 +1,99 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
-import { createServer, type Socket } from 'node:net';
+import { createServer, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+
+import type { createEnforcerDeadlineStateMachine } from '#src/provider-proxy/orphan-deadline.js';
+import { runtimeControlTimer, type connectRoleControlWithRetry } from '#src/provider-proxy/role-spawn.js';
+
+type CreateEnforcerDeadlineStateMachine = typeof createEnforcerDeadlineStateMachine;
+type ConnectRoleControlWithRetry = typeof connectRoleControlWithRetry;
+
+const bootstrapTimingHarness = vi.hoisted(() => ({
+  enabled: false,
+  nowMs: 0,
+  openingChallengeIssuedAtMs: 11_000,
+  initialHeartbeatAcceptanceMs: 19_200,
+  heartbeatCalls: 0,
+  events: [] as string[],
+  guardianEvidenceOffsetMs: null as null | (() => number),
+  guardianState: null as null | (() => string),
+  reaperReadyObserved: false,
+}));
+
+vi.mock('#src/provider-proxy/orphan-deadline.js', async (importOriginal) => {
+  const actual = (await importOriginal<object>()) as object & {
+    createEnforcerDeadlineStateMachine: CreateEnforcerDeadlineStateMachine;
+  };
+  const createEnforcerDeadlineStateMachine = ((...args: Parameters<CreateEnforcerDeadlineStateMachine>) => {
+    const machine = actual.createEnforcerDeadlineStateMachine(...args);
+    if (bootstrapTimingHarness.enabled && bootstrapTimingHarness.guardianEvidenceOffsetMs === null) {
+      const [clock] = args;
+      const constructedAt = machine.bounds().lastRoundTripEvidenceAt;
+      bootstrapTimingHarness.events.push('deadline-construction');
+      bootstrapTimingHarness.guardianEvidenceOffsetMs = () =>
+        clock.millisecondsBetween(constructedAt, machine.bounds().lastRoundTripEvidenceAt);
+      bootstrapTimingHarness.guardianState = () => machine.state();
+    }
+    return machine;
+  }) as CreateEnforcerDeadlineStateMachine;
+  return { ...actual, createEnforcerDeadlineStateMachine };
+});
+
+vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
+  const actual = (await importOriginal<object>()) as object & {
+    connectRoleControlWithRetry: ConnectRoleControlWithRetry;
+  };
+  const connectRoleControlWithRetry = (async (...args: Parameters<ConnectRoleControlWithRetry>) => {
+    const client = await actual.connectRoleControlWithRetry(...args);
+    if (!bootstrapTimingHarness.enabled) return client;
+    if (!bootstrapTimingHarness.reaperReadyObserved) {
+      bootstrapTimingHarness.reaperReadyObserved = true;
+      bootstrapTimingHarness.nowMs = 4_500;
+      bootstrapTimingHarness.events.push('reaper-ready');
+    }
+    return {
+      ...client,
+      async call(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
+        if (method === 'guardian.open.v1') {
+          bootstrapTimingHarness.nowMs = bootstrapTimingHarness.openingChallengeIssuedAtMs;
+        }
+        if (method === 'guardian.heartbeat.v1') {
+          bootstrapTimingHarness.heartbeatCalls += 1;
+          if (bootstrapTimingHarness.heartbeatCalls === 1) {
+            bootstrapTimingHarness.nowMs = bootstrapTimingHarness.initialHeartbeatAcceptanceMs;
+          }
+        }
+        try {
+          const result = await client.call(method, params, timeoutMs);
+          if (method === 'reaper.pair.v1') {
+            bootstrapTimingHarness.nowMs = 9_400;
+            bootstrapTimingHarness.events.push('reaper-paired');
+          } else if (method === 'guardian.open.v1') {
+            bootstrapTimingHarness.nowMs = 14_300;
+            bootstrapTimingHarness.events.push('open-response');
+          } else if (method === 'guardian.heartbeat.v1' && bootstrapTimingHarness.heartbeatCalls === 1) {
+            bootstrapTimingHarness.events.push('initial-heartbeat-accepted');
+          } else if (method === 'guardian.heartbeat.v1') {
+            bootstrapTimingHarness.events.push(`recurring-heartbeat-settled:${bootstrapTimingHarness.heartbeatCalls}`);
+          }
+          return result;
+        } catch (error: unknown) {
+          if (method === 'guardian.heartbeat.v1' && bootstrapTimingHarness.heartbeatCalls === 1) {
+            bootstrapTimingHarness.events.push(`initial-heartbeat-rejected:${String(error)}`);
+          } else if (method === 'guardian.heartbeat.v1') {
+            bootstrapTimingHarness.events.push(`recurring-heartbeat-rejected:${String(error)}`);
+          }
+          throw error;
+        }
+      },
+    };
+  }) as ConnectRoleControlWithRetry;
+  return { ...actual, connectRoleControlWithRetry };
+});
 
 // `runProviderRoleMain` (unlike `startProviderGuardianRole`/`startProviderReaperRole`/`startProviderProxyRole`
 // below, which take injectable ports) has no seam to supply a strict-identity resolver through — it always
@@ -45,6 +135,9 @@ import type { ChildProcessLike } from '#src/infra/port-types.js';
 import { createProviderProxyAcquisitionSteps } from '#src/coordinator/live/provider-proxy/acquisition-steps.js';
 import { acquireProviderProxySet } from '#src/coordinator/live/provider-proxy/index.js';
 import { isProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
+import { createProviderProxyAuthorityHeartbeatAssembly } from '#src/coordinator/live/provider-proxy/heartbeat.js';
+import { establishRoleControl } from '#src/coordinator/live/provider-proxy/role-control.js';
+import { createProviderProxyAuthorityFaultLatch } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
 import {
@@ -60,7 +153,17 @@ import {
   type ProxyBootstrapCapsule,
   type ReaperBootstrapCapsule,
 } from '#src/provider-proxy/bootstrap-capsule.js';
-import { createFrameReader, decodeProxyControlFrame, encodeProxyControlFrame } from '#src/provider-proxy/protocol.js';
+import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import {
+  createFrameReader,
+  controlEpochSchema,
+  decodeProxyControlFrame,
+  encodeProxyControlFrame,
+  guardianIdentitySchema,
+  guardianOpenParamsSchema,
+  heartbeatChallengeSchema,
+  proxyIdentitySchema,
+} from '#src/provider-proxy/protocol.js';
 import type { CoordinatorIdentity } from '#src/provider-proxy/protocol.js';
 import { PROVIDER_ROLE_FLAGS, type ProviderRole } from '#src/provider-proxy/role-argv.js';
 import {
@@ -78,6 +181,7 @@ import type { Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 /**
  * Drives the real spawn topology in-process rather than against the built backend artifact.
@@ -96,6 +200,14 @@ import { providerOperationRecord } from '#tests/unit/store/provider-operation-fi
 const GENERATION = 'gen2' as const;
 const FLAVOR = 'prod' as const;
 const BASE_STARTED_AT_SECONDS = 1_700_000_000;
+const timingGuardianOpenResultSchema = z
+  .object({
+    controlEpoch: controlEpochSchema,
+    heartbeatChallenge: heartbeatChallengeSchema,
+    guardian: guardianIdentitySchema,
+    proxy: proxyIdentitySchema,
+  })
+  .strict();
 
 function strictIdentity(buildSetId: string): StrictBundleIdentityResult {
   return {
@@ -136,6 +248,7 @@ type FakeRoleEnvironmentOptions = Readonly<{
    *  pairing channel to the reaper right at that point, engineering a forward failure at the one cut nothing
    *  else here can reach: everything up to it has already succeeded. */
   onProxySpawning?(): void;
+  onGuardianListening?(): void;
 }>;
 
 type FakeRoleEnvironment = Readonly<{
@@ -196,7 +309,10 @@ function createFakeRoleEnvironment(options: FakeRoleEnvironmentOptions): FakeRol
       baseDir: options.baseDir,
       resolveStrictIdentity: options.resolveStrictIdentity,
       readProcessStartedAtSeconds,
-      onGuardianListening: () => sequenceLog.push('guardian-listening'),
+      onGuardianListening: () => {
+        sequenceLog.push('guardian-listening');
+        options.onGuardianListening?.();
+      },
       exitProcess: (code) => exitLog.push(code),
     };
   }
@@ -325,7 +441,12 @@ function writeCapsuleSet(
      *  `reaper.pair.v1` call against it is refused, failing the cut right after the reaper spawn. */
     reaperGuardianReaperAuthSecret?: string;
   }> = {},
-): Readonly<{ guardianCapsulePath: string; guardianEndpoint: string }> {
+): Readonly<{
+  guardianCapsulePath: string;
+  guardianEndpoint: string;
+  guardianCapsule: GuardianBootstrapCapsule;
+  proxyCapsule: ProxyBootstrapCapsule;
+}> {
   const guardianInstanceId = randomUUID();
   const reaperInstanceId = randomUUID();
   const proxyInstanceId = randomUUID();
@@ -400,7 +521,7 @@ function writeCapsuleSet(
   };
   createProviderBootstrapCapsule(proxyCapsulePath, proxyCapsule, capsuleEnv);
 
-  return { guardianCapsulePath, guardianEndpoint };
+  return { guardianCapsulePath, guardianEndpoint, guardianCapsule, proxyCapsule };
 }
 
 async function closeHandles(environment: FakeRoleEnvironment): Promise<void> {
@@ -409,7 +530,337 @@ async function closeHandles(environment: FakeRoleEnvironment): Promise<void> {
   await environment.handles.guardian?.close();
 }
 
+function releaseTimingBarrier(barrier: (() => void) | null, label: string): void {
+  if (barrier === null) throw new Error(`${label} was not reached`);
+  barrier();
+}
+
+function releaseTimingBarrierIfPresent(barrier: (() => void) | null): void {
+  if (barrier !== null) barrier();
+}
+
+async function runGuardianBootstrapSchedule(initialHeartbeatAcceptanceMs: number, openingChallengeIssuedAtMs = 11_000) {
+  bootstrapTimingHarness.enabled = true;
+  bootstrapTimingHarness.nowMs = 0;
+  bootstrapTimingHarness.openingChallengeIssuedAtMs = openingChallengeIssuedAtMs;
+  bootstrapTimingHarness.initialHeartbeatAcceptanceMs = initialHeartbeatAcceptanceMs;
+  bootstrapTimingHarness.heartbeatCalls = 0;
+  bootstrapTimingHarness.events.splice(0);
+  bootstrapTimingHarness.guardianEvidenceOffsetMs = null;
+  bootstrapTimingHarness.guardianState = null;
+  bootstrapTimingHarness.reaperReadyObserved = false;
+
+  const monotonicRead = vi
+    .spyOn(process.hrtime, 'bigint')
+    .mockImplementation(() => BigInt(bootstrapTimingHarness.nowMs) * 1_000_000n);
+  cleanups.push(() => {
+    bootstrapTimingHarness.enabled = false;
+    monotonicRead.mockRestore();
+  });
+
+  const baseDir = scopedTempDir('coral-bootstrap-timing-');
+  const shared = mintSharedSetIdentity();
+  let startCoordinatorControl = (): void => {
+    throw new Error('guardian timing control started before its plan was ready');
+  };
+  const environment = createFakeRoleEnvironment({
+    base: createRealRuntime(FLAVOR),
+    pluginRoot: baseDir,
+    baseDir,
+    resolveStrictIdentity: () => strictIdentity(shared.buildSetId),
+    onGuardianListening: () => {
+      bootstrapTimingHarness.nowMs = 9_500;
+      bootstrapTimingHarness.events.push('guardian-listening');
+      startCoordinatorControl();
+    },
+  });
+  cleanups.push(() => closeHandles(environment));
+  const { guardianCapsulePath, guardianEndpoint, guardianCapsule, proxyCapsule } = writeCapsuleSet(
+    environment.outerRuntime(),
+    baseDir,
+    shared,
+  );
+
+  const coordinatorIdentity: CoordinatorIdentity = {
+    instanceId: randomUUID(),
+    pid: 4_000,
+    processStartedAtSeconds: 700,
+    generation: GENERATION,
+    flavor: FLAVOR,
+    buildSetId: shared.buildSetId,
+  };
+  const guardianStartedAt = environment.readProcessStartedAtSeconds(
+    process.pid,
+    environment.outerRuntime().env.platform() as NodeJS.Platform,
+  );
+  if (guardianStartedAt === null) throw new Error('test could not read the guardian process start time');
+
+  const openedClients: ControlClient[] = [];
+  cleanups.push(() => {
+    for (const client of openedClients) client.close();
+  });
+  const clientTime = new VirtualTime();
+  const faults = createProviderProxyAuthorityFaultLatch();
+  const timer = runtimeControlTimer({ time: clientTime } as unknown as Runtime);
+  const outerTime = environment.outerRuntime().time;
+  const coordinatorControl: { promise: ReturnType<typeof establishRoleControl> | null } = { promise: null };
+  startCoordinatorControl = () => {
+    const reaperSpawn = environment.spawnLog.find((record) => record.role === 'reaper');
+    if (reaperSpawn === undefined) throw new Error('guardian listened before the real reaper readiness path settled');
+    const proxyPid = reaperSpawn.pid + 1;
+    const proxyIdentity = {
+      proxyInstanceId: proxyCapsule.proxyInstanceId,
+      pid: proxyPid,
+      processStartedAtSeconds: BASE_STARTED_AT_SECONDS + proxyPid,
+      processGroupId: proxyPid,
+      guardianInstanceId: proxyCapsule.guardianInstanceId,
+      reaperInstanceId: proxyCapsule.reaperInstanceId,
+      generation: proxyCapsule.generation,
+      flavor: proxyCapsule.flavor,
+      buildSetId: proxyCapsule.buildSetId,
+      hostFingerprint: proxyCapsule.hostFingerprint,
+      canonicalEndpoint: proxyCapsule.canonicalEndpoint,
+    };
+    coordinatorControl.promise = establishRoleControl(
+      openedClients,
+      timer,
+      {
+        connectTimeoutMs: 2_000,
+        retryIntervalMs: 20,
+        overallDeadlineMs: 10_000,
+        now: () => outerTime.now(),
+        sleep: (ms) => outerTime.sleep(ms),
+      },
+      {
+        role: 'guardian',
+        endpoint: guardianEndpoint,
+        openMethod: 'guardian.open.v1',
+        openParams: {
+          bootstrapNonce: guardianCapsule.bootstrapNonce,
+          coordinator: coordinatorIdentity,
+          proxy: proxyIdentity,
+        },
+        openParamsSchema: guardianOpenParamsSchema,
+        openResultSchema: timingGuardianOpenResultSchema,
+        identity: (opened) => opened.guardian,
+        heartbeatMethod: 'guardian.heartbeat.v1',
+        expectedIdentity: {
+          guardianInstanceId: guardianCapsule.guardianInstanceId,
+          pid: process.pid,
+          processStartedAtSeconds: guardianStartedAt,
+          generation: guardianCapsule.generation,
+          flavor: guardianCapsule.flavor,
+          buildSetId: guardianCapsule.buildSetId,
+          hostFingerprint: guardianCapsule.hostFingerprint,
+          canonicalControlEndpoint: guardianCapsule.canonicalControlEndpoint,
+        },
+      },
+    );
+    void coordinatorControl.promise.catch(() => undefined);
+  };
+
+  const handle = await startProviderGuardianRole(guardianCapsulePath, environment.topLevelPorts());
+  environment.handles.guardian = handle;
+  const controlPromise = coordinatorControl.promise;
+  if (controlPromise === null) throw new Error('guardian listened without starting coordinator control');
+  const control = await controlPromise.then(
+    (session) => ({ accepted: true as const, session }),
+    (error: unknown) => ({ accepted: false as const, error }),
+  );
+  return { clientTime, control, environment, faults, guardianInstanceId: guardianCapsule.guardianInstanceId };
+}
+
 describe('provider-proxy process topology: guardian role main', () => {
+  it('carries construction-anchored bootstrap control through real readiness, pairing, open, and initial heartbeat', async () => {
+    const scheduled = await runGuardianBootstrapSchedule(19_200);
+    expect({
+      control: scheduled.control.accepted ? 'accepted' : `rejected:${String(scheduled.control.error)}`,
+      evidenceAt: bootstrapTimingHarness.guardianEvidenceOffsetMs?.(),
+      state: bootstrapTimingHarness.guardianState?.(),
+    }).toEqual({ control: 'accepted', evidenceAt: 19_200, state: 'accepting-control' });
+    if (!scheduled.control.accepted) throw scheduled.control.error;
+    bootstrapTimingHarness.events.push('control-established');
+    const observedFaults: string[] = [];
+    scheduled.faults.onFault((fault) => observedFaults.push(fault.kind));
+    const heartbeatTime = new VirtualTime();
+    const heartbeatAssembly = createProviderProxyAuthorityHeartbeatAssembly(
+      { time: heartbeatTime } as unknown as Runtime,
+      scheduled.faults,
+    );
+    heartbeatAssembly.startRole('guardian', {
+      client: scheduled.control.session.client,
+      controlEpoch: scheduled.control.session.opened.controlEpoch,
+      nextHeartbeatChallenge: scheduled.control.session.nextHeartbeatChallenge,
+      instanceId: scheduled.guardianInstanceId,
+    });
+    bootstrapTimingHarness.events.push('loop-enrolled');
+
+    expect(bootstrapTimingHarness.events).toEqual([
+      'deadline-construction',
+      'reaper-ready',
+      'reaper-paired',
+      'guardian-listening',
+      'open-response',
+      'initial-heartbeat-accepted',
+      'control-established',
+      'loop-enrolled',
+    ]);
+    expect(observedFaults).toEqual([]);
+    heartbeatAssembly.stop();
+  });
+
+  it('rejects the real production initial heartbeat at construction-anchored adoption equality', async () => {
+    const scheduled = await runGuardianBootstrapSchedule(23_000);
+
+    expect({
+      control: scheduled.control.accepted ? 'accepted' : `rejected:${String(scheduled.control.error)}`,
+      evidenceAt: bootstrapTimingHarness.guardianEvidenceOffsetMs?.(),
+      state: bootstrapTimingHarness.guardianState?.(),
+    }).toEqual({
+      control: expect.stringContaining('teardown-latched'),
+      evidenceAt: 0,
+      state: 'teardown-latched',
+    });
+  });
+
+  it('stamps the real initial echo at acceptance before the recurring heartbeat tests ordinary control loss', async () => {
+    const scheduled = await runGuardianBootstrapSchedule(19_300, 9_500);
+    if (!scheduled.control.accepted) throw scheduled.control.error;
+    const observedFaults: string[] = [];
+    scheduled.faults.onFault((fault) => {
+      observedFaults.push(
+        fault.kind === 'heartbeat-failed' ? `${fault.kind}(${fault.role}):${String(fault.error)}` : fault.kind,
+      );
+    });
+    const heartbeatTime = new VirtualTime();
+    const heartbeatAssembly = createProviderProxyAuthorityHeartbeatAssembly(
+      { time: heartbeatTime } as unknown as Runtime,
+      scheduled.faults,
+    );
+    heartbeatAssembly.startRole('guardian', {
+      client: scheduled.control.session.client,
+      controlEpoch: scheduled.control.session.opened.controlEpoch,
+      nextHeartbeatChallenge: scheduled.control.session.nextHeartbeatChallenge,
+      instanceId: scheduled.guardianInstanceId,
+    });
+
+    bootstrapTimingHarness.nowMs = 22_000;
+    heartbeatTime.tick(1_000);
+    await vi.waitFor(() =>
+      expect(bootstrapTimingHarness.events.some((event) => event.startsWith('recurring-heartbeat'))).toBe(true),
+    );
+
+    expect({
+      recurringEvents: bootstrapTimingHarness.events.filter((event) => event.startsWith('recurring-heartbeat')),
+      evidenceAt: bootstrapTimingHarness.guardianEvidenceOffsetMs?.(),
+      state: bootstrapTimingHarness.guardianState?.(),
+      observedFaults,
+    }).toEqual({
+      recurringEvents: ['recurring-heartbeat-settled:2'],
+      evidenceAt: 22_000,
+      state: 'accepting-control',
+      observedFaults: [],
+    });
+    heartbeatAssembly.stop();
+  });
+
+  it('counts the previous response tail, next eligible cadence, and next request tail between accepted stamps', async () => {
+    const scheduled = await runGuardianBootstrapSchedule(19_200);
+    if (!scheduled.control.accepted) throw scheduled.control.error;
+    const observedFaults: string[] = [];
+    scheduled.faults.onFault((fault) => {
+      observedFaults.push(
+        fault.kind === 'heartbeat-failed' ? `${fault.kind}(${fault.role}):${String(fault.error)}` : fault.kind,
+      );
+    });
+    const heartbeatTime = new VirtualTime();
+    const heartbeatAssembly = createProviderProxyAuthorityHeartbeatAssembly(
+      { time: heartbeatTime } as unknown as Runtime,
+      scheduled.faults,
+    );
+    heartbeatAssembly.startRole('guardian', {
+      client: scheduled.control.session.client,
+      controlEpoch: scheduled.control.session.opened.controlEpoch,
+      nextHeartbeatChallenge: scheduled.control.session.nextHeartbeatChallenge,
+      instanceId: scheduled.guardianInstanceId,
+    });
+
+    const originalWrite = Socket.prototype.write;
+    let holdResponse = true;
+    let holdRequest = false;
+    let releaseResponse: (() => void) | null = null;
+    let releaseRequest: (() => void) | null = null;
+    const writeSpy = vi.spyOn(Socket.prototype, 'write').mockImplementation(function (
+      this: Socket,
+      ...args: Parameters<Socket['write']>
+    ): boolean {
+      const [chunk] = args;
+      const frame = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+      const forward = (): boolean => Reflect.apply(originalWrite, this, args);
+      if (holdResponse && frame.includes('"nextHeartbeatChallenge"')) {
+        holdResponse = false;
+        releaseResponse = () => {
+          forward();
+        };
+        return true;
+      }
+      if (holdRequest && frame.includes('"method":"guardian.heartbeat.v1"')) {
+        holdRequest = false;
+        releaseRequest = () => {
+          forward();
+        };
+        return true;
+      }
+      return forward();
+    });
+    cleanups.push(() => {
+      releaseTimingBarrierIfPresent(releaseResponse);
+      releaseTimingBarrierIfPresent(releaseRequest);
+      writeSpy.mockRestore();
+    });
+
+    bootstrapTimingHarness.nowMs = 20_000;
+    heartbeatTime.tick(1_000);
+    await vi.waitFor(() => expect(releaseResponse).not.toBeNull());
+    expect(bootstrapTimingHarness.guardianEvidenceOffsetMs?.()).toBe(20_000);
+
+    bootstrapTimingHarness.nowMs = 24_999;
+    scheduled.clientTime.tick(4_999);
+    heartbeatTime.tick(5_000);
+    expect(bootstrapTimingHarness.heartbeatCalls).toBe(2);
+    releaseTimingBarrier(releaseResponse, 'recurring heartbeat response barrier');
+    await vi.waitFor(() => expect(bootstrapTimingHarness.events).toContain('recurring-heartbeat-settled:2'));
+
+    bootstrapTimingHarness.nowMs = 26_001;
+    holdRequest = true;
+    heartbeatTime.tick(1_002);
+    await vi.waitFor(() => expect(releaseRequest).not.toBeNull());
+
+    bootstrapTimingHarness.nowMs = 31_000;
+    scheduled.clientTime.tick(4_999);
+    releaseTimingBarrier(releaseRequest, 'recurring heartbeat request barrier');
+    await vi.waitFor(() =>
+      expect(
+        bootstrapTimingHarness.events.some(
+          (event) => event === 'recurring-heartbeat-settled:3' || event.startsWith('recurring-heartbeat-rejected:'),
+        ),
+      ).toBe(true),
+    );
+
+    expect({
+      evidenceAt: bootstrapTimingHarness.guardianEvidenceOffsetMs?.(),
+      heartbeatCalls: bootstrapTimingHarness.heartbeatCalls,
+      recurringEvents: bootstrapTimingHarness.events.filter((event) => event.startsWith('recurring-heartbeat')),
+      observedFaults,
+    }).toEqual({
+      evidenceAt: 31_000,
+      heartbeatCalls: 3,
+      recurringEvents: ['recurring-heartbeat-settled:2', 'recurring-heartbeat-settled:3'],
+      observedFaults: [],
+    });
+    heartbeatAssembly.stop();
+  });
+
   it('spawns the reaper before pairing, listens before the proxy spawns, spawns the proxy detached, and records containment only once its pid and start time are known', async () => {
     const baseDir = scopedTempDir('coral-topology-order-');
     const shared = mintSharedSetIdentity();

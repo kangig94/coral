@@ -22,7 +22,7 @@ import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { connectControlClient, ControlClientError } from '#src/provider-proxy/control-client.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { ControlLeaseEvidence } from '#src/provider-proxy/control-lease.js';
-import { PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
+import { PROXY_CONTROL_HEARTBEAT_MS, PROXY_CONTROL_LEASE_MS } from '#src/provider-proxy/orphan-deadline.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
 import { connectRoleControlWithRetry, runtimeControlTimer } from '#src/provider-proxy/role-spawn.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
@@ -317,7 +317,7 @@ async function guardianLeaseClient(
   const challenges: ControlChallengeAuthority = {
     issueFirstChallenge: () => {
       const challenge = mintChallenge();
-      return lease.issueFirstChallenge(challenge, clock.now())
+      return lease.issueFirstChallenge(challenge, clock.now(), 'recurring')
         ? { accepted: true, challenge }
         : { accepted: false, reason: 'already-issued' };
     },
@@ -382,13 +382,21 @@ async function guardianLeaseClient(
   };
 }
 
-async function advanceInheritanceEndpointClock(time: VirtualTime, durationMs: number): Promise<void> {
+async function advanceInheritanceEndpointClock(
+  time: VirtualTime,
+  durationMs: number,
+  heartbeatOriginMs: number,
+  acceptedEchoes: () => number,
+): Promise<void> {
   let remaining = durationMs;
   while (remaining > 0) {
     const step = Math.min(1_000, remaining);
     time.tick(step);
     remaining -= step;
-    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    const expectedEchoes = 1 + Math.floor((time.now() - heartbeatOriginMs) / PROXY_CONTROL_HEARTBEAT_MS);
+    if (acceptedEchoes() < expectedEchoes) {
+      await vi.waitFor(() => expect(acceptedEchoes()).toBe(expectedEchoes));
+    }
   }
 }
 
@@ -1118,14 +1126,15 @@ describe('createProviderProxySetInheritance', () => {
     const time = new VirtualTime();
     const guardian = await guardianLeaseClient(time, guardianOpen as Record<string, unknown>);
     const otherClient = fakeClient(responses, []);
+    const heartbeatOriginMs = time.now();
     mockedConnect.mockImplementation(async (socketPath: string) => {
       if (socketPath === loc.locator.guardian.controlEndpoint) return guardian.client;
       if (socketPath === loc.locator.reaper.controlEndpoint) {
-        await advanceInheritanceEndpointClock(time, 8_500);
+        await advanceInheritanceEndpointClock(time, 8_500, heartbeatOriginMs, guardian.acceptedEchoes);
         return otherClient;
       }
       if (socketPath === loc.locator.proxy.controlEndpoint) {
-        await advanceInheritanceEndpointClock(time, 8_500);
+        await advanceInheritanceEndpointClock(time, 8_500, heartbeatOriginMs, guardian.acceptedEchoes);
         return otherClient;
       }
       throw new Error(`unexpected connection to ${socketPath}`);

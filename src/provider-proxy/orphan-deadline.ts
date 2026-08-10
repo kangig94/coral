@@ -12,12 +12,13 @@ import {
 import { PROXY_CONTROL_RPC_TIMEOUT_MS } from './protocol.js';
 
 export const CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV = 'CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS';
-export const DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = 30_000;
+export const DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = 37_000;
 export const MIN_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = 19_001;
 export const MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = 300_000;
 
 export const PROXY_CONTROL_HEARTBEAT_MS = 1_000;
-export const PROXY_CONTROL_LEASE_MS = 13_000;
+export const PROXY_CONTROL_LEASE_MS = 12_000;
+export const PROXY_CONTROL_ESTABLISH_READY_MS = 10_000;
 export const PROXY_ENDPOINT_CLEANUP_BUDGET_MS = 1_000;
 export const PROXY_ENFORCER_MAX_WAKE_LATENCY_MS = 1_000;
 export const PROXY_PROCESS_CONTROL_BUDGET_MS = 2 * PROXY_PROCESS_CONTROL_CALL_MAX_MS;
@@ -30,27 +31,41 @@ export const PROXY_TEARDOWN_RESERVE_MS =
   PROXY_PROCESS_CONTROL_BUDGET_MS;
 export const PROXY_REDEMPTION_DISPATCH_MAX_MS = 1_000;
 export const PROXY_STARTUP_ATTACH_RESERVE_MS = 4_000;
+export const PROXY_SUCCESSOR_TAIL_MS = Math.max(
+  2 * PROXY_CONTROL_RPC_TIMEOUT_MS,
+  PROXY_REDEMPTION_DISPATCH_MAX_MS + PROXY_CONTROL_RPC_TIMEOUT_MS + PROXY_STARTUP_ATTACH_RESERVE_MS,
+);
 export const MIN_EFFECTIVE_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS = Math.max(
   MIN_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
-  PROXY_TEARDOWN_RESERVE_MS + PROXY_CONTROL_LEASE_MS + 1,
-  PROXY_TEARDOWN_RESERVE_MS +
-    PROXY_REDEMPTION_DISPATCH_MAX_MS +
-    PROXY_CONTROL_RPC_TIMEOUT_MS +
-    PROXY_STARTUP_ATTACH_RESERVE_MS +
-    1,
+  PROXY_TEARDOWN_RESERVE_MS + PROXY_CONTROL_ESTABLISH_READY_MS + 2 * PROXY_CONTROL_RPC_TIMEOUT_MS + 1,
+  PROXY_TEARDOWN_RESERVE_MS + PROXY_CONTROL_LEASE_MS + PROXY_SUCCESSOR_TAIL_MS + 1,
 );
 
 const EXPECTED_PROXY_TEARDOWN_RESERVE_MS = 14_000;
 const providerProxyDeadlineConfigurationBrand: unique symbol = Symbol('coral.provider-proxy-deadline-configuration');
 
-export function recurringHeartbeatFitsLease(
-  timing: Readonly<{
-    heartbeatMs: number;
-    rpcTimeoutMs: number;
-    leaseMs: number;
-  }>,
-): boolean {
-  return 2 * (timing.heartbeatMs + timing.rpcTimeoutMs) < timing.leaseMs;
+export type ProviderProxyDeadlineTiming = Readonly<{
+  heartbeatMs: number;
+  rpcTimeoutMs: number;
+  leaseMs: number;
+  establishReadyMs: number;
+  redemptionDispatchMs: number;
+  startupAttachReserveMs: number;
+  teardownReserveMs: number;
+  orphanTimeoutMs: number;
+}>;
+
+export function providerProxyDeadlineTimingIsValid(timing: ProviderProxyDeadlineTiming): boolean {
+  const adoptionWindowMs = timing.orphanTimeoutMs - timing.teardownReserveMs;
+  const successorTailMs = Math.max(
+    2 * timing.rpcTimeoutMs,
+    timing.redemptionDispatchMs + timing.rpcTimeoutMs + timing.startupAttachReserveMs,
+  );
+  return (
+    2 * timing.rpcTimeoutMs + timing.heartbeatMs < timing.leaseMs &&
+    timing.establishReadyMs + 2 * timing.rpcTimeoutMs < adoptionWindowMs &&
+    timing.leaseMs + successorTailMs < adoptionWindowMs
+  );
 }
 
 export type ProviderProxyDeadlineConfiguration = Readonly<{
@@ -81,8 +96,8 @@ const providerProxyDeadlineInputSchema = z
 
 export const providerProxyDeadlineConfigurationSchema = providerProxyDeadlineInputSchema
   .superRefine(({ orphanTimeoutMs }, context) => {
-    // Keep the plan's two strict inequalities independent: the redemption
-    // margin intentionally rejects part of the separately stated range.
+    // Keep the plan's strict timing policy independent from the integer production range: the timing
+    // relations intentionally reject part of that separately stated range.
     if (
       orphanTimeoutMs < MIN_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS ||
       orphanTimeoutMs > MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS
@@ -94,30 +109,21 @@ export const providerProxyDeadlineConfigurationSchema = providerProxyDeadlineInp
       });
     }
     if (
-      !(
-        recurringHeartbeatFitsLease({
-          heartbeatMs: PROXY_CONTROL_HEARTBEAT_MS,
-          rpcTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
-          leaseMs: PROXY_CONTROL_LEASE_MS,
-        }) && PROXY_CONTROL_LEASE_MS < orphanTimeoutMs - PROXY_TEARDOWN_RESERVE_MS
-      )
+      !providerProxyDeadlineTimingIsValid({
+        heartbeatMs: PROXY_CONTROL_HEARTBEAT_MS,
+        rpcTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
+        leaseMs: PROXY_CONTROL_LEASE_MS,
+        establishReadyMs: PROXY_CONTROL_ESTABLISH_READY_MS,
+        redemptionDispatchMs: PROXY_REDEMPTION_DISPATCH_MAX_MS,
+        startupAttachReserveMs: PROXY_STARTUP_ATTACH_RESERVE_MS,
+        teardownReserveMs: PROXY_TEARDOWN_RESERVE_MS,
+        orphanTimeoutMs,
+      })
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['orphanTimeoutMs'],
-        message: 'must satisfy two heartbeat RPC generations < lease < orphan timeout - teardown reserve',
-      });
-    }
-    if (
-      !(
-        PROXY_REDEMPTION_DISPATCH_MAX_MS + PROXY_CONTROL_RPC_TIMEOUT_MS + PROXY_STARTUP_ATTACH_RESERVE_MS <
-        orphanTimeoutMs - PROXY_TEARDOWN_RESERVE_MS
-      )
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['orphanTimeoutMs'],
-        message: 'must retain the strict redemption RPC and startup attach margin',
+        message: 'must satisfy the strict recurrence, process-bootstrap, and successor-adoption timing policy',
       });
     }
     if (PROXY_TEARDOWN_RESERVE_MS !== EXPECTED_PROXY_TEARDOWN_RESERVE_MS) {
@@ -312,7 +318,9 @@ export function createEnforcerDeadlineStateMachine<Scope extends symbol>(
       const challenge = policy.mintChallenge();
       // A refusal, not a throw: "a first challenge already exists" is a state this machine models, and the
       // endpoint has to be able to answer the caller rather than fail the connection over it.
-      if (!evidence.issueFirstChallenge(challenge, now)) return { accepted: false, reason: 'invalid-state' };
+      if (!evidence.issueFirstChallenge(challenge, now, 'bootstrap-first')) {
+        return { accepted: false, reason: 'invalid-state' };
+      }
       return { accepted: true, challenge };
     },
     echoChallenge: (challenge: string): ChallengeEchoResult => {

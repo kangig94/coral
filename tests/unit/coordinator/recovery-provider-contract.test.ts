@@ -638,7 +638,7 @@ describe('provider-operation carrier reap', () => {
     let elapsedMs = 0;
     return createMonotonicClock(carrierClockScope, {
       readMilliseconds: () => BigInt(elapsedMs),
-      // Advances a virtual clock rather than waiting in real time, so the ~44s default budget costs nothing.
+      // Advances a virtual clock rather than waiting in real time, so the ~51s default budget costs nothing.
       sleep: async (ms) => {
         elapsedMs += ms;
       },

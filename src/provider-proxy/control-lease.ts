@@ -10,13 +10,16 @@ export type ControlLeaseEchoResult =
       reason: 'challenge-expired' | 'challenge-mismatch' | 'control-lost';
     }>;
 
+export type ControlLeaseChallengeKind = 'bootstrap-first' | 'successor-first' | 'recurring';
+type ControlLeaseInitialChallengeKind = Exclude<ControlLeaseChallengeKind, 'successor-first'>;
+
 /**
  * What one control tenancy has proven, on the holder's own clock.
  *
  * Round-trip evidence is the whole point: a challenge is one-use and random, so only an echo of *this*
  * process's outstanding challenge shows a peer was alive to receive it. Receipt time proves nothing — a
- * frame can sit in a socket buffer across the death of its sender — and the recorded instant is therefore
- * the moment the challenge was *issued*, never the moment its echo arrived.
+ * frame can sit in a socket buffer across the death of its sender — but acceptance is the endpoint's local
+ * proof that the whole round trip completed, so accepted evidence is recorded at that local instant.
  *
  * This lives apart from any deadline model because two owners of "what counts as evidence" is precisely how
  * evidence ends up recorded in one place and checked in another. The enforcer composes this and adds its
@@ -39,7 +42,7 @@ export class ControlLeaseEvidence<Scope extends symbol> {
   #pendingChallenge: Readonly<{
     value: string;
     issuedAt: MonotonicInstant<Scope>;
-    allowAfterControlLoss: boolean;
+    kind: ControlLeaseChallengeKind;
   }> | null = null;
 
   constructor(
@@ -75,9 +78,13 @@ export class ControlLeaseEvidence<Scope extends symbol> {
   }
 
   /** False when a first challenge already exists. A second tenancy is a successor, not a first. */
-  issueFirstChallenge(challenge: string, issuedAt: MonotonicInstant<Scope>): boolean {
+  issueFirstChallenge(
+    challenge: string,
+    issuedAt: MonotonicInstant<Scope>,
+    kind: ControlLeaseInitialChallengeKind,
+  ): boolean {
     if (this.#firstChallengeIssuedAt !== null || this.#pendingChallenge !== null) return false;
-    this.#installChallenge(challenge, issuedAt, false);
+    this.#installChallenge(challenge, issuedAt, kind);
     this.#firstChallengeIssuedAt = issuedAt;
     return true;
   }
@@ -87,7 +94,7 @@ export class ControlLeaseEvidence<Scope extends symbol> {
    * control loss — that loss is the precondition for the successor existing at all.
    */
   beginSuccessorControl(challenge: string, issuedAt: MonotonicInstant<Scope>): void {
-    this.#installChallenge(challenge, issuedAt, true);
+    this.#installChallenge(challenge, issuedAt, 'successor-first');
     this.#firstChallengeIssuedAt = issuedAt;
     this.#carriedByLiveConnection();
   }
@@ -112,18 +119,15 @@ export class ControlLeaseEvidence<Scope extends symbol> {
     if (this.#pendingChallenge === null || this.#pendingChallenge.value !== challenge) {
       return { accepted: false, reason: 'challenge-mismatch' };
     }
-    if (!this.#pendingChallenge.allowAfterControlLoss && !this.isControlLive(now)) {
+    if (this.#pendingChallenge.kind === 'recurring' && !this.isControlLive(now)) {
       return { accepted: false, reason: 'control-lost' };
     }
     if (this.#arithmetic.compare(now, this.#challengeExpiresAt(this.#pendingChallenge.issuedAt)) >= 0) {
       return { accepted: false, reason: 'challenge-expired' };
     }
 
-    // The issuance instant, not now: the peer had to receive the challenge before echoing it, so issuance is
-    // the latest moment it is known to have been alive — and it is known even if the echo is dequeued later.
-    const evidenceAt = this.#pendingChallenge.issuedAt;
-    this.#installChallenge(nextChallenge, now, false);
-    this.#lastRoundTripEvidenceAt = evidenceAt;
+    this.#installChallenge(nextChallenge, now, 'recurring');
+    this.#lastRoundTripEvidenceAt = now;
     return { accepted: true };
   }
 
@@ -138,7 +142,7 @@ export class ControlLeaseEvidence<Scope extends symbol> {
     return ceiling === null ? leaseExpiry : this.#arithmetic.earlier(leaseExpiry, ceiling);
   }
 
-  #installChallenge(challenge: string, issuedAt: MonotonicInstant<Scope>, allowAfterControlLoss: boolean): void {
+  #installChallenge(challenge: string, issuedAt: MonotonicInstant<Scope>, kind: ControlLeaseChallengeKind): void {
     if (challenge.length === 0 || this.#seenChallenges.has(challenge)) {
       throw new Error('A heartbeat challenge must be non-empty and one-use.');
     }
@@ -147,7 +151,7 @@ export class ControlLeaseEvidence<Scope extends symbol> {
       const oldest = this.#seenChallenges.values().next();
       if (!oldest.done) this.#seenChallenges.delete(oldest.value);
     }
-    this.#pendingChallenge = Object.freeze({ value: challenge, issuedAt, allowAfterControlLoss });
+    this.#pendingChallenge = Object.freeze({ value: challenge, issuedAt, kind });
   }
 
   #carriedByLiveConnection(): void {

@@ -108,7 +108,7 @@ async function openLeaseEndpoint(
   const challenges: ControlChallengeAuthority = {
     issueFirstChallenge: () => {
       const challenge = mintChallenge();
-      return lease.issueFirstChallenge(challenge, clock.now())
+      return lease.issueFirstChallenge(challenge, clock.now(), 'recurring')
         ? { accepted: true, challenge }
         : { accepted: false, reason: 'already-issued' };
     },
@@ -268,7 +268,6 @@ describe('provider proxy heartbeat against the real endpoint', () => {
     time.tick(PROXY_CONTROL_HEARTBEAT_MS);
     await vi.waitFor(() => expect(heldResponseSnapshot).not.toBeNull());
     await vi.waitFor(() => expect(acceptedResponses).toBe(1));
-    await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect({
       heldResponseSnapshot,

@@ -11,7 +11,10 @@ import {
 } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import { PROXY_DISAPPEARANCE_CONFIRM_MS, SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
-import { PROXY_TEARDOWN_RESERVE_MS } from '#src/provider-proxy/orphan-deadline.js';
+import {
+  DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+  PROXY_TEARDOWN_RESERVE_MS,
+} from '#src/provider-proxy/orphan-deadline.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS } from '#src/provider-proxy/protocol.js';
 import type {
   CoordinatorIdentity,
@@ -357,11 +360,15 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     const written = JSON.parse(readFileSync(handoffCapsulePath, 'utf-8')) as {
       version: number;
       buildSetId: string;
+      orphanTimeoutMs: number;
+      teardownReserveMs: number;
       operations?: readonly unknown[];
       committedThroughProviderSeq?: number;
     };
     expect(written.version).toBe(1);
     expect(written.buildSetId).toBe(GUARDIAN_IDENTITY.buildSetId);
+    expect(written.orphanTimeoutMs).toBe(DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS);
+    expect(written.teardownReserveMs).toBe(PROXY_TEARDOWN_RESERVE_MS);
     // The two fields the design review found with a second, non-authoritative home: neither belongs in a
     // durable artifact a successor might one day trust in place of the store or the proxy's live ledger.
     expect(written.operations).toBeUndefined();
