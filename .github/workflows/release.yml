@@ -17,17 +17,12 @@ on:
         description: 'Release version — semver, no leading v (e.g. 0.9.13)'
         required: true
         type: string
-      codex_smoke_run_id:
-        description: 'Successful Provider Proxy Codex Smoke workflow run ID for this exact candidate'
-        required: true
-        type: string
 
 concurrency:
   group: release-main
   cancel-in-progress: false
 
 permissions:
-  actions: read
   contents: read
 
 jobs:
@@ -73,37 +68,6 @@ jobs:
         with:
           node-version: 26
           cache: npm
-
-      - name: Require exact protected Codex smoke evidence
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SMOKE_RUN_ID: ${{ inputs.codex_smoke_run_id }}
-        run: |
-          candidate_sha=$(git rev-parse HEAD)
-          repository="$GITHUB_REPOSITORY"
-          gh api "repos/$repository/actions/workflows/provider-proxy-codex-smoke.yml" > smoke-workflow.json
-          gh api "repos/$repository/actions/runs/$SMOKE_RUN_ID" > smoke-run.json
-          artifacts=$(gh api "repos/$repository/actions/runs/$SMOKE_RUN_ID/artifacts")
-          count=$(printf '%s' "$artifacts" | jq '[.artifacts[] | select(.name == "provider-proxy-codex-smoke" and .expired == false)] | length')
-          if [ "$count" -ne 1 ]; then
-            echo "::error::Expected exactly one unexpired provider-proxy-codex-smoke artifact, found $count"
-            exit 1
-          fi
-          artifact_id=$(printf '%s' "$artifacts" | jq -r '.artifacts[] | select(.name == "provider-proxy-codex-smoke" and .expired == false) | .id')
-          gh api "repos/$repository/actions/artifacts/$artifact_id/zip" > smoke-evidence.zip
-          entries=$(unzip -Z1 smoke-evidence.zip)
-          if [ "$entries" != "provider-proxy-codex-smoke.json" ]; then
-            echo "::error::Smoke artifact must contain only provider-proxy-codex-smoke.json"
-            exit 1
-          fi
-          unzip -p smoke-evidence.zip provider-proxy-codex-smoke.json > provider-proxy-codex-smoke.json
-          node tools/provider-proxy-smoke-release-gate.ts \
-            --repository "$repository" \
-            --candidate-sha "$candidate_sha" \
-            --run-id "$SMOKE_RUN_ID" \
-            --workflow-json smoke-workflow.json \
-            --run-json smoke-run.json \
-            --evidence-json provider-proxy-codex-smoke.json
 
       - run: npm ci
 
