@@ -451,7 +451,7 @@ async function launchThroughRoute(
       if (method === 'operation.inspect.v2') {
         prepareInspectCalls += 1;
         if (prepareInspectCalls <= (options.dropPrepareInspectReplies ?? 0)) {
-          throw new ControlClientError('control_call_failed', 'The prepare inspect reply was dropped.');
+          throw new ControlClientError('control_call_failed', 'The prepare inspect reply was dropped.', 'closed');
         }
         if (prepareInspectCalls <= (options.dropPrepareInspectReplies ?? 0) + (options.preparingInspectReplies ?? 0)) {
           const inspected = (await set.control.call(method, params, timeoutMs)) as { reservation?: string };
@@ -473,15 +473,19 @@ async function launchThroughRoute(
         result = await set.control.call(method, params, timeoutMs);
       } catch (error: unknown) {
         if (method === 'operation.prepare.v1' && options.ambiguatePrepareRejections === true) {
-          throw new ControlClientError('control_call_failed', 'The rejected prepare reply was transport-ambiguous.');
+          throw new ControlClientError(
+            'control_call_failed',
+            'The rejected prepare reply was transport-ambiguous.',
+            'closed',
+          );
         }
         throw error;
       }
       if (method === 'operation.prepare.v1' && prepareCalls <= (options.dropPrepareReplies ?? 0)) {
-        throw new ControlClientError('control_call_failed', 'The prepare reply was dropped.');
+        throw new ControlClientError('control_call_failed', 'The prepare reply was dropped.', 'closed');
       }
       if (method === 'operation.activate.v1' && activationCalls <= (options.dropActivationReplies ?? 0)) {
-        throw new ControlClientError('control_call_failed', 'The activation reply was dropped.');
+        throw new ControlClientError('control_call_failed', 'The activation reply was dropped.', 'closed');
       }
       return result;
     },
@@ -493,7 +497,7 @@ async function launchThroughRoute(
       if (method === 'guardian.operation-activate.v1') {
         guardianActivationCalls += 1;
         if (guardianActivationCalls <= (options.dropGuardianActivationReplies ?? 0)) {
-          throw new ControlClientError('control_call_failed', 'The guardian activation reply was dropped.');
+          throw new ControlClientError('control_call_failed', 'The guardian activation reply was dropped.', 'closed');
         }
         return { state: 'activation-authorized', jointActivationReceipt: 'joint-activation-1' };
       }

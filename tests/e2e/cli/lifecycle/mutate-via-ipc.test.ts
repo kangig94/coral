@@ -28,6 +28,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { readProviderOperationForJob } from '#src/store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
+import { assertLifecycleBundleSetFresh } from '#tests/support/bundle-build-freshness.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-backend.cjs');
@@ -413,6 +414,8 @@ afterEach(async () => {
 
 describe('mutating commands via IPC', () => {
   it('routes two durable operations through the discovered proxy before each faithful Codex checkpoint', async () => {
+    assertLifecycleBundleSetFresh(REPO_ROOT);
+
     if (
       !existsSync(SOURCE_BACKEND_BUNDLE) ||
       !existsSync(SOURCE_CLI_BUNDLE) ||

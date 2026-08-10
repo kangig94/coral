@@ -208,9 +208,20 @@ async function requireBackendInfo(pluginRoot: string, home: string): Promise<Bac
   return info;
 }
 
-async function withHome<T>(home: string, action: () => Promise<T>): Promise<T> {
+const childIdentityEnvKeys = [
+  'CORAL_CHILD',
+  'CORAL_CHILD_PRINCIPAL_HANDLE',
+  'CORAL_JOB_ID',
+  'CORAL_SESSION_ID',
+] as const;
+
+async function withTopLevelHome<T>(home: string, action: () => Promise<T>): Promise<T> {
   const previousHome = process.env.HOME;
+  const previousChildIdentity = childIdentityEnvKeys.map((key) => [key, process.env[key]] as const);
   process.env.HOME = home;
+  for (const key of childIdentityEnvKeys) {
+    delete process.env[key];
+  }
   try {
     return await action();
   } finally {
@@ -219,11 +230,18 @@ async function withHome<T>(home: string, action: () => Promise<T>): Promise<T> {
     } else {
       process.env.HOME = previousHome;
     }
+    for (const [key, value] of previousChildIdentity) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
   }
 }
 
 async function ensureFixtureBackend(pluginRoot: string, home: string): Promise<void> {
-  await withHome(home, async () => {
+  await withTopLevelHome(home, async () => {
     try {
       await ensure(pluginRoot);
     } catch (error: unknown) {

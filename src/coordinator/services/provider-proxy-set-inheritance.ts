@@ -1,11 +1,9 @@
 import { providerHandoffCapsulePath } from '../../infra/path/index.js';
 import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import { createMonotonicClock } from '../../infra/monotonic-clock.js';
-import { errorMessage } from '../../infra/error-format.js';
 import { reapRecordedContainment } from '../../infra/process-containment.js';
 import {
   readHandoffCapsuleFile,
-  HandoffCapsuleError,
   type HandoffCapsule,
   guardianHandoffRedeemFieldsSchema,
   guardianHandoffRedeemParamsSchema,
@@ -37,7 +35,11 @@ import {
   ESTABLISH_CONTROL_READY_DEADLINE_MS,
   ESTABLISH_CONTROL_RETRY_INTERVAL_MS,
 } from '../live/provider-proxy/acquisition-steps.js';
-import { establishRoleControl } from '../live/provider-proxy/role-control.js';
+import {
+  establishRoleControl,
+  ProviderProxyRoleControlUnavailableError,
+  type ProviderProxyRoleControlAvailabilityIncident,
+} from '../live/provider-proxy/role-control.js';
 import { createProviderProxySetAuthority } from '../live/provider-proxy/set-authority.js';
 import { createProviderProxyAuthorityHeartbeatAssembly } from '../live/provider-proxy/heartbeat.js';
 import {
@@ -122,13 +124,47 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
 export type ProviderProxySetInheritanceOutcome =
   | Readonly<{ kind: 'inherited'; set: DurableProviderProxyOperationAuthority }>
   | Readonly<{ kind: 'containment-disappeared'; disappearanceReceipt: string }>
-  | Readonly<{ kind: 'not-bequeathed'; reason: string }>;
+  | Readonly<{ kind: 'not-bequeathed'; reason: string }>
+  | Readonly<{ kind: 'temporarily-unavailable'; incident: ProviderProxySetAvailabilityIncident }>;
 
-export class ProviderProxySetInheritanceOperationalError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
+export type ProviderProxySetRedemptionOutcome =
+  | Readonly<{ kind: 'redeemed'; set: DurableProviderProxyOperationAuthority }>
+  | Readonly<{ kind: 'temporarily-unavailable'; incident: ProviderProxySetAvailabilityIncident }>;
+
+export type ProviderProxySetAvailabilityIncident =
+  | ProviderProxyRoleControlAvailabilityIncident
+  | Readonly<{ kind: 'recovery-deadline'; timeoutMs: 45_000 }>;
+
+export class ProviderProxySetInheritanceCorruptionError extends Error {
+  readonly code:
+    | 'role_operation_set_disagreement'
+    | 'role_identity_disagreement'
+    | 'capsule_identity_disagreement'
+    | 'durable_identity_disagreement';
+
+  constructor(code: ProviderProxySetInheritanceCorruptionError['code'], message: string, options?: ErrorOptions) {
     super(message, options);
-    this.name = 'ProviderProxySetInheritanceOperationalError';
-    Object.setPrototypeOf(this, ProviderProxySetInheritanceOperationalError.prototype);
+    this.name = 'ProviderProxySetInheritanceCorruptionError';
+    this.code = code;
+    Object.setPrototypeOf(this, ProviderProxySetInheritanceCorruptionError.prototype);
+  }
+}
+
+export function providerProxySetAvailabilityReason(incident: ProviderProxySetAvailabilityIncident): string {
+  switch (incident.kind) {
+    case 'role-control-unavailable':
+      return [
+        incident.kind,
+        incident.role,
+        incident.stage,
+        incident.method ?? 'none',
+        incident.origin,
+        incident.controlCode,
+      ].join(':');
+    case 'role-control-busy':
+      return [incident.kind, incident.role, incident.method, incident.protocolCode, incident.admissionReason].join(':');
+    case 'recovery-deadline':
+      return `${incident.kind}:${incident.timeoutMs}`;
   }
 }
 
@@ -355,7 +391,10 @@ async function redeemCapsule(
       !sameOperationSet(guardianSession.opened.operations, reaperSession.opened.operations) ||
       !sameOperationSet(guardianSession.opened.operations, proxySession.opened.operations)
     ) {
-      throw new Error('Guardian, reaper, and proxy redeemed different operation sets.');
+      throw new ProviderProxySetInheritanceCorruptionError(
+        'role_operation_set_disagreement',
+        'Guardian, reaper, and proxy redeemed different operation sets.',
+      );
     }
 
     const guardianIdentity = guardianSession.opened.guardian;
@@ -396,10 +435,16 @@ async function redeemCapsule(
       capsule.reaperControlEndpoint !== setIdentity.reaperControlEndpoint ||
       capsule.proxyEndpoint !== setIdentity.canonicalEndpoint
     ) {
-      throw new Error('Provider proxy redemption identities disagree with the handoff capsule.');
+      throw new ProviderProxySetInheritanceCorruptionError(
+        'capsule_identity_disagreement',
+        'Provider proxy redemption identities disagree with the handoff capsule.',
+      );
     }
     if (expectedIdentity !== null && !providerProxySetIdentitiesEqual(expectedIdentity, setIdentity)) {
-      throw new Error('Provider proxy redemption identity disagrees with the durable operation record.');
+      throw new ProviderProxySetInheritanceCorruptionError(
+        'durable_identity_disagreement',
+        'Provider proxy redemption identity disagrees with the durable operation record.',
+      );
     }
 
     const clients = {
@@ -495,32 +540,26 @@ export async function attemptProviderProxySetInheritance(
   try {
     outcome = await redeem(locator, deps, signal);
   } catch (error: unknown) {
-    if (error instanceof HandoffCapsuleError) throw error;
+    if (!(error instanceof ProviderProxyRoleControlUnavailableError)) throw error;
     try {
       const disappearanceReceipt = await deps.proveContainmentAbsent?.(identity, db, signal);
       if (disappearanceReceipt !== undefined && disappearanceReceipt !== null) {
         return { kind: 'containment-disappeared', disappearanceReceipt };
       }
     } catch (proofError: unknown) {
-      throw new ProviderProxySetInheritanceOperationalError(
-        `Provider proxy redemption failed and containment disappearance was not proven: ${errorMessage(proofError)}`,
-        { cause: new AggregateError([error, proofError]) },
+      throw new AggregateError(
+        [error, proofError],
+        'Provider proxy role control was unavailable and containment proof failed.',
+        { cause: proofError },
       );
     }
-    throw new ProviderProxySetInheritanceOperationalError(errorMessage(error), { cause: error });
+    return { kind: 'temporarily-unavailable', incident: error.incident };
   }
   if (outcome.kind !== 'not-bequeathed') return outcome;
-  try {
-    const disappearanceReceipt = await deps.proveContainmentAbsent?.(identity, db, signal);
-    return disappearanceReceipt === undefined || disappearanceReceipt === null
-      ? outcome
-      : { kind: 'containment-disappeared', disappearanceReceipt };
-  } catch (error: unknown) {
-    throw new ProviderProxySetInheritanceOperationalError(
-      `${outcome.reason}; containment disappearance was not proven: ${errorMessage(error)}`,
-      { cause: error },
-    );
-  }
+  const disappearanceReceipt = await deps.proveContainmentAbsent?.(identity, db, signal);
+  return disappearanceReceipt === undefined || disappearanceReceipt === null
+    ? outcome
+    : { kind: 'containment-disappeared', disappearanceReceipt };
 }
 
 /**
@@ -541,7 +580,7 @@ export interface ProviderProxySetInheritance {
     capsule: HandoffCapsule,
     capsulePath: string,
     signal: AbortSignal,
-  ): Promise<DurableProviderProxyOperationAuthority>;
+  ): Promise<ProviderProxySetRedemptionOutcome>;
   proveContainmentAbsent(identity: ProviderProxySetIdentity, db: Database, signal: AbortSignal): Promise<string | null>;
 }
 
@@ -604,8 +643,18 @@ export function createProviderProxySetInheritance(
           } else {
             // A per-address deadline bounds each redemption without letting one stalled carrier monopolize
             // startup reconciliation.
-            const bounded = AbortSignal.any([signal, AbortSignal.timeout(INHERITANCE_REDEMPTION_DEADLINE_MS)]);
-            outcome = await attemptProviderProxySetInheritance(locator, db, inheritanceDeps, bounded);
+            const deadline = AbortSignal.timeout(INHERITANCE_REDEMPTION_DEADLINE_MS);
+            const bounded = AbortSignal.any([signal, deadline]);
+            try {
+              outcome = await attemptProviderProxySetInheritance(locator, db, inheritanceDeps, bounded);
+            } catch (error: unknown) {
+              if (signal.aborted) throw signal.reason;
+              if (!deadline.aborted) throw error;
+              outcome = {
+                kind: 'temporarily-unavailable',
+                incident: { kind: 'recovery-deadline', timeoutMs: INHERITANCE_REDEMPTION_DEADLINE_MS },
+              };
+            }
           }
           return outcome;
         } finally {
@@ -620,13 +669,29 @@ export function createProviderProxySetInheritance(
       if (inheritanceDeps === null) {
         throw new Error('could not read this coordinator process’s own start time');
       }
-      return redeemCapsule(
-        capsulePath,
-        capsule,
-        null,
-        inheritanceDeps,
-        AbortSignal.any([signal, AbortSignal.timeout(INHERITANCE_REDEMPTION_DEADLINE_MS)]),
-      );
+      const deadline = AbortSignal.timeout(INHERITANCE_REDEMPTION_DEADLINE_MS);
+      try {
+        const set = await redeemCapsule(
+          capsulePath,
+          capsule,
+          null,
+          inheritanceDeps,
+          AbortSignal.any([signal, deadline]),
+        );
+        return { kind: 'redeemed', set };
+      } catch (error: unknown) {
+        if (signal.aborted) throw signal.reason;
+        if (deadline.aborted) {
+          return {
+            kind: 'temporarily-unavailable',
+            incident: { kind: 'recovery-deadline', timeoutMs: INHERITANCE_REDEMPTION_DEADLINE_MS },
+          };
+        }
+        if (error instanceof ProviderProxyRoleControlUnavailableError) {
+          return { kind: 'temporarily-unavailable', incident: error.incident };
+        }
+        throw error;
+      }
     },
     proveContainmentAbsent: (identity, db, signal) =>
       proveProviderProxySetContainmentAbsent(identity, db, options.runtime, signal),

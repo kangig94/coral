@@ -164,7 +164,7 @@ async function connectRawProviderEventControlClient(
   const listeners = new Set<(error: ControlClientError) => void>();
   const latchFault = (): void => {
     if (latchedFault !== null) return;
-    latchedFault = new ControlClientError('control_client_closed', 'The raw test control channel closed.');
+    latchedFault = new ControlClientError('control_client_closed', 'The raw test control channel closed.', 'closed');
     resolveFault(latchedFault);
     for (const listener of listeners) listener(latchedFault);
     for (const waiter of pending.values()) waiter.reject(latchedFault);

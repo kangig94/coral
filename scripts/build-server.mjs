@@ -2,7 +2,7 @@ import * as esbuild from 'esbuild';
 import { execFileSync } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
 import { chmodSync, copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
-import { join } from 'path';
+import { isAbsolute, join, posix, relative, resolve, sep } from 'path';
 
 import {
   createProductionServerEsbuildOptions,
@@ -103,11 +103,12 @@ sharedOpts = createProductionServerEsbuildOptions({
   flavor,
   storeFormatFingerprint,
 });
-await esbuild.build({
+const backendBuild = await esbuild.build({
   ...sharedOpts,
   entryPoints: ['src/coordinator/bootstrap.ts'],
   outfile: 'clients/build/coral-backend.cjs',
   define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
+  metafile: true,
 });
 
 const backendBundle = readFileSync('clients/build/coral-backend.cjs');
@@ -122,18 +123,20 @@ if (backendBundle.includes(Buffer.from(JSON.stringify(legacyInjectMonolith)))) {
 }
 console.log('Built clients/build/coral-backend.cjs');
 
-await esbuild.build({
+const cliBuild = await esbuild.build({
   ...sharedOpts,
   entryPoints: ['src/cli/bootstrap.ts'],
   outfile: 'clients/build/coral-cli.cjs',
   banner: { js: '#!/usr/bin/env node\n' + sharedOpts.banner.js },
+  metafile: true,
 });
 console.log('Built clients/build/coral-cli.cjs');
 
-await esbuild.build({
+const claudeAppserverBuild = await esbuild.build({
   ...sharedOpts,
   entryPoints: ['src/providers/claude/appserver/server.ts'],
   outfile: 'clients/build/coral-claude-appserver.cjs',
+  metafile: true,
 });
 console.log('Built clients/build/coral-claude-appserver.cjs');
 
@@ -163,6 +166,76 @@ renameSync(manifestTmp, manifestPath);
 execFileSync(process.execPath, ['scripts/verify-kiwi-runtime-build-contract.mjs', 'clients/build'], {
   stdio: 'inherit',
 });
+
+const repositoryRoot = process.cwd();
+const requiredReceiptInputs = [
+  'package.json',
+  'scripts/build-server.mjs',
+  'scripts/server-esbuild-options.mjs',
+  'tsconfig.json',
+];
+
+function canonicalReceiptInput(input) {
+  const repositoryRelative = isAbsolute(input) ? relative(repositoryRoot, input) : input;
+  const canonical = repositoryRelative.split(sep).join('/').replaceAll('\\', '/');
+  if (
+    canonical.length === 0 ||
+    posix.isAbsolute(canonical) ||
+    posix.normalize(canonical) !== canonical ||
+    canonical.split('/').includes('..') ||
+    resolve(repositoryRoot, canonical) === repositoryRoot ||
+    !resolve(repositoryRoot, canonical).startsWith(`${repositoryRoot}${sep}`)
+  ) {
+    throw new Error(`Build input is not a canonical repository-relative path: ${input}`);
+  }
+  return canonical;
+}
+
+function framedSourceSha256(inputs) {
+  const digest = createHash('sha256');
+  for (const input of inputs) {
+    const pathBytes = Buffer.from(input, 'utf8');
+    const content = readFileSync(resolve(repositoryRoot, input));
+    const pathLength = Buffer.alloc(4);
+    pathLength.writeUInt32BE(pathBytes.length);
+    const contentLength = Buffer.alloc(8);
+    contentLength.writeBigUInt64BE(BigInt(content.length));
+    digest.update(pathLength).update(pathBytes).update(contentLength).update(content);
+  }
+  return digest.digest('hex');
+}
+
+const receiptInputs = [
+  ...new Set([
+    ...Object.keys(backendBuild.metafile.inputs),
+    ...Object.keys(cliBuild.metafile.inputs),
+    ...Object.keys(claudeAppserverBuild.metafile.inputs),
+    ...requiredReceiptInputs,
+  ].map(canonicalReceiptInput)),
+].sort();
+const receiptOutputs = {
+  backend: { path: 'clients/build/coral-backend.cjs' },
+  cli: { path: 'clients/build/coral-cli.cjs' },
+  claudeAppserver: { path: 'clients/build/coral-claude-appserver.cjs' },
+  manifest: { path: 'clients/build/manifest.json' },
+};
+for (const output of Object.values(receiptOutputs)) {
+  output.sha256 = createHash('sha256').update(readFileSync(output.path)).digest('hex');
+}
+const buildReceiptPath = 'clients/build/build-receipt.json';
+const buildReceiptTmp = `${buildReceiptPath}.tmp`;
+writeFileSync(
+  buildReceiptTmp,
+  JSON.stringify({
+    schemaVersion: 1,
+    algorithm: 'sha256',
+    flavor,
+    sourceSha256: framedSourceSha256(receiptInputs),
+    inputs: receiptInputs,
+    outputs: receiptOutputs,
+  }) + '\n',
+);
+renameSync(buildReceiptTmp, buildReceiptPath);
 
 if (release) {
   // The shipped bundle (clients/bridge/) and the staging dir (clients/build/)

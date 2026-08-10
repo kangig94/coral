@@ -2,6 +2,11 @@ import type { TimePort, TimerHandle } from '../../infra/port-types.js';
 import type { OperationIdentity } from '../../provider-proxy/protocol.js';
 import type { HandoffCapsule, HandoffCapsuleV1, HandoffCapsuleV2 } from '../../provider-proxy/handoff-capsule.js';
 import type { DurableProviderProxyOperationAuthority } from '../live/provider-proxy/operation-route.js';
+import type { ProviderHandoffCapsuleRetirementOutcome } from './provider-proxy-capsule-discovery.js';
+import {
+  providerProxySetAvailabilityReason,
+  type ProviderProxySetRedemptionOutcome,
+} from './provider-proxy-set-inheritance.js';
 import type {
   ContainmentDisappearanceAcceptance,
   ProviderContainmentDisappearanceConsumer,
@@ -128,13 +133,7 @@ export type DisappearanceDeliveryAttemptOutcome =
       reason: string;
     }>;
 
-export type CapsuleRetirementAttemptOutcome =
-  | Readonly<{ kind: 'retired' }>
-  | Readonly<{
-      kind: 'operational-failure';
-      code: 'capsule_retirement_unavailable';
-      reason: string;
-    }>;
+export type CapsuleRetirementAttemptOutcome = ProviderHandoffCapsuleRetirementOutcome;
 
 export type ContainmentAbsenceOperationalIncident = Readonly<{
   stage: 'disappearance-delivery' | 'capsule-retirement';
@@ -158,18 +157,20 @@ export type ContainmentAbsenceAcceptance = Readonly<{
 }>;
 
 export class ProviderProxySetLifecycleFatalError extends Error {
-  readonly stage: 'disappearance-delivery' | 'capsule-retirement';
+  readonly stage: 'set-inheritance' | 'disappearance-delivery' | 'capsule-retirement' | 'capsule-recovery';
   readonly operation?: OperationIdentity;
+  readonly setIdentity?: ProviderProxySetIdentity;
 
   constructor(
     stage: ProviderProxySetLifecycleFatalError['stage'],
     message: string,
-    options?: ErrorOptions & { operation?: OperationIdentity },
+    options?: ErrorOptions & { operation?: OperationIdentity; setIdentity?: ProviderProxySetIdentity },
   ) {
     super(message, options);
     this.name = 'ProviderProxySetLifecycleFatalError';
     this.stage = stage;
     if (options?.operation !== undefined) this.operation = options.operation;
+    if (options?.setIdentity !== undefined) this.setIdentity = options.setIdentity;
     Object.setPrototypeOf(this, ProviderProxySetLifecycleFatalError.prototype);
   }
 }
@@ -206,7 +207,7 @@ export type ProviderProxySetLifecycleDeps = Readonly<{
     capsule: HandoffCapsule,
     capsulePath: string,
     signal: AbortSignal,
-  ) => Promise<DurableProviderProxyOperationAuthority>;
+  ) => Promise<ProviderProxySetRedemptionOutcome>;
   onSlotReleased?: (routeKey: string) => void;
 }>;
 
@@ -621,58 +622,79 @@ export class ProviderProxySetLifecycle {
     const token = slot.attemptToken;
     const abort = new AbortController();
     slot.attemptAbort = abort;
-    let winnerChosen = false;
-
-    const chooseWinner = (transition: () => void): void => {
-      if (winnerChosen || this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
-      winnerChosen = true;
-      abort.abort();
-      slot.attemptAbort = null;
-      transition();
-    };
-
-    const redemption = (async (): Promise<void> => {
+    const redemption = (async (): Promise<ProviderProxySetRedemptionOutcome> => {
       if (this.#deps.redeemCapsule === undefined) throw new Error('capsule redemption is not configured');
-      const authority = await this.#deps.redeemCapsule(slot.capsuleBinding, slot.capsulePath, abort.signal);
-      if (!this.#capsuleMatchesIdentity(slot.capsuleBinding, authority.setIdentity)) {
-        throw new Error('provider_proxy_capsule_redemption_identity_mismatch');
-      }
-      chooseWinner(() => {
-        this.#slots.delete(slot.key);
-        this.#identityIndex.delete(slot.identity);
-        this.#establish(authority, null, slot.capsulePath, 'contain-unclaimed-discovery');
-      });
+      return this.#deps.redeemCapsule(slot.capsuleBinding, slot.capsulePath, abort.signal);
     })();
 
-    const absenceProof = (async (): Promise<void> => {
-      const receipt = await this.#deps.proveContainmentAbsent(slot.identity, abort.signal);
-      if (receipt !== null) chooseWinner(() => void this.containmentAbsent(slot.identity, receipt));
-    })();
+    const absenceProof = this.#deps.proveContainmentAbsent(slot.identity, abort.signal);
 
     void Promise.allSettled([redemption, absenceProof]).then((results) => {
-      if (winnerChosen || this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
+      if (this.#slots.get(slot.key) !== slot || slot.attemptToken !== token) return;
+      abort.abort();
       slot.attemptAbort = null;
-      const failures = results.flatMap((result) =>
-        result.status === 'rejected'
-          ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
-          : [],
-      );
-      if (failures.length > 0) {
-        this.#deps.onError?.(`Provider handoff capsule exact recovery failed: ${failures.join('; ')}`);
+      const [redemptionResult, absenceResult] = results;
+      if (redemptionResult.status === 'rejected' || absenceResult.status === 'rejected') {
+        const causes = [redemptionResult, absenceResult].flatMap((result) =>
+          result.status === 'rejected' ? [result.reason] : [],
+        );
+        this.#failExactCapsuleRecovery(slot, new AggregateError(causes, 'Exact capsule recovery failed.'));
+        return;
       }
+      const redemptionOutcome = redemptionResult.value;
+      const disappearanceReceipt = absenceResult.value;
+      if (redemptionOutcome.kind === 'redeemed') {
+        if (!this.#capsuleMatchesIdentity(slot.capsuleBinding, redemptionOutcome.set.setIdentity)) {
+          this.#failExactCapsuleRecovery(slot, new Error('provider_proxy_capsule_redemption_identity_mismatch'));
+          return;
+        }
+        if (disappearanceReceipt !== null) {
+          this.#failExactCapsuleRecovery(slot, new Error('provider_proxy_capsule_recovery_evidence_conflict'));
+          return;
+        }
+        this.#slots.delete(slot.key);
+        this.#identityIndex.delete(slot.identity);
+        this.#establish(redemptionOutcome.set, null, slot.capsulePath, 'contain-unclaimed-discovery');
+        return;
+      }
+      if (disappearanceReceipt !== null) {
+        void this.containmentAbsent(slot.identity, disappearanceReceipt);
+        return;
+      }
+      this.#deps.onError?.(
+        `Provider handoff capsule exact recovery is temporarily unavailable: ${providerProxySetAvailabilityReason(redemptionOutcome.incident)}`,
+      );
       this.#scheduleCapsuleRetry(slot, () => this.#recoverExactCapsule(slot));
     });
+  }
+
+  #failExactCapsuleRecovery(slot: Extract<ProviderProxySetSlot, { kind: 'capsule-recovering' }>, cause: unknown): void {
+    if (this.#slots.get(slot.key) !== slot) return;
+    const error = new ProviderProxySetLifecycleFatalError(
+      'capsule-recovery',
+      'Provider handoff capsule exact recovery encountered fatal evidence.',
+      { cause, setIdentity: slot.identity },
+    );
+    this.#deps.onFatal(error);
   }
 
   async #redeemOpaqueCapsule(slot: Extract<ProviderProxySetSlot, { kind: 'capsule-opaque' }>): Promise<void> {
     if (this.#slots.get(slot.slotId) !== slot) return;
     try {
       if (this.#deps.redeemCapsule === undefined) throw new Error('capsule redemption is not configured');
-      const authority = await this.#deps.redeemCapsule(
+      const outcome = await this.#deps.redeemCapsule(
         slot.capsuleBinding,
         slot.capsulePath,
         new AbortController().signal,
       );
+      if (outcome.kind === 'temporarily-unavailable') {
+        this.#deps.onError?.(
+          `Provider handoff capsule redemption is temporarily unavailable: ${providerProxySetAvailabilityReason(outcome.incident)}`,
+        );
+        this.#scheduleCapsuleRetry(slot, () => void this.#redeemOpaqueCapsule(slot));
+        return;
+      }
+      const authority = outcome.set;
       if (!this.#capsuleMatchesIdentity(slot.capsuleBinding, authority.setIdentity)) {
         throw new Error('provider_proxy_capsule_redemption_identity_mismatch');
       }
@@ -887,7 +909,7 @@ export class ProviderProxySetLifecycle {
         new ProviderProxySetLifecycleFatalError(
           'disappearance-delivery',
           `Provider containment disappearance delivery failed: ${error instanceof Error ? error.message : String(error)}`,
-          { cause: error, operation },
+          { cause: error, operation, setIdentity: slot.identity },
         ),
       );
     }
@@ -975,7 +997,7 @@ export class ProviderProxySetLifecycle {
     try {
       const outcome = await this.#deps.retireCapsule(slot.capsulePath);
       if (this.#slots.get(slot.key) !== slot) return;
-      if (outcome.kind === 'operational-failure') {
+      if (outcome.kind === 'temporarily-unavailable') {
         this.#recordRetirementOperationalFailure(slot, outcome);
         return;
       }
@@ -990,7 +1012,7 @@ export class ProviderProxySetLifecycle {
         new ProviderProxySetLifecycleFatalError(
           'capsule-retirement',
           `Provider handoff capsule retirement failed: ${error instanceof Error ? error.message : String(error)}`,
-          { cause: error },
+          { cause: error, setIdentity: slot.identity },
         ),
       );
     }
@@ -998,7 +1020,7 @@ export class ProviderProxySetLifecycle {
 
   #recordRetirementOperationalFailure(
     slot: AbsenceDeliveryPendingSlot,
-    outcome: Extract<CapsuleRetirementAttemptOutcome, { kind: 'operational-failure' }>,
+    outcome: Extract<CapsuleRetirementAttemptOutcome, { kind: 'temporarily-unavailable' }>,
   ): void {
     const nextAttemptAtMs = this.#deps.time.now() + 1_000;
     slot.retirementState = 'retry-owned';
@@ -1011,8 +1033,8 @@ export class ProviderProxySetLifecycle {
     slot.retirementTimer.unref?.();
     this.#finishInitialDisposition(slot, {
       stage: 'capsule-retirement',
-      code: outcome.code,
-      reason: outcome.reason,
+      code: 'capsule_retirement_unavailable',
+      reason: outcome.incident.kind,
       nextAttemptAtMs,
     });
   }

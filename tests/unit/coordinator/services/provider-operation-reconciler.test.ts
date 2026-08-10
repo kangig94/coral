@@ -20,6 +20,8 @@ import {
   compareAndSwapProviderOperation,
   insertProviderOperation,
   readProviderOperation,
+  readProviderOperationsDue,
+  subscribeProviderOperationMutations,
 } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
@@ -248,6 +250,30 @@ function deferredValue<T>(): Readonly<{ promise: Promise<T>; resolve(value: T): 
     resolve = accept;
   });
   return { promise, resolve };
+}
+
+function operationUuid(value: number): string {
+  return `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
+}
+
+function legacyDueKey(record: ProviderOperationRecord): string {
+  const fixed = (value: number): string => String(value).padStart(String(Number.MAX_SAFE_INTEGER).length, '0');
+  return (
+    `provider_operation_saga.v1:due:${fixed(record.retryNotBeforeMs)}:` +
+    `${record.operation.jobId}:${record.operation.operationId}:${record.operation.proxyInstanceId}:` +
+    `${record.operation.buildSetId}:${fixed(record.revision)}`
+  );
+}
+
+function canonicalOperationKey(record: ProviderOperationRecord): string {
+  return (
+    `provider_operation_saga.v1:record:${record.operation.jobId}:${record.operation.operationId}:` +
+    `${record.operation.proxyInstanceId}:${record.operation.buildSetId}`
+  );
+}
+
+async function nextEventLoopTurn(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 function providerRecoveryAccepted(jobId: string): ProviderOperationRecoveryAcceptance {
@@ -741,6 +767,140 @@ describe('ProviderOperationReconciler publication', () => {
       expect(harness.registry.attach).toHaveBeenCalledOnce();
     });
     expect(readProviderOperation(harness.db, recovered.operation)?.phase).toBe('executing');
+  });
+
+  it('removes successful executing reattachment from durable due work', async () => {
+    const attachmentCalls = new Map<string, number>();
+    const harness = createHarness({
+      attachOperation: async (operation, committedThroughProviderSeq) => {
+        attachmentCalls.set(operation.operationId, (attachmentCalls.get(operation.operationId) ?? 0) + 1);
+        return { state: 'attached', replayFromProviderSeq: committedThroughProviderSeq + 1 };
+      },
+    });
+    const retryOwned = {
+      ...providerOperationRecord('executing', { retryCount: 1, retryNotBeforeMs: 0 }),
+      lastError: { observedAtMs: 1, code: 'attach_failed', message: 'retry attachment' },
+    } as Extract<ProviderOperationRecord, { phase: 'executing' }>;
+    const legacyHealthy = providerOperationRecord('executing', {
+      operation: { ...retryOwned.operation, operationId: operationUuid(20) },
+    });
+    insertProviderOperation(harness.db, retryOwned);
+    insertProviderOperation(harness.db, legacyHealthy);
+    harness.db
+      .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+      .run(legacyDueKey(legacyHealthy), canonicalOperationKey(legacyHealthy));
+
+    for (let poll = 0; poll < 2; poll += 1) {
+      for (const due of readProviderOperationsDue(harness.db, 100, 32)) {
+        await harness.reconciler.reconcile(due, harness.authority);
+      }
+    }
+
+    expect({
+      attachmentCalls: [
+        attachmentCalls.get(retryOwned.operation.operationId),
+        attachmentCalls.get(legacyHealthy.operation.operationId),
+      ],
+      retryOwnership: readProviderOperation(harness.db, retryOwned.operation),
+      dueRows: readProviderOperationsDue(harness.db, 100, 32),
+    }).toMatchObject({
+      attachmentCalls: [1, 1],
+      retryOwnership: { retryCount: 0, lastError: null },
+      dueRows: [],
+    });
+  });
+
+  it('drains a full retry-owned page when the pump advances every watermark before attach returns', async () => {
+    const journal = { db: null as ReturnType<typeof createHarness>['db'] | null };
+    const attachmentCalls = new Map<string, number>();
+    const prepareTarget = vi.fn(async () => ({
+      state: 'pending-activation' as const,
+      reservation: asReservation('00000000-0000-4000-8000-000000000007'),
+      leaseExpiresInMs: 15_000,
+      providerRoot: { pid: 104, processStartedAtSeconds: 1_003 },
+      jointContainmentReceipt: asJointContainmentReceipt('containment-receipt'),
+    }));
+    const harness = createHarness({
+      prepareOperation: prepareTarget,
+      attachOperation: async (operation, committedThroughProviderSeq) => {
+        attachmentCalls.set(operation.operationId, (attachmentCalls.get(operation.operationId) ?? 0) + 1);
+        if (journal.db === null) throw new Error('journal fixture is not initialized');
+        const current = readProviderOperation(journal.db, operation);
+        if (current?.phase !== 'executing') throw new Error('expected executing attachment row');
+        const advanced = { ...current, revision: current.revision + 1, committedThroughProviderSeq: 1 };
+        expect(compareAndSwapProviderOperation(journal.db, current, advanced).kind).toBe('updated');
+        return { state: 'attached', replayFromProviderSeq: committedThroughProviderSeq + 1 };
+      },
+    });
+    journal.db = harness.db;
+    const base = providerOperationRecord('executing');
+    const predecessors = Array.from({ length: 32 }, (_, index) => ({
+      ...providerOperationRecord('executing', {
+        operation: { ...base.operation, operationId: operationUuid(100 + index) },
+        retryCount: 1,
+        retryNotBeforeMs: 0,
+      }),
+      lastError: { observedAtMs: 1, code: 'attach_failed', message: 'retry attachment' },
+    })) as readonly Extract<ProviderOperationRecord, { phase: 'executing' }>[];
+    const target = providerOperationRecord('prepare-pending', {
+      operation: { ...base.operation, operationId: operationUuid(999) },
+      retryNotBeforeMs: 1,
+    });
+    for (const record of predecessors) insertProviderOperation(harness.db, record);
+    insertProviderOperation(harness.db, target);
+
+    for (let scan = 0; scan < 4; scan += 1) {
+      harness.reconciler.wake();
+      await nextEventLoopTurn();
+    }
+
+    const predecessorAttachmentCalls = predecessors.reduce(
+      (total, record) => total + (attachmentCalls.get(record.operation.operationId) ?? 0),
+      0,
+    );
+    expect({
+      predecessorAttachmentCalls,
+      targetPrepareCalls: prepareTarget.mock.calls.length,
+      earlierDueRows: readProviderOperationsDue(harness.db, 100, 32).filter((record) =>
+        predecessors.some((predecessor) => predecessor.operation.operationId === record.operation.operationId),
+      ).length,
+    }).toEqual({ predecessorAttachmentCalls: 32, targetPrepareCalls: 1, earlierDueRows: 0 });
+  });
+
+  it('does not convert attachment completion failures into provider retry ownership', async () => {
+    const sentinel = new Error('completion observer sentinel');
+    const harness = createHarness();
+    const recovered = {
+      ...providerOperationRecord('executing', { retryCount: 1, retryNotBeforeMs: 0 }),
+      lastError: { observedAtMs: 1, code: 'attach_failed', message: 'retry attachment' },
+    } as Extract<ProviderOperationRecord, { phase: 'executing' }>;
+    insertProviderOperation(harness.db, recovered);
+    let throwOnce = true;
+    const unsubscribe = subscribeProviderOperationMutations(harness.db, (mutation) => {
+      if (throwOnce && mutation.kind === 'upserted' && mutation.record.lastError === null) {
+        throwOnce = false;
+        throw sentinel;
+      }
+    });
+    let completionOutcome: 'rejected-sentinel' | 'fulfilled' = 'fulfilled';
+    try {
+      await harness.reconciler.reconcile(recovered, harness.authority).catch((error: unknown) => {
+        if (error !== sentinel) throw error;
+        completionOutcome = 'rejected-sentinel';
+      });
+    } finally {
+      unsubscribe();
+    }
+
+    expect({
+      completionOutcome,
+      record: readProviderOperation(harness.db, recovered.operation),
+      dueRows: readProviderOperationsDue(harness.db, Number.MAX_SAFE_INTEGER, 1),
+    }).toMatchObject({
+      completionOutcome: 'rejected-sentinel',
+      record: { phase: 'executing', retryCount: 0, lastError: null },
+      dueRows: [],
+    });
   });
 
   it('fences a blocked executing attach and acknowledges disappearance only after terminalization', async () => {

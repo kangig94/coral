@@ -1206,7 +1206,7 @@ describe('createProviderProxySetInheritance', () => {
     mockedConnect.mockImplementation(async (socketPath: string) => {
       if (socketPath === loc.locator.guardian.controlEndpoint) return guardian.client;
       if (socketPath === loc.locator.reaper.controlEndpoint) {
-        reaper.fault(new ControlClientError('control_client_closed', 'The reaper control channel closed.'));
+        reaper.fault(new ControlClientError('control_client_closed', 'The reaper control channel closed.', 'closed'));
         await reaper.client.faulted;
         return reaper.client;
       }

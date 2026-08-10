@@ -1,5 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs';
-import { createServer, type Server as NetServer, type Socket } from 'node:net';
+import { createServer, Socket, type Server as NetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -131,6 +131,8 @@ describe('control client', () => {
 
     await expect(connecting).rejects.toMatchObject({
       code: 'control_client_connect_failed',
+      origin: 'timeout',
+      remoteFailure: null,
       protocolCode: undefined,
       message: expect.stringContaining('exceeded 25ms'),
     });
@@ -146,6 +148,7 @@ describe('control client', () => {
 
     await expect(connectControlClient(socketPath, timer, 5_000)).rejects.toMatchObject({
       code: 'control_client_connect_failed',
+      origin: 'closed',
       message: expect.stringContaining('Control connect failed:'),
     });
   });
@@ -159,7 +162,12 @@ describe('control client', () => {
     const call = client.call('role.work.v1', {}, 5_000);
     serverSocket.destroy();
 
-    await expect(call).rejects.toMatchObject({ code: 'control_client_closed', protocolCode: undefined });
+    await expect(call).rejects.toMatchObject({
+      code: 'control_client_closed',
+      origin: 'closed',
+      remoteFailure: null,
+      protocolCode: undefined,
+    });
   });
 
   it('notifies current fault listeners inline before compatibility promise reactions', async () => {
@@ -208,7 +216,27 @@ describe('control client', () => {
 
     await expect(call).rejects.toMatchObject({
       code: 'control_call_failed',
+      origin: 'timeout',
+      remoteFailure: null,
       message: expect.stringContaining('role.slow.v1 exceeded its 30ms budget.'),
+    });
+  });
+
+  it('classifies a synchronous socket write failure by its write origin', async () => {
+    const { socketPath, sockets } = await startTestServer();
+    const client = await connectControlClient(socketPath, manualTimer(), 5_000);
+    cleanups.push(() => client.close());
+    await waitForAccept(sockets);
+    const write = vi.spyOn(Socket.prototype, 'write').mockImplementationOnce(() => {
+      throw new Error('write sentinel');
+    });
+    cleanups.push(() => write.mockRestore());
+
+    await expect(client.call('role.write.v1', {}, 5_000)).rejects.toMatchObject({
+      code: 'control_call_failed',
+      origin: 'write',
+      remoteFailure: null,
+      message: 'role.write.v1 could not be sent.',
     });
   });
 
@@ -222,7 +250,11 @@ describe('control client', () => {
     // No newline, so the client's reader must bound the accumulating buffer rather than wait for one.
     serverSocket.write('x'.repeat(MAX_PROXY_CONTROL_FRAME_BYTES + 1));
 
-    await expect(call).rejects.toMatchObject({ code: 'control_client_closed' });
+    await expect(call).rejects.toMatchObject({
+      code: 'control_call_failed',
+      origin: 'remote-response',
+      remoteFailure: { kind: 'invalid-frame' },
+    });
   });
 
   it('refuses an inbound request when no provider-event handler is installed, without dropping the connection', async () => {
@@ -386,6 +418,13 @@ describe('control client', () => {
 
     expect(observed).toBeInstanceOf(ControlClientError);
     expect((observed as ControlClientError).code).toBe('control_call_failed');
+    expect((observed as ControlClientError).origin).toBe('remote-response');
+    expect((observed as ControlClientError).remoteFailure).toEqual({
+      kind: 'json-rpc-error',
+      jsonRpcCode: -32_600,
+      protocolCode: 'invalid_state',
+      admissionReason: 'control-active',
+    });
     expect((observed as ControlClientError).protocolCode).toBe('invalid_state');
   });
 
@@ -407,6 +446,12 @@ describe('control client', () => {
       observed = error;
     }
 
+    expect((observed as ControlClientError).remoteFailure).toEqual({
+      kind: 'json-rpc-error',
+      jsonRpcCode: -32_600,
+      protocolCode: null,
+      admissionReason: null,
+    });
     expect((observed as ControlClientError).protocolCode).toBeUndefined();
   });
 });

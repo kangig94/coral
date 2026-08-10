@@ -112,7 +112,7 @@ async function runSuccessorInitialHeartbeatSchedule(configuration: ProviderProxy
       heartbeatMethod: 'guardian.heartbeat.v1',
       methods: new Map<string, ControlMethod>([
         [
-          'predecessor.open.v1',
+          'guardian.open.v1',
           {
             authority: 'establishes-control',
             handle: (params) => {
@@ -122,7 +122,7 @@ async function runSuccessorInitialHeartbeatSchedule(configuration: ProviderProxy
           },
         ],
         [
-          'successor.open.v1',
+          'guardian.handoff-redeem.v1',
           {
             authority: 'establishes-control',
             handle: (params) => {
@@ -155,9 +155,9 @@ async function runSuccessorInitialHeartbeatSchedule(configuration: ProviderProxy
     for (const client of clients) client.close();
   });
   const predecessor = await establishRoleControl(clients, controlTimer, retry, {
-    role: 'guardian predecessor',
+    role: 'guardian',
     endpoint: socketPath,
-    openMethod: 'predecessor.open.v1',
+    openMethod: 'guardian.open.v1',
     openParams: { credential: 'predecessor' },
     openParamsSchema: predecessorOpenParamsSchema,
     openResultSchema: evidenceOpenResultSchema,
@@ -198,9 +198,9 @@ async function runSuccessorInitialHeartbeatSchedule(configuration: ProviderProxy
   });
 
   const successorPromise = establishRoleControl(clients, controlTimer, retry, {
-    role: 'guardian successor',
+    role: 'guardian',
     endpoint: socketPath,
-    openMethod: 'successor.open.v1',
+    openMethod: 'guardian.handoff-redeem.v1',
     openParams: { credential: 'successor' },
     openParamsSchema: successorOpenParamsSchema,
     openResultSchema: evidenceOpenResultSchema,

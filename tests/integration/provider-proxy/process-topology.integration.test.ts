@@ -717,7 +717,7 @@ describe('provider-proxy process topology: guardian role main', () => {
       evidenceAt: bootstrapTimingHarness.guardianEvidenceOffsetMs?.(),
       state: bootstrapTimingHarness.guardianState?.(),
     }).toEqual({
-      control: expect.stringContaining('teardown-latched'),
+      control: expect.stringContaining('json-rpc-error:-32600:invalid_request:none'),
       evidenceAt: 0,
       state: 'teardown-latched',
     });

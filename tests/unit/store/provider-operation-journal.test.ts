@@ -1,6 +1,7 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import {
+  completeExecutingProviderOperationAttachment,
   compareAndSwapProviderOperation,
   deleteProviderOperation,
   insertProviderOperation,
@@ -122,7 +123,6 @@ describe('provider operation journal', () => {
       insertProviderOperation(db, executing);
       expect(sagaRows(db).map(({ key }) => key)).toEqual([
         expect.stringMatching(/^provider_operation_saga\.v1:due:/u),
-        expect.stringMatching(/^provider_operation_saga\.v1:due:/u),
         expect.stringMatching(/^provider_operation_saga\.v1:record:/u),
         expect.stringMatching(/^provider_operation_saga\.v1:record:/u),
       ]);
@@ -237,35 +237,16 @@ describe('provider operation journal', () => {
     }
   });
 
-  it('uses a bounded key range that cannot hide due work behind a LIMIT-ed record scan', () => {
+  it('does not let healthy executing rows occupy a bounded due page', () => {
     const db = createDb();
     try {
-      const scheduled = Array.from({ length: 32 }, (_, index) =>
-        providerOperationRecord('guardian-activation-pending', {
-          job: index + 1,
-          retryNotBeforeMs: 101,
-        }),
-      );
-      const due = providerOperationRecord('prepare-pending', { job: 99, retryNotBeforeMs: 100 });
-      const localRecoveryDue = providerOperationRecord('local-recovery-pending', {
-        job: 97,
-        retryNotBeforeMs: 100,
-      });
-      const executing = providerOperationRecord('executing', { job: 98, retryNotBeforeMs: 0 });
-      for (const record of [...scheduled, due, localRecoveryDue, executing]) insertProviderOperation(db, record);
+      const healthy = providerOperationRecord('executing', { job: 1, retryNotBeforeMs: 0 });
+      const pending = providerOperationRecord('prepare-pending', { job: 2, retryNotBeforeMs: 100 });
+      insertProviderOperation(db, healthy);
+      insertProviderOperation(db, pending);
 
-      const naivelyLimited = db
-        .prepare<[string, string, number], Pick<{ value: string }, 'value'>>(
-          `SELECT value FROM meta
-           WHERE key >= ? AND key < ?
-           ORDER BY key
-           LIMIT ?`,
-        )
-        .all(RECORD_PREFIX, `${RECORD_PREFIX};`, 32)
-        .map(({ value }) => decodeProviderOperationRecord(value))
-        .filter((record) => record.phase !== 'executing' && record.retryNotBeforeMs <= 100);
-      expect(naivelyLimited).toEqual([]);
-      expect(readProviderOperationsDue(db, 100, 3)).toEqual([executing, localRecoveryDue, due]);
+      expect(readProviderOperationsDue(db, 100, 1)).toEqual([pending]);
+      expect(readProviderOperationsDue(db, 100, 1)).toEqual([pending]);
 
       const plan = db
         .prepare<[string, string, number], { detail: string }>(
@@ -277,6 +258,79 @@ describe('provider operation journal', () => {
         )
         .all(DUE_PREFIX, `${DUE_PREFIX}${String(100).padStart(16, '0')};`, 1);
       expect(plan.map(({ detail }) => detail).join('\n')).toMatch(/SEARCH meta USING INDEX .*\(key>\? AND key<\?\)/u);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('completes executing attachment against the fresh watermark while preserving it', () => {
+    const db = createDb();
+    try {
+      const initial = {
+        ...providerOperationRecord('executing', { retryNotBeforeMs: 100, retryCount: 1 }),
+        lastError: { observedAtMs: 90, code: 'attach_failed', message: 'retry attachment' },
+      } as Extract<ProviderOperationRecord, { phase: 'executing' }>;
+      insertProviderOperation(db, initial);
+      const watermarkAdvanced = { ...initial, revision: 1, committedThroughProviderSeq: 4 };
+      expect(compareAndSwapProviderOperation(db, initial, watermarkAdvanced).kind).toBe('updated');
+
+      expect(
+        completeExecutingProviderOperationAttachment(
+          db,
+          initial.operation,
+          {
+            retryCount: initial.retryCount,
+            retryNotBeforeMs: initial.retryNotBeforeMs,
+            lastError: initial.lastError,
+          },
+          120,
+        ),
+      ).toEqual({
+        kind: 'completed',
+        record: {
+          ...watermarkAdvanced,
+          revision: 2,
+          retryCount: 0,
+          retryNotBeforeMs: 120,
+          lastError: null,
+        },
+      });
+      expect(readProviderOperationsDue(db, 120, 1)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('does not clear a superseding executing retry generation', () => {
+    const db = createDb();
+    try {
+      const initial = {
+        ...providerOperationRecord('executing', { retryNotBeforeMs: 100, retryCount: 1 }),
+        lastError: { observedAtMs: 90, code: 'first_failure', message: 'first failure' },
+      } as Extract<ProviderOperationRecord, { phase: 'executing' }>;
+      insertProviderOperation(db, initial);
+      const superseding = {
+        ...initial,
+        revision: 1,
+        retryCount: 2,
+        retryNotBeforeMs: 200,
+        lastError: { observedAtMs: 110, code: 'second_failure', message: 'second failure' },
+      };
+      expect(compareAndSwapProviderOperation(db, initial, superseding).kind).toBe('updated');
+
+      expect(
+        completeExecutingProviderOperationAttachment(
+          db,
+          initial.operation,
+          {
+            retryCount: initial.retryCount,
+            retryNotBeforeMs: initial.retryNotBeforeMs,
+            lastError: initial.lastError,
+          },
+          120,
+        ),
+      ).toEqual({ kind: 'retry-superseded', current: superseding });
+      expect(readProviderOperationsDue(db, 200, 1)).toEqual([superseding]);
     } finally {
       db.close();
     }

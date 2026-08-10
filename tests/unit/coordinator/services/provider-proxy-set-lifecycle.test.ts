@@ -42,6 +42,10 @@ function deferred<T>(): Readonly<{ promise: Promise<T>; resolve(value: T): void 
   return { promise, resolve };
 }
 
+async function drainMicrotasks(): Promise<void> {
+  for (let index = 0; index < 10; index += 1) await Promise.resolve();
+}
+
 class ManualClock {
   nowMs = 0;
   readonly timers: Array<{ at: number; active: boolean; callback: () => void }> = [];
@@ -211,7 +215,7 @@ describe('ProviderProxySetLifecycle', () => {
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: new ManualClock(),
       proveContainmentAbsent: noContainmentProof,
-      redeemCapsule: async () => authority,
+      redeemCapsule: async () => ({ kind: 'redeemed', set: authority }),
       rewriteCapsule,
     });
     lifecycle.initializeClaimSlots();
@@ -237,7 +241,10 @@ describe('ProviderProxySetLifecycle', () => {
       time: new ManualClock(),
       proveContainmentAbsent,
       redeemCapsule: async () => {
-        throw new Error('redemption unavailable');
+        return {
+          kind: 'temporarily-unavailable',
+          incident: { kind: 'recovery-deadline', timeoutMs: 45_000 },
+        };
       },
       retireCapsule,
     });
@@ -250,6 +257,49 @@ describe('ProviderProxySetLifecycle', () => {
 
     expect(proveContainmentAbsent).toHaveBeenCalledOnce();
     expect(retireCapsule).toHaveBeenCalledWith('/capsules/unmatched-v2.handoff.json');
+  });
+
+  it('fails exact capsule recovery on redeemed identity corruption', async () => {
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const authority = fakeAuthority();
+    const corrupted = {
+      ...authority,
+      setIdentity: { ...authority.setIdentity, guardianPid: authority.setIdentity.guardianPid + 1 },
+    };
+    const fatals = vi.fn();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      redeemCapsule: async () => ({ kind: 'redeemed', set: corrupted }),
+      onFatal: fatals,
+    });
+    lifecycle.initializeClaimSlots();
+
+    lifecycle.installDiscoveredCapsules([
+      { path: '/capsules/corrupt-v2.handoff.json', capsule: capsuleV2For(authority) },
+    ]);
+    await drainMicrotasks();
+
+    expect({
+      fatalCalls: fatals.mock.calls.length,
+      fatal: fatals.mock.calls[0]?.[0],
+      snapshot: lifecycle.snapshot(),
+      activeTimers: clock.timers.filter((timer) => timer.active).length,
+    }).toMatchObject({
+      fatalCalls: 1,
+      fatal: {
+        name: 'ProviderProxySetLifecycleFatalError',
+        stage: 'capsule-recovery',
+        setIdentity: authority.setIdentity,
+      },
+      snapshot: { represented: 1, states: ['capsule-recovering'] },
+      activeTimers: 0,
+    });
   });
 
   it('fail-stops duplicate capsule addresses, grants, and claim-binding aliases during discovery', () => {
@@ -457,9 +507,8 @@ describe('ProviderProxySetLifecycle', () => {
     const retireCapsule = vi
       .fn(async (): Promise<CapsuleRetirementAttemptOutcome> => ({ kind: 'retired' }))
       .mockResolvedValueOnce({
-        kind: 'operational-failure',
-        code: 'capsule_retirement_unavailable',
-        reason: 'capsule still durable',
+        kind: 'temporarily-unavailable',
+        incident: { kind: 'capsule-directory-durability-unavailable' },
       });
     const authority = fakeAuthority({
       stopAndReap: async () => ({ disappearanceReceipt: 'exact-absence' }),
@@ -488,7 +537,7 @@ describe('ProviderProxySetLifecycle', () => {
         expect.objectContaining({
           stage: 'capsule-retirement',
           code: 'capsule_retirement_unavailable',
-          reason: 'capsule still durable',
+          reason: 'capsule-directory-durability-unavailable',
         }),
       ],
     });

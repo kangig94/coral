@@ -2,16 +2,71 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
 import { writeHandoffCapsuleFile, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
-import { discoverProviderHandoffCapsules } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
+import {
+  discoverProviderHandoffCapsules,
+  retireProviderHandoffCapsule,
+} from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
+
+function retirementStorage(unlinkSync: () => void, syncDirectoryDurableSync: () => boolean): StoragePort {
+  return { unlinkSync, syncDirectoryDurableSync } as unknown as StoragePort;
+}
 
 describe('provider proxy capsule discovery', () => {
+  it('derives retirement availability only from directory durability', () => {
+    const unlinkSync = vi.fn();
+    const syncDirectoryDurableSync = vi.fn(() => false);
+
+    expect(
+      retireProviderHandoffCapsule(
+        retirementStorage(unlinkSync, syncDirectoryDurableSync),
+        '/capsules/provider.handoff.json',
+      ),
+    ).toEqual({
+      kind: 'temporarily-unavailable',
+      incident: { kind: 'capsule-directory-durability-unavailable' },
+    });
+    expect(unlinkSync).toHaveBeenCalledOnce();
+    expect(syncDirectoryDurableSync).toHaveBeenCalledWith('/capsules');
+  });
+
+  it('fsyncs the capsule directory after an idempotent ENOENT retry', () => {
+    const unlinkSync = vi.fn(() => {
+      throw Object.assign(new Error('already absent'), { code: 'ENOENT' });
+    });
+    const syncDirectoryDurableSync = vi.fn(() => true);
+
+    expect(
+      retireProviderHandoffCapsule(
+        retirementStorage(unlinkSync, syncDirectoryDurableSync),
+        '/capsules/provider.handoff.json',
+      ),
+    ).toEqual({ kind: 'retired' });
+    expect(syncDirectoryDurableSync).toHaveBeenCalledWith('/capsules');
+  });
+
+  it('propagates an unknown unlink failure without inferring availability', () => {
+    const sentinel = new Error('unlink sentinel');
+    const syncDirectoryDurableSync = vi.fn(() => true);
+
+    expect(() =>
+      retireProviderHandoffCapsule(
+        retirementStorage(() => {
+          throw sentinel;
+        }, syncDirectoryDurableSync),
+        '/capsules/provider.handoff.json',
+      ),
+    ).toThrow(sentinel);
+    expect(syncDirectoryDurableSync).not.toHaveBeenCalled();
+  });
+
   it('discovers a canonical real-storage capsule and blocks matching fresh admission', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-provider-capsule-discovery-'));
     const runtime = createRealRuntime('prod', { baseDir });

@@ -45,7 +45,7 @@ describe('provider proxy authority fault latch', () => {
       }
     });
 
-    sources[role].fault(new ControlClientError('control_client_closed', `${role} channel closed`));
+    sources[role].fault(new ControlClientError('control_client_closed', `${role} channel closed`, 'closed'));
 
     expect(observed).toEqual({ role, code: 'control_client_closed' });
   });
@@ -60,9 +60,9 @@ describe('provider proxy authority fault latch', () => {
     latch.observeControlClient('proxy', sources.proxy.client);
     latch.observeControlClient('guardian', sources.guardian.client);
     latch.observeControlClient('reaper', sources.reaper.client);
-    const first = new ControlClientError('control_client_closed', 'guardian channel closed');
+    const first = new ControlClientError('control_client_closed', 'guardian channel closed', 'closed');
     sources.guardian.fault(first);
-    sources.proxy.fault(new ControlClientError('control_client_closed', 'proxy channel closed'));
+    sources.proxy.fault(new ControlClientError('control_client_closed', 'proxy channel closed', 'closed'));
     let observed: unknown = null;
 
     latch.onFault((fault) => {
@@ -74,7 +74,7 @@ describe('provider proxy authority fault latch', () => {
 
   it('observes a client fault that was stored before enrollment inline', () => {
     const source = faultSource();
-    const error = new ControlClientError('control_client_closed', 'reaper channel already closed');
+    const error = new ControlClientError('control_client_closed', 'reaper channel already closed', 'closed');
     source.fault(error);
     const latch = createProviderProxyAuthorityFaultLatch();
     let observed: unknown = null;

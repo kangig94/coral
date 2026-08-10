@@ -31,20 +31,52 @@ export interface ControlClientTimer {
 
 export type ControlClientErrorCode = 'control_client_connect_failed' | 'control_client_closed' | 'control_call_failed';
 
+export type ControlClientErrorOrigin = 'timeout' | 'write' | 'closed' | 'remote-response';
+
+export type ControlClientRemoteFailure =
+  | Readonly<{
+      kind: 'json-rpc-error';
+      jsonRpcCode: number;
+      protocolCode: ProxyControlProtocolErrorCode | null;
+      admissionReason: 'control-active' | 'invalid-state' | 'teardown-latched' | null;
+    }>
+  | Readonly<{ kind: 'invalid-frame' }>;
+
 export class ControlClientError extends Error {
   readonly code: ControlClientErrorCode;
-  /**
-   * The server's own closed-set code, when the failure came from a JSON-RPC error response. Absent for a
-   * connect failure, a per-call timeout, or a channel close — those never reach the wire's `error.data`, so
-   * there is no protocol code to carry.
-   */
+  readonly origin: ControlClientErrorOrigin;
+  readonly remoteFailure: ControlClientRemoteFailure | null;
+  /** Compatibility projection for operation-control policy while it migrates to `remoteFailure`. */
   readonly protocolCode?: ProxyControlProtocolErrorCode;
 
-  constructor(code: ControlClientErrorCode, message: string, protocolCode?: ProxyControlProtocolErrorCode) {
+  constructor(
+    code: ControlClientErrorCode,
+    message: string,
+    origin: Exclude<ControlClientErrorOrigin, 'remote-response'>,
+  );
+  constructor(
+    code: ControlClientErrorCode,
+    message: string,
+    origin: 'remote-response',
+    remoteFailure: ControlClientRemoteFailure,
+  );
+  constructor(
+    code: ControlClientErrorCode,
+    message: string,
+    origin: ControlClientErrorOrigin,
+    remoteFailure: ControlClientRemoteFailure | null = null,
+  ) {
     super(message);
+    if ((origin === 'remote-response') !== (remoteFailure !== null)) {
+      throw new Error('control_client_error_origin_mismatch');
+    }
     this.name = 'ControlClientError';
     this.code = code;
-    this.protocolCode = protocolCode;
+    this.origin = origin;
+    this.remoteFailure = remoteFailure;
+    if (remoteFailure?.kind === 'json-rpc-error' && remoteFailure.protocolCode !== null) {
+      this.protocolCode = remoteFailure.protocolCode;
+    }
     Object.setPrototypeOf(this, ControlClientError.prototype);
   }
 }
@@ -54,12 +86,18 @@ export class ControlClientError extends Error {
  * closed set actually recognizes. `data` arrives as `unknown` off the wire, so an unrecognized shape — or a
  * peer that is not this endpoint at all — must canonicalize to "no code" rather than be trusted as one.
  */
-function protocolCodeFrom(data: unknown): ProxyControlProtocolErrorCode | undefined {
-  if (typeof data !== 'object' || data === null) return undefined;
+function protocolCodeFrom(data: unknown): ProxyControlProtocolErrorCode | null {
+  if (typeof data !== 'object' || data === null) return null;
   const code = (data as { code?: unknown }).code;
   return typeof code === 'string' && (PROXY_CONTROL_PROTOCOL_ERROR_CODES as readonly string[]).includes(code)
     ? (code as ProxyControlProtocolErrorCode)
-    : undefined;
+    : null;
+}
+
+function admissionReasonFrom(data: unknown): 'control-active' | 'invalid-state' | 'teardown-latched' | null {
+  if (typeof data !== 'object' || data === null) return null;
+  const reason = (data as { reason?: unknown }).reason;
+  return reason === 'control-active' || reason === 'invalid-state' || reason === 'teardown-latched' ? reason : null;
 }
 
 export interface ControlClient {
@@ -95,13 +133,19 @@ export async function connectControlClient(
     const budget = timer.setTimeout(() => {
       pendingSocket.destroy();
       reject(
-        new ControlClientError('control_client_connect_failed', `Control connect exceeded ${connectTimeoutMs}ms.`),
+        new ControlClientError(
+          'control_client_connect_failed',
+          `Control connect exceeded ${connectTimeoutMs}ms.`,
+          'timeout',
+        ),
       );
     }, connectTimeoutMs);
     budget.unref?.();
     pendingSocket.once('error', (error: Error) => {
       timer.clearTimeout(budget);
-      reject(new ControlClientError('control_client_connect_failed', `Control connect failed: ${error.message}`));
+      reject(
+        new ControlClientError('control_client_connect_failed', `Control connect failed: ${error.message}`, 'closed'),
+      );
     });
     pendingSocket.once('connect', () => {
       timer.clearTimeout(budget);
@@ -131,6 +175,18 @@ export async function connectControlClient(
       timer.clearTimeout(waiter.budget);
       waiter.reject(error);
     }
+  };
+
+  const faultInvalidFrame = (): void => {
+    const error = new ControlClientError(
+      'control_call_failed',
+      'The control channel received an invalid frame.',
+      'remote-response',
+      { kind: 'invalid-frame' },
+    );
+    latchFault(error);
+    failAll(error);
+    socket.destroy();
   };
 
   // JSON-RPC's own reserved "invalid request"/"internal error" codes. `control-endpoint.ts` uses the same
@@ -195,39 +251,41 @@ export async function connectControlClient(
   // Frames are split on the newline byte and each complete frame is decoded once. Decoding a socket chunk
   // on its own would corrupt any multi-byte character straddling the boundary, and the damage would survive
   // JSON.parse and strict validation because it lands inside a JSON string.
-  const read = createFrameReader(
-    (frame) => {
-      let message;
-      try {
-        message = decodeProxyControlFrame(frame);
-      } catch {
-        socket.destroy();
-        return;
-      }
-      if ('method' in message) {
-        void serveInboundRequest(message);
-        return;
-      }
-      if (message.id === null) return;
-      const waiter = pending.get(Number(message.id));
-      if (waiter === undefined) return;
-      pending.delete(Number(message.id));
-      timer.clearTimeout(waiter.budget);
-      if ('error' in message) {
-        waiter.reject(
-          new ControlClientError('control_call_failed', message.error.message, protocolCodeFrom(message.error.data)),
-        );
-      } else {
-        waiter.resolve(message.result);
-      }
-    },
-    () => socket.destroy(),
-  );
+  const read = createFrameReader((frame) => {
+    let message;
+    try {
+      message = decodeProxyControlFrame(frame);
+    } catch {
+      faultInvalidFrame();
+      return;
+    }
+    if ('method' in message) {
+      void serveInboundRequest(message);
+      return;
+    }
+    if (message.id === null) return;
+    const waiter = pending.get(Number(message.id));
+    if (waiter === undefined) return;
+    pending.delete(Number(message.id));
+    timer.clearTimeout(waiter.budget);
+    if ('error' in message) {
+      waiter.reject(
+        new ControlClientError('control_call_failed', message.error.message, 'remote-response', {
+          kind: 'json-rpc-error',
+          jsonRpcCode: message.error.code,
+          protocolCode: protocolCodeFrom(message.error.data),
+          admissionReason: admissionReasonFrom(message.error.data),
+        }),
+      );
+    } else {
+      waiter.resolve(message.result);
+    }
+  }, faultInvalidFrame);
   socket.on('data', read);
   socket.on('error', () => socket.destroy());
   socket.on('close', () => {
     closed = true;
-    const error = new ControlClientError('control_client_closed', 'The control channel closed.');
+    const error = new ControlClientError('control_client_closed', 'The control channel closed.', 'closed');
     latchFault(error);
     failAll(error);
   });
@@ -245,14 +303,16 @@ export async function connectControlClient(
     },
     call(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
       if (closed) {
-        return Promise.reject(new ControlClientError('control_client_closed', 'The control channel closed.'));
+        return Promise.reject(new ControlClientError('control_client_closed', 'The control channel closed.', 'closed'));
       }
       const id = nextId;
       nextId += 1;
       return new Promise<unknown>((resolve, reject) => {
         const budget = timer.setTimeout(() => {
           pending.delete(id);
-          reject(new ControlClientError('control_call_failed', `${method} exceeded its ${timeoutMs}ms budget.`));
+          reject(
+            new ControlClientError('control_call_failed', `${method} exceeded its ${timeoutMs}ms budget.`, 'timeout'),
+          );
         }, timeoutMs);
         budget.unref?.();
         pending.set(id, { resolve, reject, budget });
@@ -264,7 +324,7 @@ export async function connectControlClient(
           reject(
             error instanceof ProxyControlProtocolError
               ? error
-              : new ControlClientError('control_call_failed', `${method} could not be sent.`),
+              : new ControlClientError('control_call_failed', `${method} could not be sent.`, 'write'),
           );
         }
       });

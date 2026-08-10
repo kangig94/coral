@@ -22,6 +22,7 @@ import {
   type ProviderOperationKey,
   type ProviderOperationState,
   type ProviderRootIdentity,
+  type ReplayEvent,
 } from './ledger.js';
 import { ReplayAdmissionError } from './replay-budget.js';
 import {
@@ -170,6 +171,18 @@ type ProviderEventAmbiguityDeadline = {
   timer: { unref?: () => void } | null;
   fault: ProviderEventControlFaultReason | null;
 };
+
+type BegunProviderEventPush = Readonly<{
+  next: ReplayEvent;
+  ownership: OperationOwnershipEpoch;
+  push: ControlTenancyPush;
+  deadline: ProviderEventAmbiguityDeadline;
+}>;
+
+type ProviderEventPushResponse =
+  | Readonly<{ kind: 'received'; response: unknown }>
+  | Readonly<{ kind: 'retry' }>
+  | Readonly<{ kind: 'stop' }>;
 
 type SupervisedOperation = {
   readonly key: ProviderOperationKey;
@@ -1436,6 +1449,90 @@ export class OperationSupervisor {
     if (!record.pumping) void this.#pump(record);
   }
 
+  #beginProviderEventPush(record: SupervisedOperation, next: ReplayEvent): BegunProviderEventPush | null {
+    const ownership = this.#ownership(record);
+    let push: ControlTenancyPush;
+    try {
+      push = this.#options.pushProviderEvent(next.frame);
+    } catch (error: unknown) {
+      if (
+        error instanceof ControlEndpointError &&
+        (error.code === 'control_endpoint_push_no_tenancy' || error.code === 'control_endpoint_closed')
+      ) {
+        return null;
+      }
+      throw error;
+    }
+    const deadline = this.#ensureProviderEventAmbiguity(record, next.providerSeq, push.controlEpoch);
+    return { next, ownership, push, deadline };
+  }
+
+  async #awaitProviderEventPush(
+    record: SupervisedOperation,
+    begun: BegunProviderEventPush,
+  ): Promise<ProviderEventPushResponse> {
+    try {
+      return { kind: 'received', response: await begun.push.response };
+    } catch (error: unknown) {
+      if (error instanceof ControlEndpointError) {
+        if (error.code === 'control_endpoint_push_timeout') {
+          this.#expireProviderEventAmbiguity(record, begun.deadline);
+          return { kind: 'stop' };
+        }
+        if (error.code === 'control_endpoint_push_refused') {
+          this.#faultProviderEventAmbiguity(record, begun.deadline, 'provider_event_response_refused');
+          return { kind: 'stop' };
+        }
+        if (error.code === 'control_endpoint_push_lost' || error.code === 'control_endpoint_closed') {
+          return { kind: record.pumpRequested ? 'retry' : 'stop' };
+        }
+      }
+      return { kind: 'stop' };
+    }
+  }
+
+  #applyProviderEventResponse(
+    record: SupervisedOperation,
+    begun: BegunProviderEventPush,
+    response: unknown,
+  ): 'continue' | 'stop' {
+    let result: ProviderEventResult;
+    try {
+      result = providerEventResultSchema.parse(response);
+    } catch {
+      this.#faultProviderEventAmbiguity(record, begun.deadline, 'provider_event_response_invalid');
+      return 'stop';
+    }
+    if (result.kind === 'replay') return 'continue';
+
+    const current = this.#operations.get(operationToken(record.operation));
+    const guardedEntry = this.#ledger.get(record.key);
+    if (
+      current !== record ||
+      !this.#owns(record, begun.ownership) ||
+      record.providerEventAmbiguity !== begun.deadline ||
+      begun.deadline.fault !== null ||
+      record.fenced ||
+      record.releaseIntent !== null ||
+      guardedEntry?.state === 'releasing'
+    ) {
+      return 'stop';
+    }
+    if (result.committedThroughProviderSeq < begun.next.providerSeq) {
+      this.#faultProviderEventAmbiguity(record, begun.deadline, 'provider_event_ack_invalid');
+      return 'stop';
+    }
+    try {
+      this.#ledger.acknowledge(record.key, result.committedThroughProviderSeq);
+    } catch {
+      this.#faultProviderEventAmbiguity(record, begun.deadline, 'provider_event_ack_invalid');
+      return 'stop';
+    }
+    this.#clearProviderEventAmbiguity(record, begun.deadline);
+    this.#commitCoveredContinuity(record, begun.ownership, result.committedThroughProviderSeq);
+    return 'continue';
+  }
+
   async #pump(record: SupervisedOperation): Promise<void> {
     if (record.pumping) return;
     record.pumping = true;
@@ -1453,74 +1550,12 @@ export class OperationSupervisor {
         }
         const next = entry?.bufferedEvents[0];
         if (next === undefined) return;
-        const ownership = this.#ownership(record);
-        let push: ControlTenancyPush;
-        try {
-          push = this.#options.pushProviderEvent(next.frame);
-        } catch (error: unknown) {
-          if (
-            error instanceof ControlEndpointError &&
-            (error.code === 'control_endpoint_push_no_tenancy' || error.code === 'control_endpoint_closed')
-          ) {
-            return;
-          }
-          throw error;
-        }
-        const deadline = this.#ensureProviderEventAmbiguity(record, next.providerSeq, push.controlEpoch);
-        let response: unknown;
-        try {
-          response = await push.response;
-        } catch (error: unknown) {
-          if (error instanceof ControlEndpointError) {
-            if (error.code === 'control_endpoint_push_timeout') {
-              this.#expireProviderEventAmbiguity(record, deadline);
-              return;
-            }
-            if (error.code === 'control_endpoint_push_refused') {
-              this.#faultProviderEventAmbiguity(record, deadline, 'provider_event_response_refused');
-              return;
-            }
-            if (error.code === 'control_endpoint_push_lost' || error.code === 'control_endpoint_closed') {
-              if (record.pumpRequested) continue;
-              return;
-            }
-          }
-          return;
-        }
-        let result: ProviderEventResult;
-        try {
-          result = providerEventResultSchema.parse(response);
-        } catch {
-          this.#faultProviderEventAmbiguity(record, deadline, 'provider_event_response_invalid');
-          return;
-        }
-        if (result.kind === 'ack') {
-          const current = this.#operations.get(operationToken(record.operation));
-          const guardedEntry = this.#ledger.get(record.key);
-          if (
-            current !== record ||
-            !this.#owns(record, ownership) ||
-            record.providerEventAmbiguity !== deadline ||
-            deadline.fault !== null ||
-            record.fenced ||
-            record.releaseIntent !== null ||
-            guardedEntry?.state === 'releasing'
-          ) {
-            return;
-          }
-          if (result.committedThroughProviderSeq < next.providerSeq) {
-            this.#faultProviderEventAmbiguity(record, deadline, 'provider_event_ack_invalid');
-            return;
-          }
-          try {
-            this.#ledger.acknowledge(record.key, result.committedThroughProviderSeq);
-          } catch {
-            this.#faultProviderEventAmbiguity(record, deadline, 'provider_event_ack_invalid');
-            return;
-          }
-          this.#clearProviderEventAmbiguity(record, deadline);
-          this.#commitCoveredContinuity(record, ownership, result.committedThroughProviderSeq);
-        }
+        const begun = this.#beginProviderEventPush(record, next);
+        if (begun === null) return;
+        const pushed = await this.#awaitProviderEventPush(record, begun);
+        if (pushed.kind === 'retry') continue;
+        if (pushed.kind === 'stop') return;
+        if (this.#applyProviderEventResponse(record, begun, pushed.response) === 'stop') return;
       }
     } finally {
       record.pumping = false;

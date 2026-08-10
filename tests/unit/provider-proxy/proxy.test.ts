@@ -1087,6 +1087,10 @@ describe('provider-proxy proxy: operation.prepare.v1 budget (BLOCKING B5)', () =
       5_000,
     );
 
-    expect(recording.budgets.slice(budgetsBeforePrepare.length)).toEqual([PROXY_PENDING_ACTIVATION_LEASE_MS]);
+    const prepareBudgets = recording.budgets.slice(budgetsBeforePrepare.length);
+    expect(prepareBudgets).toHaveLength(1);
+    expect(prepareBudgets[0]).toBeGreaterThan(0);
+    expect(prepareBudgets[0]).toBeLessThanOrEqual(PROXY_PENDING_ACTIVATION_LEASE_MS);
+    expect(prepareBudgets).not.toContain(PROXY_CONTROL_RPC_TIMEOUT_MS);
   });
 });

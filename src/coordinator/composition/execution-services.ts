@@ -40,13 +40,9 @@ import {
   discoverProviderHandoffCapsules,
   retireProviderHandoffCapsule,
 } from '../services/provider-proxy-capsule-discovery.js';
-import {
-  readHandoffCapsuleFile,
-  writeHandoffCapsuleFile,
-  type HandoffCapsuleV2,
-} from '../../provider-proxy/handoff-capsule.js';
-import type { ProviderProxySetLifecycleFatalError } from '../services/provider-proxy-set-lifecycle.js';
-import { ProviderProxySetInheritanceOperationalError } from '../services/provider-proxy-set-inheritance.js';
+import { writeHandoffCapsuleFile, type HandoffCapsuleV2 } from '../../provider-proxy/handoff-capsule.js';
+import { ProviderProxySetLifecycleFatalError } from '../services/provider-proxy-set-lifecycle.js';
+import { providerProxySetAvailabilityReason } from '../services/provider-proxy-set-inheritance.js';
 
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
@@ -88,6 +84,21 @@ export function createExecutionServices({
     return storeServices.progressStore;
   };
   const providerProxyInheritance = world.providerProxyInheritance;
+  const failProviderProxyInheritance = (
+    identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
+    error: unknown,
+  ): never => {
+    const fatal =
+      error instanceof ProviderProxySetLifecycleFatalError
+        ? error
+        : new ProviderProxySetLifecycleFatalError(
+            'set-inheritance',
+            `Provider proxy set inheritance failed: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error, setIdentity: identity },
+          );
+    onProviderProxyLifecycleFatal(fatal);
+    throw fatal;
+  };
   const authorityFor = (record: ProviderOperationRecord) =>
     providerProxyLifecycle.authorityFor(providerProxySetIdentityFromRecord(record));
   const startupSetRecovery = new StartupSetRecoveryProducer(async (work, signal) => {
@@ -109,36 +120,31 @@ export function createExecutionServices({
         nextAttemptAtMs: runtime.time.now() + 25,
       };
     }
-    try {
-      const outcome = await providerProxyInheritance.inheritProviderProxySet(
-        representative,
-        getProgressStore().getDb(),
-        signal,
-      );
-      switch (outcome.kind) {
-        case 'inherited':
-          return { kind: 'authority', authority: outcome.set };
-        case 'containment-disappeared':
-          return {
-            kind: 'absence-accepted',
-            acceptance: providerProxyLifecycle.containmentAbsent(work.identity, outcome.disappearanceReceipt),
-          };
-        case 'not-bequeathed':
-          return {
-            kind: 'retry-scheduled',
-            reason: outcome.reason,
-            nextAttemptAtMs: runtime.time.now() + 25,
-          };
-        default:
-          return assertNever(outcome);
-      }
-    } catch (error: unknown) {
-      if (!(error instanceof ProviderProxySetInheritanceOperationalError)) throw error;
-      return {
-        kind: 'retry-scheduled',
-        reason: error.message,
-        nextAttemptAtMs: runtime.time.now() + 25,
-      };
+    const outcome = await providerProxyInheritance
+      .inheritProviderProxySet(representative, getProgressStore().getDb(), signal)
+      .catch((error: unknown) => failProviderProxyInheritance(work.identity, error));
+    switch (outcome.kind) {
+      case 'inherited':
+        return { kind: 'authority', authority: outcome.set };
+      case 'containment-disappeared':
+        return {
+          kind: 'absence-accepted',
+          acceptance: providerProxyLifecycle.containmentAbsent(work.identity, outcome.disappearanceReceipt),
+        };
+      case 'not-bequeathed':
+        return {
+          kind: 'retry-scheduled',
+          reason: outcome.reason,
+          nextAttemptAtMs: runtime.time.now() + 25,
+        };
+      case 'temporarily-unavailable':
+        return {
+          kind: 'retry-scheduled',
+          reason: providerProxySetAvailabilityReason(outcome.incident),
+          nextAttemptAtMs: runtime.time.now() + 25,
+        };
+      default:
+        return assertNever(outcome);
     }
   });
   const providerOperationReconciler = new ProviderOperationReconciler({
@@ -147,16 +153,20 @@ export function createExecutionServices({
     acquireAuthority: async (record, signal) => {
       const live = authorityFor(record);
       if (live !== null || providerProxyInheritance === undefined) return live;
-      const outcome = await providerProxyInheritance.inheritProviderProxySet(
-        record,
-        getProgressStore().getDb(),
-        signal,
-      );
+      const identity = providerProxySetIdentityFromRecord(record);
+      const outcome = await providerProxyInheritance
+        .inheritProviderProxySet(record, getProgressStore().getDb(), signal)
+        .catch((error: unknown) => failProviderProxyInheritance(identity, error));
       switch (outcome.kind) {
         case 'inherited':
           return outcome.set;
         case 'not-bequeathed':
           return null;
+        case 'temporarily-unavailable':
+          return {
+            kind: 'temporarily-unavailable',
+            reason: providerProxySetAvailabilityReason(outcome.incident),
+          };
         case 'containment-disappeared':
           providerProxyLifecycle.containmentAbsent(
             providerProxySetIdentityFromRecord(record),
@@ -202,23 +212,8 @@ export function createExecutionServices({
     controlEstablished: notifyProviderProxyControlEstablished,
     disappearanceConsumer: {
       containmentDisappeared: async (notice) => {
-        try {
-          const acceptance = await providerOperationReconciler.containmentDisappeared(notice);
-          return { kind: 'accepted' as const, acceptance };
-        } catch (error: unknown) {
-          const current = readProviderOperation(getProgressStore().getDb(), notice.operation);
-          if (
-            current !== null &&
-            providerProxySetIdentitiesEqual(providerProxySetIdentityFromRecord(current), notice.setIdentity)
-          ) {
-            return {
-              kind: 'operational-failure' as const,
-              code: 'disappearance_consumer_unavailable' as const,
-              reason: error instanceof Error ? error.message : String(error),
-            };
-          }
-          throw error;
-        }
+        const acceptance = await providerOperationReconciler.containmentDisappeared(notice);
+        return { kind: 'accepted' as const, acceptance };
       },
     },
     time: runtime.time,
@@ -226,23 +221,7 @@ export function createExecutionServices({
       providerProxyInheritance === undefined
         ? Promise.resolve(null)
         : providerProxyInheritance.proveContainmentAbsent(identity, getProgressStore().getDb(), signal),
-    retireCapsule: (path) => {
-      try {
-        retireProviderHandoffCapsule(runtime.storage, path);
-        return { kind: 'retired' };
-      } catch (error: unknown) {
-        const capsule = readHandoffCapsuleFile(path, {
-          storage: runtime.storage,
-          uid: process.getuid?.() ?? 0,
-        });
-        if (capsule === null) throw error;
-        return {
-          kind: 'operational-failure',
-          code: 'capsule_retirement_unavailable',
-          reason: error instanceof Error ? error.message : String(error),
-        };
-      }
-    },
+    retireCapsule: (path) => retireProviderHandoffCapsule(runtime.storage, path),
     rewriteCapsule: (path, capsule: HandoffCapsuleV2) =>
       writeHandoffCapsuleFile(path, capsule, {
         storage: runtime.storage,

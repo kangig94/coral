@@ -21,12 +21,14 @@ import {
 } from '../../jobs/provider-operation-state.js';
 import {
   compareAndSwapProviderOperation,
+  completeExecutingProviderOperationAttachment,
   deleteProviderOperation,
   insertProviderOperation,
   readProviderOperation,
   readProviderOperationForJob,
   readProviderOperations,
   readProviderOperationsDue,
+  type ProviderOperationRetryOwnership,
 } from '../../store/provider-operation-journal.js';
 import {
   providerOperationRecordSchema,
@@ -143,6 +145,28 @@ export interface StartupSetRecoveryPort {
   recoverSetAtStartup(work: StartupProviderSetWork, signal: AbortSignal): Promise<StartupSetRecoveryResult>;
 }
 
+function groupStartupProviderSetWork(records: readonly ProviderOperationRecord[]): StartupProviderSetWork[] {
+  const identityIndex = new ProviderProxySetIdentityIndex();
+  const groups = new Map<ProviderProxySetKey, StartupProviderSetWork>();
+  for (const record of records) {
+    if (record.phase === 'local-recovery-pending') continue;
+    const identity = providerProxySetIdentityFromRecord(record);
+    const key = identityIndex.add(identity);
+    const group = groups.get(key);
+    groups.set(key, {
+      key,
+      identity,
+      operations: group === undefined ? [record.operation] : [...group.operations, record.operation],
+    });
+  }
+  return [...groups.values()]
+    .sort((left, right) => left.key.localeCompare(right.key))
+    .map((group) => ({
+      ...group,
+      operations: [...group.operations].sort((left, right) => operationKey(left).localeCompare(operationKey(right))),
+    }));
+}
+
 export class StartupSetRecoveryProducer implements StartupSetRecoveryPort {
   readonly #recoveries = new Map<ProviderProxySetKey, Promise<StartupSetRecoveryResult>>();
   readonly #recoverSet: (work: StartupProviderSetWork, signal: AbortSignal) => Promise<StartupSetRecoveryResult>;
@@ -219,13 +243,24 @@ type ActivePublication = Readonly<{
   disposeAbort: () => void;
 }>;
 
+export type ProviderOperationAuthorityAcquisitionResult =
+  | DurableProviderProxyOperationAuthority
+  | null
+  | Readonly<{ kind: 'temporarily-unavailable'; reason: string }>;
+
+function isTemporarilyUnavailableAcquisition(
+  value: ProviderOperationAuthorityAcquisitionResult,
+): value is Extract<ProviderOperationAuthorityAcquisitionResult, { kind: 'temporarily-unavailable' }> {
+  return value !== null && 'kind' in value && value.kind === 'temporarily-unavailable';
+}
+
 type ProviderOperationReconcilerDeps = Readonly<{
   getProgressStore: () => Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus' | 'readLaunchProjection'>;
   authorityFor: (record: ProviderOperationRecord) => DurableProviderProxyOperationAuthority | null;
   acquireAuthority?: (
     record: ProviderOperationRecord,
     signal: AbortSignal,
-  ) => Promise<DurableProviderProxyOperationAuthority | null>;
+  ) => Promise<ProviderOperationAuthorityAcquisitionResult>;
   startupSetRecovery: StartupSetRecoveryPort;
   registry: Pick<LocalOperationRegistry, 'activate' | 'attach' | 'settled' | 'stop'>;
   materializePrepare: (
@@ -324,6 +359,15 @@ type OperationSerializer = {
   disappearance: LatchedContainmentDisappearance | null;
 };
 
+type ExecutingAttachmentAttempt =
+  | Readonly<{
+      kind: 'attached';
+      record: Extract<ProviderOperationRecord, { phase: 'executing' }>;
+    }>
+  | Readonly<{ kind: 'operation-absent' }>
+  | Readonly<{ kind: 'advanced'; current: ProviderOperationRecord | null }>
+  | Readonly<{ kind: 'retry-recorded' }>;
+
 function operationKey(identity: ProviderOperationIdentity): string {
   return `${identity.jobId}:${identity.operationId}:${identity.proxyInstanceId}:${identity.buildSetId}`;
 }
@@ -394,94 +438,87 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
 
   async reconcileAtStartup(signal: AbortSignal): Promise<StartupReconciliationReport> {
     const records = readProviderOperations(this.#deps.getProgressStore().getDb());
-    const identityIndex = new ProviderProxySetIdentityIndex();
-    const groups = new Map<
-      ProviderProxySetKey,
-      { identity: ProviderProxySetIdentity; operations: ProviderOperationIdentity[] }
-    >();
-    for (const record of records) {
-      if (record.phase === 'local-recovery-pending') continue;
-      const identity = providerProxySetIdentityFromRecord(record);
-      const key = identityIndex.add(identity);
-      const group = groups.get(key);
-      if (group === undefined) {
-        groups.set(key, { identity, operations: [record.operation] });
-      } else {
-        group.operations.push(record.operation);
-      }
-    }
-
     const incidents: StartupReconciliationIncident[] = [];
     let setsVisited = 0;
     let operationsVisited = 0;
-    for (const [key, grouped] of [...groups].sort(([left], [right]) => left.localeCompare(right))) {
+    for (const work of groupStartupProviderSetWork(records)) {
       signal.throwIfAborted();
-      const currentRecords: ProviderOperationRecord[] = [];
-      for (const operation of [...grouped.operations].sort((left, right) =>
-        operationKey(left).localeCompare(operationKey(right)),
-      )) {
-        const current = readProviderOperation(this.#deps.getProgressStore().getDb(), operation);
-        if (current === null || current.phase === 'local-recovery-pending') continue;
-        const currentIdentity = providerProxySetIdentityFromRecord(current);
-        if (!providerProxySetIdentitiesEqual(currentIdentity, grouped.identity)) {
-          throw new Error(`provider_proxy_startup_set_identity_changed:${operationKey(operation)}`);
-        }
-        currentRecords.push(current);
-      }
+      const currentRecords = this.#readCurrentStartupSet(work);
       if (currentRecords.length === 0) continue;
 
       setsVisited += 1;
       operationsVisited += currentRecords.length;
-      const work: StartupProviderSetWork = {
-        key,
-        identity: grouped.identity,
-        operations: currentRecords.map((record) => record.operation),
-      };
-      const recovery = await awaitStartup(this.#deps.startupSetRecovery.recoverSetAtStartup(work, signal), signal);
-      if (recovery.kind === 'absence-accepted') {
-        const disposition = await awaitStartup(recovery.acceptance.initialDisposition, signal);
-        if (disposition.kind === 'operational-retry-owned') {
-          incidents.push(
-            ...disposition.incidents.map(
-              (incident): StartupReconciliationIncident => ({
-                kind: 'absence-retry-owned',
-                setIdentity: grouped.identity,
-                disappearanceReceipt: recovery.acceptance.disappearanceReceipt,
-                incident,
-              }),
-            ),
-          );
-        }
-        continue;
+      incidents.push(...(await this.#reconcileStartupSet(work, currentRecords, signal)));
+    }
+    return { setsVisited, operationsVisited, incidents };
+  }
+
+  #readCurrentStartupSet(work: StartupProviderSetWork): ProviderOperationRecord[] {
+    const currentRecords: ProviderOperationRecord[] = [];
+    for (const operation of [...work.operations].sort((left, right) =>
+      operationKey(left).localeCompare(operationKey(right)),
+    )) {
+      const current = readProviderOperation(this.#deps.getProgressStore().getDb(), operation);
+      if (current === null || current.phase === 'local-recovery-pending') continue;
+      if (!providerProxySetIdentitiesEqual(providerProxySetIdentityFromRecord(current), work.identity)) {
+        throw new Error(`provider_proxy_startup_set_identity_changed:${operationKey(operation)}`);
       }
-      if (recovery.kind === 'retry-scheduled') {
-        for (const record of currentRecords) {
-          this.#scheduleStartupSetRetry(record, recovery.reason, recovery.nextAttemptAtMs);
-        }
-        incidents.push({
+      currentRecords.push(current);
+    }
+    return currentRecords;
+  }
+
+  async #reconcileStartupSet(
+    work: StartupProviderSetWork,
+    currentRecords: readonly ProviderOperationRecord[],
+    signal: AbortSignal,
+  ): Promise<StartupReconciliationIncident[]> {
+    const currentWork: StartupProviderSetWork = {
+      ...work,
+      operations: currentRecords.map((record) => record.operation),
+    };
+    const recovery = await awaitStartup(this.#deps.startupSetRecovery.recoverSetAtStartup(currentWork, signal), signal);
+    if (recovery.kind === 'absence-accepted') {
+      const disposition = await awaitStartup(recovery.acceptance.initialDisposition, signal);
+      if (disposition.kind !== 'operational-retry-owned') return [];
+      return disposition.incidents.map(
+        (incident): StartupReconciliationIncident => ({
+          kind: 'absence-retry-owned',
+          setIdentity: work.identity,
+          disappearanceReceipt: recovery.acceptance.disappearanceReceipt,
+          incident,
+        }),
+      );
+    }
+    if (recovery.kind === 'retry-scheduled') {
+      for (const record of currentRecords) {
+        this.#scheduleStartupSetRetry(record, recovery.reason, recovery.nextAttemptAtMs);
+      }
+      return [
+        {
           kind: 'set-retry-scheduled',
-          setIdentity: grouped.identity,
+          setIdentity: work.identity,
           operations: currentRecords.map((record) => record.operation),
           reason: recovery.reason,
           nextAttemptAtMs: recovery.nextAttemptAtMs,
-        });
-        continue;
-      }
+        },
+      ];
+    }
 
-      for (const record of currentRecords) {
-        const result = await awaitStartup(this.#reconcileStartupOperation(record, recovery.authority, signal), signal);
-        if (result.kind === 'retry-scheduled') {
-          incidents.push({
-            kind: 'operation-retry-scheduled',
-            setIdentity: grouped.identity,
-            operation: result.operation,
-            reason: result.reason,
-            nextAttemptAtMs: result.nextAttemptAtMs,
-          });
-        }
+    const incidents: StartupReconciliationIncident[] = [];
+    for (const record of currentRecords) {
+      const result = await awaitStartup(this.#reconcileStartupOperation(record, recovery.authority, signal), signal);
+      if (result.kind === 'retry-scheduled') {
+        incidents.push({
+          kind: 'operation-retry-scheduled',
+          setIdentity: work.identity,
+          operation: result.operation,
+          reason: result.reason,
+          nextAttemptAtMs: result.nextAttemptAtMs,
+        });
       }
     }
-    return { setsVisited, operationsVisited, incidents };
+    return incidents;
   }
 
   async #reconcileStartupOperation(
@@ -802,7 +839,12 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       }
       authority = authority !== null && sameAuthority(record, authority) ? authority : this.#deps.authorityFor(record);
       if (authority === null && this.#deps.acquireAuthority !== undefined) {
-        authority = await this.#awaitAuthority(this.#deps.acquireAuthority(record, signal ?? NEVER_ABORTS));
+        const acquired = await this.#awaitAuthority(this.#deps.acquireAuthority(record, signal ?? NEVER_ABORTS));
+        if (isTemporarilyUnavailableAcquisition(acquired)) {
+          await this.#recordRetry(record, new Error(acquired.reason));
+          return;
+        }
+        authority = acquired;
       }
       if (authority === null) {
         await this.#recordRetry(record, new Error('No live control authority is available for this proxy set.'));
@@ -1549,6 +1591,36 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   ): Promise<ProviderOperationRecord | null> {
     const key = operationKey(record.operation);
     this.#attachments.set(key, record.operation);
+    const retryOwnership: ProviderOperationRetryOwnership = {
+      retryCount: record.retryCount,
+      retryNotBeforeMs: record.retryNotBeforeMs,
+      lastError: record.lastError,
+    };
+    const attempt = await this.#attemptExecutingAttachment(record, authority);
+    if (attempt.kind === 'retry-recorded') return null;
+    if (attempt.kind === 'advanced') {
+      this.#attachments.delete(key);
+      this.#deps.registry.settled(record.operation);
+      return attempt.current;
+    }
+    if (attempt.kind === 'operation-absent') {
+      this.#attachments.delete(key);
+      return this.#terminalize(record, {
+        kind: 'terminal-failed',
+        code: 'provider_lost',
+        reason: 'The provider proxy proved that the committed operation is absent.',
+      });
+    }
+
+    this.#registerExecuting(attempt.record, authority);
+    return this.#completeExecutingAttachment(record, retryOwnership);
+  }
+
+  async #attemptExecutingAttachment(
+    record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
+    authority: DurableProviderProxyOperationAuthority,
+  ): Promise<ExecutingAttachmentAttempt> {
+    const key = operationKey(record.operation);
     try {
       const result = await this.#awaitAuthority(
         authority.attachOperation(record.operation, record.committedThroughProviderSeq),
@@ -1557,12 +1629,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
         if (operationKey(result.operation) !== key) {
           throw new Error('Operation-absent proof named a different operation.');
         }
-        this.#attachments.delete(key);
-        return this.#terminalize(record, {
-          kind: 'terminal-failed',
-          code: 'provider_lost',
-          reason: 'The provider proxy proved that the committed operation is absent.',
-        });
+        return { kind: 'operation-absent' };
       }
       if (result.replayFromProviderSeq !== record.committedThroughProviderSeq + 1) {
         throw new Error('Attachment reply named a different replay boundary.');
@@ -1570,39 +1637,47 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
 
       const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
       const attachedRecord = current?.phase === 'executing' ? current : record;
-      const finished = await this.#finishAttached(
-        attachedRecord,
-        authority,
-        current?.phase === 'executing' ? undefined : current,
-      );
-      this.#attachments.delete(key);
-      return finished;
+      if (attachedRecord.controlIntent.kind === 'stop') {
+        await this.#awaitAuthority(
+          authority.buildOperationControl(attachedRecord.operation).stop(attachedRecord.controlIntent.cause),
+        );
+      }
+      return current?.phase === 'executing' || current === null
+        ? { kind: 'attached', record: attachedRecord }
+        : { kind: 'advanced', current };
     } catch (error: unknown) {
       const current = readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
       if (current?.phase !== 'executing') {
-        const finished = await this.#finishAttached(record, authority, current);
-        this.#attachments.delete(key);
-        return finished;
+        return { kind: 'advanced', current };
       }
       await this.#recordRetry(current, error);
-      return null;
+      return { kind: 'retry-recorded' };
     }
   }
 
-  async #finishAttached(
+  #completeExecutingAttachment(
     record: Extract<ProviderOperationRecord, { phase: 'executing' }>,
-    authority: DurableProviderProxyOperationAuthority,
-    current?: ProviderOperationRecord | null,
-  ): Promise<ProviderOperationRecord | null> {
-    this.#registerExecuting(record, authority);
-    if (record.controlIntent.kind === 'stop') {
-      await this.#awaitAuthority(authority.buildOperationControl(record.operation).stop(record.controlIntent.cause));
+    retryOwnership: ProviderOperationRetryOwnership,
+  ): ProviderOperationRecord | null {
+    const result = completeExecutingProviderOperationAttachment(
+      this.#deps.getProgressStore().getDb(),
+      record.operation,
+      retryOwnership,
+      this.#deps.time.now(),
+    );
+    switch (result.kind) {
+      case 'completed':
+      case 'already-completed':
+        this.#attachments.delete(operationKey(record.operation));
+        this.#complete(record.operation, { kind: 'remote-executing' });
+        return null;
+      case 'advanced':
+        this.#attachments.delete(operationKey(record.operation));
+        this.#deps.registry.settled(record.operation);
+        return result.current;
+      case 'retry-superseded':
+        return null;
     }
-    this.#complete(record.operation, { kind: 'remote-executing' });
-    const latest = current ?? readProviderOperation(this.#deps.getProgressStore().getDb(), record.operation);
-    if (latest?.phase === 'executing') return null;
-    this.#deps.registry.settled(record.operation);
-    return latest;
   }
 
   #registerExecuting(

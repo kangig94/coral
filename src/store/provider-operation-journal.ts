@@ -17,6 +17,20 @@ export type ProviderOperationDeleteResult =
   | Readonly<{ kind: 'deleted' }>
   | Readonly<{ kind: 'conflict'; current: ProviderOperationRecord | null }>;
 
+export type ProviderOperationRetryOwnership = Readonly<{
+  retryCount: number;
+  retryNotBeforeMs: number;
+  lastError: ProviderOperationRecord['lastError'];
+}>;
+
+type ExecutingProviderOperationRecord = Extract<ProviderOperationRecord, { phase: 'executing' }>;
+
+export type CompleteExecutingProviderOperationAttachmentResult =
+  | Readonly<{ kind: 'completed'; record: ExecutingProviderOperationRecord }>
+  | Readonly<{ kind: 'already-completed'; current: ExecutingProviderOperationRecord }>
+  | Readonly<{ kind: 'advanced'; current: ProviderOperationRecord | null }>
+  | Readonly<{ kind: 'retry-superseded'; current: ExecutingProviderOperationRecord }>;
+
 export type ProviderOperationMutation =
   | Readonly<{ kind: 'upserted'; record: ProviderOperationRecord }>
   | Readonly<{ kind: 'deleted'; record: ProviderOperationRecord }>;
@@ -112,7 +126,7 @@ export function providerOperationRecordKeyPrefix(jobId: string): string {
   return `${PROVIDER_OPERATION_RECORD_PREFIX}${jobId}:`;
 }
 
-function dueEntryFor(record: ProviderOperationRecord): MetaRow | null {
+function providerOperationDueEntry(record: ProviderOperationRecord): MetaRow {
   return {
     key:
       `${PROVIDER_OPERATION_DUE_PREFIX}${encodeFixedWidthInteger(record.retryNotBeforeMs, 'retryNotBeforeMs')}:` +
@@ -120,6 +134,14 @@ function dueEntryFor(record: ProviderOperationRecord): MetaRow | null {
       `${record.operation.buildSetId}:${encodeFixedWidthInteger(record.revision, 'revision')}`,
     value: canonicalRecordKey(record.operation),
   };
+}
+
+function providerOperationHasDueWork(record: ProviderOperationRecord): boolean {
+  return record.phase !== 'executing' || record.lastError !== null;
+}
+
+function dueEntryFor(record: ProviderOperationRecord): MetaRow | null {
+  return providerOperationHasDueWork(record) ? providerOperationDueEntry(record) : null;
 }
 
 function readCanonicalValue(db: Database, key: string): string | undefined {
@@ -229,12 +251,32 @@ function insertDueEntry(db: Database, record: ProviderOperationRecord): void {
 }
 
 function deleteDueEntry(db: Database, record: ProviderOperationRecord): void {
-  const entry = dueEntryFor(record);
-  if (entry === null) return;
+  const entry = providerOperationDueEntry(record);
   const result = db
     .prepare<[string, string]>('DELETE FROM meta WHERE key = ? AND value = ?')
     .run(entry.key, entry.value);
-  assertOneDueMutation(result.changes, 'delete');
+  if (providerOperationHasDueWork(record)) {
+    assertOneDueMutation(result.changes, 'delete');
+  } else if (result.changes !== 0 && result.changes !== 0n && result.changes !== 1 && result.changes !== 1n) {
+    throw new ProviderOperationJournalError(
+      `Provider operation due-index legacy delete changed ${String(result.changes)} rows instead of zero or one.`,
+    );
+  }
+}
+
+function sameRetryOwnership(record: ProviderOperationRecord, ownership: ProviderOperationRetryOwnership): boolean {
+  const left = record.lastError;
+  const right = ownership.lastError;
+  return (
+    record.retryCount === ownership.retryCount &&
+    record.retryNotBeforeMs === ownership.retryNotBeforeMs &&
+    (left === right ||
+      (left !== null &&
+        right !== null &&
+        left.observedAtMs === right.observedAtMs &&
+        left.code === right.code &&
+        left.message === right.message))
+  );
 }
 
 function inWriteTransaction<T>(db: Database, write: () => T): T {
@@ -378,6 +420,49 @@ export function compareAndSwapProviderOperation(
     return { kind: 'updated', record: next };
   });
   if (result.kind === 'updated') notifyProviderOperationMutation(db, { kind: 'upserted', record: result.record });
+  return result;
+}
+
+export function completeExecutingProviderOperationAttachment(
+  db: Database,
+  operation: ProviderOperationIdentity,
+  expectedRetryOwnership: ProviderOperationRetryOwnership,
+  completedAtMs: number,
+): CompleteExecutingProviderOperationAttachmentResult {
+  if (!Number.isSafeInteger(completedAtMs) || completedAtMs < 0) {
+    throw new RangeError('completedAtMs must be a non-negative safe integer.');
+  }
+  const result: CompleteExecutingProviderOperationAttachmentResult = inWriteTransaction(db, () => {
+    const key = canonicalRecordKey(operation);
+    const current = readCanonicalRecord(db, key) ?? null;
+    if (current === null || current.phase !== 'executing') return { kind: 'advanced', current };
+    if (!sameRetryOwnership(current, expectedRetryOwnership)) {
+      return current.lastError === null
+        ? { kind: 'already-completed', current }
+        : { kind: 'retry-superseded', current };
+    }
+
+    const next: ExecutingProviderOperationRecord = {
+      ...current,
+      revision: current.revision + 1,
+      retryCount: 0,
+      retryNotBeforeMs: completedAtMs,
+      lastError: null,
+    };
+    const write = db
+      .prepare<[string, string, string]>('UPDATE meta SET value = ? WHERE key = ? AND value = ?')
+      .run(encodeProviderOperationRecord(next), key, encodeProviderOperationRecord(current));
+    if (write.changes !== 1) {
+      throw new ProviderOperationJournalError(
+        `Provider operation attachment completion changed ${String(write.changes)} rows instead of one.`,
+      );
+    }
+    deleteDueEntry(db, current);
+    return { kind: 'completed', record: next };
+  });
+  if (result.kind === 'completed') {
+    notifyProviderOperationMutation(db, { kind: 'upserted', record: result.record });
+  }
   return result;
 }
 

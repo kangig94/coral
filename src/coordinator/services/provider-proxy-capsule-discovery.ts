@@ -40,9 +40,26 @@ export function discoverProviderHandoffCapsules(
   });
 }
 
-export function retireProviderHandoffCapsule(storage: StoragePort, path: string): void {
-  storage.unlinkSync(path);
-  if (!storage.syncDirectoryDurableSync(dirname(path))) {
-    throw new Error(`provider_proxy_handoff_capsule_retirement_not_durable:${path}`);
+export type ProviderHandoffCapsuleRetirementOutcome =
+  | Readonly<{ kind: 'retired' }>
+  | Readonly<{
+      kind: 'temporarily-unavailable';
+      incident: Readonly<{ kind: 'capsule-directory-durability-unavailable' }>;
+    }>;
+
+export function retireProviderHandoffCapsule(
+  storage: StoragePort,
+  path: string,
+): ProviderHandoffCapsuleRetirementOutcome {
+  try {
+    storage.unlinkSync(path);
+  } catch (error: unknown) {
+    if (typeof error !== 'object' || error === null || (error as { code?: unknown }).code !== 'ENOENT') throw error;
   }
+  return storage.syncDirectoryDurableSync(dirname(path))
+    ? { kind: 'retired' }
+    : {
+        kind: 'temporarily-unavailable',
+        incident: { kind: 'capsule-directory-durability-unavailable' },
+      };
 }
