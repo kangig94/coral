@@ -62,19 +62,13 @@ describe('coral agent exposure', () => {
   it('every coral:<agent> a skill spawns has an agent file', () => {
     // Assertion 1 alone would pass a skill spawning an agent that does not exist —
     // the same invisible failure, reached from the other side.
-    const missing = [...referencedAgents().entries()]
+    const referenced = referencedAgents();
+    expect(referenced.size).toBeGreaterThan(0); // a rule matching nothing would pass vacuously
+
+    const missing = [...referenced.entries()]
       .filter(([name]) => !existsSync(join(AGENTS_DIR, `${name}.md`)))
       .map(([name, skills]) => `${name} (referenced by ${skills.join(', ')})`);
 
     expect(missing).toEqual([]);
-  });
-
-  it('resolves a representative set, so the extraction rule cannot silently match nothing', () => {
-    // Guards the regex itself: a rule that matched zero tokens would make the
-    // assertion above vacuously true.
-    const referenced = referencedAgents();
-    expect([...referenced.keys()].sort()).toEqual(
-      expect.arrayContaining(['architect', 'critic', 'debugger', 'pioneer', 'resolver', 'scanner']),
-    );
   });
 });

@@ -120,8 +120,6 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     Complexity gate passed: {M} files, {localized fix summary} — skipping review.
     ```
 
-    A gate pass is a zero-result run: no review phase produced a resolver result, so the Review Summary reports `Final verdict: NOT REVIEWED`, omits "Key changes from review", and uses the gated handoff. No extra branch — the same rule that covers a skipped or failed phase.
-
     If ANY criterion fails → proceed to Review Phases.
 
     #### Review Phases

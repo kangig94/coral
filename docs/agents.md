@@ -33,7 +33,7 @@ Codex delegation is a normal CLI-to-backend provider launch.
 | `persona-generator` | `clients/agents/persona-generator.md` | Discuss persona generation                              |
 | `workflow-literal`  | `clients/agents/workflow-literal.md`  | Pipeline step processor for workflow DSL inline prompts |
 
-These agents use Claude Code's native tools. Read-only agents declare `disallowedTools`; execution-oriented agents do not. **The declaration is not enforced by the host.** On Copilot it is ignored outright — a `coral:critic` subagent created a file. The same hole exists on Claude Code (verified on v2.1.224): an agent granted `Bash` writes via shell redirection despite `Write`/`Edit` exclusion, and removing `Bash` from the grant is what blocks it. Treat `disallowedTools` as declared intent, not a sandbox.
+These agents use Claude Code's native tools. Read-only agents declare `disallowedTools`; execution-oriented agents do not. **Copilot does not enforce that declaration** — a `coral:critic` subagent created a file — so on Copilot it is declared intent, not a sandbox.
 
 When spawned via Claude's `Agent` tool inside a host session, they receive the subagent-scoped inject bundle through the `SubagentStart` hook (`asOwner: false` — orchestrator fragment omitted). Copilot fires no `SubagentStart`, so subagents there run without the bundle — see [Hooks — Copilot CLI contract deltas](./hooks.md#copilot-cli-contract-deltas). When launched as provider jobs (`coral-cli … <agent>` or workflow), they receive the provider-scoped bundle via `applyInjectBundle` (no hooks). See [Hooks — Inject bundle](./hooks.md#inject-bundle-shared-guidelines).
 
