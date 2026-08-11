@@ -13,7 +13,7 @@ Execute a multi-round planning session with architect/critic review.
 | Argument       | Mode                                                                                                                              |
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `<prompt>`     | Self-execute on current host (default)                                                                                            |
-| `--delegate`   | Add review pass on the other host (Codex when current is Claude, Claude when current is Codex; from SessionStart `Current host:`) |
+| `--delegate`   | Add review pass on the other host (Claude → Codex, Codex → Claude, Copilot → Codex; from SessionStart `Current host:`) |
 | `round=N`      | Review rounds for every applicable phase (default `1`). e.g. `round=3` for deeper iteration.                                      |
 | `round=N,M`    | Per-phase budget: Phase 1 (`<other-host>`) gets `N` rounds, Phase 2 (`<current-host>`) gets `M`. **Turns `--delegate` on.**       |
 | `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                                                        |
@@ -124,7 +124,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     #### Review Phases
 
-    Let `<current-host>` come from SessionStart `Current host:`. Let `<other-host>` = the other of `codex`/`claude`.
+    Let `<current-host>` come from SessionStart `Current host:`. Let `<other-host>` = the other of `codex`/`claude` — and `codex` when `<current-host>` is `copilot`, which is a plugin host but not a delegation target.
 
     | Phase | Condition | Provider | Round Label | Budget |
     |-------|-----------|----------|-------------|--------|

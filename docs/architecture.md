@@ -1,6 +1,6 @@
 # Architecture
 
-Coral is a coding-assistant plugin for Claude Code and Codex. Its purpose is to help LLM agents do software work better: plan/review workflows, side-effect and bug discovery, multi-perspective discussion, durable job observation, session continuity, and long-term project memory through KB.
+Coral is a coding-assistant plugin for Claude Code, Codex, and GitHub Copilot CLI. Its purpose is to help LLM agents do software work better: plan/review workflows, side-effect and bug discovery, multi-perspective discussion, durable job observation, session continuity, and long-term project memory through KB.
 
 Internally, Coral is a local coding-agent coordination layer. Claude Code reaches Coral through hooks, slash-command skills, and Bash calls to `coral-cli`. For local mutating and live-follow commands, `coral-cli` ensures the backend daemon is running and talks over the authenticated IPC socket. Read-only no-coordinator paths use the `read-model/CoralStore` facade directly. HTTP remains available as the remote gateway plus the operational carveouts (`/health`, `/admin/shutdown`, `/events/stream`). No bridge or stdio proxy remains in the runtime path.
 

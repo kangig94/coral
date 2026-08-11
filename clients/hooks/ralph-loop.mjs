@@ -22,7 +22,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { claudeConfigDir, exitIfChildProcess, exitIfWrongFlavor, readStdin, readUserMessage, sweepStale } from './lib/hook-utils.mjs';
+import { claudeConfigDir, exitIfChildProcess, exitIfWrongFlavor, readStdin, readUserMessage, sweepStale, writeHookOutput } from './lib/hook-utils.mjs';
 import { projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 import { RALPH_FIELD_RE, RALPH_MESSAGE_RE } from './lib/coral-skills.mjs';
 import { hasLiveWork } from './lib/live-work-registry.mjs';
@@ -54,7 +54,7 @@ try {
     if (!sessionId) process.exit(0);
     if (!RALPH_MESSAGE_RE.test(readUserMessage(input))) process.exit(0);
     const statePath = createStateFile(projectDir, sessionId);
-    writeJson({
+    writeHookOutput({
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
         additionalContext: buildAdditionalContext(statePath),
@@ -68,7 +68,7 @@ try {
     const skill = input.tool_input?.skill || '';
     if (!RALPH_FIELD_RE.test(skill)) process.exit(0);
     const statePath = createStateFile(projectDir, sessionId);
-    writeJson({
+    writeHookOutput({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         additionalContext: buildAdditionalContext(statePath),
@@ -118,7 +118,7 @@ try {
   const nextState = { ...state, iteration: state.iteration + 1 };
   atomicWriteJson(statePath, nextState);
 
-  writeJson({
+  writeHookOutput({
     decision: 'block',
     reason: buildBlockReason(state, sessionId),
     systemMessage: `🔄 Ralph iteration ${nextState.iteration}`,
@@ -283,10 +283,4 @@ function extractAbortText(text) {
 
 function normalizeWhitespace(text) {
   return text.trim().replace(/\s+/g, ' ');
-}
-
-// === JSON output ===
-
-function writeJson(value) {
-  console.log(JSON.stringify(value));
 }

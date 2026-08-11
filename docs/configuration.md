@@ -218,7 +218,7 @@ Embedding credentials (e.g. `GEMINI_API_KEY`) are read from the backend's proces
 
 ## Config Files
 
-The installable plugin surface lives under `clients/` (the plugin root — it holds `.claude-plugin/plugin.json`, `.codex-plugin/`, `agents/`, `skills/`, `hooks/`, `bridge/`, `methods/`, and `inject/`). The root `.claude-plugin/marketplace.json` stays at the repo root and points at `./clients` via a `git-subdir` source. At install time the `clients/` level is flattened away, so `${CLAUDE_PLUGIN_ROOT}` resolves to a directory that contains `bridge/`, `hooks/`, etc. directly.
+The installable plugin surface lives under `clients/` (the plugin root — it holds `.claude-plugin/plugin.json`, `.codex-plugin/`, `.github/plugin/`, `agents/`, `skills/`, `hooks/`, `bridge/`, `methods/`, and `inject/`). Two marketplace catalogs stay at the repo root and point back at `./clients`: `.claude-plugin/marketplace.json` (Claude Code, via a `git-subdir` source) and `.github/plugin/marketplace.json` (Copilot CLI, via a string path — Copilot rejects the `git-subdir` object form). At install time the `clients/` level is flattened away, so `${CLAUDE_PLUGIN_ROOT}` resolves to a directory that contains `bridge/`, `hooks/`, etc. directly.
 
 ### `clients/.claude-plugin/plugin.json`
 
@@ -252,9 +252,9 @@ Build manifest written by `scripts/build-server.mjs`:
 
 `version`, `buildSetId`, `flavor`, and `storeFormatFingerprint` are embedded into the bundles and repeated here. The three hash fields bind the backend, CLI, and Claude helper bytes. Strict startup and local reporting reject missing, stale, symlinked, or mixed adjacent artifacts.
 
-### `clients/hooks/claude.json` and `clients/hooks/codex.json`
+### `clients/hooks/claude.json`, `clients/hooks/codex.json`, and `clients/hooks/copilot.json`
 
-Per-client hook registration, each referenced by its own `plugin.json` (`.claude-plugin` → `./hooks/claude.json`, `.codex-plugin` → `./hooks/codex.json`). `claude.json` is the full set (SessionStart, compact recovery, SubagentStart, PreCompact, PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, Stop); `codex.json` is the same minus the Claude-only hooks (`hud-auto-update`, the `SubagentStart`/`SubagentStop` scripts, and the `PreToolUse(Monitor)` guard). See [Hooks](./hooks.md) for behavior details.
+Per-client hook registration, each referenced by its own `plugin.json` (`.claude-plugin` → `./hooks/claude.json`, `.codex-plugin` → `./hooks/codex.json`, `.github/plugin` → `./hooks/copilot.json`). `claude.json` is the full set (SessionStart, compact recovery, SubagentStart, PreCompact, PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, Stop); `codex.json` is the same minus the Claude-only hooks (`hud-auto-update`, the `SubagentStart`/`SubagentStop` scripts, and the `PreToolUse(Monitor)` guard); `copilot.json` is the same minus `hud-auto-update`, the `PreToolUse(Monitor)` guard, and the compaction plus subagent hooks, and additionally differs in registration shape (one unmatched `SessionStart` group, `timeoutSec` instead of `timeout`, and a lowercase `skill` matcher). See [Hooks](./hooks.md) for behavior details and the Copilot contract deltas.
 
 ## Runtime State Files
 
@@ -366,10 +366,13 @@ Live scratch artifacts:
 
 ```text
 .claude-plugin/marketplace.json                -> marketplace catalog (repo root; git-subdir -> ./clients)
+.github/plugin/marketplace.json                -> marketplace catalog for Copilot (repo root; path -> ./clients)
 clients/.claude-plugin/plugin.json             -> plugin manifest
 clients/.codex-plugin/plugin.json              -> Codex plugin manifest
+clients/.github/plugin/plugin.json             -> Copilot plugin manifest
 clients/hooks/claude.json                       -> hook registration (Claude Code, full set)
 clients/hooks/codex.json                        -> hook registration (Codex, subset)
+clients/hooks/copilot.json                      -> hook registration (Copilot, subset)
 clients/bridge/coral-backend.cjs                -> backend daemon bundle
 clients/bridge/coral-cli.cjs                    -> CLI bundle
 clients/bridge/coral-claude-appserver.cjs       -> Claude broker helper bundle

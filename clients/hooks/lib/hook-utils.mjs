@@ -92,6 +92,94 @@ export function readUserMessage(input) {
   return input?.user_message || input?.message || input?.prompt || '';
 }
 
+/**
+ * Which CLI is running this hook. Codex and Copilot both export
+ * `CLAUDE_PLUGIN_ROOT` as an OOTB compat alias, so the plugin root alone
+ * cannot identify the host.
+ *
+ * Copilot is detected via `COPILOT_PLUGIN_ROOT` rather than `COPILOT_CLI`:
+ * `COPILOT_CLI` is exported into *every* shell Copilot spawns (including
+ * ordinary tool calls), so it leaks into unrelated child processes — e.g. a
+ * Claude Code or Codex session, or a test runner, started from a Copilot
+ * shell would be misdetected. `COPILOT_PLUGIN_ROOT` is set only when Copilot
+ * invokes a plugin hook, which is exactly this scope.
+ *
+ * Codex is the by-elimination default: it is the one supported host that
+ * announces itself with neither variable. A future fourth client would
+ * therefore be reported as `codex`, which is safe for output shaping
+ * (`hookOutputForHost` tests for `copilot` positively, so an unknown host
+ * gets the Claude-shaped envelope) but would mis-report `Current host:` to
+ * the model. Add a positive probe here when a fourth client lands.
+ */
+export function hostKind() {
+  if (process.env.COPILOT_PLUGIN_ROOT) return 'copilot';
+  if ((process.env.AI_AGENT ?? '').startsWith('claude')) return 'claude';
+  return 'codex';
+}
+
+/**
+ * Emits a hook result on stdout in the shape the current host understands.
+ *
+ * Claude Code and Codex namespace per-event fields under `hookSpecificOutput`.
+ * Copilot CLI is split: it reads `additionalContext` only at the *top level*
+ * and silently ignores an envelope, but reads `permissionDecision` /
+ * `updatedInput` only *inside* the envelope and silently ignores them at the
+ * top level. Both directions were A/B-verified against Copilot CLI 1.0.78 —
+ * a wrapped `additionalContext` never reaches the model, and a flat
+ * `updatedInput` never rewrites the command.
+ *
+ * So the transform hoists only the fields Copilot wants hoisted and leaves the
+ * rest enveloped. Hook scripts keep emitting one canonical Claude-shaped
+ * payload instead of branching per host at each call site.
+ *
+ * Already-flat shapes pass through untouched: Copilot honors Stop-hook
+ * `decision: 'block'` with `reason` in exactly Claude's form (verified — a
+ * blocked turn continues with `reason` as its instruction).
+ */
+export function writeHookOutput(value) {
+  // `console.log` is built with `ignoreErrors: true`; a bare `process.stdout.write`
+  // is not, and a closed pipe surfaces as an *asynchronous* 'error' event that no
+  // surrounding try/catch can reach — which would crash a hook that is required to
+  // fail open. Swallowing EPIPE restores the console semantics these sites had.
+  silenceStdoutErrors();
+  process.stdout.write(JSON.stringify(hookOutputForHost(value)) + '\n');
+}
+
+let stdoutErrorsSilenced = false;
+
+function silenceStdoutErrors() {
+  if (stdoutErrorsSilenced) return;
+  stdoutErrorsSilenced = true;
+  process.stdout.on('error', () => process.exit(0));
+}
+
+/** Envelope fields Copilot reads only at the top level. Everything else stays enveloped. */
+const COPILOT_HOISTED_FIELDS = ['additionalContext'];
+
+function hookOutputForHost(value) {
+  if (hostKind() !== 'copilot') return value;
+  const envelope = value?.hookSpecificOutput;
+  if (envelope === null || typeof envelope !== 'object' || Array.isArray(envelope)) return value;
+
+  const hoisted = {};
+  const retained = {};
+  for (const [key, field] of Object.entries(envelope)) {
+    if (key === 'hookEventName') continue; // Copilot infers the event from the registration
+    if (COPILOT_HOISTED_FIELDS.includes(key)) hoisted[key] = field;
+    else retained[key] = field;
+  }
+  if (Object.keys(hoisted).length === 0) return value;
+
+  const { hookSpecificOutput: _envelope, ...rest } = value;
+  if (Object.keys(retained).length === 0) return { ...rest, ...hoisted };
+  // `hookEventName` is preserved here: the enveloped form Copilot was verified
+  // to honor for `updatedInput` carried it.
+  const remainder = envelope.hookEventName === undefined
+    ? retained
+    : { hookEventName: envelope.hookEventName, ...retained };
+  return { ...rest, ...hoisted, hookSpecificOutput: remainder };
+}
+
 // Memoized per hook invocation: callers resolve the same projectDir several
 // times (inject rendering, wake-up slug, project dir), and each miss costs a
 // git subprocess with a 2s timeout — repeated timeouts would eat the hook budget.

@@ -22,7 +22,7 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, readStdin, writeHookOutput } from './lib/hook-utils.mjs';
 import {
   applyReplacements,
   shellQuote,
@@ -343,14 +343,14 @@ try {
   if (!changed && !invokesWait) process.exit(0);
   updatedInput.command = nextCommand;
 
-  process.stdout.write(JSON.stringify({
+  writeHookOutput({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'allow',
       permissionDecisionReason: 'bash auto-rewrite',
       updatedInput,
     },
-  }) + '\n');
+  });
 } catch {
   process.exit(0);
 }

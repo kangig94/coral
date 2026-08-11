@@ -90,7 +90,7 @@ the current `src/` tree.
 
 1. Runs simulation compatibility verification (`check-simulation.mjs`), which typechecks `tools/simulation` against `src` and verifies sealing.
 2. Reads `package.json` as the single source of truth for the version.
-3. Syncs that version into `clients/.claude-plugin/plugin.json`, `clients/.codex-plugin/plugin.json`, and the root `.claude-plugin/marketplace.json`.
+3. Syncs that version into `clients/.claude-plugin/plugin.json`, `clients/.codex-plugin/plugin.json`, `clients/.github/plugin/plugin.json`, the root `.claude-plugin/marketplace.json`, and the root `.github/plugin/marketplace.json`.
 4. Bundles the backend, CLI, and Claude broker helper to `clients/build/` using
    the shared production options in `scripts/server-esbuild-options.mjs`.
 5. Builds a probe backend to obtain the canonical store-format fingerprint, rebuilds with that fingerprint embedded, and atomically writes `clients/build/manifest.json` with the shared identity plus hashes for the backend, CLI, and Claude helper.

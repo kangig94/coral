@@ -15,7 +15,7 @@
 // The injected wrapper is silent (no stdout), so it never pollutes the Monitor's
 // line-oriented event stream.
 
-import { exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
+import { exitIfChildProcess, exitIfWrongFlavor, readStdin, writeHookOutput } from './lib/hook-utils.mjs';
 import { projectDirFromInput } from './lib/plugin-paths.mjs';
 import { beginBgTask } from './lib/live-work-registry.mjs';
 exitIfChildProcess();
@@ -34,14 +34,14 @@ try {
   const bg = beginBgTask(projectDirFromInput(input), input.session_id);
   if (!bg) process.exit(0); // invalid session / I/O error ⇒ leave the command unwrapped
 
-  process.stdout.write(JSON.stringify({
+  writeHookOutput({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'allow',
       permissionDecisionReason: 'monitor lifecycle tracking',
       updatedInput: { ...input.tool_input, command: `${bg.wrapper}\n${command}` },
     },
-  }) + '\n');
+  });
 } catch {
   process.exit(0);
 }

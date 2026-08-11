@@ -62,12 +62,12 @@ disallowedTools: Write, Edit
 
          if (!/^dc-/.test(agentName)) process.exit(0);
 
-         console.log(JSON.stringify({
+         writeHookOutput({
            hookSpecificOutput: {
              hookEventName: 'TeammateIdle',
              additionalContext: '...',
            },
-         }));
+         });
        } catch {
          process.exit(0);  // fail-open: any error = silent no-op
        }
@@ -117,8 +117,12 @@ disallowedTools: Write, Edit
        process.stderr.write('Call `discuss` with op: "bid" to submit your bid.\n');
        process.exit(2);
 
-       // CORRECT: Produce hookSpecificOutput via console.log (stdout)
-       console.log(JSON.stringify({ hookSpecificOutput: { ... } }));
+       // CORRECT: Produce hookSpecificOutput via writeHookOutput() (stdout)
+       // Never write the envelope to stdout directly: Copilot CLI reads these
+       // fields only at the top level and silently drops a hookSpecificOutput
+       // wrapper, so a raw console.log no-ops under that host.
+       import { writeHookOutput } from './lib/hook-utils.mjs';
+       writeHookOutput({ hookSpecificOutput: { ... } });
 
        // WRONG: Non-zero exit for no-op condition
        process.exit(1);  // treated as error

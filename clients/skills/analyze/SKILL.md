@@ -14,7 +14,7 @@ argument-hint: '[--delegate] [investigation target or question]'
   | Argument | Mode |
   |----------|------|
   | `<prompt>` | Self-execute on current host (default) |
-  | `--delegate` | Delegate to the other host (Codex when current is Claude, Claude when current is Codex; current host comes from SessionStart `Current host:`) |
+  | `--delegate` | Delegate to the other host (Claude → Codex, Codex → Claude, Copilot → Codex; current host comes from SessionStart `Current host:`) |
   | `--delegate <prompt>` | Same with prompt |
 
 Strip the `--delegate` flag before passing the prompt to the execution path.
@@ -57,12 +57,12 @@ Wait for each step's result before evaluating the next. At least one step must r
 Wait for the agent to return its findings.
 You (the executor) post-process and append the result to the file after each step completes.
 
-**Delegate (`--delegate`)**: run `coral-cli <other-host> <role_name> -i "<--deep prompt>" --work-dir "<work_dir>" -d` where `<other-host>` is the non-current host (Codex if current is Claude; Claude if current is Codex)
+**Delegate (`--delegate`)**: run `coral-cli <other-host> <role_name> -i "<--deep prompt>" --work-dir "<work_dir>" -d` where `<other-host>` is the delegation target for the current host (Claude → Codex, Codex → Claude, Copilot → Codex)
 with scope, `work_dir`, and analysis file content so far.
 Run one step at a time — do NOT launch steps in parallel. Each step's output informs
 the next step's scope and "Needed when" evaluation.
 Each step is a fresh call (no session continuity — each agent has a different role).
-After each launch: capture `job` from `Run coral-cli wait jobs <job> to wait for completion.`, then run `coral-cli wait jobs <job> --embed`. Classify the result from its rendered output, not exit code `75` alone: `Result path: <path>` marks a terminal result, so read that artifact and stop waiting even when a terminal `provider_exit` propagated code `75`; a status beginning `Still waiting` with `(cursor: <cursor>)` means the job is still live, so resume with `coral-cli wait jobs <job> --cursor <cursor> --embed`. If a transient error instead prints `remediation:`, follow that exact command. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
+After each launch: capture `job` from `Job <job> <launchState> (session <session>)`, then run `coral-cli wait jobs <job> --embed`. Classify the result from its rendered output, not exit code `75` alone: `Result path: <path>` marks a terminal result, so read that artifact and stop waiting even when a terminal `provider_exit` propagated code `75`; a status beginning `Still waiting` with `(cursor: <cursor>)` means the job is still live, so resume with `coral-cli wait jobs <job> --cursor <cursor> --embed`. If a transient error instead prints `remediation:`, follow that exact command. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
 On error, abort the chain and report the error.
 You (the executor) post-process and append the result to the file after each step completes.
 

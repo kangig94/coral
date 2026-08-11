@@ -12,7 +12,7 @@
 
 5. **Causal Faults**: Failure truth lives once on the originating stream. Job terminals point with `causeRef`; they do not wrap domain fault payloads. `JobLifecycleFault` is reserved for wrapper-local failures with no originating domain event.
 
-6. **Hooks Stay Self-Contained**: Hook scripts are Node.js ESM modules. They read stdin, write `hookSpecificOutput` when active, fail open, and never import from `src/`.
+6. **Hooks Stay Self-Contained**: Hook scripts are Node.js ESM modules. They read stdin, emit `hookSpecificOutput` through `writeHookOutput()` (which reshapes it per host), fail open, and never import from `src/`.
 
 7. **No Ambiguity**: Every concept has exactly one canonical home. Two files that "could" hold the same thing — even if currently different — get forgotten with 100% probability in future development, and the more generic-named file absorbs everything. The full naming/subdivision policy lives in [`docs/design-rationale.md`](../../docs/design-rationale.md) §9; the load-bearing rules:
    - **Never create a content-blank file** (`helpers.ts`, `utils.ts`, `shared.ts`, `helper.ts`, `shared-utils.ts`) — names that describe nothing invite "anything that fits" and accumulate unrelated logic. Forbidden by `tests/invariants/architecture-boundary.test.ts`.
