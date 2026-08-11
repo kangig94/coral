@@ -3,7 +3,9 @@ declare const __PLUGIN_ROOT__: string | undefined;
 
 import { auditBootstrapFailure, writeBootstrapDiagnostic, writeStartupErrorSentinel } from './bootstrap-diagnostics.js';
 import { BackendAlreadyRunningError } from './handoff.js';
+import { runHandoff } from './handoff-runner.js';
 import { createCoordinatorServer } from './index.js';
+import { StartupStoreHandoffError } from './lifecycle.js';
 import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
 import { backendLog } from '../infra/backend-log.js';
 import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
@@ -11,7 +13,21 @@ import { errorMessage } from '../infra/error-format.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
+import { parseProviderRoleArgv, type ProviderRole } from '../provider-proxy/role-argv.js';
+import { runProviderRoleMain } from '../provider-proxy/role-main.js';
 import { currentCoralStoreFormat } from '../store-format.js';
+
+/**
+ * Exit codes for a guardian/reaper/proxy role that failed to start, distinct from `0` (success), `1` (a
+ * coordinator's own generic startup failure), and `70` (`--print-store-reset-build-identity`'s own strict
+ * identity failure) — and distinct per role, so an operator reading the exit code alone knows which role
+ * process failed without needing to correlate it against a log line.
+ */
+const PROVIDER_ROLE_STARTUP_FAILURE_EXIT_CODES: Readonly<Record<ProviderRole, number>> = Object.freeze({
+  guardian: 71,
+  reaper: 72,
+  proxy: 73,
+});
 
 async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   const pathIdx = argv.indexOf('--path');
@@ -53,6 +69,44 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   }
 }
 
+export async function handoffStartupToSelectedBuild(
+  pluginRoot: string,
+  startupError: StartupStoreHandoffError,
+): Promise<Readonly<{ kind: 'started' }> | Readonly<{ kind: 'failed'; error: unknown }>> {
+  try {
+    const continuation = await runHandoff(
+      { kind: 'backend-startup' },
+      { pluginRoot, activeSelectionTarget: startupError.target },
+    );
+    if (continuation.kind === 'run-current') {
+      return {
+        kind: 'failed',
+        error: new Error('Validated active-store startup handoff did not start the selected backend.'),
+      };
+    }
+    switch (continuation.outcome.kind) {
+      case 'handoff-success':
+        return { kind: 'started' };
+      case 'handoff-exit':
+        return {
+          kind: 'failed',
+          error: new Error(
+            `Selected backend exited during startup handoff with code ${continuation.outcome.exitCode}.`,
+          ),
+        };
+      case 'handoff-signal':
+        return {
+          kind: 'failed',
+          error: new Error(
+            `Selected backend exited during startup handoff from signal ${continuation.outcome.signal}.`,
+          ),
+        };
+    }
+  } catch (error: unknown) {
+    return { kind: 'failed', error };
+  }
+}
+
 export async function main(): Promise<number> {
   // Before any child spawn, shed the Claude Code identity inherited from the daemon's launcher.
   shedInheritedClaudeCodeEnv(process.env);
@@ -67,6 +121,26 @@ export async function main(): Promise<number> {
     if (!identity.ok) return 70;
     process.stdout.write(`${JSON.stringify(identity.manifest)}\n`);
     return 0;
+  }
+
+  // Provider-proxy role dispatch runs before ordinary coordinator construction: a guardian, reaper, or proxy
+  // process is a role of this same backend artifact, never a coordinator. Parsing lives in `role-argv.ts`
+  // and running in `role-main.ts` — this is dispatch only.
+  const providerRole = parseProviderRoleArgv(process.argv);
+  if (providerRole.role !== 'none') {
+    try {
+      return await runProviderRoleMain(providerRole, {
+        pluginRoot: typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd(),
+      });
+    } catch (error: unknown) {
+      // A guardian/reaper/proxy role failing to start is not a coordinator startup failure — it must not
+      // reach `writeBootstrapDiagnostic`/`auditBootstrapFailure` below, which are the coordinator's own
+      // diagnostic surface, or an operator reading them would see a role's own crash reported as if this
+      // process had tried and failed to become the backend itself. Distinct codes, mirroring this file's own
+      // `70` for `--print-store-reset-build-identity`, are what let the two be told apart from the outside.
+      backendLog.error(`Provider ${providerRole.role} role failed to start`, error);
+      return PROVIDER_ROLE_STARTUP_FAILURE_EXIT_CODES[providerRole.role];
+    }
   }
 
   if (process.env.CORAL_KB_DAEMON === '1') {
@@ -131,10 +205,24 @@ export async function main(): Promise<number> {
       return 0;
     }
 
-    backendLog.error('Fatal startup error', error);
-    const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'startup_failed', error, 1);
-    writeStartupErrorSentinel(__PLUGIN_ROOT__, error, diagnosticFile);
-    auditBootstrapFailure('bootstrap_startup_failed', __PLUGIN_ROOT__, 'startup_failed', error, 1, diagnosticFile);
+    let startupError = error;
+    if (error instanceof StartupStoreHandoffError) {
+      const handoff = await handoffStartupToSelectedBuild(__PLUGIN_ROOT__, error);
+      if (handoff.kind === 'started') return 0;
+      startupError = handoff.error;
+    }
+
+    backendLog.error('Fatal startup error', startupError);
+    const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'startup_failed', startupError, 1);
+    writeStartupErrorSentinel(__PLUGIN_ROOT__, startupError, diagnosticFile);
+    auditBootstrapFailure(
+      'bootstrap_startup_failed',
+      __PLUGIN_ROOT__,
+      'startup_failed',
+      startupError,
+      1,
+      diagnosticFile,
+    );
     return 1;
   } finally {
     clearInterval(startupKeepalive);

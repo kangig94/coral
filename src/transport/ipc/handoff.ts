@@ -6,6 +6,7 @@
 // and `transport.shutdown`); there is no coordinator policy here.
 
 import { createRealTimePort } from '../../infra/time.js';
+import { compareProductVersions } from '../../infra/product-version.js';
 import { createIpcClient } from './client.js';
 import type { TimePort } from '../../infra/port-types.js';
 
@@ -49,11 +50,11 @@ export type IncumbentHealth = {
 };
 
 /**
- * Raised when the contender concludes the existing incumbent is *us* — same
- * version/bundle/flavor/namespace, not draining — and exiting the contender is the
- * correct action. Lifecycle translates this back into the existing
- * `BackendAlreadyRunningError` so bootstrap's "info log + exit 0" path
- * stays unchanged.
+ * Raised when the contender concludes the existing incumbent already
+ * outranks it — matching flavor/namespace, same-or-newer product version,
+ * not draining — and exiting the contender is the correct action.
+ * Lifecycle translates this back into the existing `BackendAlreadyRunningError`
+ * so bootstrap's "info log + exit 0" path stays unchanged.
  */
 export class IncumbentMatchesError extends Error {
   public readonly identity: DesiredIncumbentIdentity;
@@ -77,13 +78,30 @@ export class IpcDeadlineExceededError extends Error {
   }
 }
 
-export function isCompatibleIncumbent(health: IncumbentHealth, desired: DesiredIncumbentIdentity): boolean {
-  return (
-    health.version === desired.version &&
-    health.bundleHash === desired.bundleHash &&
-    health.flavor === desired.flavor &&
-    health.namespace === desired.namespace
-  );
+/**
+ * True when the live incumbent already covers everything the contender's own
+ * build would provide, so evicting it would trade a healthy coordinator for
+ * one that is not an upgrade. This is the daemon-side half of the precedence
+ * rule V1.1 already applies on the CLI path (`resolveLiveIncumbentRouting` /
+ * `routeLiveIncumbent` in `src/infra/backend-routing.ts`): a version
+ * difference alone is never a replacement reason, and there is no arbitrary
+ * tie-break at equal version — the incumbent keeps the socket. `bundleHash`
+ * therefore no longer gates this decision; it identifies a build, it does
+ * not order one.
+ *
+ * Total by construction: `compareProductVersions` cannot make both
+ * directions of the same ordered pair positive, so of two contenders racing
+ * for one incumbent, at most one can conclude the other side is upgradeable.
+ * At equal version neither can, so both defer — an equal-version rebuild
+ * with a different bundle hash converges on whichever build bound the
+ * socket first instead of alternating SIGTERM/SIGKILL evictions that reset
+ * the store on every lap.
+ */
+export function incumbentOutranksContender(health: IncumbentHealth, desired: DesiredIncumbentIdentity): boolean {
+  if (health.version === undefined || health.flavor !== desired.flavor || health.namespace !== desired.namespace) {
+    return false;
+  }
+  return compareProductVersions(desired.version, health.version) <= 0;
 }
 
 function remainingBudget(deadlineMs: number, timePort: TimePort): number {
@@ -107,9 +125,10 @@ function isShutdownUnauthorizedError(error: unknown): boolean {
  *   - `health`: last non-null health snapshot, or null if never reachable.
  *   - `verifiedIdentity`: pid+processStartedAt sourced from health, or null.
  *
- * Throws `IncumbentMatchesError` when the incumbent is compatible (same
- * version/bundleHash/flavor/namespace) and not draining; the contender treats this
- * as "we are redundant" rather than handoff.
+ * Throws `IncumbentMatchesError` when the incumbent outranks the contender
+ * (`incumbentOutranksContender`: matching flavor/namespace, same-or-newer
+ * version) and is not draining; the contender treats this as "we are
+ * redundant" rather than handoff.
  */
 export async function requestIncumbentShutdown(opts: {
   socketPath: string;
@@ -146,7 +165,7 @@ export async function requestIncumbentShutdown(opts: {
     }
   }
 
-  if (health && isCompatibleIncumbent(health, opts.desired) && health.status !== 'draining') {
+  if (health && incumbentOutranksContender(health, opts.desired) && health.status !== 'draining') {
     throw new IncumbentMatchesError(opts.desired);
   }
 

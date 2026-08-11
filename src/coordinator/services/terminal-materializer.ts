@@ -366,35 +366,3 @@ export function appendJobRecoveryFaultTerminalInCommit<Scope>(
 ): void {
   appendTerminalWithOutcomePlan(c, planJobRecoveryFault(fault, options), options, record);
 }
-
-export function recordSessionInterruptedTerminal(
-  progressStore: RuntimeCommitStore,
-  fault: SessionInterruptedFault,
-  options: RuntimeIngestOptions,
-  record: {
-    readonly content: string;
-    readonly durationMs: number;
-    readonly diagnostics?: JobTerminalDiagnostics;
-  },
-): void {
-  progressStore.commit((c) => {
-    appendSessionInterruptedTerminalInCommit(c, fault, options, record);
-    return undefined;
-  });
-}
-
-export function recordJobRecoveryFaultTerminal(
-  progressStore: RuntimeCommitStore,
-  fault: JobRecoveryFault,
-  options: RuntimeIngestOptions,
-  record: {
-    readonly content: string;
-    readonly durationMs: number;
-    readonly diagnostics?: JobTerminalDiagnostics;
-  },
-): void {
-  progressStore.commit((c) => {
-    appendJobRecoveryFaultTerminalInCommit(c, fault, options, record);
-    return undefined;
-  });
-}

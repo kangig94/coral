@@ -11,6 +11,16 @@ import { type CoordinatorPaths, coordinatorPaths, socketPathForRunDir } from './
 import { coralStateRoot, generationRoot, generationStateRoot, kbVaultRoot } from './root.js';
 import { type EnginePaths, enginePaths } from './engine.js';
 import { type KbRuntimePaths, kbRuntimePaths } from './kb-runtime.js';
+import {
+  ProviderProxyEndpointError,
+  providerGuardianBootstrapCapsulePath,
+  providerGuardianEndpoint,
+  providerHandoffCapsulePath,
+  providerProxyBootstrapCapsulePath,
+  providerProxyEndpoint,
+  providerReaperBootstrapCapsulePath,
+  providerReaperEndpoint,
+} from './provider-proxy.js';
 import { type StorePaths, storePaths } from './store.js';
 
 export interface CorpusPaths {
@@ -53,9 +63,28 @@ export type CoralPaths = {
 
 // Re-export per-family types so external callers (transport, expansion,
 // test fixtures) see a single public surface for path-shape vocabulary.
-// Runtime path-construction functions stay subdir-internal.
+// Stable path construction stays behind the eager runtime port; instance-keyed
+// provider endpoint and capsule paths are dynamic and therefore publish their constructors here.
 export type { CoordinatorPaths } from './coordinator.js';
 export { socketPathForRunDir };
+export type {
+  ProviderBootstrapCapsulePathOptions,
+  ProviderGuardianEndpointIdentity,
+  ProviderProxyEndpointEnvironment,
+  ProviderProxyEndpointErrorCode,
+  ProviderProxyEndpointIdentity,
+  ProviderReaperEndpointIdentity,
+} from './provider-proxy.js';
+export {
+  ProviderProxyEndpointError,
+  providerGuardianBootstrapCapsulePath,
+  providerGuardianEndpoint,
+  providerHandoffCapsulePath,
+  providerProxyBootstrapCapsulePath,
+  providerProxyEndpoint,
+  providerReaperBootstrapCapsulePath,
+  providerReaperEndpoint,
+};
 // Config-dir resolution remains public for plugin discovery and provider
 // credentials. It never participates in Coral daemon path composition.
 export { resolveClaudeConfigDir, resolveUserHomeDir } from './root.js';

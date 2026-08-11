@@ -2,7 +2,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import type { EngineManifest, Expansion, ExpansionHost } from '../../expansion/contract.js';
 import { BUNDLED_ENGINES, loadBundledEngine } from '../../expansion/bundled.js';
 import { disposeExpansionScope } from '../../expansion/host.js';
-import { createScope } from '../../expansion/scope.js';
+import { createScope } from '../../infra/disposable-scope.js';
 import type { KbRuntime } from '../../kb/contract.js';
 import type { KbCapabilityName, KbCapabilityStatus } from '../../kb/capability/contract.js';
 import { kbCapabilityNameSchema } from '../../kb/capability/contract.js';

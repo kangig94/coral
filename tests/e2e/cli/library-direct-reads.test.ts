@@ -302,7 +302,6 @@ async function expectedOutput(fixture: Fixture, testCase: ReadCommandCase): Prom
   try {
     const store = new CoralStore(db, createDefaultStoreReadContext(), {
       runtime,
-      namespace: pluginRootNamespace(fixture.root),
       projectRoot: fixture.projectRoot,
       pluginRoot: fixture.root,
     });

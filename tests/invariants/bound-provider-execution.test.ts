@@ -158,7 +158,7 @@ describe('bound-provider execution architecture', () => {
     const registry = readFileSync(new URL('src/providers/registry.ts', ROOT), 'utf-8');
     const executionPlan = readFileSync(new URL('src/providers/execution-plan.ts', ROOT), 'utf-8');
     const durableTransport = readFileSync(new URL('src/coordinator/live/durable-transport.ts', ROOT), 'utf-8');
-    const serverTransport = readFileSync(new URL('src/coordinator/live/provider-server-transport.ts', ROOT), 'utf-8');
+    const serverTransport = readFileSync(new URL('src/providers/app-server-transport.ts', ROOT), 'utf-8');
     const realRuntime = readFileSync(new URL('src/runtime/real.ts', ROOT), 'utf-8');
 
     expect(bindingContract).not.toContain('ProviderCredentialSourceRef');

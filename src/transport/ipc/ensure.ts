@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import type { CoordinatorPaths } from '../../infra/path/index.js';
@@ -14,11 +15,9 @@ import { HEALTH_TIMEOUT_MS } from '../http/sse.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
-import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
+import { readBuildFlavor, readBundleHash, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { createIpcClient, type IpcClient } from './client.js';
 import { bindSocket } from './server.js';
-import { IncumbentMatchesError, requestIncumbentShutdown, type DesiredIncumbentIdentity } from './handoff.js';
-import { shutdownBackend } from '../http/backend/shutdown.js';
 import type { TransportRuntimeComponentStatus } from '../server-ports.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { CoralSetupError, type SerializedCoralSetupError } from '../../runtime/errors.js';
@@ -105,6 +104,11 @@ type BackendReadyWaitContext =
   | { readonly kind: 'current-attempt'; readonly attemptId: string; readonly spawnedAt: number }
   | { readonly kind: 'existing-starting' };
 
+type ReadyCoordinatorEvidence = Readonly<{
+  info: VerifiedBackendInfo;
+  health: RawCoordinatorHealth;
+}>;
+
 type StartupErrorSentinel = {
   readonly version: 1;
   readonly attemptId: string;
@@ -149,23 +153,90 @@ function currentVersion(root: string): string {
   }
 }
 
-function isRawCoordinatorHealth(value: unknown): value is RawCoordinatorHealth {
-  return (
-    isRecord(value) &&
-    (value.status === 'starting' ||
-      value.status === 'kernel-ready' ||
-      value.status === 'ok' ||
-      value.status === 'running' ||
-      value.status === 'draining') &&
-    typeof value.version === 'string' &&
-    typeof value.bundleHash === 'string' &&
-    (value.flavor === 'prod' || value.flavor === 'dev') &&
-    typeof value.instanceId === 'string' &&
-    value.instanceId.length > 0 &&
-    typeof value.namespace === 'string' &&
-    value.namespace.length > 0 &&
-    (value.components === undefined || Array.isArray(value.components))
-  );
+const runtimeComponentStatusSchema = z.discriminatedUnion('phase', [
+  z.object({ id: z.string().min(1), phase: z.literal('initializing'), attempt: z.number().int().positive() }).strict(),
+  z.object({ id: z.string().min(1), phase: z.literal('online') }).strict(),
+  z
+    .object({
+      id: z.string().min(1),
+      phase: z.literal('degraded'),
+      reason: z.discriminatedUnion('kind', [
+        z
+          .object({
+            kind: z.literal('curate-publish'),
+            consecutiveFailures: z.number().int().nonnegative(),
+            lastError: z.string(),
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal('recovery-quarantine'),
+            count: z.number().int().nonnegative(),
+            lastError: z.string(),
+          })
+          .strict(),
+      ]),
+    })
+    .strict(),
+  z
+    .object({
+      id: z.string().min(1),
+      phase: z.literal('offline'),
+      reason: z.string(),
+      lastLogLine: z.string().optional(),
+      diagnostic: z
+        .object({
+          attempts: z.number().int().nonnegative().optional(),
+          failedStep: z.string().optional(),
+          retry: z.enum(['restart-daemon', 'none']).optional(),
+          lastErrorStack: z.string().optional(),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+]);
+
+const rawCoordinatorHealthSchema = z
+  .object({
+    status: z.enum(['starting', 'kernel-ready', 'ok', 'running', 'draining']),
+    version: z.string().min(1),
+    bundleHash: z.string().min(1),
+    flavor: z.enum(['prod', 'dev']),
+    instanceId: z.string().min(1),
+    namespace: z.string().min(1),
+    pid: z.number().int().positive().optional(),
+    processStartedAt: z.number().int().positive().optional(),
+    components: z.array(runtimeComponentStatusSchema).optional(),
+  })
+  .passthrough();
+
+const nonEmptyStringSchema = z.string().min(1);
+const verifiedBackendInfoSchema = z
+  .object({
+    pid: z.number().int().positive(),
+    port: z.number().int().positive(),
+    socketPath: nonEmptyStringSchema,
+    bundleHash: nonEmptyStringSchema,
+    flavor: z.enum(['prod', 'dev']),
+    namespace: nonEmptyStringSchema,
+    startedAt: z.number().positive(),
+    token: nonEmptyStringSchema,
+    bootToken: nonEmptyStringSchema,
+    shutdownToken: nonEmptyStringSchema.optional(),
+    host: nonEmptyStringSchema,
+    version: nonEmptyStringSchema,
+    instanceId: nonEmptyStringSchema,
+    processStartedAt: z.number().int().positive().optional(),
+  })
+  // Same record `readDiscoveryRecord` parses in infra/backend-discovery.ts, re-validated here with a
+  // narrower (all-required) shape — tolerant for the same reason: a future writer's extra field must not
+  // make this build's own read of the record it just wrote fail.
+  .passthrough();
+
+function parseRawCoordinatorHealth(value: unknown): RawCoordinatorHealth | null {
+  const parsed = rawCoordinatorHealthSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 /**
@@ -179,36 +250,7 @@ function isReadyStatus(status: RawCoordinatorHealth['status']): boolean {
 }
 
 function isVerifiedBackendInfo(value: unknown): value is VerifiedBackendInfo {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Record<string, unknown>;
-  return (
-    Number.isInteger(record.pid) &&
-    (record.pid as number) > 0 &&
-    Number.isInteger(record.port) &&
-    (record.port as number) > 0 &&
-    typeof record.socketPath === 'string' &&
-    record.socketPath.length > 0 &&
-    (record.host === undefined || (typeof record.host === 'string' && record.host.length > 0)) &&
-    typeof record.token === 'string' &&
-    record.token.length > 0 &&
-    typeof record.bootToken === 'string' &&
-    record.bootToken.length > 0 &&
-    (record.shutdownToken === undefined ||
-      (typeof record.shutdownToken === 'string' && record.shutdownToken.length > 0)) &&
-    typeof record.version === 'string' &&
-    record.version.length > 0 &&
-    typeof record.bundleHash === 'string' &&
-    record.bundleHash.length > 0 &&
-    (record.flavor === 'prod' || record.flavor === 'dev') &&
-    typeof record.instanceId === 'string' &&
-    record.instanceId.length > 0 &&
-    typeof record.namespace === 'string' &&
-    record.namespace.length > 0 &&
-    Number.isFinite(record.startedAt) &&
-    (record.startedAt as number) > 0 &&
-    (record.processStartedAt === undefined ||
-      (Number.isInteger(record.processStartedAt) && (record.processStartedAt as number) > 0))
-  );
+  return verifiedBackendInfoSchema.safeParse(value).success;
 }
 
 function isSerializedStartupError(value: unknown): value is SerializedCoralSetupError {
@@ -237,10 +279,16 @@ function isStartupErrorSentinel(value: unknown): value is StartupErrorSentinel {
   );
 }
 
-async function readRawCoordinatorHealth(client: IpcClient): Promise<RawCoordinatorHealth | null> {
+async function readRawCoordinatorHealth(
+  client: IpcClient,
+  request: 'ping' | 'health' = 'ping',
+): Promise<RawCoordinatorHealth | null> {
   try {
-    const health = await client.ping<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
-    return isRawCoordinatorHealth(health) ? health : null;
+    const health =
+      request === 'ping'
+        ? await client.ping<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS })
+        : await client.health<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
+    return parseRawCoordinatorHealth(health);
   } catch {
     return null;
   }
@@ -271,13 +319,12 @@ function mergeDiscoveryWithHealth(info: VerifiedBackendInfo, health: RawCoordina
   };
 }
 
-function isCompatibleHealth(health: RawCoordinatorHealth, desired: DesiredCoordinator): boolean {
-  return (
-    health.version === desired.version &&
-    health.bundleHash === desired.bundleHash &&
-    health.flavor === desired.flavor &&
-    health.namespace === desired.namespace
-  );
+export function mayInvocationBeServedByIncumbent(health: RawCoordinatorHealth | null): health is RawCoordinatorHealth {
+  return health !== null && health.status !== 'draining';
+}
+
+export function mayProcessReplaceIncumbent(health: RawCoordinatorHealth | null): boolean {
+  return health === null || health.status === 'draining';
 }
 
 function existingIncumbentIdentity(health: RawCoordinatorHealth): ExistingIncumbentIdentity {
@@ -317,6 +364,29 @@ function discoveryMatchesExistingIncumbent(
   incumbent: ExistingIncumbentIdentity,
 ): boolean {
   return info.socketPath === paths.socketPath && identityMatchesExistingIncumbent(info, incumbent);
+}
+
+async function readIdentityCheckedAuthenticatedHealth(
+  info: VerifiedBackendInfo,
+  paths: CoordinatorPaths,
+  observedHealth: RawCoordinatorHealth,
+  timePort: TimePort,
+): Promise<RawCoordinatorHealth | null> {
+  const observedIdentity = existingIncumbentIdentity(observedHealth);
+  if (!discoveryMatchesExistingIncumbent(info, paths, observedIdentity)) {
+    return null;
+  }
+
+  const client = createIpcClient(info.socketPath, timePort, { kind: 'boot', token: info.bootToken });
+  const authenticatedHealth = await readRawCoordinatorHealth(client, 'health');
+  if (
+    authenticatedHealth === null ||
+    !identityMatchesExistingIncumbent(authenticatedHealth, observedIdentity) ||
+    !discoveryMatchesExistingIncumbent(info, paths, existingIncumbentIdentity(authenticatedHealth))
+  ) {
+    return null;
+  }
+  return authenticatedHealth;
 }
 
 function childCoordinatorUnavailable(reason: string): BackendUnreachableError {
@@ -493,31 +563,10 @@ async function waitForSocketRelease(socketPath: string, timeoutMs: number, timeP
 }
 
 /**
- * Shut down the running coordinator (admin drain) and wait until its socket is
- * released, so a follow-up `ensure()` spawns a fresh daemon instead of racing a
- * still-`running` incumbent. The CLI's lazy KB re-enable path uses this: the
- * daemon must restart to pick up a changed `CORAL_KB_ENABLE`, and admin
- * shutdown is identity-agnostic (the handoff path refuses to replace a
- * same-bundle daemon).
- */
-export async function shutdownAndAwaitRelease(pluginRoot?: string, timePort?: TimePort): Promise<void> {
-  const root = resolvePluginRoot(pluginRoot);
-  const flavor = readBuildFlavor(root);
-  const runtime = createRealRuntime(flavor);
-  const ipcTime = timePort ?? runtime.time;
-  const paths = runtime.paths.coral.coordinator;
-  if (isCoralChildEnvironment(runtime.env.fullSnapshot())) {
-    throw childCoordinatorUnavailable('it is not allowed to restart its parent coordinator');
-  }
-  await shutdownBackend(root);
-  await waitForSocketRelease(paths.socketPath, HANDOFF_DRAIN_TIMEOUT_MS, ipcTime);
-}
-
-/**
  * After a fresh spawn (or while the incumbent is still in `starting`), poll
  * until the daemon has both bound the socket AND written `coordinator.json`
- * with a compatible health response. Returns the merged `VerifiedBackendInfo` ready
- * for `summarizeBackend`.
+ * with an authenticated, identity-checked health response that can serve the
+ * invocation.
  */
 async function waitForBackendReady(
   paths: CoordinatorPaths,
@@ -525,7 +574,7 @@ async function waitForBackendReady(
   timeoutMs: number,
   timePort: TimePort,
   waitContext: BackendReadyWaitContext,
-): Promise<VerifiedBackendInfo> {
+): Promise<ReadyCoordinatorEvidence> {
   const currentAttempt = waitContext.kind === 'current-attempt';
   const bindDeadline = timePort.now() + KERNEL_BIND_DEADLINE_MS;
   let sawFirstHealth = !currentAttempt;
@@ -546,8 +595,11 @@ async function waitForBackendReady(
       const health = await readRawCoordinatorHealth(createIpcClient(info.socketPath, timePort));
       noteHealth(health);
       observedPid = health?.pid ?? observedPid;
-      if (health && isReadyStatus(health.status) && isCompatibleHealth(health, desired)) {
-        return mergeDiscoveryWithHealth(info, health);
+      if (mayInvocationBeServedByIncumbent(health) && isReadyStatus(health.status)) {
+        const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(info, paths, health, timePort);
+        if (mayInvocationBeServedByIncumbent(authenticatedHealth) && isReadyStatus(authenticatedHealth.status)) {
+          return { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
+        }
       }
     } else if (waitContext.kind === 'existing-starting' || waitContext.kind === 'current-attempt') {
       const health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort));
@@ -642,90 +694,37 @@ async function ensureChildIncumbent(
   return summarizeBackend(info, timePort, 'none');
 }
 
-async function reuseCompatibleCoordinator(
+async function reuseServingIncumbent(
   paths: CoordinatorPaths,
   desired: DesiredCoordinator,
-  health: RawCoordinatorHealth | null,
+  health: RawCoordinatorHealth,
   timePort: TimePort,
 ): Promise<EnsuredIpcClient | null> {
-  if (health === null || !isCompatibleHealth(health, desired) || health.status === 'draining') return null;
-
   const info = readDiscoverySnapshot(paths);
-  if (info && isReadyStatus(health.status)) {
-    return summarizeBackend(mergeDiscoveryWithHealth(info, health), timePort, 'boot');
+  if (info !== null) {
+    const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(info, paths, health, timePort);
+    if (authenticatedHealth === null) {
+      return null;
+    }
+    if (isReadyStatus(authenticatedHealth.status)) {
+      return summarizeBackend(mergeDiscoveryWithHealth(info, authenticatedHealth), timePort, 'boot');
+    }
   }
-  return summarizeBackend(
-    await waitForBackendReady(paths, desired, KERNEL_READY_DEADLINE_MS, timePort, { kind: 'existing-starting' }),
-    timePort,
-    'boot',
-  );
-}
 
-async function requestIncompatibleIncumbentHandoff(
-  paths: CoordinatorPaths,
-  desiredIdentity: DesiredIncumbentIdentity,
-  timePort: TimePort,
-): Promise<void> {
-  const info = readDiscoverySnapshot(paths);
-  const shutdownCredential = info?.bootToken;
-  const shutdownResult = await requestIncumbentShutdown({
-    socketPath: paths.socketPath,
-    desired: desiredIdentity,
-    bootToken: shutdownCredential,
-    timeoutMs: HEALTH_TIMEOUT_MS,
-    timePort,
+  const ready = await waitForBackendReady(paths, desired, KERNEL_READY_DEADLINE_MS, timePort, {
+    kind: 'existing-starting',
   });
-  if (shutdownResult.shutdownUnauthorized) {
-    throw new BackendUnreachableError('Manual shutdown required: incumbent rejected shutdown capability.');
-  }
-  if (!shutdownResult.shutdownAttempted && shutdownCredential === undefined) {
-    throw new BackendUnreachableError(
-      'Manual shutdown required: refusing handoff because verified shutdown capability was unavailable.',
-    );
-  }
-}
-
-async function reuseReclassifiedIncumbent(
-  error: unknown,
-  paths: CoordinatorPaths,
-  desired: DesiredCoordinator,
-  timePort: TimePort,
-): Promise<EnsuredIpcClient | null> {
-  if (!(error instanceof IncumbentMatchesError) || readDiscoverySnapshot(paths) === null) return null;
-  return summarizeBackend(
-    await waitForBackendReady(paths, desired, KERNEL_READY_DEADLINE_MS, timePort, {
-      kind: 'existing-starting',
-    }),
-    timePort,
-    'boot',
-  );
+  return summarizeBackend(ready.info, timePort, 'boot');
 }
 
 async function prepareTopLevelSpawn(
   paths: CoordinatorPaths,
-  desired: DesiredCoordinator,
-  desiredIdentity: DesiredIncumbentIdentity,
   health: RawCoordinatorHealth | null,
   timePort: TimePort,
-): Promise<EnsuredIpcClient | null> {
-  if (health === null) return null;
-  if (isCompatibleHealth(health, desired)) {
+): Promise<void> {
+  if (health?.status === 'draining') {
     await waitForSocketRelease(paths.socketPath, HANDOFF_DRAIN_TIMEOUT_MS, timePort);
-    return null;
   }
-
-  try {
-    await requestIncompatibleIncumbentHandoff(paths, desiredIdentity, timePort);
-  } catch (error) {
-    const reclassified = await reuseReclassifiedIncumbent(error, paths, desired, timePort);
-    if (reclassified) return reclassified;
-    if (error instanceof BackendUnreachableError && error.message.startsWith('Manual shutdown required:')) {
-      throw error;
-    }
-    // Other failures escalate through the bounded socket-release wait.
-  }
-  await waitForSocketRelease(paths.socketPath, HANDOFF_DRAIN_TIMEOUT_MS, timePort);
-  return null;
 }
 
 async function spawnTopLevelCoordinator(
@@ -740,7 +739,7 @@ async function spawnTopLevelCoordinator(
     attemptId: spawned.attemptId,
     spawnedAt: spawned.spawnedAt,
   });
-  return summarizeBackend(ready, timePort, 'boot');
+  return summarizeBackend(ready.info, timePort, 'boot');
 }
 
 async function ensureTopLevelCoordinator(
@@ -750,42 +749,62 @@ async function ensureTopLevelCoordinator(
   health: RawCoordinatorHealth | null,
   timePort: TimePort,
 ): Promise<EnsuredIpcClient> {
-  const bundleHash = readBundleHash(root);
+  const strictIdentity = resolveStrictBundleIdentity();
+  const manifest = strictIdentity.ok ? strictIdentity.manifest : null;
+  const bundleHash = manifest?.bundleHash ?? readBundleHash(root);
   const namespace = pluginRootNamespace(root);
   const desired: DesiredCoordinator = {
-    version: currentVersion(root),
+    version: manifest?.version ?? currentVersion(root),
     bundleHash,
     flavor,
     namespace,
   };
-  const desiredIdentity: DesiredIncumbentIdentity = { version: desired.version, bundleHash, flavor, namespace };
-
-  const reusable = await reuseCompatibleCoordinator(paths, desired, health, timePort);
-  if (reusable) return reusable;
-
-  const reclassified = await prepareTopLevelSpawn(paths, desired, desiredIdentity, health, timePort);
-  if (reclassified) return reclassified;
+  let replacementEvidence = health;
+  if (mayInvocationBeServedByIncumbent(health)) {
+    const incumbent = await reuseServingIncumbent(paths, desired, health, timePort);
+    if (incumbent !== null) {
+      return incumbent;
+    }
+    // `reuseServingIncumbent` failing is not proof the incumbent is gone — an
+    // unauthenticated `ping` already showed it live moments ago, and a single
+    // dropped authenticated round-trip looks identical to a dead incumbent.
+    // Re-probe and retry once before conceding: spawning a fresh coordinator
+    // against a still-serving incumbent is exactly how two builds end up
+    // racing `bindWithHandoff` for the same socket. `mayProcessReplaceIncumbent`
+    // is the same predicate `mayInvocationBeServedByIncumbent` complements —
+    // it is the explicit gate for "is spawning even on the table here".
+    replacementEvidence = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, timePort));
+    if (mayInvocationBeServedByIncumbent(replacementEvidence)) {
+      const retried = await reuseServingIncumbent(paths, desired, replacementEvidence, timePort);
+      if (retried !== null) {
+        return retried;
+      }
+    }
+    if (!mayProcessReplaceIncumbent(replacementEvidence)) {
+      throw new BackendUnreachableError(
+        'Coral coordinator is running but this invocation could not verify it after a retry (transient IPC ' +
+          'failure). Run `coral-cli backend status` and retry.',
+      );
+    }
+  }
+  await prepareTopLevelSpawn(paths, replacementEvidence, timePort);
 
   return spawnTopLevelCoordinator(resolveBackendBin(root), paths, desired, timePort);
 }
 
 /**
- * Ensure a Coral coordinator daemon is running and compatible with the calling
- * plugin bundle. The CLI side mirrors daemon-side `bindWithHandoff` — it
- * relies on the kernel's exclusive-bind semantics on the IPC socket as the
- * single arbiter of "who is the canonical incumbent" and uses the shared
- * `requestIncumbentShutdown` helper for graceful cross-version handoff.
+ * Ensure a Coral coordinator daemon is running. The kernel's exclusive-bind
+ * semantics on the IPC socket remain the single arbiter of the canonical
+ * incumbent.
  *
  * Decision tree:
  *   1. Probe existing socket via unauthenticated `transport.ping`.
  *      - Child-shaped invocation → reuse only the exact observed incumbent;
  *                                   never hand off or spawn.
- *      - Compatible + ready  → return summary (or wait for `coordinator.json`
- *                              if `starting` or discovery missing).
- *      - Compatible + draining → wait for socket release, fall through to spawn.
- *      - Incompatible → request shutdown over the same shared helper, wait
- *                       for socket release, spawn fresh.
- *      - Unreachable → spawn fresh.
+ *      - Healthy → return it regardless of build (or wait for
+ *                  `coordinator.json` if `starting` or discovery is missing).
+ *      - Draining → wait for socket release, then spawn.
+ *      - Unreachable or identity-invalid → spawn.
  *   2. Spawn the coordinator and wait for it to bind + write discovery.
  */
 export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<EnsuredIpcClient> {

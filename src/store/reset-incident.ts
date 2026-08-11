@@ -38,8 +38,6 @@ export type StoreResetNewerTargetEvidence = {
     readonly bundleHash: string | null;
     readonly flavor: StoreResetBuildFlavor | null;
     readonly storeFormatFingerprint: string | null;
-    readonly executablePathSha256: string | null;
-    readonly executableSha256: string | null;
   };
 };
 
@@ -744,15 +742,7 @@ function validateManifest(value: unknown): StoreResetIncidentManifest {
     requireExactKeys(failureValue, ['code']);
     const code = exactString(requiredValue(failureValue, 'code'), VALIDATION_FAILURE_CODE_PATTERN, 128);
     const observedValue = objectValue(requiredValue(evidence, 'observedTarget'));
-    requireExactKeys(observedValue, [
-      'version',
-      'buildSetId',
-      'bundleHash',
-      'flavor',
-      'storeFormatFingerprint',
-      'executablePathSha256',
-      'executableSha256',
-    ]);
+    requireExactKeys(observedValue, ['version', 'buildSetId', 'bundleHash', 'flavor', 'storeFormatFingerprint']);
     const observedFlavor = requiredValue(observedValue, 'flavor');
     if (observedFlavor !== null && observedFlavor !== 'dev' && observedFlavor !== 'prod') {
       fail('manifest_invalid_schema');
@@ -769,12 +759,6 @@ function validateManifest(value: unknown): StoreResetIncidentManifest {
           FINGERPRINT_PATTERN,
           71,
         ),
-        executablePathSha256: nullableExactString(
-          requiredValue(observedValue, 'executablePathSha256'),
-          SHA256_PATTERN,
-          64,
-        ),
-        executableSha256: nullableExactString(requiredValue(observedValue, 'executableSha256'), SHA256_PATTERN, 64),
       }),
     });
     if (reason !== 'mismatch' || storedFingerprint === null) {

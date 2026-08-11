@@ -1,4 +1,6 @@
 import type { ServerResponse } from 'node:http';
+
+import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobTerminal } from '../jobs/records.js';
@@ -94,8 +96,8 @@ export type HealthSnapshot = {
    * Coarse lifecycle visibility surface for clients that validate the strict
    * `'starting' | 'ok' | 'draining'` enum. Consumers that need the full
    * lifecycle read `kernel.phase` instead. Handoff contenders read this to
-   * distinguish a same-bundle redundant peer from a mismatch they should
-   * replace.
+   * distinguish exact reuse from a validated newer-target handoff without
+   * replacing a healthy incumbent.
    */
   status: 'starting' | 'ok' | 'draining';
   /**
@@ -110,6 +112,12 @@ export type HealthSnapshot = {
   };
   version: string;
   bundleHash: string;
+  /**
+   * Authenticated foreign-build identity. Strict production builds publish
+   * both fields together; older and non-strict development builds omit both.
+   */
+  manifest?: StrictBundleManifest;
+  bundleDir?: string;
   flavor: 'prod' | 'dev';
   namespace: string;
   instanceId: string;
@@ -126,6 +134,7 @@ export type HealthSnapshot = {
   processStartedAt?: number;
   uptimeMs: number;
   active: number;
+  /** Jobs in a live phase; build namespace is provenance and does not scope job ownership. */
   activeJobs: number;
   liveDiscuss: number;
   queueDepth: number;

@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { jobsReconcile } from '#src/jobs/startup.js';
+import * as jobsStartup from '#src/jobs/startup.js';
+import type { JobsStartupContext } from '#src/jobs/startup.js';
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { createCoordinatorServer } from '#src/coordinator/index.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
@@ -16,6 +17,7 @@ import { sessionContinuationLeaseRecordedEvent } from '#src/sessions/continuatio
 import { providerSessionSchema } from '#src/sessions/entry.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import type { Database } from '#src/store/db.js';
+import { ProviderOperationReconciler } from '#src/coordinator/services/provider-operation-reconciler.js';
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -38,7 +40,7 @@ afterEach(() => {
 });
 
 describe('coordinator startup ordering', () => {
-  it('journal waitFreshUntil resolves before jobsReconcile.runStartup is called', async () => {
+  it('reconciles provider-operation sagas before generic jobs startup recovery', async () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-home-'));
     const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-plugin-'));
     tempRoots.push(home, pluginRoot);
@@ -46,7 +48,7 @@ describe('coordinator startup ordering', () => {
     mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
     writeFileSync(
       join(pluginRoot, 'bridge', 'manifest.json'),
-      JSON.stringify({ bundleHash: 'startup-ordering-bundle', flavor: 'prod' }) + '\n',
+      JSON.stringify({ bundleHash: '0123456789abcdef', flavor: 'prod' }) + '\n',
       'utf-8',
     );
 
@@ -54,15 +56,27 @@ describe('coordinator startup ordering', () => {
 
     const runtime = createRealRuntime('prod');
     const order: string[] = [];
+    const reconcileProviderOperations = vi
+      .spyOn(ProviderOperationReconciler.prototype, 'reconcileAtStartup')
+      .mockImplementation(async () => {
+        order.push('providerOperationReconciler.reconcileAtStartup');
+        return { setsVisited: 0, operationsVisited: 0, incidents: [] };
+      });
+    const startProviderOperationReconciler = vi
+      .spyOn(ProviderOperationReconciler.prototype, 'start')
+      .mockImplementation(() => {
+        order.push('providerOperationReconciler.start');
+      });
     const waitFreshUntil = vi.spyOn(ConsumerDriver.prototype, 'waitFreshUntil').mockImplementation(async () => {
       order.push('waitFreshUntil:start');
       await Promise.resolve();
       order.push('waitFreshUntil:resolved');
     });
-    const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async (options) => {
+    const runStartup = vi.fn(async (options: JobsStartupContext) => {
       order.push('jobsReconcile.runStartup');
       return options.progressStore;
     });
+    vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockReturnValue(runStartup);
     const kbDaemonSupervisor = createMockKbDaemonSupervisor();
 
     const coordinator = createCoordinatorServer({
@@ -86,11 +100,19 @@ describe('coordinator startup ordering', () => {
       expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'discuss', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'workflow', expect.any(Number));
       expect(runStartup).toHaveBeenCalledTimes(1);
+      expect(reconcileProviderOperations).toHaveBeenCalledTimes(1);
+      expect(startProviderOperationReconciler).toHaveBeenCalledTimes(1);
       // Three-era boot: journal `waitFreshUntil` (Era II) resolves BEFORE
       // `jobsReconcile.runStartup`; KB corpus replay no longer waits in boot.
       const firstWaitResolved = order.indexOf('waitFreshUntil:resolved');
       expect(firstWaitResolved).toBeGreaterThanOrEqual(0);
       expect(order.indexOf('jobsReconcile.runStartup')).toBeGreaterThan(firstWaitResolved);
+      expect(order.indexOf('providerOperationReconciler.reconcileAtStartup')).toBeLessThan(
+        order.indexOf('jobsReconcile.runStartup'),
+      );
+      expect(order.indexOf('jobsReconcile.runStartup')).toBeLessThan(
+        order.indexOf('providerOperationReconciler.start'),
+      );
     } finally {
       await coordinator.shutdown('test-cleanup');
       await coordinator.waitForShutdown();
@@ -105,7 +127,7 @@ describe('coordinator startup ordering', () => {
     mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
     writeFileSync(
       join(pluginRoot, 'bridge', 'manifest.json'),
-      JSON.stringify({ bundleHash: 'startup-ordering-bundle', flavor: 'prod' }) + '\n',
+      JSON.stringify({ bundleHash: '0123456789abcdef', flavor: 'prod' }) + '\n',
       'utf-8',
     );
 
@@ -136,10 +158,11 @@ describe('coordinator startup ordering', () => {
         const consumerId = typeof args[0] === 'string' ? args[2] : args[1];
         order.push(`waitFreshUntil:${consumerId}`);
       });
-    const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async (options) => {
+    const runStartup = vi.fn(async (options: JobsStartupContext) => {
       order.push('jobsReconcile.runStartup');
       return options.progressStore;
     });
+    vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockReturnValue(runStartup);
     const resumeAll = vi.spyOn(workflowRecover, 'resumeAll').mockImplementation(async () => {
       order.push('workflowRecover.resumeAll');
       return [];
@@ -226,7 +249,7 @@ describe('coordinator startup ordering', () => {
     mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
     writeFileSync(
       join(pluginRoot, 'bridge', 'manifest.json'),
-      JSON.stringify({ bundleHash: 'startup-ordering-bundle', flavor: 'prod' }) + '\n',
+      JSON.stringify({ bundleHash: '0123456789abcdef', flavor: 'prod' }) + '\n',
       'utf-8',
     );
     vi.stubEnv('HOME', home);
@@ -235,7 +258,7 @@ describe('coordinator startup ordering', () => {
     const order: string[] = [];
     let startupDb: Database | null = null;
     let recoveryObservedPending = false;
-    const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async (options) => {
+    const runStartup = vi.fn(async (options: JobsStartupContext) => {
       order.push('jobsReconcile.runStartup');
       startupDb = options.progressStore.getDb();
       const opened = providerSessionSchema.parse({
@@ -285,6 +308,7 @@ describe('coordinator startup ordering', () => {
       });
       return options.progressStore;
     });
+    vi.spyOn(jobsStartup, 'createJobsStartupRunner').mockReturnValue(runStartup);
     const resumeAll = vi.spyOn(workflowRecover, 'resumeAll').mockImplementation(async (options) => {
       order.push('workflowRecover.resumeAll');
       const row = options.db
@@ -338,7 +362,7 @@ describe('coordinator startup ordering', () => {
     mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
     writeFileSync(
       join(pluginRoot, 'bridge', 'manifest.json'),
-      JSON.stringify({ bundleHash: 'startup-ordering-bundle', flavor: 'prod' }) + '\n',
+      JSON.stringify({ bundleHash: '0123456789abcdef', flavor: 'prod' }) + '\n',
       'utf-8',
     );
 

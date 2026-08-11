@@ -24,14 +24,6 @@ export type ProviderFailureCause =
       };
     };
 
-type AdapterOutputUnparseableInput = {
-  provider: string;
-  exitCode: number | null;
-  stdout: string;
-  stderr: string;
-  parseError: string;
-};
-
 type ProviderSessionUnavailableInput = {
   provider: string;
   reason: string;
@@ -43,19 +35,6 @@ type ProviderRequestFailedInput = {
   cause?: unknown;
   diagnostic?: SessionProviderFailureDiagnostic;
 };
-
-export function adapterOutputUnparseable(input: AdapterOutputUnparseableInput): ProviderFailureCause {
-  return {
-    type: SESSION_ADAPTER_UNPARSEABLE_EVENT,
-    body: {
-      provider: input.provider,
-      exitCode: input.exitCode,
-      stdout: input.stdout,
-      stderr: input.stderr,
-      parseError: input.parseError,
-    },
-  };
-}
 
 export function providerSessionUnavailable(input: ProviderSessionUnavailableInput): ProviderFailureCause {
   return {

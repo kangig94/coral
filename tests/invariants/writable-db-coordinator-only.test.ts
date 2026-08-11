@@ -28,6 +28,13 @@ const EXPLICIT_ALLOWLIST = new Set([
   // here (and broke at runtime in the prod bundle); it is now a static call so
   // the open is explicit and invariant-tracked.
   'src/kb-daemon/runtime-host.ts:openWritableStoreDbNoReset',
+  // The active-store selection protocol opens the store it just selected, reached only through
+  // `startup-store-routing.ts` from the coordinator's own lifecycle. Same standing as the reset
+  // boundary above: coordinator-composed, merely not literally under `src/coordinator/`.
+  // It became visible here only when a `(injected ?? openStoreDatabase)(...)` fallback — whose
+  // injected half no production caller ever supplied — collapsed to a direct call. The indirection
+  // hid a real open from this scan, so the entry records an open that was always happening.
+  'src/store/active-store-selection-coordination.ts:openStoreDatabase',
 ]);
 
 function listSourceFiles(dir: string): string[] {

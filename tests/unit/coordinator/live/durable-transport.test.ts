@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { JobRuntime } from '#src/jobs/records.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
-import { PROVIDER_SERVER_MAX_JSONL_LINE_BYTES } from '#src/coordinator/live/provider-server-transport.js';
+import { PROVIDER_SERVER_MAX_JSONL_LINE_BYTES } from '#src/providers/app-server-transport.js';
 
 function createProviderServerScript(): string {
   return [

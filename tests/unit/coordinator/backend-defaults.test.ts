@@ -48,7 +48,6 @@ function createHarness() {
     {
       runtime,
       storeFormat: currentCoralStoreFormat(),
-      runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
       kbDaemonSupervisor: createMockKbDaemonSupervisor(),
     },

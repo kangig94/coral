@@ -870,6 +870,16 @@ async function handleJobsWaitSubscription(
         continue;
       }
 
+      if (event.type === 'interrupted') {
+        // Named on the wire, never folded into `waiting`: a client that cannot tell the two apart cannot
+        // report what was observed. No cursor update either — a derived observation is not a Journal event
+        // and carries no `seq`, so advancing here would let a reconnect resume past events never delivered.
+        if (!writeSseEvent(res, 'interrupted', event)) {
+          break;
+        }
+        continue;
+      }
+
       if (!writeSseEvent(res, 'waiting', event)) {
         break;
       }

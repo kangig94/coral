@@ -1,51 +1,56 @@
 # TODO — store-format routing (and its blocking interaction with cross-version continuity)
 
-**Status**: designed far enough to know its shape and one blocking conflict; not planned.
+**Status**: the build-selection pointer described below is implemented; the fingerprint-keyed multi-format routing proposed by this document is designed far enough to know its shape and one blocking conflict, but remains open and unplanned.
 Split out of the containment-boundary preplan on 2026-08-02.
 
 **Why it is not part of containment**: routing shares coordinator election, cold start, and
-high-water identity with `cross-version-coordinator-continuity.md`, not with containment.
-Designing it apart from that plan would recreate the conflict recorded below, which a
+high-water identity with the cross-version continuity work — since landed, and described by
+`architecture.md`'s "Generation boundary and operator recovery" section — not with containment.
+Designing it apart from that work would recreate the conflict recorded below, which a
 pioneer pass caught only because both were considered together.
 
 > **What this is NOT needed for.** Zero-step replacement of older or corrupt/unsupported
-> state is implemented without format routing. The broader requirement that the user never
-> acts in *any* store-version case is not yet satisfied because both newer-store cases still
-> end in the typed refusal:
+> state is implemented without format routing. When the running bundle directory is
+> resolvable, the active-store selection protocol now also handles both newer-store cases
+> without operator action:
 >
-> | Store relative to the running build | Newer build installed | Current behaviour | Status |
-> |---|---|---|---|
-> | older | — | auto-quarantine with a V3 incident, initialize fresh | implemented |
-> | corrupt or unsupported | — | auto-quarantine with a V3 incident, initialize fresh | implemented |
-> | newer | yes | `store_newer_incompatible`; re-exec belongs to Part A + B / AC20 | pending |
-> | newer | no | `store_newer_incompatible`; deciding “no valid target” requires the cross-version target validator | pending |
+> | Store relative to the running build | Newer build installed | Current behaviour                                                                                                                | Status      |
+> | ----------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+> | older                               | —                     | auto-quarantine with a V3 incident, initialize fresh                                                                             | implemented |
+> | corrupt or unsupported              | —                     | auto-quarantine with a V3 incident, initialize fresh                                                                             | implemented |
+> | newer                               | yes                   | the active-store selection names a valid newer local build, so startup hands off to it                                           | implemented |
+> | newer                               | no                    | an absent, malformed, or invalidated selection publishes a V3 `newer-incompatible-invalid-target` incident and initializes fresh | implemented |
 >
-> The implemented quarantine branch is at `openOrResetBackendStoreDb`
-> (`backend-store-reset.ts`). Both newer rows still reach `refuseIncompatibleStore`
-> (`backend-store-reset.ts`): the invalid-target classifier needed to distinguish the
-> second row is owned by `cross-version-coordinator-continuity.md` and has not landed. The
-> re-exec branch belongs to that plan as well. Together they are SC9 of the
-> containment-boundary preplan.
+> The implemented authority is the build-identity selection pointer
+> `active-store-selection.v1.json`. `coordinateActiveStoreSelection` consults it before
+> classifying store bytes, hands off to a valid newer local target, and records a durable
+> transition before resetting an invalid-target newer store. This remains one store path per
+> flavor; it is not the fingerprint-keyed multi-format routing proposed below.
 >
-> Routing is a *further* refinement: an older build would find its own store instead of
+> Routing is a _further_ refinement: an older build would find its own store instead of
 > needing either branch, and quarantine would stop being necessary at all. Do not treat it
 > as the prerequisite for the already-implemented older/corrupt zero-step path — it is not.
 
 ## The problem it solves
 
 One store per flavor means a build can meet a store it cannot read. Ordinary boot now
-auto-quarantines older or corrupt/unsupported state, but a newer store still produces
-`store_newer_incompatible` and requires `backend store-reset discard --target gen2`
-(`refuseIncompatibleStore` in `backend-store-reset.ts`).
+auto-quarantines older or corrupt/unsupported state. For a newer store, the build-selection
+pointer hands off to a valid newer local build or, when the selection is absent, malformed,
+or invalidated, auto-quarantines with a V3 incident and initializes fresh. That is safe
+cross-version ownership over one store path, not multi-format routing.
 
-The refusal is not wrong, but it is the wrong instrument for the common case. The dangerous
-state is **two builds with different schemas alternating over one store** — the shape of the
-2026-08-01 data incident. A single build meeting a store it has outgrown is harmless: the
-flavor root holds the journal plus rebuildable consumers, and nothing user-authored (the
-corpus is `~/.coral/kb`, plans and memos are `~/.coral/projects`, results are
-`~/.coral/exports`). Refusing there penalizes the harmless case to guard the dangerous one.
+The remaining routing problem is that an older build cannot find and open its own
+format-compatible store; it must hand authority to the selected newer build or replace the
+single active store when no valid target exists. The dangerous state is **two builds with
+different schemas alternating over one store** — the shape of the 2026-08-01 data incident.
+Fingerprint-keyed paths would isolate those schemas while preserving each format's history.
 
 ## Shape (from pioneer, 2026-08-02)
+
+**Unimplemented proposal.** What shipped is `active-store-selection.v1.json`, a
+build-identity selection pointer with one store path per flavor. It does not create
+`active-format.json` or `formats/<sha256>/store.db`; the fingerprint-keyed shape below
+remains open.
 
 Two identities, not one:
 
@@ -74,6 +79,9 @@ Rules established:
 
 ## Residual incompatibility that routing does NOT remove
 
+**Open and unimplemented.** These residual points apply to the proposed fingerprint-keyed
+paths, not to the shipped build-selection pointer.
+
 The claim "no build ever meets an incompatible store" is false in four ways:
 
 1. **`classifyStoreFormat` tests `precedence > 0` before fingerprint equality**
@@ -82,11 +90,13 @@ The claim "no build ever meets an incompatible store" is false in four ways:
    the previous one.
 2. **A directory name does not authenticate its contents.** Corruption, a partial migration,
    an operator copy, or missing metadata still needs classification. The path is an address,
-   not proof — `openOrResetBackendStoreDb` must keep classifying, automatically resetting
-   older/corrupt state, and refusing newer state.
+   not proof — the store opener must keep classifying, automatically resetting older/corrupt
+   state, and applying the active-store selection protocol's handoff-or-reset decision for
+   newer state.
 3. **Same-fingerprint semantic incompatibility remains possible.** The fingerprint hashes
    DDL, Zod contracts, declared materializer contracts, and append-validator identities
-   (`store/current-format.ts:80`, `store/format-fingerprint.ts:508`) — not arbitrary reducer
+   (`store/current-format.ts`'s `createCurrentStoreFormat`, `store/format-fingerprint.ts`'s
+   `describeStoreFormat`) — not arbitrary reducer
    implementation. The structural rule must be that every persisted semantic expectation
    participates in the fingerprint; violating it is a format-contract bug that path
    partitioning cannot prevent.
@@ -96,26 +106,31 @@ The claim "no build ever meets an incompatible store" is false in four ways:
    fork. A durable flat-path tombstone is required so a pre-keying build cannot see "absent"
    and start a second flat history. **That protocol was not designed.**
 
-## Blocking conflict with `cross-version-coordinator-continuity.md`
+## Blocking conflict with cross-version coordinator continuity
 
-**Part E / AC20 stores the high-water build inside the singleton database** so an older
-cold-start build can discover the newer build and re-exec. With fingerprint-keyed paths the
-older build opens its own older directory and never encounters that database — it can boot an
-old history while stored-nonterminal work sits in the newer one.
+**Open and unimplemented.** This section records the blocking conflict between the proposed
+fingerprint-keyed paths and the wider cross-version coordinator continuity work — a plan that
+lives outside this repo. The slice of it already shipped, the active-store selection pointer,
+is covered by `architecture.md`'s "Generation boundary and operator recovery" section. That
+shipped pointer externalizes the selected build identity while retaining one store path per
+flavor; it neither implements `active-format.json` nor resolves the keyed-path and tombstone
+protocol described here.
 
-**Fix: move AC20's high-water identity into `active-format.json`.** Then live foreign builds
-are handled through the singleton coordinator, cold-start builds consult one format-neutral
-authority, format upgrades atomically advance the active pointer, and rollback becomes
-explicit rather than a silent switch to a stale store.
+The earlier **Part E / AC20 proposal stored the high-water build inside the singleton
+database** so an older cold-start build could discover the newer build and re-exec. With
+fingerprint-keyed paths the older build would open its own older directory and never
+encounter that database — it could boot an old history while stored-nonterminal work sits in
+the newer one.
+
+**Proposed fix: move the high-water identity into `active-format.json`.** Then live foreign
+builds would be handled through the singleton coordinator, cold-start builds would consult
+one format-neutral authority, format upgrades would atomically advance the active pointer,
+and rollback would become explicit rather than a silent switch to a stale store.
 
 Part C is compatible as-is: builds sharing a fingerprint share a store, removing namespace
 tenancy lets the successor recover stored work, and `pluginRootNamespace` stays provenance
 rather than ownership. `pluginRootNamespace()` must **not** enter the store path — it hashes
 installation provenance, not storage compatibility.
-
-Note also that routing does **not** fix the coordinator ping-pong: `isCompatibleHealth`
-(`transport/ipc/ensure.ts:274`) still compares version, bundle hash, flavor, and namespace,
-so foreign builds keep evicting one another until Parts A+B change election.
 
 ## Decisions already made
 
@@ -161,7 +176,7 @@ incident role. Continuing to write it without consulting it is the least elegant
 
 - The tombstone/catalog serialization and locking protocol — not designed.
 - Whether every corpus consumer is idempotent under a `consumer_cursors` reset.
-  `runCorpusApply` (`projection-consumers/authority-apply.ts:235`) reapplies the current
+  `runCorpusApply` (`projection-consumers/authority-apply.ts`) reapplies the current
   corpus snapshot to shared runtime/index state, so "cursor reset is correct" is unproven.
 - The historical frequency of fingerprint changes, which decides how many stores actually
   accumulate.

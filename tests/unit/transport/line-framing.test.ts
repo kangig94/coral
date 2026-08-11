@@ -40,4 +40,19 @@ describe('createLineFramer', () => {
     // the framer should accept another half-cap without throwing.
     expect(() => framer.push(Buffer.alloc(halfCap, 0x62))).not.toThrow();
   });
+
+  it('reassembles a multi-byte UTF-8 character split across a chunk boundary', () => {
+    const framer = createLineFramer();
+    const line = JSON.stringify({ t: '한국어 테스트' });
+    const encoded = Buffer.from(`${line}\n`, 'utf-8');
+
+    // Byte offset 13 lands inside the 3-byte UTF-8 encoding of '어'
+    // (bytes 12-14), splitting it mid-character across the two chunks.
+    const cut = 13;
+    const first = encoded.subarray(0, cut);
+    const second = encoded.subarray(cut);
+
+    expect(framer.push(first)).toEqual([]);
+    expect(framer.push(second)).toEqual([line]);
+  });
 });

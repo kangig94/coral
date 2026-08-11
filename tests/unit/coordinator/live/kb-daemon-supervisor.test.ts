@@ -1316,6 +1316,26 @@ describe('createDisabledKbDaemonSupervisor', () => {
     });
   });
 
+  it('attaches a remediation that stays honest for a nested/child caller across reads, mutations, and expansion RPC', async () => {
+    const supervisor = createDisabledKbDaemonSupervisor();
+
+    const results = await Promise.all([
+      supervisor.readKb({ method: 'readNote', args: {} } as never),
+      supervisor.mutateKb({ method: 'createNote', args: {} } as never),
+      supervisor.expansionRpc({ method: 'listExpansion', args: {} } as never),
+    ]);
+
+    for (const result of results) {
+      expect(result.ok).toBe(false);
+      const remediation = (result as { remediation?: string }).remediation;
+      // Nested skills/hooks invoking `coral-cli kb ...` from inside a Coral-launched job are
+      // the normal caller here, and `coral-cli backend shutdown` is refused from that exact
+      // caller. The remediation must not unconditionally tell every reader to run it.
+      expect(remediation).toContain('backend shutdown');
+      expect(remediation).toContain('nested/child job cannot run that shutdown itself');
+    }
+  });
+
   it('reports every requested job as not found on abort and disposes cleanly', async () => {
     const supervisor = createDisabledKbDaemonSupervisor();
 

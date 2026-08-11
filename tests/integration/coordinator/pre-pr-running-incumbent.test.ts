@@ -127,6 +127,7 @@ describe('pre-PR running incumbent (R6)', () => {
         // Bind succeeds only after the incumbent's socket has actually released.
         return socketReleased ? { kind: 'bound' as const } : { kind: 'incumbent' as const, reason: 'live-listener' };
       },
+      runStartupRecovery: async () => [],
       runtime,
       readVerifiedIncumbentFromDiscovery: () => ({
         pid: 9999,
@@ -188,6 +189,7 @@ describe('pre-PR running incumbent (R6)', () => {
         socketPath,
         desired: { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' },
         bindAttempt: async () => ({ kind: 'incumbent' as const, reason: 'live-listener' }),
+        runStartupRecovery: async () => [],
         runtime,
         readVerifiedIncumbentFromDiscovery: () => null,
         totalBudgetMs: 1_000,
@@ -246,6 +248,7 @@ describe('pre-PR running incumbent (R6)', () => {
       desired: { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' },
       bindAttempt: async () =>
         socketReleased ? { kind: 'bound' as const } : { kind: 'incumbent' as const, reason: 'live-listener' },
+      runStartupRecovery: async () => [],
       runtime,
       readVerifiedIncumbentFromDiscovery: () => ({
         pid: 2,

@@ -31,8 +31,6 @@ export type CanonicalCoralIntent = Omit<CoralIntent, 'sessionId'> & {
   sessionId?: string;
 };
 
-export const FINALIZE_CONTINUITY_MAX_RETRIES = 2;
-
 export type ResolvedAgentLaunchProfile = {
   agentName: string;
   name: string;

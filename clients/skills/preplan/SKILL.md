@@ -132,12 +132,23 @@ items with the "unconfirmed" marker, then seek user feedback.
     // --deep (without --delegate): self-execute, blocking
     output = Agent({ subagent_type: "coral:pioneer", prompt: <draft file content> })
 
-    // --delegate: dispatch to the other host, then block on the wait
+    // --delegate: dispatch to the other host, then monitor for one bounded wait
     launch = Bash(`coral-cli <other-host> pioneer -i "<draft file content>" --work-dir "<work_dir>" -d`)
     job = parse `Job <job> <launchState> (session <session>)` from launch
-    terminal = Bash(`coral-cli wait jobs ${job} --embed`)   // foreground; blocks until terminal
-    output = Read(<path from the terminal's `Result path:` line>)
+    terminal = Bash(`coral-cli wait jobs ${job} --embed`)   // foreground; returns at terminal or the bound
+    while true:
+      if terminal begins `Still waiting` with `(cursor: <cursor>)`:
+        terminal = Bash(`coral-cli wait jobs ${job} --cursor <cursor> --embed`)
+        continue
+      if terminal prints `remediation: <command>`:
+        terminal = Bash(<command exactly as printed>)
+        continue
+      if terminal contains `Result path: <path>`:
+        output = Read(<path>)
+        break
+      stop with the rendered error
     ```
+    Classify the rendered output before reading an artifact; do not classify exit code `75` alone. `Result path: <path>` marks a terminal result even when a terminal `provider_exit` propagated code `75`. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
 
     Then consume `output`: for items where pioneer identifies a genuinely more elegant form, mark the
     sub-item unconfirmed and add the three-point spectrum (default, minimal, elegant) with pioneer's

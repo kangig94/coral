@@ -1,10 +1,9 @@
 import { z } from 'zod';
 
+import { compareText, zodPersistedContract, type CanonicalContractValue } from '../infra/persisted-contract.js';
 import {
   describeStoreFormat,
   PersistedCodecRegistry,
-  zodPersistedContract,
-  type CanonicalContractValue,
   type PersistedDdlFragment,
   type StoreFormatFingerprintDescription,
 } from './format-fingerprint.js';
@@ -54,7 +53,7 @@ const jsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
 
 function registerEventBodyCodec(codecs: PersistedCodecRegistry, reducers: ComposedReducers): void {
   const events = [...reducers.schemas.entries()]
-    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .sort(([left], [right]) => compareText(left, right))
     .map(([type, schema]) => ({
       type,
       streamKind: reducers.streamKinds.get(type),

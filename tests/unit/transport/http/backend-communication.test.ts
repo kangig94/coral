@@ -2,8 +2,6 @@ import { createServer, type Server } from 'node:http';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { throwBackendCommunicationError } from '#src/transport/http/backend/communication.js';
-import { BackendUnreachableError } from '#src/infra/http-errors.js';
 import { coordinatorHttpRoutes, createHttpHandler } from '#src/transport/http/handler.js';
 import { recoveryQuarantineClearRpcSpec, rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
@@ -58,23 +56,6 @@ async function startHttpServer(ports: HttpHandlerPorts): Promise<string> {
 }
 
 describe('transport/http backend communication', () => {
-  it.each(['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN'])(
-    'wraps fetch failures with cause.code=%s in BackendUnreachableError',
-    (code) => {
-      const original = new TypeError('fetch failed', { cause: { code } });
-
-      let caught: unknown;
-      try {
-        throwBackendCommunicationError(original);
-      } catch (error) {
-        caught = error;
-      }
-
-      expect(caught).toBeInstanceOf(BackendUnreachableError);
-      expect((caught as BackendUnreachableError).message).toBe('fetch failed');
-    },
-  );
-
   it('projects recovery quarantine clear without widening HTTP backend-token capabilities', async () => {
     const clear = vi.fn();
     const ports = recoveryPorts({ clear });

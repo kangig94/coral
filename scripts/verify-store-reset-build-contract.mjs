@@ -41,8 +41,20 @@ const identities = [
   runIdentityProbe('coral-cli.cjs'),
   runIdentityProbe('coral-claude-appserver.cjs'),
 ];
+// Field-wise, not `JSON.stringify` — the probe returns a schema-parsed object, so its key order follows the
+// Zod declaration while the manifest's follows the build script. Key order was never part of the identity
+// contract, and comparing serialized text made an unrelated schema edit look like a build mismatch.
+function identityMismatch(identity) {
+  const identityKeys = Object.keys(identity).sort();
+  const manifestKeys = Object.keys(manifest).sort();
+  if (identityKeys.join(',') !== manifestKeys.join(',')) {
+    return true;
+  }
+  return identityKeys.some((key) => identity[key] !== manifest[key]);
+}
+
 for (const identity of identities) {
-  if (JSON.stringify(identity) !== JSON.stringify(manifest)) {
+  if (identityMismatch(identity)) {
     throw new Error('Executing bundle identity does not equal its adjacent manifest.');
   }
 }

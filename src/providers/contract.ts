@@ -76,6 +76,45 @@ export interface ProviderRequest {
   instruction?: ProviderInstruction;
 }
 
+/**
+ * `ProviderRequest` as wire bytes, for the one boundary that has to send it: a prepared operation crossing
+ * into the proxy process (W2.3). It lives beside the interface it validates rather than in the transport that
+ * carries it, so the request has one canonical home and a field added above cannot silently go unvalidated on
+ * the wire — the two assertions below fail to compile if the schema and the interface drift.
+ *
+ * Strict, so a field this build does not know is refused at ingress rather than carried into an execution
+ * that would ignore it.
+ */
+export const providerRequestSchema = z
+  .object({
+    action: z.enum(['exec', 'resume']),
+    sessionId: nonEmptyStringSchema,
+    name: z.string().optional(),
+    conversationRef: nonEmptyStringSchema.optional(),
+    prompt: z.string(),
+    model: z.string().optional(),
+    cwd: z.string(),
+    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
+    bypassPermissions: z.boolean(),
+    systemPrompt: z.string().optional(),
+    coralEnv: z.record(z.string()),
+    instruction: providerInstructionSchema.optional(),
+  })
+  .strict();
+
+// Compile-time only. Mutual assignability alone is not enough: two object types still assign to each other
+// when one simply omits an optional property, so dropping an optional field from the schema — the drift most
+// likely to happen, since adding an optional field to the interface is the common edit — would pass silently.
+// The key-set comparison is what closes that, and the assignability check is what catches a field whose type
+// or optionality changed rather than disappeared. Both are needed; neither subsumes the other.
+type ProviderRequestSchemaOutput = z.infer<typeof providerRequestSchema>;
+type MutuallyAssignable<A, B> = A extends B ? (B extends A ? true : never) : never;
+type SameKeys<A, B> = [keyof A] extends [keyof B] ? ([keyof B] extends [keyof A] ? true : never) : never;
+const providerRequestSchemaTypesMatch: MutuallyAssignable<ProviderRequest, ProviderRequestSchemaOutput> = true;
+const providerRequestSchemaFieldsMatch: SameKeys<ProviderRequest, ProviderRequestSchemaOutput> = true;
+void providerRequestSchemaTypesMatch;
+void providerRequestSchemaFieldsMatch;
+
 interface ProviderServerSpecBase {
   provider: string;
   command: string;
@@ -97,12 +136,16 @@ export type ProviderServerSpec = ProviderServerSpecBase &
   (
     | {
         leaseMode: 'shared';
-        /** Evidence required before the manager may retire an unpinned shared host. */
-        idlePolicy: 'host-stats' | 'daemon';
+        /**
+         * What retires an unpinned shared host. `'host-reported'` retires it once the host itself
+         * reports no live controllers and no active turns; `'none'` keeps it until an explicit
+         * shutdown, so idleness alone never ends its lifetime.
+         */
+        idleRetirement: 'host-reported' | 'none';
       }
     | {
         leaseMode: 'job-exclusive';
-        idlePolicy?: never;
+        idleRetirement?: never;
       }
   );
 
@@ -129,8 +172,18 @@ export interface AppServerTransport {
   readonly closed: Promise<Error | void>;
 }
 
+export type ProviderInterruptRequestOutcome =
+  | Readonly<{ kind: 'accepted' }>
+  | Readonly<{ kind: 'not-accepted'; reason: string }>;
+
+export type ProviderTurnTerminalEvidence = Readonly<{
+  kind: 'provider-turn-terminal';
+  providerTurnId: string;
+  status: 'interrupted' | 'completed' | 'failed';
+}>;
+
 export interface AppServerSession extends AppServerTransport {
-  interrupt(continuity: ProviderContinuityBlob): Promise<boolean>;
+  interrupt(continuity: ProviderContinuityBlob): Promise<ProviderInterruptRequestOutcome>;
 }
 
 export type ProviderCurationRequest = {
@@ -237,6 +290,36 @@ export type ProviderEventBody =
   | ProviderTerminalEventBody;
 
 const abortReasons = ['signal_abort', 'user_abort', 'queue_shutdown'] as const satisfies readonly AbortReason[];
+
+/**
+ * Why an operation was stopped mid-flight rather than deliberately ended. Only these two leave the turn cut
+ * off, so only these two may record an interruption; every other cause is a stop the user or the system
+ * chose, and documenting harm that never happened would be a lie in the journal.
+ */
+export const PROVIDER_INTERRUPTION_CAUSES = ['restart', 'handoff'] as const;
+export type ProviderInterruptionCause = (typeof PROVIDER_INTERRUPTION_CAUSES)[number];
+
+/**
+ * Every cause `operation.stop.v1` accepts. Derived from `abortReasons` rather than restated, so "the
+ * deliberate stop causes are exactly the abort reasons" is structural: a fourth abort reason joins this set
+ * by construction instead of silently diverging from a second flat list somewhere else.
+ *
+ * It lives here because both sides of the wire may reach `providers/` and neither may reach the other — the
+ * proxy is barred from `jobs/`, and a `jobs/`-to-proxy edge would point the dependency the wrong way.
+ */
+export const PROVIDER_STOP_CAUSES = [...PROVIDER_INTERRUPTION_CAUSES, ...abortReasons] as const;
+export type ProviderStopCause = (typeof PROVIDER_STOP_CAUSES)[number];
+export const providerStopCauseSchema = z.enum(PROVIDER_STOP_CAUSES);
+
+/** Whether a stop cause is a deliberate abort, and therefore records no interruption. */
+export function isAbortStopCause(cause: ProviderStopCause): cause is AbortReason {
+  return (abortReasons as readonly string[]).includes(cause);
+}
+
+/** Whether a stop cause left the turn cut off, and therefore owes the job a truthful `session.interrupted`. */
+export function isInterruptionStopCause(cause: ProviderStopCause): cause is ProviderInterruptionCause {
+  return (PROVIDER_INTERRUPTION_CAUSES as readonly string[]).includes(cause);
+}
 
 export const providerFailureCauseSchema = z.discriminatedUnion('type', [
   z
@@ -415,6 +498,7 @@ export type ProviderAppServerRuntime<Plan extends ProviderExecutionPlan = Provid
   ProviderRuntimeCommon<Plan> & {
     readonly transport: 'app-server';
     readonly appServerSession: AppServerSession;
+    onProviderTurnTerminal(evidence: ProviderTurnTerminalEvidence): void;
   };
 
 export type ProviderStandaloneRuntime<Plan extends ProviderExecutionPlan = ProviderExecutionPlan> =
@@ -471,7 +555,7 @@ export interface ProviderAppServerCapability<
   readonly name: string;
   planHost(input: ProviderHostPlanningInput<Access>): Plan['host'];
   compileStableHost(host: Plan['host']): ProviderServerSpec;
-  interrupt?(session: AppServerTransport, continuity: ProviderContinuityBlob): Promise<boolean>;
+  interrupt?(session: AppServerTransport, continuity: ProviderContinuityBlob): Promise<ProviderInterruptRequestOutcome>;
   probe?(
     session: AppServerTransport,
     continuity: ProviderContinuityBlob,

@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { detectClaudeCli } from './cli-detection.js';
 import type {
   AppServerTransport,
+  ProviderInterruptRequestOutcome,
   ProviderPreflightRuntime,
   ProviderAppServerCapability,
   ProviderRecoveryContract,
@@ -127,17 +128,26 @@ export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecuti
     }),
   compileStableHost: (host) =>
     buildClaudeProviderServerSpec(compileClaudeBrokerHost({ platform: host.platform, broker: host.broker })),
-  async interrupt(transport: AppServerTransport, continuity: ProviderContinuityBlob): Promise<boolean> {
+  async interrupt(
+    transport: AppServerTransport,
+    continuity: ProviderContinuityBlob,
+  ): Promise<ProviderInterruptRequestOutcome> {
     const persistedContinuity = readClaudePersistedContinuity(continuity);
     const brokerSessionKey = persistedContinuity.brokerSessionKey;
-    if (brokerSessionKey === undefined) return false;
+    if (brokerSessionKey === undefined) {
+      return { kind: 'not-accepted', reason: 'Claude continuity is missing the broker session key.' };
+    }
     const brokerTurnId = persistedContinuity.brokerTurnId;
-    if (brokerTurnId === undefined) return false;
+    if (brokerTurnId === undefined) {
+      return { kind: 'not-accepted', reason: 'Claude continuity is missing the broker turn id.' };
+    }
     const result = await transport.rpc<unknown>(
       'turn/interrupt',
       mapInterruptParams(brokerSessionKey, brokerTurnId) as unknown as Record<string, unknown>,
     );
-    return isRecord(result) && result.interrupted === true && readString(result.brokerTurnId) === brokerTurnId;
+    return isRecord(result) && result.interrupted === true && readString(result.brokerTurnId) === brokerTurnId
+      ? { kind: 'accepted' }
+      : { kind: 'not-accepted', reason: 'Claude did not acknowledge the exact active broker turn.' };
   },
 };
 

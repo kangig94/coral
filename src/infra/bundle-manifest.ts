@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto';
-import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readSync } from 'node:fs';
-import { join } from 'node:path';
+import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from 'node:fs';
+import type { BigIntStats } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { z } from 'zod';
 
 import type { BuildFlavor } from './build-flavor.js';
+import { nodeFsBoundedReadStorage, readBoundedFileAtIdentity } from './bounded-file-read.js';
 import { isRecord } from './json.js';
 
 declare const __BUNDLE_DIR__: string | undefined;
@@ -32,6 +35,23 @@ export type StrictBundleManifest = EmbeddedBundleIdentity & {
   readonly claudeAppserverBundleHash: string;
 };
 
+const embeddedBundleIdentitySchema = z
+  .object({
+    version: z.string().max(128).regex(VERSION_PATTERN),
+    buildSetId: z.string().regex(BUILD_SET_ID_PATTERN),
+    flavor: z.enum(['dev', 'prod']),
+    storeFormatFingerprint: z.string().regex(STORE_FORMAT_FINGERPRINT_PATTERN),
+  })
+  .strict();
+
+export const strictBundleManifestSchema = embeddedBundleIdentitySchema
+  .extend({
+    bundleHash: z.string().regex(BUNDLE_HASH_PATTERN),
+    cliBundleHash: z.string().regex(BUNDLE_HASH_PATTERN),
+    claudeAppserverBundleHash: z.string().regex(BUNDLE_HASH_PATTERN),
+  })
+  .strict();
+
 export type StrictBundleIdentityFailure =
   | 'embedded_identity_unavailable'
   | 'adjacent_manifest_unavailable'
@@ -42,8 +62,23 @@ export type StrictBundleIdentityResult =
   | { readonly ok: true; readonly manifest: StrictBundleManifest }
   | { readonly ok: false; readonly reason: StrictBundleIdentityFailure };
 
+export type BoundedAdjacentManifestResult =
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false; readonly reason: 'unavailable' | 'invalid' };
+
 function bundleDir(): string | null {
   return typeof __BUNDLE_DIR__ === 'string' && __BUNDLE_DIR__.length > 0 ? __BUNDLE_DIR__ : null;
+}
+
+export function resolveRunningBundleDir(pluginRoot: string): string | null {
+  const candidate = resolve(bundleDir() ?? join(pluginRoot, 'bridge'));
+  try {
+    const canonical = realpathSync(candidate);
+    const stat = lstatSync(canonical);
+    return stat.isDirectory() && !stat.isSymbolicLink() ? canonical : null;
+  } catch {
+    return null;
+  }
 }
 
 function readBundleManifest(pluginRoot: string): unknown {
@@ -94,81 +129,23 @@ function embeddedBundleIdentity(): EmbeddedBundleIdentity | null {
   };
 }
 
-function readBoundedAdjacentManifest(
-  activeBundleDir: string,
-): { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly reason: 'unavailable' | 'invalid' } {
+export function readBoundedAdjacentManifest(activeBundleDir: string): BoundedAdjacentManifestResult {
   const path = join(activeBundleDir, 'manifest.json');
-  let descriptor: number | null = null;
-  let contents: Uint8Array;
-  let closeFailed = false;
+  let baseline: BigIntStats;
   try {
-    const pathBefore = lstatSync(path, { bigint: true });
-    if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) {
-      return { ok: false, reason: 'unavailable' };
-    }
-    descriptor = openSync(path, 'r');
-    const opened = fstatSync(descriptor, { bigint: true });
-    if (
-      !opened.isFile() ||
-      opened.dev !== pathBefore.dev ||
-      opened.ino !== pathBefore.ino ||
-      opened.mode !== pathBefore.mode ||
-      opened.size !== pathBefore.size ||
-      opened.mtimeNs !== pathBefore.mtimeNs ||
-      opened.size < 0n ||
-      opened.size > BigInt(MAX_STRICT_BUNDLE_MANIFEST_BYTES)
-    ) {
-      return { ok: false, reason: 'unavailable' };
-    }
-
-    const bytes = Buffer.allocUnsafe(MAX_STRICT_BUNDLE_MANIFEST_BYTES + 1);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const read = readSync(descriptor, bytes, offset, bytes.length - offset, null);
-      if (read === 0) {
-        break;
-      }
-      offset += read;
-    }
-    if (offset > MAX_STRICT_BUNDLE_MANIFEST_BYTES) {
-      return { ok: false, reason: 'unavailable' };
-    }
-    const openedAfter = fstatSync(descriptor, { bigint: true });
-    const pathAfter = lstatSync(path, { bigint: true });
-    if (
-      openedAfter.dev !== opened.dev ||
-      openedAfter.ino !== opened.ino ||
-      openedAfter.mode !== opened.mode ||
-      openedAfter.size !== opened.size ||
-      openedAfter.mtimeNs !== opened.mtimeNs ||
-      !pathAfter.isFile() ||
-      pathAfter.isSymbolicLink() ||
-      pathAfter.dev !== opened.dev ||
-      pathAfter.ino !== opened.ino ||
-      pathAfter.mode !== opened.mode ||
-      pathAfter.size !== opened.size ||
-      pathAfter.mtimeNs !== opened.mtimeNs
-    ) {
-      return { ok: false, reason: 'unavailable' };
-    }
-    contents = bytes.subarray(0, offset);
+    baseline = lstatSync(path, { bigint: true });
   } catch {
     return { ok: false, reason: 'unavailable' };
-  } finally {
-    if (descriptor !== null) {
-      try {
-        closeSync(descriptor);
-      } catch {
-        closeFailed = true;
-      }
-    }
   }
-
-  if (closeFailed) {
+  if (!baseline.isFile() || baseline.isSymbolicLink()) {
+    return { ok: false, reason: 'unavailable' };
+  }
+  const bytes = readBoundedFileAtIdentity(nodeFsBoundedReadStorage, path, baseline, MAX_STRICT_BUNDLE_MANIFEST_BYTES);
+  if (bytes === null) {
     return { ok: false, reason: 'unavailable' };
   }
   try {
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(contents);
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     return { ok: true, value: JSON.parse(text) as unknown };
   } catch {
     return { ok: false, reason: 'invalid' };
@@ -176,37 +153,11 @@ function readBoundedAdjacentManifest(
 }
 
 function parseStrictManifest(value: unknown): StrictBundleManifest | null {
-  if (
-    !isRecord(value) ||
-    typeof value.version !== 'string' ||
-    value.version.length > 128 ||
-    !VERSION_PATTERN.test(value.version) ||
-    typeof value.buildSetId !== 'string' ||
-    !BUILD_SET_ID_PATTERN.test(value.buildSetId) ||
-    typeof value.bundleHash !== 'string' ||
-    !BUNDLE_HASH_PATTERN.test(value.bundleHash) ||
-    typeof value.cliBundleHash !== 'string' ||
-    !BUNDLE_HASH_PATTERN.test(value.cliBundleHash) ||
-    typeof value.claudeAppserverBundleHash !== 'string' ||
-    !BUNDLE_HASH_PATTERN.test(value.claudeAppserverBundleHash) ||
-    (value.flavor !== 'dev' && value.flavor !== 'prod') ||
-    typeof value.storeFormatFingerprint !== 'string' ||
-    !STORE_FORMAT_FINGERPRINT_PATTERN.test(value.storeFormatFingerprint)
-  ) {
-    return null;
-  }
-  return {
-    version: value.version,
-    buildSetId: value.buildSetId,
-    bundleHash: value.bundleHash,
-    cliBundleHash: value.cliBundleHash,
-    claudeAppserverBundleHash: value.claudeAppserverBundleHash,
-    flavor: value.flavor,
-    storeFormatFingerprint: value.storeFormatFingerprint,
-  };
+  const parsed = strictBundleManifestSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
-function hashStableAdjacentBundle(activeBundleDir: string, fileName: string): string | null {
+export function hashStableAdjacentBundle(activeBundleDir: string, fileName: string): string | null {
   const path = join(activeBundleDir, fileName);
   let descriptor: number | null = null;
   let digest: string | undefined;
@@ -278,15 +229,7 @@ export function resolveStrictBundleIdentity(options?: {
   readonly embedded?: EmbeddedBundleIdentity;
 }): StrictBundleIdentityResult {
   const embedded = options?.embedded ?? embeddedBundleIdentity();
-  if (
-    embedded === null ||
-    embedded.version.length === 0 ||
-    embedded.version.length > 128 ||
-    !VERSION_PATTERN.test(embedded.version) ||
-    !BUILD_SET_ID_PATTERN.test(embedded.buildSetId) ||
-    (embedded.flavor !== 'dev' && embedded.flavor !== 'prod') ||
-    !STORE_FORMAT_FINGERPRINT_PATTERN.test(embedded.storeFormatFingerprint)
-  ) {
+  if (embedded === null || !embeddedBundleIdentitySchema.safeParse(embedded).success) {
     return { ok: false, reason: 'embedded_identity_unavailable' };
   }
 

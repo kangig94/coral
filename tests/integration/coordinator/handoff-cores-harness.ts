@@ -26,7 +26,7 @@ import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
-import type { CoordinatorServerInfo } from '#src/coordinator/lifecycle.js';
+import type { CoordinatorServerInfo, RunStartupRecoveryOrchestratorFn } from '#src/coordinator/lifecycle.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
@@ -55,13 +55,15 @@ export interface BootCoreOptions {
   bundleHash?: string;
   backendNamespace?: string;
   createExecutionService?: CoordinatorCoreOptions['createExecutionService'];
+  providerHostManager?: CoordinatorCoreOptions['providerHostManager'];
+  providerRegistry?: CoordinatorCoreOptions['providerRegistry'];
   /**
    * Override the post-discuss-recovery startup phase. Called with the same
    * deps the production `runStartupRecoveryFn` receives; defaults to discuss
    * recovery only. Tests that need workflow or jobs recovery wire the extra
    * stages in here.
    */
-  runStartupRecoveryFn?: NonNullable<CoordinatorCoreOptions['runStartupRecoveryFn']>;
+  runStartupRecoveryFn?: RunStartupRecoveryOrchestratorFn;
 }
 
 export interface BootedCore {
@@ -113,59 +115,67 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
   async function bootCore(opts: BootCoreOptions): Promise<BootedCore> {
     const coreNamespace = opts.backendNamespace ?? backendNamespace;
     const storeServices = createHarnessStoreServices(runtime, db, coreNamespace);
-
-    const core = createCoordinatorCore({
-      storeFormat: currentCoralStoreFormat(),
-      runtime,
-      backendNamespace: coreNamespace,
-      bootSnapshot: {
-        version: 'test-version',
-        bundleHash: opts.bundleHash ?? 'test-bundle',
-        flavor,
-        instanceId: opts.instanceId,
-        token: `token-${opts.instanceId}`,
-        now: () => Date.now(),
-        log: () => {},
-      },
-      createStoreServicesFromDbFn: (openedDb) => {
-        if (openedDb !== db) {
-          openedDb.close();
-        }
-        return storeServices;
-      },
-      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-      createServerFn: (handler) => createServer(handler),
-      listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
-      closeServerFn: async () => {},
-      writeBackendInfoFn: () => {},
-      removeBackendInfoIfOwnerFn: () => {},
-      cleanupStaleJobsFn: () => {},
-      markJobsAsErrorFn: () => {},
-      terminateAllFn: () => {},
-      registerBuiltInProvidersFn: () => {},
-      ...(opts.createExecutionService === undefined ? {} : { createExecutionService: opts.createExecutionService }),
-      // Production default `discussRecovery.runStartup` runs because we don't override
-      // `recoverPersistedDiscussFn`. The startup recovery shim below forwards into it.
-      runStartupRecoveryFn:
-        opts.runStartupRecoveryFn ??
-        (async ({
+    const runStartupRecovery: RunStartupRecoveryOrchestratorFn =
+      opts.runStartupRecoveryFn ??
+      (async ({
+        knownDiscussSources,
+        getDiscussStoreForSource,
+        getDiscussContext,
+        createInvocationContext,
+        signal,
+        recoverPersistedDiscussFn,
+      }) => {
+        return recoverPersistedDiscussFn({
           knownDiscussSources,
           getDiscussStoreForSource,
           getDiscussContext,
           createInvocationContext,
           signal,
-          recoverPersistedDiscussFn,
-        }) => {
-          return recoverPersistedDiscussFn({
-            knownDiscussSources,
-            getDiscussStoreForSource,
-            getDiscussContext,
-            createInvocationContext,
-            signal,
-          });
-        }),
-      getConsumerStuck: () => [],
-    });
+        });
+      });
+
+    const core = createCoordinatorCore(
+      {
+        storeFormat: currentCoralStoreFormat(),
+        runtime,
+        backendNamespace: coreNamespace,
+        bootSnapshot: {
+          // Strict-manifest shaped on purpose: startup now publishes an active-store selection, whose schema
+          // pins SemVer, a UUID build set, and 16-hex bundle hashes. Production identity always satisfies that
+          // (`resolveStrictBundleIdentity`), so a placeholder here would only be testing a shape production
+          // never has.
+          version: '1.0.0',
+          buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+          bundleHash: opts.bundleHash ?? '0123456789abcdef',
+          flavor,
+          instanceId: opts.instanceId,
+          token: `token-${opts.instanceId}`,
+          now: () => Date.now(),
+          log: () => {},
+        },
+        createStoreServicesFromDbFn: (openedDb) => {
+          if (openedDb !== db) {
+            openedDb.close();
+          }
+          return storeServices;
+        },
+        kbDaemonSupervisor: createMockKbDaemonSupervisor(),
+        createServerFn: (handler) => createServer(handler),
+        listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
+        closeServerFn: async () => {},
+        writeBackendInfoFn: () => {},
+        removeBackendInfoIfOwnerFn: () => {},
+        cleanupStaleJobsFn: () => {},
+        markJobsAsErrorFn: () => {},
+        terminateAllFn: () => {},
+        registerBuiltInProvidersFn: () => {},
+        ...(opts.createExecutionService === undefined ? {} : { createExecutionService: opts.createExecutionService }),
+        ...(opts.providerHostManager === undefined ? {} : { providerHostManager: opts.providerHostManager }),
+        ...(opts.providerRegistry === undefined ? {} : { providerRegistry: opts.providerRegistry }),
+        getConsumerStuck: () => [],
+      },
+      runStartupRecovery,
+    );
     setStoreServicesForTest(core.storeServicesRef, storeServices, { storeDbPath: ':memory:' });
 
     liveServers.push(core.server);

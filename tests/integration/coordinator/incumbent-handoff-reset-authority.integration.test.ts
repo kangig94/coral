@@ -2,7 +2,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { createServer as createNetServer, type Server as NetServer } from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -14,7 +14,6 @@ import type { CoordinatorStoreServices } from '#src/coordinator/composition/stor
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { serializeCoralSetupError } from '#src/runtime/errors.js';
 import type { Database } from '#src/store/db.js';
 import { closeIpcServer, listenIpcServer, type IpcListener } from '#src/transport/ipc/server.js';
 import {
@@ -227,7 +226,7 @@ afterEach(async () => {
 });
 
 describe('incumbent handoff reset authority', () => {
-  it('serves pre-service health/errors and refuses the old store unchanged after incumbent handoff', async () => {
+  it('serves pre-service health/errors and resets the old store after incumbent handoff', async () => {
     const runtime = createRuntime();
     const token = 'test-token';
     const bootToken = 'test-boot-token';
@@ -280,41 +279,47 @@ describe('incumbent handoff reset authority', () => {
       return { kind: 'response', id: request.id, result: null };
     });
 
-    const core = createCoordinatorCore({
-      storeFormat: currentCoralStoreFormat(),
-      runtime,
-      backendNamespace: 'ns',
-      bootSnapshot: {
-        version: '0.0.0-test',
-        buildSetId: '00000000-0000-4000-8000-000000000000',
-        bundleHash: '1111111111111111',
-        flavor: 'prod',
-        instanceId: 'replacement',
-        token,
-        bootToken: 'replacement-boot-token',
-        shutdownToken: 'replacement-shutdown-token',
-        now: () => Date.now(),
-        log: () => {},
+    const core = createCoordinatorCore(
+      {
+        storeFormat: currentCoralStoreFormat(),
+        runtime,
+        backendNamespace: 'ns',
+        bootSnapshot: {
+          // Strictly newer than the incumbent's 0.8.7, because that is what makes this a replacement at
+          // all: a contender may only evict an incumbent it outranks. The former placeholder here was
+          // '0.0.0-test', which real semver orders *below* 0.8.7 — the scenario only ever reached its
+          // assertions because nothing consulted version order.
+          version: '0.8.8',
+          buildSetId: '00000000-0000-4000-8000-000000000000',
+          bundleHash: '1111111111111111',
+          flavor: 'prod',
+          instanceId: 'replacement',
+          token,
+          bootToken: 'replacement-boot-token',
+          shutdownToken: 'replacement-shutdown-token',
+          now: () => Date.now(),
+          log: () => {},
+        },
+        createServerFn: (handler) => createServer(handler),
+        listenFn: listenHttp,
+        closeServerFn: closeHttp,
+        listenIpcFn: async (listener) => {
+          const result = await listenIpcServer(listener, runtime.paths.coral.coordinator.socketPath);
+          ipcListeners.add(listener);
+          return result;
+        },
+        createStoreServicesFromDbFn: (storeDb) => createStoreServices(storeDb, runtime, 'ns'),
+        kbDaemonSupervisor: createMockKbDaemonSupervisor(),
+        cleanupStaleJobsFn: () => {},
+        markJobsAsErrorFn: () => {},
+        terminateAllFn: () => {},
+        registerBuiltInProvidersFn: () => {},
+        getConsumerStuck: () => {
+          throw new Error('getConsumerStuck must not run before store services exist');
+        },
       },
-      createServerFn: (handler) => createServer(handler),
-      listenFn: listenHttp,
-      closeServerFn: closeHttp,
-      listenIpcFn: async (listener) => {
-        const result = await listenIpcServer(listener, runtime.paths.coral.coordinator.socketPath);
-        ipcListeners.add(listener);
-        return result;
-      },
-      createStoreServicesFromDbFn: (storeDb) => createStoreServices(storeDb, runtime, 'ns'),
-      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-      runStartupRecoveryFn: async () => [],
-      cleanupStaleJobsFn: () => {},
-      markJobsAsErrorFn: () => {},
-      terminateAllFn: () => {},
-      registerBuiltInProvidersFn: () => {},
-      getConsumerStuck: () => {
-        throw new Error('getConsumerStuck must not run before store services exist');
-      },
-    });
+      async () => [],
+    );
 
     try {
       const httpInfo = await listenHttp(core.server);
@@ -349,17 +354,15 @@ describe('incumbent handoff reset authority', () => {
       incumbentStore.close();
       await closeNet(incumbent);
 
-      const startupError = await startPromise.then(
-        () => null,
-        (error: unknown) => error,
-      );
+      await startPromise;
 
-      expect(serializeCoralSetupError(startupError)).toMatchObject({ code: 'store_corrupt_or_unsupported' });
-      expect(core.storeServicesRef.tryGet()).toBeNull();
-      expect(readFileSync(dbPath)).toEqual(storeBefore);
-      expect(readStoreFormatFingerprint(dbPath)).toBe('sha256:obsolete');
-      expect(tableExists(dbPath, 'incumbent_owned_store')).toBe(true);
-      expect(runtime.storage.existsSync(join(dirname(dbPath), 'store-reset-quarantine'))).toBe(false);
+      expect(core.storeServicesRef.tryGet()).not.toBeNull();
+      expect(readStoreFormatFingerprint(dbPath)).toBe(currentCoralStoreFormat().fingerprint);
+      expect(tableExists(dbPath, 'incumbent_owned_store')).toBe(false);
+      const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+      const incidentNames = readdirSync(quarantineRoot).filter((name) => name !== '.staging');
+      expect(incidentNames).toHaveLength(1);
+      expect(readFileSync(join(quarantineRoot, incidentNames[0], 'store.db'))).toEqual(storeBefore);
     } finally {
       try {
         incumbentStore.close();

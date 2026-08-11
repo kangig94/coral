@@ -21,9 +21,12 @@ import type { JobStatus } from '../jobs/records.js';
 import { jobLaunchRequestBodySchema } from '../jobs/launch.js';
 import { decodeProjectionJobExecutionOwner, decodeProjectionJobStoredRow } from '../jobs/projection-row.js';
 import { appendJobTerminalRecorded } from '../jobs/terminal/recording.js';
+import { deleteDurableCliProcessRuntimeMeta } from '../jobs/runtime-meta-store.js';
 import { elapsedDurationMs } from '../jobs/duration.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
+import type { ProviderProxyAuthorityRegistry } from './live/provider-proxy/authority.js';
 import type { Runtime } from '../runtime/ports.js';
+import type { StartupReconciliationReport } from './services/provider-operation-reconciler.js';
 import type { RuntimeComponent } from './runtime-components/contract.js';
 import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
 import { createRecoveryComponent } from './runtime-components/recovery-component.js';
@@ -41,6 +44,7 @@ import {
   BackendAlreadyRunningError,
   createFileHandoffSignalLedger,
   HandoffEscalationError,
+  type BoundCoordinator,
 } from './handoff.js';
 import { IncumbentMatchesError } from '../transport/ipc/handoff.js';
 import { probeCoordinator } from '../infra/backend-discovery.js';
@@ -48,12 +52,16 @@ import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
-import { createBackendStoreResetAuthority, openOrResetBackendStoreDb } from '../store/backend-store-reset.js';
+import { createBackendStoreResetAuthority } from '../store/backend-store-reset.js';
+import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
+import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Database } from '../store/db.js';
+import { routeOrOpenBackendStoreAtStartup } from '../store/startup-store-routing.js';
+import { validateForeignHandoffTarget } from './handoff-runner.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 import type { SystemProviderScope } from '../infra/provider-scope.js';
-import { CoralSetupError } from '../runtime/errors.js';
+import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { StoreFormatDescription } from '../store/format-fingerprint.js';
 import { decodeStoredBody } from '../store/body-codec.js';
 import { rowToCoralEvent } from '../store/envelope.js';
@@ -74,10 +82,21 @@ import {
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
 import { runStartupStaleArtifactPrune } from './startup-recovery.js';
+import type { ProviderOperationStartupOwnership, RunJobsStartupFn } from '../jobs/startup.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
 export const STARTUP_STORE_BUSY_TIMEOUT_MS = 750;
+
+export class StartupStoreHandoffError extends Error {
+  readonly target: ValidatedHandoffTarget;
+
+  constructor(target: ValidatedHandoffTarget) {
+    super('Coordinator startup is continuing in the selected active-store build.');
+    this.name = 'StartupStoreHandoffError';
+    this.target = target;
+  }
+}
 
 export type CoordinatorServerInfo = {
   port: number;
@@ -381,6 +400,11 @@ function createStaleJobCleanupPolicy(
       const artifactPath = progressStore.jobDir(item.jobId);
       storage.rmSync(artifactPath, { recursive: true, force: true });
       progressStore.purgeFromCache(item.jobId);
+      // The carrier identity captured at launch describes a process, so nothing about the job ending makes it
+      // stale — this prune is the only thing that ever removes it. Deleting it here rather than on the
+      // terminal event is deliberate: the identity outlives the job for exactly as long as the artifact does,
+      // and the two are reclaimed together. Idempotent, and a job that never captured one is a no-op.
+      deleteDurableCliProcessRuntimeMeta(progressStore.getDb(), item.jobId);
       bestEffortLifecycleLog(log, `Cleaned up ${fromOldBundle ? 'stale' : 'aged'} job artifact: ${item.jobId}\n`);
       return {
         kind: 'advanced',
@@ -481,7 +505,6 @@ export function createStaleJobCleanupRetryPlan(
 /** Returns the exact-subject crash-terminalization retry plan owned by coordinator lifecycle. */
 export function createCrashedJobTerminalizationRetryPlan(
   db: Database,
-  namespace: string,
   subject: RecoverySubject,
 ): RecoverySourceFactoryPlan<RawCrashedJobRow, CrashedJobTerminalizationItem> {
   let resolvedPolicy: RecoveryRetryPolicy<RawCrashedJobRow, CrashedJobTerminalizationItem> | undefined;
@@ -494,7 +517,7 @@ export function createCrashedJobTerminalizationRetryPlan(
     return resolvedPolicy;
   };
   return {
-    source: crashedJobTerminalizationSource(db, namespace, subject),
+    source: crashedJobTerminalizationSource(db, subject),
     policy: {
       processLocalCleanup: { kind: 'not-required' },
       hydrate: (raw) => policy().hydrate(raw),
@@ -537,7 +560,6 @@ export async function cleanupStaleJobs(
 
 export async function markJobsAsError(
   progressStore: JobStore,
-  namespace: string,
   message: string,
   storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>,
   jobsRoot: string,
@@ -553,7 +575,7 @@ export async function markJobsAsError(
     ...createCrashedJobTerminalizationPolicy(context),
   };
   await runShutdownCrashTerminalization({
-    source: crashedJobTerminalizationSource(progressStore.getDb(), namespace),
+    source: crashedJobTerminalizationSource(progressStore.getDb()),
     policy,
   });
 }
@@ -601,7 +623,7 @@ export type RecoverPersistedDiscussDeps = {
 
 export type RecoverPersistedDiscussFn = (deps: RecoverPersistedDiscussDeps) => Promise<RecoveredDiscussResume[]>;
 
-export type StartupRecoveryDeps = {
+export type StartupRecoveryInputs = {
   readonly identity: CoordinatorIdentity;
   readonly runtime: Runtime;
   readonly progressStore: JobStore;
@@ -613,17 +635,22 @@ export type StartupRecoveryDeps = {
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readonly createInvocationContext: (projectRoot: string) => InvocationContext;
   readonly recoveryCoordinator: RecoveryCoordinator;
+  readonly providerOperationStartupOwnership: ProviderOperationStartupOwnership;
   readonly signal: AbortSignal;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
   /**
-   * Default `'restart'`. Phase C will set this to `'handoff'` when
-   * `bindWithHandoff` observed an incumbent and acquired the socket; in this
-   * landing the parameter exists but always defaults to `'restart'`.
+   * Defaults to `'restart'`; a bound coordinator that replaced an incumbent
+   * sets this to `'handoff'`.
    */
   readonly interruptedAppServerReason?: InterruptedAppServerReason;
 };
 
-export type RunStartupRecoveryFn = (deps: StartupRecoveryDeps) => Promise<RecoveredDiscussResume[]>;
+export type RunStartupRecoveryFn = (inputs: StartupRecoveryInputs) => Promise<RecoveredDiscussResume[]>;
+
+export type RunStartupRecoveryOrchestratorFn = (
+  inputs: StartupRecoveryInputs,
+  runJobsStartup: RunJobsStartupFn,
+) => Promise<RecoveredDiscussResume[]>;
 
 export type LifecycleDeps = {
   readonly identity: CoordinatorIdentity;
@@ -644,22 +671,31 @@ export type LifecycleDeps = {
   readonly getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   readonly getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   readonly listExecutionServices: () => ProjectRequestPort[];
+  readonly connectProviderOperationRecovery?: (recoveryCoordinator: RecoveryCoordinator) => void;
+  readonly reconcileProviderOperationsAtStartup?: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
+  readonly startProviderOperationReconciler?: () => void;
+  readonly stopProviderOperationReconciler?: () => void;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readonly writeBackendInfoFn: (info: BackendInfo) => void;
   readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void;
   readonly cleanupStaleJobsFn: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
-  readonly markJobsAsErrorFn: (namespace: string, message: string, signal: AbortSignal) => void | Promise<void>;
+  readonly markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
   readonly terminateAllFn: () => void;
   readonly providerHostManager: Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
+  /**
+   * The live guardian/reaper/proxy sets, absent whenever the composition layer had no real acquisition path
+   * to report on (see `CoordinatorWorld.providerProxyAuthority`'s own doc). `runShutdownSequence` treats
+   * absence identically to an always-empty registry.
+   */
+  readonly providerProxyAuthority?: ProviderProxyAuthorityRegistry;
   readonly kbDaemonSupervisor?: KbDaemonSupervisor;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   readonly disposeLifecycleReactor?: () => void | Promise<void>;
   readonly createKbHealthComponentFn: CreateKbHealthComponentFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
-  readonly runStartupRecoveryFn: RunStartupRecoveryFn;
   readonly hooks: LifecycleHooks;
   readonly closeServerFn: (server: Server) => Promise<void>;
   readonly listenFn: (server: Server) => Promise<{ port: number; host: string }>;
@@ -686,6 +722,7 @@ type LifecycleControlState = LifecycleWiringState & {
 
 type LifecycleStartupContext = {
   deps: LifecycleDeps;
+  runStartupRecovery: RunStartupRecoveryOrchestratorFn;
   state: LifecycleControlState;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   ownershipChecker: ReturnType<typeof createReplacementBackendOwnershipChecker>;
@@ -694,6 +731,7 @@ type LifecycleStartupContext = {
 
 async function runLifecycleStartup({
   deps,
+  runStartupRecovery,
   state,
   createInvocationContext,
   ownershipChecker,
@@ -712,6 +750,9 @@ async function runLifecycleStartup({
     providerRegistry,
     server,
     getRecoveryService,
+    connectProviderOperationRecovery,
+    reconcileProviderOperationsAtStartup,
+    startProviderOperationReconciler,
     getDiscussStoreForSource,
     knownDiscussSources,
     getDiscussContext,
@@ -721,7 +762,6 @@ async function runLifecycleStartup({
     createKbHealthComponentFn,
     registerBuiltInProvidersFn,
     recoverPersistedDiscussFn,
-    runStartupRecoveryFn,
     hooks,
     closeServerFn,
     listenFn,
@@ -757,10 +797,9 @@ async function runLifecycleStartup({
     // here, so a contender that arrives while we are still 'starting' triggers
     // immediate shutdown via that path.
     const socketPath = runtime.paths.coral.coordinator.socketPath;
-    let interruptedAppServerReason: InterruptedAppServerReason = 'restart';
-    let acquiredViaHandoff = false;
+    let bound: BoundCoordinator | null = null;
     if (ipcServer && listenIpcFn) {
-      const handoff = await bindWithHandoff({
+      bound = await bindWithHandoff({
         socketPath,
         desired: { version, bundleHash, flavor, namespace },
         bindAttempt: async () => {
@@ -774,6 +813,7 @@ async function runLifecycleStartup({
             throw error;
           }
         },
+        runStartupRecovery,
         runtime,
         readVerifiedIncumbentFromDiscovery: ({ socketPath: probeSocket, desired, lastHealth }) => {
           const info = probeCoordinator({
@@ -819,10 +859,6 @@ async function runLifecycleStartup({
         signal,
         totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
       });
-      if (handoff.acquiredViaHandoff) {
-        acquiredViaHandoff = true;
-        interruptedAppServerReason = 'handoff';
-      }
     }
     signal.throwIfAborted();
 
@@ -843,27 +879,66 @@ async function runLifecycleStartup({
       }
     }
 
-    const resetAuthority = createBackendStoreResetAuthority(
-      runtime,
-      { acquiredViaHandoff },
-      {
-        namespace,
-        storeFormat: deps.storeFormat,
-        build: {
-          version,
-          buildSetId,
-          bundleHash,
-          cliBundleHash,
-          claudeAppserverBundleHash,
-          flavor,
-          storeFormatFingerprint: deps.storeFormat.fingerprint,
+    const currentBuild = {
+      version,
+      buildSetId,
+      bundleHash,
+      cliBundleHash,
+      claudeAppserverBundleHash,
+      flavor,
+      storeFormatFingerprint: deps.storeFormat.fingerprint,
+    };
+    const preinjectedStoreServices = storeServicesRef.tryGet();
+    let storeDb: Database;
+    if (preinjectedStoreServices !== null) {
+      // Production starts with an empty service ref. Test composition may pre-inject an in-memory store, which
+      // has no filesystem selection or reset state to coordinate and must not consume deterministic IDs.
+      if (preinjectedStoreServices.storeDb.location() !== null) {
+        throw new Error('Pre-injected lifecycle store must be non-filesystem-backed.');
+      }
+      storeDb = preinjectedStoreServices.storeDb;
+    } else {
+      const resetAuthority = createBackendStoreResetAuthority(
+        runtime,
+        { acquiredViaHandoff: bound?.acquiredViaHandoff ?? false },
+        {
+          namespace,
+          storeFormat: deps.storeFormat,
+          build: currentBuild,
         },
-      },
-    );
-    const storeDb = openOrResetBackendStoreDb(runtime, resetAuthority, {
-      storeFormat: deps.storeFormat,
-      startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
-    });
+      );
+      const currentBundleDir = resolveRunningBundleDir(identity.pluginRoot);
+      if (currentBundleDir === null) {
+        throw documentedCoralSetupError({
+          code: 'startup_bundle_unresolvable',
+          pluginRoot: identity.pluginRoot,
+        });
+      }
+      const routing = await routeOrOpenBackendStoreAtStartup({
+        runtime,
+        authority: resetAuthority,
+        validateForeignTarget: validateForeignHandoffTarget,
+        options: {
+          storeFormat: deps.storeFormat,
+          startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+          currentSelection: {
+            version: 1,
+            manifest: currentBuild,
+            bundleDir: currentBundleDir,
+            activeStoreFingerprint: currentBuild.storeFormatFingerprint,
+          },
+        },
+      });
+      if (routing.kind === 'handoff') {
+        throw new StartupStoreHandoffError(routing.target);
+      }
+      if (routing.kind === 'reset-newer-invalid') {
+        backendLog.warn(
+          `Recovered the newer-incompatible active store after selected bundle ${routing.evidence.bundleDir} failed validation (${routing.evidence.failure}).`,
+        );
+      }
+      storeDb = routing.db;
+    }
     let storeServices: CoordinatorStoreServices;
     try {
       storeServices = createStoreServicesFromDbFn(storeDb);
@@ -878,16 +953,21 @@ async function runLifecycleStartup({
     storeServicesRef.clear();
     storeServicesRef.set(storeServices);
     const progressStore = storeServices.progressStore;
-    const recoveryCoordinator = createRecoveryCoordinator({
-      progressStore,
-      runtime,
-      runtimeState,
-      eventBus: deps.eventBus,
-      getRecoveryService,
-      createInvocationContext,
-      log: identity.log,
-    });
+    const recoveryCoordinator = createRecoveryCoordinator(
+      {
+        progressStore,
+        runtime,
+        runtimeState,
+        eventBus: deps.eventBus,
+        getRecoveryService,
+        createInvocationContext,
+        log: identity.log,
+      },
+      bound,
+    );
     state.recoveryCoordinator = recoveryCoordinator;
+    connectProviderOperationRecovery?.(recoveryCoordinator);
+    const providerOperationStartupOwnership = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
     signal.throwIfAborted();
 
     // Bind the HTTP listener and signal kernel-ready BEFORE Era II's
@@ -918,28 +998,40 @@ async function runLifecycleStartup({
     runtimeState.setLaunchFenceActive(true);
 
     // ===== Era II (recovery) =====
+    // This order is load-bearing: a pending publication contains remote facts that the generic job walk
+    // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
+    await reconcileProviderOperationsAtStartup?.(signal);
+    signal.throwIfAborted();
     // Per-job isolation: corrupt sessions should not abort recovery.
-    // `runStartupRecoveryFn` registers journal cursors then awaits
+    // `bound.runStartupRecovery` registers journal cursors then awaits
     // `waitFreshUntil` against `currentMaxSeq`; that wait runs here in Era II
     // because its budget is bounded by the daemon-side
     // `bootFreshnessTimeoutMs` (default 90s), not by either CLI-facing
     // deadline — the CLI has already returned by now.
-    const recoveredDiscussResumes = await runStartupRecoveryFn({
-      identity,
-      runtime,
-      progressStore,
-      providerRegistry,
-      getExecutionService: deps.getExecutionService,
-      getRecoveryService,
-      knownDiscussSources,
-      getDiscussStoreForSource,
-      getDiscussContext,
-      createInvocationContext,
-      recoveryCoordinator,
-      signal,
-      recoverPersistedDiscussFn,
-      interruptedAppServerReason,
-    });
+    // A startup without an IPC listener never bound the coordinator socket, so it holds no bind
+    // authority and there is no incumbent's work to recover — it was never the canonical coordinator.
+    // This is the absence of a recovery obligation, not a skipped one.
+    const recoveredDiscussResumes =
+      bound === null
+        ? []
+        : await bound.runStartupRecovery({
+            identity,
+            runtime,
+            progressStore,
+            providerRegistry,
+            getExecutionService: deps.getExecutionService,
+            getRecoveryService,
+            knownDiscussSources,
+            getDiscussStoreForSource,
+            getDiscussContext,
+            createInvocationContext,
+            recoveryCoordinator,
+            providerOperationStartupOwnership,
+            signal,
+            recoverPersistedDiscussFn,
+            interruptedAppServerReason: bound.acquiredViaHandoff ? 'handoff' : 'restart',
+          });
+    startProviderOperationReconciler?.();
     await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
     signal.throwIfAborted();
     if (runtimeState.getLaunchFenceActive()) {
@@ -977,7 +1069,7 @@ async function runLifecycleStartup({
           runtimeState.getLifecycle() === 'running' &&
           launchCoordinator.active === 0 &&
           !recoveryCoordinator.isIdleBlocked() &&
-          progressStore.liveJobCountByNamespace(namespace) === 0 &&
+          progressStore.liveJobCount() === 0 &&
           idleTimer.inflightRequests === 0 &&
           !hooks.onIdleCheck() &&
           !daemonCurateRunning
@@ -1056,7 +1148,10 @@ async function runLifecycleStartup({
   }
 }
 
-export function createLifecycle(deps: LifecycleDeps): LifecycleController {
+export function createLifecycle(
+  deps: LifecycleDeps,
+  runStartupRecovery: RunStartupRecoveryOrchestratorFn,
+): LifecycleController {
   const {
     identity,
     runtime,
@@ -1070,6 +1165,8 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     markJobsAsErrorFn,
     terminateAllFn,
     providerHostManager,
+    providerProxyAuthority,
+    stopProviderOperationReconciler,
     kbDaemonSupervisor,
     disposeLifecycleReactor = () => {},
     hooks,
@@ -1080,7 +1177,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     onFatalShutdownError,
   } = deps;
 
-  const { pluginRoot, namespace, instanceId, log } = identity;
+  const { pluginRoot, instanceId, log } = identity;
 
   const state: LifecycleControlState = {
     shutdownPromise: null,
@@ -1117,6 +1214,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     // reason would propagate as a bare string and lose the `name`
     // discriminator.
     state.startupAbort?.abort();
+    stopProviderOperationReconciler?.();
 
     state.shutdownPromise = (async () => {
       if (runtimeState.getLifecycle() === 'stopped') return;
@@ -1136,9 +1234,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         ipcServer,
         streamResponses,
         runtime,
-        namespace,
         markJobsAsErrorFn,
         providerHostManager,
+        providerProxyAuthority,
         kbDaemonSupervisor,
         storeServicesRef,
         terminateAllFn,
@@ -1166,6 +1264,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     try {
       return await runLifecycleStartup({
         deps,
+        runStartupRecovery,
         state,
         createInvocationContext,
         ownershipChecker,

@@ -55,43 +55,47 @@ export function createProductionFileIndex(repoRoot: string, productionFilePaths:
   return new Set(productionFilePaths.map((filePath) => toCanonicalSrcPath(repoRoot, filePath)));
 }
 
-function getRelativeModuleSpecifier(moduleSpecifier: ts.Expression | undefined): string | null {
+/**
+ * True for the two importable spellings that reach another production
+ * src/ file: a relative path (`./foo.js`) or the project's `#src/*`
+ * subpath alias (`#src/foo.js`, declared in package.json#imports as
+ * `"#src/*.js": "./src/*.ts"`). Checked before the relative-path prefix so
+ * a `#src/` specifier is never mistaken for the bare-package-name case
+ * that `.`-prefix filtering exists to exclude. A specifier landing outside
+ * src/ (a real package name, `#tests/*`, `#tools/*`) is not tracked.
+ */
+function isTrackedSpecifierText(text: string): boolean {
+  if (text.startsWith('#src/')) {
+    return true;
+  }
+  if (!text.startsWith('.')) {
+    return false;
+  }
+  const extension = extname(text);
+  return extension === '' || extension === '.js' || extension === '.ts';
+}
+
+function getTrackedModuleSpecifier(moduleSpecifier: ts.Expression | undefined): string | null {
   if (!moduleSpecifier || !ts.isStringLiteralLike(moduleSpecifier)) {
     return null;
   }
 
-  if (!moduleSpecifier.text.startsWith('.')) {
-    return null;
-  }
-  const extension = extname(moduleSpecifier.text);
-  return extension === '' || extension === '.js' || extension === '.ts' ? moduleSpecifier.text : null;
+  return isTrackedSpecifierText(moduleSpecifier.text) ? moduleSpecifier.text : null;
 }
 
-export function getRelativeImportTypeSpecifier(node: ts.ImportTypeNode): string | null {
+export function getTrackedImportTypeSpecifier(node: ts.ImportTypeNode): string | null {
   if (!ts.isLiteralTypeNode(node.argument) || !ts.isStringLiteralLike(node.argument.literal)) {
     return null;
   }
 
-  return node.argument.literal.text.startsWith('.') ? node.argument.literal.text : null;
-}
-
-/**
- * Returns specifiers that match the project's `#src/*` subpath imports
- * (declared in package.json#imports as `"#src/*.js": "./src/*.ts"`).
- * Used by engine-blindness invariants to catch leaks of the form
- * `import { ... } from '#src/engines/...'` outside the documented wiring
- * points; complements `getRelativeModuleSpecifier`'s `.`-prefix coverage.
- */
-export function getSubpathModuleSpecifier(specifier: string): string | undefined {
-  return specifier.startsWith('#src/') ? specifier : undefined;
+  return isTrackedSpecifierText(node.argument.literal.text) ? node.argument.literal.text : null;
 }
 
 /**
  * Resolves a `#src/...` subpath specifier to the canonical `src/...` path
  * that the package.json#imports map points at. Mirrors the mapping
- * `#src/*.js → ./src/*.ts` and `#src/* → ./src/*` so import-graph
- * consumers see the same target shape that relative-path resolution
- * produces.
+ * `#src/*.js → ./src/*.ts` and `#src/* → ./src/*` so `resolveTrackedSourcePath`
+ * can hand back the same target shape that relative-path resolution produces.
  */
 export function resolveSubpathSourcePath(specifier: string): string {
   if (!specifier.startsWith('#src/')) {
@@ -125,6 +129,33 @@ export function resolveRelativeSourcePath(
     if (productionFiles.has(canonicalCandidate)) {
       return canonicalCandidate;
     }
+  }
+
+  throw new Error(`Unable to resolve ${specifier} from ${sourceCanonicalPath} to a production src/*.ts file`);
+}
+
+/**
+ * Resolves any specifier `isTrackedSpecifierText` accepts to its canonical
+ * `src/...` target — the single resolution path `parseSourceImportEdges`
+ * calls, so the edge list it produces is complete for both spellings
+ * production code uses to reach another src/ file. A `#src/` specifier
+ * resolves by direct package.json#imports mapping rather than by
+ * directory-relative lookup, since it is not relative to `sourceFilePath`.
+ */
+function resolveTrackedSourcePath(
+  repoRoot: string,
+  sourceFilePath: string,
+  sourceCanonicalPath: string,
+  specifier: string,
+  productionFiles: Set<string>,
+): string {
+  if (!specifier.startsWith('#src/')) {
+    return resolveRelativeSourcePath(repoRoot, sourceFilePath, sourceCanonicalPath, specifier, productionFiles);
+  }
+
+  const canonicalCandidate = resolveSubpathSourcePath(specifier);
+  if (productionFiles.has(canonicalCandidate)) {
+    return canonicalCandidate;
   }
 
   throw new Error(`Unable to resolve ${specifier} from ${sourceCanonicalPath} to a production src/*.ts file`);
@@ -208,7 +239,7 @@ export function parseSourceImportEdges(
 
     edges.push({
       source: sourceCanonicalPath,
-      target: resolveRelativeSourcePath(repoRoot, sourceFilePath, sourceCanonicalPath, specifier, productionFiles),
+      target: resolveTrackedSourcePath(repoRoot, sourceFilePath, sourceCanonicalPath, specifier, productionFiles),
       specifier,
       via,
       runtime: contribution.runtime,
@@ -218,19 +249,11 @@ export function parseSourceImportEdges(
 
   function visit(node: ts.Node): void {
     if (ts.isImportDeclaration(node)) {
-      recordEdge(
-        getRelativeModuleSpecifier(node.moduleSpecifier),
-        'ImportDeclaration',
-        classifyImportDeclaration(node),
-      );
+      recordEdge(getTrackedModuleSpecifier(node.moduleSpecifier), 'ImportDeclaration', classifyImportDeclaration(node));
     } else if (ts.isExportDeclaration(node)) {
-      recordEdge(
-        getRelativeModuleSpecifier(node.moduleSpecifier),
-        'ExportDeclaration',
-        classifyExportDeclaration(node),
-      );
+      recordEdge(getTrackedModuleSpecifier(node.moduleSpecifier), 'ExportDeclaration', classifyExportDeclaration(node));
     } else if (ts.isImportTypeNode(node)) {
-      recordEdge(getRelativeImportTypeSpecifier(node), 'ImportTypeNode', { runtime: false, typeOnly: true });
+      recordEdge(getTrackedImportTypeSpecifier(node), 'ImportTypeNode', { runtime: false, typeOnly: true });
     } else if (
       ts.isCallExpression(node) &&
       node.expression.kind === ts.SyntaxKind.ImportKeyword &&
@@ -238,7 +261,10 @@ export function parseSourceImportEdges(
       ts.isStringLiteralLike(node.arguments[0])
     ) {
       const specifier = node.arguments[0].text;
-      recordEdge(specifier.startsWith('.') ? specifier : null, 'DynamicImport', { runtime: true, typeOnly: false });
+      recordEdge(isTrackedSpecifierText(specifier) ? specifier : null, 'DynamicImport', {
+        runtime: true,
+        typeOnly: false,
+      });
     }
 
     ts.forEachChild(node, visit);
@@ -261,69 +287,6 @@ export function parseSourceImportEdges(
 
     return left.via.localeCompare(right.via);
   });
-}
-
-export type SubpathImportEdge = {
-  source: string;
-  target: string;
-  specifier: string;
-  via: EdgeSyntax;
-};
-
-/**
- * Walks the AST for `#src/...` subpath specifiers (static, type, and
- * dynamic imports). Returns one edge per occurrence with the resolved
- * `src/...` target path. Sibling collector to `parseSourceImportEdges`
- * — additive, does not reshape the existing relative-edge stream.
- */
-export function parseSourceSubpathImportEdges(repoRoot: string, sourceFilePath: string): SubpathImportEdge[] {
-  const sourceCanonicalPath = toCanonicalSrcPath(repoRoot, sourceFilePath);
-  const sourceText = readFileSync(sourceFilePath, 'utf-8');
-  const sourceFile = ts.createSourceFile(sourceFilePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const edges: SubpathImportEdge[] = [];
-
-  function recordEdge(specifier: string | undefined, via: EdgeSyntax): void {
-    if (!specifier) {
-      return;
-    }
-    edges.push({
-      source: sourceCanonicalPath,
-      target: resolveSubpathSourcePath(specifier),
-      specifier,
-      via,
-    });
-  }
-
-  function readStringLiteral(expression: ts.Expression | undefined): string | undefined {
-    return expression && ts.isStringLiteralLike(expression) ? expression.text : undefined;
-  }
-
-  function visit(node: ts.Node): void {
-    if (ts.isImportDeclaration(node)) {
-      recordEdge(getSubpathModuleSpecifier(readStringLiteral(node.moduleSpecifier) ?? ''), 'ImportDeclaration');
-    } else if (ts.isExportDeclaration(node)) {
-      recordEdge(getSubpathModuleSpecifier(readStringLiteral(node.moduleSpecifier) ?? ''), 'ExportDeclaration');
-    } else if (
-      ts.isImportTypeNode(node) &&
-      ts.isLiteralTypeNode(node.argument) &&
-      ts.isStringLiteralLike(node.argument.literal)
-    ) {
-      recordEdge(getSubpathModuleSpecifier(node.argument.literal.text), 'ImportTypeNode');
-    } else if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.length > 0 &&
-      ts.isStringLiteralLike(node.arguments[0])
-    ) {
-      recordEdge(getSubpathModuleSpecifier(node.arguments[0].text), 'DynamicImport');
-    }
-
-    ts.forEachChild(node, visit);
-  }
-
-  visit(sourceFile);
-
-  return edges;
 }
 
 export function parseProductionImportEdges(

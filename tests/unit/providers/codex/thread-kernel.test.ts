@@ -40,7 +40,7 @@ const APP_SERVER_SESSION: AppServerSession = {
   rpc: async <Result>() => ({}) as Result,
   subscribe: () => () => {},
   closed: new Promise<Error | void>(() => {}),
-  interrupt: async () => false,
+  interrupt: async () => ({ kind: 'not-accepted', reason: 'test refusal' }),
 };
 
 function makeRuntime(
@@ -69,6 +69,7 @@ function makeRuntime(
       checkpoint: () => {},
       transportClosed: () => {},
     },
+    onProviderTurnTerminal: () => {},
     kbRoot: '/mock/kb',
     executionPlan: TEST_CODEX_PLAN,
   };

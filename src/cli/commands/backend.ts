@@ -1,5 +1,6 @@
 import { InvalidArgumentError, type Command } from 'commander';
 
+import { runHandoff } from '../../coordinator/handoff-runner.js';
 import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever } from '../../infra/error-format.js';
@@ -29,6 +30,7 @@ import {
 } from '../../transport/rpc/catalog.js';
 import { getPluginRoot } from '../dispatch.js';
 import { emitError } from '../emit.js';
+import { errorCodeToExit } from '../errors.js';
 import {
   formatBackendStatus,
   formatRecoveryQuarantineClear,
@@ -38,6 +40,7 @@ import {
   RECOVERY_REVISION_UNTIL_CLEARED,
 } from '../format/backend.js';
 import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
+import { renderHandoffNotice } from '../handoff-notice.js';
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetTarget } from '../../store/operator-store-reset.js';
 import {
@@ -242,7 +245,10 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   storeResetCommand
     .command('discard')
-    .description('Quarantine and replace an incompatible generated store under explicit operator control')
+    .description(
+      'Quarantine and replace an incompatible generated store; if a newer local Coral build is already selected ' +
+        'to own this store, the command runs there instead of here',
+    )
     .requiredOption(
       '--target <target>',
       'Store generation to discard (current; gen2 also accepted, legacy is inspection-only)',
@@ -252,6 +258,36 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .action(async (options: { target: StoreResetTarget; flavor: BuildFlavor }) => {
       try {
         const result = await storeReset.discard(options.target, options.flavor);
+        if (result.kind === 'handoff') {
+          // The selection decision precedes every destructive step. Replaying the original argv lets the
+          // validated owner perform the requested reset without asking the operator to run another command.
+          const continuation = await runHandoff(
+            { kind: 'cli-invocation', argv: ['node', 'coral-cli', ...program.args] },
+            { pluginRoot: getPluginRoot(), activeSelectionTarget: result.target },
+          );
+          if (continuation.kind === 'run-current') {
+            process.stderr.write(
+              'This Coral process could not finish draining stdout, so store-reset delegation was abandoned before any destructive step. Nothing was changed. Retry the command.\n',
+            );
+            process.exitCode = errorCodeToExit('transient');
+            return;
+          }
+          switch (continuation.outcome.kind) {
+            case 'handoff-success':
+              renderHandoffNotice(continuation.outcome);
+              return;
+            case 'handoff-exit':
+              process.stderr.write(`Coral ${continuation.version} ran the delegated store-reset command.\n`);
+              process.exitCode = continuation.outcome.exitCode;
+              return;
+            case 'handoff-signal':
+              process.stderr.write(`Coral ${continuation.version} ran the delegated store-reset command.\n`);
+              process.kill(process.pid, continuation.outcome.signal);
+              return;
+            default:
+              return assertNever(continuation.outcome);
+          }
+        }
         process.stderr.write(STORE_RESET_EVIDENCE_WARNING);
         if (result.incident === null) {
           process.stdout.write(`Initialized ${result.target} ${result.flavor} store at ${result.storeDbPath}.\n`);

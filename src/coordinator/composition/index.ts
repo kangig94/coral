@@ -12,6 +12,7 @@
 import type { ServerResponse } from 'node:http';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
+import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { formatError } from '../../infra/error-format.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { isRecord } from '../../infra/json.js';
@@ -51,6 +52,7 @@ import {
   createStaleJobCleanupRetryPlan,
   type LifecycleController,
   type LifecycleDeps,
+  type RunStartupRecoveryOrchestratorFn,
 } from '../lifecycle.js';
 import { createRuntimeComponentRegistry } from '../runtime-components/registry.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
@@ -63,7 +65,6 @@ import { createExecutionServices } from './execution-services.js';
 import { createCoordinatorWorld } from './world.js';
 import { storeServicesStartupNotReadyError } from './store-services-ref.js';
 import { isLivePhase, isTerminalPhase } from '../../jobs/phase.js';
-import { belongsToNamespace } from '../../jobs/records.js';
 import type {
   EquipExpansionRequest,
   EquipExpansionResult,
@@ -361,8 +362,9 @@ function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): Exp
     switch (code) {
       case 'invalid_request':
         return "Retry with valid expansion command arguments or run 'coral-cli expansion --help'.";
-      case 'kb_disabled':
-        return 'Enable the KB daemon runtime and restart Coral, then retry.';
+      // No 'kb_disabled' case: every producer of that code (createDisabledKbDaemonSupervisor) already sets
+      // its own `result.remediation`, so `result.remediation ?? errorRemediation(result.code)` never reaches
+      // this function with that code. A case here would be dead and would drift from the real remediation.
       case 'kb_initializing':
       case 'kb_offline':
       case 'kb_unavailable':
@@ -413,13 +415,18 @@ function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): Exp
   };
 }
 
-export function createCoordinatorCore(options: CoordinatorCoreOptions): CoordinatorCoreResult {
+export function createCoordinatorCore(
+  options: CoordinatorCoreOptions,
+  runStartupRecovery: RunStartupRecoveryOrchestratorFn,
+): CoordinatorCoreResult {
   const runtime = options.runtime;
 
   const defaultsPlan = resolveCoordinatorDefaults(options, runtime);
   const world = createCoordinatorWorld(options, runtime, defaultsPlan);
   const kbDaemonSupervisor = options.kbDaemonSupervisor;
   const identity = world.identity;
+  const strictHealthIdentity = resolveStrictBundleIdentity();
+  const strictHealthBundleDir = strictHealthIdentity.ok ? resolveRunningBundleDir(world.pluginRoot) : null;
   const storeServicesRef = world.storeServicesRef;
   // Local indirection: callers in non-health/handoff paths use this to get
   // the post-bind progressStore. Equivalent to `storeServicesRef.get()` but
@@ -497,7 +504,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   recoverySources.register('workflow-recovery', (subject) => createWorkflowRecoveryRetryPlan(recoveryDb(), subject));
   recoverySources.register('stale-job-cleanup', (subject) => createStaleJobCleanupRetryPlan(recoveryDb(), subject));
   recoverySources.register('crashed-job-terminalization', (subject) =>
-    createCrashedJobTerminalizationRetryPlan(recoveryDb(), world.namespace, subject),
+    createCrashedJobTerminalizationRetryPlan(recoveryDb(), subject),
   );
   assertRecoverySourceRegistryComplete(recoverySources);
   const recoveryQuarantine = createRecoveryQuarantineRetryService({
@@ -525,15 +532,18 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   const streamResponses = new Set<ServerResponse>();
   const eventStreamSubscriptions = new WeakMap<EventStreamHandlers, () => void>();
   let readIpcOpenSockets = () => 0;
+  let lifecycleController: LifecycleController | null = null;
   const services = createExecutionServices({
     world,
     runtime,
     bundleHash: world.identity.bundleHash,
     backendNamespace: world.namespace,
     createExecutionService: defaults.createExecutionService,
+    onProviderProxyLifecycleFatal: (error) => {
+      world.log(`Fatal provider proxy lifecycle error: ${formatError(error)}\n`);
+      void lifecycleController?.shutdown('provider-proxy-lifecycle-fatal').catch(() => undefined);
+    },
   });
-
-  let lifecycleController: LifecycleController | null = null;
 
   const discuss = createDiscussRuntime({
     world,
@@ -554,7 +564,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     world,
     listExecutionServices: services.listExecutionServices,
     getLifecycleController: () => lifecycleController,
-    backendNamespace: world.namespace,
     getProgressStore,
     internalJobAbortRegistry,
   });
@@ -597,12 +606,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
     const progressStore = getProgressStore();
     const status = progressStore.readStatus(jobId);
-    if (
-      !status ||
-      status.sessionId !== sessionId ||
-      !belongsToNamespace(status, world.namespace) ||
-      !isLivePhase(status.phase)
-    ) {
+    if (!status || status.sessionId !== sessionId || !isLivePhase(status.phase)) {
       return;
     }
 
@@ -704,12 +708,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     const jobIds: string[] = [];
     for (const jobId of progressStore.listJobIds()) {
       const status = progressStore.readStatus(jobId);
-      if (
-        status === null ||
-        !isLivePhase(status.phase) ||
-        !belongsToNamespace(status, world.namespace) ||
-        status.jobKind !== 'kb'
-      ) {
+      if (status === null || !isLivePhase(status.phase) || status.jobKind !== 'kb') {
         continue;
       }
       const runtime = progressStore.readRuntimeProjection(jobId);
@@ -730,12 +729,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       const failed: string[] = [];
       for (const jobId of daemonOwnedJobIds) {
         const status = progressStore.readStatus(jobId);
-        if (
-          status === null ||
-          !isLivePhase(status.phase) ||
-          !belongsToNamespace(status, world.namespace) ||
-          status.jobKind !== 'kb'
-        ) {
+        if (status === null || !isLivePhase(status.phase) || status.jobKind !== 'kb') {
           cleanupDaemonJobAbortProxy(jobId);
           continue;
         }
@@ -816,7 +810,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       start: (providerName, input, ctx) => services.getExecutionService(ctx).start(providerName, input, ctx),
     },
     jobs: {
-      scopeCheck: (jobIds, projectRoot) => control.scopeCheckJobs(jobIds, projectRoot, world.namespace),
+      scopeCheck: control.scopeCheckJobs,
       abort: control.abortJobs,
       waitStream: (request) =>
         services
@@ -829,9 +823,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         const progressStore = getProgressStore();
         const jobs: ReturnType<typeof progressStore.listJobProjections> = [];
         for (const entry of progressStore.listJobProjections()) {
-          if (!belongsToNamespace(entry.status, world.namespace)) {
-            continue;
-          }
           if (filters.all !== true && !isLivePhase(entry.status.phase)) {
             continue;
           }
@@ -853,7 +844,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         const progressStore = getProgressStore();
         const detail = progressStore.loadJobProjectionDetail(jobId);
         const status = detail.status;
-        if (!status || !belongsToNamespace(status, world.namespace)) {
+        if (!status) {
           return null;
         }
         const events = progressStore.readJobEvents(jobId);
@@ -977,6 +968,9 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           },
           version: identity.version,
           bundleHash: identity.bundleHash,
+          ...(strictHealthIdentity.ok && strictHealthBundleDir !== null
+            ? { manifest: strictHealthIdentity.manifest, bundleDir: strictHealthBundleDir }
+            : {}),
           flavor: identity.flavor,
           namespace: identity.namespace,
           instanceId: identity.instanceId,
@@ -984,8 +978,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           ...(processStartedAt !== undefined ? { processStartedAt } : {}),
           uptimeMs: identity.now() - runtimeState.getStartedAt(),
           active: world.launchCoordinator.active,
-          activeJobs:
-            storeServices === null ? 0 : storeServices.progressStore.liveJobCountByNamespace(identity.namespace),
+          activeJobs: storeServices === null ? 0 : storeServices.progressStore.liveJobCount(),
           liveDiscuss: listAttachedSessions(world.discussRegistry).length,
           queueDepth: world.launchCoordinator.queueDepth(),
           inflightRequests: world.idleTimer.inflightRequests,
@@ -1089,6 +1082,10 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,
     listExecutionServices: services.listExecutionServices,
+    connectProviderOperationRecovery: services.connectProviderOperationRecovery,
+    reconcileProviderOperationsAtStartup: services.reconcileProviderOperationsAtStartup,
+    startProviderOperationReconciler: services.startProviderOperationReconciler,
+    stopProviderOperationReconciler: services.stopProviderOperationReconciler,
     getDiscussStoreForSource: discuss.getDiscussStoreForSource,
     knownDiscussSources: () => knownDiscussSources(discuss.readHelpersDeps),
     getDiscussContext: discuss.getDiscussContext,
@@ -1098,6 +1095,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,
     terminateAllFn: defaults.terminateAllFn,
     providerHostManager: world.providerHostManager,
+    ...(world.providerProxyAuthority === undefined ? {} : { providerProxyAuthority: world.providerProxyAuthority }),
     kbDaemonSupervisor: kbDaemonSupervisorWithTrackedShutdown,
     disposeLifecycleReactor: () => {
       disposeChildPrincipalTerminalListeners();
@@ -1115,7 +1113,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisorWithTrackedShutdown),
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,
     recoverPersistedDiscussFn: defaults.recoverPersistedDiscussFn,
-    runStartupRecoveryFn: options.runStartupRecoveryFn,
     hooks: discuss.hooks,
     closeServerFn: defaults.closeServerFn,
     listenFn: defaults.listenFn,
@@ -1127,7 +1124,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     onFatalShutdownError: options.onFatalShutdownError,
   };
 
-  lifecycleController = createLifecycle(lifecycleDeps);
+  lifecycleController = createLifecycle(lifecycleDeps, runStartupRecovery);
   const resolvedLifecycleController = lifecycleController;
   // Install the starting-incumbent shutdown callback. `transport.shutdown`
   // invokes both `requestDrain('replaced')` (idle-timer driven) AND this

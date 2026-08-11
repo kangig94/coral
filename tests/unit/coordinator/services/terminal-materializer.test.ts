@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { CauseRefToken } from '#src/causality/cause-ref.js';
 import type { AppendedEvent, CommitContext } from '#src/store/append.js';
 import type { ResolvableCoralEventInput } from '#src/store/envelope.js';
-import { adapterOutputUnparseable, providerRequestFailed, providerSessionUnavailable } from '#src/providers/fault.js';
+import { providerRequestFailed, providerSessionUnavailable, type ProviderFailureCause } from '#src/providers/fault.js';
 import type { ProviderTerminalEventBody } from '#src/providers/contract.js';
 import {
   materializeJobRecoveryFaultInCommit,
@@ -112,13 +112,16 @@ describe('terminal-materializer canonical output boundary', () => {
   it.each([
     [
       'adapter output',
-      adapterOutputUnparseable({
-        provider: 'claude',
-        exitCode: 17,
-        stdout: 'partial stdout',
-        stderr: 'partial stderr',
-        parseError: 'bad json',
-      }),
+      {
+        type: 'session.adapter_unparseable',
+        body: {
+          provider: 'claude',
+          exitCode: 17,
+          stdout: 'partial stdout',
+          stderr: 'partial stderr',
+          parseError: 'bad json',
+        },
+      } satisfies ProviderFailureCause,
       'session.adapter_unparseable',
       {
         provider: 'claude',

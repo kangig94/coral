@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { CauseRefToken } from '#src/causality/cause-ref.js';
 import { materializeProviderFailureCauseInCommit } from '#src/coordinator/services/terminal-materializer.js';
 import { providerRequestFailed } from '#src/providers/fault.js';
+import { providerProxyReplayFailed } from '#src/providers/proxy-failure.js';
 import { sessionProviderFailedBodySchema } from '#src/sessions/event-bodies.js';
 import { sessionsEventDescribers } from '#src/sessions/event-describers.js';
 import {
@@ -79,6 +80,24 @@ function asSessionProviderFailedEvent(input: ResolvableCoralEventInput<unknown, 
 }
 
 describe('terminal materializer turn failure diagnostics', () => {
+  it('preserves proxy-origin replay failure without naming a provider in the durable body or user text', () => {
+    const recorder = createContextRecorder();
+    const outcome = materializeProviderFailureCauseInCommit(
+      recorder.c,
+      providerProxyReplayFailed({ reason: 'provider_replay_operation_events_exhausted' }),
+      OPTIONS,
+    );
+
+    expect(outcome).toEqual({ kind: 'failed', causeRef: recorder.appended[0]?.token });
+    const body = sessionProviderFailedBodySchema.parse(recorder.appended[0]?.input.body);
+    expect(body.provider).toBe('@coral/provider-proxy');
+
+    const describer = sessionsEventDescribers.get('session:session.provider_failed');
+    expect(describer?.(asSessionProviderFailedEvent(recorder.appended[0].input))).toBe(
+      'Provider proxy stopped the turn: Replay event count reached 4,096 for this operation.',
+    );
+  });
+
   it.each(DIAGNOSTIC_CASES)('preserves %s/%s through session fault materialization and describers', (reason, phase) => {
     const recorder = createContextRecorder();
     const expectedDiagnostic = diagnostic(reason, phase);

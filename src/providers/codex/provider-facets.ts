@@ -4,11 +4,17 @@ import type {
   ProviderPreflightRuntime,
   ProviderAppServerCapability,
   AppServerTransport,
+  ProviderInterruptRequestOutcome,
   ProviderRecoveryContract,
 } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type { SessionContinuityMutation } from '../../sessions/continuity-mutation.js';
-import type { AppServerMethod, AppServerRequestParams, AppServerResponse } from './protocol.js';
+import {
+  turnInterruptResponseSchema,
+  type AppServerMethod,
+  type AppServerRequestParams,
+  type AppServerResponse,
+} from './protocol.js';
 import {
   clearCodexTurnContinuity,
   hasCodexContinuity,
@@ -156,19 +162,23 @@ export const codexAppServerLifecycle: ProviderAppServerCapability<CodexExecution
     cwd: host.cwd,
     env: { ...compileCodexHostEnvironment(host) },
     leaseMode: host.leaseMode,
-    idlePolicy: 'daemon',
+    idleRetirement: 'none',
     initializeRequest: {
       method: 'initialize',
       params: { clientInfo: { name: 'coral', version: 'unknown' } },
     },
   }),
-  async interrupt(lease: AppServerTransport, continuity: ProviderContinuityBlob): Promise<boolean> {
+  async interrupt(
+    lease: AppServerTransport,
+    continuity: ProviderContinuityBlob,
+  ): Promise<ProviderInterruptRequestOutcome> {
     const parsed = readCodexPersistedContinuity(continuity);
     if (parsed.threadId === undefined || parsed.turnId === undefined) {
-      return false;
+      return { kind: 'not-accepted', reason: 'Codex continuity is missing the active thread or turn id.' };
     }
     const result = await rpc(lease, 'turn/interrupt', { threadId: parsed.threadId, turnId: parsed.turnId });
-    return result.threadId === parsed.threadId && result.turnId === parsed.turnId;
+    turnInterruptResponseSchema.parse(result);
+    return { kind: 'accepted' };
   },
   async probe(lease, continuity, context): Promise<CodexProbeResult> {
     return probeCodexSession(lease, continuity, context.request.cwd);

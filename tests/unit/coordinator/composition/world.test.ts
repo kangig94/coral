@@ -93,7 +93,6 @@ function createWorld(env: Readonly<Record<string, string | undefined>>): ReturnT
         log: () => undefined,
       },
       backendNamespace: 'world-test-namespace',
-      runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
       kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       launchCoordinator: {} as never,

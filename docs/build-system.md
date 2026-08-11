@@ -64,6 +64,21 @@ The runtime is anchored by two primary entry points:
 
 The build script also emits `clients/build/coral-claude-appserver.cjs` from `src/providers/claude/appserver/server.ts` for the Claude broker helper runtime. The filename is retained for bridge compatibility; the helper defaults to `claude -p` stream-json and can use the PTY TUI transport when `CORAL_CLAUDE_TRANSPORT=tui`.
 
+### Backend Entry Point Dispatch
+
+`coral-backend.cjs` is one artifact with six dispatch modes. Before `src/coordinator/bootstrap.ts`'s `main()` constructs the ordinary coordinator, it checks argv and env for five other invocations of that same artifact and returns without ever reaching `createCoordinatorServer`:
+
+| Invocation                                                                                                    | Behavior                                                                                                                             |
+| -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `--print-store-format-fingerprint`                                                                              | Prints the canonical store-format fingerprint and exits                                                                              |
+| `--print-store-reset-build-identity`                                                                            | Prints the strict embedded build identity as JSON and exits                                                                          |
+| `--provider-guardian <capsulePath>` \| `--provider-reaper <capsulePath>` \| `--provider-proxy <capsulePath>`   | Dispatches into one provider-proxy role process instead of the coordinator — `src/provider-proxy/role-argv.ts` parses the flag, `role-main.ts` runs the named role |
+| `CORAL_KB_DAEMON=1` (env)                                                                                        | Runs the KB daemon main instead of the coordinator                                                                                    |
+| `--smoke-open-store --path <dbPath>`                                                                            | Opens the named store file, round-trips one row inside a transaction, and exits — a build/release smoke check                        |
+| (none of the above)                                                                                              | Ordinary coordinator construction (`createCoordinatorServer`)                                                                         |
+
+The three provider-role flags are one dispatch branch in `main()` — `parseProviderRoleArgv` refuses more than one role flag per invocation — but name three distinct roles (guardian, reaper, proxy) documented under [Provider proxy](./architecture.md#module-map).
+
 ## Build Script Responsibilities
 
 The npm build commands run `scripts/clean-dist.mjs` before `tsc`. TypeScript
@@ -145,7 +160,15 @@ Tests run with:
 npm test
 ```
 
-The suites cover CLI routing, client helpers, backend handlers, providers, workflow execution, KB behavior, discuss behavior, shared contracts, and the debug-only simulation harness. `npm run test:simulation` is only a narrower single-batch shortcut for that harness.
+That command runs the repo typecheck, `tests/unit/**` plus `tests/invariants/**`, and the debug-only simulation harness. Those suites cover CLI routing, client helpers, backend handlers, providers, workflow execution, KB behavior, discuss behavior, and shared contracts. `npm run test:simulation` is only a narrower single-batch shortcut for the harness.
+
+It does **not** run `tests/integration/**`, which owns the multi-process suites — cross-version handoff, cold and warm start, and IPC carriage. Those need their own command:
+
+```bash
+npm run test:integration
+```
+
+Both are CI steps, so a change that only passes one of them is not verified. The end-to-end suites are separate again (`tests/e2e/**`, see the store-reset list below).
 
 Store-reset contract changes can be reproduced locally with:
 
@@ -156,6 +179,14 @@ npm run build
 npm run verify:store-reset-build
 npm run test:e2e:store-reset:build
 ```
+
+Backend lifecycle end-to-end coverage is a separate suite again, unrelated to store-reset but also a CI step — it spawns long-lived backend subprocesses and waits through startup, the IPC handshake, and process death across namespace-isolation and child/no-handoff cold-start cases:
+
+```bash
+npm run test:e2e:lifecycle
+```
+
+`npm run test:network` is not part of the PR gate — it runs `kiwi-runtime-download.integration.test.ts` against the real network to verify the pinned Kiwi WASM artifact still downloads and hashes clean, on CI's weekly schedule and on manual dispatch only.
 
 ## Release Notes
 

@@ -1,10 +1,7 @@
-// CLI-side `ensure()` coverage. The CLI mirrors daemon-side bind-with-handoff
-// over the IPC socket alone — `coordinator.lock` is gone and the reconcile
-// state machine collapsed. Cases:
-//   - Compatible + ready  → reuse summary client
-//   - Compatible + starting → wait for `coordinator.json` then return
-//   - Compatible + draining → wait for socket release, spawn fresh
-//   - Mismatched bundle → call `requestIncumbentShutdown`, wait for release, spawn
+// CLI-side `ensure()` coverage. The coordinator socket is the live authority:
+//   - Healthy incumbent of any build → reuse summary client
+//   - Healthy + starting → wait for `coordinator.json` then return
+//   - Draining → wait for socket release, spawn fresh
 //   - Health unreachable + no `coordinator.json` → spawn fresh
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -187,7 +184,26 @@ afterEach(() => {
 });
 
 describe('ipc ensure', () => {
-  it('reuses a present compatible ready coordinator', async () => {
+  it('should classify serving and replaceable incumbent states separately', async () => {
+    const { mayInvocationBeServedByIncumbent, mayProcessReplaceIncumbent } = await importEnsure();
+    const health = {
+      status: 'ok' as const,
+      version: '0.5.2',
+      bundleHash: 'foreign-hash',
+      flavor: 'prod' as const,
+      instanceId: 'foreign-coordinator',
+      namespace: 'foreign-namespace',
+    };
+
+    expect(mayInvocationBeServedByIncumbent(health)).toBe(true);
+    expect(mayInvocationBeServedByIncumbent({ ...health, status: 'draining' })).toBe(false);
+    expect(mayInvocationBeServedByIncumbent(null)).toBe(false);
+    expect(mayProcessReplaceIncumbent(health)).toBe(false);
+    expect(mayProcessReplaceIncumbent({ ...health, status: 'draining' })).toBe(true);
+    expect(mayProcessReplaceIncumbent(null)).toBe(true);
+  });
+
+  it('should reuse a present healthy ready coordinator', async () => {
     makeHome();
     const root = createPluginRoot();
     writeDiscovery(root, {
@@ -215,6 +231,36 @@ describe('ipc ensure', () => {
       socketPath: socketPath(root),
       auth: { kind: 'boot', token: 'test-boot-token' },
     });
+  });
+
+  it('reuses a present healthy coordinator whose discovery record carries a field this build predates', async () => {
+    makeHome();
+    const root = createPluginRoot();
+    writeDiscovery(root, {
+      port: 4203,
+      token: 'existing-token',
+      instanceId: 'existing-coordinator',
+    });
+    // A build newer than this one added a field to the record before either build's schema knew about
+    // it — simulated by writing straight to disk, past `writeDiscovery`'s own field set.
+    const filePath = discoveryPath(root);
+    const written = JSON.parse(readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(filePath, JSON.stringify({ ...written, futureField: 'added-by-a-newer-coordinator' }), 'utf-8');
+
+    mockState.health.mockResolvedValue({
+      status: 'ok',
+      version: '0.5.2',
+      bundleHash: 'test-hash',
+      flavor: 'prod',
+      instanceId: 'existing-coordinator',
+      namespace: pluginRootNamespace(root),
+    });
+
+    const { ensure } = await importEnsure();
+    const ensured = await ensure(root);
+
+    expect(ensured.instanceId).toBe('existing-coordinator');
+    expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
   describe('child existing-only lifecycle', () => {
@@ -281,19 +327,6 @@ describe('ipc ensure', () => {
       const { ensure } = await importEnsure();
 
       await expect(ensure(root)).rejects.toThrow('parent coordinator is draining');
-      expect(mockState.shutdown).not.toHaveBeenCalled();
-      expect(mockState.bindSocket).not.toHaveBeenCalled();
-      expect(mockState.spawn).not.toHaveBeenCalled();
-    });
-
-    it('rejects lazy restart before shutdown or release probing', async () => {
-      makeHome();
-      const root = createPluginRoot();
-      setCompleteChildEnv();
-
-      const { shutdownAndAwaitRelease } = await importEnsure();
-
-      await expect(shutdownAndAwaitRelease(root)).rejects.toThrow('not allowed to restart its parent coordinator');
       expect(mockState.shutdown).not.toHaveBeenCalled();
       expect(mockState.bindSocket).not.toHaveBeenCalled();
       expect(mockState.spawn).not.toHaveBeenCalled();
@@ -513,9 +546,8 @@ describe('ipc ensure', () => {
     });
   });
 
-  it('treats same-bundle older-version incumbent as incompatible and spawns fresh', async () => {
+  it('should reuse a same-bundle older-version incumbent without changing its instance', async () => {
     makeHome();
-    vi.useFakeTimers();
     const root = createPluginRoot('prod', '0.9.1');
     writeDiscovery(root, {
       version: '0.8.7',
@@ -524,49 +556,23 @@ describe('ipc ensure', () => {
       instanceId: 'old-coordinator',
     });
 
-    let spawned = false;
-    mockState.health.mockImplementation(async () => {
-      if (!spawned) {
-        return {
-          status: 'ok',
-          version: '0.8.7',
-          bundleHash: 'test-hash',
-          flavor: 'prod',
-          instanceId: 'old-coordinator',
-          namespace: pluginRootNamespace(root),
-        };
-      }
-      return {
-        status: 'ok',
-        version: '0.9.1',
-        bundleHash: 'test-hash',
-        flavor: 'prod',
-        instanceId: 'new-coordinator',
-        namespace: pluginRootNamespace(root),
-      };
-    });
-    mockState.shutdown.mockResolvedValue({ status: 'draining' });
-    mockState.bindSocket.mockResolvedValue({ kind: 'bound' });
-    mockState.spawn.mockImplementation(() => {
-      spawned = true;
-      writeDiscovery(root, {
-        version: '0.9.1',
-        port: 4203,
-        token: 'new-token',
-        instanceId: 'new-coordinator',
-      });
-      return { pid: 12_345, unref: vi.fn() };
+    mockState.health.mockResolvedValue({
+      status: 'ok',
+      version: '0.8.7',
+      bundleHash: 'test-hash',
+      flavor: 'prod',
+      instanceId: 'old-coordinator',
+      namespace: pluginRootNamespace(root),
     });
 
     const { ensure } = await importEnsure();
-    const ensuredPromise = ensure(root);
-    await vi.advanceTimersByTimeAsync(800);
-    const ensured = await ensuredPromise;
+    const ensured = await ensure(root);
 
-    expect(ensured.version).toBe('0.9.1');
-    expect(ensured.instanceId).toBe('new-coordinator');
-    expect(mockState.shutdown).toHaveBeenCalledTimes(1);
-    expect(mockState.spawn).toHaveBeenCalledTimes(1);
+    expect(ensured.version).toBe('0.8.7');
+    expect(ensured.instanceId).toBe('old-coordinator');
+    expect(mockState.shutdown).not.toHaveBeenCalled();
+    expect(mockState.bindSocket).not.toHaveBeenCalled();
+    expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
   it('waits for coordinator.json when health reports starting and returns the merged client', async () => {
@@ -614,7 +620,7 @@ describe('ipc ensure', () => {
     expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
-  it('compatible-but-draining waits for socket release then spawns fresh', async () => {
+  it('should wait for a draining incumbent to release the socket before spawning', async () => {
     makeHome();
     vi.useFakeTimers();
     const root = createPluginRoot();
@@ -676,69 +682,12 @@ describe('ipc ensure', () => {
     expect(mockState.shutdown).not.toHaveBeenCalled();
   });
 
-  it('mismatched bundle requests incumbent shutdown then spawns fresh', async () => {
-    makeHome();
-    vi.useFakeTimers();
-    const root = createPluginRoot();
-    writeDiscovery(root, {
-      port: 4240,
-      token: 'old-token',
-      instanceId: 'old-coordinator',
-      bundleHash: 'old-hash',
-    });
-
-    let spawned = false;
-    mockState.health.mockImplementation(async () => {
-      if (!spawned) {
-        // Both the initial probe and the inner requestIncumbentShutdown probe
-        // see the mismatched incumbent.
-        return {
-          status: 'ok',
-          version: '0.5.2',
-          bundleHash: 'old-hash',
-          flavor: 'prod',
-          instanceId: 'old-coordinator',
-          namespace: pluginRootNamespace(root),
-        };
-      }
-      return {
-        status: 'ok',
-        version: '0.5.2',
-        bundleHash: 'test-hash',
-        flavor: 'prod',
-        instanceId: 'new-coordinator',
-        namespace: pluginRootNamespace(root),
-      };
-    });
-    mockState.shutdown.mockResolvedValue({ status: 'draining' });
-
-    mockState.spawn.mockImplementation(() => {
-      spawned = true;
-      writeDiscovery(root, {
-        port: 4241,
-        token: 'new-token',
-        instanceId: 'new-coordinator',
-      });
-      return { pid: 12_345, unref: vi.fn() };
-    });
-
-    const { ensure } = await importEnsure();
-    const ensuredPromise = ensure(root);
-    await vi.advanceTimersByTimeAsync(800);
-    const ensured = await ensuredPromise;
-
-    expect(ensured.instanceId).toBe('new-coordinator');
-    expect(mockState.shutdown).toHaveBeenCalledTimes(1);
-    expect(mockState.spawn).toHaveBeenCalledTimes(1);
-  });
-
-  it('fails fast when mismatched incumbent has no verified shutdown capability', async () => {
+  it('should reuse a healthy foreign-build incumbent without changing its instance', async () => {
     makeHome();
     const root = createPluginRoot();
     writeDiscovery(root, {
       port: 4240,
       token: 'old-token',
-      bootToken: null,
       instanceId: 'old-coordinator',
       bundleHash: 'old-hash',
     });
@@ -753,9 +702,78 @@ describe('ipc ensure', () => {
     });
 
     const { ensure } = await importEnsure();
+    const ensured = await ensure(root);
 
-    await expect(ensure(root)).rejects.toThrow('Manual shutdown required');
+    expect(ensured.instanceId).toBe('old-coordinator');
+    expect(ensured.bundleHash).toBe('old-hash');
     expect(mockState.shutdown).not.toHaveBeenCalled();
+    expect(mockState.bindSocket).not.toHaveBeenCalled();
+    expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
+  it('retries once after a single dropped authenticated health reply instead of spawning a competitor', async () => {
+    makeHome();
+    const root = createPluginRoot();
+    writeDiscovery(root, {
+      port: 4270,
+      token: 'existing-token',
+      instanceId: 'existing-coordinator',
+    });
+
+    let calls = 0;
+    mockState.health.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 2) {
+        // Simulate a single dropped authenticated round-trip: the
+        // unauthenticated `ping` moments earlier already proved the
+        // incumbent is live, so this one failure is IPC noise, not evidence
+        // the incumbent is gone.
+        throw createErrnoError('ECONNRESET');
+      }
+      return {
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'existing-coordinator',
+        namespace: pluginRootNamespace(root),
+      };
+    });
+
+    const { ensure } = await importEnsure();
+    const ensured = await ensure(root);
+
+    expect(ensured.instanceId).toBe('existing-coordinator');
+    expect(mockState.spawn).not.toHaveBeenCalled();
+    expect(mockState.shutdown).not.toHaveBeenCalled();
+  });
+
+  it('should reuse a healthy foreign-build incumbent without a shutdown token', async () => {
+    makeHome();
+    const root = createPluginRoot();
+    writeDiscovery(root, {
+      port: 4240,
+      token: 'old-token',
+      shutdownToken: null,
+      instanceId: 'old-coordinator',
+      bundleHash: 'old-hash',
+    });
+
+    mockState.health.mockResolvedValue({
+      status: 'ok',
+      version: '0.5.2',
+      bundleHash: 'old-hash',
+      flavor: 'prod',
+      instanceId: 'old-coordinator',
+      namespace: pluginRootNamespace(root),
+    });
+
+    const { ensure } = await importEnsure();
+    const ensured = await ensure(root);
+
+    expect(ensured.instanceId).toBe('old-coordinator');
+    expect(mockState.shutdown).not.toHaveBeenCalled();
+    expect(mockState.bindSocket).not.toHaveBeenCalled();
     expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
@@ -913,7 +931,7 @@ describe('ipc ensure', () => {
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
   });
 
-  it('polls bindSocket repeatedly while the incumbent socket is still bound', async () => {
+  it('should poll bindSocket repeatedly while a draining incumbent socket is still bound', async () => {
     makeHome();
     vi.useFakeTimers();
     const root = createPluginRoot();
@@ -935,7 +953,7 @@ describe('ipc ensure', () => {
     mockState.health.mockImplementation(async () => {
       if (!spawned) {
         return {
-          status: 'ok',
+          status: 'draining',
           version: '0.5.2',
           bundleHash: 'old-hash',
           flavor: 'prod',
@@ -952,7 +970,6 @@ describe('ipc ensure', () => {
         namespace: pluginRootNamespace(root),
       };
     });
-    mockState.shutdown.mockResolvedValue({ status: 'draining' });
     mockState.spawn.mockImplementation(() => {
       spawned = true;
       writeDiscovery(root, {
@@ -970,6 +987,7 @@ describe('ipc ensure', () => {
 
     expect(ensured.instanceId).toBe('replacement-coordinator');
     expect(bindCalls).toBeGreaterThanOrEqual(3);
+    expect(mockState.shutdown).not.toHaveBeenCalled();
   });
 
   describe('coordinator.log rotation on spawn', () => {

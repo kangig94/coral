@@ -565,7 +565,7 @@ describe('execution backend server', () => {
         bootToken: 'test-boot-token',
         shutdownToken: 'test-shutdown-token',
         version: '9.9.9',
-        bundleHash: 'testhash1234',
+        bundleHash: '0123456789abcdef',
         flavor: 'prod',
         log: () => {},
         ...bootOverrides,
@@ -591,6 +591,12 @@ describe('execution backend server', () => {
     const projectRoot = join(mockState.tmpHome, name);
     mkdirSync(projectRoot, { recursive: true });
     return projectRoot;
+  }
+
+  function createPluginRoot(name: string): string {
+    const pluginRoot = createProjectRoot(name);
+    mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
+    return pluginRoot;
   }
 
   it('rejects a semantically invalid named system scope before binding the listener', async () => {
@@ -625,7 +631,7 @@ describe('execution backend server', () => {
         token: 'test-token',
         bootToken: 'test-boot-token',
         version: '9.9.9',
-        bundleHash: 'testhash1234',
+        bundleHash: '0123456789abcdef',
         flavor: 'dev',
         instanceId: 'backend-info-dev',
         namespace,
@@ -670,7 +676,7 @@ describe('execution backend server', () => {
     expect(body).toMatchObject({
       status: 'ok',
       version: '9.9.9',
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       flavor: 'prod',
       instanceId: 'execution-backend-instance-1',
       active: 0,
@@ -880,7 +886,7 @@ describe('execution backend server', () => {
         bootToken: 'test-boot-token',
         shutdownToken: 'test-shutdown-token',
         version: '9.9.9',
-        bundleHash: 'testhash1234',
+        bundleHash: '0123456789abcdef',
         flavor: 'prod',
         log: () => {},
       },
@@ -1309,7 +1315,7 @@ describe('execution backend server', () => {
       provider: null,
       projectRoot,
       backendNamespace: testBackendNamespace,
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       jobKind: 'kb',
       pool: 'default',
       enqueueSequence: progressStore.nextEnqueueSequence(),
@@ -1425,7 +1431,7 @@ describe('execution backend server', () => {
       provider: null,
       projectRoot,
       backendNamespace: testBackendNamespace,
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       jobKind: 'kb',
       pool: 'default',
       enqueueSequence: progressStore.nextEnqueueSequence(),
@@ -1520,7 +1526,7 @@ describe('execution backend server', () => {
       provider: null,
       projectRoot,
       backendNamespace: testBackendNamespace,
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       jobKind: 'kb',
       pool: 'default',
       enqueueSequence: progressStore.nextEnqueueSequence(),
@@ -1652,7 +1658,7 @@ describe('execution backend server', () => {
     }
   });
 
-  it('reports only in-namespace live jobs from /health even when a foreign namespace shares the same bundle hash', async () => {
+  it('reports live jobs from every namespace in /health', async () => {
     const progressStore = createProgressStore();
     const backend = await startBackendServer();
 
@@ -1664,7 +1670,7 @@ describe('execution backend server', () => {
       provider: 'codex',
       projectRoot: '/tmp/project',
       backendNamespace: testBackendNamespace,
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -1681,7 +1687,7 @@ describe('execution backend server', () => {
       provider: 'codex',
       projectRoot: '/tmp/project',
       backendNamespace: foreignBackendNamespace,
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       initialPhase: 'running',
     });
     stubLaunchRecord(progressStore, {
@@ -1701,7 +1707,7 @@ describe('execution backend server', () => {
     expect(response.status).toBe(200);
     expect(body).toMatchObject({
       status: 'ok',
-      activeJobs: 1,
+      activeJobs: 2,
     });
   });
 
@@ -2086,7 +2092,7 @@ describe('execution backend server', () => {
           pluginRoot: '/tmp/plugin',
           namespace: testBackendNamespace,
           version: '9.9.9',
-          bundleHash: 'testhash1234',
+          bundleHash: '0123456789abcdef',
           flavor: 'prod',
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
@@ -2137,7 +2143,7 @@ describe('execution backend server', () => {
               status: 'ok' as const,
               kernel: { phase: 'running' as const, readyAt: 0 },
               version: '9.9.9',
-              bundleHash: 'testhash1234',
+              bundleHash: '0123456789abcdef',
               flavor: 'prod' as const,
               namespace: testBackendNamespace,
               instanceId: 'execution-backend-instance-1',
@@ -4502,6 +4508,64 @@ describe('execution backend server', () => {
     });
   });
 
+  it('withholds interrupted wait events from a subscriber that never declared it can render them', async () => {
+    const fakeService = createFakeExecutionService({
+      waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
+        yield {
+          type: 'interrupted',
+          jobId: 'job-1',
+          storedPhase: 'running',
+          observedMaxJournalSeq: 3,
+          remainingJobIds: ['job-1'],
+          observation: { kind: 'carrier_interrupted', reason: 'carrier_absent' },
+          continuity: 'unavailable',
+          outcome: 'unknown',
+        };
+        yield {
+          type: 'terminal',
+          jobId: 'job-1',
+          seq: 8,
+          remainingJobIds: [],
+          resultPath: jobResultPath('job-1'),
+          result: { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
+        };
+      }),
+    });
+    const progressStore = createProgressStore();
+    createdJobIds.add('job-1');
+    initTestJob(progressStore, {
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+    });
+    const backend = await startBackendServer({
+      createExecutionService: () => fakeService as never,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobIds: ['job-1'],
+        timeoutSeconds: 1,
+        projectRoot: '/tmp/project',
+      }),
+    });
+    const body = await response.text();
+
+    // An already-installed CLI predating `interrupted` never sends `supportsInterrupted`, and its
+    // `follow.ts` has no `default` case in the switch that renders wait events — an event type it does
+    // not recognize crashes the render instead of being skipped. Withholding the event at the wire is
+    // what keeps that CLI working; the terminal event still has to reach it.
+    expect(body).not.toContain('event: interrupted');
+    expect(body).toContain('event: terminal');
+  });
+
   it('streams passive dashboard SSE events and applies the optional job filter', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
     const eventBus = new TypedEventBus();
@@ -5415,7 +5479,7 @@ describe('execution backend server', () => {
   });
 
   it('returns 200 from /admin/shutdown with draining status and shuts down when idle', async () => {
-    const pluginRoot = createProjectRoot('plugin-root');
+    const pluginRoot = createPluginRoot('plugin-root');
     const backend = await startBackendServer({ pluginRoot });
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
@@ -5562,7 +5626,7 @@ describe('execution backend server', () => {
       provider: null,
       projectRoot,
       backendNamespace: testBackendNamespace,
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       jobKind: 'kb',
       pool: 'default',
       enqueueSequence: progressStore.nextEnqueueSequence(),
@@ -5647,7 +5711,7 @@ describe('execution backend server', () => {
 
   it('drains shutdown when only foreign namespace live jobs remain', async () => {
     const progressStore = createProgressStore();
-    const pluginRoot = createProjectRoot('plugin-root-foreign-drain');
+    const pluginRoot = createPluginRoot('plugin-root-foreign-drain');
     const localNamespace = pluginRootNamespace(pluginRoot);
     const foreignJobId = 'job-foreign-drain';
     createdJobIds.add(foreignJobId);
@@ -5675,7 +5739,7 @@ describe('execution backend server', () => {
       phase: 'error',
       backendNamespace: foreignBackendNamespace,
     });
-    expect(progressStore.liveJobCount('testhash1234')).toBe(0);
+    expect(progressStore.liveJobCount()).toBe(0);
 
     const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
@@ -5762,7 +5826,7 @@ describe('execution backend server', () => {
     expect(body).toMatchObject({
       status: 'ok',
       version: '9.9.9',
-      bundleHash: 'testhash1234',
+      bundleHash: '0123456789abcdef',
       flavor: 'prod',
       instanceId: 'execution-backend-instance-1',
     });
@@ -5888,68 +5952,70 @@ describe('execution backend server', () => {
       runtimeState.setLifecycle('running');
 
       const kbDaemonSupervisor = createMockKbDaemonSupervisor();
-      const controller = lifecycleModule.createLifecycle({
-        storeFormat: currentCoralStoreFormat(),
-        identity: {
-          pluginRoot,
-          namespace,
-          version: '9.9.9',
-          buildSetId: '00000000-0000-4000-8000-000000000000',
-          bundleHash: 'testhash1234',
-          cliBundleHash: 'testclihash1234',
-          claudeAppserverBundleHash: 'testclaudehash12',
-          flavor: 'prod',
-          instanceId: 'handoff-instance-1',
-          token: 'test-token',
-          bootToken: 'test-boot-token',
-          shutdownToken: 'test-shutdown-token',
-          now: () => 1,
-          log: () => {},
+      const controller = lifecycleModule.createLifecycle(
+        {
+          storeFormat: currentCoralStoreFormat(),
+          identity: {
+            pluginRoot,
+            namespace,
+            version: '9.9.9',
+            buildSetId: '00000000-0000-4000-8000-000000000000',
+            bundleHash: '0123456789abcdef',
+            cliBundleHash: 'testclihash1234',
+            claudeAppserverBundleHash: 'testclaudehash12',
+            flavor: 'prod',
+            instanceId: 'handoff-instance-1',
+            token: 'test-token',
+            bootToken: 'test-boot-token',
+            shutdownToken: 'test-shutdown-token',
+            now: () => 1,
+            log: () => {},
+          },
+          runtime,
+          backendPid: 1234,
+          runtimeState,
+          idleTimer: fakeIdleTimer as never,
+          storeServicesRef,
+          createStoreServicesFromDbFn: () => {
+            throw new Error('Unexpected store services factory during shutdown-only test');
+          },
+          streamResponses: new Set(),
+          discussStores: new Map(),
+          eventBus: new TypedEventBus(),
+          launchCoordinator: createLaunchCoordinator(),
+          providerRegistry: new ProviderRegistry(),
+          server: createServer(),
+          getExecutionService: () => fakeService as never,
+          getRecoveryService: () => fakeService as never,
+          listExecutionServices: () => [fakeService as never],
+          getDiscussStoreForSource: () => {
+            throw new Error('Unexpected discuss store lookup');
+          },
+          knownDiscussSources: () => new Set<string>(),
+          getDiscussContext: () => {
+            throw new Error('Unexpected discuss context lookup');
+          },
+          writeBackendInfoFn: vi.fn(),
+          removeBackendInfoIfOwnerFn: () => {},
+          cleanupStaleJobsFn: () => {},
+          markJobsAsErrorFn: vi.fn(),
+          terminateAllFn: vi.fn(),
+          providerHostManager: providerHostManager as never,
+          kbDaemonSupervisor,
+          handoffQuiescePorts: () => [fakeService as never],
+          createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
+          registerBuiltInProvidersFn: () => {},
+          recoverPersistedDiscussFn: async () => [],
+          hooks: {
+            onShutdown: async () => {},
+            onIdleCheck: () => false,
+            onRecoveryComplete: async () => {},
+          },
+          closeServerFn: async () => {},
+          listenFn: async () => ({ port: 4102, host: '127.0.0.1' }),
         },
-        runtime,
-        backendPid: 1234,
-        runtimeState,
-        idleTimer: fakeIdleTimer as never,
-        storeServicesRef,
-        createStoreServicesFromDbFn: () => {
-          throw new Error('Unexpected store services factory during shutdown-only test');
-        },
-        streamResponses: new Set(),
-        discussStores: new Map(),
-        eventBus: new TypedEventBus(),
-        launchCoordinator: createLaunchCoordinator(),
-        providerRegistry: new ProviderRegistry(),
-        server: createServer(),
-        getExecutionService: () => fakeService as never,
-        getRecoveryService: () => fakeService as never,
-        listExecutionServices: () => [fakeService as never],
-        getDiscussStoreForSource: () => {
-          throw new Error('Unexpected discuss store lookup');
-        },
-        knownDiscussSources: () => new Set<string>(),
-        getDiscussContext: () => {
-          throw new Error('Unexpected discuss context lookup');
-        },
-        writeBackendInfoFn: vi.fn(),
-        removeBackendInfoIfOwnerFn: () => {},
-        cleanupStaleJobsFn: () => {},
-        markJobsAsErrorFn: vi.fn(),
-        terminateAllFn: vi.fn(),
-        providerHostManager: providerHostManager as never,
-        kbDaemonSupervisor,
-        handoffQuiescePorts: () => [fakeService as never],
-        createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
-        registerBuiltInProvidersFn: () => {},
-        recoverPersistedDiscussFn: async () => [],
-        runStartupRecoveryFn: async () => [],
-        hooks: {
-          onShutdown: async () => {},
-          onIdleCheck: () => false,
-          onRecoveryComplete: async () => {},
-        },
-        closeServerFn: async () => {},
-        listenFn: async () => ({ port: 4102, host: '127.0.0.1' }),
-      });
+        async () => [],
+      );
 
       await controller.shutdown('replaced');
       await controller.waitForShutdown();
@@ -6094,7 +6160,7 @@ describe('execution backend server', () => {
           token: 'test-token',
           bootToken: 'test-boot-token',
           version: '9.9.9',
-          bundleHash: 'testhash1234',
+          bundleHash: '0123456789abcdef',
           flavor: 'prod',
           log: () => {},
         },
@@ -6176,7 +6242,7 @@ describe('execution backend server', () => {
           pluginRoot: '/tmp/plugin',
           namespace: testBackendNamespace,
           version: '9.9.9',
-          bundleHash: 'testhash1234',
+          bundleHash: '0123456789abcdef',
           flavor: 'prod',
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
@@ -6203,7 +6269,7 @@ describe('execution backend server', () => {
             status: 'ok' as const,
             kernel: { phase: 'running' as const, readyAt: 0 },
             version: '9.9.9',
-            bundleHash: 'testhash1234',
+            bundleHash: '0123456789abcdef',
             flavor: 'prod' as const,
             namespace: testBackendNamespace,
             instanceId: 'execution-backend-instance-1',

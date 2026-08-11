@@ -10,6 +10,7 @@ import type { HandoffQuiescePort } from './execution-service.js';
 import type { StoreServicesRef } from './composition/store-services-ref.js';
 import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
+import type { ProviderProxyAuthorityRegistry, ProviderProxySetAuthority } from './live/provider-proxy/authority.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
@@ -53,9 +54,13 @@ type RunShutdownSequenceContext = {
   ipcServer?: IpcListener;
   streamResponses: Set<ServerResponse>;
   runtime: Runtime;
-  namespace: string;
-  markJobsAsErrorFn: (namespace: string, message: string, signal: AbortSignal) => void | Promise<void>;
+  markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
   providerHostManager: ProviderHostLifecycle;
+  /**
+   * The live guardian/reaper/proxy sets. Absent until the lazy acquisition path has created one, which is
+   * every shutdown that ran no provider work.
+   */
+  providerProxyAuthority?: ProviderProxyAuthorityRegistry;
   kbDaemonSupervisor?: KbDaemonSupervisor;
   storeServicesRef: StoreServicesRef;
   terminateAllFn: () => void;
@@ -109,6 +114,77 @@ async function withBudget<T>(
   }
 }
 
+/**
+ * Why a required step failed. Distinguishing them matters because they are not equally recoverable: a
+ * rejection names something that went wrong, while `unconfirmed` names a step that completed without
+ * proving what it was for — which shutdown must never read as success.
+ */
+export type RequiredShutdownStepReason = 'budget-exhausted' | 'timed-out' | 'rejected' | 'unconfirmed';
+
+export class RequiredShutdownStepError extends Error {
+  readonly label: string;
+  readonly reason: RequiredShutdownStepReason;
+
+  constructor(label: string, reason: RequiredShutdownStepReason, detail: string) {
+    super(`Required shutdown step '${label}' ${reason}: ${detail}`);
+    this.name = 'RequiredShutdownStepError';
+    this.label = label;
+    this.reason = reason;
+    Object.setPrototypeOf(this, RequiredShutdownStepError.prototype);
+  }
+}
+
+/**
+ * What a required step must prove before shutdown may call itself clean. A step that ran to completion but
+ * could not confirm its effect is a failure: "the reap RPC returned" is not "the containment is gone".
+ */
+export type ShutdownStepConfirmation = Readonly<{ confirmed: true }> | Readonly<{ confirmed: false; detail: string }>;
+
+/**
+ * A budgeted step whose failure is fatal to the shutdown rather than best-effort.
+ *
+ * It differs from `withBudget` in exactly the ways a required step must: an exhausted budget, a lost race, a
+ * rejection, and an unconfirmed result all throw instead of logging. The exhausted-budget case still invokes
+ * the task once, with an already-aborted signal, because a step whose job is to *trigger* releases must
+ * trigger them even when there is no time left to confirm them — skipping the call would leave controls and
+ * sockets held by a process that is exiting anyway.
+ */
+async function withRequiredBudget(
+  label: string,
+  task: (signal: AbortSignal) => Promise<ShutdownStepConfirmation>,
+  remainingDrain: () => number,
+  time: Pick<TimePort, 'sleep'>,
+): Promise<void> {
+  const budget = remainingDrain();
+  if (budget <= 0) {
+    // Observed so a rejection is never unhandled, but deliberately not awaited: there is no budget to wait
+    // in, and the synchronous prefix of the task — the triggers — has already run by the time it returns.
+    void task(AbortSignal.abort()).catch(() => {});
+    throw new RequiredShutdownStepError(label, 'budget-exhausted', 'no drain budget remained');
+  }
+  const timedOut = Symbol('timedOut');
+  const taskAbort = new AbortController();
+  const timeoutAbort = new AbortController();
+  let result: ShutdownStepConfirmation | typeof timedOut;
+  try {
+    result = await Promise.race<ShutdownStepConfirmation | typeof timedOut>([
+      task(taskAbort.signal),
+      time.sleep(budget, { signal: timeoutAbort.signal }).then(() => timedOut),
+    ]);
+  } catch (error: unknown) {
+    throw new RequiredShutdownStepError(label, 'rejected', formatError(error));
+  } finally {
+    timeoutAbort.abort();
+  }
+  if (result === timedOut) {
+    taskAbort.abort();
+    throw new RequiredShutdownStepError(label, 'timed-out', `exceeded ${budget}ms`);
+  }
+  if (!result.confirmed) {
+    throw new RequiredShutdownStepError(label, 'unconfirmed', result.detail);
+  }
+}
+
 type ShutdownFailure = {
   readonly label: string;
   readonly error: unknown;
@@ -148,6 +224,85 @@ function observeShutdownTask(
   });
 }
 
+/**
+ * Reaps every live set and confirms the containment is gone. Used by `hard`, and by `handoff` for the
+ * sets whose containment must not survive this coordinator.
+ */
+async function reapProviderProxySets(
+  sets: readonly ProviderProxySetAuthority[],
+  signal: AbortSignal,
+): Promise<ShutdownStepConfirmation> {
+  // Every set is triggered before any is awaited: one slow reap must not consume another's share of a
+  // budget they are all spending at once.
+  const outcomes = await Promise.allSettled(sets.map((set) => set.stopAndReap(signal)));
+  const unconfirmed = outcomes.flatMap((outcome, index) => {
+    const proxy = sets[index].proxyInstanceId;
+    if (outcome.status === 'rejected') return [`${proxy}: ${formatError(outcome.reason)}`];
+    return 'unconfirmed' in outcome.value ? [`${proxy}: ${outcome.value.unconfirmed}`] : [];
+  });
+  return unconfirmed.length === 0 ? { confirmed: true } : { confirmed: false, detail: unconfirmed.join('; ') };
+}
+
+/**
+ * The IPC socket release, hoisted out of the sequence body so the containment invariant keeps its meaning:
+ * an await written inside `runShutdownSequence` is uncontained even when it sits in a nested closure, and
+ * weakening the rule to admit this one would admit every future one too.
+ */
+async function releaseIpcSocket(
+  ipcServer: IpcListener | undefined,
+  closeIpcServerFn: ((listener: IpcListener) => Promise<void>) | undefined,
+): Promise<void> {
+  if (ipcServer === undefined || closeIpcServerFn === undefined) return;
+  await closeIpcServerFn(ipcServer);
+}
+
+/**
+ * The ordered release boundary at the end of a handoff.
+ *
+ * Its whole purpose is that no single failure — synchronous or asynchronous — can suppress a later trigger.
+ * Every heartbeat stop, then every control close, then the IPC socket release, is invoked synchronously and
+ * in that order before any of them is awaited; a synchronous throw from one is caught and folded into the
+ * same outcome as an asynchronous rejection, so it cannot skip the triggers queued after it. A control whose
+ * close rejects — or a heartbeat stop that throws — must not keep the socket bound, because the successor
+ * cannot establish its own coordinator authority while the old socket remains bound.
+ */
+async function releaseHandoffAuthority(
+  sets: readonly ProviderProxySetAuthority[],
+  releaseIpcSocket: () => Promise<void>,
+  signal: AbortSignal,
+): Promise<ShutdownStepConfirmation> {
+  // A synchronous throw becomes a rejected promise here instead of escaping: escaping would abort this
+  // function before the triggers queued after it ever ran, which is exactly the failure this boundary rules
+  // out. Calling `fn()` inside the try — not deferring it to a microtask — is also what makes every trigger
+  // below run synchronously, in the order written, before any of them is awaited.
+  const trigger = (fn: () => void | Promise<void>): Promise<void> => {
+    try {
+      return Promise.resolve(fn());
+    } catch (error: unknown) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
+
+  const releases = [
+    ...sets.map((set) => ({
+      label: `heartbeats ${set.proxyInstanceId}`,
+      settled: trigger(() => set.stopHeartbeats()),
+    })),
+    ...sets.map((set) => ({
+      label: `control ${set.proxyInstanceId}`,
+      settled: trigger(() => set.initiateControlClose()),
+    })),
+    { label: 'IPC socket release', settled: trigger(releaseIpcSocket) },
+  ];
+
+  const outcomes = await Promise.allSettled(releases.map((entry) => entry.settled));
+  const failures = outcomes.flatMap((outcome, index) =>
+    outcome.status === 'rejected' ? [`${releases[index].label}: ${formatError(outcome.reason)}`] : [],
+  );
+  if (signal.aborted) failures.push('release boundary was aborted before every confirmation arrived');
+  return failures.length === 0 ? { confirmed: true } : { confirmed: false, detail: failures.join('; ') };
+}
+
 function throwShutdownFailures(failures: readonly ShutdownFailure[]): void {
   if (failures.length === 0) return;
   throw new AggregateError(
@@ -169,9 +324,9 @@ export async function runShutdownSequence({
   ipcServer,
   streamResponses,
   runtime,
-  namespace,
   markJobsAsErrorFn,
   providerHostManager,
+  providerProxyAuthority,
   kbDaemonSupervisor,
   storeServicesRef,
   terminateAllFn,
@@ -199,6 +354,23 @@ export async function runShutdownSequence({
     Promise.race([task, runtime.time.sleep(remainingDrain())]);
   const runBudgetedStep = (label: string, task: (signal: AbortSignal) => Promise<void>): Promise<void> =>
     runStep(label, () => withBudget(label, task, remainingDrain, runtime.time, log));
+  // A required step's failure is recorded like any other, so `throwShutdownFailures` still aggregates it —
+  // what "required" changes is that skipping, timing out, or finishing unconfirmed all become failures
+  // instead of a log line.
+  const runRequiredBudgetedStep = (
+    label: string,
+    task: (signal: AbortSignal) => Promise<ShutdownStepConfirmation>,
+  ): Promise<void> => runStep(label, () => withRequiredBudget(label, task, remainingDrain, runtime.time));
+  // `liveSets()` is a call-time snapshot, not a live cursor (see its doc): reading it again after this
+  // shutdown has itself reaped some of what it returned is not guaranteed to exclude those sets, which would
+  // let an already-torn-down set re-enter a later required step and fail it a second time for the same
+  // underlying reap. So this is still read exactly once per branch below — but not here, at the top of the
+  // sequence: acquisition is fire-and-forget (`ensureProxySetFor`), so a set can still be settling when this
+  // function starts, and a snapshot taken this early would read before `providerHostManager.shutdown()` /
+  // `drainForHandoff()` has even run. Its own `stopAndClose` aborts every acquisition still in flight before
+  // it awaits anything (see that abort's own doc), which is what makes a snapshot taken right after that call
+  // returns — not here — safe to treat as final: nothing still pending can add to it afterward.
+  let liveProxySets: readonly ProviderProxySetAuthority[] = [];
 
   // Stop accepting HTTP/user-facing work first; the IPC socket stays bound
   // until all handoff finalizers complete or consume the budget, so the
@@ -230,10 +402,22 @@ export async function runShutdownSequence({
     });
     if (storeServicesAvailable) {
       await runBudgetedStep('crashed job terminalization', async (signal) => {
-        await markJobsAsErrorFn(namespace, 'Backend shutting down', signal);
+        await markJobsAsErrorFn('Backend shutting down', signal);
       });
     }
     await runBudgetedStep('provider host shutdown', async (signal) => providerHostManager.shutdown(signal));
+    // Read only now, after `shutdown()` (and the `stopAndClose` abort inside it) has returned: see the
+    // declaration above for why reading this any earlier would miss a set that finishes acquiring during
+    // host shutdown.
+    liveProxySets = providerProxyAuthority?.liveSets() ?? [];
+    // Before the caught per-handle child termination, because that path terminates handles this coordinator
+    // still owns; the detached sets outlive it and have to be reaped by identity, not by handle. Skipped
+    // outright when there is nothing to reap: a required step with no work must not fail for want of budget.
+    if (liveProxySets.length > 0) {
+      await runRequiredBudgetedStep('provider proxy stop and reap', async (signal) =>
+        reapProviderProxySets(liveProxySets, signal),
+      );
+    }
     await runStep('child termination', terminateAllFn);
   } else {
     // Phase A2 is a durability fence, not a best-effort drain. Admission is
@@ -249,6 +433,9 @@ export async function runShutdownSequence({
     await runBudgetedStep('provider host drain for handoff', async (signal) =>
       providerHostManager.drainForHandoff(signal),
     );
+    // Same reasoning as the hard-mode read above: taken only after `drainForHandoff()` has aborted every
+    // acquisition still in flight, so nothing settling afterward can be missing from it.
+    liveProxySets = providerProxyAuthority?.liveSets() ?? [];
   }
 
   await runBudgetedStep('components disposeAll', async (signal) => runtimeState.components.disposeAll(signal));
@@ -262,7 +449,18 @@ export async function runShutdownSequence({
   // No async work may run between this resolution and `onStopped()`; that
   // structural invariant is what makes "socket bound = old daemon authority"
   // hold across the handoff window.
-  if (ipcServer && closeIpcServerFn) {
+  if (mode === 'handoff' && liveProxySets.length > 0) {
+    // One ordered boundary rather than a socket close beside a separate control close. Control loss makes
+    // each standing credential redeemable without moving either enforcer's challenge-derived deadline, and
+    // the socket release that immediately follows lets the successor bind without spending that deadline.
+    //
+    // Only when carriers exist. The required semantics protect the handoff of a *carrier*; applying them to
+    // a shutdown that ran no provider work would turn a slow-but-harmless drain into a non-zero exit for a
+    // property nothing was relying on.
+    await runRequiredBudgetedStep('provider proxy handoff authority release', async (signal) =>
+      releaseHandoffAuthority(liveProxySets, () => releaseIpcSocket(ipcServer, closeIpcServerFn), signal),
+    );
+  } else if (ipcServer && closeIpcServerFn) {
     const ipcServerClosed = observeTask(
       'IPC socket release',
       Promise.resolve().then(() => closeIpcServerFn(ipcServer)),

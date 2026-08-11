@@ -1,7 +1,7 @@
 ---
 name: bugfix
-description: "Use when encountering a bug, error, or unexpected behavior that needs diagnosis and fix."
-argument-hint: "[--delegate] <bug description or error message>"
+description: 'Use when encountering a bug, error, or unexpected behavior that needs diagnosis and fix.'
+argument-hint: '[--delegate] <bug description or error message>'
 ---
 
 # Bug Debugging
@@ -10,11 +10,11 @@ Diagnose bugs, plan fixes, and execute - end-to-end.
 
 ## Argument Routing
 
-| Argument | Mode |
-|----------|------|
-| `<prompt>` | Self-execute on current host (default) |
-| `--delegate` | Delegate to the other host (Claude → Codex, Codex → Claude, Copilot → Codex; current host comes from SessionStart `Current host:`) |
-| `--delegate <prompt>` | Same with prompt |
+| Argument              | Mode                                                                                                                                          |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<prompt>`            | Self-execute on current host (default)                                                                                                        |
+| `--delegate`          | Delegate to the other host (Claude → Codex, Codex → Claude, Copilot → Codex; current host comes from SessionStart `Current host:`) |
+| `--delegate <prompt>` | Same with prompt                                                                                                                              |
 
 Strip the `--delegate` flag before passing the prompt to the execution path.
 
@@ -24,7 +24,7 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
    - **Self-execute (default)**: Spawn `Agent({ subagent_type: "coral:debugger", prompt: "--deep " + prompt })`.
      Wait for the agent to return its diagnosis in `<Output_Format>` structure.
    - **Delegate (`--delegate`)**: Run `coral-cli <other-host> debugger -i "<--deep prompt>" --work-dir "<work_dir>" -d` (`<other-host>` = the delegation target for the current host: Claude → Codex, Codex → Claude, Copilot → Codex).
-     Capture `job` from `Job <job> <launchState> (session <session>)`, then run `coral-cli wait jobs <job> --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience for findings.
+     Capture `job` from `Job <job> <launchState> (session <session>)`, then run `coral-cli wait jobs <job> --embed`. Classify the result from its rendered output, not exit code `75` alone: `Result path: <path>` marks a terminal result, so read that artifact and stop waiting even when a terminal `provider_exit` propagated code `75`; a status beginning `Still waiting` with `(cursor: <cursor>)` means the job is still live, so resume with `coral-cli wait jobs <job> --cursor <cursor> --embed`. If a transient error instead prints `remediation:`, follow that exact command. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
      On error, stop with the error message.
      Verify cited file:line references. Drop findings with incorrect references.
 

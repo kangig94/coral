@@ -2,16 +2,33 @@ import { join } from 'node:path';
 
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage, formatError } from '../../../infra/error-format.js';
+import type { MonotonicClock } from '../../../infra/monotonic-clock.js';
+import {
+  reapRecordedContainment,
+  type RecordedContainmentIdentity,
+  type RecordedProcessIdentity,
+} from '../../../infra/process-containment.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
 import type { InterruptedProbeOutcome } from '../../../jobs/reconcile/interrupted-reason.js';
 import type { JobTerminalInput } from '../../../jobs/records.js';
+import { MAX_PROXY_RECORDED_PROVIDER_ROOTS } from '../../../provider-proxy/enforcement.js';
+import {
+  DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
+  PROXY_TEARDOWN_RESERVE_MS,
+} from '../../../provider-proxy/orphan-deadline.js';
 import type { ProviderArtifactHandleInput, ProviderTerminalEventBody } from '../../../providers/contract.js';
 import type { BoundProvider, BoundProviderHostPreparationInput } from '../../../providers/bound-provider-contract.js';
+import type { Database } from '../../../store/db.js';
+import { deleteProviderOperation } from '../../../store/provider-operation-journal.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { readContinuityRef } from '../../../sessions/continuity.js';
 import type { ContinuitySnapshot } from '../../../sessions/continuity.js';
 import type { ProviderValidatedSessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
-import type { AppServerInterruptedRecoveryPlan, DurableInterruptedRecoveryPlan } from './interrupted-plan.js';
+import type {
+  AppServerInterruptedRecoveryPlan,
+  DurableInterruptedRecoveryPlan,
+  ProviderOperationCarrierRecord,
+} from './interrupted-plan.js';
 
 export type PerformedInterruptedRecovery =
   | Readonly<{ kind: 'unsupported' }>
@@ -40,7 +57,67 @@ type PerformerRuntime = Readonly<{
   storage: Pick<Runtime['storage'], 'readFileSync' | 'existsSync' | 'readdirSync' | 'statSync'>;
   jobDir(jobId: string): string;
   signal?: AbortSignal;
+  /**
+   * Confirms — reaping via SIGTERM/SIGKILL if the recorded proxy set is still alive — that a `carrier-
+   * detached` plan's carrier is gone, then best-effort retires the saga record that named it.
+   * Rejects when absence cannot be confirmed inside the reap budget; the caller must not finalize the job
+   * in that case.
+   */
+  reapCarrier(locator: ProviderOperationCarrierRecord): Promise<void>;
 }>;
+
+/** Keeps process observation injectable because recovery must distinguish a recycled pid from its recorded process. */
+export type CarrierReapDeps<Scope extends symbol> = Readonly<{
+  process: Pick<Runtime['process'], 'kill' | 'isAlive'>;
+  platform: NodeJS.Platform;
+  db: Database;
+  clock: MonotonicClock<Scope>;
+  /** Tests replace the platform probe so ambiguous process identity can be exercised without real children. */
+  readProcessStartedAtSeconds?(pid: number, platform: NodeJS.Platform): number | null;
+}>;
+
+/**
+ * Only the proxy containment and provider root are reaped here because guardian and reaper own their own
+ * orphan clocks and exit after observing containment absence. The budget matches that orphan window plus
+ * teardown reserve, so recovery does not mistake a still-protected carrier for an orphan.
+ *
+ * Saga retirement is best-effort only after absence is proven; a leftover name is safe, while finalizing a
+ * job before absence is proven could permit a second kernel.
+ */
+export async function reapProviderOperationCarrier<Scope extends symbol>(
+  record: ProviderOperationCarrierRecord,
+  deps: CarrierReapDeps<Scope>,
+): Promise<void> {
+  const { locator } = record;
+  const containment: RecordedContainmentIdentity = {
+    pid: locator.containment.pid,
+    processStartedAtSeconds: locator.containment.processStartedAtSeconds,
+    processGroupId: locator.containment.processGroupId,
+  };
+  const providerRoots: readonly RecordedProcessIdentity[] = [record.providerRoot];
+  const exitDeadline = deps.clock.shiftMilliseconds(
+    deps.clock.now(),
+    DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS + PROXY_TEARDOWN_RESERVE_MS,
+  );
+
+  await reapRecordedContainment(containment, providerRoots, exitDeadline, {
+    maxRecordedRoots: MAX_PROXY_RECORDED_PROVIDER_ROOTS,
+    clock: deps.clock,
+    process: deps.process,
+    platform: deps.platform,
+    ...(deps.readProcessStartedAtSeconds === undefined
+      ? {}
+      : { readProcessStartedAtSeconds: deps.readProcessStartedAtSeconds }),
+  });
+
+  try {
+    deleteProviderOperation(deps.db, record);
+  } catch (error: unknown) {
+    backendLog.warn(
+      `Failed to retire provider operation saga for job '${record.operation.jobId}'/operation '${record.operation.operationId}': ${errorMessage(error)}`,
+    );
+  }
+}
 
 function replacementInput(
   plan: AppServerInterruptedRecoveryPlan,
@@ -55,7 +132,11 @@ function replacementInput(
   };
 }
 
-/** Performs only bound-provider, host, and read-only artifact effects for an app-server recovery plan. */
+/**
+ * Performs bound-provider, host, and read-only artifact effects for an app-server recovery plan — plus, for a
+ * `carrier-detached` plan, the process-containment effect that confirms its carrier is gone before it may
+ * finalize like `waiting` below.
+ */
 export async function performInterruptedAppServerRecovery(
   plan: AppServerInterruptedRecoveryPlan,
   boundProvider: BoundProvider,
@@ -78,6 +159,26 @@ export async function performInterruptedAppServerRecovery(
         preservedConversationRef: plan.preservedConversationRef,
       }),
       probeOutcome: 'waiting',
+      recoveryConversationRef: plan.preservedConversationRef,
+      artifactHandles: Object.freeze([]),
+    });
+  }
+
+  if (plan.kind === 'carrier-detached') {
+    // Precondition before this may finalize like `waiting`: confirm the recorded carrier is gone. A rejection
+    // here (absence unconfirmed inside budget) propagates to the caller, which must leave the job nonterminal
+    // rather than treat an unconfirmed carrier as safely detached.
+    await runtime.reapCarrier(plan.carrier);
+    const probeResult = {
+      resumable: plan.preservedConversationRef !== undefined || plan.continuity !== undefined,
+      updatedContinuity: plan.continuity,
+    };
+    return Object.freeze({
+      kind: 'resolved',
+      mutation: recovery.finalizeInterrupted(probeResult, plan.continuity, {
+        preservedConversationRef: plan.preservedConversationRef,
+      }),
+      probeOutcome: 'unavailable',
       recoveryConversationRef: plan.preservedConversationRef,
       artifactHandles: Object.freeze([]),
     });

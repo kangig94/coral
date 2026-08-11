@@ -3,6 +3,7 @@ import { cleanupStaleJobs, resolveJobRetentionMs } from '#src/coordinator/lifecy
 import { backendLog } from '#src/infra/backend-log.js';
 import type { JobStore } from '#src/jobs/store.js';
 import type { JobStatus } from '#src/jobs/records.js';
+import { durableCliProcessRuntimeMetaKey } from '#src/jobs/runtime-meta.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -29,7 +30,7 @@ async function runCleanup(
   statuses: Record<string, JobStatus>,
   rmSync: ReturnType<typeof vi.fn> = vi.fn(),
   signal: AbortSignal = new AbortController().signal,
-): Promise<{ pruned: string[]; purged: string[] }> {
+): Promise<{ pruned: string[]; purged: string[]; survivingIdentities: string[] }> {
   const runtime = new SimulationRuntime();
   const db = openTestStoreDb(runtime, ':memory:');
   const purged: string[] = [];
@@ -85,12 +86,19 @@ async function runCleanup(
       );
     }
   }
+  // Every job gets a recorded carrier identity, so the prune's deletion is observed by which rows survive it
+  // rather than by which the test happened to seed.
+  const insertMeta = db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)');
+  for (const jobId of Object.keys(statuses)) {
+    insertMeta.run(durableCliProcessRuntimeMetaKey(jobId), '{}');
+  }
   const store = {
     getDb: () => db,
     jobDir: (id: string) => `/jobs/${id}`,
     purgeFromCache: (id: string) => purged.push(id),
   } as unknown as JobStore;
 
+  let survivingIdentities: string[];
   try {
     await cleanupStaleJobs(
       store,
@@ -102,11 +110,15 @@ async function runCleanup(
       signal,
     );
   } finally {
+    survivingIdentities = db
+      .prepare<[string], { key: string }>('SELECT key FROM meta WHERE key LIKE ? ORDER BY key')
+      .all('durable_cli_process.v1:%')
+      .map((row) => row.key.replace('durable_cli_process.v1:', ''));
     db.close();
   }
 
   const pruned = rmSync.mock.calls.map((call) => String(call[0]).replace('/jobs/', ''));
-  return { pruned, purged };
+  return { pruned, purged, survivingIdentities };
 }
 
 describe('cleanupStaleJobs', () => {
@@ -164,6 +176,19 @@ describe('cleanupStaleJobs', () => {
       running: status({ phase: 'running', bundleHash: CURRENT_BUNDLE, updatedAt: ago(40) }),
     });
     expect(pruned.sort()).toEqual(['aged']);
+  });
+
+  it('reclaims the pruned job’s recorded carrier identity and leaves every other one', async () => {
+    // Nothing deletes this row when a job ends — a durable CLI's recorded pid and start second describe a
+    // process, not a phase — so the retention prune is the only thing standing between it and unbounded
+    // growth. It is reclaimed with the artifact because it is scoped to exactly the same job.
+    const { survivingIdentities } = await runCleanup({
+      aged: status({ phase: 'completed', bundleHash: CURRENT_BUNDLE, updatedAt: ago(30) }),
+      recent: status({ phase: 'completed', bundleHash: CURRENT_BUNDLE, updatedAt: ago(3) }),
+      running: status({ phase: 'running', bundleHash: CURRENT_BUNDLE, updatedAt: ago(40) }),
+    });
+
+    expect(survivingIdentities).toEqual(['recent', 'running']);
   });
 
   it('stops the prune walk when its startup signal aborts', async () => {

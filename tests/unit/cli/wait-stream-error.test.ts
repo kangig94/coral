@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import { mapWaitSubscriptionError } from '#src/cli/wait-stream-error.js';
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
@@ -56,5 +57,14 @@ describe('mapWaitSubscriptionError', () => {
 
   it('should pass through non-Error values unchanged', () => {
     expect(mapWaitSubscriptionError('plain string')).toBe('plain string');
+  });
+
+  it('should promote a ZodError to a transient 503 so the follow loop retries instead of dying', () => {
+    const zodError = z.object({ type: z.literal('progress') }).safeParse({ type: 'terminal' }).error!;
+
+    const mapped = mapWaitSubscriptionError(zodError);
+
+    expect(mapped).toBeInstanceOf(TransientHttpError);
+    expect((mapped as TransientHttpError).status).toBe(503);
   });
 });

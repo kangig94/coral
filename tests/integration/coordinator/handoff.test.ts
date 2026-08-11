@@ -123,6 +123,7 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
         desired: { version: '0.9.1', bundleHash: 'new-bundle', flavor: 'prod', namespace: 'ns' },
         bindAttempt: async () =>
           socketReleased ? { kind: 'bound' as const } : { kind: 'incumbent' as const, reason: 'live-listener' },
+        runStartupRecovery: async () => [],
         runtime,
         readVerifiedIncumbentFromDiscovery: () => ({
           pid: 12345,

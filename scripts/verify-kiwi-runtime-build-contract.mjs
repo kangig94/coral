@@ -23,9 +23,13 @@ if (!existsSync(buildDir)) {
   throw new Error(`Kiwi build contract is missing ${buildDir}; run \`npm run build\` before this verifier.`);
 }
 const buildFiles = readdirSync(buildDir);
-if (buildFiles.length !== expectedBuildFiles.size || buildFiles.some((entry) => !expectedBuildFiles.has(entry))) {
+const missingBuildFiles = [...expectedBuildFiles].filter((entry) => !buildFiles.includes(entry));
+const unexpectedBuildFiles = buildFiles.filter(
+  (entry) => !expectedBuildFiles.has(entry) && entry !== 'build-receipt.json',
+);
+if (missingBuildFiles.length > 0 || unexpectedBuildFiles.length > 0) {
   throw new Error(
-    `Kiwi build contract expected only the four bundle files, with no WASM staged beside them; got: ${buildFiles.sort().join(', ')}`,
+    `Kiwi build contract expected the four bundle files and optional build receipt, with no WASM staged beside them; got: ${buildFiles.sort().join(', ')}`,
   );
 }
 

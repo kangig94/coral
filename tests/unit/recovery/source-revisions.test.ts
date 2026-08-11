@@ -39,6 +39,7 @@ import { crashedJobTerminalizationSource } from '#src/jobs/crashed-job-terminali
 import { coordinatorJobRecoverySource } from '#src/coordinator/services/recovery/coordinator-job-source.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import type { EventsRow } from '#src/store/schema.js';
+import { providerOperationRecordKeyPrefix } from '#src/store/provider-operation-journal.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -566,6 +567,13 @@ describe('coordinator job recovery source revisions', () => {
       name: 'claimed-session presence',
       mutate: (db) =>
         db.prepare(`DELETE FROM projection_sessions WHERE session_id = 'revision-coordinator-session'`).run(),
+    },
+    {
+      name: 'provider operation locator presence',
+      mutate: (db) =>
+        db
+          .prepare(`INSERT INTO meta (key, value) VALUES (?, ?)`)
+          .run(`${providerOperationRecordKeyPrefix('revision-coordinator-job')}operation:proxy:build`, '{"saga":"v1"}'),
     },
   ];
 
@@ -1947,11 +1955,7 @@ describe('AC13 lifecycle recovery source revisions', () => {
         const quarantine = new RecoveryQuarantineStore(db, REVISION_TIME);
         let settlements = 0;
         const run = () =>
-          quarantineRawSource(
-            crashedJobTerminalizationSource(db, 'revision-namespace'),
-            quarantine,
-            () => (settlements += 1),
-          );
+          quarantineRawSource(crashedJobTerminalizationSource(db), quarantine, () => (settlements += 1));
         await run();
         expect(settlements).toBe(1);
         expect((await run()).skipped).toBe(1);

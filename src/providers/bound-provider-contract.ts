@@ -9,9 +9,12 @@ import type {
   ProviderCurationUsageRuntime,
   ProviderEventBody,
   ProviderPreflightInput,
+  ProviderInterruptRequestOutcome,
+  ProviderTurnTerminalEvidence,
   ProviderRecoveryContract,
   ProviderRequest,
   ProviderRuntime,
+  ProviderServerSpec,
 } from './contract.js';
 import type { ProviderCliRequest } from './protocol.js';
 import type { ProviderCliRunner } from './protocol.js';
@@ -79,7 +82,7 @@ export type BoundProviderHostPreparationInput = Omit<BoundProviderExecutionPrepa
 
 type BoundProviderExecutionRuntimeCommon = Omit<
   ProviderRuntime<never>,
-  'transport' | 'executionPlan' | 'appServerSession' | 'runCli'
+  'transport' | 'executionPlan' | 'appServerSession' | 'runCli' | 'onProviderTurnTerminal'
 > &
   Readonly<{
     jobId: string;
@@ -90,14 +93,11 @@ export type BoundProviderAppServerExecutionRuntime = BoundProviderExecutionRunti
     transport: 'app-server';
     onAppServerWaiting(observation: { provider: string }): void;
     onHostRef(hostRef: HostRef): void;
+    onProviderTurnTerminal(evidence: ProviderTurnTerminalEvidence): void;
   }>;
 
 export type BoundProviderStandaloneExecutionRuntime = BoundProviderExecutionRuntimeCommon &
   Readonly<{ transport: 'standalone'; runCli: ProviderCliRunner }>;
-
-export type BoundProviderExecutionRuntime =
-  | BoundProviderAppServerExecutionRuntime
-  | BoundProviderStandaloneExecutionRuntime;
 
 export interface BoundProviderAppServerCapability {
   readonly supportsInterrupt: boolean;
@@ -110,7 +110,7 @@ export interface BoundProviderAppServerCapability {
     hostRef: HostRef,
     continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
     input: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
-  ): Promise<boolean>;
+  ): Promise<ProviderInterruptRequestOutcome>;
   probe(
     hostRef: HostRef,
     continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
@@ -127,6 +127,13 @@ export interface BoundProviderAppServerCapability {
 export type BoundProviderPreparedExecution =
   | Readonly<{
       kind: 'app-server';
+      /**
+       * The compiled stable host specification this execution would run against — the same executable
+       * identity `ProviderHostManager` pools shared hosts by, computed eagerly here (rather than lazily
+       * inside `execute()`, as it was before) so a caller can identify whether a live provider-proxy set
+       * already owns that identity before ever starting local execution.
+       */
+      hostSpec: ProviderServerSpec;
       execute(runtime: BoundProviderAppServerExecutionRuntime): AsyncIterable<ProviderEventBody>;
     }>
   | Readonly<{

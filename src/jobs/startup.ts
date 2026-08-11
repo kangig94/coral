@@ -6,7 +6,11 @@ import type { Runtime } from '../runtime/ports.js';
 import type { InterruptedAppServerReason } from './reconcile/interrupted-reason.js';
 import type { CommitEventsFn } from '../store/append.js';
 
-type JobsStartupContext = {
+export type ProviderOperationStartupOwnership = Readonly<{
+  jobIds: readonly string[];
+}>;
+
+export type JobsStartupContext = {
   namespace: string;
   bundleHash: string;
   runtime: Runtime;
@@ -17,6 +21,7 @@ type JobsStartupContext = {
   signal: AbortSignal;
   log: (message: string) => void;
   coordinatorCommit: CommitEventsFn;
+  providerOperationStartupOwnership: ProviderOperationStartupOwnership;
   /**
    * Why the recovery is finalizing app-server jobs:
    * - `'restart'` (default): ordinary process restart recovery.
@@ -29,18 +34,8 @@ type JobsStartupContext = {
   interruptedAppServerReason?: InterruptedAppServerReason;
 };
 
-interface JobsRecoveryCoordinator {
-  runStartupRecovery(ctx: JobsStartupContext): Promise<JobStore>;
+export type RunJobsStartupFn = (inputs: JobsStartupContext) => Promise<JobStore>;
+
+export function createJobsStartupRunner(runCoordinatorStartupRecovery: RunJobsStartupFn): RunJobsStartupFn {
+  return (inputs) => runCoordinatorStartupRecovery(inputs);
 }
-
-type JobsStartupDeps = JobsStartupContext & {
-  recoveryCoordinator: JobsRecoveryCoordinator;
-};
-
-async function runJobsStartup({ recoveryCoordinator, ...deps }: JobsStartupDeps): Promise<JobStore> {
-  return recoveryCoordinator.runStartupRecovery(deps);
-}
-
-export const jobsReconcile = {
-  runStartup: runJobsStartup,
-} as const;

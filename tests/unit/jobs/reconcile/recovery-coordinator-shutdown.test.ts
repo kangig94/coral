@@ -25,6 +25,7 @@ import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { createBoundIpcLifecycleDeps } from '#tests/helpers/bound-ipc-lifecycle.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 
@@ -96,6 +97,12 @@ function createProjectRoot(name: string): string {
   const projectRoot = join(mockState.tmpHome, name);
   mkdirSync(projectRoot, { recursive: true });
   return projectRoot;
+}
+
+function createPluginRoot(name: string): string {
+  const pluginRoot = createProjectRoot(name);
+  mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
+  return pluginRoot;
 }
 
 function createStoreServicesHarness(progressStore: { getDb(): { close(): void } }): {
@@ -409,78 +416,92 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   const storeServices = createStoreServicesHarness(progressStore);
   const kbDaemonSupervisor = createMockKbDaemonSupervisor();
 
-  const controller = modules.lifecycleModule.createLifecycle({
-    storeFormat: currentCoralStoreFormat(),
-    identity: {
-      pluginRoot,
-      namespace,
-      version: '9.9.9',
-      buildSetId: '00000000-0000-4000-8000-000000000000',
-      bundleHash: 'testhash1234',
-      cliBundleHash: 'testclihash1234',
-      claudeAppserverBundleHash: 'testclaudehash12',
-      flavor: 'prod',
-      instanceId: `recovery-shutdown-${Math.random()}`,
-      token: 'test-token',
-      bootToken: 'test-boot-token',
-      shutdownToken: 'test-shutdown-token',
-      now: () => 1,
-      log: () => {},
-    },
-    runtime,
-    backendPid: 1234,
-    runtimeState: runtimeState as never,
-    idleTimer: idleTimer as never,
-    storeServicesRef: storeServices.storeServicesRef,
-    createStoreServicesFromDbFn: storeServices.createStoreServicesFromDbFn,
-    streamResponses: new Set(),
-    discussStores: new Map(),
-    eventBus,
-    launchCoordinator,
-    providerRegistry,
-    server: createServer(),
-    getExecutionService: () => fakeService as never,
-    getRecoveryService: () => fakeService as never,
-    listExecutionServices: () => [fakeService as never],
-    getDiscussStoreForSource: () => {
-      throw new Error('Unexpected discuss store lookup');
-    },
-    knownDiscussSources: () => new Set<string>(),
-    getDiscussContext: () => {
-      throw new Error('Unexpected discuss context lookup');
-    },
-    writeBackendInfoFn,
-    removeBackendInfoIfOwnerFn: () => {},
-    cleanupStaleJobsFn: () => {},
-    markJobsAsErrorFn: () => {},
-    terminateAllFn: () => {},
-    providerHostManager: createFakeProviderHostManager() as never,
-    kbDaemonSupervisor,
-    handoffQuiescePorts: () => [],
-    createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
-    registerBuiltInProvidersFn: () => {},
-    // Required by createLifecycle's contract but unused: the custom runStartupRecoveryFn below
-    // calls its own closure-captured spy (recoverPersistedDiscussSpy) so the tail-cut assertion
-    // can observe whether the post-recovery startup tail ran.
-    recoverPersistedDiscussFn: async () => [],
-    runStartupRecoveryFn: async ({
-      identity,
+  const controller = modules.lifecycleModule.createLifecycle(
+    {
+      storeFormat: currentCoralStoreFormat(),
+      identity: {
+        pluginRoot,
+        namespace,
+        version: '9.9.9',
+        buildSetId: '00000000-0000-4000-8000-000000000000',
+        bundleHash: '1111111111111111',
+        cliBundleHash: '2222222222222222',
+        claudeAppserverBundleHash: '3333333333333333',
+        flavor: 'prod',
+        instanceId: `recovery-shutdown-${Math.random()}`,
+        token: 'test-token',
+        bootToken: 'test-boot-token',
+        shutdownToken: 'test-shutdown-token',
+        now: () => 1,
+        log: () => {},
+      },
       runtime,
-      progressStore,
-      getRecoveryService,
-      createInvocationContext,
-      recoveryCoordinator,
-      signal,
-    }) => {
-      await recoveryCoordinator.runStartupRecovery({
-        namespace: identity.namespace,
+      backendPid: 1234,
+      runtimeState: runtimeState as never,
+      idleTimer: idleTimer as never,
+      storeServicesRef: storeServices.storeServicesRef,
+      createStoreServicesFromDbFn: storeServices.createStoreServicesFromDbFn,
+      streamResponses: new Set(),
+      discussStores: new Map(),
+      eventBus,
+      launchCoordinator,
+      providerRegistry,
+      server: createServer(),
+      ...createBoundIpcLifecycleDeps(),
+      getExecutionService: () => fakeService as never,
+      getRecoveryService: () => fakeService as never,
+      listExecutionServices: () => [fakeService as never],
+      getDiscussStoreForSource: () => {
+        throw new Error('Unexpected discuss store lookup');
+      },
+      knownDiscussSources: () => new Set<string>(),
+      getDiscussContext: () => {
+        throw new Error('Unexpected discuss context lookup');
+      },
+      writeBackendInfoFn,
+      removeBackendInfoIfOwnerFn: () => {},
+      cleanupStaleJobsFn: () => {},
+      markJobsAsErrorFn: () => {},
+      terminateAllFn: () => {},
+      providerHostManager: createFakeProviderHostManager() as never,
+      kbDaemonSupervisor,
+      handoffQuiescePorts: () => [],
+      createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
+      registerBuiltInProvidersFn: () => {},
+      recoverPersistedDiscussFn: async () => [],
+      hooks: {
+        onShutdown: async () => {},
+        onIdleCheck: () => false,
+        onRecoveryComplete: async () => {},
+      },
+      closeServerFn: async () => {},
+      listenFn: async () => ({ port: 4105, host: '127.0.0.1' }),
+    },
+    async (
+      {
+        identity,
         runtime,
         progressStore,
+        providerRegistry,
+        getRecoveryService,
+        createInvocationContext,
+        providerOperationStartupOwnership,
+        signal,
+      },
+      runJobsStartup,
+    ) => {
+      await runJobsStartup({
+        namespace: identity.namespace,
+        bundleHash: identity.bundleHash,
+        runtime,
+        progressStore,
+        providerRegistry,
         getRecoveryService,
         createInvocationContext,
         signal,
         log: identity.log,
         coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
+        providerOperationStartupOwnership,
       });
       signal.throwIfAborted();
       const recoveredDiscussResumes = await recoverPersistedDiscussFn();
@@ -489,14 +510,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       signal.throwIfAborted();
       return recoveredDiscussResumes;
     },
-    hooks: {
-      onShutdown: async () => {},
-      onIdleCheck: () => false,
-      onRecoveryComplete: async () => {},
-    },
-    closeServerFn: async () => {},
-    listenFn: async () => ({ port: 4105, host: '127.0.0.1' }),
-  });
+  );
 
   seedTestJobSession(progressStore, {
     jobId: 'running-adoption-job',
@@ -548,7 +562,7 @@ describe('recovery coordinator shutdown', () => {
   it('stops the startup tail when shutdown begins during recovery adoption', async () => {
     const modules = await loadModules();
     const runtime = createRealRuntime('prod');
-    const pluginRoot = createProjectRoot('plugin-mid-adoption');
+    const pluginRoot = createPluginRoot('plugin-mid-adoption');
     const projectRoot = createProjectRoot('project-mid-adoption');
     const cleanupSpy = vi.fn();
     // eslint-disable-next-line prefer-const -- circular: adoptRunningJob closure reads controller, but controller assignment depends on harness which wires adoptRunningJob
@@ -595,7 +609,7 @@ describe('recovery coordinator shutdown', () => {
   it('bars a late binding-failure commit when authority capture returns after shutdown', async () => {
     const modules = await loadModules();
     const runtime = createRealRuntime('prod');
-    const pluginRoot = createProjectRoot('plugin-late-authority');
+    const pluginRoot = createPluginRoot('plugin-late-authority');
     const projectRoot = createProjectRoot('project-late-authority');
     let releaseCapture!: (value: { ok: false; failure: { reason: 'subject-mismatch'; provider: string } }) => void;
     const captureBlocked = new Promise<{
@@ -635,7 +649,7 @@ describe('recovery coordinator shutdown', () => {
     const modules = await loadModules();
     const virtualRuntime = new SimulationRuntime();
     const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
-    const pluginRoot = createProjectRoot('plugin-after-poller');
+    const pluginRoot = createPluginRoot('plugin-after-poller');
     const projectRoot = createProjectRoot('project-after-poller');
     const cleanupSpy = vi.fn();
     const recoveryPollMs = 500;
@@ -708,7 +722,7 @@ describe('recovery coordinator shutdown', () => {
   it('continues to the second workflow and lets start resolve after finalizing the first recovery failure', async () => {
     const modules = await loadModules();
     const runtime = createRealRuntime('prod');
-    const pluginRoot = createProjectRoot('plugin-workflow-isolation');
+    const pluginRoot = createPluginRoot('plugin-workflow-isolation');
     const failedProjectRoot = createProjectRoot('project-workflow-failure');
     const resumedProjectRoot = createProjectRoot('project-workflow-resumed');
     const backendNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -782,7 +796,7 @@ describe('recovery coordinator shutdown', () => {
     const modules = await loadModules();
     const virtualRuntime = new SimulationRuntime();
     const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
-    const pluginRoot = createProjectRoot('plugin-finalization-failure');
+    const pluginRoot = createPluginRoot('plugin-finalization-failure');
     const projectRoot = createProjectRoot('project-finalization-failure');
     const cleanupSpy = vi.fn();
     const pid = 51_515;
@@ -833,7 +847,7 @@ describe('recovery coordinator shutdown', () => {
     const modules = await loadModules();
     const virtualRuntime = new SimulationRuntime();
     const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
-    const pluginRoot = createProjectRoot('plugin-precommit-finalization');
+    const pluginRoot = createPluginRoot('plugin-precommit-finalization');
     const projectRoot = createProjectRoot('project-precommit-finalization');
     const pid = 60_606;
     let pidAlive = true;
@@ -873,7 +887,7 @@ describe('recovery coordinator shutdown', () => {
     const modules = await loadModules();
     const virtualRuntime = new SimulationRuntime();
     const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
-    const pluginRoot = createProjectRoot('plugin-finalization-drain');
+    const pluginRoot = createPluginRoot('plugin-finalization-drain');
     const projectRoot = createProjectRoot('project-finalization-drain');
     const pid = 61_616;
     let pidAlive = true;
@@ -923,7 +937,7 @@ describe('recovery coordinator shutdown', () => {
   it('waits for startup app-server finalization before shutdown releases daemon authority', async () => {
     const modules = await loadModules();
     const runtime = createRealRuntime('prod');
-    const pluginRoot = createProjectRoot('plugin-app-finalization-drain');
+    const pluginRoot = createPluginRoot('plugin-app-finalization-drain');
     const projectRoot = createProjectRoot('project-app-finalization-drain');
     let releaseFinalizer!: () => void;
     const finalizerBlocked = new Promise<void>((resolve) => {

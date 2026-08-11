@@ -16,6 +16,14 @@ import { createDiscussContextRegistry, type DiscussContextRegistry } from '../..
 
 import { LaunchCoordinator } from '../live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
+import type { ProviderProxyAuthorityRegistry } from '../live/provider-proxy/authority.js';
+import { LocalOperationRegistry } from '../services/operation-registry.js';
+import { ProviderProxySetClaimMirror } from '../services/provider-proxy-set-claim-mirror.js';
+import { ProviderProxySetLifecycleRef } from '../services/provider-proxy-set-lifecycle-ref.js';
+import {
+  createProviderProxySetInheritance,
+  type ProviderProxySetInheritance,
+} from '../services/provider-proxy-set-inheritance.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';
@@ -158,6 +166,17 @@ export interface CoordinatorWorld {
   readonly discussRegistry: DiscussContextRegistry;
   readonly storeServicesRef: StoreServicesRef;
   readonly providerHostManager: ProviderHostManager;
+  /** Absent whenever `options.providerHostManager` overrode the default (see the construction site's own
+   *  comment) — every test override, and only every test override. */
+  readonly providerProxyAuthority?: ProviderProxyAuthorityRegistry;
+  /** Same absence rule as `providerProxyAuthority` above — the capsule-inheritance branch of proxy-set
+   *  acquisition (W2.4/W2.5), which startup recovery drives once the store is open and before it can decide
+   *  any job carrier-detached. */
+  readonly providerProxyInheritance?: ProviderProxySetInheritance;
+  /** This coordinator generation's live app-server operations (W2.3) — see `CoordinatorCoreOptions.operationRegistry`. */
+  readonly operationRegistry: LocalOperationRegistry;
+  readonly providerProxyClaims: ProviderProxySetClaimMirror;
+  readonly providerProxyLifecycleRef: ProviderProxySetLifecycleRef;
   readonly pluginRoot: string;
   readonly now: () => number;
   readonly log: (message: string) => void;
@@ -240,12 +259,50 @@ export function createCoordinatorWorld(
   });
   const discussRegistry = options.discussRegistry ?? createDiscussContextRegistry();
   const storeServicesRef = createStoreServicesRef();
-  const providerHostManager =
-    options.providerHostManager ??
-    createProviderHostManager({
+  const operationRegistry = options.operationRegistry ?? new LocalOperationRegistry();
+  const providerProxyClaims = new ProviderProxySetClaimMirror();
+  const providerProxyLifecycleRef = new ProviderProxySetLifecycleRef();
+  // A caller-supplied `providerHostManager` (every test that fakes provider hosts) never carries live
+  // guardian/reaper/proxy sets, so `providerProxyAuthority` stays absent rather than reporting on a
+  // substitute it played no part in creating — matching `runShutdownSequence`'s own `undefined` default.
+  let providerHostManager: ProviderHostManager;
+  let providerProxyAuthority: ProviderProxyAuthorityRegistry | undefined;
+  let providerProxyInheritance: ProviderProxySetInheritance | undefined;
+  if (options.providerHostManager !== undefined) {
+    providerHostManager = options.providerHostManager;
+  } else {
+    const created = createProviderHostManager({
       runtime,
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
+      proxySetAcquisition: {
+        pluginRoot,
+        identity: { instanceId, buildSetId, flavor },
+        operationRegistry,
+        ...(options.buildProviderEventHandler === undefined
+          ? {}
+          : { onProviderEvent: options.buildProviderEventHandler }),
+      },
+      providerProxyLifecycleRef,
     });
+    providerHostManager = created;
+    providerProxyAuthority = created;
+    // The redemption mechanism needs jobs-domain vocabulary `coordinator/live/**` may not reach directly
+    // (`architecture-layering.test.ts`'s coordinator-contract-entrypoint rule), so it is composed here in
+    // `coordinator/composition/` — itself exempt — closing over the identical identity/registry/event-handler
+    // `proxySetAcquisition` above already carries, and folding a successfully redeemed set back into `created`
+    // through its narrow, domain-free `registerInheritedSet` seam.
+    providerProxyInheritance = createProviderProxySetInheritance({
+      runtime,
+      identity: { instanceId, buildSetId, flavor },
+      operationRegistry,
+      ...(options.buildProviderEventHandler === undefined
+        ? {}
+        : { onProviderEvent: options.buildProviderEventHandler }),
+      registerInheritedSet: (set) => {
+        created.registerInheritedSet(set);
+      },
+    });
+  }
   providerRegistry.connectAppServerHost(providerHostManager);
 
   const identity: CoordinatorIdentity = {
@@ -284,6 +341,11 @@ export function createCoordinatorWorld(
     discussRegistry,
     storeServicesRef,
     providerHostManager,
+    ...(providerProxyAuthority === undefined ? {} : { providerProxyAuthority }),
+    ...(providerProxyInheritance === undefined ? {} : { providerProxyInheritance }),
+    operationRegistry,
+    providerProxyClaims,
+    providerProxyLifecycleRef,
     pluginRoot,
     now,
     log,

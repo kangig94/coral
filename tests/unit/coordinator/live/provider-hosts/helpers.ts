@@ -3,7 +3,7 @@ import { createDeferred } from '#tools/testing/deferred.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
 import type { DefaultProviderHostManager, ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
-import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/coordinator/live/provider-server-transport.js';
+import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/providers/app-server-transport.js';
 
 export const runtime = createRealRuntime('prod');
 
@@ -17,7 +17,7 @@ export function createSharedSpec(overrides: Partial<SharedProviderServerSpec> = 
     args: ['broker.js'],
     cwd: process.cwd(),
     leaseMode: 'shared',
-    idlePolicy: 'host-stats',
+    idleRetirement: 'host-reported',
     ...overrides,
   };
 }

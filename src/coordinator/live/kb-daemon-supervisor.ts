@@ -1,6 +1,6 @@
 import { basename, join } from 'node:path';
 import { errorMessage, formatError } from '../../infra/error-format.js';
-import { appendBuffer, gracefulKill, requirePipedHandles, safeKill } from './process-supervision.js';
+import { appendBuffer, gracefulKill, requirePipedHandles, safeKill } from '../../infra/process-supervision.js';
 import type { Runtime } from '../../runtime/ports.js';
 import {
   KB_DAEMON_REQUEST_MESSAGE,
@@ -201,6 +201,15 @@ export function createDisabledKbDaemonSupervisor(reason = 'disabled'): KbDaemonS
     readyAt: null,
     reason,
   };
+  // A nested/child caller is the normal way this failure is reached (skills and hooks run
+  // `coral-cli kb ...` from inside a job Coral itself launched), and it cannot shut down the
+  // coordinator its own parent job is running on. Phrase the remediation so it stays true and
+  // actionable no matter which caller reads it, instead of pointing everyone at a command that
+  // is refused from a child.
+  const remediation =
+    'Ask the operator to run `coral-cli backend shutdown` from the top-level Coral session once nothing else ' +
+    'is running, or wait for the automatic idle restart (CORAL_BACKEND_IDLE_MS, default ~6h). A nested/child ' +
+    'job cannot run that shutdown itself.';
 
   return {
     read: () => ({ ...snapshot }),
@@ -211,18 +220,21 @@ export function createDisabledKbDaemonSupervisor(reason = 'disabled'): KbDaemonS
       ok: false,
       code: 'kb_disabled',
       message: `KB daemon supervisor is disabled: ${reason}`,
+      remediation,
       detail: { reason: 'kb_daemon_disabled' },
     }),
     mutateKb: async () => ({
       ok: false,
       code: 'kb_disabled',
       message: `KB daemon supervisor is disabled: ${reason}`,
+      remediation,
       detail: { reason: 'kb_daemon_disabled' },
     }),
     expansionRpc: async () => ({
       ok: false,
       code: 'kb_disabled',
       message: `KB daemon supervisor is disabled: ${reason}`,
+      remediation,
       detail: { reason: 'kb_daemon_disabled' },
     }),
     onExit: () => () => {},
@@ -887,7 +899,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     // event; with no listener Node re-throws it as an uncaughtException and
     // crashes the coordinator. Swallow it here — the 'close' handler below owns
     // real teardown (rejectPendingRequests / phase transition). Mirrors the
-    // sibling live transports (provider-server-transport, durable-transport).
+    // sibling live transports (app-server-transport, durable-transport).
     stdin.on('error', (error: unknown) => {
       log(`[kb-daemon] stdin error: ${formatError(error)}`);
     });

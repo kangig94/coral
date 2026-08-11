@@ -13,7 +13,7 @@ import type {
 } from '../store/consumer-contract.js';
 import type { EngineManifest, ExpansionConsumerRegistration, ExpansionHost } from './contract.js';
 import { assertExpansionPackageId } from './package-id.js';
-import { decorateDispose } from './scope.js';
+import { decorateDispose } from '../infra/disposable-scope.js';
 import type { EngineArtifactRegistration } from '../kb/corpus/artifact-registry.js';
 import { join } from 'node:path';
 

@@ -101,7 +101,9 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
         }
       },
       terminalMaterializer: { recordProviderTerminal },
+      ...(deps.appServerProxyRoute === undefined ? {} : { appServerProxyRoute: deps.appServerProxyRoute }),
     });
+    deps.providerOperationCleanup?.register(this.launchOrchestrator);
     const waitCoordinator = new WaitCoordinator({
       sessionManager: this.sessionManager,
       launchQueue: deps.launchCoordinator,
@@ -115,6 +117,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       getCurrentJournalSeq: deps.getCurrentJournalSeq,
       resultJobsRoot: this.runtime.paths.coral.exports.jobsRoot,
       ensureResultArtifact: (jobId) => this.progressStore.ensureResultArtifact(jobId),
+      observeCarriers: deps.observeCarriers,
     });
 
     this.recoveryService = new RecoveryService({
@@ -131,6 +134,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       launchOrchestrator: this.launchOrchestrator,
       childPrincipalRegistry: deps.childPrincipalRegistry,
       parentPrincipal: ctx.principal,
+      ...(deps.operations === undefined ? {} : { operations: deps.operations }),
     });
     this.launchService = new JobLaunchService({
       runtime: this.runtime,

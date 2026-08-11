@@ -240,6 +240,27 @@ describe('cli errors', () => {
         buildErrorEnvelope(new BackendToolHttpError(response.message, response.statusCode, response.body)).exitCode,
       ).toBe(1);
     });
+
+    it.each([
+      ['kb_disabled', 'KB daemon supervisor is disabled: disabled (CORAL_KB_ENABLE=0)'],
+      ['kb_initializing', 'Knowledge base is starting up — retry in ~5 seconds'],
+      ['kb_offline', 'Knowledge base is offline'],
+    ] as const)('retries %s at exit 75 over IPC even though the wire carries no numeric status', (code, message) => {
+      // src/transport/ipc/server.ts's requestErrorResponse puts only the raw domain body
+      // (`{code, message, remediation?, detail?}`) on the JSON-RPC error `data` — no
+      // `statusCode`/`http` field ever crosses IPC. errorCodeToExit must recognize these
+      // three retry-later codes by name, the same way it already does for `transient` and
+      // `backend_shutting_down`, or this exact shape falls through to exit 1.
+      const envelope = buildErrorEnvelope(
+        new IpcRpcError({
+          code: -32603,
+          message,
+          data: { code, message },
+        }),
+      );
+
+      expect(envelope.exitCode).toBe(75);
+    });
   });
 
   describe('errorCodeToExit', () => {
@@ -247,6 +268,9 @@ describe('cli errors', () => {
       ['invalid_usage', undefined, 2],
       ['transient', undefined, 75],
       ['backend_shutting_down', undefined, 75],
+      ['kb_disabled', undefined, 75],
+      ['kb_initializing', undefined, 75],
+      ['kb_offline', undefined, 75],
       ['backend_error', 503, 75],
       ['backend_unreachable', undefined, 69],
       ['missing_capability', undefined, 77],

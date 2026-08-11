@@ -14,6 +14,8 @@ import { backendLog } from '../infra/backend-log.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { StoragePort } from '../infra/port-types.js';
+import type { RunStartupRecoveryFn, RunStartupRecoveryOrchestratorFn } from './lifecycle.js';
+import type { RunCoordinatorStartupRecoveryFn } from './services/recovery/index.js';
 import {
   requestIncumbentShutdown,
   type DesiredIncumbentIdentity,
@@ -55,12 +57,39 @@ export class BackendAlreadyRunningError extends Error {
 }
 
 export type HandoffBindResult = { kind: 'bound' } | { kind: 'incumbent'; reason: string };
+
+export type BoundCoordinator = Readonly<{
+  readonly acquiredViaHandoff: boolean;
+  readonly runStartupRecovery: RunStartupRecoveryFn;
+}>;
+
+type BoundCoordinatorState = {
+  runCoordinatorStartupRecovery: RunCoordinatorStartupRecoveryFn | null;
+};
+
+const boundCoordinatorStates = new WeakMap<object, BoundCoordinatorState>();
+
+export function registerCoordinatorStartupRecovery(
+  bound: BoundCoordinator,
+  runCoordinatorStartupRecovery: RunCoordinatorStartupRecoveryFn,
+): void {
+  const state = boundCoordinatorStates.get(bound);
+  if (state === undefined) {
+    throw new Error('Bound coordinator capability is not registered');
+  }
+  if (state.runCoordinatorStartupRecovery !== null) {
+    throw new Error('Bound coordinator startup recovery is already registered');
+  }
+  state.runCoordinatorStartupRecovery = runCoordinatorStartupRecovery;
+}
+
 export type HandoffSignalPolicy = 'term-kill' | 'term-only' | 'manual';
 
 export interface HandoffOptions {
   socketPath: string;
   desired: DesiredIncumbentIdentity;
   bindAttempt: () => Promise<HandoffBindResult>;
+  runStartupRecovery: RunStartupRecoveryOrchestratorFn;
   runtime: Pick<Runtime, 'time' | 'process' | 'env'>;
   /**
    * Read `coordinator.json` and cross-check it against the bound socket and
@@ -372,14 +401,21 @@ function verifySignalTarget(
 /**
  * Repeatedly attempt socket bind. On 'incumbent' result:
  *   1. open IPC client to incumbent's socket
- *   2. requestIncumbentShutdown() → health + transport.shutdown; if
- *      version/bundle/flavor/namespace match and the incumbent is not draining,
- *      throw IncumbentMatchesError (we're redundant)
+ *   2. requestIncumbentShutdown() → health + transport.shutdown; if the
+ *      incumbent outranks this contender (`incumbentOutranksContender`:
+ *      matching flavor/namespace, same-or-newer product version) and is not
+ *      draining, throw IncumbentMatchesError (we're redundant) instead of
+ *      requesting shutdown. This is the only version comparison on the bind
+ *      path, and it is the same precedence rule the CLI target-routing path
+ *      uses (`src/infra/backend-routing.ts`) — a contender never evicts a
+ *      live incumbent for a version difference alone, so two same-version
+ *      builds with different bundle hashes cannot both conclude the other
+ *      side should step down.
  *   3. poll bind until budget expires
  *   4. on budget expiry, escalate via process signals only after revalidating
  *      pid+processStartedAt
  */
-export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredViaHandoff: boolean }> {
+export async function bindWithHandoff(opts: HandoffOptions): Promise<BoundCoordinator> {
   const deadline = opts.runtime.time.now() + opts.totalBudgetMs;
   const platform = opts.runtime.env.platform() as NodeJS.Platform;
   const signalPolicy = resolveSignalPolicy(opts);
@@ -401,7 +437,18 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
     const result = await opts.bindAttempt();
     opts.signal?.throwIfAborted();
     if (result.kind === 'bound') {
-      return { acquiredViaHandoff: sawIncumbent };
+      const state: BoundCoordinatorState = { runCoordinatorStartupRecovery: null };
+      const bound: BoundCoordinator = Object.freeze({
+        acquiredViaHandoff: sawIncumbent,
+        runStartupRecovery: (inputs) => {
+          if (state.runCoordinatorStartupRecovery === null) {
+            throw new Error('Bound coordinator startup recovery is not registered');
+          }
+          return opts.runStartupRecovery(inputs, state.runCoordinatorStartupRecovery);
+        },
+      });
+      boundCoordinatorStates.set(bound, state);
+      return bound;
     }
 
     sawIncumbent = true;

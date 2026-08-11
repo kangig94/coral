@@ -15,10 +15,8 @@ import {
   createProductionFileIndex,
   listProductionSourceFiles,
   parseSourceImportEdges,
-  parseSourceSubpathImportEdges,
   toCanonicalSrcPath,
   type ParsedImportEdge,
-  type SubpathImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -45,12 +43,16 @@ const DEBUG_SIMULATION_SCENARIOS_ROOT = ['tools', 'simulation', 'scenarios'].joi
 const RETIRED_PROVIDERS_CONTINUITY_MUTATION = ['src', 'providers', 'continuity-mutation.ts'].join('/');
 const RETIRED_STATUS_SCHEMA_FAULT = ['stale', 'status', 'schema'].join('_');
 const RETIRED_TEXT_ARTIFACT_LOCK_METHOD = ['ensureTextArtifacts', 'FreshUnderLock'].join('');
+// The snapshot-acknowledgement mechanism went with `87e7a72f`. Its field name was kept out by the wait
+// schemas' `.strict()` until those became `.passthrough()` so a newer coordinator's additive fields stop
+// killing an older CLI's wait. Tolerating an unknown field on the wire is not the same as letting the
+// mechanism back into `src/`, and this is where that second thing is now held.
+const RETIRED_SNAPSHOT_RENDER_FIELD = ['snapshot', 'RenderId'].join('');
 const RETIRED_KB_DAEMON_ARG = '--kb-daemon';
 const RETIRED_KB_DAEMON_PLAINTEXT_SHUTDOWN = 'Plain-text shutdown remains supported';
 const RETIRED_KB_DAEMON_OLD_SUPERVISORS = 'old supervisors';
 const PROVIDERS_ROOT = 'src/providers';
 const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
-const STORE_QUERIES_ROOT = 'src/store/queries';
 const WORKFLOW_PROVIDER_ALLOWLIST_TARGET = 'src/providers/catalog.ts';
 const SESSION_FAULT_EVENTS = 'src/sessions/event-builders.ts';
 const COORDINATOR_TERMINAL_MATERIALIZER = 'src/coordinator/services/terminal-materializer.ts';
@@ -58,7 +60,7 @@ const JOBS_TERMINAL_RECORDING = 'src/jobs/terminal/recording.ts';
 const KB_PATHS_MODULE = 'src/kb/paths.ts';
 const KB_JOB_RECORDER = 'src/jobs/kb/recorder.ts';
 const DURABLE_TRANSPORT_MODULE = 'src/coordinator/live/durable-transport.ts';
-const PROVIDER_SERVER_TRANSPORT_MODULE = 'src/coordinator/live/provider-server-transport.ts';
+const PROVIDER_SERVER_TRANSPORT_MODULE = 'src/providers/app-server-transport.ts';
 const CONSUMER_DRIVER_MODULE = 'src/projection-consumers/index.ts';
 
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(SRC_ROOT);
@@ -74,10 +76,6 @@ for (const edge of PARSED_IMPORT_EDGES) {
   edgesForSource.push(edge);
   PARSED_IMPORT_EDGES_BY_SOURCE.set(edge.source, edgesForSource);
 }
-
-const PARSED_SUBPATH_IMPORT_EDGES: readonly SubpathImportEdge[] = PRODUCTION_FILE_PATHS.flatMap((filePath) =>
-  parseSourceSubpathImportEdges(REPO_ROOT, filePath),
-);
 
 type BoundaryViolation = {
   source: string;
@@ -513,16 +511,6 @@ describe('architecture boundary guard', () => {
 
     assertNoViolations(violations);
   });
-  it('store query modules may not import domain shell modules', () => {
-    const violations = collectViolations(
-      STORE_QUERIES_ROOT,
-      'store/queries must read Journal projections, not domain shells',
-      'move shell reads behind projection tables or a store-owned query helper.',
-      (target) => target.includes('/shell/'),
-    );
-
-    assertNoViolations(violations);
-  });
   it('providers may not import jobs shell modules', () => {
     const violations = collectViolations(
       PROVIDERS_ROOT,
@@ -558,6 +546,7 @@ describe('architecture boundary guard', () => {
       collectProductionStringResidue([
         RETIRED_STATUS_SCHEMA_FAULT,
         RETIRED_TEXT_ARTIFACT_LOCK_METHOD,
+        RETIRED_SNAPSHOT_RENDER_FIELD,
         RETIRED_KB_DAEMON_ARG,
         RETIRED_KB_DAEMON_PLAINTEXT_SHUTDOWN,
         RETIRED_KB_DAEMON_OLD_SUPERVISORS,
@@ -970,21 +959,25 @@ describe('architecture boundary guard', () => {
     // are coordinator/daemon concerns. The KB domain owns query
     // semantics and operations but never composes the runtime that runs
     // them.
-    const forbiddenSpecifiers = ['runtime/real.js', 'expansion/bundled.js', 'expansion/host.js', 'expansion/scope.js'];
-    const violations: string[] = [];
-    for (const filePath of PRODUCTION_SOURCE_FILES) {
-      if (!filePath.startsWith('src/kb/')) continue;
-      const source = readFileSync(resolve(REPO_ROOT, filePath), 'utf8');
-      for (const specifier of forbiddenSpecifiers) {
-        if (
-          source.includes(`from '${specifier.replace(/\.js$/, '')}`) ||
-          source.includes(`'../../${specifier}'`) ||
-          source.includes(`'../${specifier}'`)
-        ) {
-          violations.push(`${filePath} -> ${specifier}`);
-        }
-      }
-    }
+    //
+    // Matched on resolved targets, not on the literal specifier text. The previous form tested for `'../x'`
+    // and `'../../x'`, which covered `src/kb/*.ts` and `src/kb/*/*.ts` and silently exempted everything
+    // deeper — `src/kb/` is four levels deep today, so the ban had a hole for every file in it. It also went
+    // stale invisibly: `expansion/scope.ts` moved to `infra/disposable-scope.ts` and the entry kept naming a
+    // path that no longer exists, so the one composition helper a KB module is most likely to reach for was
+    // banned under a name nothing could match. A forbidden list that names nothing simply never fires.
+    const forbiddenTargets = new Set([
+      'src/runtime/real.ts',
+      'src/expansion/bundled.ts',
+      'src/expansion/host.ts',
+      'src/infra/disposable-scope.ts',
+    ]);
+    const violations = PARSED_IMPORT_EDGES.filter(
+      (edge) => edge.source.startsWith('src/kb/') && forbiddenTargets.has(edge.target),
+    ).map((edge) => `${edge.source} -> ${edge.target}`);
+
+    // A forbidden target that names nothing is the failure this rule exists to prevent, so it fails here too.
+    expect([...forbiddenTargets].filter((target) => !PRODUCTION_SOURCE_FILES.includes(target))).toEqual([]);
     expect(violations).toEqual([]);
   });
 
@@ -1149,7 +1142,7 @@ describe('architecture boundary guard', () => {
       ]),
     ).toEqual([]);
 
-    expect(collectEngineImportViolations([...PARSED_IMPORT_EDGES, ...PARSED_SUBPATH_IMPORT_EDGES])).toEqual([]);
+    expect(collectEngineImportViolations(PARSED_IMPORT_EDGES)).toEqual([]);
   });
 
   it('engine-blind domains carry no engine-id string literals (AC7.2)', () => {

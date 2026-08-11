@@ -1,5 +1,5 @@
 import type { AppServerTransport } from '../../../providers/contract.js';
-import type { ProviderServerHandle } from '../provider-server-transport.js';
+import type { ProviderServerHandle } from '../../../providers/app-server-transport.js';
 import type { ProviderHostEntry } from './state.js';
 
 export function createProviderServerLease(handle: ProviderServerHandle, releasePin: () => void): ProviderServerLease {

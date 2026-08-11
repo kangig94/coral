@@ -154,7 +154,9 @@ function providerAppServerSession<Plan extends ProviderExecutionPlan>(
     subscribe: transport.subscribe.bind(transport),
     closed: transport.closed,
     interrupt: async (continuity: NonNullable<ProviderRuntime['persistedContinuity']>) => {
-      if (capability.interrupt === undefined) return false;
+      if (capability.interrupt === undefined) {
+        return { kind: 'not-accepted' as const, reason: 'The provider does not support interruption.' };
+      }
       return capability.interrupt(transport, snapshotBoundaryData(continuity, 'Provider interrupt continuity'));
     },
   });
@@ -162,6 +164,7 @@ function providerAppServerSession<Plan extends ProviderExecutionPlan>(
 
 type PreparedBoundAppServer<Plan extends ProviderExecutionPlan> = {
   readonly hostPlan: Plan['host'];
+  readonly hostSpec: ProviderServerSpec;
   execute(
     runtime: BoundProviderAppServerExecutionRuntime,
     operation: (session: AppServerSession) => AsyncIterable<ProviderEventBody>,
@@ -313,10 +316,14 @@ async function interruptBoundAppServer<Plan extends ProviderExecutionPlan>(
   hostRef: HostRef,
   continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
   input: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
-): Promise<boolean> {
-  if (tools.capability.interrupt === undefined) return false;
+): ReturnType<BoundProviderAppServerCapability['interrupt']> {
+  if (tools.capability.interrupt === undefined) {
+    return { kind: 'not-accepted', reason: 'The provider does not support interruption.' };
+  }
   const attached = await attachExpectedBoundSession(tools, hostRef, input, 'Provider interrupt host reference');
-  if (attached === null) return false;
+  if (attached === null) {
+    return { kind: 'not-accepted', reason: 'The active provider host could not be attached.' };
+  }
   try {
     return await attached.session.interrupt(continuity);
   } finally {
@@ -529,6 +536,11 @@ function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Acces
       const hostPlan = tools.planExecution(input);
       return Object.freeze({
         hostPlan,
+        // Computed eagerly, before any host is opened: `tools.compileHost` is a pure derivation of `hostPlan`
+        // (already `snapshotBoundaryData`-sanitized there), so calling it here as well as inside
+        // `executeBoundAppServer` costs one extra cheap synchronous call and gives a caller the executable
+        // identity before it ever decides whether to open a session at all.
+        hostSpec: tools.compileHost(hostPlan),
         execute: (runtime, operation) => executeBoundAppServer(tools, hostPlan, runtime, operation),
       });
     },
@@ -628,6 +640,7 @@ function sealPreparedAppServerExecution<Plan extends ProviderExecutionPlan>(
 ): BoundProviderPreparedExecution {
   return Object.freeze({
     kind: 'app-server' as const,
+    hostSpec: preparedAppServer.hostSpec,
     execute: (runtime: BoundProviderAppServerExecutionRuntime) =>
       preparedAppServer.execute(runtime, (appServerSession) =>
         implementation.run(request, snapshotAppServerExecutionRuntime(runtime, plan, appServerSession)),

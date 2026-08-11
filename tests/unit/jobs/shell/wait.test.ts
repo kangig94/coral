@@ -42,7 +42,7 @@ import {
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
-import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
+import type { ProviderServerHandle } from '#src/providers/app-server-transport.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
@@ -501,7 +501,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
   args: string[];
   cwd: string;
   leaseMode: 'shared';
-  idlePolicy: 'host-stats' | 'daemon';
+  idleRetirement: 'host-reported' | 'none';
 }): Provider {
   return {
     name: 'claude',

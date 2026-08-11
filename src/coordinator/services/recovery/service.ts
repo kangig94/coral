@@ -1,8 +1,10 @@
 import type { ProviderRequest } from '../../../providers/contract.js';
 import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import { backendLog } from '../../../infra/backend-log.js';
+import { createMonotonicClock } from '../../../infra/monotonic-clock.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal, JobTerminalInput } from '../../../jobs/records.js';
 import { isTerminalPhase, type JobPhase } from '../../../jobs/phase.js';
+import { hasProviderOperationForJob, readProviderOperationForJob } from '../../../store/provider-operation-journal.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../../runtime/durable-runtime.js';
@@ -31,16 +33,23 @@ import { toProviderRequest } from '../../../jobs/provider-request.js';
 import type { InterruptedAppServerReason } from '../../../jobs/reconcile/interrupted-reason.js';
 import { CHILD_PRINCIPAL_CAPABILITIES, type ChildPrincipalRegistry } from '../../child-principal-registry.js';
 import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../../security/child-principal-env.js';
+import type { ProviderOperationProtectedEnvironment } from '../../../jobs/contracts/provider-operation-lifecycle.js';
 import type { Principal } from '../../../security/principal.js';
 import { elapsedDurationMs } from '../../../jobs/duration.js';
 import { snapshotProviderRecoveryAuthority } from './authority-snapshot.js';
 import { planInterruptedAppServerRecovery, planInterruptedDurableRecovery } from './interrupted-plan.js';
-import { performInterruptedAppServerRecovery, performInterruptedDurableRecovery } from './interrupted-performer.js';
+import {
+  performInterruptedAppServerRecovery,
+  performInterruptedDurableRecovery,
+  reapProviderOperationCarrier,
+} from './interrupted-performer.js';
 import {
   finalizeInterruptedAppServerRecovery,
   finalizeInterruptedDurableRecovery,
   RecoveryOwnershipReleaseError,
 } from './interrupted-finalizer.js';
+
+const carrierDetachedRecoveryClockScope: unique symbol = Symbol('coral.recovery.carrier-detached');
 
 function requireProviderLaunchRecord(
   launchRecord: JobLaunch,
@@ -86,7 +95,10 @@ export class RecoveryService {
     };
   }
 
-  private queuedRecoveryChildEnv(session: ProviderRecoverySession, jobId: string): Readonly<Record<string, string>> {
+  private queuedRecoveryChildEnv(
+    session: ProviderRecoverySession,
+    jobId: string,
+  ): ProviderOperationProtectedEnvironment {
     const childCredential = this.deps.childPrincipalRegistry.register({
       issuer: 'job-recovery',
       parentPrincipal: this.deps.parentPrincipal,
@@ -96,11 +108,14 @@ export class RecoveryService {
       nowMs: this.deps.runtime.time.now(),
       childCaps: CHILD_PRINCIPAL_CAPABILITIES,
     });
-    return Object.freeze({
-      CORAL_JOB_ID: jobId,
-      CORAL_SESSION_ID: session.sessionId,
-      [CORAL_CHILD_PRINCIPAL_HANDLE]: childCredential.handle,
-    });
+    return {
+      env: Object.freeze({
+        CORAL_JOB_ID: jobId,
+        CORAL_SESSION_ID: session.sessionId,
+        [CORAL_CHILD_PRINCIPAL_HANDLE]: childCredential.handle,
+      }),
+      childAuthorization: childCredential.authorization,
+    };
   }
 
   private async readProviderSession(launchRecord: JobLaunch): Promise<
@@ -179,6 +194,14 @@ export class RecoveryService {
       );
       return;
     }
+    // The provider-operation reconciler alone resolves saga-owned hosts; generic recovery must not address
+    // their shared proxy set or infer absence from missing process-local attachment state.
+    if (hasProviderOperationForJob(this.deps.progressStore.getDb(), launchRecord.jobId)) {
+      backendLog.warn(
+        `Cannot interrupt recovered app-server job ${launchRecord.jobId}: its acquired host is owned by a durable provider proxy operation.`,
+      );
+      return;
+    }
     const appServer = boundProvider.appServer;
     if (appServer?.supportsInterrupt !== true) return;
     const continuity = this.sessionProviderContinuity(session);
@@ -218,10 +241,26 @@ export class RecoveryService {
       return;
     }
 
-    const plan = planInterruptedAppServerRecovery(authority, runtimeRecord, options.reason, {
-      recovery: boundProvider.recovery !== undefined,
-      probe: boundProvider.appServer?.supportsProbe === true,
-    });
+    const providerOperation = readProviderOperationForJob(this.deps.progressStore.getDb(), launchRecord.jobId);
+    if (
+      providerOperation !== null &&
+      providerOperation.phase !== 'executing' &&
+      providerOperation.phase !== 'settlement-pending'
+    ) {
+      throw new Error(
+        `Running job '${launchRecord.jobId}' has provider operation phase '${providerOperation.phase}' without executing evidence.`,
+      );
+    }
+    const plan = planInterruptedAppServerRecovery(
+      authority,
+      runtimeRecord,
+      options.reason,
+      {
+        recovery: boundProvider.recovery !== undefined,
+        probe: boundProvider.appServer?.supportsProbe === true,
+      },
+      providerOperation,
+    );
     options.signal.throwIfAborted();
     const performed = await performInterruptedAppServerRecovery(plan, boundProvider, {
       time: this.deps.runtime.time,
@@ -229,6 +268,13 @@ export class RecoveryService {
       storage: this.deps.runtime.storage,
       jobDir: (jobId) => this.deps.progressStore.jobDir(jobId),
       signal: options.signal,
+      reapCarrier: (record) =>
+        reapProviderOperationCarrier(record, {
+          process: this.deps.runtime.process,
+          platform: this.deps.runtime.env.platform() as NodeJS.Platform,
+          db: this.deps.progressStore.getDb(),
+          clock: createMonotonicClock(carrierDetachedRecoveryClockScope),
+        }),
     });
     options.signal.throwIfAborted();
     options.onCommitStart();

@@ -4,7 +4,6 @@ import type { CauseRef } from '../causality/cause-ref.js';
 import type { JobPhase } from '../jobs/phase.js';
 import {
   decodeProjectionJobTerminal,
-  readProjectionJobRow,
   readProjectionJobRows,
   type ProjectionJobStoredRow,
 } from '../jobs/projection-row.js';
@@ -45,11 +44,6 @@ export type WorkflowView = {
   slotOutcomes: Record<string, WorkflowSlotOutcome>;
   outcome: WorkflowOutcome;
   causeRef: CauseRef | null;
-  lastSeq: number;
-};
-
-export type ProjectedJobState = {
-  phase: JobPhase;
   lastSeq: number;
 };
 
@@ -143,18 +137,6 @@ export function readWorkflowView(db: Database, workflowId: string, ctx: StoreRea
     outcome: completion?.outcome ?? 'running',
     causeRef,
     lastSeq,
-  };
-}
-
-export function readProjectionJob(db: Database, jobId: string): ProjectedJobState | null {
-  const row = readProjectionJobRow(db, jobId);
-  if (row === null) {
-    return null;
-  }
-
-  return {
-    phase: row.phase,
-    lastSeq: row.last_seq,
   };
 }
 

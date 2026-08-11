@@ -19,28 +19,26 @@ export type RawCrashedJobRow = {
   readonly launchEvent: EventsRow | null;
 };
 
-function scanCrashedJobRows(db: Database, namespace: string, subjectKey?: string): readonly RawCrashedJobRow[] {
+function scanCrashedJobRows(db: Database, subjectKey?: string): readonly RawCrashedJobRow[] {
   return withConsistentRead(db, () => {
     const projections =
       subjectKey === undefined
         ? db
+            .prepare<[], ProjectionJobStoredRow>(
+              `SELECT ${PROJECTION_JOB_COLUMNS}
+                 FROM projection_jobs
+                WHERE phase NOT IN ('completed', 'error', 'aborted')
+                ORDER BY job_id ASC`,
+            )
+            .all()
+        : db
             .prepare<[string], ProjectionJobStoredRow>(
               `SELECT ${PROJECTION_JOB_COLUMNS}
                  FROM projection_jobs
-                WHERE backend_namespace = ?
-                  AND phase NOT IN ('completed', 'error', 'aborted')
-                ORDER BY job_id ASC`,
-            )
-            .all(namespace)
-        : db
-            .prepare<[string, string], ProjectionJobStoredRow>(
-              `SELECT ${PROJECTION_JOB_COLUMNS}
-                 FROM projection_jobs
-                WHERE backend_namespace = ?
-                  AND phase NOT IN ('completed', 'error', 'aborted')
+                WHERE phase NOT IN ('completed', 'error', 'aborted')
                   AND job_id = ?`,
             )
-            .all(namespace, subjectKey);
+            .all(subjectKey);
     const readLaunchEvent = db.prepare<[string], EventsRow>(
       `SELECT ${EVENT_COLUMNS}
          FROM events
@@ -78,13 +76,12 @@ function crashedJobSubject(raw: RawCrashedJobRow) {
 /** Creates the raw row-granular live-job crash terminalization source. */
 export function crashedJobTerminalizationSource(
   db: Database,
-  namespace: string,
   subject?: RecoverySubject,
 ): RecoverySource<RawCrashedJobRow> {
   return defineRecoverySource({
     boundary: 'crashed-job-terminalization',
     scanSubject: subject ?? { key: 'crashed-job-terminalization-discovery', revision: { kind: 'until-cleared' } },
-    scan: () => scanCrashedJobRows(db, namespace, subject?.key),
+    scan: () => scanCrashedJobRows(db, subject?.key),
     subject: crashedJobSubject,
   });
 }

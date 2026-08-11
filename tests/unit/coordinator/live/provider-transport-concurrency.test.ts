@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
-import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '#src/coordinator/live/provider-server-transport.js';
+import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '#src/providers/app-server-transport.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';

@@ -4,6 +4,7 @@ import { parseBooleanQuery } from '../../infra/json.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
 import { jobPhaseSchema } from '../../jobs/phase.js';
 import { isWaitCursor, type WaitCursor } from '../../jobs/wait.js';
+import { MAX_WAIT_JOB_IDS } from '../../jobs/wait-stream-event.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const jobIdSchema = z.string().min(1, 'Job ID is required');
@@ -16,10 +17,18 @@ const providerNameSchema = z
 
 export const jobWaitSchema = z
   .object({
-    jobIds: z.array(z.string().min(1)).min(1, 'At least one job required'),
+    jobIds: z
+      .array(z.string().min(1))
+      .min(1, 'At least one job required')
+      .max(MAX_WAIT_JOB_IDS, `At most ${MAX_WAIT_JOB_IDS} jobs may be waited on at once`),
     projectRoot: projectRootSchema,
     timeoutSeconds: z.number().int().min(1).max(1200).optional(),
     cursor: waitCursorSchema.optional(),
+    // Absent on any CLI built before the `interrupted` event existed — that build's renderer has no case
+    // for it and no `default`, so the coordinator must not emit one unless the subscriber names itself able
+    // to render it. Never inferred from version or bundle identity: a client that predates the field and one
+    // that sends `false` are indistinguishable to the coordinator, and both get the pre-`interrupted` stream.
+    supportsInterrupted: z.boolean().optional(),
   })
   .strict();
 

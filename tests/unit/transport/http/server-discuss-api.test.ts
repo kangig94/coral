@@ -181,29 +181,31 @@ describe('server discuss API', () => {
         throw new Error('startServer with progressStore requires its matching runtime');
       }
       const effectiveRuntime = runtime ? { ...runtime, time: realTimePort() } : undefined;
-      const core = createCoordinatorCore({
-        storeFormat: currentCoralStoreFormat(),
-        runtime: effectiveRuntime as Runtime,
-        resolveProjectSourceFn,
-        bootSnapshot: {
-          instanceId: 'server-discuss-api-test',
-          token: 'test-token',
-          bootToken: 'test-boot-token',
-          version: '9.9.9',
-          bundleHash: 'test-hash',
-          flavor: 'prod',
-          log: () => {},
+      const core = createCoordinatorCore(
+        {
+          storeFormat: currentCoralStoreFormat(),
+          runtime: effectiveRuntime as Runtime,
+          resolveProjectSourceFn,
+          bootSnapshot: {
+            instanceId: 'server-discuss-api-test',
+            token: 'test-token',
+            bootToken: 'test-boot-token',
+            version: '9.9.9',
+            bundleHash: 'test-hash',
+            flavor: 'prod',
+            log: () => {},
+          },
+          discussRegistry: registry,
+          createExecutionService: () => service as never,
+          createServerFn: (handler) => createServer(handler),
+          closeServerFn: async (server) => {
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+          },
+          kbDaemonSupervisor: createMockKbDaemonSupervisor(),
+          getConsumerStuck: () => [],
         },
-        discussRegistry: registry,
-        createExecutionService: () => service as never,
-        createServerFn: (handler) => createServer(handler),
-        closeServerFn: async (server) => {
-          await new Promise<void>((resolve) => server.close(() => resolve()));
-        },
-        kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-        runStartupRecoveryFn: async () => [],
-        getConsumerStuck: () => [],
-      });
+        async () => [],
+      );
       setStoreServicesForTest(core.storeServicesRef, createStoreServices(progressStore), { storeDbPath: ':memory:' });
       const liveSessions = [...registry.contexts.entries()].flatMap(([projectRoot, context]) =>
         [...context.sessions.values()].map((session) => ({

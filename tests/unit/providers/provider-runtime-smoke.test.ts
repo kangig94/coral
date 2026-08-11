@@ -97,7 +97,7 @@ function makeLease(rpcImpl: (method: string, params: Record<string, unknown>) =>
     rpc: rpcMock as unknown as AppServerSession['rpc'],
     subscribe: subscribeMock as unknown as AppServerSession['subscribe'],
     closed: closed.promise,
-    interrupt: vi.fn(async () => false),
+    interrupt: vi.fn(async () => ({ kind: 'not-accepted' as const, reason: 'test refusal' })),
     close(outcome) {
       closed.resolve(outcome);
     },
@@ -144,6 +144,7 @@ function makeRuntime(options: {
     jobId: 'smoke-job',
     onAppServerWaiting: vi.fn(),
     onHostRef: vi.fn(),
+    onProviderTurnTerminal: vi.fn(),
     persistedContinuity: options.persistedContinuity,
     continuityBridge: {
       checkpoint: vi.fn(),
@@ -396,6 +397,14 @@ describe('provider runtime smoke', () => {
         }),
       );
     });
+    lease.emit({
+      method: brokerNotificationMethods.turnFailed,
+      params: {
+        brokerSessionKey: 'broker-claude-aborted',
+        brokerTurnId: 'test-uuid',
+        message: 'Claude child exited after interruption.',
+      },
+    });
 
     const events = await eventsPromise;
     const terminal = expectSingleTerminalLast(events);
@@ -494,7 +503,9 @@ describe('provider runtime smoke', () => {
       jobId: 'job-claude-runtime-smoke',
     } as const;
     const callsBeforeInterrupt = lease.rpcMock.mock.calls.length;
-    await expect(recovered.value.appServer?.interrupt(hostRef, active ?? {}, recoveredHostInput)).resolves.toBe(true);
+    await expect(recovered.value.appServer?.interrupt(hostRef, active ?? {}, recoveredHostInput)).resolves.toEqual({
+      kind: 'accepted',
+    });
     expect(lease.rpcMock).toHaveBeenNthCalledWith(callsBeforeInterrupt + 1, 'turn/interrupt', {
       brokerSessionKey: 'broker-recovered-interrupt',
       brokerTurnId: 'test-uuid',
@@ -505,7 +516,7 @@ describe('provider runtime smoke', () => {
         { bootstrapSignature: CLAUDE_BOOTSTRAP_SIGNATURE },
         recoveredHostInput,
       ),
-    ).resolves.toBe(false);
+    ).resolves.toMatchObject({ kind: 'not-accepted' });
     expect(lease.rpcMock).toHaveBeenCalledTimes(callsBeforeInterrupt + 1);
 
     lease.emit({
@@ -621,10 +632,7 @@ describe('provider runtime smoke', () => {
         return { turn: { id: 'codex-turn-aborted', status: 'inProgress' } };
       }
       if (method === 'turn/interrupt') {
-        return {
-          threadId: 'codex-thread-aborted',
-          turnId: 'codex-turn-aborted',
-        };
+        return {};
       }
       throw new Error(`Unexpected Codex abort RPC: ${method}`);
     });

@@ -303,7 +303,6 @@ describe('jobs queries', () => {
     const jobs = listJobs(
       db,
       {
-        namespace: 'tests',
         projectRoot: '/workspace/coral',
         phase: 'queued',
         provider: 'codex',
@@ -323,7 +322,7 @@ describe('jobs queries', () => {
   });
 
   it('keeps KB jobs visible from any project while scoping other projects out', () => {
-    const jobs = listJobs(db, { namespace: 'tests', projectRoot: '/workspace/coral' }, readCtx);
+    const jobs = listJobs(db, { projectRoot: '/workspace/coral' }, readCtx);
     const ids = jobs.map((entry) => entry.jobId);
 
     // KB jobs run against the shared corpus, so they surface regardless of cwd...
@@ -335,7 +334,7 @@ describe('jobs queries', () => {
   });
 
   it('keeps the KB exception under the all-phases filter', () => {
-    const jobs = listJobs(db, { namespace: 'tests', projectRoot: '/workspace/coral', all: true }, readCtx);
+    const jobs = listJobs(db, { projectRoot: '/workspace/coral', all: true }, readCtx);
     const ids = jobs.map((entry) => entry.jobId);
 
     // `all` widens phases but does not change the project scope: KB stays global,

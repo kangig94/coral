@@ -24,9 +24,34 @@ const DOMAIN_ROOTS = [
   'src/expansion/',
   'src/engines/',
 ] as const;
-const RUNTIME_INFRA_FORBIDDEN = [...DOMAIN_ROOTS, 'src/transport/', 'src/coordinator/', 'src/cli/'] as const;
+const RUNTIME_INFRA_FORBIDDEN = [
+  ...DOMAIN_ROOTS,
+  'src/transport/',
+  'src/coordinator/',
+  'src/cli/',
+  'src/provider-proxy/',
+] as const;
+
+/**
+ * The provider proxy is spawned as its own process from the backend artifact. Its whole safety argument is
+ * that it carries the live provider carrier without touching daemon-owned state: it never opens the store
+ * and never binds the coordinator socket, so a proxy that outlives a coordinator cannot corrupt anything
+ * the successor will read. The tree is clean today, which is exactly when stating it is cheap.
+ */
+const PROVIDER_PROXY_ROOT = 'src/provider-proxy/';
+const STORE_ROOT = 'src/store/';
+const PROVIDER_PROXY_FORBIDDEN = [
+  STORE_ROOT,
+  'src/coordinator/',
+  'src/transport/',
+  'src/read-model/',
+  'src/jobs/',
+  'src/sessions/',
+  'src/discuss/',
+  'src/workflow/',
+  'src/kb/',
+] as const;
 const SECURITY_ROOT = 'src/security/';
-const SECURITY_ALLOWED_TARGETS = new Set(['src/infra/port-types.ts', 'src/runtime/ports.ts']);
 const TRANSPORT_ALLOWED = new Set([
   'src/expansion/rpc-contract.ts',
   'src/jobs/contracts/abort-registry.ts',
@@ -39,48 +64,32 @@ const TRANSPORT_ALLOWED = new Set([
   'src/sessions/command-schemas.ts',
   'src/discuss/command-schemas.ts',
   'src/discuss/read-contract.ts',
-  'src/discuss/session-types.ts',
-  'src/discuss/watch.ts',
   'src/workflow/input.ts',
-  'src/kb/entry-types.ts',
   'src/kb/result.ts',
   'src/kb/tool-contracts.ts',
-  'src/kb/selector.ts',
-  'src/expansion/contract.ts',
-  'src/providers/request-policy.ts',
 ]);
 const COORDINATOR_GLUE_EXEMPT = new Set([
   'src/coordinator/index.ts',
-  'src/coordinator/bootstrap.ts',
   'src/coordinator/contracts.ts',
   'src/coordinator/lifecycle.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
   'src/coordinator/shutdown.ts',
   'src/coordinator/live/durable-transport.ts',
-  'src/coordinator/live/kb-daemon-supervisor.ts',
 ]);
-const COORDINATOR_EXEMPT_PREFIXES = [
-  'src/coordinator/composition/',
-  'src/coordinator/services/',
-  'src/coordinator/runtime-components/',
-] as const;
+const COORDINATOR_EXEMPT_PREFIXES = ['src/coordinator/composition/', 'src/coordinator/services/'] as const;
 const COORDINATOR_ALLOWED = new Set([
   'src/jobs/contracts/admission.ts',
-  'src/jobs/launch.ts',
-  'src/jobs/outcome.ts',
-  'src/kb/contract.ts',
-  'src/kb/projection-input-contract.ts',
-  'src/kb/state/corpus-state.ts',
-  'src/kb/search/contract.ts',
+  // The app-server child transport. The coordinator's host pool has always spawned children through it; it
+  // simply used to sit inside `coordinator/live/` and so crossed no boundary to reach. It is provider-domain
+  // by what it does — spawning a provider's app-server child and framing its JSON-RPC — and it now lives
+  // there, which makes this edge visible rather than new.
+  'src/providers/app-server-transport.ts',
   'src/providers/contract.ts',
-  'src/providers/protocol.ts',
-  'src/providers/registry.ts',
-  'src/sessions/continuity.ts',
-  'src/store/consumer-contract.ts',
 ]);
 const GENERIC_FILENAMES = ['utils.ts', 'types.ts', 'schemas.ts', 'shared.ts', 'shared-utils.ts'] as const;
 const DOMAIN_ROOT_DIRS = [
+  'src/provider-proxy',
   'src/jobs',
   'src/sessions',
   'src/discuss',
@@ -93,6 +102,34 @@ const DOMAIN_SHELL_ROOTS = DOMAIN_ROOT_DIRS.map((root) => `${root}/shell/`);
 
 function startsWithAny(value: string, prefixes: readonly string[]): boolean {
   return prefixes.some((prefix) => value.startsWith(prefix));
+}
+
+function referencesProductionPath(entry: string): boolean {
+  return entry.endsWith('/')
+    ? [...PRODUCTION_FILES].some((file) => file.startsWith(entry))
+    : PRODUCTION_FILES.has(entry);
+}
+
+function isCoordinatorExemptSource(source: string): boolean {
+  return COORDINATOR_GLUE_EXEMPT.has(source) || startsWithAny(source, COORDINATOR_EXEMPT_PREFIXES);
+}
+
+function isCoordinatorBaseTarget(target: string): boolean {
+  return (
+    target.startsWith('src/coordinator/') ||
+    target.startsWith('src/runtime/') ||
+    target.startsWith('src/infra/') ||
+    target.startsWith('src/store/')
+  );
+}
+
+function requiresCoordinatorSourceExemption(source: string, target: string): boolean {
+  return (
+    source.startsWith('src/coordinator/') &&
+    !isCoordinatorBaseTarget(target) &&
+    !COORDINATOR_ALLOWED.has(target) &&
+    startsWithAny(target, DOMAIN_ROOTS)
+  );
 }
 
 function shellOwner(path: string): string | null {
@@ -116,13 +153,13 @@ describe('architecture layering invariants', () => {
     expect(violations).toEqual([]);
   });
 
-  it('security imports only security-local modules and runtime/infra port types', () => {
+  it('security imports only security-local modules', () => {
     const violations = collectViolations((source, target) => {
       if (!source.startsWith(SECURITY_ROOT)) {
         return false;
       }
 
-      if (target.startsWith(SECURITY_ROOT) || SECURITY_ALLOWED_TARGETS.has(target)) {
+      if (target.startsWith(SECURITY_ROOT)) {
         return false;
       }
 
@@ -154,20 +191,11 @@ describe('architecture layering invariants', () => {
 
   it('only coordinator glue and extracted coordinator implementation leafs may bypass coordinator contract entrypoints', () => {
     const violations = collectViolations((source, target) => {
-      if (
-        !source.startsWith('src/coordinator/') ||
-        COORDINATOR_GLUE_EXEMPT.has(source) ||
-        startsWithAny(source, COORDINATOR_EXEMPT_PREFIXES)
-      ) {
+      if (!source.startsWith('src/coordinator/') || isCoordinatorExemptSource(source)) {
         return false;
       }
 
-      if (
-        target.startsWith('src/coordinator/') ||
-        target.startsWith('src/runtime/') ||
-        target.startsWith('src/infra/') ||
-        target.startsWith('src/store/')
-      ) {
+      if (isCoordinatorBaseTarget(target)) {
         return false;
       }
 
@@ -179,6 +207,64 @@ describe('architecture layering invariants', () => {
     });
 
     expect(violations).toEqual([]);
+  });
+
+  it('names only real, exercised layering exemptions', () => {
+    const ruleRoots = [
+      ...DOMAIN_ROOTS,
+      'src/runtime/',
+      'src/infra/',
+      'src/transport/',
+      PROVIDER_PROXY_ROOT,
+      STORE_ROOT,
+      SECURITY_ROOT,
+      ...DOMAIN_ROOT_DIRS.map((root) => `${root}/`),
+    ];
+    expect(ruleRoots.filter((root) => !referencesProductionPath(root))).toEqual([]);
+
+    const unexercisedTransportTargets = [...TRANSPORT_ALLOWED].filter(
+      (target) =>
+        !referencesProductionPath(target) ||
+        !IMPORT_EDGES.some(
+          (edge) =>
+            edge.source.startsWith('src/transport/') &&
+            edge.target === target &&
+            (startsWithAny(edge.target, DOMAIN_ROOTS) || edge.target.startsWith('src/coordinator/')),
+        ),
+    );
+    expect(unexercisedTransportTargets).toEqual([]);
+
+    const unexercisedGlueSources = [...COORDINATOR_GLUE_EXEMPT].filter(
+      (source) =>
+        !referencesProductionPath(source) ||
+        !IMPORT_EDGES.some(
+          (edge) => edge.source === source && requiresCoordinatorSourceExemption(edge.source, edge.target),
+        ),
+    );
+    expect(unexercisedGlueSources).toEqual([]);
+
+    const unexercisedCoordinatorPrefixes = COORDINATOR_EXEMPT_PREFIXES.filter(
+      (prefix) =>
+        !referencesProductionPath(prefix) ||
+        !IMPORT_EDGES.some(
+          (edge) => edge.source.startsWith(prefix) && requiresCoordinatorSourceExemption(edge.source, edge.target),
+        ),
+    );
+    expect(unexercisedCoordinatorPrefixes).toEqual([]);
+
+    const unexercisedCoordinatorTargets = [...COORDINATOR_ALLOWED].filter(
+      (target) =>
+        !referencesProductionPath(target) ||
+        !IMPORT_EDGES.some(
+          (edge) =>
+            edge.target === target &&
+            edge.source.startsWith('src/coordinator/') &&
+            !isCoordinatorExemptSource(edge.source) &&
+            !isCoordinatorBaseTarget(edge.target) &&
+            startsWithAny(edge.target, DOMAIN_ROOTS),
+        ),
+    );
+    expect(unexercisedCoordinatorTargets).toEqual([]);
   });
 
   it('production files never import test helpers', () => {
@@ -206,6 +292,34 @@ describe('architecture layering invariants', () => {
     const violations = collectViolations(
       (source, target) => source.startsWith('src/kb/') && target === 'src/transport/tool-result.ts',
     );
+
+    expect(violations).toEqual([]);
+  });
+
+  it('the provider proxy opens no store and reaches no coordinator surface', () => {
+    const violations = IMPORT_EDGES.filter((edge) => edge.source.startsWith(PROVIDER_PROXY_ROOT))
+      .filter((edge) => startsWithAny(edge.target, PROVIDER_PROXY_FORBIDDEN))
+      .map((edge) => `${edge.source} -> ${edge.target}`);
+
+    expect(violations).toEqual([]);
+  });
+
+  it('the journal store does not reach into the provider proxy', () => {
+    // The Journal is durable authority below the live proxy domain; durable records validate provider
+    // identities at the providers boundary instead of importing proxy protocol schemas.
+    const violations = collectViolations(
+      (source, target) => source.startsWith(STORE_ROOT) && target.startsWith(PROVIDER_PROXY_ROOT),
+    );
+
+    expect(violations).toEqual([]);
+  });
+
+  it('the jobs domain does not reach into the provider proxy', () => {
+    // Jobs must remain meaningful without a live proxy process; proxy correlation brands stop at the wire
+    // boundary and durable saga identities are validated by the store instead.
+    const violations = IMPORT_EDGES.filter((edge) => edge.source.startsWith('src/jobs/'))
+      .filter((edge) => edge.target.startsWith(PROVIDER_PROXY_ROOT))
+      .map((edge) => `${edge.source} -> ${edge.target}`);
 
     expect(violations).toEqual([]);
   });

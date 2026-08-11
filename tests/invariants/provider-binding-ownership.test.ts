@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import {
   listProductionSourceFiles,
   parseProductionImportEdges,
-  parseSourceSubpathImportEdges,
   toCanonicalSrcPath,
   type ParsedImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
@@ -15,10 +14,7 @@ describe('provider binding ownership', () => {
   it('keeps provider-private binding codecs behind provider definitions and the registry boundary', () => {
     const files = listProductionSourceFiles(new URL('src/', ROOT).pathname);
     const violations: string[] = [];
-    const edges: Pick<ParsedImportEdge, 'source' | 'target'>[] = [
-      ...parseProductionImportEdges(ROOT.pathname, files),
-      ...files.flatMap((file) => parseSourceSubpathImportEdges(ROOT.pathname, file)),
-    ];
+    const edges: Pick<ParsedImportEdge, 'source' | 'target'>[] = parseProductionImportEdges(ROOT.pathname, files);
     for (const edge of edges) {
       const violation = bindingImportViolation(edge.source, edge.target);
       if (violation !== null) {

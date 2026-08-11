@@ -43,6 +43,6 @@ export interface JobProgressStore {
   readTerminalProjection(jobId: string): JobTerminal | null;
   rebindNamespace(jobId: string, newNamespace: string, newBundleHash?: string): void;
   listJobIds(): string[];
-  liveJobCountByNamespace(namespace: string): number;
+  liveJobCount(): number;
   appendProgress(jobId: string, sessionId: string | null, message: string): number;
 }

@@ -1,8 +1,27 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { createDeferred } from '#tools/testing/deferred.js';
+
+// `ensureProxySetFor` (the manager's own dedup/registry wiring) is what these tests exercise; the acquisition
+// attempt it delegates to is already covered end to end by `proxy-set-acquisition.test.ts` and the real-spawn
+// integration test, so stubbing it here keeps this suite free of process spawning.
+vi.mock('#src/coordinator/live/provider-hosts/proxy-set-acquisition.js', () => ({
+  ensureProviderProxySet: vi.fn(),
+}));
+
 import { DefaultProviderHostManager, hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/index.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
+import { MAX_COORDINATOR_PROXY_SET_SLOTS } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import { ensureProviderProxySet } from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
+import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
+import type {
+  DurableProviderProxyOperationAuthority,
+  ProviderProxyOperationAuthority,
+} from '#src/coordinator/live/provider-proxy/operation-route.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
+import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
 import {
   createExclusiveSpec,
   createFakeProviderServerHandle,
@@ -11,6 +30,117 @@ import {
   createSpawnProviderServerMock,
   runtime,
 } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
+import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+
+const mockedEnsureProxySet = ensureProviderProxySet as unknown as ReturnType<typeof vi.fn>;
+
+function fakeProxySet(proxyInstanceId: string): ProviderProxySetAuthority {
+  return {
+    proxyInstanceId: /^[0-9a-f]{8}-/u.test(proxyInstanceId) ? proxyInstanceId : randomUUID(),
+    stopAndReap: async () => ({ disappearanceReceipt: 'r' }),
+    stopHeartbeats: () => {},
+    initiateControlClose: async () => {},
+  };
+}
+
+/** `registerInheritedSet` takes the full operation-routing authority, unlike `ensureProxySetFor`'s untyped
+ *  mock elsewhere in this file — a fresh fixture rather than widening `fakeProxySet` for every caller. */
+function fakeInheritedProxySet(proxyInstanceId: string): ProviderProxyOperationAuthority {
+  const base = fakeProxySet(proxyInstanceId);
+  return {
+    ...base,
+    registerSuccessionOperation: async () => {},
+    setIdentity: {
+      buildSetId: randomUUID(),
+      hostFingerprint: 'a'.repeat(64),
+      guardianInstanceId: randomUUID(),
+      guardianPid: 100,
+      guardianProcessStartedAtSeconds: 1,
+      guardianControlEndpoint: '/tmp/guardian.sock',
+      proxyInstanceId: base.proxyInstanceId,
+      proxyPid: 200,
+      reaperInstanceId: randomUUID(),
+      reaperPid: 300,
+      reaperProcessStartedAtSeconds: 2,
+      reaperControlEndpoint: '/tmp/reaper.sock',
+      containmentKind: 'posix-group',
+      proxyProcessStartedAtSeconds: 3,
+      proxyProcessGroupId: 200,
+      canonicalEndpoint: '/tmp/proxy.sock',
+    },
+  };
+}
+
+function fakeDurableProxySet(
+  proxyInstanceId: string,
+  options: {
+    prepareOperation?: DurableProviderProxyOperationAuthority['prepareOperation'];
+    stopAndReap?: DurableProviderProxyOperationAuthority['stopAndReap'];
+    stopHeartbeats?: DurableProviderProxyOperationAuthority['stopHeartbeats'];
+    initiateControlClose?: DurableProviderProxyOperationAuthority['initiateControlClose'];
+  } = {},
+): DurableProviderProxyOperationAuthority {
+  const inherited = fakeInheritedProxySet(proxyInstanceId);
+  return {
+    ...inherited,
+    faulted: new Promise<never>(() => {}),
+    onFault: () => () => undefined,
+    prepareOperation:
+      options.prepareOperation ??
+      (async () => {
+        throw new Error('unused prepareOperation');
+      }),
+    inspectOperation: async () => {
+      throw new Error('unused inspectOperation');
+    },
+    authorizeOperation: async () => {
+      throw new Error('unused authorizeOperation');
+    },
+    activatePreparedOperation: async () => {
+      throw new Error('unused activatePreparedOperation');
+    },
+    attachOperation: async () => {
+      throw new Error('unused attachOperation');
+    },
+    cancelOperation: async () => {
+      throw new Error('unused cancelOperation');
+    },
+    settleOperation: async () => {
+      throw new Error('unused settleOperation');
+    },
+    buildOperationControl: () => ({ stop: async () => {} }),
+    stopAndReap: options.stopAndReap ?? inherited.stopAndReap,
+    stopHeartbeats: options.stopHeartbeats ?? inherited.stopHeartbeats,
+    initiateControlClose: options.initiateControlClose ?? inherited.initiateControlClose,
+  };
+}
+
+const proxySetAcquisition = {
+  pluginRoot: '/plugin',
+  identity: { instanceId: 'i', buildSetId: 'b', flavor: 'prod' as const },
+  // This suite fakes `ensureProxySet` itself (`mockedEnsureProxySet`), so nothing here ever reads the
+  // registry; empty is the honest answer regardless.
+  operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+};
+
+function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void): ProviderProxySetLifecycleRef {
+  const claims = new ProviderProxySetClaimMirror();
+  claims.initialize([]);
+  const lifecycle = new ProviderProxySetLifecycle({
+    claims,
+    controlEstablished: () => undefined,
+    time: runtime.time,
+    recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+      'containment-proof': async () => null,
+    }),
+    ...(onSlotReleased === undefined ? {} : { onSlotReleased }),
+  });
+  lifecycle.initializeClaimSlots();
+  lifecycle.completeStartupDiscovery();
+  const ref = new ProviderProxySetLifecycleRef();
+  ref.connect(lifecycle);
+  return ref;
+}
 
 function expectedHost(spec: ProviderServerSpec, jobId = 'shared-attachment') {
   return { spec, jobId };
@@ -18,9 +148,9 @@ function expectedHost(spec: ProviderServerSpec, jobId = 'shared-attachment') {
 
 describe('provider host pool', () => {
   it.each([
-    [{ ...createSharedSpec(), idlePolicy: undefined }, 'shared hosts require idlePolicy'],
-    [{ ...createSharedSpec(), idlePolicy: 'implicit-timeout' }, 'shared hosts require idlePolicy'],
-    [{ ...createExclusiveSpec(), idlePolicy: 'daemon' }, 'job-exclusive hosts cannot declare idlePolicy'],
+    [{ ...createSharedSpec(), idleRetirement: undefined }, 'shared hosts require idleRetirement'],
+    [{ ...createSharedSpec(), idleRetirement: 'implicit-timeout' }, 'shared hosts require idleRetirement'],
+    [{ ...createExclusiveSpec(), idleRetirement: 'none' }, 'job-exclusive hosts cannot declare idleRetirement'],
     [{ ...createExclusiveSpec(), leaseMode: 'unknown' }, "leaseMode must be 'shared' or 'job-exclusive'"],
   ])('rejects malformed runtime lifecycle policy before spawning', async (spec, expected) => {
     const server = createFakeProviderServerHandle();
@@ -63,7 +193,7 @@ describe('provider host pool', () => {
       hostKeyFromSpec({ ...base, env: { CODEX_HOME: '/accounts/b' } }),
     );
     const shared = createSharedSpec();
-    expect(hostKeyFromSpec({ ...shared, idlePolicy: 'daemon' })).toBe(hostKeyFromSpec(shared));
+    expect(hostKeyFromSpec({ ...shared, idleRetirement: 'none' })).toBe(hostKeyFromSpec(shared));
     const initialized = createExclusiveSpec({
       initializeRequest: { method: 'initialize', params: { beta: 2, alpha: { y: 2, x: 1 } } },
       initializeTimeoutMs: 1_000,
@@ -265,12 +395,12 @@ describe('provider host pool', () => {
       runtime,
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
     });
-    const statsSpec = createSharedSpec();
-    const lease = await manager.openSession(createLaunch(statsSpec));
-    const daemonSpec = createSharedSpec({ idlePolicy: 'daemon' });
+    const hostReportedSpec = createSharedSpec();
+    const lease = await manager.openSession(createLaunch(hostReportedSpec));
+    const noRetirementSpec = createSharedSpec({ idleRetirement: 'none' });
 
-    await expect(manager.openSession(createLaunch(daemonSpec))).rejects.toThrow('provider_host_policy_conflict');
-    await expect(manager.attachSession(lease.hostRef, expectedHost(daemonSpec))).resolves.toBeNull();
+    await expect(manager.openSession(createLaunch(noRetirementSpec))).rejects.toThrow('provider_host_policy_conflict');
+    await expect(manager.attachSession(lease.hostRef, expectedHost(noRetirementSpec))).resolves.toBeNull();
 
     lease.close();
     await manager.shutdown();
@@ -471,7 +601,7 @@ describe('provider host pool', () => {
     expect(server.closeMock).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps daemon-lifetime shared hosts alive regardless of pins or host notifications', async () => {
+  it('keeps shared hosts with idle retirement disabled alive regardless of pins or host notifications', async () => {
     vi.useFakeTimers();
     const server = createFakeProviderServerHandle({ generation: 74 });
     const manager = new DefaultProviderHostManager({
@@ -479,7 +609,7 @@ describe('provider host pool', () => {
       spawnProviderServer: createSpawnProviderServerMock(server.handle),
       idleTimeoutMs: 10,
     });
-    const lease = await manager.openSession(createLaunch(createSharedSpec({ idlePolicy: 'daemon' })));
+    const lease = await manager.openSession(createLaunch(createSharedSpec({ idleRetirement: 'none' })));
 
     lease.close();
     server.emitNotification({ method: 'host/stats', params: { liveControllers: 0, activeTurns: 0 } });
@@ -734,5 +864,332 @@ describe('provider host pool', () => {
     await shutdown;
     expect(shutDown).toBe(true);
     expect(server.closeMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('provider host pool proxy set registry', () => {
+  // Each manager instance is fresh per test, but the module-level `ensureProviderProxySet` mock is shared —
+  // its call history must not leak from one `it` into the next.
+  beforeEach(() => {
+    mockedEnsureProxySet.mockReset();
+  });
+
+  it('never attempts proxy set acquisition when constructed without proxySetAcquisition', async () => {
+    const server = createFakeProviderServerHandle();
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+    });
+
+    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
+
+    expect(mockedEnsureProxySet).not.toHaveBeenCalled();
+    expect(manager.liveSets()).toEqual([]);
+    lease.close();
+    await manager.shutdown();
+  });
+
+  it('single-flights one acquisition attempt per entry across repeated openSession calls', async () => {
+    const server = createFakeProviderServerHandle();
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
+    });
+
+    const spec = createSharedSpec();
+    const first = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
+    const second = await manager.openSession(createLaunch(spec), { jobId: 'job-b' });
+
+    // Same shared entry both times, so the same hostKey — the second call must not start a second attempt
+    // while the first is still pending (`onSettled` was never invoked).
+    expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
+    first.close();
+    second.close();
+    await manager.shutdown();
+  });
+
+  it('exposes an acquired set through liveSets() once the attempt settles, and does not re-acquire once live', async () => {
+    const server = createFakeProviderServerHandle();
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
+    });
+    const set = fakeDurableProxySet('proxy-a');
+    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
+      onSettled({ kind: 'acquired', set });
+    });
+
+    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
+
+    expect(manager.liveSets().map((candidate) => candidate.proxyInstanceId)).toEqual([set.proxyInstanceId]);
+    const second = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-b' });
+    expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
+
+    lease.close();
+    second.close();
+    await manager.shutdown();
+  });
+
+  it('a failed acquisition does not fail openSession and leaves liveSets() empty', async () => {
+    const server = createFakeProviderServerHandle();
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
+    });
+    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
+      onSettled({ kind: 'failed', reason: 'guardian spawn exploded' });
+    });
+
+    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
+
+    expect(manager.liveSets()).toEqual([]);
+    lease.close();
+    await manager.shutdown();
+  });
+
+  it('routes to the exact live authority for a matching spec once acquisition settles', async () => {
+    // `routeAppServerOperation` is the entry point of the W2.3 publication path — the only assertion touching
+    // it elsewhere in this file checks the negative case (no live set yet). Replacing its body with
+    // `return null;` would fail nothing else here.
+    const server = createFakeProviderServerHandle();
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
+    });
+    const set = fakeDurableProxySet('proxy-routed');
+    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
+      onSettled({ kind: 'acquired', set });
+    });
+    const spec = createSharedSpec();
+
+    const lease = await manager.openSession(createLaunch(spec), { jobId: 'job-a' });
+
+    expect(manager.routeAppServerOperation(spec)?.proxyInstanceId).toBe(set.proxyInstanceId);
+
+    lease.close();
+    await manager.shutdown();
+  });
+
+  it('shares one set across job-exclusive entries of the same executable identity', async () => {
+    // A set is three real processes and one proxy carries many operations — its ledger is keyed by
+    // `(jobId, operationId)`, a handoff grant covers the whole operation set, and release refuses to reap a
+    // provider root another operation still references. So the set belongs to the executable identity, not
+    // to an acquisition. Keying it per entry would also never terminate: a job-exclusive `hostKey` carries a
+    // fresh sequence number every acquisition, and nothing retires a set before coordinator shutdown, so a
+    // long-lived daemon would accumulate three processes per job.
+    const server = createFakeProviderServerHandle();
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
+    });
+    const set = fakeDurableProxySet('proxy-shared');
+    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
+      onSettled({ kind: 'acquired', set });
+    });
+
+    const first = await manager.openSession(createLaunch(createExclusiveSpec()), { jobId: 'job-a' });
+    const second = await manager.openSession(createLaunch(createExclusiveSpec()), { jobId: 'job-b' });
+
+    // Two distinct entries — the per-job isolation of the hosts themselves is unchanged — but one set.
+    const entryKeys = mockedEnsureProxySet.mock.calls.map((call) => (call[0] as ProviderHostEntry).hostKey);
+    expect(new Set(entryKeys).size).toBe(1);
+    expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
+    expect(manager.liveSets()).toHaveLength(1);
+
+    first.close();
+    second.close();
+    await manager.shutdown();
+  });
+
+  it('reserves at most four set slots across pending acquisitions (C3-M7)', async () => {
+    const servers = Array.from({ length: 5 }, (_, index) => createFakeProviderServerHandle({ generation: index + 1 }));
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(...servers.map(({ handle }) => handle)),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
+    });
+    mockedEnsureProxySet.mockImplementation(() => {
+      // Every reserved slot remains pending while the fifth identity reaches the admission gate.
+    });
+    const specs = servers.map((_, index) => createSharedSpec({ env: { CORAL_SET_ID: String(index) } }));
+    const leases = [];
+    for (const [index, spec] of specs.entries()) {
+      leases.push(await manager.openSession(createLaunch(spec), { jobId: `job-${index}` }));
+    }
+
+    expect(
+      mockedEnsureProxySet.mock.calls.length,
+      'five live/acquiring/uncontained proxy set slots were admitted',
+    ).toBe(4);
+    expect(manager.routeAppServerOperation(specs.at(-1) as ProviderServerSpec)).toBeNull();
+
+    for (const lease of leases) lease.close();
+    await manager.shutdown();
+  });
+
+  it('holds a retiring slot until absence, then rotates to a fresh set before routing new work', async () => {
+    const absence = createDeferred<Readonly<{ disappearanceReceipt: string } | { unconfirmed: string }>>();
+    const stopAndReap = vi.fn(() => absence.promise);
+    const stopHeartbeats = vi.fn();
+    const initiateControlClose = vi.fn(async () => {});
+    const firstSet = fakeDurableProxySet('proxy-a', {
+      prepareOperation: async () => ({
+        state: 'capacity',
+        retryable: true,
+        code: 'provider_root_generation_draining',
+        reason: 'generation reached 127 recorded roots',
+      }),
+      stopAndReap,
+      stopHeartbeats,
+      initiateControlClose,
+    });
+    const sets = [
+      firstSet,
+      fakeDurableProxySet('proxy-b'),
+      fakeDurableProxySet('proxy-c'),
+      fakeDurableProxySet('proxy-d'),
+      fakeDurableProxySet('proxy-a-fresh'),
+    ];
+    let nextSet = 0;
+    mockedEnsureProxySet.mockImplementation((_entry, _env, onSettled) => {
+      const set = sets[nextSet++];
+      if (set === undefined) throw new Error('unexpected extra proxy set acquisition');
+      onSettled({ kind: 'acquired', set });
+    });
+    const servers = Array.from({ length: 5 }, (_, index) => createFakeProviderServerHandle({ generation: index + 1 }));
+    const providerProxyLifecycleRef = createProxySetLifecycleRef((routeKey) =>
+      manager.providerProxySlotReleased(routeKey),
+    );
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(...servers.map(({ handle }) => handle)),
+      proxySetAcquisition,
+      providerProxyLifecycleRef,
+    });
+    const specs = servers.map((_, index) => createSharedSpec({ env: { CORAL_ROTATION_SET: String(index) } }));
+    const leases = [];
+    for (let index = 0; index < MAX_COORDINATOR_PROXY_SET_SLOTS; index += 1) {
+      leases.push(await manager.openSession(specs[index] as ProviderServerSpec, { jobId: `job-${index}` }));
+    }
+    const routed = manager.routeAppServerOperation(specs[0] as ProviderServerSpec);
+    if (routed === null || !('prepareOperation' in routed)) throw new Error('expected a durable routed set');
+
+    await (routed as DurableProviderProxyOperationAuthority).prepareOperation({} as never);
+    expect(stopAndReap).toHaveBeenCalledOnce();
+    expect(manager.routeAppServerOperation(specs[0] as ProviderServerSpec)).toBeNull();
+    leases.push(await manager.openSession(specs[4] as ProviderServerSpec, { jobId: 'job-4' }));
+    expect(
+      mockedEnsureProxySet.mock.calls.length,
+      'a fifth set was acquired before the retiring set proved joint absence',
+    ).toBe(MAX_COORDINATOR_PROXY_SET_SLOTS);
+
+    absence.resolve({ disappearanceReceipt: 'joint-absence' });
+    await vi.waitFor(() => expect(mockedEnsureProxySet).toHaveBeenCalledTimes(5));
+    expect(stopHeartbeats).toHaveBeenCalledOnce();
+    expect(initiateControlClose).toHaveBeenCalledOnce();
+    expect(manager.routeAppServerOperation(specs[0] as ProviderServerSpec)?.proxyInstanceId).toBe(
+      sets[4]?.proxyInstanceId,
+    );
+    expect(manager.liveSets()).toHaveLength(MAX_COORDINATOR_PROXY_SET_SLOTS);
+
+    for (const lease of leases) lease.close();
+    await manager.shutdown();
+  });
+
+  it('aborts a still-pending acquisition’s signal when the manager stops, without waiting for it to settle', async () => {
+    // The defect this guards against: a job acquires a lease, its proxy-set acquisition is still mid-
+    // handshake when shutdown begins, and nothing ever cuts it off — so it can go on to populate `liveSets()`
+    // after a caller (`runShutdownSequence`) has already read it. `stopAndClose` must sever it instead of
+    // merely outliving it.
+    const server = createFakeProviderServerHandle();
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
+    });
+    let capturedSignal: AbortSignal | undefined;
+    mockedEnsureProxySet.mockImplementationOnce((_entry, env: { signal: AbortSignal }) => {
+      capturedSignal = env.signal;
+      // Deliberately never calls `onSettled` — this attempt is still running when shutdown begins.
+    });
+
+    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
+
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    expect(capturedSignal?.aborted).toBe(false);
+
+    lease.close();
+    // Must resolve even though the acquisition it started never calls `onSettled` — shutdown does not await
+    // acquisition completion, it cuts it off.
+    await manager.shutdown();
+
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+});
+
+describe('provider host pool proxy set registration', () => {
+  // Exact-set redemption and per-operation attachment live in
+  // `coordinator/services/provider-proxy-set-inheritance.ts` and is covered end to end there
+  // (`provider-proxy-set-inheritance.test.ts`) — it needs jobs-domain vocabulary this `coordinator/live/`
+  // manager may not reach directly. `registerInheritedSet` is the narrow, domain-free seam that mechanism
+  // calls back into once it already holds a live, connected set; that hand-off is what this suite exercises.
+
+  // The module-level `ensureProviderProxySet` mock is shared with every other describe block in this file —
+  // its call history must not leak from one `it` into the next (mirrors the sibling `beforeEach` above).
+  beforeEach(() => {
+    mockedEnsureProxySet.mockReset();
+  });
+
+  it('folds an inherited set into liveSets() alongside acquired sets, without routing new sessions onto it', async () => {
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(createFakeProviderServerHandle().handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
+    });
+    const set = fakeDurableProxySet('proxy-inherited');
+
+    manager.registerInheritedSet(set);
+
+    expect(manager.liveSets()).toEqual([set]);
+    // Inheritance never registers routing for new work — only an `ensureProxySetFor` acquisition does.
+    expect(manager.routeAppServerOperation(createSharedSpec())).toBeNull();
+
+    await manager.shutdown();
+  });
+
+  it('coexists with an acquired set for a different proxy — liveSets() reports both', async () => {
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(createFakeProviderServerHandle().handle),
+      proxySetAcquisition,
+      providerProxyLifecycleRef: createProxySetLifecycleRef(),
+    });
+    const acquired = fakeDurableProxySet('proxy-acquired');
+    mockedEnsureProxySet.mockImplementationOnce((_entry, _env, onSettled) => {
+      onSettled({ kind: 'acquired', set: acquired });
+    });
+    const lease = await manager.openSession(createLaunch(createSharedSpec()), { jobId: 'job-a' });
+    const inherited = fakeDurableProxySet('proxy-inherited');
+
+    manager.registerInheritedSet(inherited);
+
+    expect(new Set(manager.liveSets().map((set) => set.proxyInstanceId))).toEqual(
+      new Set([acquired.proxyInstanceId, inherited.proxyInstanceId]),
+    );
+    lease.close();
+    await manager.shutdown();
   });
 });

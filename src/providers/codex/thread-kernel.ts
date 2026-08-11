@@ -1,8 +1,17 @@
+import { z } from 'zod';
+
 import { errorMessage } from '../../infra/error-format.js';
 import { readString } from '../../infra/json.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { resolveModelTier } from '../request-policy.js';
-import type { Provider, ProviderEventBody, ProviderRequest, ProviderRuntime, AppServerSession } from '../contract.js';
+import type {
+  Provider,
+  ProviderEventBody,
+  ProviderRequest,
+  ProviderRuntime,
+  AppServerSession,
+  ProviderTurnTerminalEvidence,
+} from '../contract.js';
 import { buildProviderFailureMessage } from '../app-server.js';
 import type { AppServerNotificationMessage } from '../protocol.js';
 import { streamProviderEvents } from '../stream.js';
@@ -43,15 +52,11 @@ export const PRE_TURN_MAILBOX_CAP = 64;
 // the diagnostic message goes into `note`. See spec §7.1 `provider_exit`.
 const CODEX_RPC_FAILURE_EXIT_CODE = 1;
 
-// An operator abort must not depend on the app-server answering. `ensureInterrupt`
-// is itself an RPC and `lease.closed` only settles when the host process exits, so
-// an alive-but-unresponsive app-server leaves every leg of the abort race pending
-// forever: the job stays `running`, reports no events, and no further abort can
-// free it. After this deadline the kernel stops waiting for confirmation and
-// terminalizes locally, preserving the recovery snapshot so a later boot can still
-// probe the turn. Only the abort path is bounded — a turn that nobody asked to
-// cancel still runs as long as it needs.
+// The interrupt request and provider completion notification can both wedge. After
+// this deadline the kernel suspends with its recovery snapshot intact; elapsed time
+// is not evidence that the provider turn ceased.
 const ABORT_CONFIRMATION_DEADLINE_MS = 10_000;
+const codexFinalTurnStatusSchema = z.enum(['interrupted', 'completed', 'failed']);
 
 type PreTurnMailboxStatus = {
   pending: number;
@@ -91,7 +96,7 @@ export type TurnAttempt = {
   subagentThreadIds: Set<string>;
   activeSubagentTurns: Set<string>;
   completionTimer: ReturnType<TimePort['setTimeout']> | null;
-  interruptRequest: Promise<'confirmed' | 'failed'> | null;
+  interruptRequest: Promise<'accepted' | 'failed'> | null;
 };
 
 export type CodexTurnState = {
@@ -108,6 +113,7 @@ export type CodexTurnState = {
   retiredControllerTurnIds: Set<string>;
   activeAttempt: TurnAttempt;
   continuityBridge: CodexProviderRuntime['continuityBridge'];
+  onProviderTurnTerminal: (evidence: ProviderTurnTerminalEvidence) => void;
   checkpointBarrier: Promise<void>;
   signal: AbortSignal;
   lease: AppServerSession | null;
@@ -185,6 +191,7 @@ function createState(request: ProviderRequest, runtime: CodexProviderRuntime): C
     retiredControllerTurnIds: new Set(),
     activeAttempt: createAttempt(0),
     continuityBridge: runtime.continuityBridge,
+    onProviderTurnTerminal: runtime.onProviderTurnTerminal,
     checkpointBarrier: Promise.resolve(),
     signal: runtime.signal,
     lease: null,
@@ -645,17 +652,40 @@ function applyNotificationCore(
     }
     case 'turn/completed': {
       const threadId = extractThreadId(message);
-      const turnId = extractTurnId(message);
+      const routedTurnId = extractTurnId(message);
       const turn = (notification.params as { turn?: Turn } | undefined)?.turn ?? null;
+      const completedTurnId = readTurnId(turn);
       if (threadId !== null && threadId !== state.threadId) {
         attempt.activeSubagentTurns.delete(threadId);
         scheduleInferredCompletion(state, attempt);
         return;
       }
-      if (threadId !== state.threadId || turnId === null || turnId !== attempt.turnId || turn === null) {
+      if (
+        threadId !== state.threadId ||
+        routedTurnId !== attempt.turnId ||
+        completedTurnId === null ||
+        completedTurnId !== attempt.turnId ||
+        turn === null
+      ) {
         return;
       }
-      completeTurn(state, attempt, turn, 'notification');
+      const finalStatus = codexFinalTurnStatusSchema.safeParse(turn.status);
+      if (!finalStatus.success) {
+        settleAttempt(state, attempt, {
+          kind: 'failed',
+          message: `Codex turn/completed carried an invalid final status: ${turn.status ?? 'missing'}.`,
+          preserveRecoverySnapshot: true,
+          attempt,
+        });
+        return;
+      }
+      const validatedTurn = { ...turn, status: finalStatus.data };
+      state.onProviderTurnTerminal({
+        kind: 'provider-turn-terminal',
+        providerTurnId: completedTurnId,
+        status: finalStatus.data,
+      });
+      completeTurn(state, attempt, validatedTurn, 'notification');
       return;
     }
     default:
@@ -769,13 +799,13 @@ async function ensureInterrupt(
   lease: AppServerSession,
   state: CodexTurnState,
   attempt: TurnAttempt,
-): Promise<'confirmed' | 'failed'> {
+): Promise<'accepted' | 'failed'> {
   if (state.threadId === null || attempt.turnId === null) {
     return 'failed';
   }
   await state.checkpointBarrier;
   attempt.interruptRequest ??= lease.interrupt({ threadId: state.threadId, turnId: attempt.turnId }).then(
-    (interrupted) => (interrupted ? ('confirmed' as const) : ('failed' as const)),
+    (outcome) => (outcome.kind === 'accepted' ? ('accepted' as const) : ('failed' as const)),
     () => 'failed' as const,
   );
   return await attempt.interruptRequest;
@@ -1020,24 +1050,35 @@ async function finishAbortedStart(
   });
   try {
     const outcome = await Promise.race([
-      ensureInterrupt(lease, state, attempt).then((interrupted) => ({ kind: 'interrupt' as const, interrupted })),
+      ensureInterrupt(lease, state, attempt).then((request) => ({ kind: 'interrupt' as const, request })),
       lease.closed.then(() => ({ kind: 'closed' as const })),
+      attempt.completion.then((result) => ({ kind: 'completion' as const, result })),
       deadline,
     ]);
     if (outcome.kind === 'deadline') {
-      return {
-        kind: 'aborted',
-        reason: 'signal_abort',
-        preserveRecoverySnapshot: attempt.turnId !== null,
-        attempt,
-      };
+      return { kind: 'suspended', reason: 'interrupt_unconfirmed', attempt };
     }
     if (outcome.kind === 'closed') {
       return transportClosedResult(runtime, attempt, undefined);
     }
-    return outcome.interrupted === 'confirmed'
-      ? { kind: 'aborted', reason: 'signal_abort', attempt }
-      : { kind: 'suspended', reason: 'interrupt_unconfirmed', attempt };
+    if (outcome.kind === 'completion') {
+      return outcome.result;
+    }
+    if (outcome.request === 'failed') {
+      return { kind: 'suspended', reason: 'interrupt_unconfirmed', attempt };
+    }
+    const terminal = await Promise.race([
+      attempt.completion.then((result) => ({ kind: 'completion' as const, result })),
+      lease.closed.then(() => ({ kind: 'closed' as const })),
+      deadline,
+    ]);
+    if (terminal.kind === 'completion') {
+      return terminal.result;
+    }
+    if (terminal.kind === 'closed') {
+      return transportClosedResult(runtime, attempt, undefined);
+    }
+    return { kind: 'suspended', reason: 'interrupt_unconfirmed', attempt };
   } finally {
     if (deadlineTimer !== undefined) {
       state.time.clearTimeout(deadlineTimer);

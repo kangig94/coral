@@ -5,6 +5,7 @@ import { BackendToolHttpError } from '../transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '../infra/http-errors.js';
 import { isRecord } from '../infra/json.js';
 import { DiscussWatchReadError } from '../discuss/watch.js';
+import { HandoffGuardError } from '../coordinator/handoff-runner.js';
 import { serializeCoralSetupError } from '../runtime/errors.js';
 import { ChildPrincipalBindingError } from '../transport/ipc/child-principal-auth.js';
 import { IpcRpcError } from '../transport/ipc/client.js';
@@ -92,6 +93,19 @@ export class ProviderSelectionError extends Error {
   }
 }
 
+export class WaitResumeError extends Error {
+  readonly code = 'transient';
+  readonly exitCode = 75;
+  readonly remediation: string;
+
+  constructor(message: string, jobIds: readonly string[], serializedCursor?: string) {
+    super(message);
+    this.name = 'WaitResumeError';
+    const cursorArg = serializedCursor === undefined ? '' : ` --cursor ${serializedCursor}`;
+    this.remediation = `Rerun \`coral-cli wait jobs ${jobIds.join(' ')}${cursorArg}\` to continue waiting.`;
+  }
+}
+
 /**
  * Collapses a ZodError from CLI argument validation into a UsageError whose
  * message reads as flag guidance (issue messages already phrased as `--flag ...`
@@ -133,7 +147,14 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
   if (code === 'invalid_usage') {
     return 2;
   }
-  if (code === 'transient' || code === 'backend_shutting_down' || httpStatus === 503) {
+  if (
+    code === 'transient' ||
+    code === 'backend_shutting_down' ||
+    code === 'kb_disabled' ||
+    code === 'kb_initializing' ||
+    code === 'kb_offline' ||
+    httpStatus === 503
+  ) {
     return 75;
   }
   if (code === 'backend_unreachable') {
@@ -195,7 +216,11 @@ function structuredBodyError(
 }
 
 function directErrorEnvelope(error: unknown): CliErrorResult | null {
-  if (error instanceof StoreResetCliError || error instanceof ChildPrincipalBindingError) {
+  if (
+    error instanceof StoreResetCliError ||
+    error instanceof ChildPrincipalBindingError ||
+    error instanceof WaitResumeError
+  ) {
     return remediatedError(error);
   }
 
@@ -209,7 +234,7 @@ function directErrorEnvelope(error: unknown): CliErrorResult | null {
     );
   }
 
-  if (error instanceof UsageError || error instanceof CommanderError) {
+  if (error instanceof UsageError || error instanceof CommanderError || error instanceof HandoffGuardError) {
     return withExitCode({ error: true, code: 'invalid_usage', message: error.message }, 2);
   }
 

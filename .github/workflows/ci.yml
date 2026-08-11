@@ -4,6 +4,12 @@ name: CI
 # suite passes, on both supported Node majors. Feature PRs carry source only —
 # they do NOT bump the version or rebuild bridge/ (the Release workflow does
 # that at release time), so there is no bridge hash check here.
+#
+# Every job carries `timeout-minutes`. Without it a job inherits the 360-minute
+# GitHub default, so a test that spins instead of failing burns six runner-hours
+# per Node major and reports nothing useful — which is exactly what a
+# catastrophically backtracking regex in an invariant scan did before it was
+# caught locally. The budgets below are several times the observed runtime.
 
 on:
   pull_request:
@@ -16,6 +22,7 @@ jobs:
   build-and-test:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -31,6 +38,12 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      # `npm test` runs only tests/unit, tests/invariants and the simulation
+      # suite. tests/integration was outside the gate entirely, so the
+      # cross-version handoff, cold/warm start and IPC suites went unrun and two
+      # of them sat red. The focused store-reset step below stays because it
+      # gives that contract its own signal.
+      - run: npm run test:integration
       - run: npm run test:store-reset:integration
       - run: npm run verify:store-reset-build
       - run: npm run test:e2e:store-reset:build
@@ -39,6 +52,7 @@ jobs:
   network-test:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

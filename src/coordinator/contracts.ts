@@ -9,8 +9,9 @@ import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/contracts/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-queries.js';
 import type { JobEvent, LaunchReadiness } from '../jobs/records.js';
+import type { JobPhase } from '../jobs/phase.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
-import type { UsageSummary } from '../providers/contract.js';
+import type { ProviderStopCause, UsageSummary } from '../providers/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -21,6 +22,8 @@ import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { ChildPrincipalRegistry } from './child-principal-registry.js';
+import type { AppServerProxyRoute } from '../jobs/contracts/app-server-proxy-route.js';
+import type { ProviderOperationCleanupRegistrar } from '../jobs/contracts/provider-operation-lifecycle.js';
 
 interface CoordinatorSessionOps {
   start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
@@ -75,4 +78,30 @@ export type ExecutionServiceDeps = {
     abortSignal?: AbortSignal;
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
+  /** Tries to route an app-server operation through a live provider proxy set (W2.3). Optional because most
+   *  compositions (every test, and any coordinator with no live set) never wire it — `LaunchOrchestrator`
+   *  falls back to in-process execution when absent, identically to the port returning `null`. */
+  appServerProxyRoute?: AppServerProxyRoute;
+  /** The registry's abort-side capability (W2.3) — see `LaunchOrchestratorDeps.operations` in
+   *  `jobs/shell/launch.ts` for the full contract. Optional for the same reason `appServerProxyRoute` is. */
+  operations?: { stop(jobId: string, cause: ProviderStopCause): void };
+  providerOperationCleanup?: ProviderOperationCleanupRegistrar;
+  /**
+   * Reports what is carrying each still-pending job, local-registry classification only. Optional because a
+   * wait works without it — see `WaitCoordinatorDeps.observeCarriers` in `jobs/shell/wait.ts`.
+   *
+   * The result shape mirrors `CarrierWaitObservation` (`jobs/shell/wait.ts`) field-for-field rather than
+   * importing it: this contracts module must stay a leaf per
+   * `tests/invariants/api-export-scope.test.ts`, which bans `/shell/` and `/live/` imports here outright.
+   */
+  observeCarriers?: (jobIds: readonly string[]) => Promise<
+    Array<
+      Readonly<{
+        jobId: string;
+        liveness: 'live' | 'absent' | 'unknown';
+        storedPhase: JobPhase;
+        observedMaxJournalSeq: number;
+      }>
+    >
+  >;
 };

@@ -1,0 +1,271 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+  createProviderProxyAuthorityHeartbeatAssembly,
+  heartbeatOnce,
+  type ProviderProxyHeartbeatSession,
+  type ProviderProxyRoleHeartbeats,
+} from '#src/coordinator/live/provider-proxy/heartbeat.js';
+import type {
+  ProviderProxyAuthorityFault,
+  ProviderProxyAuthorityFaultLatch,
+  ProviderProxyRole,
+} from '#src/coordinator/services/provider-proxy-authority-fault.js';
+import type { ControlClient } from '#src/provider-proxy/control-client.js';
+import { PROXY_CONTROL_HEARTBEAT_MS } from '#src/provider-proxy/orphan-deadline.js';
+import type { Runtime } from '#src/runtime/ports.js';
+import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
+
+type RecordedCall = Readonly<{ controlEpoch: number; heartbeatChallenge: string }>;
+
+/** Answers each `call` with the next scripted reply — a challenge string to echo `state: 'active'`, or an
+ *  `Error` to reject with. The last entry repeats once exhausted, so a test can assert on ticks past its
+ *  scripted list without needing one entry per tick. */
+function scriptedClient(replies: readonly (string | Error)[]): { client: ControlClient; calls: RecordedCall[] } {
+  const calls: RecordedCall[] = [];
+  let index = 0;
+  const client: ControlClient = {
+    call: (_method, params) => {
+      calls.push(params as RecordedCall);
+      const reply = replies[Math.min(index, replies.length - 1)];
+      index += 1;
+      return reply instanceof Error
+        ? Promise.reject(reply)
+        : Promise.resolve({ state: 'active', nextHeartbeatChallenge: reply });
+    },
+    faulted: new Promise<never>(() => undefined),
+    onFault: () => () => undefined,
+    close: () => {},
+  };
+  return { client, calls };
+}
+
+function runtimeWithTime(time: VirtualTime): Runtime {
+  return { time } as unknown as Runtime;
+}
+
+function sessions(clients: { proxy: ControlClient; guardian: ControlClient; reaper: ControlClient }) {
+  return {
+    proxy: {
+      client: clients.proxy,
+      controlEpoch: 7,
+      nextHeartbeatChallenge: 'proxy-challenge-0',
+      instanceId: 'proxy-1',
+    },
+    guardian: {
+      client: clients.guardian,
+      controlEpoch: 8,
+      nextHeartbeatChallenge: 'guardian-challenge-0',
+      instanceId: 'guardian-1',
+    },
+    reaper: {
+      client: clients.reaper,
+      controlEpoch: 9,
+      nextHeartbeatChallenge: 'reaper-challenge-0',
+      instanceId: 'reaper-1',
+    },
+  } satisfies Record<ProviderProxyRole, ProviderProxyHeartbeatSession>;
+}
+
+function startAll(
+  heartbeatSessions: ReturnType<typeof sessions>,
+  runtime: Runtime,
+  faults: ProviderProxyAuthorityFaultLatch,
+): ProviderProxyRoleHeartbeats {
+  const assembly = createProviderProxyAuthorityHeartbeatAssembly(runtime, faults);
+  assembly.startRole('proxy', heartbeatSessions.proxy);
+  assembly.startRole('guardian', heartbeatSessions.guardian);
+  assembly.startRole('reaper', heartbeatSessions.reaper);
+  return assembly.complete();
+}
+
+function recordingFaultLatch(): { latch: ProviderProxyAuthorityFaultLatch; faults: ProviderProxyAuthorityFault[] } {
+  const faults: ProviderProxyAuthorityFault[] = [];
+  return {
+    latch: {
+      faulted: new Promise<never>(() => undefined),
+      observeControlClient: () => undefined,
+      latch: (fault) => faults.push(fault),
+      onFault: () => () => undefined,
+    },
+    faults,
+  };
+}
+
+function stopAll(heartbeats: ProviderProxyRoleHeartbeats): void {
+  heartbeats.proxy.stop();
+  heartbeats.guardian.stop();
+  heartbeats.reaper.stop();
+}
+
+describe('provider proxy authority heartbeats', () => {
+  it('rejects a duplicate role and refuses to complete a partial assembly', () => {
+    const time = new VirtualTime();
+    const proxy = scriptedClient(['proxy-challenge-1']);
+    const session = sessions({ proxy: proxy.client, guardian: proxy.client, reaper: proxy.client }).proxy;
+    const assembly = createProviderProxyAuthorityHeartbeatAssembly(runtimeWithTime(time), recordingFaultLatch().latch);
+
+    assembly.startRole('proxy', session);
+
+    expect(() => assembly.startRole('proxy', session)).toThrow('provider_proxy_heartbeat_role_already_started:proxy');
+    expect(() => assembly.complete()).toThrow('provider_proxy_heartbeat_roles_incomplete');
+    assembly.stop();
+  });
+
+  it('stops every role enrolled in a partial assembly', () => {
+    const time = new VirtualTime();
+    const clearIntervalSpy = vi.spyOn(time, 'clearInterval');
+    const proxy = scriptedClient(['proxy-challenge-1']);
+    const guardian = scriptedClient(['guardian-challenge-1']);
+    const heartbeatSessions = sessions({ proxy: proxy.client, guardian: guardian.client, reaper: proxy.client });
+    const assembly = createProviderProxyAuthorityHeartbeatAssembly(runtimeWithTime(time), recordingFaultLatch().latch);
+    assembly.startRole('proxy', heartbeatSessions.proxy);
+    assembly.startRole('guardian', heartbeatSessions.guardian);
+
+    assembly.stop();
+
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects an invalid heartbeat before the untyped control client can write it', async () => {
+    const call = vi.fn(async () => ({ state: 'active', nextHeartbeatChallenge: 'challenge-1' }));
+    const client: ControlClient = {
+      call,
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => {},
+    };
+
+    await expect(heartbeatOnce(client, 'control.heartbeat.v1', -1, 'challenge-0')).rejects.toThrow();
+
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it('echoes the current challenge on every tick and carries the reply into the next one', async () => {
+    const time = new VirtualTime();
+    const proxy = scriptedClient(['proxy-challenge-1', 'proxy-challenge-2']);
+    const guardian = scriptedClient(['guardian-challenge-1', 'guardian-challenge-2']);
+    const reaper = scriptedClient(['reaper-challenge-1', 'reaper-challenge-2']);
+    const faults = recordingFaultLatch();
+    const heartbeats = startAll(
+      sessions({ proxy: proxy.client, guardian: guardian.client, reaper: reaper.client }),
+      runtimeWithTime(time),
+      faults.latch,
+    );
+
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+
+    expect(proxy.calls).toEqual([
+      { controlEpoch: 7, heartbeatChallenge: 'proxy-challenge-0' },
+      { controlEpoch: 7, heartbeatChallenge: 'proxy-challenge-1' },
+    ]);
+    expect(faults.faults).toEqual([]);
+    stopAll(heartbeats);
+  });
+
+  it('skips interval ticks while an accepted heartbeat response is pending', async () => {
+    const time = new VirtualTime();
+    let resolveFirst!: (value: { state: 'active'; nextHeartbeatChallenge: string }) => void;
+    const first = new Promise<{ state: 'active'; nextHeartbeatChallenge: string }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const call = vi
+      .fn<ControlClient['call']>()
+      .mockImplementationOnce(() => first)
+      .mockResolvedValue({ state: 'active', nextHeartbeatChallenge: 'challenge-2' });
+    const client = {
+      call,
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => {},
+    } satisfies ControlClient;
+    const guardian = scriptedClient(['guardian-challenge-1']);
+    const reaper = scriptedClient(['reaper-challenge-1']);
+    const faults = recordingFaultLatch();
+    const heartbeats = startAll(
+      sessions({ proxy: client, guardian: guardian.client, reaper: reaper.client }),
+      runtimeWithTime(time),
+      faults.latch,
+    );
+
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS * 3);
+    await flushMicrotasks();
+
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(faults.faults).toEqual([]);
+
+    resolveFirst({ state: 'active', nextHeartbeatChallenge: 'challenge-1' });
+    await flushMicrotasks();
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(call.mock.calls[1]?.[1]).toEqual({ controlEpoch: 7, heartbeatChallenge: 'challenge-1' });
+    stopAll(heartbeats);
+  });
+
+  it.each([
+    ['proxy', 'control.heartbeat.v1'],
+    ['guardian', 'guardian.heartbeat.v1'],
+    ['reaper', 'reaper.heartbeat.v1'],
+  ] as const)('tags and latches a %s heartbeat failure once', async (role, method) => {
+    const time = new VirtualTime();
+    const error = new Error(`${role} endpoint unreachable`);
+    const sources: Record<ProviderProxyRole, ReturnType<typeof scriptedClient>> = {
+      proxy: scriptedClient(role === 'proxy' ? [error] : ['proxy-challenge-1']),
+      guardian: scriptedClient(role === 'guardian' ? [error] : ['guardian-challenge-1']),
+      reaper: scriptedClient(role === 'reaper' ? [error] : ['reaper-challenge-1']),
+    };
+    const faults = recordingFaultLatch();
+    const heartbeats = startAll(
+      sessions({
+        proxy: sources.proxy.client,
+        guardian: sources.guardian.client,
+        reaper: sources.reaper.client,
+      }),
+      runtimeWithTime(time),
+      faults.latch,
+    );
+
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+
+    expect(faults.faults).toEqual([{ kind: 'heartbeat-failed', role, method, error }]);
+
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS);
+    await flushMicrotasks();
+
+    expect(sources[role].calls).toHaveLength(1);
+    stopAll(heartbeats);
+  });
+
+  it('stop() clears the interval on the runtime, not just its own internal flag', async () => {
+    const time = new VirtualTime();
+    // A spy on `clearInterval` itself, not just an absence of later calls: the loop's own `stopped` flag
+    // already short-circuits `tick()` on its own, so asserting no further calls would pass even if `stop()`
+    // forgot to release the runtime's timer handle.
+    const clearIntervalSpy = vi.spyOn(time, 'clearInterval');
+    const proxy = scriptedClient(['proxy-challenge-1']);
+    const guardian = scriptedClient(['guardian-challenge-1']);
+    const reaper = scriptedClient(['reaper-challenge-1']);
+    const heartbeats = startAll(
+      sessions({ proxy: proxy.client, guardian: guardian.client, reaper: reaper.client }),
+      runtimeWithTime(time),
+      recordingFaultLatch().latch,
+    );
+
+    heartbeats.proxy.stop();
+
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
+
+    time.tick(PROXY_CONTROL_HEARTBEAT_MS * 3);
+    await flushMicrotasks();
+
+    expect(proxy.calls).toEqual([]);
+    heartbeats.guardian.stop();
+    heartbeats.reaper.stop();
+  });
+});

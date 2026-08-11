@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { backendLog } from '#src/infra/backend-log.js';
@@ -29,13 +29,24 @@ import { documentedCoralSetupError, serializeCoralSetupError } from '#src/runtim
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import {
+  acquireBackendStoreResetLock,
   createBackendStoreResetAuthority,
   openOrResetBackendStoreDb,
-  publishBackendStoreResetIncident,
-  resumeInterruptedBackendStoreResetIncident,
+  publishClassifiedBackendStoreResetIncident,
+  resolveBackendStoreFileSet,
+  resumeBackendStoreResetIncidentForOperator,
+  retainTransitionFileInStoreResetQuarantine,
   type BackendStoreResetAuthority,
 } from '#src/store/backend-store-reset.js';
-import { openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
+import { classifyStoreFile, openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
+import type { GenerationAdoptionLockLease } from '#src/store/generation-mutation-coordination.js';
+
+/**
+ * Mirrors `STALE_LOCK_MS` in `src/infra/fs-lock.ts`. Restated rather than exported from production: the value a
+ * test bounds against is a property of the contention behaviour it asserts, and importing it would let a
+ * production change silently move the assertion with it.
+ */
+const FRESH_LOCK_STALENESS_WINDOW_MS = 30_000;
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
 import {
   MAX_RESET_MANIFEST_BYTES,
@@ -222,25 +233,54 @@ function authorityFor(runtime: Runtime, dbPath: string): BackendStoreResetAuthor
   );
 }
 
+function adoptionLease(): GenerationAdoptionLockLease {
+  return {
+    assertOwned: () => undefined,
+  } as unknown as GenerationAdoptionLockLease;
+}
+
 function openReset(runtime: Runtime, dbPath: string) {
-  return openOrResetBackendStoreDb(runtime, authorityFor(runtime, dbPath), {
+  return openOrResetBackendStoreDb(runtime, authorityFor(runtime, dbPath), adoptionLease(), {
     path: dbPath,
     storeFormat: STORE_FORMAT,
   });
 }
 
 function publishReset(runtime: Runtime, dbPath: string) {
-  return publishBackendStoreResetIncident(runtime, authorityFor(runtime, dbPath), {
+  const options = {
     path: dbPath,
     storeFormat: STORE_FORMAT,
-  });
+  };
+  const files = resolveBackendStoreFileSet(runtime, options);
+  const resetLock = acquireBackendStoreResetLock(runtime, files, adoptionLease());
+  try {
+    const classification = classifyStoreFile(dbPath, runtime.storage, STORE_FORMAT);
+    if (classification.kind !== 'older-incompatible' && classification.kind !== 'corrupt-or-unsupported') {
+      throw new Error(`Test fixture is not resettable: ${classification.kind}`);
+    }
+    return publishClassifiedBackendStoreResetIncident(
+      runtime,
+      authorityFor(runtime, dbPath),
+      files,
+      classification,
+      resetLock,
+    );
+  } finally {
+    resetLock.release();
+  }
 }
 
 function resumeReset(runtime: Runtime, dbPath: string) {
-  return resumeInterruptedBackendStoreResetIncident(runtime, authorityFor(runtime, dbPath), {
+  const files = resolveBackendStoreFileSet(runtime, {
     path: dbPath,
     storeFormat: STORE_FORMAT,
   });
+  const resetLock = acquireBackendStoreResetLock(runtime, files, adoptionLease());
+  try {
+    return resumeBackendStoreResetIncidentForOperator(runtime, files, resetLock);
+  } finally {
+    resetLock.release();
+  }
 }
 
 function captureError(fn: () => unknown): unknown {
@@ -307,8 +347,6 @@ function setInterruptedResetCause(
               bundleHash: 'fedcba9876543210',
               flavor: 'prod',
               storeFormatFingerprint: `sha256:${'e'.repeat(64)}`,
-              executablePathSha256: 'c'.repeat(64),
-              executableSha256: 'd'.repeat(64),
             },
           }
         : null,
@@ -326,6 +364,30 @@ afterEach(() => {
   while (tempRoots.length > 0) {
     rmSync(tempRoots.pop()!, { recursive: true, force: true });
   }
+});
+
+/**
+ * Finding 3: `acquireBackendStoreResetLock` used to call `acquireDirectoryLockSync(lockPath, 250)` — the
+ * ambient-fs default overload, which reaches around the `runtime` parameter it already receives instead of
+ * threading it through (a Single Runtime World violation, `.claude/rules/design-philosophy.md` §4). The
+ * ambient-default overload never touches an injected time port; its deadline loop reads `Date.now()` directly
+ * (`resolveDirectoryLockDeps` in `src/infra/fs-lock.ts`). A call on `runtime.time.now` during acquisition is
+ * therefore proof the lock went through the runtime ports, not the ambient fallback.
+ */
+describe('acquireBackendStoreResetLock', () => {
+  it('acquires the lock through the runtime storage/time ports rather than the ambient-fs default', () => {
+    const runtime = createRealRuntime('prod');
+    const dbPath = join(makeTempRoot('coral-reset-lock-'), 'store.db');
+    const files = resolveBackendStoreFileSet(runtime, { path: dbPath, storeFormat: STORE_FORMAT });
+    const nowSpy = vi.spyOn(runtime.time, 'now');
+
+    const lease = acquireBackendStoreResetLock(runtime, files, adoptionLease());
+    try {
+      expect(nowSpy).toHaveBeenCalled();
+    } finally {
+      lease.release();
+    }
+  });
 });
 
 describe('openOrResetBackendStoreDb', () => {
@@ -360,7 +422,7 @@ describe('openOrResetBackendStoreDb', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-steady-busy-timeout-'), 'store.db');
 
-    const db = openOrResetBackendStoreDb(runtime, authorityFor(runtime, dbPath), {
+    const db = openOrResetBackendStoreDb(runtime, authorityFor(runtime, dbPath), adoptionLease(), {
       path: dbPath,
       storeFormat: STORE_FORMAT,
       startupBusyTimeoutMs: 1,
@@ -1063,7 +1125,7 @@ describe('openOrResetBackendStoreDb', () => {
       },
     );
 
-    const db = openOrResetBackendStoreDb(runtime, authority, {
+    const db = openOrResetBackendStoreDb(runtime, authority, adoptionLease(), {
       path: dbPath,
       storeFormat: STORE_FORMAT,
     });
@@ -1121,7 +1183,11 @@ describe('openOrResetBackendStoreDb', () => {
     const elapsed = Date.now() - started;
 
     expectSetupCode(error, 'store_reset_lock_contended');
-    expect(elapsed).toBeLessThan(1_000);
+    // The property is "did not sit out the staleness window", not "finished inside an arbitrary second". A
+    // fresh lock must be refused immediately, whereas waiting for it to go stale would cost STALE_LOCK_MS
+    // (30s). Bounding against that instead of a round number keeps this from failing under suite load — it
+    // measured 2623ms on a loaded machine while the call itself was nowhere near the wait path.
+    expect(elapsed).toBeLessThan(FRESH_LOCK_STALENESS_WINDOW_MS / 2);
     expect(existsSync(lockDir)).toBe(true);
   });
 
@@ -1201,7 +1267,7 @@ describe('openOrResetBackendStoreDb', () => {
     );
 
     const error = captureError(() =>
-      openOrResetBackendStoreDb(runtime, staleAuthority, {
+      openOrResetBackendStoreDb(runtime, staleAuthority, adoptionLease(), {
         path: dbPath,
         storeFormat: STORE_FORMAT,
       }),
@@ -1237,7 +1303,7 @@ describe('openOrResetBackendStoreDb', () => {
     );
 
     const error = captureError(() =>
-      openOrResetBackendStoreDb(runtime, authority, {
+      openOrResetBackendStoreDb(runtime, authority, adoptionLease(), {
         path: dbPath,
         storeFormat: otherFormat,
       }),
@@ -1249,6 +1315,68 @@ describe('openOrResetBackendStoreDb', () => {
     for (const [index, path] of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}.format`].entries()) {
       expect(readFileSync(path)).toEqual(before[index]);
     }
+  });
+});
+
+describe('retainTransitionFileInStoreResetQuarantine', () => {
+  function retain(runtime: Runtime, dbPath: string, sourcePath: string) {
+    const files = resolveBackendStoreFileSet(runtime, { path: dbPath, storeFormat: STORE_FORMAT });
+    return retainTransitionFileInStoreResetQuarantine(runtime, files, sourcePath, adoptionLease());
+  }
+
+  it('republishes over a truncated file left at the final evidence path instead of wedging', () => {
+    const runtime = createRuntime();
+    const dbDir = makeTempRoot('coral-retained-transition-torn-');
+    const dbPath = join(dbDir, 'store.db');
+    const sourcePath = join(dbDir, 'active-store.transition.json');
+    writeFileSync(sourcePath, 'complete transition record bytes', 'utf-8');
+    const first = retain(runtime, dbPath, sourcePath);
+
+    // A hard kill mid-copy under the old direct-to-final-path publication left exactly this:
+    // a shorter file sitting at the path the complete evidence is supposed to occupy.
+    writeFileSync(first.evidencePath, 'complete transi', 'utf-8');
+
+    const healed = retain(runtime, dbPath, sourcePath);
+
+    expect(healed.evidencePath).toBe(first.evidencePath);
+    expect(healed.evidenceByteLength).toBe(first.evidenceByteLength);
+    expect(healed.evidenceSha256).toBe(first.evidenceSha256);
+    expect(readFileSync(first.evidencePath, 'utf-8')).toBe('complete transition record bytes');
+    expect(readdirSync(dirname(first.evidencePath))).toEqual([basename(first.evidencePath)]);
+  });
+
+  it('refuses a retained transition whose source identity changed mid-verification', () => {
+    const runtime = createRuntime();
+    const dbDir = makeTempRoot('coral-retained-transition-mismatch-');
+    const dbPath = join(dbDir, 'store.db');
+    const sourcePath = join(dbDir, 'active-store.transition.json');
+    writeFileSync(sourcePath, 'original transition record bytes', 'utf-8');
+    const first = retain(runtime, dbPath, sourcePath);
+
+    // stablePathStat runs four times while evidencePath already exists: the outer
+    // sourceIdentity, describeCandidate's own pathBefore/pathAfter pair, and the outer
+    // sourceAfter. Mutate only the last so describeCandidate's internal consistency checks
+    // stay satisfied and the outer identity-stability check is the one that trips.
+    const statSync = runtime.storage.statSync.bind(runtime.storage);
+    let sourceStatCalls = 0;
+    vi.spyOn(runtime.storage, 'statSync').mockImplementation((target, options) => {
+      const result = statSync(target, options);
+      if (target === sourcePath && options?.bigint === true) {
+        sourceStatCalls += 1;
+        if (sourceStatCalls === 4) {
+          return {
+            ...result,
+            mtimeNs: (result as { mtimeNs: bigint }).mtimeNs + 1n,
+            isDirectory: () => result.isDirectory(),
+            isFile: () => result.isFile(),
+          };
+        }
+      }
+      return result;
+    });
+
+    expect(() => retain(runtime, dbPath, sourcePath)).toThrow(/changed identity/);
+    expect(readFileSync(first.evidencePath, 'utf-8')).toBe('original transition record bytes');
   });
 });
 

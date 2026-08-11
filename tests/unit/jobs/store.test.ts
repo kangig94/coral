@@ -66,21 +66,8 @@ function createStore(db: Database = createDb()): {
   };
 }
 
-function referenceLiveCount(statuses: Array<{ jobId: string; status: JobStatus }>, bundleHash?: string): number {
-  return statuses.filter(
-    ({ status }) => isLivePhase(status.phase) && (bundleHash === undefined || status.bundleHash === bundleHash),
-  ).length;
-}
-
-function referenceLiveCountByNamespace(
-  statuses: Array<{ jobId: string; status: JobStatus }>,
-  namespace: string,
-): number {
-  if (!namespace) {
-    return 0;
-  }
-
-  return statuses.filter(({ status }) => isLivePhase(status.phase) && status.backendNamespace === namespace).length;
+function referenceLiveCount(statuses: Array<{ jobId: string; status: JobStatus }>): number {
+  return statuses.filter(({ status }) => isLivePhase(status.phase)).length;
 }
 
 function initProviderJob(store: JobStore, jobId: string, sessionId: string): void {
@@ -238,12 +225,6 @@ describe('JobStore', () => {
     const statuses = store.listJobProjections();
 
     expect(store.liveJobCount()).toBe(referenceLiveCount(statuses));
-    expect(store.liveJobCount('bundle-a')).toBe(referenceLiveCount(statuses, 'bundle-a'));
-    expect(store.liveJobCount('bundle-override')).toBe(referenceLiveCount(statuses, 'bundle-override'));
-    expect(store.liveJobCountByNamespace('alpha')).toBe(referenceLiveCountByNamespace(statuses, 'alpha'));
-    expect(store.liveJobCountByNamespace('beta')).toBe(referenceLiveCountByNamespace(statuses, 'beta'));
-    expect(store.liveJobCountByNamespace('override')).toBe(referenceLiveCountByNamespace(statuses, 'override'));
-    expect(store.liveJobCountByNamespace('')).toBe(0);
   });
 
   it('rejects duplicate terminal events for the same job stream', () => {

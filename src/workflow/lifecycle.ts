@@ -3,7 +3,6 @@ import { z } from 'zod';
 export const workflowLifecycleSchema = z.enum(['active', 'draining', 'faulted', 'completed', 'failed', 'aborted']);
 export type WorkflowLifecycle = z.infer<typeof workflowLifecycleSchema>;
 export const workflowTerminalLifecycleSchema = z.enum(['completed', 'failed', 'aborted']);
-export type WorkflowTerminalLifecycle = z.infer<typeof workflowTerminalLifecycleSchema>;
 
 export type WorkflowLifecycleEvent =
   | { readonly type: 'workflow.plan.declared' }

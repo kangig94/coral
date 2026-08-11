@@ -25,9 +25,17 @@ interface SocketPathEnvironment {
   readonly tempDirectory: string;
 }
 
+export function socketPathByteLimit(platformName: string): number {
+  return platformName === 'darwin' ? SOCKET_LIMIT_DARWIN : SOCKET_LIMIT_LINUX;
+}
+
+export function generationRunDir(flavor: BuildFlavor, opts?: CoordinatorPathOptions): string {
+  return join(generationRoot(opts), flavor === 'dev' ? 'run-dev' : 'run');
+}
+
 export function socketPathForRunDir(runDir: string, flavor: BuildFlavor, env: SocketPathEnvironment): string {
   const candidateSocket = join(runDir, 'coordinator.sock');
-  const limit = env.platform === 'darwin' ? SOCKET_LIMIT_DARWIN : SOCKET_LIMIT_LINUX;
+  const limit = socketPathByteLimit(env.platform);
   if (Buffer.byteLength(candidateSocket, 'utf8') < limit) return candidateSocket;
 
   const hash = hashToken(candidateSocket, 8);
@@ -39,8 +47,7 @@ export function coordinatorPaths(
   env: NodeJS.ProcessEnv = process.env,
   opts?: CoordinatorPathOptions,
 ): CoordinatorPaths {
-  const base = flavor === 'dev' ? 'run-dev' : 'run';
-  const runDir = join(generationRoot(opts), base);
+  const runDir = generationRunDir(flavor, opts);
   const socketPath = socketPathForRunDir(runDir, flavor, {
     platform: platform(),
     tempDirectory: env.TMPDIR ?? tmpdir(),

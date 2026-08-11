@@ -15,7 +15,7 @@ import { oramaIndexMetadataPath } from '#src/engines/orama/paths.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import { kiwiArtifactStateKey } from '#src/engines/kiwi/artifact.js';
 import { KiwiAnalyzerManager } from '#src/engines/kiwi/analyzer-manager.js';
-import { createScope } from '#src/expansion/scope.js';
+import { createScope } from '#src/infra/disposable-scope.js';
 import type { KbEngineRuntime, KbRuntime } from '#src/kb/contract.js';
 import { buildNoteIndexEntry } from '#src/kb/corpus/index/records.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';

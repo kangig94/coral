@@ -86,13 +86,34 @@ describe('codexRecoveryLifecycle.finalizeInterrupted', () => {
 });
 
 describe('codexAppServerLifecycle.interrupt', () => {
-  it('confirms interruption only when the response echoes the exact thread and turn', async () => {
+  it('accepts only the strict empty interrupt response', async () => {
     const continuity = { cwd: '/workspace', threadId: 'thread-1', turnId: 'turn-1' };
-    const mismatch = vi.fn(async () => ({ threadId: 'thread-other', turnId: 'turn-1' }));
-    const exact = vi.fn(async () => ({ threadId: 'thread-1', turnId: 'turn-1' }));
+    const empty = vi.fn(async () => ({}));
+    const echo = vi.fn(async () => ({ threadId: 'thread-1', turnId: 'turn-1' }));
 
-    await expect(codexAppServerLifecycle.interrupt?.(leaseWithRpc(mismatch), continuity)).resolves.toBe(false);
-    await expect(codexAppServerLifecycle.interrupt?.(leaseWithRpc(exact), continuity)).resolves.toBe(true);
+    await expect(codexAppServerLifecycle.interrupt?.(leaseWithRpc(empty), continuity)).resolves.toEqual({
+      kind: 'accepted',
+    });
+    await expect(codexAppServerLifecycle.interrupt?.(leaseWithRpc(echo), continuity)).rejects.toThrow();
+  });
+
+  it('does not issue an interrupt without both exact continuity identifiers', async () => {
+    const rpc = vi.fn(async () => ({}));
+
+    await expect(
+      codexAppServerLifecycle.interrupt?.(leaseWithRpc(rpc), { cwd: '/workspace', threadId: 'thread-1' }),
+    ).resolves.toEqual({
+      kind: 'not-accepted',
+      reason: 'Codex continuity is missing the active thread or turn id.',
+    });
+    await expect(
+      codexAppServerLifecycle.interrupt?.(leaseWithRpc(rpc), { cwd: '/workspace', turnId: 'turn-1' }),
+    ).resolves.toEqual({
+      kind: 'not-accepted',
+      reason: 'Codex continuity is missing the active thread or turn id.',
+    });
+
+    expect(rpc).not.toHaveBeenCalled();
   });
 });
 

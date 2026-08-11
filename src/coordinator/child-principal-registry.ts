@@ -1,7 +1,12 @@
 import { attenuate } from '../security/attenuate.js';
 import type { Capability } from '../security/capability.js';
 import type { Principal } from '../security/principal.js';
-import { principalFromWire, principalToWire, type PrincipalWire } from '../security/principal-wire.js';
+import {
+  principalFromWire,
+  principalToWire,
+  principalWireSchema,
+  type PrincipalWire,
+} from '../security/principal-wire.js';
 import type { IdPort } from '../runtime/ports.js';
 
 const CHILD_PRINCIPAL_TTL_MS = 24 * 60 * 60 * 1000;
@@ -17,7 +22,14 @@ export type ChildPrincipalCredential = {
   readonly parentJobId: string;
   readonly parentSessionId: string;
   readonly expiresAt: number;
+  readonly authorization: ChildPrincipalAuthorization;
 };
+
+export type ChildPrincipalAuthorization = Readonly<{
+  principalWire: PrincipalWire;
+  namespace: string;
+  expiresAtMs: number;
+}>;
 
 export type ChildPrincipalRegistration = {
   readonly issuer: string;
@@ -29,6 +41,14 @@ export type ChildPrincipalRegistration = {
   readonly ttlMs?: number;
   readonly childCaps?: readonly Capability[];
 };
+
+export type PersistedChildPrincipalRegistration = Readonly<{
+  issuer: string;
+  authorization: ChildPrincipalAuthorization;
+  parentJobId: string;
+  parentSessionId: string;
+  nowMs: number;
+}>;
 
 type ChildPrincipalEntry = {
   readonly issuer: string;
@@ -61,19 +81,44 @@ export class ChildPrincipalRegistry {
 
     const ttlMs = registration.ttlMs ?? CHILD_PRINCIPAL_TTL_MS;
     const expiresAt = registration.nowMs + ttlMs;
-    const handle = this.ids.randomBytes(32).toString('hex');
     const childPrincipal = attenuate(
       registration.parentPrincipal,
       registration.childCaps ?? CHILD_PRINCIPAL_CAPABILITIES,
     );
 
-    this.entries.set(handle, {
+    return this.registerPersistedAuthorization({
       issuer: registration.issuer,
-      wire: principalToWire(childPrincipal),
-      namespace: registration.namespace,
+      authorization: {
+        principalWire: principalToWire(childPrincipal),
+        namespace: registration.namespace,
+        expiresAtMs: expiresAt,
+      },
       parentJobId: registration.parentJobId,
       parentSessionId: registration.parentSessionId,
-      expiresAt,
+      nowMs: registration.nowMs,
+    });
+  }
+
+  registerPersistedAuthorization(registration: PersistedChildPrincipalRegistration): ChildPrincipalCredential {
+    this.pruneExpired(registration.nowMs);
+    if (registration.authorization.expiresAtMs <= registration.nowMs) {
+      throw new Error('Provider operation child authorization has expired.');
+    }
+
+    const authorization: ChildPrincipalAuthorization = {
+      principalWire: principalWireSchema.parse(registration.authorization.principalWire),
+      namespace: registration.authorization.namespace,
+      expiresAtMs: registration.authorization.expiresAtMs,
+    };
+    const handle = this.ids.randomBytes(32).toString('hex');
+
+    this.entries.set(handle, {
+      issuer: registration.issuer,
+      wire: authorization.principalWire,
+      namespace: authorization.namespace,
+      parentJobId: registration.parentJobId,
+      parentSessionId: registration.parentSessionId,
+      expiresAt: authorization.expiresAtMs,
       usedNonces: new Set(),
     });
 
@@ -81,7 +126,8 @@ export class ChildPrincipalRegistry {
       handle,
       parentJobId: registration.parentJobId,
       parentSessionId: registration.parentSessionId,
-      expiresAt,
+      expiresAt: authorization.expiresAtMs,
+      authorization,
     };
   }
 

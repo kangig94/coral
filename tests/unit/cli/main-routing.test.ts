@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type * as CommandClientMod from '#src/cli/dispatch.js';
 import type * as CommandOutputMod from '#src/cli/emit.js';
 import type * as ErrorsMod from '#src/cli/errors.js';
+import type * as FollowMod from '#src/cli/follow.js';
 import type * as MainMod from '#src/cli/program.js';
 import { installErrorSchema, installResultSchema, type InstallMethod } from '#src/expansion/rpc-contract.js';
 import { serializeWaitCursor } from '#src/jobs/wait.js';
@@ -95,8 +96,17 @@ vi.mock('#src/transport/http/backend/shutdown.js', () => ({
   shutdownBackend: mockState.shutdownBackend,
 }));
 
+// Vitest deliberately preserves mocked modules across `vi.resetModules()`, so spreading `actual` here would
+// pin the real `followJobs` — and the cause-renderer/read-store graph it closed over — to the module state
+// that existed when this mock was hoisted. `loadMainModuleFresh()` would then report a fresh import while
+// `followJobs` still read the store resolved from the pre-reassignment `HOME`. Importing lazily per call
+// keeps the real implementation under test and lets a test that moves `HOME` actually get a new graph.
 vi.mock('#src/cli/follow.js', () => ({
   launchAndFollow: mockState.launchAndFollow,
+  followJobs: async (...args: Parameters<typeof FollowMod.followJobs>) => {
+    const actual = await vi.importActual<typeof FollowMod>('#src/cli/follow.js');
+    return actual.followJobs(...args);
+  },
 }));
 
 vi.mock('#src/cli/expansion/index.js', () => ({
@@ -1538,6 +1548,7 @@ describe('cli main routing', () => {
       `${formatWaitProgress(progressEvent)}\n${formatWaitTerminal(terminalEvent, serializeWaitCursor({ afterSeq: 2 }), false)}\n`,
     );
     expect(stderr).toBe('');
+    expect(process.exitCode).toBe(0);
   });
 
   it('routes wait jobs with multiple positional job ids', async () => {
@@ -1548,6 +1559,7 @@ describe('cli main routing', () => {
       type: 'waiting' as const,
       waitingJobIds: ['job-1', 'job-2'],
     };
+    const cursor = serializeWaitCursor({ afterSeq: 0 });
     mockState.streamWait.mockImplementationOnce(async function* () {
       yield waitingEvent;
     });
@@ -1560,8 +1572,129 @@ describe('cli main routing', () => {
         jobIds: ['job-1', 'job-2'],
       }),
     );
-    expect(stdout).toBe(`${formatWaitWaiting(waitingEvent, null, ['job-1', 'job-2'])}\n`);
+    expect(stdout).toBe(`${formatWaitWaiting(waitingEvent, cursor, ['job-1', 'job-2'])}\n`);
     expect(stderr).toBe('');
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('returns 75 with a resume cursor when a bounded wait still has running work', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const progressEvent = {
+      type: 'progress' as const,
+      jobId: 'job-1',
+      seq: 4,
+      message: 'working',
+      timing: {
+        origin: 'runtime' as const,
+        originAt: '2026-07-03T08:00:00.000Z',
+        emittedAt: '2026-07-03T08:00:02.000Z',
+        elapsedMs: 2_000,
+      },
+    };
+    const waitingEvent = { type: 'waiting' as const, waitingJobIds: ['job-1'] };
+    const cursor = serializeWaitCursor({ afterSeq: 4 });
+    mockState.streamWait.mockImplementationOnce(async function* () {
+      yield progressEvent;
+      yield waitingEvent;
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'job-1']);
+
+    expect(stdout).toBe(
+      `${formatWaitProgress(progressEvent)}\n${formatWaitWaiting(waitingEvent, cursor, ['job-1'])}\n`,
+    );
+    expect(stdout).toContain(`cursor: ${cursor}`);
+    expect(stderr).toBe('');
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('returns a failed terminal exit code from wait jobs', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const terminalEvent = {
+      type: 'terminal' as const,
+      jobId: 'job-1',
+      seq: 1,
+      remainingJobIds: ['job-2'],
+      resultPath: '/tmp/result.md',
+      result: {
+        content: '',
+        durationMs: 1_000,
+        outcome: {
+          kind: 'failed' as const,
+          causeRef: { stream: { kind: 'session' as const, id: 'session-1' }, seq: 1 },
+        },
+      },
+    };
+    mockState.streamWait.mockImplementationOnce(async function* () {
+      yield terminalEvent;
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'job-1', 'job-2']);
+
+    expect(process.exitCode).toBe(1);
+    expect(stdout).toContain('Job job-1 failed');
+    expect(mockState.streamWait).toHaveBeenCalledOnce();
+  });
+
+  it('returns the normalized provider child exit code from wait jobs', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const terminalEvent = {
+      type: 'terminal' as const,
+      jobId: 'job-1',
+      seq: 1,
+      remainingJobIds: [] as string[],
+      resultPath: '/tmp/result.md',
+      result: { content: '', durationMs: 1_000, outcome: { kind: 'provider_exit' as const, code: 7 } },
+    };
+    mockState.streamWait.mockImplementationOnce(async function* () {
+      yield terminalEvent;
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'job-1']);
+
+    expect(process.exitCode).toBe(7);
+    expect(stdout).toContain('Job job-1 provider exited 7');
+  });
+
+  it('waits through intermediate terminals and returns 0 only after every job succeeds', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const firstTerminal = {
+      type: 'terminal' as const,
+      jobId: 'job-1',
+      seq: 1,
+      remainingJobIds: ['job-2'],
+      resultPath: '/tmp/result-1.md',
+      result: { content: 'one', durationMs: 1_000, outcome: { kind: 'completed' as const } },
+    };
+    const secondTerminal = {
+      type: 'terminal' as const,
+      jobId: 'job-2',
+      seq: 2,
+      remainingJobIds: [] as string[],
+      resultPath: '/tmp/result-2.md',
+      result: { content: 'two', durationMs: 1_000, outcome: { kind: 'completed' as const } },
+    };
+    mockState.streamWait
+      .mockImplementationOnce(async function* () {
+        yield firstTerminal;
+      })
+      .mockImplementationOnce(async function* () {
+        yield secondTerminal;
+      });
+
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'job-1', 'job-2']);
+
+    expect(mockState.streamWait).toHaveBeenCalledTimes(2);
+    expect(mockState.streamWait).toHaveBeenNthCalledWith(
+      2,
+      'jobs.wait',
+      expect.objectContaining({ jobIds: ['job-2'], cursor: { afterSeq: 1 } }),
+    );
+    expect(process.exitCode).toBe(0);
   });
 
   it('routes wait jobs --verbose into detailed terminal usage rendering', async () => {

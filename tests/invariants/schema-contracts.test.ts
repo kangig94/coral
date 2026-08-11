@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { jobAbortSchema, jobWaitSchema } from '#src/transport/rpc/jobs.js';
+import { MAX_WAIT_JOB_IDS } from '#src/jobs/wait-stream-event.js';
 import { agentIdentSchema, sessionCreateSchema } from '#src/sessions/command-schemas.js';
 import { workflowCommandSchema } from '#src/workflow/input.js';
 import { workflowRequestSchema } from '#src/transport/rpc/workflow.js';
@@ -144,6 +145,15 @@ describe('jobWaitSchema', () => {
         projectRoot: '/tmp/project',
       }),
     ).toThrow('At least one job required');
+  });
+
+  it('bounds jobIds at the wait cap so one request cannot ask for an unbounded fan-out', () => {
+    const atCap = Array.from({ length: MAX_WAIT_JOB_IDS }, (_unused, index) => `job-${index}`);
+
+    expect(jobWaitSchema.parse({ jobIds: atCap, projectRoot: '/tmp/project' }).jobIds).toHaveLength(MAX_WAIT_JOB_IDS);
+    expect(() => jobWaitSchema.parse({ jobIds: [...atCap, 'job-over'], projectRoot: '/tmp/project' })).toThrow(
+      `At most ${MAX_WAIT_JOB_IDS} jobs`,
+    );
   });
 
   it('parses an IPC wait cursor when provided in the request body', () => {

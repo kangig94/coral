@@ -31,7 +31,7 @@ import { createKbProjectionInput } from '#src/kb/projection-input.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
-import { createScope } from '#src/expansion/scope.js';
+import { createScope } from '#src/infra/disposable-scope.js';
 import { createEmptyGeneratedCommunityProjectionStore, createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import { installedKiwiArtifactState, missingKiwiArtifactState } from '#tests/helpers/kiwi-artifact-state.js';

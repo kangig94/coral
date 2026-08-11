@@ -94,6 +94,7 @@ export interface BackendHealth {
   namespace: string;
   uptimeMs: number;
   active: number;
+  /** Jobs in a live phase; build namespace is provenance and does not scope job ownership. */
   activeJobs: number;
   inflightRequests: number;
   queueDepth: number;

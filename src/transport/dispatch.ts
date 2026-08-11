@@ -206,6 +206,24 @@ function withAbortSignal<T extends object>(request: T, abortSignal?: AbortSignal
   return request;
 }
 
+/**
+ * `interrupted` is withheld here rather than left to the wire consumer, because HTTP and IPC are two
+ * separate emitters and a per-transport check would have to be kept in sync twice. An already-installed
+ * CLI that never declared `supportsInterrupted` gets the pre-`interrupted` stream verbatim — indistinguishable
+ * from talking to a coordinator that predates the event — instead of a type its renderer has no case for.
+ */
+async function* withInterruptedGate(
+  events: AsyncIterable<WaitStreamEvent>,
+  supportsInterrupted: boolean,
+): AsyncGenerator<WaitStreamEvent> {
+  for await (const event of events) {
+    if (event.type === 'interrupted' && !supportsInterrupted) {
+      continue;
+    }
+    yield event;
+  }
+}
+
 export function resolveRequestBinding(rule: RequestBindingRule | undefined, request: unknown): ResourceBinding {
   const bindingRule = rule ?? ({ kind: 'projectRoot', projectRoot: 'required' } satisfies RequestBindingRule);
 
@@ -421,6 +439,7 @@ export async function executeCatalogRequest(
         projectRoot: string;
         timeoutSeconds?: number;
         cursor?: { afterSeq: number };
+        supportsInterrupted?: boolean;
       };
       const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobIds, parsed.projectRoot);
       if (scopeCheck.mismatch.length > 0) {
@@ -441,12 +460,14 @@ export async function executeCatalogRequest(
         );
       }
 
-      const waitRequest: WaitStreamRequest = { ...parsed };
+      const { supportsInterrupted, ...waitFields } = parsed;
+      const waitRequest: WaitStreamRequest = waitFields;
       return {
         kind: 'subscription',
-        notifications: rpcPorts.jobs.waitStream(
-          withAbortSignal(waitRequest, abortSignal),
-        ) as AsyncIterable<WaitStreamEvent>,
+        notifications: withInterruptedGate(
+          rpcPorts.jobs.waitStream(withAbortSignal(waitRequest, abortSignal)) as AsyncIterable<WaitStreamEvent>,
+          supportsInterrupted === true,
+        ),
       };
     }
 

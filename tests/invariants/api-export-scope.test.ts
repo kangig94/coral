@@ -17,11 +17,23 @@ const FORBIDDEN_COORDINATOR_ROOT_EXPORTS = new Set([
   'CreateServerFn',
   'FetchFn',
 ]);
+/**
+ * Entries in `FORBIDDEN_CONTRACT_IMPORTS` that name a specifier deliberately retired rather than currently
+ * real. The self-check below still requires every other entry to resolve to a file that actually sits where
+ * the specifier points, so a rename or deletion elsewhere cannot silently narrow this ban the way a stale
+ * entry would.
+ */
+const ASPIRATIONAL_CONTRACT_IMPORTS = new Set<string>([
+  // `src/coordinator/control.ts` held the pre-rewrite RPC control surface (added in e4d25f42) and was deleted,
+  // along with the rest of the old architecture, in the 618c95d1 rewrite. `contracts.ts` must stay a leaf;
+  // this entry keeps the retired path on record so RPC control logic cannot quietly reappear behind it.
+  './control.js',
+]);
+
 const FORBIDDEN_CONTRACT_IMPORTS = [
   './control.js',
   './execution-service.js',
   '../transport/server-ports.js',
-  './transport/server-ports.js',
   '../jobs/store.js',
   '../providers/registry.js',
 ];
@@ -73,7 +85,27 @@ function collectExportNames(sourceFile: ts.SourceFile): string[] {
   return names;
 }
 
+/** Resolves a `FORBIDDEN_CONTRACT_IMPORTS` specifier exactly as `contracts.ts`'s own relative imports would —
+ *  from `src/coordinator/`, the file the ban applies to — so a specifier that never named a real file (or no
+ *  longer does) is distinguishable from one that still does. */
+function forbiddenContractImportResolvesToRealFile(specifier: string): boolean {
+  return existsSync(join(REPO_ROOT, 'src/coordinator', specifier.replace(/\.js$/u, '.ts')));
+}
+
 describe('coordinator api export scope invariant', () => {
+  it('names forbidden contract imports that all resolve to a real file or are explicitly retired', () => {
+    // A specifier naming neither a real file nor a documented retirement silently narrows the ban: it looks
+    // like it forbids something, but no import could ever match it, so the check above passes over nothing.
+    // `./transport/server-ports.js` was exactly this — it never resolved to a real file at any point in this
+    // repository's history, and the concern it gestured at (banning the transport module) is already covered
+    // by the correct relative form, `../transport/server-ports.js`, elsewhere in this same list.
+    const dangling = FORBIDDEN_CONTRACT_IMPORTS.filter(
+      (specifier) =>
+        !ASPIRATIONAL_CONTRACT_IMPORTS.has(specifier) && !forbiddenContractImportResolvesToRealFile(specifier),
+    );
+    expect(dangling).toEqual([]);
+  });
+
   it('keeps coordinator/contracts.ts free of transport, live, and service implementation imports', () => {
     const sourceFile = ts.createSourceFile(
       CONTRACTS_PATH,

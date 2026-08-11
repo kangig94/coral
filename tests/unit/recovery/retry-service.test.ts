@@ -184,7 +184,7 @@ describe('recovery quarantine retry service', () => {
       retentionWorkItemRecoverySource([]).boundary,
       workflowRecoverySource(db).boundary,
       staleJobCleanupSource(db).boundary,
-      crashedJobTerminalizationSource(db, 'test-namespace').boundary,
+      crashedJobTerminalizationSource(db).boundary,
     ];
 
     expect(new Set(registeredSourceBoundaries)).toEqual(new Set(repeatableRecoveryBoundaryIds));
@@ -232,7 +232,7 @@ describe('recovery quarantine retry service', () => {
       policy: passThroughPolicy(),
     }));
     runtimeRegistry.register('crashed-job-terminalization', (retrySubject) => ({
-      source: crashedJobTerminalizationSource(db, 'test-namespace', retrySubject),
+      source: crashedJobTerminalizationSource(db, retrySubject),
       policy: passThroughPolicy(),
     }));
 

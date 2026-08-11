@@ -9,6 +9,7 @@ import { formatUsageSegment } from './usage.js';
 type WaitProgressEvent = Extract<WaitStreamEvent, { type: 'progress' }>;
 type WaitQueuedEvent = Extract<WaitStreamEvent, { type: 'queued' }>;
 type WaitTerminalEvent = Extract<WaitStreamEvent, { type: 'terminal' }>;
+type WaitCarrierInterruptedEvent = Extract<WaitStreamEvent, { type: 'interrupted' }>;
 type WaitWaitingEvent = Extract<WaitStreamEvent, { type: 'waiting' }>;
 
 export type WaitRenderContext = {
@@ -67,11 +68,20 @@ export function formatWaitQueued(event: WaitQueuedEvent, label?: string): string
   return formatTimedMessage(event.timing.elapsedMs, body, label);
 }
 
+/**
+ * Rule for the continuation line in both branches below: it appears exactly when the caller must act, and
+ * never when this process keeps waiting on its own. `followJobs` reconnects by itself, in the same
+ * process, whenever a terminal event's exit code is `0` and jobs remain — telling the caller to re-run the
+ * command they're already inside of would be a no-op instruction. Any other exit code returns control to
+ * the caller immediately even with siblings still live, which is exactly when the caller needs to know
+ * which jobs to keep watching, so both branches print it then. `remainingJobIds.length === 0` is a third
+ * case — nothing to continue, so `formatWaitContinuation` reports that instead of staying silent.
+ */
 export function formatWaitTerminal(
   event: WaitTerminalEvent,
   cursor: string | null,
   inline: boolean,
-  options: { describeCauseRef?: CauseRefDescriber; verbose?: boolean } = {},
+  options: { describeCauseRef?: CauseRefDescriber; verbose?: boolean; exitCode?: number } = {},
 ): string {
   const header = [
     terminalOutcomeHeader(event.jobId, event.result, options.describeCauseRef),
@@ -79,22 +89,39 @@ export function formatWaitTerminal(
   ]
     .filter((segment): segment is string => segment !== undefined)
     .join(' · ');
+  const willReconnectAutomatically = event.remainingJobIds.length > 0 && options.exitCode === 0;
+  const continuation = willReconnectAutomatically ? undefined : formatWaitContinuation(event.remainingJobIds);
   if (!inline) {
-    return joinLines([header, `Result path: ${event.resultPath}`, formatWaitContinuation(event.remainingJobIds)]);
+    return joinLines([header, `Result path: ${event.resultPath}`, continuation]);
   }
 
   return joinLines([
     header,
     `Result path: ${event.resultPath}`,
     truncatePreview(pickTerminalPreviewSource(event.result, options.describeCauseRef)),
+    continuation,
     cursor === null ? undefined : `Cursor: ${cursor}`,
   ]);
+}
+
+/**
+ * Reports what was observed without claiming the job ended. The wording is deliberately about the carrier,
+ * not the job — "still waiting" stays true, because this event releases nothing and the durable terminal is
+ * still the only thing that will end the stream.
+ */
+export function formatWaitCarrierInterrupted(event: WaitCarrierInterruptedEvent): string {
+  // No continuation line, unlike every other event that renders one. Those are printed where this process is
+  // about to hand control back, so "run this to continue waiting" names a real next step. This event returns
+  // control to nobody — the subscription stays open and the exit code stays pending — so the same line would
+  // instruct an action that is not needed, and a caller following it literally would open a second
+  // subscription to a stream it is already reading.
+  return `Job ${event.jobId} carrier is no longer present (stored phase: ${event.storedPhase}); still waiting for a durable result — this wait is still open, no action needed.`;
 }
 
 export function formatWaitWaiting(
   event: WaitWaitingEvent,
   cursor: string | null,
-  resumeJobIds: readonly string[] = [],
+  resumeJobIds: readonly string[] = event.waitingJobIds,
 ): string {
   const jobs = event.waitingJobIds.length > 0 ? event.waitingJobIds.join(', ') : 'none';
   const waitingCount = event.waitingJobIds.length;
@@ -102,9 +129,16 @@ export function formatWaitWaiting(
     resumeJobIds.length > 0 && waitingCount > 0
       ? `Still waiting on ${waitingCount} ${waitingCount === 1 ? 'job' : 'jobs'}.`
       : `Still waiting; jobs: ${jobs}.`;
-  const resumeArgs = resumeJobIds.length > 0 ? ` ${resumeJobIds.join(' ')}` : '';
+  const continuation =
+    resumeJobIds.length > 0 ? ` Run coral-cli wait jobs ${resumeJobIds.join(' ')} to continue waiting.` : '';
+  // Named as unconfirmed rather than folded into the waiting list: these are the jobs nothing could answer
+  // for, and a reader deciding whether to keep waiting needs that distinction.
+  const unknown =
+    event.carrierUnknownJobIds === undefined
+      ? undefined
+      : `Carrier unconfirmed for: ${event.carrierUnknownJobIds.join(', ')}.`;
 
-  return appendCursor(`${status} Run coral-cli wait jobs${resumeArgs} again to continue waiting.`, cursor);
+  return appendCursor(joinLines([`${status}${continuation}`, unknown]), cursor);
 }
 
 export function renderWaitLine(text: string, ctx: WaitRenderContext): string {

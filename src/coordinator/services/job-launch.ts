@@ -34,6 +34,7 @@ import {
 } from './execution-policies.js';
 import { CHILD_PRINCIPAL_CAPABILITIES, type ChildPrincipalRegistry } from '../child-principal-registry.js';
 import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../security/child-principal-env.js';
+import type { ProviderOperationProtectedEnvironment } from '../../jobs/contracts/provider-operation-lifecycle.js';
 
 export interface JobLaunchServiceDeps {
   runtime: Runtime;
@@ -441,7 +442,7 @@ export class JobLaunchService {
     sessionId: string,
     jobId: string,
     issuer: string,
-  ): Record<string, string> {
+  ): ProviderOperationProtectedEnvironment {
     const credential = this.deps.childPrincipalRegistry.register({
       issuer,
       parentPrincipal: ctx.principal,
@@ -452,9 +453,12 @@ export class JobLaunchService {
       childCaps: CHILD_PRINCIPAL_CAPABILITIES,
     });
     return {
-      CORAL_JOB_ID: jobId,
-      CORAL_SESSION_ID: sessionId,
-      [CORAL_CHILD_PRINCIPAL_HANDLE]: credential.handle,
+      env: {
+        CORAL_JOB_ID: jobId,
+        CORAL_SESSION_ID: sessionId,
+        [CORAL_CHILD_PRINCIPAL_HANDLE]: credential.handle,
+      },
+      childAuthorization: credential.authorization,
     };
   }
 }

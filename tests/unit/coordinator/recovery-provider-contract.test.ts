@@ -3,13 +3,17 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   planInterruptedAppServerRecovery,
   planInterruptedDurableRecovery,
+  type ProviderOperationCarrierRecord,
 } from '#src/coordinator/services/recovery/interrupted-plan.js';
 import {
   performInterruptedAppServerRecovery,
   performInterruptedDurableRecovery,
+  reapProviderOperationCarrier,
 } from '#src/coordinator/services/recovery/interrupted-performer.js';
 import type { AppServerRuntime, JobLaunch } from '#src/jobs/records.js';
 import type { ProviderRecoveryAuthority } from '#src/jobs/reconcile/contracts.js';
+import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
+import { ProcessContainmentError } from '#src/infra/process-containment.js';
 import type {
   BoundProvider,
   BoundProviderAppServerCapability,
@@ -20,10 +24,14 @@ import type { ProviderSession } from '#src/sessions/entry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { bindingSuccess } from '#src/providers/contracts/binding.js';
 import { validatedTestContinuityBlob } from '#tests/helpers/session.js';
+import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import {
   finalizeInterruptedAppServerRecovery,
   RecoveryOwnershipReleaseError,
 } from '#src/coordinator/services/recovery/interrupted-finalizer.js';
+import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
+
+import { providerOperationRecord } from '../store/provider-operation-fixtures.js';
 
 const launchRecord = {
   jobId: 'job-recovery-contract',
@@ -75,6 +83,8 @@ const session = {
   version: 1,
 } as unknown as ProviderSession;
 
+const providerOperationCarrier = providerOperationRecord('executing') as ProviderOperationCarrierRecord;
+
 function recovery(): BoundProviderRecovery {
   return {
     finalizeInterrupted: (result: { resumable: boolean }) =>
@@ -97,22 +107,35 @@ function serviceWithCapability(appServer: BoundProviderAppServerCapability, boun
     appServer,
     recovery: boundRecovery,
   } as unknown as BoundProvider;
+  const reapCarrier = vi.fn(async () => {});
   return {
-    decide: (runtimeRecord: AppServerRuntime, nextSession: ProviderSession = session) => {
+    reapCarrier,
+    decide: (
+      runtimeRecord: AppServerRuntime,
+      nextSession: ProviderSession = session,
+      providerOperation: ProviderOperationCarrierRecord | null = null,
+    ) => {
       const authority = {
         launchRecord,
         session: nextSession,
         boundProvider: bound,
       } as unknown as ProviderRecoveryAuthority;
-      const plan = planInterruptedAppServerRecovery(authority, runtimeRecord, 'restart', {
-        recovery: bound.recovery !== undefined,
-        probe: bound.appServer?.supportsProbe === true,
-      });
+      const plan = planInterruptedAppServerRecovery(
+        authority,
+        runtimeRecord,
+        'restart',
+        {
+          recovery: bound.recovery !== undefined,
+          probe: bound.appServer?.supportsProbe === true,
+        },
+        providerOperation,
+      );
       return performInterruptedAppServerRecovery(plan, bound, {
         time: runtime.time,
         env: runtime.env,
         storage: runtime.storage,
         jobDir: () => '/jobs/job-recovery-contract',
+        reapCarrier,
       });
     },
   };
@@ -123,7 +146,7 @@ function capability(overrides: Partial<BoundProviderAppServerCapability> = {}): 
     supportsInterrupt: false,
     supportsProbe: true,
     openReplacement: vi.fn(),
-    interrupt: vi.fn(async () => false),
+    interrupt: vi.fn(async () => ({ kind: 'not-accepted' as const, reason: 'test refusal' })),
     probe: vi.fn(async () => ({ kind: 'probed' as const, result: { resumable: true } })),
     ...overrides,
   };
@@ -137,14 +160,20 @@ describe('interrupted recovery planning', () => {
   } as unknown as ProviderRecoveryAuthority;
 
   it('selects one deterministic effect route without consulting provider state', () => {
-    const first = planInterruptedAppServerRecovery(authority, acquiredRuntime, 'restart', {
-      recovery: true,
-      probe: false,
-    });
-    const second = planInterruptedAppServerRecovery(authority, acquiredRuntime, 'restart', {
-      recovery: true,
-      probe: false,
-    });
+    const first = planInterruptedAppServerRecovery(
+      authority,
+      acquiredRuntime,
+      'restart',
+      { recovery: true, probe: false },
+      null,
+    );
+    const second = planInterruptedAppServerRecovery(
+      authority,
+      acquiredRuntime,
+      'restart',
+      { recovery: true, probe: false },
+      null,
+    );
 
     expect(first).toEqual(second);
     expect(first).toMatchObject({
@@ -157,11 +186,66 @@ describe('interrupted recovery planning', () => {
 
   it('makes missing recovery capability an explicit unsupported plan', () => {
     expect(
-      planInterruptedAppServerRecovery(authority, acquiredRuntime, 'handoff', {
-        recovery: false,
-        probe: true,
-      }),
+      planInterruptedAppServerRecovery(authority, acquiredRuntime, 'handoff', { recovery: false, probe: true }, null),
     ).toMatchObject({ kind: 'unsupported', reason: 'handoff' });
+  });
+
+  it('never routes a committed provider-operation carrier through the unsupported, waiting, or artifacts arms', () => {
+    expect(
+      planInterruptedAppServerRecovery(
+        authority,
+        acquiredRuntime,
+        'restart',
+        { recovery: false, probe: true },
+        providerOperationCarrier,
+      ),
+    ).toMatchObject({ kind: 'unsupported' });
+    expect(
+      planInterruptedAppServerRecovery(
+        authority,
+        waitingRuntime,
+        'restart',
+        { recovery: true, probe: true },
+        providerOperationCarrier,
+      ),
+    ).toMatchObject({ kind: 'waiting' });
+    expect(
+      planInterruptedAppServerRecovery(
+        authority,
+        acquiredRuntime,
+        'restart',
+        { recovery: true, probe: false },
+        providerOperationCarrier,
+      ),
+    ).toMatchObject({ kind: 'artifacts' });
+  });
+
+  it('classifies a committed provider-operation carrier as detached ahead of probe', () => {
+    const plan = planInterruptedAppServerRecovery(
+      authority,
+      acquiredRuntime,
+      'restart',
+      { recovery: true, probe: true },
+      providerOperationCarrier,
+    );
+
+    expect(plan).toMatchObject({
+      kind: 'carrier-detached',
+      carrier: providerOperationCarrier,
+      continuity: { checkpoint: 'persisted' },
+    });
+  });
+
+  it('plans a probe when no provider-operation carrier is committed, unchanged from before', () => {
+    const plan = planInterruptedAppServerRecovery(
+      authority,
+      acquiredRuntime,
+      'restart',
+      { recovery: true, probe: true },
+      null,
+    );
+
+    expect(plan).toMatchObject({ kind: 'probe', hostRef: persistedHostRef });
   });
 
   it.each([
@@ -390,6 +474,38 @@ describe('interrupted provider HostRef recovery', () => {
     });
     expect(openReplacement).not.toHaveBeenCalled();
   });
+
+  it('confirms the carrier and finalizes without probing or opening a replacement when a saga carrier exists', async () => {
+    const probe = vi.fn(async () => ({ kind: 'probed' as const, result: { resumable: true } }));
+    const openReplacement = vi.fn();
+    const fixture = serviceWithCapability(capability({ probe, openReplacement }));
+
+    await expect(fixture.decide(acquiredRuntime, session, providerOperationCarrier)).resolves.toMatchObject({
+      probeOutcome: 'unavailable',
+    });
+
+    expect(fixture.reapCarrier).toHaveBeenCalledTimes(1);
+    expect(fixture.reapCarrier).toHaveBeenCalledWith(providerOperationCarrier);
+    expect(probe).not.toHaveBeenCalled();
+    expect(openReplacement).not.toHaveBeenCalled();
+  });
+
+  it('leaves the session unfinalized when the carrier reap cannot confirm absence', async () => {
+    const finalizeInterrupted = vi.fn();
+    const boundRecovery = {
+      finalizeInterrupted,
+      finalizeFromArtifacts: vi.fn(),
+    } as unknown as BoundProviderRecovery;
+    const fixture = serviceWithCapability(capability(), boundRecovery);
+    fixture.reapCarrier.mockRejectedValueOnce(
+      new ProcessContainmentError('process_containment_reap_failed', 'absence not confirmed'),
+    );
+
+    await expect(fixture.decide(acquiredRuntime, session, providerOperationCarrier)).rejects.toBeInstanceOf(
+      ProcessContainmentError,
+    );
+    expect(finalizeInterrupted).not.toHaveBeenCalled();
+  });
 });
 
 describe('interrupted recovery settlement ownership', () => {
@@ -431,6 +547,7 @@ describe('interrupted recovery settlement ownership', () => {
       waitingRuntime,
       'restart',
       { recovery: true, probe: false },
+      null,
     );
     const performed = {
       kind: 'resolved',
@@ -511,5 +628,101 @@ describe('interrupted recovery settlement ownership', () => {
       finalizeInterruptedAppServerRecovery(fixture.plan, fixture.performed, status, fixture.deps as never),
     ).rejects.toBeInstanceOf(RecoveryOwnershipReleaseError);
     expect(fixture.finalizeJobContinuityAtomic).toHaveBeenCalledOnce();
+  });
+});
+
+describe('provider-operation carrier reap', () => {
+  const carrierClockScope = Symbol('carrier-reap-test');
+
+  function fakeClock() {
+    let elapsedMs = 0;
+    return createMonotonicClock(carrierClockScope, {
+      readMilliseconds: () => BigInt(elapsedMs),
+      // Advances a virtual clock rather than waiting in real time, so the ~51s default budget costs nothing.
+      sleep: async (ms) => {
+        elapsedMs += ms;
+      },
+    });
+  }
+
+  function seededDb() {
+    const db = openTestStoreDb(new SimulationRuntime(), ':memory:');
+    insertProviderOperation(db, providerOperationCarrier);
+    return db;
+  }
+
+  it('reaps exactly the recorded proxy group and provider root — never the guardian or reaper — then retires the saga', async () => {
+    const db = seededDb();
+    const state = { groupAlive: true, providerRootAlive: true };
+    const signals: Array<{ pid: number; signal: NodeJS.Signals | 0 }> = [];
+    const process = {
+      isAlive: (pid: number): boolean => {
+        if (pid === -providerOperationCarrier.locator.containment.processGroupId) return state.groupAlive;
+        if (pid === providerOperationCarrier.providerRoot.pid) return state.providerRootAlive;
+        return false;
+      },
+      kill: (pid: number, signal: NodeJS.Signals | 0): boolean => {
+        signals.push({ pid, signal });
+        if (signal === 'SIGKILL') {
+          if (pid === -providerOperationCarrier.locator.containment.processGroupId) state.groupAlive = false;
+          if (pid === providerOperationCarrier.providerRoot.pid) state.providerRootAlive = false;
+        }
+        return true;
+      },
+    };
+
+    try {
+      await reapProviderOperationCarrier(providerOperationCarrier, {
+        process,
+        platform: 'linux',
+        db,
+        clock: fakeClock(),
+        readProcessStartedAtSeconds: (pid) => {
+          if (pid === providerOperationCarrier.locator.proxy.pid && state.groupAlive) {
+            return providerOperationCarrier.locator.proxy.processStartedAtSeconds;
+          }
+          if (pid === providerOperationCarrier.providerRoot.pid && state.providerRootAlive) {
+            return providerOperationCarrier.providerRoot.processStartedAtSeconds;
+          }
+          return null;
+        },
+      });
+
+      const signalledPids = new Set(signals.map((entry) => entry.pid));
+      expect(signalledPids).toEqual(
+        new Set([
+          -providerOperationCarrier.locator.containment.processGroupId,
+          providerOperationCarrier.providerRoot.pid,
+        ]),
+      );
+      expect(signalledPids.has(providerOperationCarrier.locator.guardian.pid)).toBe(false);
+      expect(signalledPids.has(providerOperationCarrier.locator.reaper.pid)).toBe(false);
+      expect(readProviderOperation(db, providerOperationCarrier.operation)).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('leaves the saga in place when absence cannot be confirmed', async () => {
+    const db = seededDb();
+    const process = { isAlive: () => true, kill: () => true };
+
+    try {
+      await expect(
+        reapProviderOperationCarrier(providerOperationCarrier, {
+          process,
+          platform: 'linux',
+          db,
+          clock: fakeClock(),
+          // Alive with no verifiable start time is the ambiguous case `reapRecordedContainment` refuses to
+          // signal past — the recorded set can never be confirmed absent, so this must stay fatal.
+          readProcessStartedAtSeconds: () => null,
+        }),
+      ).rejects.toBeInstanceOf(ProcessContainmentError);
+
+      expect(readProviderOperation(db, providerOperationCarrier.operation)).toEqual(providerOperationCarrier);
+    } finally {
+      db.close();
+    }
   });
 });

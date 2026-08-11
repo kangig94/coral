@@ -6,6 +6,7 @@ import {
   closeSync,
   existsSync,
   fdatasyncSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -188,6 +189,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
           dev: stats.dev,
           ino: stats.ino,
           mode: stats.mode,
+          uid: stats.uid,
           size: stats.size,
           mtimeNs: stats.mtimeNs,
           isDirectory: () => stats.isDirectory(),
@@ -208,6 +210,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         dev: stats.dev,
         ino: stats.ino,
         mode: stats.mode,
+        uid: stats.uid,
         size: stats.size,
         mtimeNs: stats.mtimeNs,
         isDirectory: () => stats.isDirectory(),
@@ -773,6 +776,9 @@ function writeAtomicDurableSyncNode(
   let fd: number | null = null;
   try {
     fd = mode === undefined ? openSync(tempPath, 'w') : openSync(tempPath, 'w', mode);
+    if (mode !== undefined) {
+      fchmodSync(fd, mode);
+    }
     writeAllSync(fd, normalizeStorageBuffer(data, options?.encoding ?? 'utf-8'));
     fdatasyncSync(fd);
     closeSync(fd);

@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   IncumbentMatchesError,
-  isCompatibleIncumbent,
+  incumbentOutranksContender,
   IpcDeadlineExceededError,
   requestIncumbentShutdown,
   type IncumbentHealth,
@@ -70,23 +70,71 @@ afterEach(async () => {
   }
 });
 
-describe('isCompatibleIncumbent', () => {
-  it('matches on version + bundleHash + flavor + namespace', () => {
+describe('incumbentOutranksContender', () => {
+  it('outranks on exact version match regardless of bundleHash', () => {
     const desired: DesiredIncumbentIdentity = { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
     const health: IncumbentHealth = { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
-    expect(isCompatibleIncumbent(health, desired)).toBe(true);
+    expect(incumbentOutranksContender(health, desired)).toBe(true);
   });
 
-  it('rejects on bundleHash mismatch', () => {
+  it('outranks at equal version even with a different bundleHash — the BLOCKING-1 cycle trigger', () => {
+    // A rebuild without a version bump: same version, different bundleHash.
+    // A version difference alone must never be an eviction reason, so the
+    // incumbent still outranks the contender here — evicting it would trade
+    // a healthy coordinator for one that is not an upgrade.
     const desired: DesiredIncumbentIdentity = { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
     const health: IncumbentHealth = { version: '0.9.1', bundleHash: 'h2', flavor: 'prod', namespace: 'ns' };
-    expect(isCompatibleIncumbent(health, desired)).toBe(false);
+    expect(incumbentOutranksContender(health, desired)).toBe(true);
   });
 
-  it('rejects on version mismatch even when bundle identity matches', () => {
+  it('does not outrank when the contender is strictly newer', () => {
     const desired: DesiredIncumbentIdentity = { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
     const health: IncumbentHealth = { version: '0.8.7', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
-    expect(isCompatibleIncumbent(health, desired)).toBe(false);
+    expect(incumbentOutranksContender(health, desired)).toBe(false);
+  });
+
+  it('outranks when the incumbent is strictly newer — an older build must not evict a healthy newer incumbent', () => {
+    const desired: DesiredIncumbentIdentity = { version: '0.8.7', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
+    const health: IncumbentHealth = { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
+    expect(incumbentOutranksContender(health, desired)).toBe(true);
+  });
+
+  it('does not outrank on flavor or namespace mismatch even at a same-or-newer version', () => {
+    const desired: DesiredIncumbentIdentity = { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
+    expect(
+      incumbentOutranksContender({ version: '0.9.1', bundleHash: 'h1', flavor: 'dev', namespace: 'ns' }, desired),
+    ).toBe(false);
+    expect(
+      incumbentOutranksContender(
+        { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'other-ns' },
+        desired,
+      ),
+    ).toBe(false);
+  });
+
+  it('does not outrank when the incumbent reported no version at all', () => {
+    // The one guard the cases above leave open, and the only one that is not a comparison: an incumbent whose
+    // health reply carried no version cannot be ranked against anything. Deferring to it would hand the socket
+    // to a coordinator that never proved it was an upgrade, so the unrankable answer is "does not outrank" —
+    // and it must come from this guard, not from feeding `undefined` into the version comparison.
+    const desired: DesiredIncumbentIdentity = { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
+    const health: IncumbentHealth = { bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
+
+    expect(incumbentOutranksContender(health, desired)).toBe(false);
+  });
+
+  it('is total: equal-version contenders racing for the same socket both defer, never both evict', () => {
+    // The exact BLOCKING-1 shape, viewed from both sides at once: build A
+    // contends against B's incumbent and build B contends against A's
+    // incumbent. If both calls returned false, both would proceed to
+    // eviction and mutually destroy each other's coordinator every lap.
+    const a: DesiredIncumbentIdentity = { version: '1.4.0', bundleHash: 'hash-a', flavor: 'prod', namespace: 'ns' };
+    const b: DesiredIncumbentIdentity = { version: '1.4.0', bundleHash: 'hash-b', flavor: 'prod', namespace: 'ns' };
+    const healthA: IncumbentHealth = { ...a };
+    const healthB: IncumbentHealth = { ...b };
+
+    expect(incumbentOutranksContender(healthA, b)).toBe(true);
+    expect(incumbentOutranksContender(healthB, a)).toBe(true);
   });
 });
 

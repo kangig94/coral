@@ -6,6 +6,16 @@ const emitError = vi.hoisted(() => vi.fn());
 
 vi.mock('#src/cli/program.js', () => ({
   buildProgram: () => ({ parseAsync }),
+  // Stubbed rather than partially mocked: the real pre-flight probes for a live coordinator, which would make
+  // these cases depend on whether one happens to be running. Mirrors the real dispatch — argv through to
+  // `parseAsync`, no handoff — so the CommanderError routing under test is unchanged.
+  parseProgramWithHandoff: async (
+    program: { parseAsync: typeof parseAsync },
+    argv: readonly string[] = process.argv,
+  ) => {
+    await program.parseAsync([...argv]);
+    return null;
+  },
 }));
 vi.mock('#src/cli/emit.js', () => ({ emitError }));
 

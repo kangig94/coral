@@ -18,7 +18,6 @@ function createControlHarness(): {
     world,
     listExecutionServices: () => [],
     getLifecycleController: () => null,
-    backendNamespace: 'test-ns',
     getProgressStore: () => ({}) as never,
     internalJobAbortRegistry,
   });
@@ -48,7 +47,11 @@ describe('createCoordinatorControl.abortJobs', () => {
 });
 
 describe('createCoordinatorControl.scopeCheckJobs', () => {
-  it('reports jobs from another namespace as missing', () => {
+  // Converted, not deleted: this case used to assert that a job from another build's namespace was reported
+  // missing. Namespace is no longer work tenancy, so the same job — same project root, still recorded under a
+  // different `backendNamespace` — is now simply in scope. The status deliberately keeps the foreign namespace
+  // so the assertion fails again if namespace ever re-enters scoping.
+  it('keeps a job recorded under another build namespace in scope when the project root matches', () => {
     const runtime = new SimulationRuntime();
     const internalJobAbortRegistry = new AbortRegistry(runtime.ids);
     const world = { idleTimer: { requestDrain() {} } } as unknown as CoordinatorWorld;
@@ -56,7 +59,6 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
       world,
       listExecutionServices: () => [],
       getLifecycleController: () => null,
-      backendNamespace: 'test-ns',
       getProgressStore: () =>
         ({
           readStatus: () => ({ projectRoot: '/current/project', jobKind: 'provider', backendNamespace: 'other-ns' }),
@@ -64,9 +66,9 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
       internalJobAbortRegistry,
     });
 
-    const result = control.scopeCheckJobs(['foreign-job'], '/current/project', 'test-ns');
+    const result = control.scopeCheckJobs(['foreign-job'], '/current/project');
 
-    expect(result).toEqual({ valid: ['foreign-job'], missing: ['foreign-job'], mismatch: [] });
+    expect(result).toEqual({ valid: ['foreign-job'], missing: [], mismatch: [] });
   });
 
   it('keeps KB jobs in scope from any project but rejects foreign non-KB jobs', () => {
@@ -81,13 +83,12 @@ describe('createCoordinatorControl.scopeCheckJobs', () => {
       world,
       listExecutionServices: () => [],
       getLifecycleController: () => null,
-      backendNamespace: 'test-ns',
       getProgressStore: () => ({ readStatus: (id: string) => statuses[id] ?? null }) as never,
       internalJobAbortRegistry,
     });
 
     // cwd is a third project that owns neither job.
-    const result = control.scopeCheckJobs(['kb-job', 'provider-job'], '/current/project', 'test-ns');
+    const result = control.scopeCheckJobs(['kb-job', 'provider-job'], '/current/project');
 
     expect(result.valid).toContain('kb-job');
     expect(result.mismatch).toContain('provider-job');

@@ -27,8 +27,6 @@ describe('coral-skills name lists', () => {
   it('ALL_CORAL_SKILLS stays a subset of the shipped skills', () => {
     // ALL_CORAL_SKILLS drives user-message matching and is deliberately
     // narrower; it must still name only skills that actually ship.
-    expect(ALL_SHIPPED_SKILLS as string[]).toEqual(
-      expect.arrayContaining(ALL_CORAL_SKILLS as string[]),
-    );
+    expect(ALL_SHIPPED_SKILLS as string[]).toEqual(expect.arrayContaining(ALL_CORAL_SKILLS as string[]));
   });
 });

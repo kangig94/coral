@@ -138,3 +138,24 @@ describe('cause-ref discuss rendering', () => {
     ).toBe('Discuss agent alpha job job-1 failed with retryable parse error (attempt 2).');
   });
 });
+
+describe('cause-ref job rendering', () => {
+  it('surfaces indeterminate provider activation with a durable inspection command', () => {
+    expect(
+      renderRootEventDescription({
+        type: 'job.progress.emitted',
+        stream: { kind: 'job', id: 'job-activation-unknown' },
+        body: {
+          kind: 'domain',
+          stage: 'provider_operation_failed',
+          message: 'Provider containment disappeared after activation may have begun.',
+          detail: { code: 'activation_indeterminate' },
+        },
+      }),
+    ).toBe(
+      'Provider containment disappeared after activation may have begun. ' +
+        'Activation indeterminate [activation_indeterminate]: the provider may have started. ' +
+        'Run `coral-cli jobs detail job-activation-unknown` to inspect the durable job record before deciding whether to retry.',
+    );
+  });
+});

@@ -7,21 +7,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import { type WaitStreamEvent, serializeWaitCursor } from '#src/jobs/wait.js';
+import type { BackendRoutingResult } from '#src/infra/backend-routing.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/infra/path/store.js';
 import type * as FollowMod from '#src/cli/follow.js';
+import { buildErrorEnvelope } from '#src/cli/errors.js';
 import { formatLaunch } from '#src/cli/format/jobs.js';
-import { formatWaitProgress, formatWaitQueued, formatWaitTerminal, formatWaitWaiting } from '#src/cli/format/wait.js';
+import { formatWaitProgress, formatWaitQueued, formatWaitTerminal } from '#src/cli/format/wait.js';
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
+  runHandoff: vi.fn(),
   subscribe: vi.fn(),
 }));
 
 vi.mock('#src/transport/ipc/ensure.js', () => ({
   ensure: mockState.ensure,
+}));
+
+vi.mock('#src/coordinator/handoff-runner.js', () => ({
+  runHandoff: mockState.runHandoff,
 }));
 
 type FollowModule = typeof FollowMod;
@@ -31,6 +38,9 @@ function toText(chunk: string | Uint8Array): string {
 }
 
 function makeBackend(instanceId = 'backend-1') {
+  const routing = {
+    kind: 'use-current',
+  } satisfies BackendRoutingResult;
   return {
     socketPath: '/tmp/coordinator.sock',
     instanceId,
@@ -41,6 +51,7 @@ function makeBackend(instanceId = 'backend-1') {
     port: 4100,
     token: 'backend-token',
     version: '0.5.2',
+    routing,
     request: vi.fn(),
     subscribe: mockState.subscribe,
     health: vi.fn(),
@@ -97,6 +108,7 @@ function makeTerminalEvent(
     result: {
       content: 'done',
       outcome: { kind: 'completed' },
+      durationMs: 0,
       ...result,
     } as Extract<WaitStreamEvent, { type: 'terminal' }>['result'],
     ...overrides,
@@ -190,6 +202,22 @@ function createCauseRenderFixture(): { home: string; pluginRoot: string; cleanup
       'workflow-1',
       Buffer.from(JSON.stringify({ kind: 'unknown', message: 'workflow failure' }), 'utf-8'),
     );
+    insertEvent.run(
+      3,
+      '2026-03-21T00:00:00.000Z',
+      'job.progress.emitted',
+      'job',
+      'job-activation-unknown',
+      Buffer.from(
+        JSON.stringify({
+          kind: 'domain',
+          stage: 'provider_operation_failed',
+          message: 'Provider containment disappeared after activation may have begun.',
+          detail: { code: 'activation_indeterminate' },
+        }),
+        'utf-8',
+      ),
+    );
   } finally {
     db.close();
   }
@@ -233,10 +261,15 @@ describe('cli follow', () => {
     sigintHandler = null;
     process.exitCode = undefined;
     mockState.ensure.mockReset();
+    mockState.runHandoff.mockReset().mockResolvedValue({ kind: 'run-current' });
     mockState.subscribe.mockReset();
 
-    vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+    vi.spyOn(process.stdout, 'write').mockImplementation(((
+      chunk: string | Uint8Array,
+      callback?: (error?: Error | null) => void,
+    ) => {
       stdout += toText(chunk);
+      callback?.();
       return true;
     }) as typeof process.stdout.write);
 
@@ -303,8 +336,11 @@ describe('cli follow', () => {
       'jobs.wait',
       {
         jobIds: ['job-1'],
-        timeoutSeconds: 600,
+        // The Bash tool's 600s ceiling minus the flush margin that lets a bounded wait write its resume
+        // cursor before being killed — asserted as the derived value, not as a round number.
+        timeoutSeconds: 590,
         projectRoot: '/project/root',
+        supportsInterrupted: true,
       },
       {
         timeoutMs: 3_000,
@@ -325,24 +361,8 @@ describe('cli follow', () => {
     const progressEvent = makeProgressEvent('Halfway there');
     const waitingEvent = makeRunningEvent();
     const terminalEvent = makeTerminalEvent(
-      {
-        content: 'secret result body',
-        warnings: ['be careful'],
-        usage: { inputTokens: 12, outputTokens: 34, costUsd: 0.01 },
-        workflow: {
-          steps: [
-            {
-              agent: 'architect',
-              step: 1,
-              atom: 1,
-              provider: 'codex',
-              start: 10,
-              end: 20,
-            },
-          ],
-        },
-      },
-      { seq: 2 },
+      { content: 'secret result body' },
+      { seq: 2, usage: { inputTokens: 12, outputTokens: 34, costUsd: 0.01 } },
     );
     const cursorAfterProgress = serializeWaitCursor({ afterSeq: 1 });
     const cursorAfterTerminal = serializeWaitCursor({ afterSeq: 2 });
@@ -360,6 +380,7 @@ describe('cli follow', () => {
       .mockImplementationOnce(async (_method: string, params: Record<string, unknown>) => {
         expect(params.cursor).toEqual({ afterSeq: 1 });
         return makeSubscription(async function* () {
+          yield progressEvent;
           yield terminalEvent;
         });
       });
@@ -370,10 +391,213 @@ describe('cli follow', () => {
       `${formatLaunch(launchResult)}\n` +
         `${formatWaitQueued(queuedEvent)}\n` +
         `${formatWaitProgress(progressEvent)}\n` +
-        `${formatWaitWaiting(waitingEvent, cursorAfterProgress)}\n` +
+        `Still waiting on 1 job. Run coral-cli wait jobs job-1 to continue waiting. (cursor: ${cursorAfterProgress})\n` +
         `${formatWaitTerminal(terminalEvent, cursorAfterTerminal, false)}\n`,
     );
     expect(mockState.ensure).toHaveBeenCalledTimes(2);
+    expect(stdout.match(/Halfway there/gu)).toHaveLength(1);
+  });
+
+  it('skips a wait stream event of an unrecognized type and keeps the stream alive', async () => {
+    // Reproduces an N-build CLI reading an N+1 coordinator's event: the wire delivers a `type` this build
+    // never registered. `followJobs` must not crash rendering it (no `undefined` in the output) and must
+    // not end the wait early — the following legitimate terminal event still has to arrive.
+    const { followJobs } = await loadFollowModule();
+    const terminalEvent = makeTerminalEvent();
+
+    const exitCode = await followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1'] },
+      reconnectPolicy: 'until-terminal',
+      projectRoot: '/project/root',
+      emitError: vi.fn(),
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs: vi.fn(),
+      connect: async () => ({
+        kind: 'subscription',
+        subscription: makeSubscription(async function* () {
+          yield { type: 'some-future-event' } as unknown as WaitStreamEvent;
+          yield terminalEvent;
+        }),
+      }),
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain('undefined');
+    expect(stdout).toContain('Job job-1 completed');
+  });
+
+  it('reconnects silently on a successful terminal event with jobs remaining, printing no continuation line', async () => {
+    const { followJobs } = await loadFollowModule();
+    // `seq` is a global journal cursor, not per-job — the second event must advance past the first or the
+    // render cursor treats it as already-seen and suppresses it.
+    const firstTerminal = makeTerminalEvent({}, { jobId: 'job-1', seq: 1, remainingJobIds: ['job-2'] });
+    const secondTerminal = makeTerminalEvent({}, { jobId: 'job-2', seq: 2, remainingJobIds: [] });
+
+    const connect = vi
+      .fn()
+      .mockImplementationOnce(async () => ({
+        kind: 'subscription' as const,
+        subscription: makeSubscription(async function* () {
+          yield firstTerminal;
+        }),
+      }))
+      .mockImplementationOnce(async ({ jobIds }: { jobIds: readonly string[] }) => {
+        expect(jobIds).toEqual(['job-2']);
+        return {
+          kind: 'subscription' as const,
+          subscription: makeSubscription(async function* () {
+            yield secondTerminal;
+          }),
+        };
+      });
+
+    const exitCode = await followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1', 'job-2'] },
+      reconnectPolicy: 'until-terminal',
+      projectRoot: '/project/root',
+      emitError: vi.fn(),
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs: vi.fn(),
+      connect,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(stdout).toContain('Job job-1 completed');
+    expect(stdout).toContain('Job job-2 completed');
+    expect(stdout).not.toContain('to continue waiting');
+  });
+
+  it('reports which jobs are still live on an early non-zero exit, in both embed and non-embed output', async () => {
+    const failingTerminal = makeTerminalEvent(
+      { outcome: { kind: 'aborted', reason: 'signal_abort' } },
+      { jobId: 'job-1', remainingJobIds: ['job-2'] },
+    );
+
+    for (const embed of [false, true]) {
+      const { followJobs } = await loadFollowModule();
+      stdout = '';
+      const connect = vi.fn().mockResolvedValueOnce({
+        kind: 'subscription' as const,
+        subscription: makeSubscription(async function* () {
+          yield failingTerminal;
+        }),
+      });
+
+      const exitCode = await followJobs({
+        start: { kind: 'jobs', jobIds: ['job-1', 'job-2'] },
+        reconnectPolicy: 'until-terminal',
+        projectRoot: '/project/root',
+        emitError: vi.fn(),
+        render: { isTTY: false, columns: 80, embed, verbose: false },
+        abortJobs: vi.fn(),
+        connect,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(connect).toHaveBeenCalledTimes(1);
+      expect(stdout).toContain('Run coral-cli wait jobs job-2 to continue waiting.');
+    }
+  });
+
+  it.each(['SIGTERM', 'SIGHUP'] as const)(
+    'emits an exact resume command when a delegated wait ends from %s',
+    async (signal) => {
+      const { followJobs } = await loadFollowModule();
+      const cursor = serializeWaitCursor({ afterSeq: 7 });
+      const emitError = vi.fn();
+
+      const exitCode = await followJobs({
+        start: { kind: 'jobs', jobIds: ['job-2', 'job-3'], serializedCursor: cursor },
+        reconnectPolicy: 'until-terminal',
+        projectRoot: '/project/root',
+        emitError,
+        render: { isTTY: false, columns: 80, embed: false, verbose: false },
+        abortJobs: vi.fn(),
+        connect: async () => ({
+          kind: 'delegated',
+          outcome: { kind: 'handoff-signal', signal },
+        }),
+      });
+
+      expect(exitCode).toBe(75);
+      expect(emitError).toHaveBeenCalledOnce();
+      expect(buildErrorEnvelope(emitError.mock.calls[0]?.[0])).toEqual({
+        envelope: {
+          error: true,
+          code: 'transient',
+          message: `Delegated wait command ended from signal ${signal}; the jobs may still be running.`,
+          remediation: `Rerun \`coral-cli wait jobs job-2 job-3 --cursor ${cursor}\` to continue waiting.`,
+        },
+        exitCode: 75,
+      });
+    },
+  );
+
+  it.each(['SIGKILL', 'SIGQUIT', 'SIGINT'] as const)(
+    'emits an exact resume command when a delegated wait separately ends from %s',
+    async (signal) => {
+      const { followJobs } = await loadFollowModule();
+      const cursor = serializeWaitCursor({ afterSeq: 7 });
+      const emitError = vi.fn();
+
+      const exitCode = await followJobs({
+        start: { kind: 'jobs', jobIds: ['job-2', 'job-3'], serializedCursor: cursor },
+        reconnectPolicy: 'until-terminal',
+        projectRoot: '/project/root',
+        emitError,
+        render: { isTTY: false, columns: 80, embed: false, verbose: false },
+        abortJobs: vi.fn(),
+        connect: async () => ({
+          kind: 'delegated',
+          outcome: { kind: 'handoff-signal', signal },
+        }),
+      });
+
+      expect(exitCode).toBe(75);
+      expect(emitError).toHaveBeenCalledOnce();
+      expect(buildErrorEnvelope(emitError.mock.calls[0]?.[0])).toEqual({
+        envelope: {
+          error: true,
+          code: 'transient',
+          message: `Delegated wait command ended from signal ${signal}; the jobs may still be running.`,
+          remediation: `Rerun \`coral-cli wait jobs job-2 job-3 --cursor ${cursor}\` to continue waiting.`,
+        },
+        exitCode: 75,
+      });
+    },
+  );
+
+  it('emits the remaining jobs and current cursor when a progressed stream ends before terminal', async () => {
+    const { followJobs } = await loadFollowModule();
+    const progressEvent = makeProgressEvent('Checkpoint reached');
+    const cursor = serializeWaitCursor({ afterSeq: 1 });
+    const emitError = vi.fn();
+    const subscription = makeSubscription(async function* () {
+      yield progressEvent;
+    });
+
+    const exitCode = await followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1', 'job-2'] },
+      reconnectPolicy: 'until-terminal',
+      projectRoot: '/project/root',
+      emitError,
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs: vi.fn(),
+      connect: async () => ({ kind: 'subscription', subscription }),
+    });
+
+    expect(exitCode).toBe(75);
+    expect(subscription.close).toHaveBeenCalledOnce();
+    expect(buildErrorEnvelope(emitError.mock.calls[0]?.[0])).toEqual({
+      envelope: {
+        error: true,
+        code: 'transient',
+        message: 'The wait stream ended before a terminal event; the jobs may still be running.',
+        remediation: `Rerun \`coral-cli wait jobs job-1 job-2 --cursor ${cursor}\` to continue waiting.`,
+      },
+      exitCode: 75,
+    });
   });
 
   it('retries transient stream failures with a 1s backoff and resumes from the current cursor', async () => {
@@ -414,6 +638,90 @@ describe('cli follow', () => {
     expect(mockState.subscribe).toHaveBeenCalledTimes(2);
   });
 
+  it('retries a malformed recognized wait event twice, then emits authored upgrade and resume guidance', async () => {
+    const { followJobs } = await loadFollowModule();
+    const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
+    const emitError = vi.fn();
+    const cursor = serializeWaitCursor({ afterSeq: 0 });
+    const connect = vi.fn(async () => ({
+      kind: 'subscription' as const,
+      subscription: makeSubscription(async function* () {
+        yield { type: 'progress' } as unknown as WaitStreamEvent;
+      }),
+    }));
+
+    const exitCode = await followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1'] },
+      reconnectPolicy: 'until-terminal',
+      projectRoot: '/project/root',
+      emitError,
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs: vi.fn(),
+      connect,
+      backoffScheduler,
+    });
+
+    expect(exitCode).toBe(75);
+    expect(connect).toHaveBeenCalledTimes(3);
+    expect(backoffScheduler).toHaveBeenCalledTimes(2);
+    expect(buildErrorEnvelope(emitError.mock.calls[0]?.[0])).toEqual({
+      envelope: {
+        error: true,
+        code: 'transient',
+        message:
+          'The coordinator emitted a wait event this Coral build could not read. Rerun the command; if this keeps happening, upgrade the installed Coral plugin.',
+        remediation: `Rerun \`coral-cli wait jobs job-1 --cursor ${cursor}\` to continue waiting.`,
+      },
+      exitCode: 75,
+    });
+  });
+
+  it('emits the current cursor after transient subscription failures exhaust their retries', async () => {
+    const { followJobs } = await loadFollowModule();
+    const progressEvent = makeProgressEvent('Checkpoint reached');
+    const cursor = serializeWaitCursor({ afterSeq: 1 });
+    const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
+    const emitError = vi.fn();
+    let emitProgress = true;
+    const connect = vi.fn(async () => {
+      const shouldEmitProgress = emitProgress;
+      emitProgress = false;
+      return {
+        kind: 'subscription' as const,
+        subscription: makeSubscription(async function* () {
+          if (shouldEmitProgress) {
+            yield progressEvent;
+          }
+          throw new TypeError('terminated');
+        }),
+      };
+    });
+
+    const exitCode = await followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1', 'job-2'] },
+      reconnectPolicy: 'until-terminal',
+      projectRoot: '/project/root',
+      emitError,
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs: vi.fn(),
+      connect,
+      backoffScheduler,
+    });
+
+    expect(exitCode).toBe(75);
+    expect(connect).toHaveBeenCalledTimes(3);
+    expect(backoffScheduler).toHaveBeenCalledTimes(2);
+    expect(buildErrorEnvelope(emitError.mock.calls[0]?.[0])).toEqual({
+      envelope: {
+        error: true,
+        code: 'transient',
+        message: 'terminated',
+        remediation: `Rerun \`coral-cli wait jobs job-1 job-2 --cursor ${cursor}\` to continue waiting.`,
+      },
+      exitCode: 75,
+    });
+  });
+
   it('returns the emitted envelope exit code on non-transient stream failures without retrying', async () => {
     const { launchAndFollow } = await loadFollowModule();
 
@@ -426,43 +734,130 @@ describe('cli follow', () => {
 
     await expect(launchAndFollow(makeOptions())).resolves.toBe(70);
 
-    expect(stdout).toBe('Provider job job-1 running (provider session session-1)\n');
+    expect(stdout).toBe('Provider job job-1 launch accepted (provider session session-1)\n');
     expect(stderr).toBe('fatal wait failure\n');
     expect(process.exitCode).toBe(70);
     expect(mockState.ensure).toHaveBeenCalledTimes(1);
     expect(mockState.subscribe).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps retrying BackendUnreachableError until the retry budget is exhausted and emits the envelope on stderr only', async () => {
+  it('emits the current cursor when BackendUnreachableError exhausts reconnect attempts after progress', async () => {
     const { launchAndFollow } = await loadFollowModule();
     const { BackendUnreachableError } = await import('#src/infra/http-errors.js');
+    const progressEvent = makeProgressEvent('Checkpoint reached');
+    const waitingEvent = makeRunningEvent();
+    const cursor = serializeWaitCursor({ afterSeq: 1 });
     const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
+    const emitError = vi.fn();
 
     mockState.ensure.mockResolvedValue(makeBackend());
     mockState.subscribe
+      .mockResolvedValueOnce(
+        makeSubscription(async function* () {
+          yield progressEvent;
+          yield waitingEvent;
+        }),
+      )
       .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'))
       .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'))
       .mockRejectedValueOnce(new BackendUnreachableError('fetch failed'));
 
     const options = makeOptions({
-      emitError: (error: unknown) => {
-        expect(error).toBeInstanceOf(BackendUnreachableError);
-        process.stderr.write('fetch failed [code=backend_unreachable]\n');
-        process.exitCode = 69;
-      },
+      emitError,
       backoffScheduler,
     });
 
-    await expect(launchAndFollow(options)).resolves.toBe(69);
+    await expect(launchAndFollow(options)).resolves.toBe(75);
 
-    expect(stdout).toBe(`${formatLaunch(options.launchResult)}\n`);
-    expect(stderr).toBe('fetch failed [code=backend_unreachable]\n');
+    expect(buildErrorEnvelope(emitError.mock.calls[0]?.[0])).toEqual({
+      envelope: {
+        error: true,
+        code: 'transient',
+        message: 'fetch failed',
+        remediation: `Rerun \`coral-cli wait jobs job-1 --cursor ${cursor}\` to continue waiting.`,
+      },
+      exitCode: 75,
+    });
     expect(backoffScheduler).toHaveBeenCalledTimes(2);
     expect(backoffScheduler).toHaveBeenNthCalledWith(1, 1_000);
     expect(backoffScheduler).toHaveBeenNthCalledWith(2, 1_000);
-    expect(mockState.ensure).toHaveBeenCalledTimes(3);
-    expect(mockState.subscribe).toHaveBeenCalledTimes(3);
+    expect(mockState.ensure).toHaveBeenCalledTimes(4);
+    expect(mockState.subscribe).toHaveBeenCalledTimes(4);
   });
+
+  it.each(['backend_recovering', 'backend_shutting_down'])(
+    'prints a cursor-free resume command when initial %s retries are exhausted',
+    async (code) => {
+      const { launchAndFollow } = await loadFollowModule();
+      const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
+      const emitError = vi.fn();
+      const subscriptionError = new Error('Backend is not accepting wait subscriptions.', {
+        cause: { code, message: 'Backend is not accepting wait subscriptions.' },
+      });
+
+      mockState.ensure.mockResolvedValue(makeBackend());
+      mockState.subscribe.mockRejectedValue(subscriptionError);
+
+      await expect(launchAndFollow(makeOptions({ emitError, backoffScheduler }))).resolves.toBe(75);
+
+      expect(buildErrorEnvelope(emitError.mock.calls[0]?.[0])).toEqual({
+        envelope: {
+          error: true,
+          code: 'transient',
+          message: 'Backend is not accepting wait subscriptions.',
+          remediation: 'Rerun `coral-cli wait jobs job-1` to continue waiting.',
+        },
+        exitCode: 75,
+      });
+      expect(backoffScheduler).toHaveBeenCalledTimes(2);
+      expect(mockState.subscribe).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it.each(['launch-follow', 'wait'] as const)(
+    'prints backend recovery commands when %s exhausts initial connection attempts',
+    async (path) => {
+      const { followJobs, launchAndFollow } = await loadFollowModule();
+      const { BackendUnreachableError } = await import('#src/infra/http-errors.js');
+      const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
+      let renderedError = '';
+      const emitError = vi.fn((error: unknown) => {
+        expect(error).toBeInstanceOf(BackendUnreachableError);
+        renderedError = (error as Error).message;
+        process.exitCode = 69;
+      });
+
+      if (path === 'launch-follow') {
+        mockState.ensure.mockResolvedValue(makeBackend());
+        mockState.subscribe.mockRejectedValue(new BackendUnreachableError('fetch failed'));
+        await expect(launchAndFollow(makeOptions({ emitError, backoffScheduler }))).resolves.toBe(69);
+      } else {
+        await expect(
+          followJobs({
+            start: { kind: 'jobs', jobIds: ['job-1'] },
+            reconnectPolicy: 'bounded',
+            connect: async () => {
+              throw new BackendUnreachableError('fetch failed');
+            },
+            abortJobs: async () => undefined,
+            projectRoot: '/project/root',
+            emitError,
+            render: { isTTY: false, columns: 80, embed: false, verbose: false },
+            backoffScheduler,
+          }),
+        ).resolves.toBe(69);
+      }
+
+      expect(emitError).toHaveBeenCalledOnce();
+      expect(renderedError).toContain('Run `coral-cli backend status` and follow its recovery guidance');
+      expect(renderedError).toContain('`coral-cli wait jobs job-1` to continue waiting');
+      expect(backoffScheduler).toHaveBeenCalledTimes(2);
+      if (path === 'launch-follow') {
+        expect(mockState.ensure).toHaveBeenCalledTimes(3);
+        expect(mockState.subscribe).toHaveBeenCalledTimes(3);
+      }
+    },
+  );
 
   it('warns on first SIGINT, aborts on second SIGINT, and calls abortJob once', async () => {
     const { launchAndFollow } = await loadFollowModule();
@@ -489,7 +884,7 @@ describe('cli follow', () => {
 
     await expect(followPromise).resolves.toBe(1);
 
-    expect(stdout).toBe('Provider job job-1 running (provider session session-1)\n');
+    expect(stdout).toBe('Provider job job-1 launch accepted (provider session session-1)\n');
     expect(stderr).toBe('\nPress Ctrl+C again to abort the job.\n');
     expect(abortJob).toHaveBeenCalledTimes(1);
     expect(abortJob).toHaveBeenCalledWith('job-1');
@@ -498,10 +893,45 @@ describe('cli follow', () => {
     expect(process.off).toHaveBeenCalledWith('SIGINT', expect.any(Function));
   });
 
+  it('warns on first SIGINT and aborts every bounded-wait job on the second', async () => {
+    const { followJobs } = await loadFollowModule();
+    const started = createDeferred<void>();
+    const abortJobs = vi.fn().mockResolvedValue(undefined);
+
+    const followPromise = followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1', 'job-2'] },
+      reconnectPolicy: 'bounded',
+      projectRoot: '/project/root',
+      emitError: vi.fn(),
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs,
+      connect: async ({ signal }) => ({
+        kind: 'subscription',
+        subscription: makeSubscription(async function* () {
+          started.resolve();
+          await new Promise<never>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new TypeError('terminated')), { once: true });
+          });
+        }),
+      }),
+    });
+    await started.promise;
+
+    sigintHandler?.();
+    expect(stderr).toBe('\nPress Ctrl+C again to abort the job.\n');
+    expect(abortJobs).not.toHaveBeenCalled();
+
+    sigintHandler?.();
+    await expect(followPromise).resolves.toBe(1);
+
+    expect(abortJobs).toHaveBeenCalledOnce();
+    expect(abortJobs).toHaveBeenCalledWith(['job-1', 'job-2']);
+  });
+
   it.each([
-    [{ exitCode: null }, 0],
-    [{ exitCode: 256 }, 0],
-    [{ exitCode: 1.5 }, 0],
+    [{}, 0],
+    [{}, 0],
+    [{}, 0],
     [{ outcome: { kind: 'provider_exit' as const, code: 256 } }, 1],
     [{ outcome: { kind: 'provider_exit' as const, code: 1.5 } }, 1],
     [{ outcome: { kind: 'aborted' as const, reason: 'signal_abort' as const } }, 1],
@@ -518,7 +948,22 @@ describe('cli follow', () => {
     await expect(launchAndFollow(makeOptions())).resolves.toBe(expected);
   });
 
-  it('renders local cause chains from the store for failed terminal outcomes', async () => {
+  it.each([
+    {
+      name: 'a nested workflow cause',
+      causeRef: { stream: { kind: 'workflow', id: 'workflow-1' }, seq: 1 },
+      expected:
+        'Job job-1 failed: Failed: Workflow failed. Caused by: Workflow lifecycle fault (unknown): workflow failure.',
+    },
+    {
+      name: 'an indeterminate provider activation cause with its inspection command',
+      causeRef: { stream: { kind: 'job', id: 'job-activation-unknown' }, seq: 3 },
+      expected:
+        'Job job-1 failed: Failed: Provider containment disappeared after activation may have begun. ' +
+        'Activation indeterminate [activation_indeterminate]: the provider may have started. ' +
+        'Run `coral-cli jobs detail job-activation-unknown` to inspect the durable job record before deciding whether to retry.',
+    },
+  ] as const)('renders $name from the store for failed terminal outcomes', async ({ causeRef, expected }) => {
     // Module-load-time env capture: this test needs fresh import after HOME change.
     const fixture = createCauseRenderFixture();
     const originalHome = process.env.HOME;
@@ -537,10 +982,7 @@ describe('cli follow', () => {
             content: '',
             outcome: {
               kind: 'failed',
-              causeRef: {
-                stream: { kind: 'workflow', id: 'workflow-1' },
-                seq: 1,
-              },
+              causeRef,
             },
           });
         }),
@@ -548,10 +990,7 @@ describe('cli follow', () => {
 
       await expect(launchAndFollow(makeOptions({ pluginRoot: fixture.pluginRoot }))).resolves.toBe(1);
 
-      expect(stdout).toContain(
-        'Job job-1 failed: Failed: Workflow failed. Caused by: Workflow lifecycle fault (unknown): workflow failure.',
-      );
-      expect(stdout).not.toContain('workflow/workflow-1#1');
+      expect(stdout).toContain(expected);
     } finally {
       if (originalHome === undefined) {
         delete process.env.HOME;

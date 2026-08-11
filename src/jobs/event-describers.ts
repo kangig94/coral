@@ -29,11 +29,23 @@ const queueAdmitted = typedDescriber(jobQueueAdmittedBodySchema, () => 'Job admi
 
 const runtimeStarted = typedDescriber(jobRuntimeStartedBodySchema, () => 'Job runtime started.');
 
-const progressEmitted = typedDescriber(jobProgressBodySchema, (body) => {
+const progressEmitted = typedDescriber(jobProgressBodySchema, (body, event) => {
   switch (body.kind) {
     case 'message':
       return body.message;
     case 'domain':
+      if (
+        body.stage === 'provider_operation_failed' &&
+        typeof body.detail === 'object' &&
+        body.detail !== null &&
+        'code' in body.detail &&
+        body.detail.code === 'activation_indeterminate'
+      ) {
+        return (
+          `${body.message} Activation indeterminate [activation_indeterminate]: the provider may have started. ` +
+          `Run \`coral-cli jobs detail ${event.stream.id}\` to inspect the durable job record before deciding whether to retry.`
+        );
+      }
       return body.message;
     case 'missing_launch_record':
     case 'recovery_parse_failed':

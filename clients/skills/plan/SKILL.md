@@ -1,7 +1,7 @@
 ---
 name: plan
 description: 'Use when a task needs structured planning before implementation. Supports --delegate and round=N[,M].'
-argument-hint: '[--delegate] [round=N[,M]] [task description]'
+argument-hint: '[--delegate] [--no-handoff] [round=N[,M]] [task description]'
 ---
 
 # Planning
@@ -10,13 +10,13 @@ Execute a multi-round planning session with architect/critic review.
 
 ## Argument Routing
 
-| Argument       | Mode                                                                                               |
-| -------------- | -------------------------------------------------------------------------------------------------- |
-| `<prompt>`     | Self-execute on current host (default)                                                             |
+| Argument       | Mode                                                                                                                              |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `<prompt>`     | Self-execute on current host (default)                                                                                            |
 | `--delegate`   | Add review pass on the other host (Claude → Codex, Codex → Claude, Copilot → Codex; from SessionStart `Current host:`) |
-| `round=N`      | Review rounds for every applicable phase (default `1`). e.g. `round=3` for deeper iteration. |
-| `round=N,M`    | Per-phase budget: Phase 1 (`<other-host>`) gets `N` rounds, Phase 2 (`<current-host>`) gets `M`. **Turns `--delegate` on.** |
-| `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                         |
+| `round=N`      | Review rounds for every applicable phase (default `1`). e.g. `round=3` for deeper iteration.                                      |
+| `round=N,M`    | Per-phase budget: Phase 1 (`<other-host>`) gets `N` rounds, Phase 2 (`<current-host>`) gets `M`. **Turns `--delegate` on.**       |
+| `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                                                        |
 
 Reviewers and the resolver always run — the round budget only sets how many times each phase iterates.
 
@@ -142,7 +142,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     launch = Bash(`coral-cli workflow -e "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d`)
     ```
     Reviewers always run in `--deep` methodology and the resolver always runs — both are independent of the round budget.
-    `coral-cli wait jobs <job>` → the terminal output prints `Result path: <path>`; read that artifact for the full workflow result and locate the resolver's synthesis section there.
+    Run `coral-cli wait jobs <job>` and classify the result from its rendered output, not exit code `75` alone. `Result path: <path>` marks a terminal result; read that artifact for the full workflow result and locate the resolver's synthesis section there, even when a terminal `provider_exit` propagated code `75`. A status beginning `Still waiting` with `(cursor: <cursor>)` means the workflow is still live; only then resume with `coral-cli wait jobs <job> --cursor <cursor>`. If a transient error instead prints `remediation:`, follow that exact command. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
 
     **4b. Post-Round Processing**
 

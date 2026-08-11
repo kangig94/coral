@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { HostRef, ProviderServerSpec } from '../../../providers/contract.js';
 import type { TimePort } from '../../../infra/port-types.js';
-import type { ProviderServerHandle } from '../provider-server-transport.js';
+import type { ProviderServerHandle } from '../../../providers/app-server-transport.js';
 
 export type HostStatsState = {
   liveControllers: number;
@@ -64,7 +64,7 @@ export function hostFingerprintFromSpec(spec: ProviderServerSpec): string {
       JSON.stringify({
         identity: hostKeyFromSpec(spec),
         leaseMode: spec.leaseMode,
-        idlePolicy: spec.leaseMode === 'shared' ? spec.idlePolicy : null,
+        idleRetirement: spec.leaseMode === 'shared' ? spec.idleRetirement : null,
       }),
     )
     .digest('hex');

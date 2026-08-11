@@ -1,3 +1,4 @@
+import { ZodError } from 'zod';
 import { BackendToolHttpError } from '../transport/http/errors.js';
 import { TransientHttpError } from '../infra/http-errors.js';
 import { isRecord } from '../infra/json.js';
@@ -28,8 +29,18 @@ function waitSubscriptionStatusCode(body: Record<string, unknown>): number {
  *
  * 503-family codes are wrapped as `TransientHttpError` so the follow-loop
  * retry guard (`isTransientStreamError`) recognizes them as retryable.
+ *
+ * A decode failure can occur during a coordinator/plugin version transition. Retrying covers a short-lived
+ * transition; if it persists, the public message points at upgrading without exposing schema diagnostics.
  */
 export function mapWaitSubscriptionError(error: unknown): unknown {
+  if (error instanceof ZodError) {
+    return new TransientHttpError(
+      503,
+      'The coordinator emitted a wait event this Coral build could not read. Rerun the command; if this keeps happening, upgrade the installed Coral plugin.',
+    );
+  }
+
   if (!(error instanceof Error) || !isRecord(error.cause) || typeof error.cause.message !== 'string') {
     return error;
   }

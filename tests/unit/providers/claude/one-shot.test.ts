@@ -72,17 +72,21 @@ function createDeferred<T>() {
 }
 
 describe('runClaudeOneShotTurn', () => {
-  it('confirms lifecycle interruption only for the exact broker turn response', async () => {
+  it('accepts a lifecycle interrupt request only for the exact broker turn response', async () => {
     const transport = (brokerTurnId: string): AppServerSession => ({
       rpc: async <R>() => ({ interrupted: true, brokerTurnId }) as R,
       subscribe: () => () => {},
       closed: Promise.resolve(),
-      interrupt: async () => false,
+      interrupt: async () => ({ kind: 'not-accepted', reason: 'test refusal' }),
     });
     const continuity = { brokerSessionKey: 'broker-1', brokerTurnId: 'turn-1' };
 
-    await expect(claudeAppServerLifecycle.interrupt?.(transport('turn-other'), continuity)).resolves.toBe(false);
-    await expect(claudeAppServerLifecycle.interrupt?.(transport('turn-1'), continuity)).resolves.toBe(true);
+    await expect(claudeAppServerLifecycle.interrupt?.(transport('turn-other'), continuity)).resolves.toMatchObject({
+      kind: 'not-accepted',
+    });
+    await expect(claudeAppServerLifecycle.interrupt?.(transport('turn-1'), continuity)).resolves.toEqual({
+      kind: 'accepted',
+    });
   });
 
   it('returns the completed turn, closes the broker session, and removes the transient JSONL', async () => {
@@ -152,7 +156,8 @@ describe('runClaudeOneShotTurn', () => {
         return () => {};
       },
       closed: new Promise(() => {}),
-      interrupt: (continuity) => Promise.resolve(rpc('turn/interrupt', continuity)).then(() => true),
+      interrupt: (continuity) =>
+        Promise.resolve(rpc('turn/interrupt', continuity)).then(() => ({ kind: 'accepted' as const })),
     };
 
     const turn = runClaudeOneShotTurn(
@@ -272,7 +277,8 @@ describe('runClaudeOneShotTurn', () => {
         return () => {};
       },
       closed: new Promise(() => {}),
-      interrupt: (continuity) => Promise.resolve(rpc('turn/interrupt', continuity)).then(() => true),
+      interrupt: (continuity) =>
+        Promise.resolve(rpc('turn/interrupt', continuity)).then(() => ({ kind: 'accepted' as const })),
     };
 
     const turn = runClaudeOneShotTurn(
@@ -395,7 +401,8 @@ describe('runClaudeOneShotTurn', () => {
         return () => {};
       },
       closed: new Promise(() => {}),
-      interrupt: (continuity) => Promise.resolve(rpc('turn/interrupt', continuity)).then(() => true),
+      interrupt: (continuity) =>
+        Promise.resolve(rpc('turn/interrupt', continuity)).then(() => ({ kind: 'accepted' as const })),
     };
 
     const turn = runClaudeOneShotTurn(
@@ -514,7 +521,8 @@ describe('runClaudeOneShotTurn', () => {
         return () => {};
       },
       closed: brokerClosed.promise,
-      interrupt: (continuity) => Promise.resolve(rpc('turn/interrupt', continuity)).then(() => true),
+      interrupt: (continuity) =>
+        Promise.resolve(rpc('turn/interrupt', continuity)).then(() => ({ kind: 'accepted' as const })),
     };
 
     const turn = runClaudeOneShotTurn(
@@ -566,7 +574,8 @@ describe('runClaudeOneShotTurn', () => {
       rpc: rpc as AppServerSession['rpc'],
       subscribe: () => () => {},
       closed: new Promise(() => {}),
-      interrupt: (continuity) => Promise.resolve(rpc('turn/interrupt', continuity)).then(() => true),
+      interrupt: (continuity) =>
+        Promise.resolve(rpc('turn/interrupt', continuity)).then(() => ({ kind: 'accepted' as const })),
     };
 
     await expect(
@@ -621,7 +630,7 @@ describe('runClaudeOneShotTurn', () => {
       }
       throw new Error(`unexpected RPC ${method}`);
     });
-    const interrupt = vi.fn(async () => true);
+    const interrupt = vi.fn(async () => ({ kind: 'accepted' as const }));
     const lease: AppServerSession = {
       rpc: rpc as AppServerSession['rpc'],
       subscribe: () => () => {},
@@ -649,7 +658,7 @@ describe('runClaudeOneShotTurn', () => {
   it.each([
     {
       name: 'persistent false responses',
-      interrupt: () => Promise.resolve(false),
+      interrupt: () => Promise.resolve({ kind: 'not-accepted' as const, reason: 'test refusal' }),
       close: (brokerSessionKey: unknown) => Promise.resolve({ brokerSessionKey, closed: false }),
     },
     {

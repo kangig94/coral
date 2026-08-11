@@ -9,6 +9,7 @@ import type { AbortReason } from '../outcome.js';
 import type { LaunchPool, QueuedHandle } from './admission.js';
 import type { ExecutionOwner } from '../../runtime/execution-owner.js';
 import type { DiscussionRunDescriptor } from '../discussion-run.js';
+import type { ProviderOperationEnvironmentInput } from './provider-operation-lifecycle.js';
 
 export interface ProviderJobLaunchPort {
   launchInitialProviderJob(
@@ -26,7 +27,7 @@ export interface ProviderJobLaunchPort {
       replacesWorkflowJobId?: string;
       retention?: RetentionPolicy;
       discussionRun?: DiscussionRunDescriptor;
-      mintProtectedEnv: (jobId: string) => Record<string, string>;
+      mintProtectedEnv: (jobId: string) => ProviderOperationEnvironmentInput;
     },
   ): ProviderSessionLaunchDecision;
 
@@ -47,7 +48,7 @@ export interface ProviderJobLaunchPort {
       replacesWorkflowJobId?: string;
       retention?: RetentionPolicy;
       discussionRun?: DiscussionRunDescriptor;
-      mintProtectedEnv: (jobId: string) => Record<string, string>;
+      mintProtectedEnv: (jobId: string) => ProviderOperationEnvironmentInput;
     },
   ): ProviderSessionLaunchDecision;
 
@@ -63,7 +64,7 @@ export interface ProviderJobLaunchPort {
       replacesWorkflowJobId: string;
       pool?: LaunchPool;
       projectRoot: string;
-      mintProtectedEnv: (jobId: string) => Record<string, string>;
+      mintProtectedEnv: (jobId: string) => ProviderOperationEnvironmentInput;
     },
   ): ProviderSessionLaunchDecision;
 }
@@ -89,7 +90,7 @@ export interface RecoveredJobLifecyclePort {
     launchRecord: JobLaunch,
     queuedHandle: QueuedHandle,
     pool: LaunchPool,
-    protectedEnv: Readonly<Record<string, string>>,
+    protectedEnv: ProviderOperationEnvironmentInput,
   ): void;
   writeJobTerminal(
     jobId: string,

@@ -1,6 +1,6 @@
 ---
 paths:
-  - "src/**/*.ts"
+  - 'src/**/*.ts'
 ---
 
 # Validation Checklists
@@ -9,35 +9,36 @@ paths:
 
 Work CANNOT be marked complete if any fail.
 
-| Category | Check | Agent |
-|----------|-------|-------|
-| **Session** | Codex session writes use atomic pattern (`.tmp` + rename) | integration-guardian |
-| **Session** | Corrupt session files are skipped, not crash | integration-guardian |
-| **Session** | Discuss session writes use atomic pattern (`writeStateAtomic`) | integration-guardian |
-| **Process** | Child processes tracked in `activeChildren` set | integration-guardian |
-| **Process** | Timeout kills use SIGTERM then SIGKILL after delay (use `gracefulKill`; enforced by `tests/invariants/timeout-kill-escalation.test.ts`) | integration-guardian |
-| **Process** | `killAllChildren()` called on server shutdown (enforced by `tests/invariants/shutdown-teardown-containment.test.ts`) | integration-guardian |
-| **Elegance** | Elegance Score >= 7 (code quality gate) | code-critic |
-| **Elegance** | Follows established codebase patterns | code-critic |
+| Category     | Check                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Agent                |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------- |
+| **Session**  | Codex session writes use atomic pattern (`.tmp` + rename)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | integration-guardian |
+| **Session**  | Corrupt session files are skipped, not crash                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | integration-guardian |
+| **Session**  | Discuss session writes use atomic pattern (`writeStateAtomic`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | integration-guardian |
+| **Process**  | Provider-proxy containment teardown uses the identity recorded by `recordContainment`, never by walking descendants                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | integration-guardian |
+| **Process**  | Timeout kills use SIGTERM then SIGKILL after delay — call `gracefulKill` or `reapRecordedContainment`; hand-rolling the escalation is a violation even when it never touches `safeKill` (enforced by `tests/invariants/timeout-kill-escalation.test.ts`)                                                                                                                                                                                                                                                                                                                                                                                                                                                     | integration-guardian |
+| **Process**  | Reaping confirms absence after every signal, and times the grace on `createMonotonicClock` — never on wall-clock time                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | integration-guardian |
+| **Process**  | Every awaited shutdown finalizer and child-cleanup call runs inside a containment helper — `runStep`, `runBudgetedStep`, or `runRequiredBudgetedStep` — except a documented 2-entry allowlist (`SHUTDOWN_NON_FINALIZER_AWAIT_ALLOWLIST` in `tests/invariants/shutdown-teardown-containment.test.ts`): `waitForObservedShutdownTask(serverClosed)` and `waitForObservedShutdownTask(ipcServerClosed)` are not finalizer calls themselves, but bounded joins on tasks whose failure was already captured via `observeTask` when each task started. Only `runBudgetedStep` and `runRequiredBudgetedStep` impose a time budget by name; the two allowlisted joins race the same remaining-drain deadline instead | integration-guardian |
+| **Elegance** | Elegance Score >= 7 (code quality gate)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | code-critic          |
+| **Elegance** | Follows established codebase patterns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | code-critic          |
 
 ## STRONG (Must Document)
 
 If not addressed, must document reason in code comments or commit message.
 
-| Category | Check | Agent |
-|----------|-------|-------|
-| **Schema** | Zod schemas match documented CLI flags and backend payload contracts | integration-guardian |
-| **Schema** | Schema error messages are user-friendly | ux-critic |
-| **Types** | Exported types have JSDoc comments | code-critic |
-| **Test** | Changed modules have corresponding test updates | code-critic |
-| **Error** | Error messages include recovery hints | ux-critic |
-| **Discuss** | State machine functions are pure (no I/O) | code-critic |
+| Category    | Check                                                                | Agent                |
+| ----------- | -------------------------------------------------------------------- | -------------------- |
+| **Schema**  | Zod schemas match documented CLI flags and backend payload contracts | integration-guardian |
+| **Schema**  | Schema error messages are user-friendly                              | ux-critic            |
+| **Types**   | Exported types have JSDoc comments                                   | code-critic          |
+| **Test**    | Changed modules have corresponding test updates                      | code-critic          |
+| **Error**   | Error messages include recovery hints                                | ux-critic            |
+| **Discuss** | State machine functions are pure (no I/O)                            | code-critic          |
 
 ## MINOR (Should Document)
 
-| Category | Check | Agent |
-|----------|-------|-------|
-| **Naming** | Contract-facing JSON fields stay consistent with their documented naming; TypeScript stays camelCase | code-critic |
-| **Docs** | Code comments explain WHY, not WHAT | code-critic |
-| **Buffer** | Output buffers respect MAX_BUFFER limit | integration-guardian |
-| **Hook** | Hook scripts use `try/catch` wrapper for fail-open behavior | hook-safety |
+| Category   | Check                                                                                                | Agent                |
+| ---------- | ---------------------------------------------------------------------------------------------------- | -------------------- |
+| **Naming** | Contract-facing JSON fields stay consistent with their documented naming; TypeScript stays camelCase | code-critic          |
+| **Docs**   | Code comments explain WHY, not WHAT                                                                  | code-critic          |
+| **Buffer** | Output buffers respect MAX_BUFFER limit                                                              | integration-guardian |
+| **Hook**   | Hook scripts use `try/catch` wrapper for fail-open behavior                                          | hook-safety          |

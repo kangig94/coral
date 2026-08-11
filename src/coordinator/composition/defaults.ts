@@ -47,7 +47,7 @@ type BackendEagerDefaults = {
 type BackendWorldBoundDefaults = {
   readonly listenFn: NonNullable<CoordinatorCoreOptions['listenFn']>;
   readonly cleanupStaleJobsFn: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
-  readonly markJobsAsErrorFn: (namespace: string, message: string, signal: AbortSignal) => void | Promise<void>;
+  readonly markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
   readonly terminateAllFn: NonNullable<CoordinatorCoreOptions['terminateAllFn']>;
 };
 
@@ -148,12 +148,11 @@ export function resolveCoordinatorDefaults(
         });
       const markJobsAsErrorFn: BackendWorldBoundDefaults['markJobsAsErrorFn'] =
         options.markJobsAsErrorFn ??
-        ((currentNamespace, message, signal) => {
+        ((message, signal) => {
           const progressStore = bindings.getProgressStore();
           if (progressStore === null) return;
           return markJobsAsError(
             progressStore,
-            currentNamespace,
             message,
             runtime.storage,
             runtime.paths.coral.exports.jobsRoot,
