@@ -288,15 +288,13 @@ describe('createProviderProxyAcquisitionSteps', () => {
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
       controlEstablished: notifyProviderProxyControlEstablished,
-      disappearanceConsumer: {
-        containmentDisappeared: async (notice) => ({
-          kind: 'accepted',
-          acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
-        }),
-      },
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => null,
+        'disappearance-consumer': async ({ notice }) => ({
+          kind: 'accepted',
+          acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
+        }),
       }),
     });
     lifecycle.initializeClaimSlots();

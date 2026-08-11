@@ -33,6 +33,7 @@ import { proxyOperationAttachResultSchema } from '#src/provider-proxy/protocol.j
 import { createGrantRegistry, handoffSecretDigest, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import {
   ProviderOperationAtomicTerminalizationError,
+  ProviderOperationTerminalMetadataError,
   terminalizeProviderOperation,
   type ProviderOperationTerminalizationPort,
 } from '#src/jobs/provider-operation-terminalization.js';
@@ -127,16 +128,16 @@ function lifecycleForSchedule(
   const lifecycle = new ProviderProxySetLifecycle({
     claims,
     controlEstablished: () => undefined,
-    disappearanceConsumer: {
-      containmentDisappeared: (notice) => reconciler.containmentDisappeared(notice),
-    },
     time: {
       now: () => 100,
       setTimeout: () => ({ unref: () => undefined }),
       clearTimeout: () => undefined,
     },
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher(
-      { 'containment-proof': async () => null },
+      {
+        'containment-proof': async () => null,
+        'disappearance-consumer': ({ notice }) => reconciler.containmentDisappeared(notice),
+      },
       (error) => {
         throw error;
       },
@@ -546,13 +547,18 @@ function createHarness(
         terminalizeProviderOperation(progressStore, terminalRecord, directive, now)),
   };
   const fatalErrors: Error[] = [];
+  const dispatcherFatalErrors: Error[] = [];
+  const reconcilerFatalErrors: Error[] = [];
   const recoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
     {
       'disappearance-terminalization':
         overrides.disappearanceTerminalization ??
         (({ record, directive }) => terminalization.terminalize(record, directive)),
     },
-    (error) => fatalErrors.push(error),
+    (error) => {
+      dispatcherFatalErrors.push(error);
+      fatalErrors.push(error);
+    },
   );
   const reconciler = new ProviderOperationReconciler({
     getProgressStore: () => progressStore,
@@ -569,7 +575,10 @@ function createHarness(
     terminalization,
     recoveryDispatcher,
     backendNamespace: 'tests',
-    onFatal: (error) => fatalErrors.push(error),
+    onFatal: (error) => {
+      reconcilerFatalErrors.push(error);
+      fatalErrors.push(error);
+    },
     ...(overrides.onError === undefined ? {} : { onError: overrides.onError }),
     time: {
       now: () => now,
@@ -598,6 +607,8 @@ function createHarness(
     reconciler,
     recoveryDispatcher,
     fatalErrors,
+    dispatcherFatalErrors,
+    reconcilerFatalErrors,
     phasesBeforeMutation,
     begin,
     advance: (ms: number) => {
@@ -973,6 +984,74 @@ describe('ProviderOperationReconciler publication', () => {
       expect(replacement.record).toMatchObject({ revision: 1, retryNotBeforeMs: 125 });
     }
     expect(harness.fatalErrors).toEqual([]);
+  });
+
+  it('stops the active due page on an already-dispatched lifecycle fatal', async () => {
+    type ControlledTimer = ReturnType<TimePort['setTimeout']>;
+    const timers = new Set<ControlledTimer>();
+    const warnings: string[] = [];
+    let rejectTerminalization!: (error: Error) => void;
+    let laterLocalRecoveryCalls = 0;
+    const harness = createHarness({
+      disappearanceTerminalization: () =>
+        new Promise((_, reject) => {
+          rejectTerminalization = reject;
+        }),
+      recoverLocalJob: async (record) => {
+        laterLocalRecoveryCalls += 1;
+        return providerRecoveryAccepted(record.operation.jobId);
+      },
+      onError: (message) => warnings.push(message),
+      time: {
+        setTimeout: () => {
+          const timer: ControlledTimer = { unref: () => undefined };
+          timers.add(timer);
+          return timer;
+        },
+        clearTimeout: (timer) => {
+          if (timer !== null) timers.delete(timer);
+        },
+      },
+    });
+    const first = {
+      ...providerOperationRecord('executing', { retryCount: 1, retryNotBeforeMs: 0 }),
+      lastError: { observedAtMs: 1, code: 'attach_failed', message: 'retry attachment' },
+    } as Extract<ProviderOperationRecord, { phase: 'executing' }>;
+    const later = providerOperationRecord('local-recovery-pending', {
+      operation: { ...first.operation, operationId: operationUuid(999) },
+      retryNotBeforeMs: 1,
+    });
+    insertProviderOperation(harness.db, first);
+    insertProviderOperation(harness.db, later);
+    const delivery = harness.reconciler.containmentDisappeared({
+      operation: first.operation,
+      setIdentity: providerProxySetIdentityFromRecord(first),
+      disappearanceReceipt: 'active-page-fatal',
+    });
+
+    harness.reconciler.wake();
+    await nextEventLoopTurn();
+    rejectTerminalization(new ProviderOperationTerminalMetadataError(first.operation));
+    await expect(delivery).rejects.toMatchObject({
+      name: 'ProviderProxySetLifecycleFatalError',
+      stage: 'disappearance-delivery',
+      producerId: 'disappearance-terminalization',
+    });
+    await nextEventLoopTurn();
+
+    expect({
+      dispatcherGlobalFatalCalls: harness.dispatcherFatalErrors.length,
+      reconcilerOnFatalCalls: harness.reconcilerFatalErrors.length,
+      warnings: warnings.length,
+      laterLocalRecoveryCalls,
+      activePollTimers: timers.size,
+    }).toEqual({
+      dispatcherGlobalFatalCalls: 1,
+      reconcilerOnFatalCalls: 0,
+      warnings: 0,
+      laterLocalRecoveryCalls: 0,
+      activePollTimers: 0,
+    });
   });
 
   it('retires healthy legacy occupants before due membership returns', async () => {

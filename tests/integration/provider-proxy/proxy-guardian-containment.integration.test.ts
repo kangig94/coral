@@ -510,7 +510,6 @@ function establishActivationRoute(setIdentity: ProviderProxySetIdentity) {
   const lifecycle = new ProviderProxySetLifecycle({
     claims,
     controlEstablished: () => undefined,
-    disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
     time: { ...timer, now: () => 0 },
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
       'containment-proof': () => new Promise<never>(() => undefined),
@@ -1323,7 +1322,6 @@ describe('provider proxy cumulative root rotation', () => {
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
       controlEstablished: () => undefined,
-      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: runtime.time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => null,

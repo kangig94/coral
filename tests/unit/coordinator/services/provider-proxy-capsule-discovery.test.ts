@@ -106,7 +106,6 @@ describe('provider proxy capsule discovery', () => {
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
       controlEstablished: () => undefined,
-      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: runtime.time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'capsule-redemption': () => new Promise<never>(() => undefined),

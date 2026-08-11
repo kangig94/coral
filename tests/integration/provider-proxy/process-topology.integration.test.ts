@@ -1109,15 +1109,13 @@ describe('provider-proxy process topology: acquisition', () => {
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
       controlEstablished: () => undefined,
-      disappearanceConsumer: {
-        containmentDisappeared: async (notice) => ({
-          kind: 'accepted',
-          acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
-        }),
-      },
       time: environment.outerRuntime().time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => null,
+        'disappearance-consumer': async ({ notice }) => ({
+          kind: 'accepted',
+          acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
+        }),
       }),
     });
     lifecycle.initializeClaimSlots();

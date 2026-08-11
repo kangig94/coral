@@ -1,7 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-import { z } from 'zod';
-
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
 import type { AppServerProxyPlacementResult } from '../../jobs/contracts/app-server-proxy-route.js';
@@ -12,7 +10,6 @@ import type { ProviderOperationTerminalizationResult } from '../../jobs/provider
 import { isAbortStopCause, type ProviderStopCause } from '../../providers/contract.js';
 import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
-  operationIdentitySchema,
   providerOperationPreparePermanentRefusalSchema,
   type ProviderOperationPreparePermanentRefusal,
 } from '../../provider-proxy/protocol.js';
@@ -57,7 +54,6 @@ import type { ProviderOperationPrepareMaterializationResult } from './provider-o
 import {
   providerProxySetIdentitiesEqual,
   ProviderProxySetIdentityIndex,
-  providerProxySetIdentitySchema,
   providerProxySetIdentityFromRecord,
   type ProviderProxySetKey,
   type ProviderProxySetIdentity,
@@ -66,9 +62,18 @@ import type { ProviderOperationRecoveryAcceptance } from './recovery/index.js';
 import type {
   ContainmentAbsenceAcceptance,
   ContainmentAbsenceOperationalIncident,
-  DisappearanceDeliveryAttemptOutcome,
 } from './provider-proxy-set-lifecycle.js';
-import type { ProviderProxyRecoveryDispatcher } from './provider-proxy-recovery-policy.js';
+import {
+  containmentDisappearanceNoticeSchema,
+  type ContainmentDisappearanceAcceptance,
+  type ContainmentDisappearanceNotice,
+  type DisappearanceDeliveryAttemptOutcome,
+  type ProviderContainmentDisappearanceConsumer,
+} from './provider-containment-disappearance.js';
+import {
+  isProviderProxyRecoveryFatalError,
+  type ProviderProxyRecoveryDispatcher,
+} from './provider-proxy-recovery-policy.js';
 
 export type ProviderOperationReconciliationEvidence =
   | Readonly<{ kind: 'unresolved' }>
@@ -84,22 +89,6 @@ export type ProviderOperationReconciliationEvidence =
       prepareAttemptKey: string;
     }>
   | Readonly<{ kind: 'released-after-terminal'; settledThroughProviderSeq: number }>;
-
-export type ContainmentDisappearanceNotice = Readonly<{
-  operation: ProviderOperationIdentity;
-  setIdentity: ProviderProxySetIdentity;
-  disappearanceReceipt: string;
-}>;
-
-export type ContainmentDisappearanceAcceptance = Readonly<{
-  kind: 'accepted';
-  operation: ProviderOperationIdentity;
-  disposition: 'record-absent' | 'local-recovery-committed' | 'terminalization-committed' | 'settlement-deleted';
-}>;
-
-export interface ProviderContainmentDisappearanceConsumer {
-  containmentDisappeared(notice: ContainmentDisappearanceNotice): Promise<DisappearanceDeliveryAttemptOutcome>;
-}
 
 export type StartupProviderSetWork = Readonly<{
   key: ProviderProxySetKey;
@@ -195,14 +184,6 @@ export class StartupSetRecoveryProducer implements StartupSetRecoveryPort {
     return awaitStartup(this.#recoverSet(work, signal), signal);
   }
 }
-
-const containmentDisappearanceNoticeSchema = z
-  .object({
-    operation: operationIdentitySchema,
-    setIdentity: providerProxySetIdentitySchema,
-    disappearanceReceipt: z.string().min(1).max(4096),
-  })
-  .strict();
 
 export type ProviderOperationTerminationVerdict =
   | Readonly<{ kind: 'pending' }>
@@ -2012,7 +1993,7 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
         await this.reconcile(record, preferredAuthority);
       }
     } catch (error: unknown) {
-      if (!this.#fatal) {
+      if (!this.#observeFatal(error)) {
         this.#deps.onError?.(`Provider operation reconciliation failed: ${providerOperationErrorReason(error)}`);
       }
     } finally {
@@ -2076,19 +2057,15 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     }
 
     if (driveError === undefined) return 'finished';
-    if (this.#fatal) return 'fatal';
-    if (driveError instanceof ProviderOperationReconcilerFatalError) {
-      this.#latchFatal(driveError);
-      return 'fatal';
-    }
+    if (this.#observeFatal(driveError)) return 'fatal';
     this.#deps.onError?.(
       `Provider operation reconciliation failed for '${operationKey(selection.record.operation)}': ${providerOperationErrorReason(driveError)}`,
     );
     return 'finished-with-drive-error';
   }
 
-  #latchFatal(error: ProviderOperationReconcilerFatalError): void {
-    if (this.#fatal) return;
+  #sealFatal(): boolean {
+    if (this.#fatal) return false;
     this.#fatal = true;
     this.#started = false;
     if (this.#timer !== null) {
@@ -2096,7 +2073,23 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
       this.#timer = null;
     }
     this.#pollRequested = false;
-    this.#deps.onFatal(error);
+    return true;
+  }
+
+  #latchFatal(error: ProviderOperationReconcilerFatalError): void {
+    if (this.#sealFatal()) this.#deps.onFatal(error);
+  }
+
+  #observeFatal(error: unknown): boolean {
+    if (isProviderProxyRecoveryFatalError(error)) {
+      this.#sealFatal();
+      return true;
+    }
+    if (error instanceof ProviderOperationReconcilerFatalError) {
+      this.#latchFatal(error);
+      return true;
+    }
+    return this.#fatal;
   }
 
   async #reconcileActiveForAuthority(authority: DurableProviderProxyOperationAuthority): Promise<void> {

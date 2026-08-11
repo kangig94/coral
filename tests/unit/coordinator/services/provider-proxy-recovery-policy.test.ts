@@ -38,6 +38,8 @@ const seamFor = (producerId: ProviderProxyRecoveryProducerId): ProviderProxyReco
       return 'opaque-capsule-rewrite';
     case 'capsule-retirement':
       return 'capsule-retirement';
+    case 'disappearance-consumer':
+      return 'disappearance-delivery';
     case 'role-control':
     case 'containment-proof':
       return 'containment-attempt';
@@ -94,12 +96,23 @@ describe('provider proxy recovery producer classification', () => {
       ['containment-proof', 'containment-absent'],
       ['capsule-rewrite', undefined],
       ['capsule-retirement', { kind: 'retired' }],
+      [
+        'disappearance-consumer',
+        {
+          kind: 'accepted',
+          acceptance: { kind: 'accepted', operation: record.operation, disposition: 'record-absent' },
+        },
+      ],
     ]);
 
     const positiveResults = await Promise.all(
       [...positive].map(async ([producerId, value]) => [
         producerId,
-        await observe(producerId, { kind: 'value', value }),
+        await observe(
+          producerId,
+          { kind: 'value', value },
+          producerId === 'disappearance-consumer' ? { operation: record.operation } : {},
+        ),
       ]),
     );
     const unknownResults = await Promise.all(
@@ -177,5 +190,56 @@ describe('provider proxy recovery producer classification', () => {
       localFatal: 1,
       globalFatal: 1,
     });
+  });
+
+  it('classifies disappearance delivery only from the strict outcome and complete operation identity', async () => {
+    const operation = providerOperationRecord('executing').operation;
+    const accepted = {
+      kind: 'accepted' as const,
+      acceptance: { kind: 'accepted' as const, operation, disposition: 'record-absent' as const },
+    };
+
+    await expect(observe('disappearance-consumer', { kind: 'value', value: accepted }, { operation })).resolves.toEqual(
+      { evidence: 1, retry: 0, localFatal: 0, globalFatal: 0 },
+    );
+    await expect(
+      observe(
+        'disappearance-consumer',
+        {
+          kind: 'value',
+          value: {
+            kind: 'operational-failure',
+            code: 'disappearance_consumer_unavailable',
+            reason: 'transient store contention',
+          },
+        },
+        { operation },
+      ),
+    ).resolves.toEqual({ evidence: 0, retry: 1, localFatal: 0, globalFatal: 0 });
+    await expect(
+      observe('disappearance-consumer', { kind: 'value', value: { ...accepted, unexpected: true } }, { operation }),
+    ).resolves.toEqual({ evidence: 0, retry: 0, localFatal: 1, globalFatal: 1 });
+    await expect(
+      observe('disappearance-consumer', { kind: 'throw', error: unavailable }, { operation }),
+    ).resolves.toEqual({ evidence: 0, retry: 0, localFatal: 1, globalFatal: 1 });
+
+    for (const field of ['jobId', 'operationId', 'proxyInstanceId', 'buildSetId'] as const) {
+      await expect(
+        observe(
+          'disappearance-consumer',
+          {
+            kind: 'value',
+            value: {
+              ...accepted,
+              acceptance: {
+                ...accepted.acceptance,
+                operation: { ...operation, [field]: '00000000-0000-4000-8000-000000000123' },
+              },
+            },
+          },
+          { operation },
+        ),
+      ).resolves.toEqual({ evidence: 0, retry: 0, localFatal: 1, globalFatal: 1 });
+    }
   });
 });

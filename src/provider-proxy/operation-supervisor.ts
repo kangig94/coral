@@ -1435,6 +1435,7 @@ export class OperationSupervisor {
     deadline.fault = reason;
     if (deadline.timer !== null) this.#options.timer.clearTimeout(deadline.timer);
     deadline.timer = null;
+    this.#retirePumpDemand(record);
     this.#options.faultProviderEventControl({
       reason,
       operation: record.operation,
@@ -1450,12 +1451,30 @@ export class OperationSupervisor {
     record.providerEventAmbiguity = null;
   }
 
+  #retirePumpDemand(record: SupervisedOperation): void {
+    record.pumpDemand = false;
+    if (record.pumpTurn !== null) {
+      this.#options.timer.clearTimeout(record.pumpTurn);
+      record.pumpTurn = null;
+    }
+  }
+
   #requestPump(record: SupervisedOperation): void {
+    const deadline = record.providerEventAmbiguity;
+    if (deadline !== null && deadline.fault !== null) {
+      this.#retirePumpDemand(record);
+      return;
+    }
     record.pumpDemand = true;
     this.#schedulePumpTurn(record);
   }
 
   #schedulePumpTurn(record: SupervisedOperation): void {
+    const deadline = record.providerEventAmbiguity;
+    if (deadline !== null && deadline.fault !== null) {
+      this.#retirePumpDemand(record);
+      return;
+    }
     if (record.pumpTurn !== null || record.pumpRunning || record.closed) return;
     let handle: { unref?: () => void } | null = null;
     handle = this.#options.timer.setTimeout(() => {

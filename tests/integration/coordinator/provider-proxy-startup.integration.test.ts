@@ -17,11 +17,12 @@ import {
   type StartupSetRecoveryPort,
 } from '#src/coordinator/services/provider-operation-reconciler.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set-claim-mirror.js';
+import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
+import type { DisappearanceDeliveryAttemptOutcome } from '#src/coordinator/services/provider-containment-disappearance.js';
 import {
-  ProviderProxySetLifecycle,
-  type DisappearanceDeliveryAttemptOutcome,
-} from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
-import { ProviderProxySetLifecycleFatalError } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
+  isProviderProxyRecoveryFatalError,
+  type ProviderProxySetLifecycleFatalError,
+} from '#src/coordinator/services/provider-proxy-recovery-policy.js';
 import {
   providerProxySetIdentityFromRecord,
   providerProxySetKey,
@@ -198,15 +199,13 @@ function lifecycleFor(
       ...(redeemCapsule === undefined
         ? {}
         : { 'capsule-redemption': ({ capsule, capsulePath, signal }) => redeemCapsule(capsule, capsulePath, signal) }),
+      'disappearance-consumer': ({ notice }) => options.containmentDisappeared(notice),
     },
     onFatal,
   );
   const lifecycle = new ProviderProxySetLifecycle({
     claims,
     controlEstablished: () => undefined,
-    disappearanceConsumer: {
-      containmentDisappeared: (notice) => options.containmentDisappeared(notice),
-    },
     time: options.time,
     recoveryDispatcher,
   });
@@ -1203,7 +1202,7 @@ describe('provider proxy startup set recovery', () => {
         () => ({ kind: 'fulfilled' as const, fatal: false }),
         (error: unknown) => ({
           kind: 'rejected' as const,
-          fatal: error instanceof ProviderProxySetLifecycleFatalError,
+          fatal: isProviderProxyRecoveryFatalError(error),
         }),
       );
 
@@ -1212,7 +1211,7 @@ describe('provider proxy startup set recovery', () => {
       fatal: outcome.fatal,
       fatalPortCalls: fatals.mock.calls.length,
       setBVisits: setBVisits.mock.calls.length,
-    }).toEqual({ outcome: 'rejected', fatal: true, fatalPortCalls: 0, setBVisits: 0 });
+    }).toEqual({ outcome: 'rejected', fatal: true, fatalPortCalls: 1, setBVisits: 0 });
   });
 });
 
@@ -1343,7 +1342,7 @@ describe('production provider proxy startup classification', () => {
 
     expect({
       outcome: outcome.kind,
-      lifecycleFatal: outcome.kind === 'rejected' && outcome.error instanceof ProviderProxySetLifecycleFatalError,
+      lifecycleFatal: outcome.kind === 'rejected' && isProviderProxyRecoveryFatalError(outcome.error),
       fatalCalls: harness.fatals.mock.calls.length,
       absenceRetryIncidents:
         outcome.kind === 'fulfilled'
@@ -1369,8 +1368,7 @@ describe('production provider proxy startup classification', () => {
       disagreement: {
         outcome: disagreement.outcome.kind,
         lifecycleFatal:
-          disagreement.outcome.kind === 'rejected' &&
-          disagreement.outcome.error instanceof ProviderProxySetLifecycleFatalError,
+          disagreement.outcome.kind === 'rejected' && isProviderProxyRecoveryFatalError(disagreement.outcome.error),
         fatalCalls: disagreement.fatalCalls,
         openCalls: disagreement.openCalls,
         retryOwned: disagreement.dueRows.length,
@@ -1436,8 +1434,7 @@ describe('production provider proxy startup classification', () => {
       unknownUnlink: {
         outcome: unknownUnlink.outcome.kind,
         lifecycleFatal:
-          unknownUnlink.outcome.kind === 'rejected' &&
-          unknownUnlink.outcome.error instanceof ProviderProxySetLifecycleFatalError,
+          unknownUnlink.outcome.kind === 'rejected' && isProviderProxyRecoveryFatalError(unknownUnlink.outcome.error),
         fatalCalls: unknownUnlink.fatalCalls,
         timerCalls: unknownUnlink.timerCalls,
         unlinkCalls: unknownUnlink.unlinkCalls,

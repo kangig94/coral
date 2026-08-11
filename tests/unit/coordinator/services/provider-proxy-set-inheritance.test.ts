@@ -1090,7 +1090,6 @@ describe('createProviderProxySetInheritance', () => {
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
       controlEstablished: notifyProviderProxyControlEstablished,
-      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: runtime.time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => null,
@@ -1152,7 +1151,6 @@ describe('createProviderProxySetInheritance', () => {
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
       controlEstablished: established,
-      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => null,
@@ -1214,12 +1212,6 @@ describe('createProviderProxySetInheritance', () => {
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
       controlEstablished: established,
-      disappearanceConsumer: {
-        containmentDisappeared: async (notice) => ({
-          kind: 'accepted',
-          acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
-        }),
-      },
       time: {
         now: () => 0,
         setTimeout: () => ({ unref: () => undefined }),
@@ -1227,6 +1219,10 @@ describe('createProviderProxySetInheritance', () => {
       },
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => null,
+        'disappearance-consumer': async ({ notice }) => ({
+          kind: 'accepted',
+          acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
+        }),
       }),
     });
     lifecycle.initializeClaimSlots();
@@ -1281,15 +1277,13 @@ describe('createProviderProxySetInheritance', () => {
     const lifecycle = new ProviderProxySetLifecycle({
       claims,
       controlEstablished: () => undefined,
-      disappearanceConsumer: {
-        containmentDisappeared: async (notice) => ({
-          kind: 'accepted',
-          acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
-        }),
-      },
       time,
       recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
         'containment-proof': async () => null,
+        'disappearance-consumer': async ({ notice }) => ({
+          kind: 'accepted',
+          acceptance: { kind: 'accepted', operation: notice.operation, disposition: 'record-absent' },
+        }),
       }),
     });
     lifecycle.initializeClaimSlots();

@@ -57,6 +57,7 @@ function controlledTimer(): {
   nowMs(): number;
   runNext(): boolean;
   advance(ms: number): void;
+  pendingCount(): number;
 } {
   let elapsedMs = 0;
   let nextId = 0;
@@ -95,6 +96,7 @@ function controlledTimer(): {
         due.callback();
       }
     },
+    pendingCount: () => pending.size,
   };
 }
 
@@ -320,6 +322,41 @@ describe('provider-event supervisor pump', () => {
       expectedControlEpoch: 3,
     });
     expect(fixture.supervisor.ledger().get(fixture.operation)?.bufferedEvents).toHaveLength(1);
+  });
+
+  it('retires in-flight demand when provider event control faults', async () => {
+    const first = deferred<unknown>();
+    let pushCalls = 0;
+    const fixture = await executingSupervisor(() => {
+      pushCalls += 1;
+      return {
+        controlEpoch: pushCalls === 1 ? 3 : 4,
+        response: pushCalls === 1 ? first.promise : new Promise<never>(() => undefined),
+      };
+    });
+
+    fixture.supervisor.emitProviderEvent(fixture.operation, { kind: 'progress', message: 'A' });
+    expect(fixture.clock.runNext()).toBe(true);
+    fixture.supervisor.emitProviderEvent(fixture.operation, { kind: 'progress', message: 'B' });
+    first.resolve({});
+    await vi.waitFor(() => expect(fixture.faults).toHaveLength(1));
+
+    expect({
+      pushCalls,
+      faults: fixture.faults.length,
+      buffered: fixture.supervisor.ledger().get(fixture.operation)?.bufferedEvents.length,
+      successorTimers: fixture.clock.pendingCount(),
+    }).toEqual({ pushCalls: 1, faults: 1, buffered: 2, successorTimers: 0 });
+    expect(fixture.clock.runNext()).toBe(false);
+
+    fixture.supervisor.controlActivated(3);
+    expect(fixture.clock.pendingCount()).toBe(0);
+    expect(pushCalls).toBe(1);
+
+    fixture.supervisor.controlActivated(4);
+    expect(fixture.clock.pendingCount()).toBe(1);
+    expect(fixture.clock.runNext()).toBe(true);
+    expect(pushCalls).toBe(2);
   });
 
   it('commits the original continuity object only after the cumulative ACK', async () => {

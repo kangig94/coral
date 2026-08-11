@@ -23,6 +23,7 @@ export function createTestProviderProxyRecoveryDispatcher(
       'containment-proof': producers['containment-proof'] ?? (() => unconfigured('containment-proof')),
       'capsule-rewrite': producers['capsule-rewrite'] ?? (() => unconfigured('capsule-rewrite')),
       'capsule-retirement': producers['capsule-retirement'] ?? (() => unconfigured('capsule-retirement')),
+      'disappearance-consumer': producers['disappearance-consumer'] ?? (() => unconfigured('disappearance-consumer')),
     },
     fatalSink: { fatal: onFatal },
   });

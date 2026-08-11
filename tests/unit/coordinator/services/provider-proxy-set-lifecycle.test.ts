@@ -10,18 +10,24 @@ import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-
 import {
   ProviderProxySetLifecycle,
   type CapsuleRetirementAttemptOutcome,
-  type DisappearanceDeliveryAttemptOutcome,
   type ProviderProxySetLifecycleDeps,
   type ProviderProxySetLifecycleProgressViolation,
 } from '#src/coordinator/services/provider-proxy-set-lifecycle.js';
 import type {
+  DisappearanceDeliveryAttemptOutcome,
+  ProviderContainmentDisappearanceConsumer,
+} from '#src/coordinator/services/provider-containment-disappearance.js';
+import type {
   ProviderProxyRecoveryDispatcher,
   ProviderProxySetLifecycleFatalError,
 } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
+import { isProviderProxyRecoveryFatalError } from '#src/coordinator/services/provider-proxy-recovery-policy.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set-identity.js';
 import type { ProviderProxySetRedemptionOutcome } from '#src/coordinator/services/provider-proxy-set-inheritance.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
+import { ProviderOperationTerminalMetadataError } from '#src/jobs/provider-operation-terminalization.js';
+import type { ProviderOperationTerminalDirective } from '#src/store/provider-operation-record.js';
 
 const noContainmentProof = async (): Promise<null> => null;
 const ignoreControlEstablished = (): void => undefined;
@@ -29,6 +35,7 @@ const ignoreControlEstablished = (): void => undefined;
 type ProviderProxySetLifecycleFixtureDeps = Omit<ProviderProxySetLifecycleDeps, 'recoveryDispatcher'> &
   Readonly<{
     recoveryDispatcher?: ProviderProxyRecoveryDispatcher;
+    disappearanceConsumer: ProviderContainmentDisappearanceConsumer;
     proveContainmentAbsent(
       identity: ReturnType<typeof providerProxySetIdentityFromRecord>,
       signal: AbortSignal,
@@ -58,6 +65,7 @@ function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxy
       'containment-proof': ({ identity, signal }) => deps.proveContainmentAbsent(identity, signal),
       'capsule-rewrite': ({ path, capsule }) => rewriteCapsule(path, capsule),
       'capsule-retirement': ({ path }) => retireCapsule(path),
+      'disappearance-consumer': ({ notice }) => deps.disappearanceConsumer.containmentDisappeared(notice),
     },
     onFatal,
   );
@@ -67,6 +75,7 @@ function lifecycleFor(deps: ProviderProxySetLifecycleFixtureDeps): ProviderProxy
     rewriteCapsule: _rewriteCapsule,
     onFatal: _onFatal,
     redeemCapsule: _redeemCapsule,
+    disappearanceConsumer: _disappearanceConsumer,
     recoveryDispatcher: suppliedDispatcher,
     ...lifecycleDeps
   } = deps;
@@ -568,6 +577,151 @@ describe('ProviderProxySetLifecycle', () => {
     expect(() => lifecycle.containmentAbsent(authority.setIdentity, 'conflicting-receipt')).toThrow(
       'provider_proxy_containment_absence_conflict',
     );
+  });
+
+  it('dispatches post-start disappearance corruption through the global fatal route', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const fatals: ProviderProxySetLifecycleFatalError[] = [];
+    const delivery = vi.fn(
+      async (notice: Parameters<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>[0]) => ({
+        kind: 'accepted' as const,
+        acceptance: {
+          kind: 'accepted' as const,
+          operation: { ...notice.operation, operationId: randomUUID() },
+          disposition: 'record-absent' as const,
+        },
+      }),
+    );
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: delivery },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      onFatal: (error) => fatals.push(error),
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const authority = fakeAuthority({ record });
+    lifecycle.registerInheritedSet(authority);
+    lifecycle.faultAuthority(authority.setIdentity);
+
+    const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'corrupt-disappearance-identity');
+    const outcome = await acceptance.initialDisposition.then(
+      () => ({ kind: 'fulfilled' as const }),
+      (error: unknown) => ({ kind: 'rejected' as const, error }),
+    );
+
+    expect({
+      initialDisposition: outcome.kind,
+      branded: outcome.kind === 'rejected' && isProviderProxyRecoveryFatalError(outcome.error),
+      fatal: outcome.kind === 'rejected' ? outcome.error : null,
+      dispatcherGlobalFatalCalls: fatals.length,
+      sameFatal: outcome.kind === 'rejected' && fatals[0] === outcome.error,
+      representedPendingRows: lifecycle.snapshot().pendingOperationCounts[0],
+      activeRetryTimers: clock.timers.filter((timer) => timer.active).length,
+      laterDeliveryCalls: delivery.mock.calls.length - 1,
+    }).toMatchObject({
+      initialDisposition: 'rejected',
+      branded: true,
+      fatal: { stage: 'disappearance-delivery', producerId: 'disappearance-consumer' },
+      dispatcherGlobalFatalCalls: 1,
+      sameFatal: true,
+      representedPendingRows: 1,
+      activeRetryTimers: 0,
+      laterDeliveryCalls: 0,
+    });
+  });
+
+  it('forwards nested disappearance fatal evidence without republishing it', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const globalFatals: ProviderProxySetLifecycleFatalError[] = [];
+    const directive: ProviderOperationTerminalDirective = {
+      kind: 'terminal-failed',
+      code: 'provider_lost',
+      reason: 'nested disappearance fatal',
+    };
+    const dispatcher: ProviderProxyRecoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
+      {
+        'containment-proof': async () => null,
+        'disappearance-terminalization': () => {
+          throw new ProviderOperationTerminalMetadataError(record.operation);
+        },
+        'disappearance-consumer': ({ notice }) =>
+          new Promise<DisappearanceDeliveryAttemptOutcome>((_resolve, reject) => {
+            const inner = dispatcher.begin(
+              'disappearance-delivery',
+              { operation: notice.operation, setIdentity: notice.setIdentity },
+              {
+                evidence: () => reject(new Error('nested terminalization unexpectedly produced evidence')),
+                retry: () => reject(new Error('nested terminalization unexpectedly requested retry')),
+                fatal: reject,
+              },
+            );
+            inner.start({
+              sourceId: 'terminalization',
+              producerId: 'disappearance-terminalization',
+              input: { record, directive },
+            });
+          }),
+      },
+      (error) => globalFatals.push(error),
+    );
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      recoveryDispatcher: dispatcher,
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const authority = fakeAuthority({ record });
+    lifecycle.registerInheritedSet(authority);
+    lifecycle.faultAuthority(authority.setIdentity);
+
+    const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'nested-disappearance-fatal');
+    const outcome = await acceptance.initialDisposition.then(
+      () => ({ kind: 'fulfilled' as const }),
+      (error: unknown) => ({ kind: 'rejected' as const, error }),
+    );
+
+    expect({
+      initialDisposition: outcome.kind,
+      globalFatalCalls: globalFatals.length,
+      branded: outcome.kind === 'rejected' && isProviderProxyRecoveryFatalError(outcome.error),
+      sameObject: outcome.kind === 'rejected' && outcome.error === globalFatals[0],
+      fatalIdentities: globalFatals.map((fatal) => ({
+        branded: isProviderProxyRecoveryFatalError(fatal),
+        sameOutcome: outcome.kind === 'rejected' && outcome.error === fatal,
+        producerId: fatal.producerId,
+        causeName: fatal.cause instanceof Error ? fatal.cause.name : typeof fatal.cause,
+      })),
+      representedPendingRows: lifecycle.snapshot().pendingOperationCounts[0],
+      activeRetryTimers: clock.timers.filter((timer) => timer.active).length,
+    }).toEqual({
+      initialDisposition: 'rejected',
+      globalFatalCalls: 1,
+      branded: true,
+      sameObject: true,
+      fatalIdentities: [
+        {
+          branded: true,
+          sameOutcome: true,
+          producerId: 'disappearance-terminalization',
+          causeName: 'ProviderOperationTerminalMetadataError',
+        },
+      ],
+      representedPendingRows: 1,
+      activeRetryTimers: 0,
+    });
   });
 
   it('retains absence and its capsule until every captured operation acknowledges durable disposition', async () => {

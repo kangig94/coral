@@ -129,7 +129,6 @@ function createProxySetLifecycleRef(onSlotReleased?: (routeKey: string) => void)
   const lifecycle = new ProviderProxySetLifecycle({
     claims,
     controlEstablished: () => undefined,
-    disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
     time: runtime.time,
     recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
       'containment-proof': async () => null,

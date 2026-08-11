@@ -5,13 +5,13 @@ import type { DurableProviderProxyOperationAuthority } from '../live/provider-pr
 import type { ProviderHandoffCapsuleRetirementOutcome } from './provider-proxy-capsule-discovery.js';
 import type { ProviderProxySetRedemptionOutcome } from './provider-proxy-set-inheritance.js';
 import type {
-  ContainmentDisappearanceAcceptance,
-  ProviderContainmentDisappearanceConsumer,
-} from './provider-operation-reconciler.js';
+  ContainmentDisappearanceNotice,
+  DisappearanceDeliveryAttemptOutcome,
+} from './provider-containment-disappearance.js';
 import type { ProviderProxySetClaimMirror } from './provider-proxy-set-claim-mirror.js';
-import {
+import type {
+  ProviderProxyRecoveryDispatcher,
   ProviderProxySetLifecycleFatalError,
-  type ProviderProxyRecoveryDispatcher,
 } from './provider-proxy-recovery-policy.js';
 import {
   ProviderProxySetIdentityIndex,
@@ -128,14 +128,6 @@ export type ProviderProxySetLifecycleProgressViolation = Readonly<{
   latenessMs: number;
 }>;
 
-export type DisappearanceDeliveryAttemptOutcome =
-  | Readonly<{ kind: 'accepted'; acceptance: ContainmentDisappearanceAcceptance }>
-  | Readonly<{
-      kind: 'operational-failure';
-      code: 'disappearance_consumer_unavailable';
-      reason: string;
-    }>;
-
 export type CapsuleRetirementAttemptOutcome = ProviderHandoffCapsuleRetirementOutcome;
 
 export type ContainmentAbsenceOperationalIncident = Readonly<{
@@ -175,11 +167,6 @@ type AbsenceDeliveryState =
 export type ProviderProxySetLifecycleDeps = Readonly<{
   claims: ProviderProxySetClaimMirror;
   controlEstablished(authority: DurableProviderProxyOperationAuthority): void;
-  disappearanceConsumer: Readonly<{
-    containmentDisappeared(
-      notice: Parameters<ProviderContainmentDisappearanceConsumer['containmentDisappeared']>[0],
-    ): Promise<DisappearanceDeliveryAttemptOutcome>;
-  }>;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   recoveryDispatcher: ProviderProxyRecoveryDispatcher;
   onProgressPremiseViolation?: (violation: ProviderProxySetLifecycleProgressViolation) => void;
@@ -904,42 +891,45 @@ export class ProviderProxySetLifecycle {
     slot.retryTimer.unref?.();
   }
 
-  async #deliverDisappearance(slot: AbsenceDeliveryPendingSlot, operation: OperationIdentity): Promise<void> {
-    try {
-      const outcome = await this.#deps.disappearanceConsumer.containmentDisappeared({
-        operation,
-        setIdentity: slot.identity,
-        disappearanceReceipt: slot.disappearanceReceipt,
-      });
-      if (this.#slots.get(slot.key) !== slot || !slot.pendingOperations.has(operationKey(operation))) return;
-      if (outcome.kind === 'operational-failure') {
-        this.#retainDisappearanceDelivery(slot, operation, outcome);
-        return;
-      }
-      this.#acceptDisappearance(slot, operation, outcome.acceptance);
-    } catch (error: unknown) {
-      if (this.#slots.get(slot.key) !== slot || !slot.pendingOperations.has(operationKey(operation))) return;
-      this.#failDisappearanceDelivery(
-        slot,
-        operation,
-        new ProviderProxySetLifecycleFatalError(
-          'disappearance-delivery',
-          `Provider containment disappearance delivery failed: ${error instanceof Error ? error.message : String(error)}`,
-          { cause: error, operation, setIdentity: slot.identity },
-        ),
-      );
-    }
+  #deliverDisappearance(slot: AbsenceDeliveryPendingSlot, operation: OperationIdentity): void {
+    const notice: ContainmentDisappearanceNotice = {
+      operation,
+      setIdentity: slot.identity,
+      disappearanceReceipt: slot.disappearanceReceipt,
+    };
+    const currentDelivery = (): boolean =>
+      this.#slots.get(slot.key) === slot && slot.pendingOperations.has(operationKey(operation));
+    const turn = this.#deps.recoveryDispatcher.begin(
+      'disappearance-delivery',
+      { operation, setIdentity: slot.identity },
+      {
+        evidence: () => {
+          if (!currentDelivery()) return;
+          this.#acceptDisappearance(slot, operation);
+        },
+        retry: (retry) => {
+          if (!currentDelivery()) return;
+          this.#retainDisappearanceDelivery(
+            slot,
+            operation,
+            retry.incident as Extract<DisappearanceDeliveryAttemptOutcome, { kind: 'operational-failure' }>,
+          );
+        },
+        fatal: (error) => {
+          if (!currentDelivery()) return;
+          this.#failDisappearanceDelivery(slot, operation, error);
+        },
+      },
+    );
+    turn.start({
+      sourceId: 'delivery',
+      producerId: 'disappearance-consumer',
+      input: { notice },
+    });
   }
 
-  #acceptDisappearance(
-    slot: AbsenceDeliveryPendingSlot,
-    operation: OperationIdentity,
-    acceptance: ContainmentDisappearanceAcceptance,
-  ): void {
+  #acceptDisappearance(slot: AbsenceDeliveryPendingSlot, operation: OperationIdentity): void {
     if (this.#slots.get(slot.key) !== slot) return;
-    if (operationKey(acceptance.operation) !== operationKey(operation)) {
-      throw new Error('provider_proxy_disappearance_acceptance_identity_mismatch');
-    }
     const key = operationKey(operation);
     if (!slot.pendingOperations.delete(key)) return;
     const timer = slot.deliveryRetryTimers.get(key);

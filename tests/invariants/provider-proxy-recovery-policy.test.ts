@@ -8,20 +8,38 @@ import ts from 'typescript';
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const POLICY_FILE = 'src/coordinator/services/provider-proxy-recovery-policy.ts';
 
-function createProductionProgram(): ts.Program {
+function createProductionProgram(overlays: ReadonlyMap<string, string> = new Map()): ts.Program {
   const configPath = resolve(REPO_ROOT, 'tsconfig.json');
   const config = ts.readConfigFile(configPath, ts.sys.readFile);
   if (config.error) throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, '\n'));
   const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, REPO_ROOT, undefined, configPath);
+  const options = {
+    ...parsed.options,
+    composite: false,
+    incremental: false,
+    noEmit: true,
+    tsBuildInfoFile: undefined,
+  };
+  const overlayFiles = new Map([...overlays].map(([path, source]) => [resolve(REPO_ROOT, path), source]));
+  const host = ts.createCompilerHost(options);
+  const readFile = host.readFile.bind(host);
+  const fileExists = host.fileExists.bind(host);
+  const getSourceFile = host.getSourceFile.bind(host);
+  host.readFile = (fileName) => overlayFiles.get(fileName) ?? readFile(fileName);
+  host.fileExists = (fileName) => overlayFiles.has(fileName) || fileExists(fileName);
+  host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
+    const overlay = overlayFiles.get(fileName);
+    return overlay === undefined
+      ? getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
+      : ts.createSourceFile(fileName, overlay, languageVersion, true, ts.ScriptKind.TS);
+  };
   return ts.createProgram({
-    rootNames: parsed.fileNames.filter((fileName) => fileName.startsWith(resolve(REPO_ROOT, 'src'))),
-    options: {
-      ...parsed.options,
-      composite: false,
-      incremental: false,
-      noEmit: true,
-      tsBuildInfoFile: undefined,
-    },
+    rootNames: [
+      ...parsed.fileNames.filter((fileName) => fileName.startsWith(resolve(REPO_ROOT, 'src'))),
+      ...overlayFiles.keys(),
+    ],
+    options,
+    host,
   });
 }
 
@@ -31,7 +49,17 @@ const SOURCE_FILES = PROGRAM.getSourceFiles().filter(
   (sourceFile) => !sourceFile.isDeclarationFile && sourceFile.fileName.startsWith(`${resolve(REPO_ROOT, 'src')}/`),
 );
 
-type ReferenceClass = 'factory' | 'begin' | 'start' | 'producer' | 'sink' | 'effect' | 'fatal-sink';
+type ReferenceClass =
+  | 'factory'
+  | 'begin'
+  | 'start'
+  | 'producer'
+  | 'sink'
+  | 'effect'
+  | 'fatal-sink'
+  | 'facade'
+  | 'raw-result'
+  | 'fatal-origin';
 
 type OwnedSymbol = Readonly<{
   key: string;
@@ -87,6 +115,13 @@ const producerPorts = exportedSymbol(policy, 'ProviderProxyRecoveryProducerPorts
 const turnSinks = exportedSymbol(policy, 'ProviderProxyRecoveryTurnSinks');
 const effects = exportedSymbol(policy, 'ProviderProxyRecoveryEffects');
 const fatalSink = exportedSymbol(policy, 'ProviderProxyRecoveryFatalSink');
+const inheritance = sourceFile('src/coordinator/services/provider-proxy-set-inheritance.ts');
+const disappearance = sourceFile('src/coordinator/services/provider-containment-disappearance.ts');
+const reconciler = sourceFile('src/coordinator/services/provider-operation-reconciler.ts');
+const lifecycle = sourceFile('src/coordinator/services/provider-proxy-set-lifecycle.ts');
+const disappearanceConsumer = exportedSymbol(disappearance, 'ProviderContainmentDisappearanceConsumer');
+const reconcilerClass = exportedSymbol(reconciler, 'ProviderOperationReconciler');
+const absenceAcceptance = exportedSymbol(lifecycle, 'ContainmentAbsenceAcceptance');
 const producerIds = [
   'disappearance-terminalization',
   'role-control',
@@ -95,6 +130,7 @@ const producerIds = [
   'containment-proof',
   'capsule-rewrite',
   'capsule-retirement',
+  'disappearance-consumer',
 ] as const;
 
 const OWNED_SYMBOLS: readonly OwnedSymbol[] = [
@@ -115,7 +151,44 @@ const OWNED_SYMBOLS: readonly OwnedSymbol[] = [
     owned(`ProviderProxyRecoveryEffects.${name}`, 'effect', memberSymbol(effects, name)),
   ),
   owned('ProviderProxyRecoveryFatalSink.fatal', 'fatal-sink', memberSymbol(fatalSink, 'fatal')),
+  owned('recoverProviderProxySetAtStartup', 'facade', exportedSymbol(inheritance, 'recoverProviderProxySetAtStartup')),
+  owned(
+    'recoverProviderProxySetOrdinarily',
+    'facade',
+    exportedSymbol(inheritance, 'recoverProviderProxySetOrdinarily'),
+  ),
+  owned(
+    'ProviderContainmentDisappearanceConsumer.containmentDisappeared',
+    'raw-result',
+    memberSymbol(disappearanceConsumer, 'containmentDisappeared'),
+  ),
+  owned(
+    'ProviderOperationReconciler.containmentDisappeared',
+    'raw-result',
+    memberSymbol(reconcilerClass, 'containmentDisappeared'),
+  ),
+  owned(
+    'ContainmentAbsenceAcceptance.initialDisposition',
+    'raw-result',
+    memberSymbol(absenceAcceptance, 'initialDisposition'),
+  ),
+  owned(
+    'isProviderProxyRecoveryFatalError',
+    'fatal-origin',
+    exportedSymbol(policy, 'isProviderProxyRecoveryFatalError'),
+  ),
 ];
+
+/**
+ * PARTIAL ENFORCEMENT — DO NOT TREAT THIS INVARIANT AS A PROVENANCE GUARANTEE.
+ *
+ * TypeScript is structurally typed. This check deliberately does not perform the taint analysis needed to
+ * follow an exact dispatcher through assignment, arguments, returns, or object storage into a locally declared
+ * compatible interface; calls then resolve to the local begin/start/sink declarations. It also does not follow
+ * a dynamic import through two `export *` barrels into a structurally annotated callback parameter whose
+ * destructured binding has no initializer and no remaining owned symbol. Both escape forms compile without
+ * casts, `any`, or reflection. This test catches only the exact-symbol paths inventoried below.
+ */
 
 function matchOwnedSymbol(symbol: ts.Symbol | undefined): OwnedSymbol | undefined {
   const canonical = canonicalSymbol(symbol);
@@ -191,6 +264,88 @@ function resolvedCallSymbol(call: ts.CallExpression): ts.Symbol | undefined {
     : undefined;
 }
 
+type PromiseRejectionKind = 'Promise.catch' | 'Promise.then(rejected)' | 'Promise.allSettled';
+
+function standardPromiseRejectionKind(call: ts.CallExpression): PromiseRejectionKind | null {
+  if (!ts.isPropertyAccessExpression(call.expression) && !ts.isElementAccessExpression(call.expression)) {
+    return null;
+  }
+  const access = call.expression;
+  const property = ts.isPropertyAccessExpression(access)
+    ? access.name
+    : access.argumentExpression !== undefined &&
+        (ts.isStringLiteral(access.argumentExpression) || ts.isNoSubstitutionTemplateLiteral(access.argumentExpression))
+      ? access.argumentExpression
+      : undefined;
+  if (property === undefined) return null;
+  if (!['catch', 'then', 'allSettled'].includes(property.text)) return null;
+  const symbol = canonicalSymbol(CHECKER.getSymbolAtLocation(property));
+  if (
+    symbol === undefined ||
+    symbol.declarations?.some((declaration) => {
+      const source = declaration.getSourceFile();
+      return source.isDeclarationFile && /\/typescript\/lib\/lib\.[^/]+\.d\.ts$/u.test(source.fileName);
+    }) !== true
+  ) {
+    return null;
+  }
+  if (symbol.name === 'catch' && call.arguments.length > 0) return 'Promise.catch';
+  if (symbol.name === 'then' && call.arguments.length > 1) return 'Promise.then(rejected)';
+  if (symbol.name === 'allSettled') return 'Promise.allSettled';
+  return null;
+}
+
+function bindingElementSymbol(node: ts.BindingElement): ts.Symbol | undefined {
+  const chain: ts.BindingElement[] = [node];
+  let pattern: ts.ObjectBindingPattern | ts.ArrayBindingPattern = node.parent;
+  while (ts.isBindingElement(pattern.parent)) {
+    chain.unshift(pattern.parent);
+    pattern = pattern.parent.parent;
+  }
+  if (!ts.isVariableDeclaration(pattern.parent) || pattern.parent.initializer === undefined) return undefined;
+  let currentType = CHECKER.getTypeAtLocation(pattern.parent.initializer);
+  for (const element of chain) {
+    if (!ts.isObjectBindingPattern(element.parent)) return undefined;
+    const property = element.propertyName ?? element.name;
+    if (!ts.isIdentifier(property) && !ts.isStringLiteral(property) && !ts.isNumericLiteral(property)) {
+      return undefined;
+    }
+    const symbol = canonicalSymbol(currentType.getProperty(property.text));
+    if (symbol === undefined) return undefined;
+    if (element === node) return symbol;
+    currentType = CHECKER.getTypeOfSymbolAtLocation(symbol, element);
+  }
+  return undefined;
+}
+
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isSatisfiesExpression(current) ||
+    ts.isTypeAssertionExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function isExactCallCallee(node: ts.Node): boolean {
+  let current = node;
+  while (
+    ts.isParenthesizedExpression(current.parent) ||
+    ts.isNonNullExpression(current.parent) ||
+    ts.isAsExpression(current.parent) ||
+    ts.isSatisfiesExpression(current.parent) ||
+    ts.isTypeAssertionExpression(current.parent)
+  ) {
+    current = current.parent;
+  }
+  return ts.isCallExpression(current.parent) && unwrapExpression(current.parent.expression) === node;
+}
+
 function collectReferences(): Reference[] {
   const references: Reference[] = [];
   const seen = new Set<string>();
@@ -223,7 +378,13 @@ function collectReferences(): Reference[] {
           }
         }
       }
-      if (ts.isCallExpression(node)) {
+      if (ts.isBindingElement(node)) {
+        record(file, node, bindingElementSymbol(node), 'BindingElement');
+      } else if (ts.isImportSpecifier(node)) {
+        record(file, node, CHECKER.getSymbolAtLocation(node.name), 'ImportSpecifier');
+      } else if (ts.isExportSpecifier(node)) {
+        record(file, node, CHECKER.getSymbolAtLocation(node.name), 'ExportSpecifier');
+      } else if (ts.isCallExpression(node)) {
         record(file, node, resolvedCallSymbol(node), 'CallExpression');
       } else if (ts.isPropertyAccessExpression(node)) {
         record(file, node, CHECKER.getSymbolAtLocation(node.name), 'PropertyAccessExpression');
@@ -246,15 +407,31 @@ function collectReferences(): Reference[] {
   return references;
 }
 
-const ALLOWED_FILES = new Map<string, ReadonlySet<ReferenceClass>>([
-  [POLICY_FILE, new Set<ReferenceClass>(['factory', 'begin', 'start', 'producer', 'sink', 'effect', 'fatal-sink'])],
-  ['src/coordinator/services/provider-operation-reconciler.ts', new Set<ReferenceClass>(['begin', 'start', 'sink'])],
-  ['src/coordinator/services/provider-proxy-set-inheritance.ts', new Set<ReferenceClass>(['begin', 'start', 'sink'])],
-  ['src/coordinator/services/provider-proxy-set-lifecycle.ts', new Set<ReferenceClass>(['begin', 'start', 'sink'])],
-  ['src/coordinator/live/provider-proxy/role-control.ts', new Set<ReferenceClass>()],
-  ['src/jobs/provider-operation-terminalization.ts', new Set<ReferenceClass>()],
-  ['src/coordinator/composition/execution-services.ts', new Set<ReferenceClass>(['factory', 'producer', 'fatal-sink'])],
+const DIRECT_CALL_ONLY_CLASSES = new Set<ReferenceClass>([
+  'begin',
+  'start',
+  'facade',
+  'producer',
+  'effect',
+  'fatal-sink',
+  'fatal-origin',
 ]);
+
+function valueEscapeViolations(references: readonly Reference[]): string[] {
+  return references
+    .filter((reference) => {
+      if (!DIRECT_CALL_ONLY_CLASSES.has(reference.target.referenceClass)) return false;
+      if (ts.isCallExpression(reference.node)) return false;
+      if (reference.nodeKind.startsWith('Contextual')) return false;
+      if (ts.isImportSpecifier(reference.node)) return false;
+      return !isExactCallCallee(reference.node);
+    })
+    .map(
+      (reference) =>
+        `${reference.file} :: ${reference.owner} :: ${reference.nodeKind} value escape for ${reference.target.key}`,
+    )
+    .sort();
+}
 
 function stringLiteralArgument(call: ts.CallExpression, index: number): string | null {
   const argument = call.arguments[index];
@@ -302,32 +479,50 @@ function rejectionFingerprint(owner: ts.FunctionLikeDeclaration, catchClause: ts
 function consumerRejectionViolations(references: readonly Reference[]): string[] {
   const owners = new Set<ts.FunctionLikeDeclaration>();
   for (const reference of references) {
-    if (reference.target.referenceClass !== 'begin' && reference.target.referenceClass !== 'start') continue;
+    if (reference.target.referenceClass === 'sink') continue;
     if (reference.file === POLICY_FILE) continue;
     const owner = namedOwner(reference.node);
     if (owner !== undefined) owners.add(owner);
   }
   const violations: string[] = [];
   for (const owner of owners) {
+    const consumedSymbols = references
+      .filter((reference) => namedOwner(reference.node) === owner)
+      .map((reference) => reference.target.key)
+      .filter((value, index, values) => values.indexOf(value) === index)
+      .sort();
+    const returnedShapes: string[] = [];
+    const collectReturns = (node: ts.Node): void => {
+      if (ts.isReturnStatement(node) && node.expression !== undefined) {
+        returnedShapes.push(node.expression.getText().replaceAll(/\s+/gu, ' '));
+      }
+      ts.forEachChild(node, collectReturns);
+    };
     let ordinal = 0;
     const visit = (node: ts.Node): void => {
       if (ts.isCatchClause(node)) {
         ordinal += 1;
-        violations.push(rejectionFingerprint(owner, node, ordinal));
+        const fingerprint = rejectionFingerprint(owner, node, ordinal);
+        if (!EXPECTED_REJECTION_NODE_INVENTORY.includes(fingerprint as never)) {
+          returnedShapes.length = 0;
+          collectReturns(node.block);
+          violations.push(
+            `${fingerprint} consumed=[${consumedSymbols.join(', ')}] returned=[${returnedShapes.join(', ')}]`,
+          );
+        }
       }
-      if (
-        ts.isCallExpression(node) &&
-        ((ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'catch') ||
-          (ts.isPropertyAccessExpression(node.expression) &&
-            node.expression.name.text === 'then' &&
-            node.arguments.length > 1) ||
-          (ts.isPropertyAccessExpression(node.expression) &&
-            node.expression.expression.getText() === 'Promise' &&
-            node.expression.name.text === 'allSettled'))
-      ) {
-        violations.push(
-          `${relativePath(owner.getSourceFile())} :: ${ownerName(owner)} :: ${node.expression.getText()} rejection/join`,
-        );
+      if (ts.isCallExpression(node)) {
+        const kind = standardPromiseRejectionKind(node);
+        if (kind === null) {
+          ts.forEachChild(node, visit);
+          return;
+        }
+        const fingerprint = `${relativePath(owner.getSourceFile())} :: ${ownerName(owner)} :: ${kind} :: ${node.expression
+          .getText()
+          .replaceAll(/\s+/gu, ' ')}`;
+        if (!EXPECTED_REJECTION_NODE_INVENTORY.includes(fingerprint as never)) {
+          violations.push(`${fingerprint} consumed=[${consumedSymbols.join(', ')}]`);
+        }
       }
       ts.forEachChild(node, visit);
     };
@@ -341,25 +536,21 @@ function rejectionNodeInventory(): string[] {
   const catchOrdinals = new Map<string, number>();
   for (const file of SOURCE_FILES) {
     const path = relativePath(file);
-    if (!ALLOWED_FILES.has(path)) continue;
     const visit = (node: ts.Node): void => {
       const owner = namedOwner(node);
       const name = ownerName(owner);
+      if (!EXPECTED_REJECTION_OWNER_KEYS.has(`${path} :: ${name}`)) {
+        ts.forEachChild(node, visit);
+        return;
+      }
       if (ts.isCatchClause(node) && owner !== undefined) {
         const ordinalKey = `${path}:${name}`;
         const ordinal = (catchOrdinals.get(ordinalKey) ?? 0) + 1;
         catchOrdinals.set(ordinalKey, ordinal);
         inventory.push(rejectionFingerprint(owner, node, ordinal));
-      } else if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      } else if (ts.isCallExpression(node)) {
         const callee = node.expression;
-        const kind =
-          callee.name.text === 'catch'
-            ? 'Promise.catch'
-            : callee.name.text === 'then' && node.arguments.length > 1
-              ? 'Promise.then(rejected)'
-              : callee.expression.getText() === 'Promise' && callee.name.text === 'allSettled'
-                ? 'Promise.allSettled'
-                : null;
+        const kind = standardPromiseRejectionKind(node);
         if (kind !== null) {
           inventory.push(`${path} :: ${name} :: ${kind} :: ${callee.getText().replaceAll(/\s+/gu, ' ')}`);
         }
@@ -394,7 +585,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-operation-reconciler.ts :: #driveProxyActivation :: catch#2 :: calls=[readProviderOperation, this.#deps.getProgressStore().getDb, this.#deps.getProgressStore, this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #driveSettlement :: catch#1 :: calls=[this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #poll :: catch#1 :: calls=[this.#latchFatal, providerOperationErrorReason] assignments=[]',
-  'src/coordinator/services/provider-operation-reconciler.ts :: #poll :: catch#2 :: calls=[this.#deps.onError, providerOperationErrorReason] assignments=[]',
+  'src/coordinator/services/provider-operation-reconciler.ts :: #poll :: catch#2 :: calls=[this.#observeFatal, this.#deps.onError, providerOperationErrorReason] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #reconcileDueSelection :: catch#1 :: calls=[] assignments=[driveError]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #reconcileDueSelection :: catch#2 :: calls=[this.#latchFatal, providerOperationErrorReason] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #recoverPrepare :: catch#1 :: calls=[providerOperationErrorIsAmbiguous, this.#transition, this.#prepareRefusalRecord, providerOperationPreparePermanentRefusalSchema.parse, boundedPrepareRefusalReason, this.#recordRetry] assignments=[]',
@@ -413,20 +604,285 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set-inheritance.ts :: attemptProviderProxySetInheritance :: catch#2 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set-inheritance.ts :: proveProviderProxySetContainmentAbsent :: catch#1 :: calls=[] assignments=[]',
   'src/coordinator/services/provider-proxy-set-inheritance.ts :: redeemCapsule :: catch#1 :: calls=[heartbeatAssembly.stop, client.close] assignments=[]',
-  'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #deliverDisappearance :: catch#1 :: calls=[this.#slots.get, slot.pendingOperations.has, operationKey, this.#failDisappearanceDelivery, String] assignments=[]',
   'src/coordinator/services/provider-proxy-set-lifecycle.ts :: containmentAbsent :: Promise.catch :: authorityToClose .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set-lifecycle.ts :: createInitialDispositionLatch :: Promise.catch :: promise.catch',
   'src/jobs/provider-operation-terminalization.ts :: terminalizeProviderOperation :: catch#1 :: calls=[] assignments=[]',
 ] as const;
 
+function rejectionJustification(fingerprint: string): string {
+  if (fingerprint.startsWith('src/coordinator/live/provider-proxy/role-control.ts')) {
+    return 'Producer-side role-control classifier preserves typed transport and remote-response causes.';
+  }
+  if (fingerprint.includes(' :: #poll :: ') || fingerprint.includes(' :: #reconcileDueSelection :: ')) {
+    return 'Due-page wrapper captures drive/repair failure and preserves fatal observation before warning.';
+  }
+  if (fingerprint.startsWith('src/coordinator/services/provider-operation-reconciler.ts')) {
+    return 'Existing phase-specific serialization or publication boundary preserves the r17 disposition contract.';
+  }
+  if (fingerprint.startsWith(POLICY_FILE)) {
+    return 'The central dispatcher alone classifies producer rejection and deadline cancellation.';
+  }
+  if (fingerprint.startsWith('src/coordinator/services/provider-proxy-set-inheritance.ts')) {
+    return 'Producer-side inheritance protocol cleanup preserves causal evidence without consuming a dispatcher façade.';
+  }
+  if (fingerprint.includes(' :: containmentAbsent :: ')) {
+    return 'Authority-close observation cannot settle or relabel disappearance delivery.';
+  }
+  if (fingerprint.includes(' :: createInitialDispositionLatch :: ')) {
+    return 'No-op observer prevents an unhandled rejection while returning the original promise unchanged.';
+  }
+  return 'Atomic terminalization producer boundary preserves its narrow retry-safety proof.';
+}
+
+const REJECTION_AUTHORIZATIONS = EXPECTED_REJECTION_NODE_INVENTORY.map((fingerprint) => ({
+  fingerprint,
+  justification: rejectionJustification(fingerprint),
+}));
+
+const EXPECTED_REJECTION_OWNER_KEYS = new Set(
+  EXPECTED_REJECTION_NODE_INVENTORY.map((fingerprint) => fingerprint.split(' :: ').slice(0, 2).join(' :: ')),
+);
+
+type JustifiedOccurrence = Readonly<{ occurrence: string; justification: string }>;
+
+const BOUNDARY_AUTHORIZATIONS: readonly JustifiedOccurrence[] = [
+  {
+    occurrence:
+      'src/coordinator/composition/execution-services.ts :: <module> :: ImportSpecifier :: createProviderProxyRecoveryDispatcher',
+    justification: 'Composition is the sole production dispatcher factory importer.',
+  },
+  {
+    occurrence:
+      'src/coordinator/composition/execution-services.ts :: <module> :: ImportSpecifier :: recoverProviderProxySetAtStartup',
+    justification: 'Composition owns the sole startup inheritance façade import.',
+  },
+  {
+    occurrence:
+      'src/coordinator/composition/execution-services.ts :: <module> :: ImportSpecifier :: recoverProviderProxySetOrdinarily',
+    justification: 'Composition owns the sole ordinary inheritance façade import.',
+  },
+  {
+    occurrence:
+      'src/coordinator/composition/execution-services.ts :: createExecutionServices :: CallExpression :: createProviderProxyRecoveryDispatcher',
+    justification: 'Composition creates the single production recovery dispatcher.',
+  },
+  {
+    occurrence:
+      'src/coordinator/composition/execution-services.ts :: createExecutionServices :: CallExpression :: recoverProviderProxySetAtStartup :: awaited-outcome-initializer',
+    justification: 'The startup recovery producer awaits the registered startup façade.',
+  },
+  {
+    occurrence:
+      'src/coordinator/composition/execution-services.ts :: createExecutionServices :: CallExpression :: recoverProviderProxySetOrdinarily :: awaited-outcome-initializer',
+    justification: 'The ordinary authority acquisition path awaits the registered ordinary façade.',
+  },
+  {
+    occurrence:
+      'src/coordinator/composition/execution-services.ts :: createExecutionServices :: CallExpression :: ProviderOperationReconciler.containmentDisappeared',
+    justification: 'The disappearance-consumer producer closes over the concrete reconciler method.',
+  },
+  {
+    occurrence:
+      'src/coordinator/services/provider-operation-reconciler.ts :: <module> :: ImportSpecifier :: isProviderProxyRecoveryFatalError',
+    justification: 'The reconciler imports the origin guard to seal already-published fatal evidence.',
+  },
+  {
+    occurrence:
+      'src/coordinator/services/provider-operation-reconciler.ts :: #observeFatal :: CallExpression :: isProviderProxyRecoveryFatalError',
+    justification: 'The single observation helper recognizes dispatcher-issued fatal evidence without republishing it.',
+  },
+  {
+    occurrence:
+      'src/coordinator/services/provider-operation-reconciler.ts :: #reconcileStartupSet :: PropertyAccessExpression :: ContainmentAbsenceAcceptance.initialDisposition :: awaitStartup-argument-zero',
+    justification: 'Startup awaits the original lifecycle disposition promise through the identity-preserving helper.',
+  },
+  {
+    occurrence:
+      'src/coordinator/services/provider-proxy-recovery-policy.ts :: classifyRejection :: CallExpression :: isProviderProxyRecoveryFatalError',
+    justification: 'The dispatcher recognizes forwarded fatal evidence before any causal reclassification.',
+  },
+  {
+    occurrence:
+      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #absenceAcceptance :: ContextualPropertyAssignment :: ContainmentAbsenceAcceptance.initialDisposition :: lifecycle-public-disposition-property',
+    justification: 'Lifecycle constructs the one public disposition boundary from its unchanged latch promise.',
+  },
+];
+
+function boundaryInventory(references: readonly Reference[]): string[] {
+  return references
+    .filter((reference) => {
+      if (!['factory', 'facade', 'raw-result', 'fatal-origin'].includes(reference.target.referenceClass)) return false;
+      if (ts.isImportSpecifier(reference.node) || ts.isCallExpression(reference.node)) return true;
+      if (reference.target.key === 'ContainmentAbsenceAcceptance.initialDisposition') {
+        return ts.isPropertyAccessExpression(reference.node) || reference.nodeKind.startsWith('Contextual');
+      }
+      return false;
+    })
+    .map((reference) => {
+      const occurrence = `${reference.file} :: ${reference.owner} :: ${reference.nodeKind} :: ${reference.target.key}`;
+      if (reference.target.referenceClass === 'facade' && ts.isCallExpression(reference.node)) {
+        const awaited = ts.isAwaitExpression(reference.node.parent) ? reference.node.parent : null;
+        const declaration = awaited?.parent;
+        const role =
+          declaration !== undefined &&
+          ts.isVariableDeclaration(declaration) &&
+          declaration.initializer === awaited &&
+          ts.isIdentifier(declaration.name)
+            ? `awaited-${declaration.name.text}-initializer`
+            : 'unregistered-facade-call-role';
+        return `${occurrence} :: ${role}`;
+      }
+      if (reference.target.key === 'ContainmentAbsenceAcceptance.initialDisposition') {
+        if (ts.isPropertyAccessExpression(reference.node)) {
+          const call = reference.node.parent;
+          const callee = ts.isCallExpression(call) ? canonicalSymbol(resolvedCallSymbol(call)) : undefined;
+          const isAwaitStartupArgument =
+            ts.isCallExpression(call) &&
+            call.arguments[0] === reference.node &&
+            callee?.name === 'awaitStartup' &&
+            callee.declarations?.some(
+              (declaration) =>
+                relativePath(declaration.getSourceFile()) ===
+                'src/coordinator/services/provider-operation-reconciler.ts',
+            ) === true;
+          return `${occurrence} :: ${isAwaitStartupArgument ? 'awaitStartup-argument-zero' : 'unregistered-result-role'}`;
+        }
+        return `${occurrence} :: lifecycle-public-disposition-property`;
+      }
+      return occurrence;
+    })
+    .sort();
+}
+
+type AdversarialAnalysis = Readonly<{
+  bindingEscapes: readonly string[];
+  ownedOccurrences: readonly string[];
+  rejections: readonly string[];
+}>;
+
+function analyzeAdversarialProgram(program: ts.Program, path: string): AdversarialAnalysis {
+  const checker = program.getTypeChecker();
+  const canonical = (symbol: ts.Symbol | undefined): ts.Symbol | undefined => {
+    let current = symbol;
+    const seen = new Set<ts.Symbol>();
+    while (current !== undefined && (current.flags & ts.SymbolFlags.Alias) !== 0 && !seen.has(current)) {
+      seen.add(current);
+      current = checker.getAliasedSymbol(current);
+    }
+    return current;
+  };
+  const fileAt = (filePath: string): ts.SourceFile => {
+    const file = program.getSourceFile(resolve(REPO_ROOT, filePath));
+    if (file === undefined) throw new Error(`Missing adversarial program source '${filePath}'.`);
+    return file;
+  };
+  const exported = (file: ts.SourceFile, name: string): ts.Symbol => {
+    const module = checker.getSymbolAtLocation(file);
+    const symbol = module && checker.getExportsOfModule(module).find((candidate) => candidate.name === name);
+    const resolved = canonical(symbol);
+    if (resolved === undefined) throw new Error(`Missing adversarial owned symbol '${name}'.`);
+    return resolved;
+  };
+  const member = (owner: ts.Symbol, name: string): ts.Symbol => {
+    const resolved = canonical(checker.getDeclaredTypeOfSymbol(owner).getProperty(name));
+    if (resolved === undefined) throw new Error(`Missing adversarial owned member '${owner.name}.${name}'.`);
+    return resolved;
+  };
+  const policyFile = fileAt(POLICY_FILE);
+  const inheritanceFile = fileAt('src/coordinator/services/provider-proxy-set-inheritance.ts');
+  const localOwned = new Map<ts.Symbol, string>([
+    [member(exported(policyFile, 'ProviderProxyRecoveryDispatcher'), 'begin'), 'ProviderProxyRecoveryDispatcher.begin'],
+    [member(exported(policyFile, 'ProviderProxyRecoveryArbiter'), 'start'), 'ProviderProxyRecoveryArbiter.start'],
+    [exported(inheritanceFile, 'recoverProviderProxySetOrdinarily'), 'recoverProviderProxySetOrdinarily'],
+    [exported(inheritanceFile, 'recoverProviderProxySetAtStartup'), 'recoverProviderProxySetAtStartup'],
+    [exported(policyFile, 'isProviderProxyRecoveryFatalError'), 'isProviderProxyRecoveryFatalError'],
+  ]);
+  const match = (symbol: ts.Symbol | undefined): string | undefined => {
+    const resolved = canonical(symbol);
+    if (resolved === undefined) return undefined;
+    const direct = localOwned.get(resolved);
+    if (direct !== undefined) return direct;
+    for (const [ownedSymbol, key] of localOwned) {
+      const declarations = new Set(ownedSymbol.declarations ?? []);
+      if (resolved.declarations?.some((declaration) => declarations.has(declaration)) === true) return key;
+    }
+    return undefined;
+  };
+  const bindingSymbol = (node: ts.BindingElement): ts.Symbol | undefined => {
+    if (!ts.isVariableDeclaration(node.parent.parent) || node.parent.parent.initializer === undefined) {
+      return undefined;
+    }
+    const property = node.propertyName ?? node.name;
+    if (!ts.isIdentifier(property) && !ts.isStringLiteral(property)) return undefined;
+    return canonical(checker.getTypeAtLocation(node.parent.parent.initializer).getProperty(property.text));
+  };
+  const resolvedCall = (call: ts.CallExpression): ts.Symbol | undefined => {
+    const direct = checker.getSymbolAtLocation(call.expression);
+    if (direct !== undefined) return direct;
+    const declaration = checker.getResolvedSignature(call)?.declaration;
+    return declaration !== undefined && 'name' in declaration && declaration.name !== undefined
+      ? checker.getSymbolAtLocation(declaration.name)
+      : undefined;
+  };
+  const source = fileAt(path);
+  const references: Array<{ owner: ts.FunctionLikeDeclaration | undefined; key: string; nodeKind: string }> = [];
+  const catches: Array<{ owner: ts.FunctionLikeDeclaration | undefined; node: ts.CatchClause }> = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isBindingElement(node)) {
+      const key = match(bindingSymbol(node));
+      if (key !== undefined) references.push({ owner: namedOwner(node), key, nodeKind: 'BindingElement' });
+    } else if (ts.isImportSpecifier(node)) {
+      const key = match(checker.getSymbolAtLocation(node.name));
+      if (key !== undefined) references.push({ owner: undefined, key, nodeKind: 'ImportSpecifier' });
+    } else if (ts.isCallExpression(node)) {
+      const key = match(resolvedCall(node));
+      if (key !== undefined) references.push({ owner: namedOwner(node), key, nodeKind: 'CallExpression' });
+    } else if (ts.isCatchClause(node)) {
+      catches.push({ owner: namedOwner(node), node });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  const bindingEscapes = references
+    .filter(({ nodeKind }) => nodeKind === 'BindingElement')
+    .map(({ owner, key }) => `${path} :: ${ownerName(owner)} :: BindingElement value escape for ${key}`)
+    .sort();
+  const ownedOccurrences = references
+    .filter(({ nodeKind }) => nodeKind !== 'BindingElement')
+    .map(({ owner, key, nodeKind }) => `${path} :: ${ownerName(owner)} :: ${nodeKind} :: ${key}`)
+    .sort();
+  const rejections = catches.map(({ owner, node }, index) => {
+    const consumed = references
+      .filter((reference) => reference.owner === owner)
+      .map(({ key }) => key)
+      .filter((value, itemIndex, values) => values.indexOf(value) === itemIndex)
+      .sort();
+    const returns: string[] = [];
+    const collectReturns = (child: ts.Node): void => {
+      if (ts.isReturnStatement(child) && child.expression !== undefined) {
+        returns.push(child.expression.getText().replaceAll(/\s+/gu, ' '));
+      }
+      ts.forEachChild(child, collectReturns);
+    };
+    collectReturns(node.block);
+    return `${path} :: ${ownerName(owner)} :: catch#${index + 1} :: consumed=[${consumed.join(
+      ', ',
+    )}] :: returned=[${returns.join(', ')}]`;
+  });
+  return { bindingEscapes, ownedOccurrences, rejections };
+}
+
+function diagnosticsFor(program: ts.Program, path: string): string[] {
+  const fileName = resolve(REPO_ROOT, path);
+  return ts
+    .getPreEmitDiagnostics(program)
+    .filter((diagnostic) => diagnostic.file?.fileName === fileName)
+    .map((diagnostic) => `TS${diagnostic.code}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')}`);
+}
+
 describe('provider proxy recovery policy construction', () => {
   it('rejects unclassified recovery catches and direct policy effects', () => {
     const references = collectReferences();
-    const perimeterViolations = references
-      .filter((reference) => !ALLOWED_FILES.get(reference.file)?.has(reference.target.referenceClass))
-      .map(
-        (reference) => `${reference.file} :: ${reference.owner} :: ${reference.nodeKind} :: ${reference.target.key}`,
-      );
 
     const beginInventory = callsFor('ProviderProxyRecoveryDispatcher.begin', references)
       .map((reference) => {
@@ -434,16 +890,55 @@ describe('provider proxy recovery policy construction', () => {
         return `${reference.file} :: ${reference.owner} :: ${stringLiteralArgument(call, 0) ?? '<dynamic>'}`;
       })
       .sort();
-    const expectedBegins = [
-      'src/coordinator/services/provider-operation-reconciler.ts :: #terminalizeDisappearance :: disappearance-delivery',
-      'src/coordinator/services/provider-proxy-set-inheritance.ts :: recoverProviderProxySetAtStartup :: startup-set-inheritance',
-      'src/coordinator/services/provider-proxy-set-inheritance.ts :: recoverProviderProxySetOrdinarily :: ordinary-set-inheritance',
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #attemptRetirement :: capsule-retirement',
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #recoverExactCapsule :: exact-capsule-recovery',
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #redeemOpaqueCapsule :: opaque-capsule-redemption',
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #rewriteOpaqueCapsule :: opaque-capsule-rewrite',
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #runContainmentAttempt :: containment-attempt',
-    ].sort();
+    const beginAuthorizations: readonly JustifiedOccurrence[] = [
+      {
+        occurrence:
+          'src/coordinator/services/provider-operation-reconciler.ts :: #terminalizeDisappearance :: disappearance-delivery',
+        justification: 'The reconciler opens the registered durable terminalization turn for one disappearance notice.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-inheritance.ts :: recoverProviderProxySetAtStartup :: startup-set-inheritance',
+        justification: 'The startup façade opens its one inheritance classification turn.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-inheritance.ts :: recoverProviderProxySetOrdinarily :: ordinary-set-inheritance',
+        justification: 'The ordinary façade opens its one inheritance classification turn.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #attemptRetirement :: capsule-retirement',
+        justification: 'Capsule retirement is classified by its dedicated lifecycle turn.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #deliverDisappearance :: disappearance-delivery',
+        justification:
+          'R3 requires every post-start disappearance delivery to enter the dispatcher before consumption.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #recoverExactCapsule :: exact-capsule-recovery',
+        justification: 'Exact capsule recovery reduces redemption and absence evidence in one registered turn.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #redeemOpaqueCapsule :: opaque-capsule-redemption',
+        justification: 'Opaque capsule redemption has one registered classification boundary.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #rewriteOpaqueCapsule :: opaque-capsule-rewrite',
+        justification: 'Opaque capsule rewriting has one registered classification boundary.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #runContainmentAttempt :: containment-attempt',
+        justification: 'The containment race reduces stop-and-reap and proof evidence in one registered turn.',
+      },
+    ];
+    const expectedBegins = beginAuthorizations.map(({ occurrence }) => occurrence).sort();
 
     const startInventory = callsFor('ProviderProxyRecoveryArbiter.start', references)
       .map((reference) => {
@@ -454,24 +949,68 @@ describe('provider proxy recovery policy construction', () => {
         )}`;
       })
       .sort();
-    const expectedStarts = [
-      'src/coordinator/services/provider-operation-reconciler.ts :: #terminalizeDisappearance :: terminalization/disappearance-terminalization',
-      'src/coordinator/services/provider-proxy-set-inheritance.ts :: dispatchProviderProxySetInheritance :: inheritance/set-inheritance',
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #attemptRetirement :: retirement/capsule-retirement',
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #recoverExactCapsule :: absence/containment-proof',
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #recoverExactCapsule :: redemption/capsule-redemption',
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #redeemOpaqueCapsule :: redemption/capsule-redemption',
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #rewriteOpaqueCapsule :: rewrite/capsule-rewrite',
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #runContainmentAttempt :: absence/containment-proof',
-      'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #runContainmentAttempt :: stop-and-reap/role-control',
-    ].sort();
+    const startAuthorizations: readonly JustifiedOccurrence[] = [
+      {
+        occurrence:
+          'src/coordinator/services/provider-operation-reconciler.ts :: #terminalizeDisappearance :: terminalization/disappearance-terminalization',
+        justification: 'The disappearance turn invokes only the atomic terminalization producer under this source id.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-inheritance.ts :: dispatchProviderProxySetInheritance :: inheritance/set-inheritance',
+        justification: 'Both public inheritance façades delegate their one producer start to this adapter.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #attemptRetirement :: retirement/capsule-retirement',
+        justification: 'The retirement turn invokes only the capsule-retirement producer.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #deliverDisappearance :: delivery/disappearance-consumer',
+        justification: 'R3 routes the captured notice through the registered disappearance consumer.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #recoverExactCapsule :: absence/containment-proof',
+        justification: 'Exact recovery contributes independently proven absence under the absence source id.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #recoverExactCapsule :: redemption/capsule-redemption',
+        justification: 'Exact recovery contributes capsule redemption under the redemption source id.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #redeemOpaqueCapsule :: redemption/capsule-redemption',
+        justification: 'Opaque recovery invokes its sole capsule redemption producer.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #rewriteOpaqueCapsule :: rewrite/capsule-rewrite',
+        justification: 'Opaque recovery invokes its sole capsule rewrite producer.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #runContainmentAttempt :: absence/containment-proof',
+        justification: 'The containment race contributes independent absence proof under the absence source id.',
+      },
+      {
+        occurrence:
+          'src/coordinator/services/provider-proxy-set-lifecycle.ts :: #runContainmentAttempt :: stop-and-reap/role-control',
+        justification: 'The containment race contributes the role-control stop attempt under its distinct source id.',
+      },
+    ];
+    const expectedStarts = startAuthorizations.map(({ occurrence }) => occurrence).sort();
     const producerCallInventory = references
       .filter((reference) => reference.target.referenceClass === 'producer' && ts.isCallExpression(reference.node))
       .map((reference) => `${reference.file} :: ${reference.owner} :: ${reference.target.key}`)
       .sort();
-    const expectedProducerCalls = producerIds
-      .map((producerId) => `${POLICY_FILE} :: invokeProducer :: ProviderProxyRecoveryProducerPorts.${producerId}`)
-      .sort();
+    const producerAuthorizations = producerIds.map((producerId) => ({
+      occurrence: `${POLICY_FILE} :: invokeProducer :: ProviderProxyRecoveryProducerPorts.${producerId}`,
+      justification: `The central invokeProducer switch is the sole caller of '${producerId}'.`,
+    }));
+    const expectedProducerCalls = producerAuthorizations.map(({ occurrence }) => occurrence).sort();
     const directPolicyEffectViolations = references
       .filter(
         (reference) =>
@@ -495,12 +1034,7 @@ describe('provider proxy recovery policy construction', () => {
       if (!consumerFiles.has(relativePath(file))) return [];
       const matches: string[] = [];
       const visit = (node: ts.Node): void => {
-        if (
-          ts.isCallExpression(node) &&
-          ts.isPropertyAccessExpression(node.expression) &&
-          node.expression.expression.getText() === 'Promise' &&
-          node.expression.name.text === 'allSettled'
-        ) {
+        if (ts.isCallExpression(node) && standardPromiseRejectionKind(node) === 'Promise.allSettled') {
           matches.push(`${relativePath(file)} :: ${ownerName(namedOwner(node))} :: Promise.allSettled`);
         }
         ts.forEachChild(node, visit);
@@ -526,7 +1060,18 @@ describe('provider proxy recovery policy construction', () => {
 
     expect(
       {
-        perimeterViolations,
+        boundaryInventory: boundaryInventory(references),
+        authorizationJustifications: [
+          ...BOUNDARY_AUTHORIZATIONS,
+          ...beginAuthorizations,
+          ...startAuthorizations,
+          ...producerAuthorizations,
+          ...REJECTION_AUTHORIZATIONS.map(({ fingerprint, justification }) => ({
+            occurrence: fingerprint,
+            justification,
+          })),
+        ].filter(({ justification }) => justification.trim().length === 0),
+        valueEscapeViolations: valueEscapeViolations(references),
         beginInventory,
         startInventory,
         producerCallInventory,
@@ -538,7 +1083,9 @@ describe('provider proxy recovery policy construction', () => {
       },
       'project-wide provider proxy recovery policy inventory',
     ).toEqual({
-      perimeterViolations: [],
+      boundaryInventory: BOUNDARY_AUTHORIZATIONS.map(({ occurrence }) => occurrence).sort(),
+      authorizationJustifications: [],
+      valueEscapeViolations: [],
       beginInventory: expectedBegins,
       startInventory: expectedStarts,
       producerCallInventory: expectedProducerCalls,
@@ -548,6 +1095,156 @@ describe('provider proxy recovery policy construction', () => {
       forbiddenAllSettled: [],
       forbiddenMethods: [],
     });
+  }, 45_000);
+
+  it('rejects destructured dispatcher and arbiter consumers', () => {
+    const path = 'src/adversarial-destructured-recovery-consumer.ts';
+    const program = createProductionProgram(
+      new Map([
+        [
+          path,
+          `import type {
+  ProviderProxyRecoveryAnySource,
+  ProviderProxyRecoveryConsumerSeam,
+  ProviderProxyRecoveryDispatcher,
+  ProviderProxyRecoveryExactContext,
+  ProviderProxyRecoveryTurnSinks,
+} from './coordinator/services/provider-proxy-recovery-policy.js';
+
+export function consume(
+  dispatcher: ProviderProxyRecoveryDispatcher,
+  seam: ProviderProxyRecoveryConsumerSeam,
+  context: ProviderProxyRecoveryExactContext,
+  sinks: ProviderProxyRecoveryTurnSinks,
+  source: ProviderProxyRecoveryAnySource,
+): void {
+  const { begin } = dispatcher;
+  const { start } = begin(seam, context, sinks);
+  start(source);
+}
+`,
+        ],
+      ]),
+    );
+
+    expect({
+      diagnostics: diagnosticsFor(program, path).filter((diagnostic) => diagnostic.startsWith('TS2684:')),
+      invariant: analyzeAdversarialProgram(program, path).bindingEscapes,
+    }).toEqual({
+      diagnostics: [
+        expect.stringContaining("The 'this' context of type 'void' is not assignable"),
+        expect.stringContaining("The 'this' context of type 'void' is not assignable"),
+      ],
+      invariant: [
+        `${path} :: consume :: BindingElement value escape for ProviderProxyRecoveryArbiter.start`,
+        `${path} :: consume :: BindingElement value escape for ProviderProxyRecoveryDispatcher.begin`,
+      ],
+    });
+  }, 45_000);
+
+  it('rejects an external facade consumer that erases fatal provenance', () => {
+    const path = 'src/adversarial-provider-recovery-consumer.ts';
+    const program = createProductionProgram(
+      new Map([
+        [
+          path,
+          `import { recoverProviderProxySetOrdinarily as recover } from './coordinator/services/provider-proxy-set-inheritance.js';
+
+export async function erase(...args: Parameters<typeof recover>) {
+  try {
+    return await recover(...args);
+  } catch {
+    return {
+      kind: 'temporarily-unavailable',
+      incident: { kind: 'recovery-deadline', timeoutMs: 45_000 },
+    };
+  }
+}
+`,
+        ],
+      ]),
+    );
+    const analysis = analyzeAdversarialProgram(program, path);
+
+    expect(diagnosticsFor(program, path)).toEqual([]);
+    expect(analysis.ownedOccurrences).toEqual([
+      `${path} :: <module> :: ImportSpecifier :: recoverProviderProxySetOrdinarily`,
+      `${path} :: erase :: CallExpression :: recoverProviderProxySetOrdinarily`,
+    ]);
+    expect(analysis.rejections).toEqual([
+      expect.stringContaining(
+        `${path} :: erase :: catch#1 :: consumed=[recoverProviderProxySetOrdinarily] :: returned=[{ kind: 'temporarily-unavailable'`,
+      ),
+    ]);
+  });
+
+  it('rejects catch relabeling of dispatcher fatal evidence', () => {
+    const path = 'src/adversarial-provider-recovery-relabel.ts';
+    const program = createProductionProgram(
+      new Map([
+        [
+          path,
+          `import { isProviderProxyRecoveryFatalError } from './coordinator/services/provider-proxy-recovery-policy.js';
+import { recoverProviderProxySetOrdinarily } from './coordinator/services/provider-proxy-set-inheritance.js';
+
+export async function relabel(...args: Parameters<typeof recoverProviderProxySetOrdinarily>) {
+  try {
+    return await recoverProviderProxySetOrdinarily(...args);
+  } catch (error) {
+    if (isProviderProxyRecoveryFatalError(error)) {
+      return {
+        kind: 'temporarily-unavailable',
+        incident: { kind: 'recovery-deadline', timeoutMs: 45_000 },
+      };
+    }
+    throw error;
+  }
+}
+`,
+        ],
+      ]),
+    );
+    const analysis = analyzeAdversarialProgram(program, path);
+
+    expect(diagnosticsFor(program, path)).toEqual([]);
+    expect(analysis.rejections).toEqual([
+      expect.stringMatching(
+        /catch#1 :: consumed=\[isProviderProxyRecoveryFatalError, recoverProviderProxySetOrdinarily\] :: returned=\[\{ kind: 'temporarily-unavailable'/u,
+      ),
+    ]);
+  });
+
+  it('keeps dispatcher fatal origin private', () => {
+    const path = 'src/adversarial-fatal-construction.ts';
+    const program = createProductionProgram(
+      new Map([
+        [
+          path,
+          `import { ProviderProxySetLifecycleFatalError } from './coordinator/services/provider-proxy-recovery-policy.js';
+
+export const constructed = new ProviderProxySetLifecycleFatalError(
+  'set-inheritance',
+  'forged',
+  { cause: new Error('forged'), seam: 'ordinary-set-inheritance', producerId: 'set-inheritance' },
+);
+
+export const structural: ProviderProxySetLifecycleFatalError = {
+  name: 'ProviderProxySetLifecycleFatalError',
+  message: 'forged',
+  stage: 'set-inheritance',
+  seam: 'ordinary-set-inheritance',
+  producerId: 'set-inheritance',
+};
+`,
+        ],
+      ]),
+    );
+    const diagnostics = diagnosticsFor(program, path);
+
+    expect(diagnostics).toEqual([
+      expect.stringContaining("'ProviderProxySetLifecycleFatalError' only refers to a type"),
+      expect.stringContaining("Property '[providerProxyRecoveryFatalOrigin]' is missing"),
+    ]);
   });
 
   it('keeps the producer registry closed and explicit', () => {

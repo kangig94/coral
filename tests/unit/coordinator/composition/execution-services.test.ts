@@ -20,6 +20,47 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 describe('execution services provider-proxy proof composition', () => {
+  it('does not invoke the disappearance consumer producer during assembly', () => {
+    const runtime = createRealRuntime('prod');
+    const claims = new ProviderProxySetClaimMirror();
+    const lifecycleRef = new ProviderProxySetLifecycleRef();
+    const operationRegistry = new LocalOperationRegistry();
+    const inheritProviderProxySet = vi.fn(async () => ({ kind: 'not-bequeathed' as const, reason: 'unused' }));
+    const redeemDiscoveredCapsule = vi.fn(async () => {
+      throw new Error('capsule redemption was not expected');
+    });
+    const proveContainmentAbsent = vi.fn(async () => null);
+    const world = {
+      storeServicesRef: { tryGet: () => null },
+      operationRegistry,
+      providerProxyClaims: claims,
+      providerProxyLifecycleRef: lifecycleRef,
+      providerProxyInheritance: { inheritProviderProxySet, redeemDiscoveredCapsule, proveContainmentAbsent },
+      providerHostManager: {},
+    } as never;
+
+    const services = createExecutionServices({
+      world,
+      runtime,
+      bundleHash: 'execution-services-assembly-test',
+      backendNamespace: 'execution-services-assembly-test',
+      onProviderProxyLifecycleFatal: (error) => {
+        throw error;
+      },
+      createExecutionService: (() => {
+        throw new Error('execution service creation was not expected');
+      }) as never,
+    });
+
+    expect({
+      inheritanceCalls: inheritProviderProxySet.mock.calls.length,
+      redemptionCalls: redeemDiscoveredCapsule.mock.calls.length,
+      proofCalls: proveContainmentAbsent.mock.calls.length,
+      lifecycleComposed: lifecycleRef.get() !== null,
+    }).toEqual({ inheritanceCalls: 0, redemptionCalls: 0, proofCalls: 0, lifecycleComposed: true });
+    services.stopProviderOperationReconciler();
+  });
+
   it('does not publish a stored-fault authority through the production subscriber', async () => {
     const time = new VirtualTime();
     const runtime = { ...createRealRuntime('prod'), time };

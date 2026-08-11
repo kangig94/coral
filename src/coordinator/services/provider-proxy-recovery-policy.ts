@@ -17,6 +17,11 @@ import {
   ProviderProxyRoleControlRemoteError,
   ProviderProxyRoleControlUnavailableError,
 } from '../live/provider-proxy/role-control.js';
+import {
+  disappearanceDeliveryAttemptOutcomeSchema,
+  type ContainmentDisappearanceNotice,
+  type DisappearanceDeliveryAttemptOutcome,
+} from './provider-containment-disappearance.js';
 import type { ProviderHandoffCapsuleRetirementOutcome } from './provider-proxy-capsule-discovery.js';
 import { providerProxySetIdentitiesEqual, type ProviderProxySetIdentity } from './provider-proxy-set-identity.js';
 import type {
@@ -34,6 +39,7 @@ export const PROVIDER_PROXY_RECOVERY_PRODUCERS = [
   'containment-proof',
   'capsule-rewrite',
   'capsule-retirement',
+  'disappearance-consumer',
 ] as const;
 
 export type ProviderProxyRecoveryProducerId = (typeof PROVIDER_PROXY_RECOVERY_PRODUCERS)[number];
@@ -80,6 +86,7 @@ type ContainmentProofInput = Readonly<{
 
 type CapsuleRewriteInput = Readonly<{ path: string; capsule: HandoffCapsuleV2 }>;
 type CapsuleRetirementInput = Readonly<{ path: string }>;
+type DisappearanceConsumerInput = Readonly<{ notice: ContainmentDisappearanceNotice }>;
 
 export type ProviderProxyRecoveryProducerInput = {
   'disappearance-terminalization': DisappearanceTerminalizationInput;
@@ -89,6 +96,7 @@ export type ProviderProxyRecoveryProducerInput = {
   'containment-proof': ContainmentProofInput;
   'capsule-rewrite': CapsuleRewriteInput;
   'capsule-retirement': CapsuleRetirementInput;
+  'disappearance-consumer': DisappearanceConsumerInput;
 };
 
 export interface ProviderProxyRecoveryProducerPorts {
@@ -103,6 +111,7 @@ export interface ProviderProxyRecoveryProducerPorts {
   'capsule-retirement'(
     input: CapsuleRetirementInput,
   ): Promise<ProviderHandoffCapsuleRetirementOutcome> | ProviderHandoffCapsuleRetirementOutcome;
+  'disappearance-consumer'(input: DisappearanceConsumerInput): Promise<DisappearanceDeliveryAttemptOutcome>;
 }
 
 export type ProviderProxyRecoveryRetry = Readonly<{
@@ -110,19 +119,32 @@ export type ProviderProxyRecoveryRetry = Readonly<{
   incident: unknown;
 }>;
 
-export class ProviderProxySetLifecycleFatalError extends Error {
-  readonly stage: 'set-inheritance' | 'disappearance-delivery' | 'capsule-retirement' | 'capsule-recovery';
-  readonly operation?: OperationIdentity;
-  readonly setIdentity?: ProviderProxySetIdentity;
+const providerProxyRecoveryFatalOrigin: unique symbol = Symbol('provider-proxy-recovery-fatal-origin');
+
+export type ProviderProxySetLifecycleFatalError = Error &
+  Readonly<{
+    [providerProxyRecoveryFatalOrigin]: true;
+    stage: 'set-inheritance' | 'disappearance-delivery' | 'capsule-retirement' | 'capsule-recovery';
+    seam: ProviderProxyRecoveryConsumerSeam;
+    producerId: ProviderProxyRecoveryProducerId;
+    operation?: OperationIdentity;
+    setIdentity?: ProviderProxySetIdentity;
+  }>;
+
+class DispatcherIssuedProviderProxySetLifecycleFatalError extends Error {
+  readonly [providerProxyRecoveryFatalOrigin] = true as const;
+  readonly stage: ProviderProxySetLifecycleFatalError['stage'];
   readonly seam: ProviderProxyRecoveryConsumerSeam;
   readonly producerId: ProviderProxyRecoveryProducerId;
+  readonly operation?: OperationIdentity;
+  readonly setIdentity?: ProviderProxySetIdentity;
 
   constructor(
     stage: ProviderProxySetLifecycleFatalError['stage'],
     message: string,
     options: ErrorOptions & {
-      seam?: ProviderProxyRecoveryConsumerSeam;
-      producerId?: ProviderProxyRecoveryProducerId;
+      seam: ProviderProxyRecoveryConsumerSeam;
+      producerId: ProviderProxyRecoveryProducerId;
       operation?: OperationIdentity;
       setIdentity?: ProviderProxySetIdentity;
     },
@@ -130,28 +152,20 @@ export class ProviderProxySetLifecycleFatalError extends Error {
     super(message, options);
     this.name = 'ProviderProxySetLifecycleFatalError';
     this.stage = stage;
-    this.seam =
-      options.seam ??
-      (stage === 'set-inheritance'
-        ? 'ordinary-set-inheritance'
-        : stage === 'disappearance-delivery'
-          ? 'disappearance-delivery'
-          : stage === 'capsule-retirement'
-            ? 'capsule-retirement'
-            : 'exact-capsule-recovery');
-    this.producerId =
-      options.producerId ??
-      (stage === 'set-inheritance'
-        ? 'set-inheritance'
-        : stage === 'disappearance-delivery'
-          ? 'disappearance-terminalization'
-          : stage === 'capsule-retirement'
-            ? 'capsule-retirement'
-            : 'capsule-redemption');
+    this.seam = options.seam;
+    this.producerId = options.producerId;
     if (options.operation !== undefined) this.operation = options.operation;
     if (options.setIdentity !== undefined) this.setIdentity = options.setIdentity;
-    Object.setPrototypeOf(this, ProviderProxySetLifecycleFatalError.prototype);
+    Object.setPrototypeOf(this, DispatcherIssuedProviderProxySetLifecycleFatalError.prototype);
   }
+}
+
+export function isProviderProxyRecoveryFatalError(value: unknown): value is ProviderProxySetLifecycleFatalError {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { [providerProxyRecoveryFatalOrigin]?: unknown })[providerProxyRecoveryFatalOrigin] === true
+  );
 }
 
 export interface ProviderProxyRecoveryTurnSinks {
@@ -188,12 +202,13 @@ export type ProviderProxyRecoveryAnySource = {
 }[ProviderProxyRecoveryProducerId];
 
 export interface ProviderProxyRecoveryArbiter {
-  start(source: ProviderProxyRecoveryAnySource): void;
+  start(this: ProviderProxyRecoveryArbiter, source: ProviderProxyRecoveryAnySource): void;
   cancel(reason: unknown): void;
 }
 
 export interface ProviderProxyRecoveryDispatcher {
   begin(
+    this: ProviderProxyRecoveryDispatcher,
     seam: ProviderProxyRecoveryConsumerSeam,
     context: ProviderProxyRecoveryExactContext,
     sinks: ProviderProxyRecoveryTurnSinks,
@@ -212,7 +227,8 @@ type Observation<T = unknown> =
       error: unknown;
       proof: 'atomic-provider-operation-terminalization';
     }>
-  | Readonly<{ kind: 'cancel'; reason: unknown }>;
+  | Readonly<{ kind: 'cancel'; reason: unknown }>
+  | Readonly<{ kind: 'forwarded-fatal'; error: ProviderProxySetLifecycleFatalError }>;
 
 const evidence = <T>(value: T): Observation<T> => ({ kind: 'evidence', value });
 const unavailable = (producerId: ProviderProxyRecoveryProducerId, incident: unknown): Observation => ({
@@ -281,6 +297,15 @@ function capsuleMatchesIdentity(capsule: HandoffCapsule, identity: ProviderProxy
 
 function callerCancellation(input: { signal?: AbortSignal }, error: unknown): Observation | null {
   return input.signal?.aborted === true && input.signal.reason === error ? { kind: 'cancel', reason: error } : null;
+}
+
+function sameOperationIdentity(left: OperationIdentity, right: OperationIdentity): boolean {
+  return (
+    left.jobId === right.jobId &&
+    left.operationId === right.operationId &&
+    left.proxyInstanceId === right.proxyInstanceId &&
+    left.buildSetId === right.buildSetId
+  );
 }
 
 function classifyFulfillment(
@@ -353,6 +378,18 @@ function classifyFulfillment(
     const outcome = value as ProviderHandoffCapsuleRetirementOutcome;
     return outcome.kind === 'temporarily-unavailable' ? unavailable(producerId, outcome.incident) : evidence(outcome);
   }
+  if (producerId === 'disappearance-consumer') {
+    const parsed = disappearanceDeliveryAttemptOutcomeSchema.safeParse(value);
+    if (!parsed.success) {
+      return unknown(producerId, new Error('provider_proxy_disappearance_consumer_contract_violation'));
+    }
+    const outcome = parsed.data;
+    if (outcome.kind === 'operational-failure') return unavailable(producerId, outcome);
+    if (context.operation === undefined || !sameOperationIdentity(outcome.acceptance.operation, context.operation)) {
+      return corrupt(producerId, new Error('provider_proxy_disappearance_consumer_identity_mismatch'));
+    }
+    return evidence(outcome.acceptance);
+  }
   return evidence(value);
 }
 
@@ -361,6 +398,7 @@ function classifyRejection(
   input: ProviderProxyRecoveryProducerInput[ProviderProxyRecoveryProducerId],
   error: unknown,
 ): Observation {
+  if (isProviderProxyRecoveryFatalError(error)) return { kind: 'forwarded-fatal', error };
   const cancelled = callerCancellation(input as { signal?: AbortSignal }, error);
   if (cancelled !== null) return cancelled;
   if (producerId === 'disappearance-terminalization') {
@@ -375,6 +413,7 @@ function classifyRejection(
     }
     return unknown(producerId, error);
   }
+  if (producerId === 'disappearance-consumer') return unknown(producerId, error);
   if (error instanceof ProviderProxyRoleControlUnavailableError) return unavailable(producerId, error.incident);
   if (error instanceof ProviderProxyRoleControlRemoteError) return refused(producerId, error);
   if (
@@ -398,7 +437,7 @@ function fatalError(
   context: ProviderProxyRecoveryExactContext,
   observation: Extract<Observation, { kind: 'corrupt' | 'refused' | 'unknown' }>,
 ): ProviderProxySetLifecycleFatalError {
-  return new ProviderProxySetLifecycleFatalError(
+  return new DispatcherIssuedProviderProxySetLifecycleFatalError(
     fatalStage(seam),
     `Provider proxy recovery '${seam}' received ${observation.kind} evidence from '${observation.producerId}'.`,
     {
@@ -430,6 +469,8 @@ function invokeProducer(
       return producers['capsule-rewrite'](source.input);
     case 'capsule-retirement':
       return producers['capsule-retirement'](source.input);
+    case 'disappearance-consumer':
+      return producers['disappearance-consumer'](source.input);
   }
 }
 
@@ -496,6 +537,12 @@ export function createProviderProxyRecoveryDispatcher(
 
       const submit = (sourceId: string, observation: Observation): void => {
         if (retired) return;
+        if (observation.kind === 'forwarded-fatal') {
+          retired = true;
+          for (const abort of aborters) abort(observation.error);
+          sinks.fatal(observation.error);
+          return;
+        }
         if (observation.kind === 'cancel') {
           retired = true;
           sinks.cancel?.(observation.reason);

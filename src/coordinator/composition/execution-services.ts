@@ -122,6 +122,7 @@ export function createExecutionServices({
           uid: process.getuid?.() ?? 0,
         }),
       'capsule-retirement': ({ path }) => retireProviderHandoffCapsule(runtime.storage, path),
+      'disappearance-consumer': ({ notice }) => providerOperationReconciler.containmentDisappeared(notice),
     },
     fatalSink: { fatal: onProviderProxyLifecycleFatal },
   });
@@ -243,9 +244,6 @@ export function createExecutionServices({
   const providerProxyLifecycle: ProviderProxySetLifecycle = new ProviderProxySetLifecycle({
     claims: world.providerProxyClaims,
     controlEstablished: notifyProviderProxyControlEstablished,
-    disappearanceConsumer: {
-      containmentDisappeared: (notice) => providerOperationReconciler.containmentDisappeared(notice),
-    },
     time: runtime.time,
     recoveryDispatcher: providerProxyRecovery,
     onProgressPremiseViolation: (violation) =>
