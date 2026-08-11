@@ -13,12 +13,12 @@ Execute a multi-round planning session with architect/critic review.
 | Argument       | Mode                                                                                                                              |
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `<prompt>`     | Self-execute on current host (default)                                                                                            |
-| `--delegate`   | Add review pass on the other host (Claude → Codex, Codex → Claude, Copilot → Codex; from SessionStart `Current host:`) |
+| `--delegate`   | Add a review pass on `<other-host>` (see Review Phases for the mapping). On a host that is not itself a provider it **replaces** Phase 2 rather than adding to it, so the net is still one review phase. |
 | `round=N`      | Review rounds for every applicable phase (default `1`). e.g. `round=3` for deeper iteration.                                      |
-| `round=N,M`    | Per-phase budget: Phase 1 (`<other-host>`) gets `N` rounds, Phase 2 (`<current-host>`) gets `M`. **Turns `--delegate` on.**       |
+| `round=N,M`    | Per-phase budget: Phase 1 (`<other-host>`) gets `N` rounds, Phase 2 gets `M`. **Turns `--delegate` on.**                          |
 | `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                                                        |
 
-Reviewers and the resolver always run — the round budget only sets how many times each phase iterates.
+Reviewers and the resolver always run in every review phase that dispatches — the round budget only sets how many times each phase iterates.
 
 **Parsing the round budget** (`round=…` and `--round=…` are the same token):
 
@@ -80,14 +80,14 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     ### 4. Review Loop
 
     Phase 0 always runs first. Phase 0b (Complexity Gate) may skip review phases.
-    Phase 1 runs only when `--delegate` is set — explicitly, or implied by a two-value `round=N,M` (review on the other host). Phase 2 always runs (unless skipped by Complexity Gate; review on the current host).
+    Phase 1 runs only when `--delegate` is set — explicitly, or implied by a two-value `round=N,M` (review on `<other-host>`). Phase 2 runs when the current host is itself a registered provider, or when Phase 1 did not already resolve to `<phase-2-provider>`; it is skipped by the Complexity Gate, and skipped when it would repeat Phase 1's provider or re-attempt a provider Phase 1's dispatch already failed on.
 
     **Round budget**: `{maxRounds[P]}` is phase P's own budget. `round=N` gives every phase `N`; `round=N,M` gives Phase 1 `N` and Phase 2 `M`; absent gives every phase `1`. Each phase iterates up to its own budget and then exits — a phase at budget `1` runs exactly one round with no iteration. Phase structure is independent of the budget: Phase 1 (if `--delegate`) and Phase 2 still run whatever the numbers are.
 
     **Task registration**: Before starting Phase 0, register one Task per applicable phase:
     - `TaskCreate({ subject: "Phase 0 — Frame Gate" })`
     - `TaskCreate({ subject: "Phase 1 — <other-host> review" })` (only if `--delegate`, explicit or implied)
-    - `TaskCreate({ subject: "Phase 2 — <current-host> review" })`
+    - `TaskCreate({ subject: "Phase 2 — <phase-2-provider> review" })` (omit when Phase 2 is excluded because Phase 1 resolves to the same provider)
     - `TaskCreate({ subject: "Execution Ordering" })`
 
     On phase start: `TaskUpdate({ taskId, status: "in_progress" })`.
@@ -124,12 +124,28 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     #### Review Phases
 
-    Let `<current-host>` come from SessionStart `Current host:`. Let `<other-host>` = the other of `codex`/`claude` — and `codex` when `<current-host>` is `copilot`, which is a plugin host but not a delegation target.
+    Let `<other-host>` be the registered provider that is not the current host (Claude → Codex, Codex → Claude, Copilot → Codex). Let `<phase-2-provider>` be the current host when it is itself a registered Coral provider (`codex`, `claude`), and `<other-host>` otherwise — Copilot is a plugin host but not a provider, so on Copilot Phase 2 resolves to `<other-host>`.
 
     | Phase | Condition | Provider | Round Label | Budget |
     |-------|-----------|----------|-------------|--------|
     | 1 | `--delegate`, explicit or implied by `round=N,M` | `<other-host>` | `(<other-host capitalized>)` | `{maxRounds[1]}` |
-    | 2 | always | `<current-host>` | `(<current-host capitalized>)` | `{maxRounds[2]}` |
+    | 2 | the current host is itself a registered provider, **or** `<phase-2-provider>` is one Phase 1 did not already resolve to | `<phase-2-provider>` | `(<phase-2-provider capitalized>)` | `{maxRounds[2]}` |
+
+    `<phase-2-provider>` is not a second delegation concept — it is a label for whichever provider Phase 2 resolved to, so the Round Label, the Task subject, and the Review Summary can name it without repeating the resolution rule at each site.
+
+    **What "a phase ran" means.** Every phase ends in exactly one of three states, and the whole protocol — this condition, the verdict, and the coverage line — reads that state:
+
+    - **not attempted** — its condition was false, so no dispatch was made;
+    - **attempted and failed** — it dispatched and no round produced a resolver result;
+    - **produced a result** — at least one round completed and the resolver returned a synthesis. A phase that completed round 1 and failed in round 2 **produced a result**.
+
+    **Phase 2's condition.** `<phase-2-provider>` resolves to the current host when that host is itself a registered provider, and to `<other-host>` otherwise — this resolution always succeeds, so Phase 2 is never skipped for want of a provider. Then:
+
+    - Phase 1 **produced a result** on `<phase-2-provider>` → Phase 2 does not run. Two phases on the same provider are one review reported as two. Record the reason "`<other-host>` already used by Phase 1".
+    - Phase 1 **attempted and failed** on `<phase-2-provider>` → Phase 2 does not run, and does not dispatch. Record the reason "`<other-host>` dispatch already failed in Phase 1: {observed error}". Re-dispatching would repeat a binding failure that is deterministic within one run — the same reason the retry is skipped in `<Error_Handling>`.
+    - Otherwise Phase 2 dispatches. If its dispatch does not survive the one retry, it takes the skip path: record the observed error and report it in the Review Summary rather than failing.
+
+    On Claude and Codex the current host is itself a provider, so `<phase-2-provider>` is always that host, only the last branch is ever reached, and behaviour is exactly as today.
 
     Run the phases in order. For each applicable phase, repeat up to that phase's own `{maxRounds[P]}` rounds (default 1):
 
@@ -143,6 +159,8 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     ```
     Reviewers always run in `--deep` methodology and the resolver always runs — both are independent of the round budget.
     Run `coral-cli wait jobs <job>` and classify the result from its rendered output, not exit code `75` alone. `Result path: <path>` marks a terminal result; read that artifact for the full workflow result and locate the resolver's synthesis section there, even when a terminal `provider_exit` propagated code `75`. A status beginning `Still waiting` with `(cursor: <cursor>)` means the workflow is still live; only then resume with `coral-cli wait jobs <job> --cursor <cursor>`. If a transient error instead prints `remediation:`, follow that exact command. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
+
+    A phase that never dispatched — excluded, skipped, or its launch failed on round 1 — has no workflow result and does not enter 4b–4d: record its coverage note and continue to the next phase, or to 4e (Execution Order) if it was the last.
 
     **4b. Post-Round Processing**
 
@@ -240,7 +258,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
   <Error_Handling>
     | Scenario | Action |
     |----------|--------|
-    | Workflow job fails | Retry once. If still fails and more phases remain, skip to next phase. Otherwise AskUserQuestion. |
+    | Workflow launch or job fails | Retry once — skip the retry when the launch failed on provider binding, which is deterministic and will fail identically. If it still fails, the phase takes the skip path whichever phase it is: record its outcome as **attempted and failed**, report it as a coverage note quoting the observed error, and continue to the next phase — or to 4e when none remains. Never `AskUserQuestion`, and never fail the run. |
     | Resolver fails | Retry once. If still fails, AskUserQuestion. |
   </Error_Handling>
   <Constraints>
@@ -259,10 +277,18 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     **Plan file**: `CORAL_PROJECT/plans/{topic}.md`
 
     ### Review Summary
-    - Phases: [0 (Frame Gate) + 1 (<other-host>) + 2 (<current-host>)] or [0 (Frame Gate) + 2 (<current-host>)]
-    - Rounds: rounds actually run / budget, per phase — e.g. `Phase 1: 2/3, Phase 2: 1/1`
-    - Final verdict: [APPROVED / APPROVED WITH CONDITIONS]
-    - Key changes from review: [brief list]
+    - Phases: list only the phases that produced a result — `0 (Frame Gate) + 1 (<other-host>) + 2 (<phase-2-provider>)`, `0 (Frame Gate) + 2 (<phase-2-provider>)`, `0 (Frame Gate) + 1 (<other-host>)`, or `0 (Frame Gate)` alone.
+    - Rounds: rounds **actually completed** / budget, per phase — e.g. `Phase 1: 2/3, Phase 2: 1/1`. A phase that never dispatched reports `0/{maxRounds[P]}`; a phase that failed partway reports the rounds it completed, never `0`.
+    - ⚠️ One line per phase that did not run, or that ran fewer rounds than its budget — **Phase {P} {skipped | ended early}**: {reason}.
+      - Phase 1, skipped — `<other-host>` dispatch failed: "{observed error}"
+      - Phase 2, skipped — `<other-host>` already used by Phase 1 | `<other-host>` dispatch already failed in Phase 1: "{observed error}" | `<phase-2-provider>` dispatch failed: "{observed error}"
+      - Either phase, ended early — dispatch failed in round {M} of {maxRounds[P]}: "{observed error}"; this phase's verdict is its round {M−1} verdict.
+
+      Add "The plan is unreviewed." only when no review phase produced a result. Append "Install and authenticate a provider CLI (`coral-cli codex` / `coral-cli claude`, or `/coral:equip`) and re-run for a second perspective." **only** to a reason whose text is a dispatch failure — never to "already used by Phase 1", which no install changes.
+    - Final verdict: [APPROVED / APPROVED WITH CONDITIONS / NOT REVIEWED]
+      - `NOT REVIEWED` when NO review phase produced a resolver result — the Complexity Gate skipped review, or neither Phase 1 nor Phase 2 produced one (each was not attempted, or attempted and failed).
+      - Otherwise the verdict of the last phase that produced a result, unaffected by a skip elsewhere.
+    - Key changes from review: [brief list]  ← omit entirely when the verdict is NOT REVIEWED
     - ⚠️ **Unsatisfied Success Criteria**: [list with reasons] *(omit if all satisfied)*
 
     ### Final Plan
@@ -272,9 +298,13 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     ### Implementation Handoff
 
-    **If `--no-handoff`**: stop after showing the summary above. The caller controls the next step.
+    **If `--no-handoff`**: stop after showing the summary above. The caller controls the next step. The caller inherits the verdict and must not present the plan as reviewed when it is `NOT REVIEWED`.
 
     **Otherwise**, ask the user how to implement:
+
+    When the verdict is `NOT REVIEWED`, replace the first question's `question:` value with
+    "This plan was not reviewed — no review phase produced a result. How would you like to implement?".
+    Leave the options unchanged.
     ```
     AskUserQuestion({ questions: [
       { question: "How would you like to implement?", header: "Mode",
