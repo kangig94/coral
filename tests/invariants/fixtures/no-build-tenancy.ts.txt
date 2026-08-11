@@ -1,0 +1,128 @@
+// Each block is an isolated source overlay for the matching BANNED_ROWS entry in
+// no-build-tenancy.test.ts. Keeping them isolated proves that a row fails for
+// its own signature rather than because another row happened to reject it.
+
+// @mutation belongs-to-namespace src/jobs/reconcile/plan.ts
+import { belongsToNamespace } from '../records.js';
+const owned = belongsToNamespace(status, currentNamespace);
+// @end
+
+// @mutation live-job-count-by-namespace src/coordinator/lifecycle.ts
+const activeJobs = progressStore.liveJobCountByNamespace(namespace);
+// @end
+
+// @mutation count-projected-live-jobs-by-namespace src/jobs/store.ts
+const projected = this.countProjectedLiveJobsByNamespace(namespace);
+// @end
+
+// @mutation load-job-detail-namespace-option src/jobs/read-queries.ts
+export function loadJobDetail(
+  db: Database,
+  jobId: string,
+  ctx: StoreReadContext,
+  options: { namespace?: string } = {},
+): JobDetail | null {
+  return null;
+}
+// @end
+
+// @mutation jobs-list-filters-namespace src/jobs/read-queries.ts
+export type JobsListFilters = {
+  projectRoot?: string;
+  namespace?: string;
+};
+// @end
+
+// @mutation read-ordered-projection-namespace-comparison src/jobs/read-queries.ts
+function readOrderedProjectionRows(db: Database, filters?: JobsListFilters): ProjectionRow[] {
+  return rows.filter((row) => filters?.namespace === undefined || row.backend_namespace === filters.namespace);
+}
+// @end
+
+// @mutation coral-store-jobs-list-namespace-injection src/read-model/coral-store.ts
+class CoralStore {
+  private namespace?: string;
+  jobs: unknown;
+  constructor() {
+    this.jobs = {
+      list: (filters: JobsListFilters) => listJobs(db, { ...filters, namespace: this.namespace }, this),
+    };
+  }
+}
+// @end
+
+// @mutation coral-store-jobs-detail-namespace-injection src/read-model/coral-store.ts
+class CoralStore {
+  private namespace?: string;
+  jobs: unknown;
+  constructor() {
+    this.jobs = {
+      detail: (jobId: string) => loadJobDetail(db, jobId, this, { namespace: this.namespace }),
+    };
+  }
+}
+// @end
+
+// @mutation direct-read-plugin-root-namespace src/cli/read-store.ts
+import { pluginRootNamespace } from '../infra/plugin-identity.js';
+const namespace = pluginRootNamespace(pluginRoot);
+const store = new CoralStore(db, readContext, { namespace });
+// @end
+
+// @mutation backend-world-namespace-comparison src/coordinator/composition/index.ts
+if (record.backendNamespace !== world.namespace) continue;
+// @end
+
+// @mutation backend-current-namespace-comparison src/jobs/reconcile/plan.ts
+if (status.backendNamespace === currentNamespace) recover(status);
+// @end
+
+// @mutation backend-lifecycle-namespace-comparison src/coordinator/services/recovery/service.ts
+if (!Object.is(record.backendNamespace, namespace)) continue;
+// @end
+
+// @mutation namespace-valued-equality-comparison src/coordinator/services/recovery/service.ts
+if (record.backendNamespace !== this.deps.backendNamespace) return;
+// @end
+
+// @mutation namespace-valued-equality-comparison-reconcile src/jobs/reconcile/plan.ts
+if (status.backendNamespace !== coordinator.backendNamespace) continue;
+// @end
+
+// @mutation non-namespace-equality-control src/jobs/reconcile/plan.ts
+if (status.projectRoot !== coordinator.projectRoot) continue;
+// @end
+
+// @mutation adopt-orphaned-cross-namespace-jobs src/jobs/reconcile/cross-namespace-adoption.ts
+export function adoptOrphanedCrossNamespaceJobs(): number {
+  return 0;
+}
+// @end
+
+// @mutation origin-current-namespace-comparison src/jobs/reconcile/cross-namespace-adoption.ts
+if (!(origin === currentNamespace)) adopt(jobId);
+// @end
+
+// @mutation launch-event-lifecycle-namespace-comparison src/coordinator/services/recovery/index.ts
+if (launchEventNamespace != namespace) terminalize(jobId);
+// @end
+
+// @mutation crashed-source-namespace-parameter src/jobs/crashed-job-terminalization-recovery-source.ts
+export function crashedJobTerminalizationSource(
+  db: Database,
+  namespace: string,
+  subject?: RecoverySubject,
+): RecoverySource<RawCrashedJobRow> {
+  return source;
+}
+// @end
+
+// @mutation crashed-source-namespace-argument src/coordinator/lifecycle.ts
+const source = crashedJobTerminalizationSource(progressStore.getDb(), namespace);
+// @end
+
+// @mutation crashed-source-backend-namespace-sql src/jobs/crashed-job-terminalization-recovery-source.ts
+const rows = db
+  .prepare(`SELECT * FROM projection_jobs WHERE backend_namespace = ? AND phase = 'running'`)
+  .all(namespace);
+// @end
