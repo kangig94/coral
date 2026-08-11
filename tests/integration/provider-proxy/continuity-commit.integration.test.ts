@@ -273,7 +273,7 @@ async function controlFaultDisposition(harness: Harness): Promise<'faulted' | 'r
     harness.control.faulted.then(() => 'faulted' as const),
     harness.control
       .call(
-        'operation.inspect.v2',
+        'operation.inspect.v1',
         { operation: harness.operation, prepareAttemptKey: harness.prepareAttemptKey },
         5_000,
       )

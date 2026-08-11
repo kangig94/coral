@@ -875,7 +875,7 @@ describe('provider proxy activation against a real guardian', () => {
     });
 
     const cancelResult = proxyOperationCancelResultSchema.parse(
-      await set.proxyControl.call('operation.cancel.v2', cancelRequest, 5_000),
+      await set.proxyControl.call('operation.cancel.v1', cancelRequest, 5_000),
     );
     expect(cancelResult).toEqual({
       state: 'released-never-started',
@@ -1242,7 +1242,7 @@ describe('provider proxy cancellation relinquishment against a real guardian pai
         5_000,
       ),
     ).resolves.toMatchObject({ state: 'active' });
-    await expect(set.guardianChannel.call('guardian.operation-release.v2', {}, 5_000)).rejects.toThrow(
+    await expect(set.guardianChannel.call('guardian.operation-release.v1', {}, 5_000)).rejects.toThrow(
       /closed|write|socket/u,
     );
   });

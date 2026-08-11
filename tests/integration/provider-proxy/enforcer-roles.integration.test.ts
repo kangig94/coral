@@ -753,7 +753,7 @@ describe('provider-proxy guardian and reaper', () => {
     for (let cycle = 0; cycle < cycles; cycle += 1) {
       const { operation, reservation } = await stage(set);
       const released = (await set.proxyChannel.call(
-        'guardian.operation-release.v2',
+        'guardian.operation-release.v1',
         { proxy: set.proxyIdentity, operation, reservation },
         5_000,
       )) as { state: string };
@@ -820,13 +820,13 @@ describe('provider-proxy guardian and reaper', () => {
     ).rejects.toThrow(/different provider root/u);
   });
 
-  it('refuses guardian.operation-release.v2 presenting a different reservation for a known operation', async () => {
+  it('refuses guardian.operation-release.v1 presenting a different reservation for a known operation', async () => {
     const set = await startSet();
     const { operation } = await stage(set);
 
     await expect(
       set.proxyChannel.call(
-        'guardian.operation-release.v2',
+        'guardian.operation-release.v1',
         { proxy: set.proxyIdentity, operation, reservation: randomUUID() },
         5_000,
       ),
@@ -957,7 +957,7 @@ describe('provider-proxy guardian and reaper', () => {
       )) as { state: string; jointContainmentReceipt: string };
       expect(staged.state).toBe('staged-contained');
       const released = (await set.proxyChannel.call(
-        'guardian.operation-release.v2',
+        'guardian.operation-release.v1',
         { proxy: set.proxyIdentity, operation, reservation },
         5_000,
       )) as { state: string };
@@ -1166,7 +1166,7 @@ describe('provider-proxy guardian and reaper', () => {
     const { operation, reservation } = await stage(set);
 
     const released = (await set.proxyChannel.call(
-      'guardian.operation-release.v2',
+      'guardian.operation-release.v1',
       { proxy: set.proxyIdentity, operation, reservation },
       5_000,
     )) as { state: string };

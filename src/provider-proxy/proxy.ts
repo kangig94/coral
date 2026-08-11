@@ -243,7 +243,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       },
     ],
     [
-      'operation.cancel.v2',
+      'operation.cancel.v1',
       {
         authority: 'active',
         handle: async (params) => {
@@ -265,7 +265,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       },
     ],
     [
-      'operation.settle.v2',
+      'operation.settle.v1',
       {
         authority: 'active',
         handle: async (params) => {
@@ -302,7 +302,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       },
     ],
     [
-      'operation.inspect.v2',
+      'operation.inspect.v1',
       {
         authority: 'observation',
         budgetMs: PROXY_STATUS_RPC_TIMEOUT_MS,

@@ -20,6 +20,23 @@ import {
   operationPrepareAttemptNumberSchema,
 } from './ledger.js';
 
+/**
+ * Every control method carries a `.vN` suffix, and every one of them is `.v1`.
+ *
+ * The suffix exists because this protocol is spoken between *processes*, not between code paths: a coordinator
+ * can inherit a proxy set that an entirely different build spawned, and an already-running responder cannot be
+ * retrofitted. So when a shape has to change incompatibly while an older set may still be answering, a second
+ * number is the honest way to say so — the two versions coexist in different processes, never in one build.
+ *
+ * That is the only thing the suffix means. Nothing parses it; a peer that does not implement a method answers
+ * `method_not_found` (`control-endpoint.ts`), which is what callers actually branch on. So a number may only be
+ * raised once a build carrying the lower one has shipped. Four methods here once read `.v2` against a `.v1`
+ * that had never existed in any commit and never shipped — a rewrite-iteration fossil claiming a predecessor
+ * it did not have. They were corrected to `.v1` while no release contained this domain at all.
+ *
+ * `handoff-capsule.ts` shows the shape this is reserved for: `handoffCapsuleV1Schema` and
+ * `handoffCapsuleV2Schema` both exist, discriminated on `version`, because both are genuinely readable.
+ */
 export const MAX_PROXY_CONTROL_FRAME_BYTES = 17 * 1024 * 1024;
 export const PROXY_CONTROL_RPC_TIMEOUT_MS = 5_000;
 export const PROXY_EVENT_COMMIT_TIMEOUT_MS = 30_000;
@@ -839,7 +856,7 @@ export const proxyOperationAttachResultSchema = z.discriminatedUnion('state', [
 /**
  * The proxy echoes both correlation and build identity so the observer can reject a well-formed answer from
  * the wrong batch or set. Rows deliberately expose only ledger liveness: reconciliation attempt state stays
- * confined to `operation.inspect.v2`, whose more detailed vocabulary carries different authority semantics.
+ * confined to `operation.inspect.v1`, whose more detailed vocabulary carries different authority semantics.
  */
 export const proxyOperationStatusResultSchema = z
   .object({

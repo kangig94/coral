@@ -390,7 +390,7 @@ describe('provider-proxy proxy: prepare result sender validation', () => {
     void preparing.then(prepareSettled, prepareSettled);
 
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('releasing'));
-    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
       state: 'releasing',
       releaseKind: 'never-started',
     });
@@ -398,7 +398,7 @@ describe('provider-proxy proxy: prepare result sender validation', () => {
 
     release.resolve();
     await expect(preparing).resolves.toEqual(refusal);
-    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toEqual(
+    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toEqual(
       refusal,
     );
   });
@@ -430,9 +430,9 @@ describe('provider-proxy truthful operation authority', () => {
       await control.call('operation.activate.v1', activation, 5_000),
     );
     const replay = await control.call('operation.activate.v1', activation, 5_000);
-    const awaitingPublication = await control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000);
+    const awaitingPublication = await control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000);
     await control.call('operation.attach.v1', { operation, committedThroughProviderSeq: 0 }, 5_000);
-    const attached = await control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000);
+    const attached = await control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000);
 
     expect(first).toEqual({
       state: 'executing',
@@ -472,7 +472,7 @@ describe('provider-proxy truthful operation authority', () => {
 
     const activating = control.call('operation.activate.v1', activation, 5_000);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('releasing'));
-    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
       state: 'releasing',
       releaseKind: 'activation-indeterminate',
       activationAck: null,
@@ -487,7 +487,7 @@ describe('provider-proxy truthful operation authority', () => {
     };
     await expect(activating).resolves.toEqual(receipt);
     await expect(control.call('operation.activate.v1', activation, 5_000)).resolves.toEqual(receipt);
-    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toEqual(
+    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toEqual(
       receipt,
     );
     expect(proxy.ledger().get(operation)).toBeNull();
@@ -532,7 +532,7 @@ describe('provider-proxy truthful operation authority', () => {
 
     await activationTimedOut;
     await vi.waitFor(() => expect(startAborted).toHaveBeenCalled());
-    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
       state: 'released-never-started',
     });
   });
@@ -579,7 +579,7 @@ describe('provider-proxy truthful operation authority', () => {
     });
     const inspectRequest = proxyOperationInspectParamsSchema.parse({ operation, prepareAttemptKey });
     const inspectResult = proxyOperationInspectResultSchema.parse(
-      await control.call('operation.inspect.v2', inspectRequest, 5_000),
+      await control.call('operation.inspect.v1', inspectRequest, 5_000),
     );
     expect(inspectResult).toMatchObject({ state: 'starting' });
     expect(inspectRequestParses).toHaveBeenCalledTimes(2);
@@ -686,7 +686,7 @@ describe('provider-proxy truthful operation authority', () => {
 
     await vi.waitFor(() => expect(stageAborted).toHaveBeenCalledOnce());
     expect(proxy.ledger().get(operation)?.state).toBe('releasing');
-    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
       state: 'releasing',
       releaseKind: 'never-started',
     });
@@ -715,7 +715,7 @@ describe('provider-proxy truthful operation authority', () => {
     const preparing = control.call('operation.prepare.v1', prepareRequest, 5_000);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('preparing'));
     const cancelling = control.call(
-      'operation.cancel.v2',
+      'operation.cancel.v1',
       { operation, prepareAttemptNumber: 1, prepareAttemptKey },
       5_000,
     );
@@ -732,7 +732,7 @@ describe('provider-proxy truthful operation authority', () => {
     expect(receipt).toMatchObject({ state: 'released-never-started' });
     expect(host.released).toContainEqual({ jobId: operation.jobId, operationId: operation.operationId });
     expect(proxy.ledger().get(operation)).toBeNull();
-    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toEqual(
+    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toEqual(
       receipt,
     );
   });
@@ -761,7 +761,7 @@ describe('provider-proxy truthful operation authority', () => {
 
     await vi.waitFor(() => expect(releaseMembership).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(proxy.ledger().get(operation)).toBeNull());
-    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
       state: 'released-never-started',
     });
   });
@@ -781,9 +781,9 @@ describe('provider-proxy truthful operation authority', () => {
     await control.call('operation.prepare.v1', prepareRequest, 5_000);
 
     await expect(
-      control.call('operation.cancel.v2', { operation, prepareAttemptNumber: 1, prepareAttemptKey }, 5_000),
+      control.call('operation.cancel.v1', { operation, prepareAttemptNumber: 1, prepareAttemptKey }, 5_000),
     ).rejects.toThrow('Provider operation cancellation did not settle within 10000ms.');
-    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
       state: 'releasing',
       releaseKind: 'never-started',
     });
@@ -791,7 +791,7 @@ describe('provider-proxy truthful operation authority', () => {
     controlled.advance(OPERATION_RELEASE_RETRY_MS);
 
     await vi.waitFor(() => expect(stageAbortAndRelease).toHaveBeenCalledTimes(2));
-    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
       state: 'released-never-started',
     });
     expect(proxy.ledger().get(operation)).toBeNull();
@@ -817,7 +817,7 @@ describe('provider-proxy truthful operation authority', () => {
     });
 
     const cancelled = proxyOperationCancelResultSchema.parse(
-      await control.call('operation.cancel.v2', cancelRequest, 5_000),
+      await control.call('operation.cancel.v1', cancelRequest, 5_000),
     );
 
     expect(cancelled).toEqual({
@@ -844,7 +844,7 @@ describe('provider-proxy truthful operation authority', () => {
     };
     const higherAttemptKey = operationPrepareAttemptKey(higherPrepare);
     await control.call(
-      'operation.cancel.v2',
+      'operation.cancel.v1',
       { operation, prepareAttemptNumber: 2, prepareAttemptKey: higherAttemptKey },
       5_000,
     );
@@ -876,7 +876,7 @@ describe('provider-proxy truthful operation authority', () => {
       /previous prepare attempt is not fenced/u,
     );
     await control.call(
-      'operation.cancel.v2',
+      'operation.cancel.v1',
       { operation, prepareAttemptNumber: 1, prepareAttemptKey: firstAttemptKey },
       5_000,
     );
@@ -914,7 +914,7 @@ describe('provider-proxy truthful operation authority', () => {
 
     await expect(
       control.call(
-        'operation.cancel.v2',
+        'operation.cancel.v1',
         { operation, prepareAttemptNumber: 1, prepareAttemptKey: firstAttemptKey },
         5_000,
       ),
@@ -924,7 +924,7 @@ describe('provider-proxy truthful operation authority', () => {
     ).rejects.toThrow();
 
     await expect(
-      control.call('operation.inspect.v2', { operation, prepareAttemptKey: firstAttemptKey }, 5_000),
+      control.call('operation.inspect.v1', { operation, prepareAttemptKey: firstAttemptKey }, 5_000),
     ).resolves.toMatchObject({ state: 'executing' });
   });
 
@@ -945,11 +945,11 @@ describe('provider-proxy truthful operation authority', () => {
     const prepareAttemptKey = operationPrepareAttemptKey(prepareRequest);
     const preparing = control.call('operation.prepare.v1', prepareRequest, 5_000);
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('preparing'));
-    await expect(control.call('operation.inspect.v2', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
+    await expect(control.call('operation.inspect.v1', { operation, prepareAttemptKey }, 5_000)).resolves.toMatchObject({
       state: 'preparing',
     });
     const cancelling = control.call(
-      'operation.cancel.v2',
+      'operation.cancel.v1',
       { operation, prepareAttemptNumber: 1, prepareAttemptKey },
       5_000,
     );
@@ -1009,7 +1009,7 @@ describe('provider-proxy truthful operation authority', () => {
     );
     await vi.waitFor(() => expect(proxy.ledger().get(operation)?.state).toBe('starting'));
     const cancelling = control.call(
-      'operation.cancel.v2',
+      'operation.cancel.v1',
       { operation, prepareAttemptNumber: 1, prepareAttemptKey },
       5_000,
     );
@@ -1052,12 +1052,12 @@ describe('provider-proxy truthful operation authority', () => {
 
     const settleRequest = proxyOperationSettleParamsSchema.parse({ operation, finalProviderSeq: 1 });
     const settled = proxyOperationSettleResultSchema.parse(
-      await control.call('operation.settle.v2', settleRequest, 5_000),
+      await control.call('operation.settle.v1', settleRequest, 5_000),
     );
     expect(settled).toEqual({ state: 'released-after-terminal', settledThroughProviderSeq: 1 });
     const replayRequest = proxyOperationSettleParamsSchema.parse({ operation, finalProviderSeq: 0 });
     const replay = proxyOperationSettleResultSchema.parse(
-      await control.call('operation.settle.v2', replayRequest, 5_000),
+      await control.call('operation.settle.v1', replayRequest, 5_000),
     );
     expect(replay).toEqual({ state: 'released-after-terminal', settledThroughProviderSeq: 1 });
     expect(proxy.ledger().get(operation)).toBeNull();
