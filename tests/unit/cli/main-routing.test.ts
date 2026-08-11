@@ -96,10 +96,18 @@ vi.mock('#src/transport/http/backend/shutdown.js', () => ({
   shutdownBackend: mockState.shutdownBackend,
 }));
 
-vi.mock('#src/cli/follow.js', async () => {
-  const actual = await vi.importActual<typeof FollowMod>('#src/cli/follow.js');
-  return { ...actual, launchAndFollow: mockState.launchAndFollow };
-});
+// Vitest deliberately preserves mocked modules across `vi.resetModules()`, so spreading `actual` here would
+// pin the real `followJobs` — and the cause-renderer/read-store graph it closed over — to the module state
+// that existed when this mock was hoisted. `loadMainModuleFresh()` would then report a fresh import while
+// `followJobs` still read the store resolved from the pre-reassignment `HOME`. Importing lazily per call
+// keeps the real implementation under test and lets a test that moves `HOME` actually get a new graph.
+vi.mock('#src/cli/follow.js', () => ({
+  launchAndFollow: mockState.launchAndFollow,
+  followJobs: async (...args: Parameters<typeof FollowMod.followJobs>) => {
+    const actual = await vi.importActual<typeof FollowMod>('#src/cli/follow.js');
+    return actual.followJobs(...args);
+  },
+}));
 
 vi.mock('#src/cli/expansion/index.js', () => ({
   createCliExpansionActivation: () => ({
