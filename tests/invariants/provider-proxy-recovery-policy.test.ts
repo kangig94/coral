@@ -185,9 +185,10 @@ const OWNED_SYMBOLS: readonly OwnedSymbol[] = [
  * TypeScript is structurally typed. This check deliberately does not perform the taint analysis needed to
  * follow an exact dispatcher through assignment, arguments, returns, or object storage into a locally declared
  * compatible interface; calls then resolve to the local begin/start/sink declarations. It also does not follow
- * a dynamic import through two `export *` barrels into a structurally annotated callback parameter whose
- * destructured binding has no initializer and no remaining owned symbol. Both escape forms compile without
- * casts, `any`, or reflection. This test catches only the exact-symbol paths inventoried below.
+ * a dynamic import through two `export *` barrels into a structurally annotated callback, or recover an owned
+ * member carried solely by a contextual type when destructured function parameters have no initializer. These
+ * escape forms compile without casts, `any`, or reflection. This test catches only the exact-symbol paths
+ * inventoried below.
  */
 
 function matchOwnedSymbol(symbol: ts.Symbol | undefined): OwnedSymbol | undefined {
@@ -346,10 +347,64 @@ function isExactCallCallee(node: ts.Node): boolean {
   return ts.isCallExpression(current.parent) && unwrapExpression(current.parent.expression) === node;
 }
 
+type ReferenceRecorder = (file: ts.SourceFile, node: ts.Node, symbol: ts.Symbol | undefined, nodeKind: string) => void;
+
+function recordContextualProperties(file: ts.SourceFile, node: ts.ObjectLiteralExpression, record: ReferenceRecorder) {
+  const contextual = CHECKER.getContextualType(node);
+  if (contextual === undefined) return;
+  for (const property of node.properties) {
+    if (
+      !ts.isPropertyAssignment(property) &&
+      !ts.isMethodDeclaration(property) &&
+      !ts.isShorthandPropertyAssignment(property)
+    ) {
+      continue;
+    }
+    const name = property.name;
+    if (name === undefined) continue;
+    const memberName = name.getText(file).replaceAll(/["']/gu, '');
+    record(file, property, contextual.getProperty(memberName), `Contextual${ts.SyntaxKind[property.kind]}`);
+  }
+}
+
+function recordSyntaxReference(file: ts.SourceFile, node: ts.Node, record: ReferenceRecorder): void {
+  if (ts.isBindingElement(node)) {
+    record(file, node, bindingElementSymbol(node), 'BindingElement');
+  } else if (ts.isImportSpecifier(node)) {
+    record(file, node, CHECKER.getSymbolAtLocation(node.name), 'ImportSpecifier');
+  } else if (ts.isExportSpecifier(node)) {
+    record(file, node, CHECKER.getSymbolAtLocation(node.name), 'ExportSpecifier');
+  } else if (ts.isCallExpression(node)) {
+    record(file, node, resolvedCallSymbol(node), 'CallExpression');
+  } else if (ts.isPropertyAccessExpression(node)) {
+    record(file, node, CHECKER.getSymbolAtLocation(node.name), 'PropertyAccessExpression');
+  } else if (ts.isElementAccessExpression(node) && node.argumentExpression !== undefined) {
+    record(file, node, CHECKER.getSymbolAtLocation(node.argumentExpression), 'ElementAccessExpression');
+  } else if (
+    ts.isIdentifier(node) &&
+    !declarationName(node) &&
+    !typeOnly(node) &&
+    !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node)
+  ) {
+    record(file, node, CHECKER.getSymbolAtLocation(node), 'Identifier');
+  } else if (ts.isShorthandPropertyAssignment(node)) {
+    record(file, node, CHECKER.getShorthandAssignmentValueSymbol(node), 'ShorthandPropertyAssignment');
+  }
+}
+
+function collectSourceFileReferences(file: ts.SourceFile, record: ReferenceRecorder): void {
+  const visit = (node: ts.Node): void => {
+    if (ts.isObjectLiteralExpression(node)) recordContextualProperties(file, node, record);
+    recordSyntaxReference(file, node, record);
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+}
+
 function collectReferences(): Reference[] {
   const references: Reference[] = [];
   const seen = new Set<string>();
-  const record = (file: ts.SourceFile, node: ts.Node, symbol: ts.Symbol | undefined, nodeKind: string): void => {
+  const record: ReferenceRecorder = (file, node, symbol, nodeKind) => {
     const target = matchOwnedSymbol(symbol);
     if (target === undefined) return;
     const key = `${file.fileName}:${node.getStart(file)}:${node.getEnd()}:${target.key}`;
@@ -357,53 +412,7 @@ function collectReferences(): Reference[] {
     seen.add(key);
     references.push({ file: relativePath(file), owner: ownerName(namedOwner(node)), nodeKind, target, node });
   };
-
-  for (const file of SOURCE_FILES) {
-    const visit = (node: ts.Node): void => {
-      if (ts.isObjectLiteralExpression(node)) {
-        const contextual = CHECKER.getContextualType(node);
-        if (contextual !== undefined) {
-          for (const property of node.properties) {
-            if (
-              !ts.isPropertyAssignment(property) &&
-              !ts.isMethodDeclaration(property) &&
-              !ts.isShorthandPropertyAssignment(property)
-            ) {
-              continue;
-            }
-            const name = property.name;
-            if (name === undefined) continue;
-            const memberName = name.getText(file).replaceAll(/["']/gu, '');
-            record(file, property, contextual.getProperty(memberName), `Contextual${ts.SyntaxKind[property.kind]}`);
-          }
-        }
-      }
-      if (ts.isBindingElement(node)) {
-        record(file, node, bindingElementSymbol(node), 'BindingElement');
-      } else if (ts.isImportSpecifier(node)) {
-        record(file, node, CHECKER.getSymbolAtLocation(node.name), 'ImportSpecifier');
-      } else if (ts.isExportSpecifier(node)) {
-        record(file, node, CHECKER.getSymbolAtLocation(node.name), 'ExportSpecifier');
-      } else if (ts.isCallExpression(node)) {
-        record(file, node, resolvedCallSymbol(node), 'CallExpression');
-      } else if (ts.isPropertyAccessExpression(node)) {
-        record(file, node, CHECKER.getSymbolAtLocation(node.name), 'PropertyAccessExpression');
-      } else if (ts.isElementAccessExpression(node) && node.argumentExpression !== undefined) {
-        record(file, node, CHECKER.getSymbolAtLocation(node.argumentExpression), 'ElementAccessExpression');
-      } else if (
-        ts.isIdentifier(node) &&
-        !declarationName(node) &&
-        !typeOnly(node) &&
-        !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node)
-      ) {
-        record(file, node, CHECKER.getSymbolAtLocation(node), 'Identifier');
-      } else if (ts.isShorthandPropertyAssignment(node)) {
-        record(file, node, CHECKER.getShorthandAssignmentValueSymbol(node), 'ShorthandPropertyAssignment');
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(file);
-  }
+  for (const file of SOURCE_FILES) collectSourceFileReferences(file, record);
   return references;
 }
 
@@ -412,10 +421,29 @@ const DIRECT_CALL_ONLY_CLASSES = new Set<ReferenceClass>([
   'start',
   'facade',
   'producer',
+  'sink',
   'effect',
   'fatal-sink',
+  'raw-result',
   'fatal-origin',
 ]);
+
+function initialDispositionRole(reference: Reference): string | null {
+  if (reference.target.key !== 'ContainmentAbsenceAcceptance.initialDisposition') return null;
+  if (reference.nodeKind.startsWith('Contextual')) return 'lifecycle-public-disposition-property';
+  if (!ts.isPropertyAccessExpression(reference.node)) return null;
+  const call = reference.node.parent;
+  const callee = ts.isCallExpression(call) ? canonicalSymbol(resolvedCallSymbol(call)) : undefined;
+  const isAwaitStartupArgument =
+    ts.isCallExpression(call) &&
+    call.arguments[0] === reference.node &&
+    callee?.name === 'awaitStartup' &&
+    callee.declarations?.some(
+      (declaration) =>
+        relativePath(declaration.getSourceFile()) === 'src/coordinator/services/provider-operation-reconciler.ts',
+    ) === true;
+  return isAwaitStartupArgument ? 'awaitStartup-argument-zero' : 'unregistered-result-role';
+}
 
 function valueEscapeViolations(references: readonly Reference[]): string[] {
   return references
@@ -424,6 +452,7 @@ function valueEscapeViolations(references: readonly Reference[]): string[] {
       if (ts.isCallExpression(reference.node)) return false;
       if (reference.nodeKind.startsWith('Contextual')) return false;
       if (ts.isImportSpecifier(reference.node)) return false;
+      if (initialDispositionRole(reference) === 'awaitStartup-argument-zero') return false;
       return !isExactCallCallee(reference.node);
     })
     .map(
@@ -476,59 +505,86 @@ function rejectionFingerprint(owner: ts.FunctionLikeDeclaration, catchClause: ts
   )}] assignments=[${assignments.join(', ')}]`;
 }
 
-function consumerRejectionViolations(references: readonly Reference[]): string[] {
+function rejectionConsumerOwners(references: readonly Reference[]): Set<ts.FunctionLikeDeclaration> {
   const owners = new Set<ts.FunctionLikeDeclaration>();
   for (const reference of references) {
-    if (reference.target.referenceClass === 'sink') continue;
     if (reference.file === POLICY_FILE) continue;
     const owner = namedOwner(reference.node);
     if (owner !== undefined) owners.add(owner);
   }
+  return owners;
+}
+
+function consumedSymbolsForOwner(owner: ts.FunctionLikeDeclaration, references: readonly Reference[]): string[] {
+  return references
+    .filter((reference) => namedOwner(reference.node) === owner)
+    .map((reference) => reference.target.key)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .sort();
+}
+
+function returnedShapes(node: ts.Node): string[] {
+  const shapes: string[] = [];
+  const visit = (child: ts.Node): void => {
+    if (ts.isReturnStatement(child) && child.expression !== undefined) {
+      shapes.push(child.expression.getText().replaceAll(/\s+/gu, ' '));
+    }
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return shapes;
+}
+
+function catchRejectionViolation(
+  owner: ts.FunctionLikeDeclaration,
+  catchClause: ts.CatchClause,
+  ordinal: number,
+  consumedSymbols: readonly string[],
+): string | null {
+  const fingerprint = rejectionFingerprint(owner, catchClause, ordinal);
+  if (EXPECTED_REJECTION_NODE_INVENTORY.includes(fingerprint as never)) return null;
+  return `${fingerprint} consumed=[${consumedSymbols.join(', ')}] returned=[${returnedShapes(catchClause.block).join(
+    ', ',
+  )}]`;
+}
+
+function promiseRejectionViolation(
+  owner: ts.FunctionLikeDeclaration,
+  call: ts.CallExpression,
+  consumedSymbols: readonly string[],
+): string | null {
+  const kind = standardPromiseRejectionKind(call);
+  if (kind === null) return null;
+  const fingerprint = `${relativePath(owner.getSourceFile())} :: ${ownerName(owner)} :: ${kind} :: ${call.expression
+    .getText()
+    .replaceAll(/\s+/gu, ' ')}`;
+  return EXPECTED_REJECTION_NODE_INVENTORY.includes(fingerprint as never)
+    ? null
+    : `${fingerprint} consumed=[${consumedSymbols.join(', ')}]`;
+}
+
+function rejectionViolationsForOwner(owner: ts.FunctionLikeDeclaration, references: readonly Reference[]): string[] {
   const violations: string[] = [];
-  for (const owner of owners) {
-    const consumedSymbols = references
-      .filter((reference) => namedOwner(reference.node) === owner)
-      .map((reference) => reference.target.key)
-      .filter((value, index, values) => values.indexOf(value) === index)
-      .sort();
-    const returnedShapes: string[] = [];
-    const collectReturns = (node: ts.Node): void => {
-      if (ts.isReturnStatement(node) && node.expression !== undefined) {
-        returnedShapes.push(node.expression.getText().replaceAll(/\s+/gu, ' '));
-      }
-      ts.forEachChild(node, collectReturns);
-    };
-    let ordinal = 0;
-    const visit = (node: ts.Node): void => {
-      if (ts.isCatchClause(node)) {
-        ordinal += 1;
-        const fingerprint = rejectionFingerprint(owner, node, ordinal);
-        if (!EXPECTED_REJECTION_NODE_INVENTORY.includes(fingerprint as never)) {
-          returnedShapes.length = 0;
-          collectReturns(node.block);
-          violations.push(
-            `${fingerprint} consumed=[${consumedSymbols.join(', ')}] returned=[${returnedShapes.join(', ')}]`,
-          );
-        }
-      }
-      if (ts.isCallExpression(node)) {
-        const kind = standardPromiseRejectionKind(node);
-        if (kind === null) {
-          ts.forEachChild(node, visit);
-          return;
-        }
-        const fingerprint = `${relativePath(owner.getSourceFile())} :: ${ownerName(owner)} :: ${kind} :: ${node.expression
-          .getText()
-          .replaceAll(/\s+/gu, ' ')}`;
-        if (!EXPECTED_REJECTION_NODE_INVENTORY.includes(fingerprint as never)) {
-          violations.push(`${fingerprint} consumed=[${consumedSymbols.join(', ')}]`);
-        }
-      }
-      ts.forEachChild(node, visit);
-    };
-    if (owner.body !== undefined) visit(owner.body);
-  }
+  const consumedSymbols = consumedSymbolsForOwner(owner, references);
+  let catchOrdinal = 0;
+  const visit = (node: ts.Node): void => {
+    if (ts.isCatchClause(node)) {
+      catchOrdinal += 1;
+      const violation = catchRejectionViolation(owner, node, catchOrdinal, consumedSymbols);
+      if (violation !== null) violations.push(violation);
+    }
+    if (ts.isCallExpression(node)) {
+      const violation = promiseRejectionViolation(owner, node, consumedSymbols);
+      if (violation !== null) violations.push(violation);
+    }
+    ts.forEachChild(node, visit);
+  };
+  if (owner.body !== undefined) visit(owner.body);
   return violations;
+}
+
+function consumerRejectionViolations(references: readonly Reference[]): string[] {
+  return [...rejectionConsumerOwners(references)].flatMap((owner) => rejectionViolationsForOwner(owner, references));
 }
 
 function rejectionNodeInventory(): string[] {
@@ -713,10 +769,9 @@ function boundaryInventory(references: readonly Reference[]): string[] {
     .filter((reference) => {
       if (!['factory', 'facade', 'raw-result', 'fatal-origin'].includes(reference.target.referenceClass)) return false;
       if (ts.isImportSpecifier(reference.node) || ts.isCallExpression(reference.node)) return true;
-      if (reference.target.key === 'ContainmentAbsenceAcceptance.initialDisposition') {
-        return ts.isPropertyAccessExpression(reference.node) || reference.nodeKind.startsWith('Contextual');
-      }
-      return false;
+      if (reference.target.referenceClass !== 'raw-result') return false;
+      if (initialDispositionRole(reference) !== null) return true;
+      return !isExactCallCallee(reference.node);
     })
     .map((reference) => {
       const occurrence = `${reference.file} :: ${reference.owner} :: ${reference.nodeKind} :: ${reference.target.key}`;
@@ -732,23 +787,8 @@ function boundaryInventory(references: readonly Reference[]): string[] {
             : 'unregistered-facade-call-role';
         return `${occurrence} :: ${role}`;
       }
-      if (reference.target.key === 'ContainmentAbsenceAcceptance.initialDisposition') {
-        if (ts.isPropertyAccessExpression(reference.node)) {
-          const call = reference.node.parent;
-          const callee = ts.isCallExpression(call) ? canonicalSymbol(resolvedCallSymbol(call)) : undefined;
-          const isAwaitStartupArgument =
-            ts.isCallExpression(call) &&
-            call.arguments[0] === reference.node &&
-            callee?.name === 'awaitStartup' &&
-            callee.declarations?.some(
-              (declaration) =>
-                relativePath(declaration.getSourceFile()) ===
-                'src/coordinator/services/provider-operation-reconciler.ts',
-            ) === true;
-          return `${occurrence} :: ${isAwaitStartupArgument ? 'awaitStartup-argument-zero' : 'unregistered-result-role'}`;
-        }
-        return `${occurrence} :: lifecycle-public-disposition-property`;
-      }
+      const role = initialDispositionRole(reference);
+      if (role !== null) return `${occurrence} :: ${role}`;
       return occurrence;
     })
     .sort();
@@ -756,6 +796,7 @@ function boundaryInventory(references: readonly Reference[]): string[] {
 
 type AdversarialAnalysis = Readonly<{
   bindingEscapes: readonly string[];
+  valueEscapes: readonly string[];
   ownedOccurrences: readonly string[];
   rejections: readonly string[];
 }>;
@@ -790,12 +831,39 @@ function analyzeAdversarialProgram(program: ts.Program, path: string): Adversari
   };
   const policyFile = fileAt(POLICY_FILE);
   const inheritanceFile = fileAt('src/coordinator/services/provider-proxy-set-inheritance.ts');
+  const disappearanceFile = fileAt('src/coordinator/services/provider-containment-disappearance.ts');
+  const reconcilerFile = fileAt('src/coordinator/services/provider-operation-reconciler.ts');
+  const lifecycleFile = fileAt('src/coordinator/services/provider-proxy-set-lifecycle.ts');
   const localOwned = new Map<ts.Symbol, string>([
     [member(exported(policyFile, 'ProviderProxyRecoveryDispatcher'), 'begin'), 'ProviderProxyRecoveryDispatcher.begin'],
     [member(exported(policyFile, 'ProviderProxyRecoveryArbiter'), 'start'), 'ProviderProxyRecoveryArbiter.start'],
+    [member(exported(policyFile, 'ProviderProxyRecoveryTurnSinks'), 'fatal'), 'ProviderProxyRecoveryTurnSinks.fatal'],
     [exported(inheritanceFile, 'recoverProviderProxySetOrdinarily'), 'recoverProviderProxySetOrdinarily'],
     [exported(inheritanceFile, 'recoverProviderProxySetAtStartup'), 'recoverProviderProxySetAtStartup'],
+    [
+      member(exported(disappearanceFile, 'ProviderContainmentDisappearanceConsumer'), 'containmentDisappeared'),
+      'ProviderContainmentDisappearanceConsumer.containmentDisappeared',
+    ],
+    [
+      member(exported(reconcilerFile, 'ProviderOperationReconciler'), 'containmentDisappeared'),
+      'ProviderOperationReconciler.containmentDisappeared',
+    ],
+    [
+      member(exported(lifecycleFile, 'ContainmentAbsenceAcceptance'), 'initialDisposition'),
+      'ContainmentAbsenceAcceptance.initialDisposition',
+    ],
     [exported(policyFile, 'isProviderProxyRecoveryFatalError'), 'isProviderProxyRecoveryFatalError'],
+  ]);
+  const localClasses = new Map<string, ReferenceClass>([
+    ['ProviderProxyRecoveryDispatcher.begin', 'begin'],
+    ['ProviderProxyRecoveryArbiter.start', 'start'],
+    ['ProviderProxyRecoveryTurnSinks.fatal', 'sink'],
+    ['recoverProviderProxySetOrdinarily', 'facade'],
+    ['recoverProviderProxySetAtStartup', 'facade'],
+    ['ProviderContainmentDisappearanceConsumer.containmentDisappeared', 'raw-result'],
+    ['ProviderOperationReconciler.containmentDisappeared', 'raw-result'],
+    ['ContainmentAbsenceAcceptance.initialDisposition', 'raw-result'],
+    ['isProviderProxyRecoveryFatalError', 'fatal-origin'],
   ]);
   const match = (symbol: ts.Symbol | undefined): string | undefined => {
     const resolved = canonical(symbol);
@@ -825,18 +893,28 @@ function analyzeAdversarialProgram(program: ts.Program, path: string): Adversari
       : undefined;
   };
   const source = fileAt(path);
-  const references: Array<{ owner: ts.FunctionLikeDeclaration | undefined; key: string; nodeKind: string }> = [];
+  const references: Array<{
+    owner: ts.FunctionLikeDeclaration | undefined;
+    key: string;
+    nodeKind: string;
+    node: ts.Node;
+  }> = [];
   const catches: Array<{ owner: ts.FunctionLikeDeclaration | undefined; node: ts.CatchClause }> = [];
   const visit = (node: ts.Node): void => {
     if (ts.isBindingElement(node)) {
       const key = match(bindingSymbol(node));
-      if (key !== undefined) references.push({ owner: namedOwner(node), key, nodeKind: 'BindingElement' });
+      if (key !== undefined) references.push({ owner: namedOwner(node), key, nodeKind: 'BindingElement', node });
     } else if (ts.isImportSpecifier(node)) {
       const key = match(checker.getSymbolAtLocation(node.name));
-      if (key !== undefined) references.push({ owner: undefined, key, nodeKind: 'ImportSpecifier' });
+      if (key !== undefined) references.push({ owner: undefined, key, nodeKind: 'ImportSpecifier', node });
     } else if (ts.isCallExpression(node)) {
       const key = match(resolvedCall(node));
-      if (key !== undefined) references.push({ owner: namedOwner(node), key, nodeKind: 'CallExpression' });
+      if (key !== undefined) references.push({ owner: namedOwner(node), key, nodeKind: 'CallExpression', node });
+    } else if (ts.isPropertyAccessExpression(node)) {
+      const key = match(checker.getSymbolAtLocation(node.name));
+      if (key !== undefined) {
+        references.push({ owner: namedOwner(node), key, nodeKind: 'PropertyAccessExpression', node });
+      }
     } else if (ts.isCatchClause(node)) {
       catches.push({ owner: namedOwner(node), node });
     }
@@ -846,6 +924,15 @@ function analyzeAdversarialProgram(program: ts.Program, path: string): Adversari
   const bindingEscapes = references
     .filter(({ nodeKind }) => nodeKind === 'BindingElement')
     .map(({ owner, key }) => `${path} :: ${ownerName(owner)} :: BindingElement value escape for ${key}`)
+    .sort();
+  const valueEscapes = references
+    .filter(({ key, node, nodeKind }) => {
+      const referenceClass = localClasses.get(key);
+      if (referenceClass === undefined || !DIRECT_CALL_ONLY_CLASSES.has(referenceClass)) return false;
+      if (ts.isCallExpression(node) || nodeKind === 'ImportSpecifier') return false;
+      return !isExactCallCallee(node);
+    })
+    .map(({ owner, key, nodeKind }) => `${path} :: ${ownerName(owner)} :: ${nodeKind} value escape for ${key}`)
     .sort();
   const ownedOccurrences = references
     .filter(({ nodeKind }) => nodeKind !== 'BindingElement')
@@ -869,7 +956,7 @@ function analyzeAdversarialProgram(program: ts.Program, path: string): Adversari
       ', ',
     )}] :: returned=[${returns.join(', ')}]`;
   });
-  return { bindingEscapes, ownedOccurrences, rejections };
+  return { bindingEscapes, valueEscapes, ownedOccurrences, rejections };
 }
 
 function diagnosticsFor(program: ts.Program, path: string): string[] {
@@ -1142,6 +1229,69 @@ export function consume(
     });
   }, 45_000);
 
+  it('rejects a destructured fatal sink value escape', () => {
+    const path = 'src/adversarial-destructured-recovery-fatal-sink.ts';
+    const program = createProductionProgram(
+      new Map([
+        [
+          path,
+          `import type {
+  ProviderProxyRecoveryTurnSinks,
+  ProviderProxySetLifecycleFatalError,
+} from './coordinator/services/provider-proxy-recovery-policy.js';
+
+export function escape(sinks: ProviderProxyRecoveryTurnSinks, error: ProviderProxySetLifecycleFatalError): void {
+  const { fatal } = sinks;
+  fatal(error);
+}
+`,
+        ],
+      ]),
+    );
+
+    expect({
+      diagnostics: diagnosticsFor(program, path),
+      invariant: analyzeAdversarialProgram(program, path).valueEscapes,
+    }).toEqual({
+      diagnostics: [],
+      invariant: [`${path} :: escape :: BindingElement value escape for ProviderProxyRecoveryTurnSinks.fatal`],
+    });
+  }, 45_000);
+
+  it('rejects a raw-result method value escape', () => {
+    const path = 'src/adversarial-provider-recovery-raw-result.ts';
+    const program = createProductionProgram(
+      new Map([
+        [
+          path,
+          `import type {
+  ContainmentDisappearanceNotice,
+  ProviderContainmentDisappearanceConsumer,
+} from './coordinator/services/provider-containment-disappearance.js';
+
+export function escape(
+  consumer: ProviderContainmentDisappearanceConsumer,
+  notice: ContainmentDisappearanceNotice,
+): void {
+  const rawResult = consumer.containmentDisappeared;
+  void rawResult(notice);
+}
+`,
+        ],
+      ]),
+    );
+
+    expect({
+      diagnostics: diagnosticsFor(program, path),
+      invariant: analyzeAdversarialProgram(program, path).valueEscapes,
+    }).toEqual({
+      diagnostics: [],
+      invariant: [
+        `${path} :: escape :: PropertyAccessExpression value escape for ProviderContainmentDisappearanceConsumer.containmentDisappeared`,
+      ],
+    });
+  }, 45_000);
+
   it('rejects an external facade consumer that erases fatal provenance', () => {
     const path = 'src/adversarial-provider-recovery-consumer.ts';
     const program = createProductionProgram(
@@ -1177,6 +1327,50 @@ export async function erase(...args: Parameters<typeof recover>) {
       ),
     ]);
   });
+
+  it('documents parameter-carried destructuring that erases fatal provenance', () => {
+    const path = 'src/adversarial-parameter-carried-recovery-consumer.ts';
+    const program = createProductionProgram(
+      new Map([
+        [
+          path,
+          `import { recoverProviderProxySetOrdinarily as realRecover } from './coordinator/services/provider-proxy-set-inheritance.js';
+
+export async function erase(
+  { recover }: { recover: typeof realRecover },
+  ...args: Parameters<typeof realRecover>
+) {
+  try {
+    return await recover(...args);
+  } catch {
+    return {
+      kind: 'temporarily-unavailable',
+      incident: { kind: 'recovery-deadline', timeoutMs: 45_000 },
+    };
+  }
+}
+`,
+        ],
+      ]),
+    );
+    const analysis = analyzeAdversarialProgram(program, path);
+    const checkerSource = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    const noticeStart = checkerSource.indexOf('/**\n * PARTIAL ENFORCEMENT');
+    const noticeEnd = checkerSource.indexOf(' */', noticeStart);
+    const limitationNotice = checkerSource.slice(noticeStart, noticeEnd);
+
+    expect({
+      diagnostics: diagnosticsFor(program, path),
+      ownedOccurrences: analysis.ownedOccurrences,
+      rejections: analysis.rejections,
+      namesDestructuredFunctionParameters: limitationNotice.includes('destructured function parameters'),
+    }).toEqual({
+      diagnostics: [],
+      ownedOccurrences: [`${path} :: <module> :: ImportSpecifier :: recoverProviderProxySetOrdinarily`],
+      rejections: [expect.stringContaining(`${path} :: erase :: catch#1 :: consumed=[]`)],
+      namesDestructuredFunctionParameters: true,
+    });
+  }, 45_000);
 
   it('rejects catch relabeling of dispatcher fatal evidence', () => {
     const path = 'src/adversarial-provider-recovery-relabel.ts';

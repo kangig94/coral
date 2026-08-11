@@ -10,6 +10,7 @@ import {
   type ProviderProxySetIdentity,
 } from '#src/coordinator/services/provider-proxy-set-identity.js';
 import { ProviderProxySetLifecycleRef } from '#src/coordinator/services/provider-proxy-set-lifecycle-ref.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import type { Database } from '#src/store/db.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -142,13 +143,28 @@ describe('execution services provider-proxy proof composition', () => {
     const claims = new ProviderProxySetClaimMirror();
     const lifecycleRef = new ProviderProxySetLifecycleRef();
     const operationRegistry = new LocalOperationRegistry();
+    const readLaunchProjection = vi.fn(() => ({
+      jobId: record.operation.jobId,
+      owner: { kind: 'provider-session' as const, id: record.operation.jobId },
+      sessionId: record.operation.jobId,
+      provider: 'codex',
+      projectRoot: '/workspace',
+      backendNamespace: 'tests',
+      pool: 'default',
+      enqueueSequence: 1,
+      createdAt: '2026-08-09T12:34:55.000Z',
+      jobKind: 'provider' as const,
+      providerAction: 'exec' as const,
+      request: { prompt: 'test', cwd: '/workspace', bypassPermissions: false, coralEnv: {} },
+    }));
     const world = {
-      storeServicesRef: { tryGet: () => ({ progressStore: { getDb: () => db } }) },
+      storeServicesRef: { tryGet: () => ({ progressStore: { getDb: () => db, readLaunchProjection } }) },
       operationRegistry,
       providerProxyClaims: claims,
       providerProxyLifecycleRef: lifecycleRef,
       providerHostManager: {},
     } as never;
+    const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
     const services = createExecutionServices({
       world,
       runtime,
@@ -170,6 +186,7 @@ describe('execution services provider-proxy proof composition', () => {
       state: 'attached' as const,
       replayFromProviderSeq: record.committedThroughProviderSeq + 1,
     }));
+    const buildOperationControl = vi.fn(() => ({ stop: async () => undefined }));
     const authority = {
       proxyInstanceId: record.operation.proxyInstanceId,
       setIdentity: providerProxySetIdentityFromRecord(record),
@@ -180,17 +197,25 @@ describe('execution services provider-proxy proof composition', () => {
       stopHeartbeats: () => undefined,
       initiateControlClose: async () => undefined,
       registerSuccessionOperation: async () => undefined,
+      buildOperationControl,
     } as unknown as DurableProviderProxyOperationAuthority;
     const admission = lifecycle.beginFreshAcquisition('fresh-publication');
     if (admission.kind !== 'accepted') throw new Error(`fresh set was not admitted: ${admission.kind}`);
 
     lifecycle.acquisitionSucceeded(admission.slotId, authority);
     await vi.waitFor(() => expect(attachOperation).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(buildOperationControl.mock.calls.length + warning.mock.calls.length).toBeGreaterThan(0),
+    );
     lifecycle.registerInheritedSet(authority);
     await flushMicrotasks();
 
     expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority);
     expect(attachOperation).toHaveBeenCalledTimes(1);
+    expect(warning).not.toHaveBeenCalled();
+    expect(buildOperationControl).toHaveBeenCalledTimes(1);
+    expect(readLaunchProjection).toHaveBeenCalledWith(record.operation.jobId);
+    warning.mockRestore();
     services.stopProviderOperationReconciler();
   });
 
