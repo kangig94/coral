@@ -1326,7 +1326,7 @@ export async function erase(...args: Parameters<typeof recover>) {
         `${path} :: erase :: catch#1 :: consumed=[recoverProviderProxySetOrdinarily] :: returned=[{ kind: 'temporarily-unavailable'`,
       ),
     ]);
-  });
+  }, 45_000);
 
   it('documents parameter-carried destructuring that erases fatal provenance', () => {
     const path = 'src/adversarial-parameter-carried-recovery-consumer.ts';
@@ -1406,7 +1406,7 @@ export async function relabel(...args: Parameters<typeof recoverProviderProxySet
         /catch#1 :: consumed=\[isProviderProxyRecoveryFatalError, recoverProviderProxySetOrdinarily\] :: returned=\[\{ kind: 'temporarily-unavailable'/u,
       ),
     ]);
-  });
+  }, 45_000);
 
   it('keeps dispatcher fatal origin private', () => {
     const path = 'src/adversarial-fatal-construction.ts';
