@@ -7,7 +7,7 @@ function observe(evidence: CarrierEvidence, overrides: Partial<CarrierObservatio
     storedPhase: 'running',
     evidence,
     observedMaxJournalSeq: 7,
-    recoveryDecisionComplete: false,
+    recoveryCoverage: 'in-progress',
     ...overrides,
   });
 }
@@ -46,7 +46,7 @@ describe('classifyCarrier', () => {
   it('reports a local unknown after the recovery decision as the defect it is', () => {
     const observation = observe(
       { carrierClass: 'app-server-acquired', registryState: 'inherited' },
-      { recoveryDecisionComplete: true },
+      { recoveryCoverage: 'unaccounted' },
     );
 
     // Startup recovery is what bounds local unknowns, so one surviving it means recovery skipped a job it
@@ -55,10 +55,23 @@ describe('classifyCarrier', () => {
     expect(observation.liveness).toBe('unknown');
   });
 
+  it.each(['in-progress', 'accounted-for'] as const)(
+    'keeps an inherited operation defect-free while recovery coverage is %s',
+    (recoveryCoverage) => {
+      const observation = observe(
+        { carrierClass: 'app-server-acquired', registryState: 'inherited' },
+        { recoveryCoverage },
+      );
+
+      expect(observation.liveness).toBe('unknown');
+      expect(observation.defect).toBeUndefined();
+    },
+  );
+
   it('does not report the defect for classes whose unknown recovery never claimed to bound', () => {
     const workflow = observe(
       { carrierClass: 'workflow', ownedByThisCoordinator: false },
-      { recoveryDecisionComplete: true },
+      { recoveryCoverage: 'unaccounted' },
     );
 
     expect(workflow.liveness).toBe('unknown');

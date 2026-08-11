@@ -42,6 +42,7 @@ import {
   countProjectedLiveJobRows,
   decodeProjectionJobExecutionOwner,
   decodeProjectionJobStoredRow,
+  readStoredNonterminalProjectionJobIds,
   type ProjectionJobStoredRow,
 } from './projection-row.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
@@ -776,6 +777,10 @@ export class JobStore implements JobProgressStore {
 
   listJobIds(): string[] {
     return this.listJobProjections().map(({ jobId }) => jobId);
+  }
+
+  listStoredNonterminalJobIds(): string[] {
+    return readStoredNonterminalProjectionJobIds(this.db);
   }
 
   liveJobCount(): number {

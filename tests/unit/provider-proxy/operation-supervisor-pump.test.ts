@@ -7,8 +7,10 @@ import { attachContinuityCommit } from '#src/providers/internal/continuity-commi
 import { ControlEndpointError, type ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import { operationPrepareAttemptKey } from '#src/provider-proxy/ledger.js';
 import {
+  OPERATION_RELEASE_RETRY_MS,
   OperationSupervisor,
   type OperationStageHandle,
+  type OperationStageResult,
   type ProviderEventControlFault,
   type SemanticOperationHost,
 } from '#src/provider-proxy/operation-supervisor.js';
@@ -175,6 +177,192 @@ async function executingSupervisor(
   await supervisor.attach(operation, 0);
   return { supervisor, operation, faults, clock };
 }
+
+function preExecutionReleaseFixture(abortAndRelease: OperationStageHandle['abortAndRelease']): Readonly<{
+  supervisor: OperationSupervisor;
+  operation: OperationIdentity;
+  prepareAttemptKey: string;
+  staging: ReturnType<typeof deferred<OperationStageResult>>;
+  stageAbort: ReturnType<typeof vi.fn<OperationStageHandle['abortAndRelease']>>;
+  clock: ReturnType<typeof controlledTimer>;
+}> {
+  const operation: OperationIdentity = {
+    jobId: randomUUID(),
+    operationId: randomUUID(),
+    proxyInstanceId: randomUUID(),
+    buildSetId: randomUUID(),
+  };
+  const clock = controlledTimer();
+  const staging = deferred<OperationStageResult>();
+  const stageAbort = vi.fn(abortAndRelease);
+  const stage: OperationStageHandle = {
+    result: staging.promise,
+    confirmActivation: async () => {},
+    abortAndRelease: stageAbort,
+  };
+  const host: SemanticOperationHost = {
+    start: () => {
+      throw new Error('pre-execution fixture must not start the host');
+    },
+    stop: async () => {},
+  };
+  const supervisor = new OperationSupervisor({
+    host,
+    timer: clock.timer,
+    mintReservation: () => asReservation('40000000-0000-4000-8000-000000000001'),
+    wallClockNow: () => 0,
+    nowMs: clock.nowMs,
+    proxyInstanceId: operation.proxyInstanceId,
+    buildSetId: operation.buildSetId,
+    stageProviderRoot: () => stage,
+    pushProviderEvent: () => ({
+      controlEpoch: 1,
+      response: Promise.resolve({ kind: 'ack', committedThroughProviderSeq: 0 }),
+    }),
+    faultProviderEventControl: () => {},
+  });
+  const prepareAttemptKey = operationPrepareAttemptKey({
+    operation,
+    hostFingerprint: 'a'.repeat(64),
+    prepareAttemptNumber: 1,
+    prepared: PREPARED,
+  });
+  return { supervisor, operation, prepareAttemptKey, staging, stageAbort, clock };
+}
+
+async function beginBlockedPreparation(
+  fixture: ReturnType<typeof preExecutionReleaseFixture>,
+): Promise<Readonly<{ preparing: Promise<unknown> }>> {
+  const preparing = fixture.supervisor.prepare(fixture.operation, {
+    prepareAttemptNumber: 1,
+    prepareAttemptKey: fixture.prepareAttemptKey,
+    prepared: PREPARED,
+  });
+  await vi.waitFor(() => expect(fixture.supervisor.ledger().get(fixture.operation)?.state).toBe('preparing'));
+  return { preparing };
+}
+
+function completeStaging(fixture: ReturnType<typeof preExecutionReleaseFixture>): void {
+  fixture.staging.resolve({
+    state: 'staged',
+    providerRoot: { pid: 4_242, processStartedAtSeconds: 1_700_000_000 },
+    receipt: asJointContainmentReceipt('late-containment'),
+  });
+}
+
+describe('operation supervisor release progress', () => {
+  it('drives pre-execution release before a blocked operation tail can resume', async () => {
+    const ownedAbort = deferred<void>();
+    const fixture = preExecutionReleaseFixture(() => ownedAbort.promise);
+    const { preparing } = await beginBlockedPreparation(fixture);
+    const prepareSettled = vi.fn();
+    void preparing.then(prepareSettled, prepareSettled);
+
+    const stopping = fixture.supervisor.stop(fixture.operation, 'signal_abort');
+    const stopSettled = vi.fn();
+    void stopping.then(stopSettled, stopSettled);
+    await vi.waitFor(() => expect(fixture.stageAbort).toHaveBeenCalledOnce());
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.state).toBe('releasing');
+
+    ownedAbort.resolve(undefined);
+
+    await vi.waitFor(async () => {
+      const inspection = (await fixture.supervisor.inspect(fixture.operation, fixture.prepareAttemptKey)) as {
+        state: string;
+      };
+      expect({
+        ledgerState: fixture.supervisor.ledger().get(fixture.operation)?.state ?? 'absent',
+        inspectionState: inspection.state,
+      }).toEqual({ ledgerState: 'absent', inspectionState: 'released-never-started' });
+    });
+    expect(prepareSettled).not.toHaveBeenCalled();
+    expect(stopSettled).not.toHaveBeenCalled();
+
+    completeStaging(fixture);
+    await expect(preparing).rejects.toThrow();
+    await expect(stopping).resolves.toMatchObject({ state: 'released' });
+  });
+
+  it('does not re-enter a completed release when blocked preparation resumes', async () => {
+    const fixture = preExecutionReleaseFixture(async () => {});
+    const { preparing } = await beginBlockedPreparation(fixture);
+    const stopping = fixture.supervisor.stop(fixture.operation, 'signal_abort');
+
+    await vi.waitFor(() => expect(fixture.supervisor.ledger().get(fixture.operation)).toBeNull());
+    completeStaging(fixture);
+
+    const prepareError = await preparing.catch((error: unknown) => error);
+    await expect(stopping).resolves.toMatchObject({ state: 'released' });
+
+    const secondPrepareAttemptKey = operationPrepareAttemptKey({
+      operation: fixture.operation,
+      hostFingerprint: 'a'.repeat(64),
+      prepareAttemptNumber: 2,
+      prepared: PREPARED,
+    });
+    await expect(
+      fixture.supervisor.prepare(fixture.operation, {
+        prepareAttemptNumber: 2,
+        prepareAttemptKey: secondPrepareAttemptKey,
+        prepared: PREPARED,
+      }),
+    ).resolves.toMatchObject({ state: 'pending-activation' });
+    expect(prepareError).toMatchObject({
+      code: 'reservation_expired',
+      message: 'The activation lease expired.',
+    });
+  });
+
+  it('keeps inspection pure while a failed release waits for its retry', async () => {
+    const fixture = preExecutionReleaseFixture(
+      vi
+        .fn<OperationStageHandle['abortAndRelease']>()
+        .mockRejectedValueOnce(new Error('first release failed'))
+        .mockResolvedValue(undefined),
+    );
+    const { preparing } = await beginBlockedPreparation(fixture);
+    const stopping = fixture.supervisor.stop(fixture.operation, 'signal_abort');
+    await vi.waitFor(() => expect(fixture.clock.pendingCount()).toBe(1));
+
+    await expect(fixture.supervisor.inspect(fixture.operation, fixture.prepareAttemptKey)).resolves.toMatchObject({
+      state: 'releasing',
+      releaseKind: 'never-started',
+    });
+    expect(fixture.stageAbort).toHaveBeenCalledOnce();
+    expect(fixture.supervisor.ledger().get(fixture.operation)?.state).toBe('releasing');
+
+    fixture.clock.advance(OPERATION_RELEASE_RETRY_MS);
+    await vi.waitFor(() => expect(fixture.supervisor.ledger().get(fixture.operation)).toBeNull());
+    completeStaging(fixture);
+    await expect(preparing).rejects.toThrow();
+    await expect(stopping).resolves.toMatchObject({ state: 'released' });
+  });
+
+  it('retries an independently driven release failure without inspection', async () => {
+    const fixture = preExecutionReleaseFixture(
+      vi
+        .fn<OperationStageHandle['abortAndRelease']>()
+        .mockRejectedValueOnce(new Error('first release failed'))
+        .mockResolvedValue(undefined),
+    );
+    const { preparing } = await beginBlockedPreparation(fixture);
+    const stopping = fixture.supervisor.stop(fixture.operation, 'signal_abort');
+    await vi.waitFor(() => expect(fixture.stageAbort).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setImmediate(resolve));
+
+    fixture.clock.advance(OPERATION_RELEASE_RETRY_MS);
+
+    await vi.waitFor(() => expect(fixture.stageAbort).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(fixture.supervisor.ledger().get(fixture.operation)).toBeNull());
+    await expect(fixture.supervisor.cancel(fixture.operation, 1, fixture.prepareAttemptKey)).resolves.toMatchObject({
+      state: 'released-never-started',
+    });
+
+    completeStaging(fixture);
+    await expect(preparing).rejects.toThrow();
+    await expect(stopping).resolves.toMatchObject({ state: 'released' });
+  });
+});
 
 describe('provider-event supervisor pump', () => {
   it('retains a control-activation wake while the old push is in flight', async () => {

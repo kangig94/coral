@@ -47,6 +47,11 @@ const OBSERVATION_AUTHORITIES: readonly ObservationAuthority[] = [
     // erased before anything runs and so needs no permission. Listing it granted a runtime capability nothing
     // used, which would have silently pre-authorized a later value import of the classifier itself.
   },
+  {
+    module: 'src/coordinator/live/carrier-observer.ts',
+    what: 'the bounded network carrier observer',
+    permittedImporters: ['src/coordinator/composition/'],
+  },
 ];
 
 /**

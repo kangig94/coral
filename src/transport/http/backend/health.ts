@@ -94,7 +94,7 @@ export interface BackendHealth {
   namespace: string;
   uptimeMs: number;
   active: number;
-  /** Jobs in a live phase; build namespace is provenance and does not scope job ownership. */
+  /** Jobs whose local carrier is live or unresolved; build namespace is provenance, not ownership scope. */
   activeJobs: number;
   inflightRequests: number;
   queueDepth: number;
@@ -112,6 +112,12 @@ export interface BackendHealth {
   systemProviderScope?: { name: string; providers: string[] };
   kbDaemon?: TransportKbDaemonHealthSnapshot;
   diagnostics?: {
+    carriers?: {
+      coverage: 'complete' | 'unknown';
+      liveJobs: number;
+      unknownJobs: number;
+      recoveryDefectJobs: number;
+    };
     mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
     consumerStuck?: Array<{
       id: string;
@@ -329,6 +335,16 @@ function isDiagnostics(value: unknown): value is NonNullable<BackendHealth['diag
     return false;
   }
   if (value.consumerStuck !== undefined && !isConsumerStuck(value.consumerStuck)) {
+    return false;
+  }
+  if (
+    value.carriers !== undefined &&
+    (!isRecord(value.carriers) ||
+      (value.carriers.coverage !== 'complete' && value.carriers.coverage !== 'unknown') ||
+      !isNonNegativeInteger(value.carriers.liveJobs) ||
+      !isNonNegativeInteger(value.carriers.unknownJobs) ||
+      !isNonNegativeInteger(value.carriers.recoveryDefectJobs))
+  ) {
     return false;
   }
   return true;

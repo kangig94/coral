@@ -44,6 +44,8 @@ import {
   proxyOperationReservationParamsSchema as reservationParamsSchema,
   proxyControlOpenParamsSchema as openParamsSchema,
   proxyOperationInspectParamsSchema as inspectParamsSchema,
+  proxyOperationStatusParamsSchema as statusParamsSchema,
+  proxyOperationStatusResultSchema as statusResultSchema,
   proxyOperationCancelParamsSchema as cancelParamsSchema,
   proxyOperationSettleParamsSchema as settleParamsSchema,
   proxyOperationRenewResultSchema,
@@ -308,6 +310,25 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           const request = inspectParamsSchema.parse(params);
           assertNamedOperation(request.operation);
           return supervisor.inspect(request.operation, request.prepareAttemptKey);
+        },
+      },
+    ],
+    [
+      'operation.status.v1',
+      {
+        authority: 'observation',
+        budgetMs: PROXY_STATUS_RPC_TIMEOUT_MS,
+        handle: (params) => {
+          const request = statusParamsSchema.parse(params);
+          for (const operation of request.operations) assertNamedOperation(operation);
+          return statusResultSchema.parse({
+            proxy: {
+              proxyInstanceId: identity.proxyInstanceId,
+              buildSetId: identity.buildSetId,
+            },
+            nonce: request.nonce,
+            operations: supervisor.status(request.operations),
+          });
         },
       },
     ],

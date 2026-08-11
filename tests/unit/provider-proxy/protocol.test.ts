@@ -25,6 +25,7 @@ import {
   providerEventResultSchema,
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   PROXY_EVENT_COMMIT_TIMEOUT_MS,
+  PROXY_OPERATION_STATUS_MAX_OPERATIONS,
   PROXY_STATUS_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
   proxyIdentitySchema,
@@ -36,6 +37,9 @@ import {
   proxyOperationCancelResultSchema,
   proxyOperationInspectParamsSchema,
   proxyOperationInspectResultSchema,
+  proxyOperationStatusNonceSchema,
+  proxyOperationStatusParamsSchema,
+  proxyOperationStatusResultSchema,
   proxyOperationPrepareParamsSchema,
   proxyOperationReleaseReceiptSchema,
   proxyOperationReservationParamsSchema,
@@ -581,6 +585,85 @@ describe('truthful operation wire schemas', () => {
     };
 
     expect(proxyOperationActivateResultSchema.safeParse(receipt).success).toBe(false);
+  });
+});
+
+describe('operation.status.v1 wire contract', () => {
+  const nonce = proxyOperationStatusNonceSchema.parse(UUID_A);
+
+  it('accepts one through the independent request cap and rejects empty or oversized batches', () => {
+    expect(proxyOperationStatusParamsSchema.safeParse({ operations: [operationIdentity], nonce }).success).toBe(true);
+    expect(
+      proxyOperationStatusParamsSchema.safeParse({
+        operations: Array.from({ length: PROXY_OPERATION_STATUS_MAX_OPERATIONS }, () => operationIdentity),
+        nonce,
+      }).success,
+    ).toBe(true);
+    expect(proxyOperationStatusParamsSchema.safeParse({ operations: [], nonce }).success).toBe(false);
+    expect(
+      proxyOperationStatusParamsSchema.safeParse({
+        operations: Array.from({ length: PROXY_OPERATION_STATUS_MAX_OPERATIONS + 1 }, () => operationIdentity),
+        nonce,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('uses the canonical branded nonce in both strict directions', () => {
+    const request = { operations: [operationIdentity], nonce };
+    const result = {
+      proxy: { proxyInstanceId: UUID_C, buildSetId: UUID_D },
+      nonce,
+      operations: [
+        { operation: operationIdentity, state: 'held' as const },
+        { operation: { ...operationIdentity, operationId: UUID_C }, state: 'absent' as const },
+      ],
+    };
+
+    expect(proxyOperationStatusParamsSchema.parse(request)).toEqual(request);
+    expect(proxyOperationStatusResultSchema.parse(result)).toEqual(result);
+    expect(
+      proxyOperationStatusParamsSchema.safeParse({
+        ...request,
+        nonce: 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA',
+      }).success,
+    ).toBe(false);
+    expect(proxyOperationStatusResultSchema.safeParse({ ...result, nonce: 'not-a-uuid' }).success).toBe(false);
+    expect(proxyOperationStatusParamsSchema.safeParse({ ...request, unexpected: true }).success).toBe(false);
+    expect(proxyOperationStatusResultSchema.safeParse({ ...result, unexpected: true }).success).toBe(false);
+  });
+
+  it('requires the echoed proxy/build identity and exposes only minimal ledger liveness', () => {
+    const valid = {
+      proxy: { proxyInstanceId: UUID_C, buildSetId: UUID_D },
+      nonce,
+      operations: [{ operation: operationIdentity, state: 'held' as const }],
+    };
+
+    expect(proxyOperationStatusResultSchema.safeParse(valid).success).toBe(true);
+    expect(
+      proxyOperationStatusResultSchema.safeParse({
+        ...valid,
+        proxy: { buildSetId: UUID_D },
+      }).success,
+    ).toBe(false);
+    expect(
+      proxyOperationStatusResultSchema.safeParse({
+        ...valid,
+        proxy: { ...valid.proxy, unexpected: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      proxyOperationStatusResultSchema.safeParse({
+        ...valid,
+        operations: [{ operation: operationIdentity, state: 'executing' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      proxyOperationStatusResultSchema.safeParse({
+        ...valid,
+        operations: [{ operation: operationIdentity, state: 'held', prepareAttemptKey: 'f'.repeat(64) }],
+      }).success,
+    ).toBe(false);
   });
 });
 

@@ -62,7 +62,8 @@ import { createCoordinatorControl } from './job-control.js';
 import { resolveCoordinatorDefaults } from './defaults.js';
 import { createDiscussRuntime } from '../../discuss/shell/runtime-services.js';
 import { createExecutionServices } from './execution-services.js';
-import { createCoordinatorWorld } from './world.js';
+import { createCoordinatorWorld, createStartupRecoveryBarrier } from './world.js';
+import { admittedByThisCoordinator, classifyLocalCarriers } from './carrier-observation.js';
 import { storeServicesStartupNotReadyError } from './store-services-ref.js';
 import { isLivePhase, isTerminalPhase } from '../../jobs/phase.js';
 import type {
@@ -422,7 +423,8 @@ export function createCoordinatorCore(
   const runtime = options.runtime;
 
   const defaultsPlan = resolveCoordinatorDefaults(options, runtime);
-  const world = createCoordinatorWorld(options, runtime, defaultsPlan);
+  const startupRecoveryBarrier = createStartupRecoveryBarrier();
+  const world = createCoordinatorWorld(options, runtime, defaultsPlan, startupRecoveryBarrier.read);
   const kbDaemonSupervisor = options.kbDaemonSupervisor;
   const identity = world.identity;
   const strictHealthIdentity = resolveStrictBundleIdentity();
@@ -945,20 +947,82 @@ export function createCoordinatorCore(
         const kbDaemon = kbDaemonSupervisor.read();
         const systemProviderScope = world.systemProviderScope;
 
+        let activeJobs = 0;
+        let carrierDiagnostics: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['carriers']>;
+        if (storeServices === null) {
+          carrierDiagnostics = {
+            coverage: 'unknown',
+            liveJobs: 0,
+            unknownJobs: activeJobs,
+            recoveryDefectJobs: 0,
+          };
+        } else {
+          const progressStore = storeServices.progressStore;
+          try {
+            const jobIds = progressStore.listStoredNonterminalJobIds();
+            const observedMaxJournalSeq =
+              progressStore
+                .getDb()
+                .prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events')
+                .get()?.seq ?? 0;
+            const observations = classifyLocalCarriers(
+              jobIds,
+              {
+                getDb: () => progressStore.getDb(),
+                loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
+                platform,
+                hasStartupRecoveryPassed: () => world.startupRecoveryBarrier.hasPassed(),
+                isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(world.launchCoordinator, jobId),
+                registryStateForJob: (jobId) => world.operationRegistry.stateForJob(jobId),
+              },
+              observedMaxJournalSeq,
+            );
+            if (
+              observations.length !== jobIds.length ||
+              observations.some(({ observation }) => !isLivePhase(observation.storedPhase))
+            ) {
+              throw new Error('carrier_health_projection_mapping_incomplete');
+            }
+            const liveJobs = observations.filter(({ observation }) => observation.liveness === 'live').length;
+            const unknownJobs = observations.filter(({ observation }) => observation.liveness === 'unknown').length;
+            const recoveryDefectJobs = observations.filter(
+              ({ observation }) => observation.defect === 'local-unknown-after-recovery-decision',
+            ).length;
+            activeJobs = liveJobs + unknownJobs;
+            carrierDiagnostics = { coverage: 'complete', liveJobs, unknownJobs, recoveryDefectJobs };
+          } catch {
+            try {
+              activeJobs = progressStore.liveJobCount();
+            } catch {
+              activeJobs = 0;
+            }
+            carrierDiagnostics = {
+              coverage: 'unknown',
+              liveJobs: 0,
+              unknownJobs: activeJobs,
+              recoveryDefectJobs: 0,
+            };
+          }
+        }
+
         const consumerStuck: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']> =
           storeServices === null ? [] : (options.getConsumerStuck() ?? []);
         const mutationBlocked = kbDaemon.kbWrite?.mutationBlocked;
         const diagnostics: {
+          carriers?: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['carriers']>;
           mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
           consumerStuck?: NonNullable<HealthSnapshot['diagnostics']>['consumerStuck'];
-        } = {};
+        } = { carriers: carrierDiagnostics };
         if (mutationBlocked !== undefined) {
           diagnostics.mutationBlocked = mutationBlocked;
         }
         if (consumerStuck.length > 0) {
           diagnostics.consumerStuck = consumerStuck;
         }
-        const hasDiagnostics = diagnostics.mutationBlocked !== undefined || diagnostics.consumerStuck !== undefined;
+        const hasDiagnostics =
+          diagnostics.carriers !== undefined ||
+          diagnostics.mutationBlocked !== undefined ||
+          diagnostics.consumerStuck !== undefined;
 
         return {
           status: coarseStatus,
@@ -978,7 +1042,7 @@ export function createCoordinatorCore(
           ...(processStartedAt !== undefined ? { processStartedAt } : {}),
           uptimeMs: identity.now() - runtimeState.getStartedAt(),
           active: world.launchCoordinator.active,
-          activeJobs: storeServices === null ? 0 : storeServices.progressStore.liveJobCount(),
+          activeJobs,
           liveDiscuss: listAttachedSessions(world.discussRegistry).length,
           queueDepth: world.launchCoordinator.queueDepth(),
           inflightRequests: world.idleTimer.inflightRequests,
@@ -1086,6 +1150,7 @@ export function createCoordinatorCore(
     reconcileProviderOperationsAtStartup: services.reconcileProviderOperationsAtStartup,
     startProviderOperationReconciler: services.startProviderOperationReconciler,
     stopProviderOperationReconciler: services.stopProviderOperationReconciler,
+    startupRecoveryBarrierPublisher: startupRecoveryBarrier.publication,
     getDiscussStoreForSource: discuss.getDiscussStoreForSource,
     knownDiscussSources: () => knownDiscussSources(discuss.readHelpersDeps),
     getDiscussContext: discuss.getDiscussContext,

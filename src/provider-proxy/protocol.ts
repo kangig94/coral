@@ -25,6 +25,18 @@ export const PROXY_CONTROL_RPC_TIMEOUT_MS = 5_000;
 export const PROXY_EVENT_COMMIT_TIMEOUT_MS = 30_000;
 export const PROXY_STATUS_RPC_TIMEOUT_MS = 500;
 
+/**
+ * How many operations one `operation.status.v1` request may name.
+ *
+ * Deliberately a literal rather than `MAX_PROXY_OPERATION_LEDGERS`, which happens to be the same number today.
+ * Status-query cardinality is not a property of live ledger capacity: a released entry leaves the ledger while
+ * the supervisor keeps its release receipt, so the set a coordinator may ask about outlives the set the ledger
+ * holds. Deriving this from ledger capacity would couple a wire bound to an unrelated one and make each
+ * future change to either silently move the other. `tests/invariants/provider-operation-status-bounds.test.ts`
+ * enforces the independence at the source level, because a value assertion cannot see it while both are 128.
+ */
+export const PROXY_OPERATION_STATUS_MAX_OPERATIONS = 128;
+
 export const controlEpochSchema = z.number().int().nonnegative().safe();
 export const heartbeatChallengeSchema = z.string().min(1);
 
@@ -78,6 +90,17 @@ export const canonicalUuidSchema = z
   .string()
   .length(36)
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+/**
+ * A caller-minted correlation value lets a coordinator reject a valid reply from another in-flight status
+ * batch without treating the value as permission to observe or mutate anything. Its own brand prevents an
+ * unrelated UUID from being passed accidentally while leaving the cross-version wire bytes unchanged.
+ */
+export const proxyOperationStatusNonceSchema = canonicalUuidSchema.brand<'ProxyOperationStatusNonce'>();
+
+/** The distinct brand keeps correlation separate from every credential carried by the control protocol. */
+export type ProxyOperationStatusNonce = z.infer<typeof proxyOperationStatusNonceSchema>;
+
 /**
  * One reservation, naming one prepared operation for the whole window between `operation.prepare.v1` and
  * `operation.activate.v1`. Formerly two fields — a `reservationId` and an `activationNonce` — minted together,
@@ -638,6 +661,17 @@ export const proxyOperationInspectParamsSchema = z
   .object({ operation: operationIdentitySchema, prepareAttemptKey: operationPrepareAttemptKeySchema })
   .strict();
 
+/**
+ * Status is bounded independently of ledger capacity so one observation cannot monopolize the proxy while
+ * still amortizing transport overhead across the inherited operations owned by the same exact proxy set.
+ */
+export const proxyOperationStatusParamsSchema = z
+  .object({
+    operations: z.array(operationIdentitySchema).min(1).max(PROXY_OPERATION_STATUS_MAX_OPERATIONS),
+    nonce: proxyOperationStatusNonceSchema,
+  })
+  .strict();
+
 export const proxyOperationCancelParamsSchema = z
   .object({
     operation: operationIdentitySchema,
@@ -801,6 +835,31 @@ export const proxyOperationAttachResultSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('attached'), replayFromProviderSeq: z.number().int().positive().safe() }).strict(),
   z.object({ state: z.literal('operation-absent'), operation: operationIdentitySchema }).strict(),
 ]);
+
+/**
+ * The proxy echoes both correlation and build identity so the observer can reject a well-formed answer from
+ * the wrong batch or set. Rows deliberately expose only ledger liveness: reconciliation attempt state stays
+ * confined to `operation.inspect.v2`, whose more detailed vocabulary carries different authority semantics.
+ */
+export const proxyOperationStatusResultSchema = z
+  .object({
+    proxy: z
+      .object({
+        proxyInstanceId: canonicalUuidSchema,
+        buildSetId: canonicalUuidSchema,
+      })
+      .strict(),
+    nonce: proxyOperationStatusNonceSchema,
+    operations: z.array(
+      z
+        .object({
+          operation: operationIdentitySchema,
+          state: z.enum(['held', 'absent']),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
 
 const proxyOperationInspectPreExecutionBaseSchema = z.object({
   reservation: reservationSchema,

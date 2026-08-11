@@ -675,6 +675,11 @@ export type LifecycleDeps = {
   readonly reconcileProviderOperationsAtStartup?: (signal: AbortSignal) => Promise<StartupReconciliationReport>;
   readonly startProviderOperationReconciler?: () => void;
   readonly stopProviderOperationReconciler?: () => void;
+  /**
+   * Optional only for narrow lifecycle harnesses; production composition supplies the sole publishing facet
+   * so carrier readers cannot advance the startup boundary themselves.
+   */
+  readonly startupRecoveryBarrierPublisher?: Readonly<{ publish(): void }>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
@@ -753,6 +758,7 @@ async function runLifecycleStartup({
     connectProviderOperationRecovery,
     reconcileProviderOperationsAtStartup,
     startProviderOperationReconciler,
+    startupRecoveryBarrierPublisher,
     getDiscussStoreForSource,
     knownDiscussSources,
     getDiscussContext,
@@ -1031,6 +1037,7 @@ async function runLifecycleStartup({
             recoverPersistedDiscussFn,
             interruptedAppServerReason: bound.acquiredViaHandoff ? 'handoff' : 'restart',
           });
+    startupRecoveryBarrierPublisher?.publish();
     startProviderOperationReconciler?.();
     await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
     signal.throwIfAborted();

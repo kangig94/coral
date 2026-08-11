@@ -134,7 +134,7 @@ export type HealthSnapshot = {
   processStartedAt?: number;
   uptimeMs: number;
   active: number;
-  /** Jobs in a live phase; build namespace is provenance and does not scope job ownership. */
+  /** Jobs whose local carrier is live or unresolved; build namespace is provenance, not ownership scope. */
   activeJobs: number;
   liveDiscuss: number;
   queueDepth: number;
@@ -153,11 +153,16 @@ export type HealthSnapshot = {
   components: TransportRuntimeComponentStatus[];
   kbDaemon?: TransportKbDaemonHealthSnapshot;
   /**
-   * Health diagnostics. Omitted entirely when nothing is wrong so the green
-   * path stays compact and operators can grep for these keys to find
-   * blocked writers / stuck consumers.
+   * Carrier coverage is observational even when complete. Incident-only fields remain omitted when healthy
+   * so operators can still grep for blocked writers and stuck consumers.
    */
   diagnostics?: {
+    carriers?: {
+      coverage: 'complete' | 'unknown';
+      liveJobs: number;
+      unknownJobs: number;
+      recoveryDefectJobs: number;
+    };
     mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
     consumerStuck?: Array<{
       id: string;
