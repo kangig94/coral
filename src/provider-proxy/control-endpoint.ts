@@ -57,9 +57,8 @@ export class ControlEndpointError extends Error {
 }
 
 /**
- * A method name absent from the role's dispatch table. Kept distinct from the protocol's error vocabulary —
- * which has no such code — so the JSON-RPC mapping can answer "no such method" without borrowing a code
- * that means something else.
+ * A method name absent from the role's dispatch table. Kept distinct so the JSON-RPC mapping can pair the
+ * standard method-not-found code with the protocol's structured `method_not_found` code.
  */
 class UnknownControlMethodError extends Error {
   constructor(method: string) {

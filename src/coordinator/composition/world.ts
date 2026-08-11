@@ -3,6 +3,7 @@ declare const __VERSION__: string;
 import { type PluginRegistry, createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { ProviderRegistry } from '../../providers/registry.js';
+import type { HostRef } from '../../providers/contract.js';
 import { providerScopeSchema, type ProviderScope } from '../../infra/provider-scope.js';
 import { writeAuditEvent } from '../../infra/audit-log.js';
 import { backendLog } from '../../infra/backend-log.js';
@@ -30,6 +31,8 @@ import { CoralSetupError } from '../../runtime/errors.js';
 import type { BackendDefaultsPlan } from './defaults.js';
 import { createStoreServicesRef, type StoreServicesRef } from './store-services-ref.js';
 import { ChildPrincipalRegistry } from '../child-principal-registry.js';
+import { admittedByThisCoordinator, classifyLocalCarriers } from './carrier-observation.js';
+import { isLivePhase } from '../../jobs/phase.js';
 
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
 const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
@@ -147,6 +150,45 @@ function readConfiguredSystemProviderScope(
   }
 }
 
+function exactHostRefsMatch(left: HostRef, right: HostRef): boolean {
+  if (
+    left.provider !== right.provider ||
+    left.fingerprint !== right.fingerprint ||
+    left.instanceId !== right.instanceId ||
+    left.leaseMode !== right.leaseMode
+  ) {
+    return false;
+  }
+  return left.leaseMode === 'shared' || (right.leaseMode === 'job-exclusive' && left.ownerJobId === right.ownerJobId);
+}
+
+/**
+ * The read-only startup boundary lets carrier consumers distinguish unfinished recovery without gaining the
+ * authority to declare recovery complete themselves.
+ */
+export type StartupRecoveryBarrier = Readonly<{
+  hasPassed(): boolean;
+}>;
+
+/**
+ * Creates separate closure-backed facets so co-resident coordinator worlds cannot publish or observe one
+ * another's startup boundary, and only composition decides where the publishing facet travels.
+ */
+export function createStartupRecoveryBarrier(): Readonly<{
+  read: StartupRecoveryBarrier;
+  publication: Readonly<{ publish(): void }>;
+}> {
+  let passed = false;
+  return Object.freeze({
+    read: Object.freeze({ hasPassed: () => passed }),
+    publication: Object.freeze({
+      publish: () => {
+        passed = true;
+      },
+    }),
+  });
+}
+
 export interface CoordinatorWorld {
   readonly identity: CoordinatorIdentity;
   readonly namespace: string;
@@ -165,6 +207,8 @@ export interface CoordinatorWorld {
   readonly childPrincipalRegistry: ChildPrincipalRegistry;
   readonly discussRegistry: DiscussContextRegistry;
   readonly storeServicesRef: StoreServicesRef;
+  /** Carrier consumers receive only this facet, so none can advance startup recovery on a read path. */
+  readonly startupRecoveryBarrier: StartupRecoveryBarrier;
   readonly providerHostManager: ProviderHostManager;
   /** Absent whenever `options.providerHostManager` overrode the default (see the construction site's own
    *  comment) — every test override, and only every test override. */
@@ -186,6 +230,7 @@ export function createCoordinatorWorld(
   options: CoordinatorCoreOptions,
   runtime: Runtime,
   defaultsPlan: BackendDefaultsPlan,
+  startupRecoveryBarrier: StartupRecoveryBarrier = createStartupRecoveryBarrier().read,
 ): CoordinatorWorld {
   const bootSnapshot = options.bootSnapshot ?? {};
   const pluginRoot = defaultsPlan.eager.resolvedPluginRoot;
@@ -262,6 +307,52 @@ export function createCoordinatorWorld(
   const operationRegistry = options.operationRegistry ?? new LocalOperationRegistry();
   const providerProxyClaims = new ProviderProxySetClaimMirror();
   const providerProxyLifecycleRef = new ProviderProxySetLifecycleRef();
+  const localCarrierRegistries = {
+    getDb: () => storeServicesRef.get().progressStore.getDb(),
+    loadJobProjectionDetail: (jobId: string) => storeServicesRef.get().progressStore.loadJobProjectionDetail(jobId),
+    platform: runtime.env.platform() as NodeJS.Platform,
+    hasStartupRecoveryPassed: () => startupRecoveryBarrier.hasPassed(),
+    isAdmittedByThisCoordinator: (jobId: string) => admittedByThisCoordinator(launchCoordinator, jobId),
+    registryStateForJob: (jobId: string) => operationRegistry.stateForJob(jobId),
+  };
+  const carrierBlocksRetirement = (hostRef: HostRef): boolean => {
+    const storeServices = storeServicesRef.tryGet();
+    if (storeServices === null) return true;
+
+    try {
+      const progressStore = storeServices.progressStore;
+      const matchingJobIds: string[] = [];
+      for (const jobId of progressStore.listStoredNonterminalJobIds()) {
+        const detail = progressStore.loadJobProjectionDetail(jobId);
+        if (detail.status === null) return true;
+        const jobRuntime = detail.runtime;
+        if (jobRuntime?.transport !== 'app-server' || jobRuntime.providerMeta.leaseState !== 'acquired') {
+          continue;
+        }
+
+        const storedHostRef = jobRuntime.providerMeta.hostRef;
+        if (storedHostRef.leaseMode === 'job-exclusive' && storedHostRef.ownerJobId !== jobId) return true;
+        if (exactHostRefsMatch(storedHostRef, hostRef)) matchingJobIds.push(jobId);
+      }
+      if (matchingJobIds.length === 0) return false;
+
+      const observedMaxJournalSeq =
+        progressStore.getDb().prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()
+          ?.seq ?? 0;
+      const observations = classifyLocalCarriers(matchingJobIds, localCarrierRegistries, observedMaxJournalSeq);
+      if (
+        observations.length !== matchingJobIds.length ||
+        observations.some(({ observation }) => !isLivePhase(observation.storedPhase))
+      ) {
+        return true;
+      }
+      return observations.some(
+        ({ observation }) => observation.liveness === 'live' || observation.liveness === 'unknown',
+      );
+    } catch {
+      return true;
+    }
+  };
   // A caller-supplied `providerHostManager` (every test that fakes provider hosts) never carries live
   // guardian/reaper/proxy sets, so `providerProxyAuthority` stays absent rather than reporting on a
   // substitute it played no part in creating — matching `runShutdownSequence`'s own `undefined` default.
@@ -274,6 +365,7 @@ export function createCoordinatorWorld(
     const created = createProviderHostManager({
       runtime,
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
+      carrierBlocksRetirement,
       proxySetAcquisition: {
         pluginRoot,
         identity: { instanceId, buildSetId, flavor },
@@ -340,6 +432,7 @@ export function createCoordinatorWorld(
     pluginRegistry,
     discussRegistry,
     storeServicesRef,
+    startupRecoveryBarrier,
     providerHostManager,
     ...(providerProxyAuthority === undefined ? {} : { providerProxyAuthority }),
     ...(providerProxyInheritance === undefined ? {} : { providerProxyInheritance }),

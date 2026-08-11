@@ -143,6 +143,22 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth(stuck)).toBe(true);
   });
 
+  it.each([
+    { coverage: 'complete', liveJobs: 2, unknownJobs: 1, recoveryDefectJobs: 1 },
+    { coverage: 'unknown', liveJobs: 0, unknownJobs: 3, recoveryDefectJobs: 0 },
+  ] as const)('accepts carrier diagnostics with $coverage coverage', (carriers) => {
+    expect(isBackendHealth({ ...HEALTHY_BASE, diagnostics: { carriers } })).toBe(true);
+  });
+
+  it.each([
+    { coverage: 'partial', liveJobs: 1, unknownJobs: 0, recoveryDefectJobs: 0 },
+    { coverage: 'complete', liveJobs: -1, unknownJobs: 0, recoveryDefectJobs: 0 },
+    { coverage: 'complete', liveJobs: 1, unknownJobs: 0.5, recoveryDefectJobs: 0 },
+    { coverage: 'unknown', liveJobs: 0, unknownJobs: 1 },
+  ])('rejects malformed carrier diagnostics %#', (carriers) => {
+    expect(isBackendHealth({ ...HEALTHY_BASE, diagnostics: { carriers } })).toBe(false);
+  });
+
   it('accepts kernel.readyAt === null while still starting', () => {
     const starting: BackendHealth = {
       ...HEALTHY_BASE,

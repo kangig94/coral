@@ -775,7 +775,7 @@ export function createProxyGuardianContainment(
             reservation: reserved.reservation,
           });
           const response = await deps.guardianChannel.call(
-            'guardian.operation-release.v2',
+            'guardian.operation-release.v1',
             params,
             PROXY_CONTROL_RPC_TIMEOUT_MS,
           );

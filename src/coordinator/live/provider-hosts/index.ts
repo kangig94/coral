@@ -162,6 +162,7 @@ export class DefaultProviderHostManager
   private readonly idleTimeoutMs: number;
   private readonly spawnProviderServer: SpawnProviderServerFn;
   private readonly runtime: Runtime;
+  private readonly carrierBlocksRetirement: (hostRef: HostRef) => boolean;
   private readonly proxySetAcquisitionConfig?: ProviderProxySetAcquisitionConfig;
   private readonly providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
   private readonly proxySetRotationEntries = new Map<string, ProviderHostEntry>();
@@ -180,12 +181,14 @@ export class DefaultProviderHostManager
     runtime: Runtime;
     idleTimeoutMs?: number;
     spawnProviderServer: SpawnProviderServerFn;
+    carrierBlocksRetirement?: (hostRef: HostRef) => boolean;
     proxySetAcquisition?: ProviderProxySetAcquisitionConfig;
     providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
   }) {
     this.runtime = options.runtime;
     this.idleTimeoutMs = options.idleTimeoutMs ?? parseIdleTimeoutMs(this.runtime.env.get('CORAL_BROKER_IDLE_MS'));
     this.spawnProviderServer = options.spawnProviderServer;
+    this.carrierBlocksRetirement = options.carrierBlocksRetirement ?? (() => false);
     this.proxySetAcquisitionConfig = options.proxySetAcquisition;
     this.providerProxyLifecycleRef = options.providerProxyLifecycleRef;
   }
@@ -501,6 +504,7 @@ export class DefaultProviderHostManager
       runtime: this.runtime,
       idleTimeoutMs: this.idleTimeoutMs,
       entries: this.entries,
+      carrierBlocksRetirement: this.carrierBlocksRetirement,
       closeProviderServerEntry: (nextEntry, detail) => this.closeProviderServerEntry(nextEntry, detail),
     });
   }
@@ -510,6 +514,7 @@ export class DefaultProviderHostManager
       runtime: this.runtime,
       idleTimeoutMs: this.idleTimeoutMs,
       entries: this.entries,
+      carrierBlocksRetirement: this.carrierBlocksRetirement,
       closeProviderServerEntry: (nextEntry, detail) => this.closeProviderServerEntry(nextEntry, detail),
     });
   }
@@ -548,6 +553,7 @@ export function createProviderHostManager(options: {
   runtime: Runtime;
   idleTimeoutMs?: number;
   spawnProviderServer: SpawnProviderServerFn;
+  carrierBlocksRetirement?: (hostRef: HostRef) => boolean;
   proxySetAcquisition?: ProviderProxySetAcquisitionConfig;
   providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
 }): ProviderHostManager & ProviderProxyAuthorityRegistry & ProviderProxySetRegistration {

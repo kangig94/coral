@@ -199,6 +199,24 @@ export function countProjectedLiveJobRows(db: Database, excludedJobIds: readonly
   );
 }
 
+/**
+ * Lists only the projection rows whose stored phase is nonterminal. `INDEXED BY` pins this operational read
+ * to the phase/namespace index instead of turning carrier observation into a scan over historical jobs.
+ */
+export function readStoredNonterminalProjectionJobIds(db: Database): string[] {
+  return db
+    .prepare<[], { job_id: string }>(
+      "SELECT job_id FROM projection_jobs INDEXED BY projection_jobs_phase_namespace WHERE phase IN ('queued', 'launching', 'running') ORDER BY job_id ASC",
+    )
+    .all()
+    .map(({ job_id }) => {
+      if (typeof job_id !== 'string' || job_id.length === 0) {
+        throw new TypeError('projection_jobs.job_id for a stored-nonterminal row is invalid.');
+      }
+      return job_id;
+    });
+}
+
 export function readProjectionJobRow(db: Database, jobId: string): ProjectionJobStoredRow | null {
   const raw = db.prepare(`SELECT ${PROJECTION_JOB_COLUMNS} FROM projection_jobs WHERE job_id = ?`).get(jobId);
   return raw === undefined ? null : decodeProjectionJobStoredRow(raw);

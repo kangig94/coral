@@ -23,11 +23,18 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
 import { isProcessAlive, probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import {
   admittedByThisCoordinator,
+  classifyLocalCarriers,
+  collectLocalCarrierInputs,
   createObserveCarriers,
   type LocalCarrierRegistries,
+  withExternalStatus,
 } from '#src/coordinator/composition/carrier-observation.js';
+import { carrierStatusOperationKey } from '#src/coordinator/live/carrier-observer.js';
+import { classifyCarrier } from '#src/jobs/carrier-observation.js';
 import type { JobProjectionDetail } from '#src/jobs/read-queries.js';
 import type { JobRuntime, JobStatus } from '#src/jobs/records.js';
+import { insertProviderOperation } from '#src/store/provider-operation-journal.js';
+import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 const mockedIsAlive = vi.mocked(isProcessAlive);
 const mockedProbe = vi.mocked(probeProcessStartedAtSeconds);
@@ -38,6 +45,7 @@ const PLATFORM = process.platform;
 const DEAD_PID = 2_147_483_647;
 // `durable_cli_process.v1` keys on a canonical UUID.
 const DURABLE_JOB_ID = '00000000-0000-4000-8000-000000000099';
+const ACQUIRED_JOB_ID = '00000000-0000-4000-8000-000000000098';
 
 function status(overrides: Partial<JobStatus> = {}): JobStatus {
   return {
@@ -58,6 +66,18 @@ function detail(runtime: JobRuntime | null, statusOverrides: Partial<JobStatus> 
   return { status: status(statusOverrides), launch: null, runtime, exit: null };
 }
 
+function acquiredRuntime(): JobRuntime {
+  return {
+    transport: 'app-server',
+    startTime: '2026-04-19T00:00:00.000Z',
+    providerMeta: {
+      provider: 'codex',
+      leaseState: 'acquired',
+      hostRef: { provider: 'codex', fingerprint: 'f', instanceId: 'i', leaseMode: 'shared' },
+    },
+  };
+}
+
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db, currentCoralStoreFormat());
@@ -74,6 +94,7 @@ function registriesFor(
     },
     loadJobProjectionDetail: (jobId) => details.get(jobId) ?? { status: null, launch: null, runtime: null, exit: null },
     platform: PLATFORM,
+    hasStartupRecoveryPassed: () => false,
     isAdmittedByThisCoordinator: () => false,
     registryStateForJob: () => null,
     ...overrides,
@@ -132,23 +153,127 @@ describe('createObserveCarriers', () => {
     ]);
   });
 
-  it('reports app-server-acquired as unknown regardless of admission — no local activation registry exists yet', async () => {
-    const acquiredRuntime: JobRuntime = {
-      transport: 'app-server',
-      startTime: '2026-04-19T00:00:00.000Z',
-      providerMeta: {
-        provider: 'codex',
-        leaseState: 'acquired',
-        hostRef: { provider: 'codex', fingerprint: 'f', instanceId: 'i', leaseMode: 'shared' },
-      },
-    };
-    const details = new Map([['job-1', detail(acquiredRuntime)]]);
-    const observe = createObserveCarriers(registriesFor(details, { isAdmittedByThisCoordinator: () => true }), () => 7);
+  it('reports app-server-acquired as unknown before startup recovery passes', async () => {
+    const details = new Map([['job-1', detail(acquiredRuntime())]]);
+    const db = createDb();
+    const observe = createObserveCarriers(
+      registriesFor(details, { getDb: () => db, isAdmittedByThisCoordinator: () => true }),
+      () => 7,
+    );
 
     expect(await observe(['job-1'])).toEqual([
       { jobId: 'job-1', liveness: 'unknown', storedPhase: 'running', observedMaxJournalSeq: 7 },
     ]);
   });
+
+  it('keeps a missing local registry entry defect-free when a durable operation still owns the job', () => {
+    const db = createDb();
+    const record = providerOperationRecord('executing', { job: 98 });
+    insertProviderOperation(db, record);
+    const details = new Map([[ACQUIRED_JOB_ID, detail(acquiredRuntime(), { jobId: ACQUIRED_JOB_ID })]]);
+
+    const [result] = classifyLocalCarriers(
+      [ACQUIRED_JOB_ID],
+      registriesFor(details, {
+        getDb: () => db,
+        hasStartupRecoveryPassed: () => true,
+      }),
+      7,
+    );
+
+    expect(result?.observation.liveness).toBe('unknown');
+    expect(result?.observation.defect).toBeUndefined();
+  });
+
+  it('reports an advisory defect when settlement removes both owners before the terminal projects', () => {
+    const db = createDb();
+    const details = new Map([[ACQUIRED_JOB_ID, detail(acquiredRuntime(), { jobId: ACQUIRED_JOB_ID })]]);
+
+    const [result] = classifyLocalCarriers(
+      [ACQUIRED_JOB_ID],
+      registriesFor(details, {
+        getDb: () => db,
+        hasStartupRecoveryPassed: () => true,
+      }),
+      7,
+    );
+
+    expect(result?.observation.liveness).toBe('unknown');
+    expect(result?.observation.defect).toBe('local-unknown-after-recovery-decision');
+  });
+
+  it.each([
+    ['held', 'live'],
+    ['absent', 'absent'],
+    ['unknown', 'unknown'],
+  ] as const)('merges inherited proxy status %s as %s through the pure classifier', (externalStatus, liveness) => {
+    const db = createDb();
+    const record = providerOperationRecord('executing', { job: 98 });
+    insertProviderOperation(db, record);
+    const details = new Map([[ACQUIRED_JOB_ID, detail(acquiredRuntime(), { jobId: ACQUIRED_JOB_ID })]]);
+    const [collected] = collectLocalCarrierInputs([ACQUIRED_JOB_ID], registriesFor(details, { getDb: () => db }), 7);
+    if (collected === undefined) throw new Error('expected a collected carrier input');
+
+    const observation = classifyCarrier(withExternalStatus(collected.input, externalStatus));
+
+    expect(observation).toMatchObject({ liveness, source: 'proxy-operation-status' });
+  });
+
+  it('batches the exact durable operation and proxy locator instead of deriving either from HostRef', async () => {
+    const db = createDb();
+    const record = providerOperationRecord('executing', { job: 98 });
+    insertProviderOperation(db, record);
+    const details = new Map([[ACQUIRED_JOB_ID, detail(acquiredRuntime(), { jobId: ACQUIRED_JOB_ID })]]);
+    const observeExternal = vi.fn(
+      async () => new Map([[carrierStatusOperationKey(record.operation), 'absent' as const]]),
+    );
+    const observe = createObserveCarriers(registriesFor(details, { getDb: () => db }), () => 7, observeExternal);
+
+    await expect(observe([ACQUIRED_JOB_ID])).resolves.toEqual([
+      { jobId: ACQUIRED_JOB_ID, liveness: 'absent', storedPhase: 'running', observedMaxJournalSeq: 7 },
+    ]);
+    expect(observeExternal).toHaveBeenCalledWith([record]);
+  });
+
+  it('treats a missing durable record and a missing observer map entry as unknown', async () => {
+    const missingRecordDb = createDb();
+    const recordDb = createDb();
+    const record = providerOperationRecord('executing', { job: 98 });
+    insertProviderOperation(recordDb, record);
+    const details = new Map([[ACQUIRED_JOB_ID, detail(acquiredRuntime(), { jobId: ACQUIRED_JOB_ID })]]);
+    const observeExternal = vi.fn(async () => new Map());
+    const withoutRecord = createObserveCarriers(
+      registriesFor(details, { getDb: () => missingRecordDb }),
+      () => 7,
+      observeExternal,
+    );
+    const withoutMapEntry = createObserveCarriers(
+      registriesFor(details, { getDb: () => recordDb }),
+      () => 7,
+      observeExternal,
+    );
+
+    await expect(withoutRecord([ACQUIRED_JOB_ID])).resolves.toMatchObject([{ liveness: 'unknown' }]);
+    expect(observeExternal).not.toHaveBeenCalled();
+    await expect(withoutMapEntry([ACQUIRED_JOB_ID])).resolves.toMatchObject([{ liveness: 'unknown' }]);
+    expect(observeExternal).toHaveBeenCalledOnce();
+  });
+
+  it.each(['activated', 'attached'] as const)(
+    'lets local %s evidence win without invoking the observer',
+    async (state) => {
+      const details = new Map([[ACQUIRED_JOB_ID, detail(acquiredRuntime(), { jobId: ACQUIRED_JOB_ID })]]);
+      const observeExternal = vi.fn(async () => new Map());
+      const observe = createObserveCarriers(
+        registriesFor(details, { registryStateForJob: () => state }),
+        () => 7,
+        observeExternal,
+      );
+
+      await expect(observe([ACQUIRED_JOB_ID])).resolves.toMatchObject([{ liveness: 'live' }]);
+      expect(observeExternal).not.toHaveBeenCalled();
+    },
+  );
 
   it('reports a durable CLI job as unknown when nothing was captured at launch', async () => {
     const runtime: JobRuntime = {

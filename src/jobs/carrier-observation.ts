@@ -22,6 +22,7 @@ export type CarrierObservationSource =
   | 'local-workflow-owner'
   | 'local-internal-registry'
   | 'durable-cli-process'
+  | 'proxy-operation-status'
   | 'no-local-evidence';
 
 /**
@@ -41,12 +42,19 @@ export type CarrierClass =
 /**
  * What the local coordinator knows about one app-server operation.
  *
- * `inherited` is the case this distinction exists for: runtime meta names a complete provider-operation
- * tuple, but this coordinator never activated or adopted it — it belongs to a predecessor build whose proxy
- * may well still be running. Locally that is `unknown`, never `absent`, because the only thing proven is
- * that *this* process has no entry.
+ * `inherited` is the case this distinction exists for: this coordinator never activated or attached the
+ * operation, but the durable provider-operation record may name a predecessor build whose proxy is still
+ * running. Runtime metadata contains only `HostRef`, never the operation tuple. Locally this state is
+ * `unknown`, never `absent`, because the only thing proven is that *this* process has no registry entry.
  */
 export type LocalOperationRegistryState = 'activated' | 'attached' | 'inherited';
+
+/**
+ * Whether startup recovery can account for a job without mistaking durable saga ownership for a skipped
+ * local attachment. The middle state is essential: a provider-operation record may still own recovery even
+ * though this coordinator has no live registry entry for it.
+ */
+export type JobRecoveryCoverage = 'in-progress' | 'accounted-for' | 'unaccounted';
 
 /**
  * The durable CLI's recorded process identity, or why it is missing.
@@ -60,11 +68,15 @@ export type DurableCliProcessEvidence =
   | Readonly<{ kind: 'recorded'; alive: boolean; matchesRecordedStart: boolean; transportEvidence: boolean }>
   | Readonly<{ kind: 'uncaptured' }>;
 
-/** The local evidence one stored-nonterminal job's class is judged by. Every variant is coordinator-local. */
+/** The evidence one stored-nonterminal job's class is judged by. */
 export type CarrierEvidence =
   | Readonly<{ carrierClass: 'queued-or-launching'; admittedByThisCoordinator: boolean }>
   | Readonly<{ carrierClass: 'app-server-waiting'; admittedByThisCoordinator: boolean }>
-  | Readonly<{ carrierClass: 'app-server-acquired'; registryState: LocalOperationRegistryState }>
+  | Readonly<{
+      carrierClass: 'app-server-acquired';
+      registryState: LocalOperationRegistryState;
+      proxyOperationStatus?: 'held' | 'absent' | 'unknown';
+    }>
   | Readonly<{ carrierClass: 'workflow'; ownedByThisCoordinator: boolean }>
   | Readonly<{ carrierClass: 'internal-hosted-kb'; memberOfSupervisor: boolean }>
   | Readonly<{ carrierClass: 'durable-cli'; process: DurableCliProcessEvidence }>;
@@ -72,10 +84,10 @@ export type CarrierEvidence =
 /**
  * The one condition under which a locally derived `unknown` is a defect rather than an honest answer.
  *
- * Startup recovery is what bounds local unknowns: once it has decided every stored-nonterminal job, an
- * app-server operation with no local registry entry means recovery skipped something it owned. Reporting it
- * beats throwing on a read path — the verdict stays conservatively active either way, and the caller that
- * can actually act on the defect is the one holding the log.
+ * Startup recovery is what bounds local unknowns, but its durable provider-operation journal can keep
+ * owning a job after the barrier passes and before a local registry entry exists. Only a job with neither
+ * local evidence nor that durable owner is unaccounted; reporting it beats throwing on a read path because
+ * the verdict stays conservatively active either way.
  */
 export type CarrierObservationDefect = 'local-unknown-after-recovery-decision';
 
@@ -90,12 +102,15 @@ export type CarrierObservation = Readonly<{
   defect?: CarrierObservationDefect;
 }>;
 
+/**
+ * The complete, already-gathered input keeps classification pure while making durable recovery ownership an
+ * explicit per-job fact rather than process-wide timing guessed inside the classifier.
+ */
 export type CarrierObservationInput = Readonly<{
   storedPhase: JobPhase;
   evidence: CarrierEvidence;
   observedMaxJournalSeq: number;
-  /** True once startup recovery has decided every stored-nonterminal job it owns. */
-  recoveryDecisionComplete: boolean;
+  recoveryCoverage: JobRecoveryCoverage;
 }>;
 
 type Verdict = Readonly<{ liveness: CarrierLiveness; source: CarrierObservationSource }>;
@@ -106,13 +121,22 @@ type Verdict = Readonly<{ liveness: CarrierLiveness; source: CarrierObservationS
  * (`LocalOperationRegistry.settled`) rather than marking it ended, so an operation this coordinator watched
  * all the way through is locally indistinguishable from one it never had — both read as `inherited`.
  */
-function acquiredVerdict(registryState: LocalOperationRegistryState): Verdict {
-  switch (registryState) {
+function acquiredVerdict(evidence: Extract<CarrierEvidence, { carrierClass: 'app-server-acquired' }>): Verdict {
+  switch (evidence.registryState) {
     case 'activated':
     case 'attached':
       return { liveness: 'live', source: 'local-operation-registry' };
     case 'inherited':
-      return { liveness: 'unknown', source: 'no-local-evidence' };
+      switch (evidence.proxyOperationStatus) {
+        case 'held':
+          return { liveness: 'live', source: 'proxy-operation-status' };
+        case 'absent':
+          return { liveness: 'absent', source: 'proxy-operation-status' };
+        case 'unknown':
+          return { liveness: 'unknown', source: 'proxy-operation-status' };
+        case undefined:
+          return { liveness: 'unknown', source: 'no-local-evidence' };
+      }
   }
 }
 
@@ -139,7 +163,7 @@ function verdictFor(evidence: CarrierEvidence): Verdict {
         ? { liveness: 'live', source: 'local-admission' }
         : { liveness: 'unknown', source: 'no-local-evidence' };
     case 'app-server-acquired':
-      return acquiredVerdict(evidence.registryState);
+      return acquiredVerdict(evidence);
     case 'workflow':
       return evidence.ownedByThisCoordinator
         ? { liveness: 'live', source: 'local-workflow-owner' }
@@ -156,11 +180,10 @@ function verdictFor(evidence: CarrierEvidence): Verdict {
 }
 
 /**
- * Classifies one stored-nonterminal job's carrier from local evidence alone.
+ * Classifies one stored-nonterminal job's carrier from already-gathered evidence.
  *
- * Pure by construction — no clock, no filesystem, no socket — because this is the half of observation that
- * health, idle, and every read path may use. No network observer exists; keeping classification local
- * preserves the boundary between reading carrier evidence and any future authority to probe for it.
+ * Pure by construction — no clock, no filesystem, no socket. Health and idle pass local evidence only;
+ * wait may pass the external status already returned by the read-only proxy observer.
  */
 export function classifyCarrier(input: CarrierObservationInput): CarrierObservation {
   const { liveness, source } = verdictFor(input.evidence);
@@ -172,7 +195,7 @@ export function classifyCarrier(input: CarrierObservationInput): CarrierObservat
     observedMaxJournalSeq: input.observedMaxJournalSeq,
   };
   if (
-    input.recoveryDecisionComplete &&
+    input.recoveryCoverage === 'unaccounted' &&
     liveness === 'unknown' &&
     input.evidence.carrierClass === 'app-server-acquired'
   ) {

@@ -42,6 +42,7 @@ import {
   proxyOperationPreparePendingResultSchema,
   proxyOperationReleasedActivationIndeterminateSchema,
   proxyOperationSettleResultSchema,
+  proxyOperationStatusResultSchema,
   proxyOperationStopResultSchema,
   type JointActivationReceipt,
   type JointContainmentReceipt,
@@ -392,7 +393,7 @@ export class OperationSupervisor {
         this.#ledger.recordPreparation(record.key, staged.providerRoot, staged.receipt);
         return this.#preparedResult(this.#requireLedger(record.key));
       } catch (error: unknown) {
-        if (this.#ledger.get(record.key)?.state !== 'releasing') {
+        if (record.releaseReceipt === null && this.#ledger.get(record.key)?.state !== 'releasing') {
           this.#beginRelease(record, { kind: 'never-started' });
         }
         await this.#driveRelease(record, false);
@@ -647,15 +648,6 @@ export class OperationSupervisor {
       return proxyOperationInspectResultSchema.parse(record.prepareRefusal);
     }
     if (record.releaseReceipt !== null) return proxyOperationInspectResultSchema.parse(record.releaseReceipt);
-    if (record.releaseIntent !== null) {
-      const receipt = await this.#driveRelease(record, false);
-      if (receipt !== null) {
-        if (record.prepareRefusal !== null && receipt.state === 'released-never-started') {
-          return proxyOperationInspectResultSchema.parse(record.prepareRefusal);
-        }
-        return proxyOperationInspectResultSchema.parse(receipt);
-      }
-    }
 
     const entry = this.#ledger.get(record.key);
     if (entry === null) return proxyOperationInspectResultSchema.parse({ state: 'absent' });
@@ -727,6 +719,23 @@ export class OperationSupervisor {
       activationAck: entry.activationAck,
       committedThroughProviderSeq: entry.committedThroughProviderSeq,
     });
+  }
+
+  /**
+   * Minimal ledger liveness stays separate from inspection so a batched observation cannot advance release,
+   * move a deadline, or expose attempt state that belongs to reconciliation authority.
+   */
+  status(
+    operations: readonly OperationIdentity[],
+  ): ReadonlyArray<Readonly<{ operation: OperationIdentity; state: 'held' | 'absent' }>> {
+    return proxyOperationStatusResultSchema.shape.operations.parse(
+      operations.map((operation) => {
+        const record = this.#operations.get(operationToken(operation));
+        const held =
+          record !== undefined && sameOperation(record.operation, operation) && this.#ledger.get(record.key) !== null;
+        return { operation, state: held ? 'held' : 'absent' };
+      }),
+    );
   }
 
   attach(
@@ -1072,6 +1081,7 @@ export class OperationSupervisor {
   }
 
   #beginRelease(record: SupervisedOperation, intent: ReleaseIntent): void {
+    if (record.releaseReceipt !== null) return;
     if (record.releaseIntent !== null && !releaseIntentsMatch(record.releaseIntent, intent)) {
       throw new ProxyControlProtocolError('invalid_state', 'This operation is already releasing for another reason.');
     }
@@ -1097,6 +1107,7 @@ export class OperationSupervisor {
       if (ambiguity !== null) this.#clearProviderEventAmbiguity(record, ambiguity);
     }
     this.#abortOwnedHandles(record);
+    if (beginsRelease) void this.#driveRelease(record, false);
   }
 
   #abortOwnedHandles(record: SupervisedOperation): void {

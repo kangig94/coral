@@ -250,11 +250,11 @@ describe('guardian outbound schemas', () => {
     });
     const release = { proxy: harness.proxyIdentity, operation, reservation };
 
-    expect(harness.method('guardian.operation-release.v2').authority).toBe('pairing');
-    expect(harness.method('guardian.operation-release.v2').handle(release)).toEqual({
+    expect(harness.method('guardian.operation-release.v1').authority).toBe('pairing');
+    expect(harness.method('guardian.operation-release.v1').handle(release)).toEqual({
       state: 'membership-released',
     });
-    expect(harness.method('guardian.operation-release.v2').handle(release)).toEqual({
+    expect(harness.method('guardian.operation-release.v1').handle(release)).toEqual({
       state: 'membership-absent',
     });
   });

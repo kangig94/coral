@@ -221,8 +221,12 @@ describe('coordinator continuity lifecycle integration', () => {
                 getDb: () => progressStore.getDb(),
                 loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
                 platform: runtime.env.platform() as NodeJS.Platform,
+                // This fixture exercises the wait stream, not the recovery boundary: the barrier stays
+                // unpassed so every local `unknown` is the honest `in-progress` answer rather than a
+                // recovery defect this test never set up the durable ownership to judge.
+                hasStartupRecoveryPassed: () => false,
                 isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(launchCoordinator, jobId),
-                registryStateForJob: () => null,
+                registryStateForJob: (): null => null,
               },
               journalDeps.getCurrentJournalSeq,
             ),

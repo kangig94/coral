@@ -130,7 +130,7 @@ describe('provider proxy operation mutations', () => {
   });
 
   it('uses observation-only inspect v2 with the full operation identity and attempt key', async () => {
-    const proxy = scriptedClient({ 'operation.inspect.v2': { state: 'absent' } });
+    const proxy = scriptedClient({ 'operation.inspect.v1': { state: 'absent' } });
     const guardian = scriptedClient({});
     const prepareAttemptKey = 'b'.repeat(64);
 
@@ -140,7 +140,7 @@ describe('provider proxy operation mutations', () => {
       state: 'absent',
     });
     expect(proxy.calls).toEqual([
-      { method: 'operation.inspect.v2', params: { operation: OPERATION, prepareAttemptKey } },
+      { method: 'operation.inspect.v1', params: { operation: OPERATION, prepareAttemptKey } },
     ]);
   });
 
@@ -265,7 +265,7 @@ describe('provider proxy operation mutations', () => {
   it('uses fenced cancel v2 for prestart cleanup while retaining the executing stop capability', async () => {
     const prepareAttemptKey = 'b'.repeat(64);
     const proxy = scriptedClient({
-      'operation.cancel.v2': {
+      'operation.cancel.v1': {
         state: 'released-never-started',
         operation: OPERATION,
         prepareAttemptNumber: 2,
@@ -285,14 +285,14 @@ describe('provider proxy operation mutations', () => {
     const control = buildProviderOperationControl(activationDeps, OPERATION);
     await control.stop('user_abort');
 
-    expect(proxy.calls.map((call) => call.method)).toEqual(['operation.cancel.v2', 'operation.stop.v1']);
+    expect(proxy.calls.map((call) => call.method)).toEqual(['operation.cancel.v1', 'operation.stop.v1']);
     expect(proxy.calls[0]?.params).toEqual({ operation: OPERATION, prepareAttemptNumber: 2, prepareAttemptKey });
     expect(guardian.calls).toEqual([]);
   });
 
   it('sends cumulative settlement through the proxy with the final provider sequence', async () => {
     const proxy = scriptedClient({
-      'operation.settle.v2': { state: 'released-after-terminal', settledThroughProviderSeq: 7 },
+      'operation.settle.v1': { state: 'released-after-terminal', settledThroughProviderSeq: 7 },
     });
     const guardian = scriptedClient({});
 
@@ -301,7 +301,7 @@ describe('provider proxy operation mutations', () => {
       settledThroughProviderSeq: 7,
     });
     expect(proxy.calls).toEqual([
-      { method: 'operation.settle.v2', params: { operation: OPERATION, finalProviderSeq: 7 } },
+      { method: 'operation.settle.v1', params: { operation: OPERATION, finalProviderSeq: 7 } },
     ]);
     expect(guardian.calls).toEqual([]);
   });

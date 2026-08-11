@@ -7,6 +7,7 @@ import { subscribeJobEvents } from '../../jobs/shell/event-subscription.js';
 import { prepareCached } from '../../store/db.js';
 import { aggregateWorkflowUsage } from '../../jobs/workflow-usage.js';
 import { admittedByThisCoordinator, createObserveCarriers } from './carrier-observation.js';
+import { observeCarrierStatuses } from '../live/carrier-observer.js';
 import { createAppServerProxyRoute } from '../services/provider-proxy-launch-route.js';
 import {
   ProviderOperationReconciler,
@@ -43,6 +44,7 @@ import {
   retireProviderHandoffCapsule,
 } from '../services/provider-proxy-capsule-discovery.js';
 import { writeHandoffCapsuleFile } from '../../provider-proxy/handoff-capsule.js';
+import { proxyOperationStatusNonceSchema } from '../../provider-proxy/protocol.js';
 import { providerProxySetAvailabilityReason } from '../services/provider-proxy-set-inheritance.js';
 import {
   recoverProviderProxySetAtStartup,
@@ -328,10 +330,20 @@ export function createExecutionServices({
           getDb: () => getProgressStore().getDb(),
           loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
           platform: runtime.env.platform() as NodeJS.Platform,
+          hasStartupRecoveryPassed: () => world.startupRecoveryBarrier.hasPassed(),
           isAdmittedByThisCoordinator: (jobId) => admittedByThisCoordinator(world.launchCoordinator, jobId),
           registryStateForJob: (jobId) => world.operationRegistry.stateForJob(jobId),
         },
         getCurrentJournalSeq,
+        (records) =>
+          observeCarrierStatuses(records, {
+            timer: runtime.time,
+            mintNonce: () => proxyOperationStatusNonceSchema.parse(runtime.ids.uuid()),
+            log: (report) =>
+              backendLog.warn(
+                `carrier status pass dropped ${report.droppedRows} rows across ${report.droppedEndpointRequests} requests`,
+              ),
+          }),
       ),
     });
     services.set(key, created);

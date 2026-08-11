@@ -548,7 +548,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       },
     ],
     [
-      'guardian.operation-release.v2',
+      'guardian.operation-release.v1',
       {
         authority: 'pairing',
         handle: (params) => {

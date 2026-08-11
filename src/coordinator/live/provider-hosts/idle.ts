@@ -1,8 +1,9 @@
 import type { ProviderServerHandle } from '../../../providers/app-server-transport.js';
 import type { TimePort } from '../../../infra/port-types.js';
 import type { Runtime } from '../../../runtime/ports.js';
+import type { HostRef } from '../../../providers/contract.js';
 import { activePinCount } from './lease.js';
-import type { HostStatsState, ProviderHostEntry } from './state.js';
+import { hostRefFromEntry, type HostStatsState, type ProviderHostEntry } from './state.js';
 
 const DEFAULT_BROKER_IDLE_MS = 300_000;
 
@@ -60,7 +61,11 @@ function isHostIdleFromStats(entry: ProviderHostEntry): boolean {
   return hostStats !== null && hostStats.liveControllers === 0 && hostStats.activeTurns === 0;
 }
 
-function canCloseIdleHost(entry: ProviderHostEntry, entries: Map<string, ProviderHostEntry>): boolean {
+function canCloseIdleHost(
+  entry: ProviderHostEntry,
+  entries: Map<string, ProviderHostEntry>,
+  carrierBlocksRetirement: (hostRef: HostRef) => boolean,
+): boolean {
   if (entry.closingError || entries.get(entry.hostKey) !== entry || !entry.handle) {
     return false;
   }
@@ -71,9 +76,13 @@ function canCloseIdleHost(entry: ProviderHostEntry, entries: Map<string, Provide
     return false;
   }
   if (retiresOnHostReport(entry)) {
-    return isHostIdleFromStats(entry);
+    if (!isHostIdleFromStats(entry)) return false;
   }
-  return true;
+  try {
+    return !carrierBlocksRetirement(hostRefFromEntry(entry));
+  } catch {
+    return false;
+  }
 }
 
 export function maybeArmIdleTimer(
@@ -82,6 +91,7 @@ export function maybeArmIdleTimer(
     runtime: Pick<Runtime, 'time'>;
     idleTimeoutMs: number;
     entries: Map<string, ProviderHostEntry>;
+    carrierBlocksRetirement: (hostRef: HostRef) => boolean;
     closeProviderServerEntry: (entry: ProviderHostEntry, detail: string) => Promise<void>;
   },
 ): void {
@@ -100,9 +110,12 @@ export function maybeArmIdleTimer(
   }
 
   clearIdleTimer(entry, options.runtime.time);
+  if (!canCloseIdleHost(entry, options.entries, options.carrierBlocksRetirement)) {
+    return;
+  }
   entry.idleTimer = options.runtime.time.setTimeout(() => {
     entry.idleTimer = null;
-    if (!canCloseIdleHost(entry, options.entries)) {
+    if (!canCloseIdleHost(entry, options.entries, options.carrierBlocksRetirement)) {
       return;
     }
     void options.closeProviderServerEntry(entry, 'idle timeout expired').catch(() => {});
@@ -117,6 +130,7 @@ export function attachHostNotificationListener(
     runtime: Pick<Runtime, 'time'>;
     idleTimeoutMs: number;
     entries: Map<string, ProviderHostEntry>;
+    carrierBlocksRetirement: (hostRef: HostRef) => boolean;
     closeProviderServerEntry: (entry: ProviderHostEntry, detail: string) => Promise<void>;
   },
 ): void {

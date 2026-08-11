@@ -449,7 +449,7 @@ async function launchThroughRoute(
   const proxyClient = {
     call: async (method: string, params: unknown, timeoutMs: number): Promise<unknown> => {
       if (method === 'operation.prepare.v1') prepareCalls += 1;
-      if (method === 'operation.inspect.v2') {
+      if (method === 'operation.inspect.v1') {
         prepareInspectCalls += 1;
         if (prepareInspectCalls <= (options.dropPrepareInspectReplies ?? 0)) {
           throw new ControlClientError('control_call_failed', 'The prepare inspect reply was dropped.', 'closed');
@@ -465,7 +465,7 @@ async function launchThroughRoute(
         }
       }
       if (method === 'operation.activate.v1') activationCalls += 1;
-      if (method === 'operation.cancel.v2') {
+      if (method === 'operation.cancel.v1') {
         cancelCalls += 1;
         await cancelGate;
       }

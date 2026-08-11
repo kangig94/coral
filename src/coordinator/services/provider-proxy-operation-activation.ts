@@ -181,7 +181,7 @@ export async function inspectProviderOperation(
   const params = proxyOperationInspectParamsSchema.parse({ operation, prepareAttemptKey });
   return callStrict(
     deps.proxyClient,
-    policy('operation.inspect.v2', 'prepare-pending', 'observation'),
+    policy('operation.inspect.v1', 'prepare-pending', 'observation'),
     params,
     deps.mutationRpcTimeoutMs,
     proxyOperationInspectResultSchema,
@@ -254,7 +254,7 @@ export async function cancelProviderOperation(
   const params = proxyOperationCancelParamsSchema.parse({ operation, prepareAttemptNumber, prepareAttemptKey });
   return callStrict(
     deps.proxyClient,
-    policy('operation.cancel.v2', 'prestart-cleanup-pending', 'mutation'),
+    policy('operation.cancel.v1', 'prestart-cleanup-pending', 'mutation'),
     params,
     deps.mutationRpcTimeoutMs,
     proxyOperationCancelResultSchema,
@@ -270,7 +270,7 @@ export async function settleProviderOperation(
   const params = proxyOperationSettleParamsSchema.parse({ operation, finalProviderSeq });
   return callStrict(
     deps.proxyClient,
-    policy('operation.settle.v2', 'settlement-pending', 'mutation'),
+    policy('operation.settle.v1', 'settlement-pending', 'mutation'),
     params,
     deps.mutationRpcTimeoutMs,
     proxyOperationSettleResultSchema,
