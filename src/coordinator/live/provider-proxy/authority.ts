@@ -1,4 +1,5 @@
-import type { OperationIdentity } from '../../../provider-proxy/protocol.js';
+import type { OperationIdentity, ProviderHostInventoryRecordWire } from '../../../provider-proxy/protocol.js';
+import type { HostRef } from '../../../providers/contract.js';
 
 /**
  * What coordinated shutdown needs from the live guardian/reaper/proxy sets.
@@ -27,6 +28,11 @@ export interface ProviderProxySetAuthority {
    * every close *triggered* before it waits on any of them, so one slow set cannot delay the rest.
    */
   initiateControlClose(): Promise<void>;
+  readonly providerHosts?: Readonly<{
+    list(): Promise<readonly ProviderHostInventoryRecordWire[]>;
+    inspect(hostRef: HostRef): Promise<ProviderHostInventoryRecordWire | null>;
+    evict(hostRef: HostRef): Promise<boolean>;
+  }>;
 }
 
 export interface ProviderProxySetRecoveryAuthority extends ProviderProxySetAuthority {

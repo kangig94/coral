@@ -10,6 +10,7 @@ import type { ProviderHostDiagnosticsSnapshot } from '../providers/host-diagnost
 import {
   admissionSlotKey,
   canonicalProviderHostSpecMetadata,
+  exactHostRefsMatch,
   type AdmissionSlotKey,
   type HostAdmissionReservation,
   type HostAdmissionSnapshot,
@@ -248,12 +249,24 @@ export interface ProxyAppServerHostAuthority {
   rootIdentity(hostRef: HostRef): Readonly<{ pid: number; processStartedAtSeconds: number }> | null;
   closed(hostRef: HostRef): Promise<Error | void> | null;
   forceClose(hostRef: HostRef): Promise<void>;
+  evictHost(hostRef: HostRef): Promise<boolean>;
 }
 
-export interface ProxyProviderHostAdmissionAuthority {
+export interface ProxyProviderHostAdministrationAuthority {
   admissionSnapshot(): HostAdmissionSnapshot;
-  confirmEvicted(hostRef: HostRef): boolean;
+  listProviderHosts(): readonly ProxyProviderHostInventoryRecord[];
+  inspectProviderHost(hostRef: HostRef): ProxyProviderHostInventoryRecord | null;
+  evictHost(hostRef: HostRef): Promise<boolean>;
 }
+
+export type ProxyProviderHostInventoryRecord = Readonly<{
+  ref: HostRef;
+  status: 'live' | 'retired-blocked';
+  spec: ReturnType<typeof canonicalProviderHostSpecMetadata>;
+  host: Readonly<Record<string, string | number | boolean | null>>;
+  diagnostics: ProviderHostDiagnosticsSnapshot;
+  diagnosticsRetention: Readonly<{ ownerBudgetTruncated: boolean }>;
+}>;
 
 /**
  * The proxy's own narrower stand-in for `DefaultProviderHostManager`: pools app-server children by executable
@@ -266,7 +279,7 @@ export interface ProxyProviderHostAdmissionAuthority {
  */
 export function createProxyAppServerHostAuthority(
   runtime: Runtime,
-): ProxyAppServerHostAuthority & ProxyProviderHostAdmissionAuthority {
+): ProxyAppServerHostAuthority & ProxyProviderHostAdministrationAuthority {
   const entries = new Map<string, HostPoolEntry>();
   const closingEntries = new Set<HostPoolEntry>();
   const admission = createProxyProviderHostAdmission();
@@ -300,8 +313,8 @@ export function createProxyAppServerHostAuthority(
   };
 
   const closeEntry = (entry: HostPoolEntry): Promise<void> => {
-    closingEntries.add(entry);
     if (entry.closePromise !== null) return entry.closePromise;
+    closingEntries.add(entry);
     const closePromise = closeSpawnedHandle(entry.handle, entry.spec, runtime).then(() => releaseLiveRoot(entry));
     entry.closePromise = closePromise;
     void closePromise.then(
@@ -518,12 +531,95 @@ export function createProxyAppServerHostAuthority(
       if (matched !== undefined) await closeEntry(matched);
     },
 
-    admissionSnapshot() {
-      return admission.snapshot();
+    listProviderHosts() {
+      const snapshot = admission.snapshot();
+      const processEntries = new Set([...entries.values(), ...closingEntries]);
+      const records: ProxyProviderHostInventoryRecord[] = [];
+      for (const admissionEntry of snapshot.state.values()) {
+        if (admissionEntry.phase === 'spawning' || admissionEntry.phase === 'retired-blocked') continue;
+        const matches = [...processEntries].filter((entry) => isMatchingHostRef(admissionEntry.ref, entry, runtime));
+        if (matches.length !== 1) {
+          throw new Error('provider_host_inventory_unavailable: live proxy host could not be revalidated');
+        }
+        const entry = matches[0] as HostPoolEntry;
+        if (entry.handle.isClosed()) {
+          throw new Error('provider_host_inventory_unavailable: live proxy host process is unavailable');
+        }
+        records.push(
+          Object.freeze({
+            ref: admissionEntry.ref,
+            status: 'live',
+            spec: canonicalProviderHostSpecMetadata(entry.spec),
+            host: Object.freeze({
+              owner: 'provider-proxy',
+              hostKey: entry.hostKey,
+              ownerJobId: entry.jobId ?? null,
+              cancellationMode: entry.cancellationMode,
+            }),
+            diagnostics: entry.handle.inspectDiagnostics(),
+            diagnosticsRetention: Object.freeze({ ownerBudgetTruncated: false }),
+          }),
+        );
+      }
+      records.push(
+        ...snapshot.tombstones.map((tombstone) =>
+          Object.freeze({
+            ref: tombstone.ref,
+            status: tombstone.phase,
+            spec: tombstone.spec,
+            host: tombstone.host,
+            diagnostics: tombstone.diagnostics,
+            diagnosticsRetention: tombstone.diagnosticsRetention,
+          }),
+        ),
+      );
+      return Object.freeze(records);
     },
 
-    confirmEvicted(hostRef) {
+    inspectProviderHost(hostRef) {
+      const matches = this.listProviderHosts().filter((record) => exactHostRefsMatch(record.ref, hostRef));
+      if (matches.length > 1) {
+        throw new Error('provider_host_identity_integrity: exact host ref matched multiple proxy records');
+      }
+      return matches[0] ?? null;
+    },
+
+    async evictHost(hostRef) {
+      const snapshot = admission.snapshot();
+      const owned =
+        [...snapshot.state.values()].some((entry) => exactHostRefsMatch(entry.ref, hostRef)) ||
+        snapshot.tombstones.some((tombstone) => exactHostRefsMatch(tombstone.ref, hostRef));
+      if (!owned) return false;
+
+      const matches = new Set<HostPoolEntry>();
+      for (const entry of entries.values()) {
+        if (isMatchingHostRef(hostRef, entry, runtime)) matches.add(entry);
+      }
+      for (const entry of closingEntries) {
+        if (isMatchingHostRef(hostRef, entry, runtime)) matches.add(entry);
+      }
+      if (matches.size > 1) {
+        throw new Error('provider_host_identity_integrity: exact host ref matched multiple proxy entries');
+      }
+      const matched = matches.values().next().value;
+      if (matched !== undefined) {
+        if (entries.get(matched.hostKey) === matched) entries.delete(matched.hostKey);
+        await closeEntry(matched);
+        admission.confirmEvicted(hostRef);
+        return true;
+      }
+
+      const tombstones = admission
+        .snapshot()
+        .tombstones.filter(
+          (tombstone) => tombstone.retirement.processAbsent && exactHostRefsMatch(tombstone.ref, hostRef),
+        );
+      if (tombstones.length !== 1) return false;
       return admission.confirmEvicted(hostRef);
+    },
+
+    admissionSnapshot() {
+      return admission.snapshot();
     },
   };
 }

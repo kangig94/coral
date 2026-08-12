@@ -60,6 +60,7 @@ export function createEntry(overrides: Partial<ProviderHostEntry> = {}): Provide
 export function createFakeProviderServerHandle(options?: {
   generation?: number;
   request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  close?: () => Promise<void>;
 }) {
   let isClosed = false;
   const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
@@ -81,6 +82,7 @@ export function createFakeProviderServerHandle(options?: {
   );
   const markExpectedCloseMock = vi.fn();
   const closeMock = vi.fn(async () => {
+    await options?.close?.();
     isClosed = true;
     closed.resolve();
   });

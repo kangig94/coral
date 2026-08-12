@@ -66,6 +66,8 @@ const TRANSPORT_ALLOWED = new Set([
   'src/jobs/records.ts',
   'src/jobs/wait.ts',
   'src/jobs/wait-stream-event.ts',
+  'src/providers/host-ref-codec.ts',
+  'src/providers/host-ref-schema.ts',
   'src/sessions/command-schemas.ts',
   'src/discuss/command-schemas.ts',
   'src/discuss/read-contract.ts',

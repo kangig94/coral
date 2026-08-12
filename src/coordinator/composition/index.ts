@@ -87,6 +87,12 @@ import type {
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../../jobs/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import { type KbDaemonHealthSnapshot, type KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import type { ProviderHostAdministrationAuthority, ProviderHostManager } from '../live/provider-hosts/index.js';
+import {
+  ProviderHostAdministrationService,
+  type ProviderHostAdministrationOwner,
+  type ProviderHostSelector,
+} from '../services/provider-host-administration.js';
 import type { KbDaemonRequestContextWire } from '../../kb-daemon/protocol.js';
 import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-component.js';
 import { readCorpusState } from '../../kb/state/corpus-state.js';
@@ -815,6 +821,61 @@ export function createCoordinatorCore(
     readOnlyInvocationContext,
   );
 
+  const localProviderHosts = world.providerHostManager as ProviderHostManager &
+    Partial<ProviderHostAdministrationAuthority>;
+  const localProviderHostOwner: ProviderHostAdministrationOwner = {
+    ownerId: `coordinator:${world.identity.instanceId}`,
+    listProviderHosts: () => {
+      if (localProviderHosts.listProviderHosts === undefined) {
+        throw new Error('provider_host_inventory_unavailable: local manager has no administration authority');
+      }
+      return localProviderHosts.listProviderHosts();
+    },
+    inspectProviderHost: (hostRef) => {
+      if (localProviderHosts.inspectProviderHost === undefined) {
+        throw new Error('provider_host_inventory_unavailable: local manager has no administration authority');
+      }
+      return localProviderHosts.inspectProviderHost(hostRef);
+    },
+    evictProviderHost: async (hostRef) => {
+      if (localProviderHosts.evictHost === undefined) {
+        throw new Error('provider_host_inventory_unavailable: local manager has no administration authority');
+      }
+      return localProviderHosts.evictHost(hostRef);
+    },
+  };
+  const providerHostAdministration = new ProviderHostAdministrationService({
+    owners: () => {
+      const proxySets = world.providerProxyAuthority?.liveSets() ?? [];
+      return [
+        localProviderHostOwner,
+        ...proxySets.map(
+          (set): ProviderHostAdministrationOwner => ({
+            ownerId: `provider-proxy:${set.proxyInstanceId}`,
+            listProviderHosts: async () => {
+              if (set.providerHosts === undefined) {
+                throw new Error('provider_host_inventory_unavailable: proxy set has no administration control');
+              }
+              return set.providerHosts.list();
+            },
+            inspectProviderHost: async (hostRef) => {
+              if (set.providerHosts === undefined) {
+                throw new Error('provider_host_inventory_unavailable: proxy set has no administration control');
+              }
+              return set.providerHosts.inspect(hostRef);
+            },
+            evictProviderHost: async (hostRef) => {
+              if (set.providerHosts === undefined) {
+                throw new Error('provider_host_inventory_unavailable: proxy set has no administration control');
+              }
+              return set.providerHosts.evict(hostRef);
+            },
+          }),
+        ),
+      ];
+    },
+  });
+
   const rpcPorts: RpcPorts = {
     sessions: {
       start: (providerName, input, ctx) => services.getExecutionService(ctx).start(providerName, input, ctx),
@@ -898,6 +959,13 @@ export function createCoordinatorCore(
       },
     },
     recoveryQuarantine,
+    providerHosts: {
+      list: async () => ({ hosts: await providerHostAdministration.list() }),
+      inspect: async (selector) => ({
+        host: await providerHostAdministration.inspect(selector as ProviderHostSelector),
+      }),
+      evict: async (selector) => providerHostAdministration.evict(selector as ProviderHostSelector),
+    },
     kb: kbRpcPort,
     discuss: {
       seed: handleDiscussSeed,

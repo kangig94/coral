@@ -449,6 +449,7 @@ async function createHarness(
     rootIdentity: () => ({ pid: 4_242, processStartedAtSeconds: 1_700_000_000 }),
     closed: () => new Promise<never>(() => undefined),
     forceClose: async () => undefined,
+    evictHost: async () => false,
   };
 
   const timer = new ControlledTimer();

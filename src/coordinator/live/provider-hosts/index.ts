@@ -1,9 +1,11 @@
 import type { AppServerTransport, HostRef, ProviderServerSpec } from '../../../providers/contract.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from '../../../providers/app-server-transport.js';
 import type { ProviderHostDiagnosticsSnapshot } from '../../../providers/host-diagnostics.js';
+import type { ProviderHostInventoryRecord } from '../../services/provider-host-administration.js';
 import {
   admissionSlotKey,
   canonicalProviderHostSpecMetadata,
+  exactHostRefsMatch,
   type AdmissionSlotKey,
   type HostAdmissionReservation,
   type HostAdmissionSnapshot,
@@ -55,9 +57,11 @@ export interface ProviderHostManager {
 
 export type ProviderHostLifecycle = Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
 
-export interface ProviderHostAdmissionAuthority {
+export interface ProviderHostAdministrationAuthority {
   admissionSnapshot(): HostAdmissionSnapshot;
-  confirmEvicted(hostRef: HostRef): boolean;
+  listProviderHosts(): readonly ProviderHostInventoryRecord[];
+  inspectProviderHost(hostRef: HostRef): ProviderHostInventoryRecord | null;
+  evictHost(hostRef: HostRef): Promise<boolean>;
 }
 
 /**
@@ -144,6 +148,17 @@ function isExactHostRef(value: HostRef): boolean {
   );
 }
 
+function entryMatchesHostRef(entry: ProviderHostEntry, hostRef: HostRef): boolean {
+  return (
+    entry.instanceId !== null &&
+    entry.spec.provider === hostRef.provider &&
+    hostFingerprintFromSpec(entry.spec) === hostRef.fingerprint &&
+    entry.instanceId === hostRef.instanceId &&
+    entry.spec.leaseMode === hostRef.leaseMode &&
+    (hostRef.leaseMode !== 'job-exclusive' || entry.jobId === hostRef.ownerJobId)
+  );
+}
+
 function waitForClose(operation: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
   if (signal === undefined) return operation;
   if (signal.aborted) {
@@ -171,6 +186,7 @@ export class DefaultProviderHostManager
   private readonly entries = new Map<string, ProviderHostEntry>();
   private readonly admission = createCoordinatorProviderHostAdmission();
   private readonly pendingCloses = new Set<Promise<void>>();
+  private readonly closingEntries = new Map<ProviderHostEntry, Readonly<{ ref: HostRef; operation: Promise<void> }>>();
   private readonly lifecyclePolicies = new Map<string, string>();
   private nextProviderServerGeneration = 1;
   private acceptingAcquisitions = true;
@@ -490,7 +506,84 @@ export class DefaultProviderHostManager
     return this.admission.snapshot();
   }
 
-  confirmEvicted(hostRef: HostRef): boolean {
+  listProviderHosts(): readonly ProviderHostInventoryRecord[] {
+    const snapshot = this.admission.snapshot();
+    const processEntries = new Set([...this.entries.values(), ...this.closingEntries.keys()]);
+    const records: ProviderHostInventoryRecord[] = [];
+    for (const admissionEntry of snapshot.state.values()) {
+      if (admissionEntry.phase === 'spawning' || admissionEntry.phase === 'retired-blocked') continue;
+      const matches = [...processEntries].filter((entry) => entryMatchesHostRef(entry, admissionEntry.ref));
+      if (matches.length !== 1) {
+        throw new Error('provider_host_inventory_unavailable: live coordinator host could not be revalidated');
+      }
+      const entry = matches[0] as ProviderHostEntry;
+      const handle = entry.handle;
+      if (handle === null || handle.isClosed()) {
+        throw new Error('provider_host_inventory_unavailable: live coordinator host process is unavailable');
+      }
+      records.push(
+        Object.freeze({
+          ref: admissionEntry.ref,
+          status: 'live',
+          spec: canonicalProviderHostSpecMetadata(entry.spec),
+          host: Object.freeze({
+            owner: 'coordinator',
+            hostKey: entry.hostKey,
+            identityKey: entry.identityKey,
+            ownerJobId: entry.jobId ?? null,
+          }),
+          diagnostics: handle.inspectDiagnostics(),
+          diagnosticsRetention: Object.freeze({ ownerBudgetTruncated: false }),
+        }),
+      );
+    }
+    records.push(
+      ...snapshot.tombstones.map((tombstone) =>
+        Object.freeze({
+          ref: tombstone.ref,
+          status: tombstone.phase,
+          spec: tombstone.spec,
+          host: tombstone.host,
+          diagnostics: tombstone.diagnostics,
+          diagnosticsRetention: tombstone.diagnosticsRetention,
+        }),
+      ),
+    );
+    return Object.freeze(records);
+  }
+
+  inspectProviderHost(hostRef: HostRef): ProviderHostInventoryRecord | null {
+    if (!isExactHostRef(hostRef)) return null;
+    const matches = this.listProviderHosts().filter((record) => exactHostRefsMatch(record.ref, hostRef));
+    if (matches.length > 1) {
+      throw new Error('provider_host_identity_integrity: exact host ref matched multiple coordinator records');
+    }
+    return matches[0] ?? null;
+  }
+
+  async evictHost(hostRef: HostRef): Promise<boolean> {
+    if (!isExactHostRef(hostRef)) return false;
+    const liveMatches = [...this.entries.values()].filter((entry) => entryMatchesHostRef(entry, hostRef));
+    const closingMatches = [...this.closingEntries.entries()].filter(([, closing]) =>
+      exactHostRefsMatch(closing.ref, hostRef),
+    );
+    const matchedEntries = new Set([...liveMatches, ...closingMatches.map(([entry]) => entry)]);
+    if (matchedEntries.size > 1) {
+      throw new Error('provider_host_identity_integrity: exact host ref matched multiple coordinator entries');
+    }
+    const matched = matchedEntries.values().next().value;
+    if (matched !== undefined) {
+      await this.closeProviderServerEntry(matched, 'evicted by operator', { confirmAbsence: true });
+      this.admission.confirmEvicted(hostRef);
+      return true;
+    }
+
+    const tombstones = this.admission
+      .snapshot()
+      .tombstones.filter(
+        (tombstone) => tombstone.retirement.processAbsent && exactHostRefsMatch(tombstone.ref, hostRef),
+      );
+    if (tombstones.length !== 1) return false;
     return this.admission.confirmEvicted(hostRef);
   }
 
@@ -604,9 +697,10 @@ export class DefaultProviderHostManager
   private async closeProviderServerEntry(
     entry: ProviderHostEntry,
     detail: string,
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; confirmAbsence?: boolean } = {},
   ): Promise<void> {
     if (entry.closePromise === null) {
+      const ref = entry.instanceId === null ? null : hostRefFromEntry(entry);
       const operation = closeEntry(entry, detail, {
         runtime: this.runtime,
         entries: this.entries,
@@ -614,12 +708,24 @@ export class DefaultProviderHostManager
       });
       entry.closePromise = operation;
       this.pendingCloses.add(operation);
+      if (ref !== null) this.closingEntries.set(entry, Object.freeze({ ref, operation }));
       void operation.then(
-        () => this.pendingCloses.delete(operation),
-        () => this.pendingCloses.delete(operation),
+        () => {
+          this.pendingCloses.delete(operation);
+          if (this.closingEntries.get(entry)?.operation === operation) this.closingEntries.delete(entry);
+        },
+        () => {
+          this.pendingCloses.delete(operation);
+          if (entry.closePromise === operation) entry.closePromise = null;
+        },
       );
     }
-    await waitForClose(entry.closePromise, options.signal);
+    const operation = entry.closePromise;
+    try {
+      await waitForClose(operation, options.signal);
+    } catch (error: unknown) {
+      if (options.confirmAbsence) throw error;
+    }
   }
 
   private async shutdownHandle(handle: ProviderServerHandle, spec: ProviderServerSpec): Promise<void> {
@@ -636,7 +742,7 @@ export function createProviderHostManager(options: {
   proxySetAcquisition?: ProviderProxySetAcquisitionConfig;
   providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
 }): ProviderHostManager &
-  ProviderHostAdmissionAuthority &
+  ProviderHostAdministrationAuthority &
   ProviderProxyAuthorityRegistry &
   ProviderProxySetRegistration {
   return new DefaultProviderHostManager(options);

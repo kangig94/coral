@@ -54,6 +54,7 @@ import {
 import { sessionCreateSchema } from '../../sessions/command-schemas.js';
 import type { RpcPorts } from './ports.js';
 import { workflowRequestSchema } from './workflow.js';
+import { hostRefSchema } from '../../providers/host-ref-schema.js';
 
 export interface RpcMethodSpec<Req, _Res> {
   readonly name: string;
@@ -61,6 +62,7 @@ export interface RpcMethodSpec<Req, _Res> {
   readonly requires: Capability;
   readonly requestBinding?: RequestBindingRule;
   readonly requestSchema: ZodType<Req>;
+  readonly responseSchema?: ZodType<_Res>;
   readonly responseKind: 'json' | 'notification-stream';
   readonly portKey: keyof RpcPorts;
   readonly http: {
@@ -89,6 +91,99 @@ export const recoveryQuarantineClearResultSchema = recoveryQuarantineClearReques
   })
   .strict();
 
+const providerHostNonNegativeIntegerSchema = z.number().int().nonnegative().safe();
+const providerHostLogEntrySchema = z
+  .object({
+    seq: providerHostNonNegativeIntegerSchema,
+    observedAt: z.number(),
+    stream: z.literal('stderr'),
+    text: z.string(),
+    startTruncated: z.literal(true).optional(),
+  })
+  .strict();
+const providerHostLogSpanSchema = z
+  .object({
+    startSeq: providerHostNonNegativeIntegerSchema,
+    endSeq: providerHostNonNegativeIntegerSchema,
+    truncated: z.boolean(),
+    historical: z.array(providerHostLogEntrySchema),
+    during: z.array(providerHostLogEntrySchema),
+    after: z.array(providerHostLogEntrySchema),
+  })
+  .strict();
+const providerHostResponseSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('success') }).strict(),
+  z
+    .object({
+      kind: z.literal('failure'),
+      rpcCode: z.number().optional(),
+      providerMessage: z.string().optional(),
+      providerData: z.unknown().optional(),
+    })
+    .strict(),
+]);
+const providerHostDiagnosticFactSchema = z
+  .object({
+    factSeq: providerHostNonNegativeIntegerSchema,
+    generation: providerHostNonNegativeIntegerSchema,
+    requestId: providerHostNonNegativeIntegerSchema,
+    method: z.string(),
+    response: providerHostResponseSchema,
+    hostLog: providerHostLogSpanSchema,
+  })
+  .strict();
+const providerHostDiagnosticsSchema = z
+  .object({
+    hostLog: z
+      .object({
+        entries: z.array(providerHostLogEntrySchema),
+        retainedBytes: providerHostNonNegativeIntegerSchema,
+        truncatedBeforeSeq: providerHostNonNegativeIntegerSchema,
+      })
+      .strict(),
+    completedObservations: z.array(providerHostDiagnosticFactSchema),
+    factsTruncatedBeforeSeq: providerHostNonNegativeIntegerSchema,
+  })
+  .strict();
+const providerHostSpecSchema = z
+  .object({
+    provider: z.string().min(1),
+    command: z.string().min(1),
+    args: z.array(z.string()),
+    cwd: z.string().nullable(),
+    leaseMode: z.enum(['shared', 'job-exclusive']),
+    idleRetirement: z.enum(['host-reported', 'none']).nullable(),
+  })
+  .strict();
+const providerHostMetadataValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+export const providerHostInventoryRowSchema = z
+  .object({
+    ownerId: z.string().min(1),
+    ref: hostRefSchema,
+    status: z.enum(['live', 'retired-blocked']),
+    spec: providerHostSpecSchema,
+    host: z.record(providerHostMetadataValueSchema),
+    diagnostics: providerHostDiagnosticsSchema,
+    diagnosticsRetention: z.object({ ownerBudgetTruncated: z.boolean() }).strict(),
+  })
+  .strict();
+
+export const providerHostListRequestSchema = z.object({}).strict();
+export const providerHostSelectorRequestSchema = z.union([
+  z.object({ hostRef: hostRefSchema }).strict(),
+  z.object({ workDir: z.string().min(1), projectRoot: z.string().min(1) }).strict(),
+]);
+export const providerHostListResponseSchema = z.object({ hosts: z.array(providerHostInventoryRowSchema) }).strict();
+export const providerHostInspectResponseSchema = z.object({ host: providerHostInventoryRowSchema }).strict();
+export const providerHostEvictResponseSchema = z
+  .object({ ownerId: z.string().min(1), hostRef: hostRefSchema })
+  .strict();
+
+export type ProviderHostSelectorRequest = z.input<typeof providerHostSelectorRequestSchema>;
+export type ProviderHostListResponse = z.output<typeof providerHostListResponseSchema>;
+export type ProviderHostInspectResponse = z.output<typeof providerHostInspectResponseSchema>;
+export type ProviderHostEvictResponse = z.output<typeof providerHostEvictResponseSchema>;
+
 /** Catalog declaration for the canonical-coordinator recovery retry operation. */
 export const recoveryQuarantineClearRpcSpec = {
   name: 'coordinator.recovery_quarantine.clear',
@@ -98,6 +193,42 @@ export const recoveryQuarantineClearRpcSpec = {
   responseKind: 'json',
   portKey: 'recoveryQuarantine',
   http: { method: 'POST', path: '/coordinator/recovery-quarantine/clear' },
+} as const satisfies RpcMethodSpec<unknown, unknown>;
+
+export const providerHostListRpcSpec = {
+  name: 'coordinator.provider_host.list',
+  kind: 'unary',
+  requires: 'system:debug',
+  requestBinding: { kind: 'projectRoot', projectRoot: 'optional-all-projects' },
+  requestSchema: providerHostListRequestSchema,
+  responseSchema: providerHostListResponseSchema,
+  responseKind: 'json',
+  portKey: 'providerHosts',
+  http: { method: 'GET', path: '/coordinator/provider-hosts' },
+} as const satisfies RpcMethodSpec<unknown, unknown>;
+
+export const providerHostInspectRpcSpec = {
+  name: 'coordinator.provider_host.inspect',
+  kind: 'unary',
+  requires: 'system:debug',
+  requestBinding: { kind: 'projectRoot', projectRoot: 'optional-all-projects' },
+  requestSchema: providerHostSelectorRequestSchema,
+  responseSchema: providerHostInspectResponseSchema,
+  responseKind: 'json',
+  portKey: 'providerHosts',
+  http: { method: 'POST', path: '/coordinator/provider-hosts/inspect' },
+} as const satisfies RpcMethodSpec<unknown, unknown>;
+
+export const providerHostEvictRpcSpec = {
+  name: 'coordinator.provider_host.evict',
+  kind: 'unary',
+  requires: 'system:shutdown',
+  requestBinding: { kind: 'projectRoot', projectRoot: 'optional-all-projects' },
+  requestSchema: providerHostSelectorRequestSchema,
+  responseSchema: providerHostEvictResponseSchema,
+  responseKind: 'json',
+  portKey: 'providerHosts',
+  http: { method: 'POST', path: '/coordinator/provider-hosts/evict' },
 } as const satisfies RpcMethodSpec<unknown, unknown>;
 
 export const transportOperationalCarveouts = [
@@ -127,6 +258,9 @@ export const rpcCatalog = [
     http: { method: 'POST', path: '/workflow' },
   },
   recoveryQuarantineClearRpcSpec,
+  providerHostListRpcSpec,
+  providerHostInspectRpcSpec,
+  providerHostEvictRpcSpec,
   {
     name: 'coordinator.equipExpansion',
     kind: 'unary',

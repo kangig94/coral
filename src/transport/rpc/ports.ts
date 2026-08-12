@@ -63,6 +63,26 @@ export interface RecoveryQuarantineRequestPort {
   clear(request: RecoveryQuarantineClearRequest, signal?: AbortSignal): Promise<RecoveryQuarantineClearResult>;
 }
 
+export interface ProviderHostRequestPort {
+  list(): Promise<unknown>;
+  inspect(
+    selector: Readonly<{ hostRef: ProviderHostRefInput }> | Readonly<{ workDir: CanonicalWorkDir }>,
+  ): Promise<unknown>;
+  evict(
+    selector: Readonly<{ hostRef: ProviderHostRefInput }> | Readonly<{ workDir: CanonicalWorkDir }>,
+  ): Promise<unknown>;
+}
+
+type ProviderHostRefInput =
+  | Readonly<{ provider: string; fingerprint: string; instanceId: string; leaseMode: 'shared' }>
+  | Readonly<{
+      provider: string;
+      fingerprint: string;
+      instanceId: string;
+      leaseMode: 'job-exclusive';
+      ownerJobId: string;
+    }>;
+
 type MaybePromise<T> = T | Promise<T>;
 
 export interface KbRequestPort {
@@ -119,6 +139,7 @@ export interface RpcPorts {
   readonly jobs: JobsRequestPort;
   readonly workflows: WorkflowRequestPort;
   readonly recoveryQuarantine: RecoveryQuarantineRequestPort;
+  readonly providerHosts?: ProviderHostRequestPort;
   readonly kb: KbRequestPort;
   readonly discuss: DiscussRequestPort;
   readonly expansion: ExpansionRequestPort;

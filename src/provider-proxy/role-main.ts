@@ -872,6 +872,7 @@ export async function startProviderProxyRole(
     clock,
     identity,
     host: semantic.host,
+    providerHosts: hostAuthority,
     timer,
     mintChallenge: () => ports.runtime.ids.uuid(),
     mintReceipt: () => ports.runtime.ids.uuid(),

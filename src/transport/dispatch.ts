@@ -8,14 +8,22 @@ import { isCapability, type Capability } from '../security/capability.js';
 import type { Principal, ResourceBinding } from '../security/principal.js';
 import { authorizeCapability, authorizeResourceBinding, type Decision } from '../security/policy/authorize.js';
 import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
+import { isRecord } from '../infra/json.js';
 import type { RecoveryQuarantineClearRequest } from '../recovery/source-registry.js';
 import { domainError, type ToolDomainResult } from './tool-result.js';
 import { domainResultToHttp, launchToHttp } from './response.js';
 import type { HttpHandlerPorts } from './server-ports.js';
 import type { RequestBindingRule, RpcMethodSpec } from './rpc/catalog.js';
+import {
+  providerHostEvictResponseSchema,
+  providerHostInspectResponseSchema,
+  providerHostListResponseSchema,
+  type ProviderHostSelectorRequest,
+} from './rpc/catalog.js';
 import type { JobListFilters, WorkflowPortInput } from './rpc/ports.js';
 import { buildInvocationContext, buildInvocationContextFromQuery } from './invocation-context.js';
 import { callerProviderScopeSchema } from '../infra/provider-scope.js';
+import { encodeHostRef } from '../providers/host-ref-codec.js';
 
 type RetentionPolicy = NonNullable<JobLaunchRequest['retention']>;
 
@@ -284,6 +292,71 @@ function workDirectoryFailure(error: WorkDirectoryError): CatalogRequestExecutio
   );
 }
 
+const PROVIDER_HOST_ADMINISTRATION_ERROR_CODES = new Set([
+  'provider_host_inventory_unavailable',
+  'provider_host_not_found',
+  'provider_host_ambiguous',
+  'provider_host_identity_integrity',
+  'provider_host_stale',
+]);
+
+function providerHostAdministrationFailure(error: unknown): CatalogRequestExecution | null {
+  if (!isRecord(error) || typeof error.code !== 'string' || !PROVIDER_HOST_ADMINISTRATION_ERROR_CODES.has(error.code)) {
+    return null;
+  }
+  const ownerIds = Array.isArray(error.ownerIds)
+    ? error.ownerIds.filter((value): value is string => typeof value === 'string')
+    : [];
+  const hostRefs = Array.isArray(error.matches)
+    ? error.matches.flatMap((value) => {
+        try {
+          return [encodeHostRef(value as Parameters<typeof encodeHostRef>[0])];
+        } catch {
+          return [];
+        }
+      })
+    : [];
+  let message: string;
+  switch (error.code) {
+    case 'provider_host_inventory_unavailable':
+      message = `Provider-host inventory is unavailable${ownerIds.length === 0 ? '.' : ` from: ${ownerIds.join(', ')}.`}`;
+      break;
+    case 'provider_host_not_found':
+      message = 'No live or retained-blocked provider host matches the selector.';
+      break;
+    case 'provider_host_ambiguous':
+      message = `The work directory matches multiple provider hosts: ${hostRefs.join(', ')}.`;
+      break;
+    case 'provider_host_identity_integrity':
+      message = `The exact provider-host identity matched multiple owners: ${hostRefs.join(', ')}.`;
+      break;
+    case 'provider_host_stale':
+      message = `The selected provider host changed before the owner could revalidate it: ${hostRefs.join(', ')}.`;
+      break;
+    default:
+      return null;
+  }
+  const statusCode =
+    error.code === 'provider_host_not_found' ? 404 : error.code === 'provider_host_inventory_unavailable' ? 503 : 409;
+  return unary(
+    {
+      code: error.code,
+      message,
+      detail: { ownerIds, hostRefs },
+    },
+    statusCode,
+  );
+}
+
+function providerHostSelectorFromRequest(
+  request: ProviderHostSelectorRequest,
+):
+  | Readonly<{ hostRef: Extract<ProviderHostSelectorRequest, { hostRef: unknown }>['hostRef'] }>
+  | Readonly<{ workDir: CanonicalWorkDir }> {
+  if ('hostRef' in request) return { hostRef: request.hostRef };
+  return { workDir: canonicalizeWorkDir(request.workDir, request.projectRoot) };
+}
+
 function requiredCapability(spec: RpcMethodSpec<unknown, unknown>): Capability | null {
   const requires = (spec as { readonly requires?: unknown }).requires;
   return isCapability(requires) ? requires : null;
@@ -351,6 +424,58 @@ export async function executeCatalogRequest(
   switch (spec.name) {
     case 'coordinator.recovery_quarantine.clear':
       return unary(await rpcPorts.recoveryQuarantine.clear(request as RecoveryQuarantineClearRequest, abortSignal));
+
+    case 'coordinator.provider_host.list': {
+      if (rpcPorts.providerHosts === undefined) {
+        return providerHostAdministrationFailure({
+          code: 'provider_host_inventory_unavailable',
+          ownerIds: ['coordinator'],
+        }) as CatalogRequestExecution;
+      }
+      try {
+        return unary(providerHostListResponseSchema.parse(await rpcPorts.providerHosts.list()));
+      } catch (error: unknown) {
+        const failure = providerHostAdministrationFailure(error);
+        if (failure !== null) return failure;
+        throw error;
+      }
+    }
+
+    case 'coordinator.provider_host.inspect': {
+      if (rpcPorts.providerHosts === undefined) {
+        return providerHostAdministrationFailure({
+          code: 'provider_host_inventory_unavailable',
+          ownerIds: ['coordinator'],
+        }) as CatalogRequestExecution;
+      }
+      try {
+        const selector = providerHostSelectorFromRequest(request as ProviderHostSelectorRequest);
+        return unary(providerHostInspectResponseSchema.parse(await rpcPorts.providerHosts.inspect(selector)));
+      } catch (error: unknown) {
+        if (error instanceof WorkDirectoryError) return workDirectoryFailure(error);
+        const failure = providerHostAdministrationFailure(error);
+        if (failure !== null) return failure;
+        throw error;
+      }
+    }
+
+    case 'coordinator.provider_host.evict': {
+      if (rpcPorts.providerHosts === undefined) {
+        return providerHostAdministrationFailure({
+          code: 'provider_host_inventory_unavailable',
+          ownerIds: ['coordinator'],
+        }) as CatalogRequestExecution;
+      }
+      try {
+        const selector = providerHostSelectorFromRequest(request as ProviderHostSelectorRequest);
+        return unary(providerHostEvictResponseSchema.parse(await rpcPorts.providerHosts.evict(selector)));
+      } catch (error: unknown) {
+        if (error instanceof WorkDirectoryError) return workDirectoryFailure(error);
+        const failure = providerHostAdministrationFailure(error);
+        if (failure !== null) return failure;
+        throw error;
+      }
+    }
 
     case 'sessions.create': {
       const parsed = request as Record<string, unknown> & { provider: string; prompt: string };

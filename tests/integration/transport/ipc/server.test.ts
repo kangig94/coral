@@ -9,6 +9,13 @@ import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type { Principal } from '#src/security/principal.js';
 import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
+import {
+  createProviderHostCommandOperations,
+  formatProviderHostInspect,
+  formatProviderHostList,
+  parseProviderHostSelector,
+} from '#src/cli/commands/backend.js';
+import type { HostRef } from '#src/providers/contract.js';
 
 const tempDirs: string[] = [];
 
@@ -200,6 +207,11 @@ function createPorts(): HttpHandlerPorts {
     recoveryQuarantine: {
       clear: vi.fn(async (request) => ({ ...request, disposition: 'advanced' as const })),
     },
+    providerHosts: {
+      list: vi.fn(),
+      inspect: vi.fn(),
+      evict: vi.fn(),
+    },
     expansion: {
       equipExpansion: vi.fn(),
       unequipExpansion: vi.fn(),
@@ -239,6 +251,86 @@ describe('ipc server', () => {
           },
         ],
       });
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('drives the real provider-host list formatter/parser and sender through the strict IPC receiver', async () => {
+    const ports = createPorts();
+    const ref: HostRef = {
+      provider: 'codex',
+      fingerprint: 'a'.repeat(64),
+      instanceId: 'host-instance',
+      leaseMode: 'shared',
+    };
+    const host = {
+      ownerId: 'coordinator:test-instance',
+      ref,
+      status: 'live' as const,
+      spec: {
+        provider: 'codex',
+        command: 'codex',
+        args: ['app-server'],
+        cwd: process.cwd(),
+        leaseMode: 'shared' as const,
+        idleRetirement: 'none' as const,
+      },
+      host: { owner: 'coordinator' },
+      diagnostics: {
+        hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+        completedObservations: [
+          {
+            factSeq: 1,
+            generation: 2,
+            requestId: 3,
+            method: 'config/read',
+            response: { kind: 'failure' as const, rpcCode: -32_603, providerMessage: 'fixture', providerData: null },
+            hostLog: {
+              startSeq: 4,
+              endSeq: 5,
+              truncated: true,
+              historical: [{ seq: 1, observedAt: 1, stream: 'stderr' as const, text: 'before' }],
+              during: [],
+              after: [],
+            },
+          },
+        ],
+        factsTruncatedBeforeSeq: 0,
+      },
+      diagnosticsRetention: { ownerBudgetTruncated: false },
+    };
+    const providerHosts = ports.providerHosts!;
+    vi.mocked(providerHosts.list).mockResolvedValue({ hosts: [host] });
+    vi.mocked(providerHosts.inspect).mockResolvedValue({ host });
+    vi.mocked(providerHosts.evict).mockResolvedValue({ ownerId: host.ownerId, hostRef: ref });
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    try {
+      const sender = createProviderHostCommandOperations({
+        getClient: async () => ({
+          request: (method, params) =>
+            requestIpcMethod(socketPath, method, params, { auth: { kind: 'boot', token: 'boot-token' } }),
+        }),
+      });
+      const listed = await sender.list();
+      const formatted = formatProviderHostList(listed);
+      const token = formatted.split('\n')[1]?.split('\t')[0];
+      expect(token).toMatch(/^ph1\./);
+
+      const decodedSelector = parseProviderHostSelector(token, undefined);
+      const inspected = await sender.inspect(decodedSelector);
+      expect(inspected.host.ref).toEqual(ref);
+      expect(formatProviderHostInspect(inspected)).toContain('"truncatedBeforeSeq": 0');
+      expect(formatProviderHostInspect(inspected)).toContain('"truncated": true');
+      expect(formatProviderHostInspect(inspected)).toContain('"historical"');
+      expect(providerHosts.inspect).toHaveBeenCalledExactlyOnceWith({ hostRef: ref });
+
+      await expect(sender.inspect(parseProviderHostSelector(undefined, '.'))).resolves.toEqual({ host });
+      expect(providerHosts.inspect).toHaveBeenLastCalledWith({ workDir: process.cwd() });
+      await expect(sender.evict(decodedSelector)).resolves.toEqual({ ownerId: host.ownerId, hostRef: ref });
+      expect(providerHosts.evict).toHaveBeenCalledExactlyOnceWith({ hostRef: ref });
     } finally {
       await closeIpcServer(listener);
     }

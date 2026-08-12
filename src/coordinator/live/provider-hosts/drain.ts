@@ -56,10 +56,11 @@ export async function closeProviderServerEntry(
   }
 
   const handle = entry.handle;
-  entry.handle = null;
-  entry.instanceId = null;
   if (handle) {
-    await options.shutdownHandle(handle, entry.spec).catch(() => {});
+    const instanceId = entry.instanceId;
+    await options.shutdownHandle(handle, entry.spec);
+    if (entry.handle === handle) entry.handle = null;
+    if (entry.instanceId === instanceId) entry.instanceId = null;
     return;
   }
 
@@ -70,7 +71,7 @@ export async function closeProviderServerEntry(
 
   const spawnedHandle = await pendingSpawn.catch(() => null);
   if (spawnedHandle) {
-    await options.shutdownHandle(spawnedHandle, entry.spec).catch(() => {});
+    await options.shutdownHandle(spawnedHandle, entry.spec);
   }
 }
 
@@ -87,7 +88,7 @@ export async function shutdownHandle(
     }
   }
 
-  await handle.close().catch(() => {});
+  await handle.close();
 }
 
 async function tryGracefulShutdown(

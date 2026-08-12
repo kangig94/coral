@@ -119,4 +119,19 @@ describe('command class coverage', () => {
       'kb wiki list',
     ]);
   });
+
+  it('classifies provider-host reads separately from destructive eviction', () => {
+    const entries = collectCommandCoverage(buildProgram())
+      .filter((entry) => entry.path.startsWith('backend provider-host '))
+      .map((entry) => ({
+        path: entry.path,
+        commandClass: entry.resolution.kind === 'class' ? entry.resolution.commandClass : null,
+      }));
+
+    expect(entries).toEqual([
+      { path: 'backend provider-host list', commandClass: 'servedRead' },
+      { path: 'backend provider-host inspect', commandClass: 'servedRead' },
+      { path: 'backend provider-host evict', commandClass: 'mutate' },
+    ]);
+  });
 });
