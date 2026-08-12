@@ -2,10 +2,11 @@ import { attenuate } from '../security/attenuate.js';
 import type { Capability } from '../security/capability.js';
 import type { Principal } from '../security/principal.js';
 import {
+  canonicalizePrincipalWire,
   principalFromWire,
   principalToWire,
-  principalWireSchema,
   type PrincipalWire,
+  type RawPrincipalWire,
 } from '../security/principal-wire.js';
 import type { IdPort } from '../runtime/ports.js';
 
@@ -31,6 +32,12 @@ export type ChildPrincipalAuthorization = Readonly<{
   expiresAtMs: number;
 }>;
 
+type PersistedChildPrincipalAuthorization = Readonly<{
+  principalWire: RawPrincipalWire;
+  namespace: string;
+  expiresAtMs: number;
+}>;
+
 export type ChildPrincipalRegistration = {
   readonly issuer: string;
   readonly parentPrincipal: Principal;
@@ -44,7 +51,7 @@ export type ChildPrincipalRegistration = {
 
 export type PersistedChildPrincipalRegistration = Readonly<{
   issuer: string;
-  authorization: ChildPrincipalAuthorization;
+  authorization: PersistedChildPrincipalAuthorization;
   parentJobId: string;
   parentSessionId: string;
   nowMs: number;
@@ -109,12 +116,16 @@ export class ChildPrincipalRegistry {
       ...registration,
       authorization: {
         ...registration.authorization,
-        principalWire: principalWireSchema.parse(registration.authorization.principalWire),
+        principalWire: canonicalizePrincipalWire(registration.authorization.principalWire),
       },
     });
   }
 
-  private storeAuthorization(registration: PersistedChildPrincipalRegistration): ChildPrincipalCredential {
+  private storeAuthorization(
+    registration: Omit<PersistedChildPrincipalRegistration, 'authorization'> & {
+      authorization: ChildPrincipalAuthorization;
+    },
+  ): ChildPrincipalCredential {
     const authorization: ChildPrincipalAuthorization = {
       principalWire: registration.authorization.principalWire,
       namespace: registration.authorization.namespace,

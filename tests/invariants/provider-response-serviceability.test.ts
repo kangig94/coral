@@ -10,6 +10,13 @@ import {
   parseProductionImportEdges,
   toCanonicalSrcPath,
 } from '#tests/helpers/ts-import-scanner.js';
+import {
+  exportedClassifierNames,
+  providerClassifierFiles,
+  serviceabilityDecisionClosureInventory,
+  STATIC_SERVICEABILITY_DECISION_SYMBOLS,
+  type DecisionSymbol,
+} from './provider-serviceability-decision-inventory.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const PRODUCTION_FILES = listProductionSourceFiles(join(REPO_ROOT, 'src'));
@@ -21,37 +28,13 @@ const SERVICEABILITY_SEAM = 'src/providers/serviceability.ts';
 const TRANSPORT = 'src/providers/app-server-transport.ts';
 const DIAGNOSTICS = 'src/providers/host-diagnostics.ts';
 const ADMISSION = 'src/providers/host-admission.ts';
-const SERVICEABILITY_REDUCER = 'src/providers/host-serviceability.ts';
 const COORDINATOR_ADMISSION_LEAF = 'src/coordinator/live/provider-host-admission.ts';
 const COORDINATOR_COMPOSITION = 'src/coordinator/index.ts';
 const PROXY_ADMISSION_LEAF = 'src/provider-proxy/provider-host-admission.ts';
 const COORDINATOR_OWNER = 'src/coordinator/live/provider-hosts/index.ts';
 const COORDINATOR_SPAWNER = 'src/coordinator/live/admission.ts';
 const PROXY_OWNER = 'src/provider-proxy/provider-root-authority.ts';
-const CLASSIFIER_PATH = /^src\/providers\/([^/]+)\/serviceability\.ts$/u;
 const SERVICEABILITY_LITERALS = new Set(['serviceable', 'unserviceable', 'unknown']);
-
-type DecisionSymbol = Readonly<{ path: string; symbol: string }>;
-
-const STATIC_DECISION_SYMBOLS = {
-  factPublishers: [
-    { path: DIAGNOSTICS, symbol: 'recordProviderResponseDiagnostic' },
-    { path: TRANSPORT, symbol: 'handleProviderServerLine' },
-  ],
-  classifierDispatchers: [
-    { path: SERVICEABILITY_COMPOSITION, symbol: 'classifyProviderResponseServiceability' },
-    { path: SERVICEABILITY_SEAM, symbol: 'classifyProviderResponseServiceability' },
-  ],
-  serviceabilityReducers: [{ path: SERVICEABILITY_REDUCER, symbol: 'reduceHostServiceability' }],
-  admissionSymbols: [
-    { path: ADMISSION, symbol: 'reduceHostAdmission' },
-    { path: ADMISSION, symbol: 'createHostAdmissionCollection' },
-  ],
-  admissionCompositionLeaves: [
-    { path: COORDINATOR_ADMISSION_LEAF, symbol: 'createCoordinatorProviderHostAdmission' },
-    { path: PROXY_ADMISSION_LEAF, symbol: 'createProxyProviderHostAdmission' },
-  ],
-} satisfies Readonly<Record<string, readonly DecisionSymbol[]>>;
 
 const FORBIDDEN_CLASSIFIER_EVIDENCE = new Set([
   'providerMessage',
@@ -105,26 +88,8 @@ function visit(sourceFile: ts.Node, inspect: (node: ts.Node) => void): void {
   walk(sourceFile);
 }
 
-function isExported(node: ts.Node & { modifiers?: ts.NodeArray<ts.ModifierLike> }): boolean {
-  return node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false;
-}
-
-function exportedClassifierNames(sourceFile: ts.SourceFile): string[] {
-  return sourceFile.statements.flatMap((statement) =>
-    ts.isFunctionDeclaration(statement) &&
-    statement.name !== undefined &&
-    isExported(statement) &&
-    statement.name.text.startsWith('classify')
-      ? [statement.name.text]
-      : [],
-  );
-}
-
 function classifierFiles(): ReadonlyArray<{ provider: string; path: string; sourceFile: ts.SourceFile }> {
-  return [...CANONICAL_PATHS.keys()].flatMap((path) => {
-    const match = CLASSIFIER_PATH.exec(path);
-    return match?.[1] === undefined ? [] : [{ provider: match[1], path, sourceFile: parse(path) }];
-  });
+  return providerClassifierFiles(REPO_ROOT, PRODUCTION_FILES);
 }
 
 function registeredClassifiers(): ReadonlyMap<string, string> {
@@ -263,12 +228,7 @@ function decisionBoundViolations(spec: DecisionSymbol): string[] {
 }
 
 function decisionClosureInventory(): Readonly<Record<string, readonly DecisionSymbol[]>> {
-  return {
-    ...STATIC_DECISION_SYMBOLS,
-    providerClassifiers: classifierFiles().flatMap(({ path, sourceFile }) =>
-      exportedClassifierNames(sourceFile).map((symbol) => ({ path, symbol })),
-    ),
-  };
+  return serviceabilityDecisionClosureInventory(REPO_ROOT, PRODUCTION_FILES);
 }
 
 function callsNamed(sourceFile: ts.Node, name: string): ts.CallExpression[] {
@@ -383,7 +343,7 @@ describe('provider response serviceability decision layers', () => {
     const inventory = decisionClosureInventory();
     expect(Object.keys(inventory).length).toBeGreaterThan(0);
     expect(Object.entries(inventory).filter(([, symbols]) => symbols.length === 0)).toEqual([]);
-    expect(STATIC_DECISION_SYMBOLS.admissionCompositionLeaves).toHaveLength(2);
+    expect(STATIC_SERVICEABILITY_DECISION_SYMBOLS.admissionCompositionLeaves).toHaveLength(2);
 
     const missingSymbols = Object.values(inventory)
       .flat()

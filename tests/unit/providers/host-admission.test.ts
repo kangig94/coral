@@ -132,7 +132,7 @@ describe('provider host admission state machine', () => {
       hostRef,
       remediation: {
         action: 'evict-provider-host',
-        command: 'coral backend provider-host evict <host-ref>',
+        command: 'coral-cli backend provider-host evict <host-ref>',
       },
     } as const;
     expect(providerOperationPreparePermanentRefusalSchema.parse(refusal)).toEqual(refusal);

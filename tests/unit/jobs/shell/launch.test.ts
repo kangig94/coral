@@ -21,6 +21,7 @@ import {
 import type { AppServerTransport, HostRef, ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
 import type { AppServerHostAuthority } from '#src/providers/internal/app-server-host.js';
 import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
+import { encodeHostRef } from '#src/providers/host-ref-codec.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 import type { AppServerProxyRoute } from '#src/jobs/contracts/app-server-proxy-route.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
@@ -1520,16 +1521,20 @@ describe('ExecutionService launch', () => {
         >("SELECT body FROM events WHERE stream_id = ? AND type = 'job.progress.emitted' ORDER BY seq ASC")
         .all(decision.jobId);
       const bodies = rows.map((row) => JSON.parse(Buffer.from(row.body).toString('utf8')) as unknown);
+      const encodedHostRef = encodeHostRef(hostRef);
       expect(bodies).toContainEqual({
         kind: 'domain',
         stage: 'provider_operation_failed',
-        message: `Provider host ${hostRef.provider}/${hostRef.instanceId} is unserviceable; evict that exact host before retrying fresh placement.`,
+        message:
+          `Provider host ${encodedHostRef} (${hostRef.provider}/${hostRef.instanceId}) is unserviceable. ` +
+          `Run coral-cli backend provider-host inspect ${encodedHostRef}, then ` +
+          `coral-cli backend provider-host evict ${encodedHostRef} before retrying fresh placement.`,
         detail: {
           code: 'provider_host_unserviceable',
           hostRef,
           remediation: {
             action: 'evict-provider-host',
-            command: 'coral backend provider-host evict <host-ref>',
+            command: 'coral-cli backend provider-host evict <host-ref>',
           },
         },
       });

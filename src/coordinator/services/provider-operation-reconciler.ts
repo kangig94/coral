@@ -1916,16 +1916,23 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   async #recordRetry(record: ProviderOperationRecord, error: unknown): Promise<void> {
     this.#assertActiveDrive();
     const now = this.#deps.time.now();
+    const preserveHostRefusal =
+      record.phase === 'prestart-cleanup-pending' &&
+      record.afterRelease.kind === 'terminal-failed' &&
+      record.afterRelease.code === 'provider_host_unserviceable' &&
+      record.lastError?.code === 'provider_host_unserviceable';
     const next = providerOperationRecordSchema.parse({
       ...record,
       revision: record.revision + 1,
       retryCount: record.retryCount + 1,
       retryNotBeforeMs: now + retryDelayMs(record.retryCount),
-      lastError: {
-        observedAtMs: now,
-        code: providerOperationErrorCode(error),
-        message: providerOperationErrorReason(error),
-      },
+      lastError: preserveHostRefusal
+        ? record.lastError
+        : {
+            observedAtMs: now,
+            code: providerOperationErrorCode(error),
+            message: providerOperationErrorReason(error),
+          },
     });
     const transitioned = this.#transition(record, next);
     if (transitioned !== null) this.#schedule(retryDelayMs(record.retryCount));

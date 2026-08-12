@@ -4,20 +4,30 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('#src/providers/app-server-transport.js', async (importOriginal) => {
+  const actual = await importOriginal<object>();
+  return { ...actual, spawnProviderServerTransport: vi.fn() };
+});
+
+vi.mock('#src/infra/node-process.js', async (importOriginal) => {
+  const actual = await importOriginal<object>();
+  return { ...actual, probeProcessStartedAtSeconds: vi.fn(() => 1_700_000_000) };
+});
+
 import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import type { HostRef } from '#src/providers/contract.js';
+import { spawnProviderServerTransport, type ProviderServerHandle } from '#src/providers/app-server-transport.js';
+import type { HostRef, ProviderServerSpec } from '#src/providers/contract.js';
+import type { ProviderResponseDiagnosticFact } from '#src/providers/host-diagnostics.js';
 import type { ControlClient } from '#src/provider-proxy/control-client.js';
 import { connectControlClient } from '#src/provider-proxy/control-client.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import type { ProxyBootstrapCapsule } from '#src/provider-proxy/bootstrap-capsule.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
 import type { SemanticOperationHost } from '#src/provider-proxy/operation-supervisor.js';
-import type {
-  ProxyProviderHostAdministrationAuthority,
-  ProxyProviderHostInventoryRecord,
-} from '#src/provider-proxy/provider-root-authority.js';
+import { createProxyAppServerHostAuthority } from '#src/provider-proxy/provider-root-authority.js';
 import type {
   CoordinatorIdentity,
   GuardianIdentity,
@@ -25,6 +35,7 @@ import type {
   ReaperIdentity,
 } from '#src/provider-proxy/protocol.js';
 import { asReservation } from '#tests/helpers/provider-proxy-correlation.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const timer: ControlEndpointTimer = {
   setTimeout: (callback, ms) => setTimeout(callback, ms),
@@ -39,51 +50,22 @@ const hostRef: HostRef = {
   instanceId: 'host-instance',
   leaseMode: 'shared',
 };
-const record: ProxyProviderHostInventoryRecord = {
-  ref: hostRef,
-  status: 'live',
-  spec: {
-    provider: 'codex',
-    command: 'codex',
-    args: ['app-server'],
-    cwd: '/workspace',
-    leaseMode: 'shared',
-    idleRetirement: 'none',
-  },
-  host: { owner: 'provider-proxy' },
-  diagnostics: {
-    hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
-    completedObservations: [
-      {
-        factSeq: 1,
-        generation: 2,
-        requestId: 3,
-        method: 'config/read',
-        response: { kind: 'failure', rpcCode: -32_603, providerMessage: 'fixture', providerData: null },
-        hostLog: {
-          startSeq: 4,
-          endSeq: 5,
-          truncated: true,
-          historical: [{ seq: 1, observedAt: 1, stream: 'stderr', text: 'before' }],
-          during: [],
-          after: [],
-        },
-      },
-    ],
-    factsTruncatedBeforeSeq: 0,
-  },
-  diagnosticsRetention: { ownerBudgetTruncated: false },
+const providerSpec: ProviderServerSpec = {
+  provider: 'codex',
+  command: 'codex',
+  args: ['app-server'],
+  cwd: fixtureCanonicalWorkDir('/workspace'),
+  leaseMode: 'shared',
+  idleRetirement: 'none',
 };
 
 let cleanup: (() => Promise<void>) | undefined;
 let authority: ReturnType<typeof createProviderProxySetAuthority>;
-let providerHosts: ProxyProviderHostAdministrationAuthority & {
-  listProviderHosts: ReturnType<typeof vi.fn>;
-  inspectProviderHost: ReturnType<typeof vi.fn>;
-  evictHost: ReturnType<typeof vi.fn>;
-};
+let providerHosts: ReturnType<typeof createProxyAppServerHostAuthority>;
+let providerServer: ReturnType<typeof fakeProviderServerHandle>;
 
 beforeEach(async () => {
+  vi.mocked(spawnProviderServerTransport).mockReset();
   const directory = mkdtempSync(join(tmpdir(), 'coral-provider-host-control-'));
   const endpoint = join(directory, 'proxy.sock');
   const capsule: ProxyBootstrapCapsule = {
@@ -113,12 +95,23 @@ beforeEach(async () => {
     hostFingerprint: capsule.hostFingerprint,
     canonicalEndpoint: endpoint,
   };
-  providerHosts = {
-    admissionSnapshot: () => ({ state: new Map(), tombstones: [] }),
-    listProviderHosts: vi.fn(() => [record]),
-    inspectProviderHost: vi.fn(() => record),
-    evictHost: vi.fn(async () => true),
+  const realRuntime = createRealRuntime('prod');
+  const providerRuntime: Runtime = {
+    ...realRuntime,
+    ids: {
+      ...realRuntime.ids,
+      uuid: () => hostRef.instanceId,
+      sha256: () => hostRef.fingerprint,
+    },
   };
+  providerServer = fakeProviderServerHandle();
+  vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(providerServer.handle);
+  providerHosts = createProxyAppServerHostAuthority(providerRuntime);
+  const scope = providerHosts.beginOperation({ jobId: 'job-1', operationId: 'operation-1' });
+  scope.selectCancellationMode('shared-acknowledged-interrupt');
+  const openedHost = await scope.openSession(providerSpec);
+  expect(openedHost.hostRef).toEqual(hostRef);
+
   const semanticHost: SemanticOperationHost = {
     start: () => {
       throw new Error('semantic operation start was not expected');
@@ -153,14 +146,14 @@ beforeEach(async () => {
     flavor: 'prod',
     buildSetId,
   };
-  const opened = (await control.call(
+  const openedControl = (await control.call(
     'control.open.v1',
     { bootstrapNonce: capsule.bootstrapNonce, coordinator: coordinatorIdentity },
     5_000,
   )) as { controlEpoch: number; heartbeatChallenge: string };
   await control.call(
     'control.heartbeat.v1',
-    { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
+    { controlEpoch: openedControl.controlEpoch, heartbeatChallenge: openedControl.heartbeatChallenge },
     5_000,
   );
 
@@ -185,6 +178,7 @@ beforeEach(async () => {
   });
   cleanup = async () => {
     control.close();
+    await providerHosts.evictHost(hostRef);
     await proxy.close();
     rmSync(directory, { recursive: true, force: true });
   };
@@ -196,21 +190,112 @@ afterEach(async () => {
 });
 
 describe('provider-host proxy controls', () => {
-  it('drives the real list sender through the real strict receiver and handler', async () => {
-    await expect(authority.providerHosts?.list()).resolves.toEqual([record]);
-    expect(providerHosts.listProviderHosts).toHaveBeenCalledOnce();
-  });
+  it('passes actual live and retained-tombstone records through the real strict list and inspect handlers', async () => {
+    const controls = authority.providerHosts;
+    if (controls === undefined) throw new Error('provider-host controls were not composed');
 
-  it('drives the real inspect sender through the real strict receiver and handler', async () => {
-    await expect(authority.providerHosts?.inspect(hostRef)).resolves.toEqual(record);
-    expect(providerHosts.inspectProviderHost).toHaveBeenCalledExactlyOnceWith(hostRef);
+    const liveRecords = providerHosts.listProviderHosts();
+    expect(liveRecords).toHaveLength(1);
+    expect(liveRecords[0]?.status).toBe('live');
+    await expect(controls.list()).resolves.toEqual(liveRecords);
+    await expect(controls.inspect(hostRef)).resolves.toEqual(liveRecords[0]);
+
+    const spawnOptions = vi.mocked(spawnProviderServerTransport).mock.calls[0]?.[0];
+    if (spawnOptions === undefined) throw new Error('provider-host transport was not spawned');
+    spawnOptions.observeProviderResponse(rejectedConfigRead(0));
+    providerServer.resolveClosed();
+    await vi.waitFor(() => expect(providerHosts.admissionSnapshot().tombstones).toHaveLength(1));
+
+    const tombstoneRecords = providerHosts.listProviderHosts();
+    expect(tombstoneRecords).toHaveLength(1);
+    expect(tombstoneRecords[0]?.status).toBe('retired-blocked');
+    await expect(controls.list()).resolves.toEqual(tombstoneRecords);
+    await expect(controls.inspect(hostRef)).resolves.toEqual(tombstoneRecords[0]);
   });
 
   it('drives the real evict sender through the real strict receiver and handler', async () => {
-    await expect(authority.providerHosts?.evict(hostRef)).resolves.toBe(true);
-    expect(providerHosts.evictHost).toHaveBeenCalledExactlyOnceWith(hostRef);
+    const controls = authority.providerHosts;
+    if (controls === undefined) throw new Error('provider-host controls were not composed');
+
+    await expect(controls.evict(hostRef)).resolves.toBe(true);
+    expect(providerServer.closeMock).toHaveBeenCalledOnce();
+    expect(providerHosts.listProviderHosts()).toEqual([]);
   });
 });
+
+function fakeProviderServerHandle(): {
+  handle: ProviderServerHandle;
+  closeMock: ReturnType<typeof vi.fn>;
+  resolveClosed(): void;
+} {
+  let resolveClosed!: () => void;
+  let closed = false;
+  const closePromise = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  const closeMock = vi.fn(async () => {
+    closed = true;
+    resolveClosed();
+  });
+  return {
+    handle: {
+      pid: process.pid,
+      child: {} as never,
+      generation: 0,
+      rpc: {
+        request: vi.fn(async () => ({})) as unknown as ProviderServerHandle['rpc']['request'],
+        notify: vi.fn(),
+      },
+      onNotification: vi.fn(() => () => {}) as unknown as ProviderServerHandle['onNotification'],
+      closePromise,
+      isClosed: () => closed,
+      inspectDiagnostics: () => ({
+        hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+        completedObservations: [
+          {
+            factSeq: 1,
+            generation: 0,
+            requestId: 3,
+            method: 'config/read',
+            response: { kind: 'failure', rpcCode: -32_603, providerMessage: 'fixture', providerData: null },
+            hostLog: {
+              startSeq: 4,
+              endSeq: 5,
+              truncated: true,
+              historical: [{ seq: 1, observedAt: 1, stream: 'stderr', text: 'before' }],
+              during: [],
+              after: [],
+            },
+          },
+        ],
+        factsTruncatedBeforeSeq: 0,
+      }),
+      markExpectedClose: vi.fn(),
+      close: closeMock,
+    },
+    closeMock,
+    resolveClosed: () => {
+      closed = true;
+      resolveClosed();
+    },
+  };
+}
+
+function rejectedConfigRead(generation: number): ProviderResponseDiagnosticFact {
+  return {
+    factSeq: 1,
+    generation,
+    requestId: 1,
+    method: 'config/read',
+    response: {
+      kind: 'failure',
+      rpcCode: -32_603,
+      providerMessage: 'fixture rejection',
+      providerData: { cause: 'fixture' },
+    },
+    hostLog: { startSeq: 1, endSeq: 2 },
+  };
+}
 
 function unreachableClient(): ControlClient {
   return {

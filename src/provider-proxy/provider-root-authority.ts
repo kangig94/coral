@@ -18,7 +18,7 @@ import {
 import type { AppServerTransport, HostRef, ProviderServerSpec } from '../providers/contract.js';
 import type { AppServerHostAuthority, ManagedHostSession } from '../providers/internal/app-server-host.js';
 import type { ProviderOperationKey } from './ledger.js';
-import type { ProxyPrepareCapacityCode } from './protocol.js';
+import type { ProviderHostInventoryRecordWire, ProxyPrepareCapacityCode } from './protocol.js';
 import { createProxyProviderHostAdmission } from './provider-host-admission.js';
 
 /**
@@ -259,14 +259,13 @@ export interface ProxyProviderHostAdministrationAuthority {
   evictHost(hostRef: HostRef): Promise<boolean>;
 }
 
-export type ProxyProviderHostInventoryRecord = Readonly<{
-  ref: HostRef;
-  status: 'live' | 'retired-blocked';
-  spec: ReturnType<typeof canonicalProviderHostSpecMetadata>;
-  host: Readonly<Record<string, string | number | boolean | null>>;
-  diagnostics: ProviderHostDiagnosticsSnapshot;
-  diagnosticsRetention: Readonly<{ ownerBudgetTruncated: boolean }>;
-}>;
+type ReadonlyWire<T> = T extends readonly (infer Entry)[]
+  ? readonly ReadonlyWire<Entry>[]
+  : T extends object
+    ? { readonly [Key in keyof T]: ReadonlyWire<T[Key]> }
+    : T;
+
+export type ProxyProviderHostInventoryRecord = ReadonlyWire<ProviderHostInventoryRecordWire>;
 
 /**
  * The proxy's own narrower stand-in for `DefaultProviderHostManager`: pools app-server children by executable

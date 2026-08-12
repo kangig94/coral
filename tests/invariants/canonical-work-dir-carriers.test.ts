@@ -1,11 +1,19 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import ts from 'typescript';
 
+import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { WorkDirectoryError } from '#src/runtime/canonical-work-dir.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { decodeProviderOperationRecord, encodeProviderOperationRecord } from '#src/store/provider-operation-record.js';
+import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const tempDirs: string[] = [];
 
 const REQUIRED_SOURCE_CARRIERS = [
   {
@@ -86,6 +94,7 @@ import type { CanonicalWorkflowCommand, CompiledWorkflow } from '../src/workflow
 import type { ExecuteAgentAttemptParams } from '../src/discuss/shell/runtime-build.js';
 import type { WorkflowRecoveryDescendant } from '../src/workflow/recover.js';
 import type { ProjectRequestPort } from '../src/coordinator/contracts.js';
+import { principalWireSchema, type PrincipalWire } from '../src/security/principal-wire.js';
 
 declare const raw: string;
 type ProjectBinding = Extract<ResourceBinding, { kind: 'project' }>;
@@ -111,7 +120,38 @@ recoveryRoot = raw; // @carrier WorkflowRecoveryDescendant.projectRoot
 type CoordinatorWorkflowWorkDir = Parameters<ProjectRequestPort['executeWorkflow']>[4];
 declare let coordinatorWorkflowWorkDir: CoordinatorWorkflowWorkDir;
 coordinatorWorkflowWorkDir = raw; // @carrier CoordinatorWorkflowOps.workDir
+declare let canonicalPrincipalWire: PrincipalWire;
+canonicalPrincipalWire = principalWireSchema.parse(raw); // @carrier principalWireSchema output
 `;
+
+function ids() {
+  return { randomBytes: (length: number) => Buffer.alloc(length, 1) };
+}
+
+function persistedAuthorization(root: string) {
+  const base = providerOperationRecord('prepare-pending');
+  if (base.phase !== 'prepare-pending') throw new Error('Expected a prepare-pending provider operation fixture.');
+  const encoded = encodeProviderOperationRecord({
+    ...base,
+    prepareSource: {
+      ...base.prepareSource,
+      childAuthorization: {
+        ...base.prepareSource.childAuthorization,
+        principalWire: {
+          ...base.prepareSource.childAuthorization.principalWire,
+          binding: { kind: 'project', root },
+        },
+      },
+    },
+  });
+  const recovered = decodeProviderOperationRecord(encoded);
+  if (recovered.phase !== 'prepare-pending') throw new Error('Expected a recovered prepare-pending operation.');
+  return recovered.prepareSource.childAuthorization;
+}
+
+afterEach(() => {
+  for (const root of tempDirs.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
 function createFixtureProgram(): { program: ts.Program; fixturePath: string } {
   const configPath = resolve(REPO_ROOT, 'tsconfig.json');
@@ -196,6 +236,58 @@ describe('canonical work-directory carrier closure', () => {
     );
 
     expect(violations).toEqual([]);
+  });
+
+  it('keeps the persisted provider-operation codec independent of the live principal schema', () => {
+    const source = readFileSync(resolve(REPO_ROOT, 'src/store/provider-operation-record.ts'), 'utf8');
+
+    expect(source).not.toMatch(/security\/principal-wire/u);
+  });
+
+  it('does not change the store-format fingerprint while separating the durability boundary', () => {
+    expect(currentCoralStoreFormat().fingerprint).toBe(
+      'sha256:9fd970cdcb803f517d77b133bba86ae83ef1ff662f77da8656604f32c8e67980',
+    );
+  });
+
+  it('canonicalizes a persisted symlink binding before registering the recovered principal', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'coral-persisted-principal-'));
+    tempDirs.push(root);
+    const physical = resolve(root, 'physical');
+    const selected = resolve(root, 'selected');
+    mkdirSync(physical);
+    symlinkSync(physical, selected, 'dir');
+    const registry = new ChildPrincipalRegistry(ids());
+
+    const credential = registry.registerPersistedAuthorization({
+      issuer: 'provider-operation-recovery',
+      authorization: persistedAuthorization(selected),
+      parentJobId: 'job-a',
+      parentSessionId: 'session-a',
+      nowMs: 1,
+    });
+
+    expect(credential.authorization.principalWire.binding).toEqual({
+      kind: 'project',
+      root: realpathSync(physical),
+    });
+  });
+
+  it('refuses a missing persisted binding when registering the recovered principal', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'coral-missing-persisted-principal-'));
+    tempDirs.push(root);
+    const missing = resolve(root, 'missing');
+    const registry = new ChildPrincipalRegistry(ids());
+
+    expect(() =>
+      registry.registerPersistedAuthorization({
+        issuer: 'provider-operation-recovery',
+        authorization: persistedAuthorization(missing),
+        parentJobId: 'job-a',
+        parentSessionId: 'session-a',
+        nowMs: 1,
+      }),
+    ).toThrow(WorkDirectoryError);
   });
 
   it('rejects raw string assignment independently for every exported branded carrier', () => {

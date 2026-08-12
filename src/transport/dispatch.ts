@@ -277,6 +277,37 @@ function canonicalizeRequestProjectRoot(request: unknown): {
   return { request: { ...request, projectRoot }, projectRoot };
 }
 
+function canonicalizeCatalogRequest(
+  spec: RpcMethodSpec<unknown, unknown>,
+  request: unknown,
+): {
+  request: unknown;
+  projectRoot: CanonicalWorkDir | undefined;
+  authorizationRoot: CanonicalWorkDir | undefined;
+} {
+  const canonical = canonicalizeRequestProjectRoot(request);
+  if (
+    canonical.projectRoot === undefined ||
+    (spec.name !== 'sessions.create' && spec.name !== 'workflow.run') ||
+    canonical.request === null ||
+    typeof canonical.request !== 'object'
+  ) {
+    return { ...canonical, authorizationRoot: canonical.projectRoot };
+  }
+
+  const rawWorkDir = (canonical.request as { workDir?: unknown }).workDir;
+  if (typeof rawWorkDir !== 'string') {
+    return { ...canonical, authorizationRoot: canonical.projectRoot };
+  }
+
+  const workDir = canonicalizeWorkDir(rawWorkDir, canonical.projectRoot);
+  return {
+    request: { ...canonical.request, workDir },
+    projectRoot: canonical.projectRoot,
+    authorizationRoot: workDir,
+  };
+}
+
 function narrowUnboundPrincipal(principal: Principal, binding: ResourceBinding): Principal {
   return principal.binding.kind === 'unbound' && binding.kind === 'project' ? { ...principal, binding } : principal;
 }
@@ -317,21 +348,29 @@ function providerHostAdministrationFailure(error: unknown): CatalogRequestExecut
       })
     : [];
   let message: string;
+  let remediation: string;
   switch (error.code) {
     case 'provider_host_inventory_unavailable':
       message = `Provider-host inventory is unavailable${ownerIds.length === 0 ? '.' : ` from: ${ownerIds.join(', ')}.`}`;
+      remediation =
+        'Retry the original command; if it persists, run `coral-cli backend status` and restore the unavailable owner before retrying.';
       break;
     case 'provider_host_not_found':
       message = 'No live or retained-blocked provider host matches the selector.';
+      remediation = 'Rerun `coral-cli backend provider-host list`, then use a currently listed reference.';
       break;
     case 'provider_host_ambiguous':
       message = `The work directory matches multiple provider hosts: ${hostRefs.join(', ')}.`;
+      remediation =
+        'For one listed reference, run `coral-cli backend provider-host inspect <ref>` and verify it, then run `coral-cli backend provider-host evict <ref>`; never choose a match by position.';
       break;
     case 'provider_host_identity_integrity':
       message = `The exact provider-host identity matched multiple owners: ${hostRefs.join(', ')}.`;
+      remediation = 'Do not evict: preserve the complete error output and escalate the integrity failure.';
       break;
     case 'provider_host_stale':
       message = `The selected provider host changed before the owner could revalidate it: ${hostRefs.join(', ')}.`;
+      remediation = 'Rerun `coral-cli backend provider-host list` and act only on a currently listed reference.';
       break;
     default:
       return null;
@@ -342,6 +381,7 @@ function providerHostAdministrationFailure(error: unknown): CatalogRequestExecut
     {
       code: error.code,
       message,
+      remediation,
       detail: { ownerIds, hostRefs },
     },
     statusCode,
@@ -405,15 +445,15 @@ export async function executeCatalogRequest(
     return authorizationFailure(capabilityAuthz, principal);
   }
 
-  let canonicalRequest: ReturnType<typeof canonicalizeRequestProjectRoot>;
+  let canonicalRequest: ReturnType<typeof canonicalizeCatalogRequest>;
   try {
-    canonicalRequest = canonicalizeRequestProjectRoot(request);
+    canonicalRequest = canonicalizeCatalogRequest(spec, request);
   } catch (error: unknown) {
     if (error instanceof WorkDirectoryError) return workDirectoryFailure(error);
     throw error;
   }
   request = canonicalRequest.request;
-  const requestedBinding = requestedBindingFor(spec, canonicalRequest.projectRoot);
+  const requestedBinding = requestedBindingFor(spec, canonicalRequest.authorizationRoot);
   principal = narrowUnboundPrincipal(principal, requestedBinding);
   const authz = authorizeResourceBinding(principal, requires, requestedBinding);
   writeAuthorizationDecisionAudit(principal, spec.name, authz, requestedBinding);
@@ -484,16 +524,12 @@ export async function executeCatalogRequest(
       const unconfigured = ensureProviderScopeConfigured(rpcPorts, principal);
       if (unconfigured) return unaryHttp(unconfigured);
       const projectRoot = canonicalRequest.projectRoot;
-      if (projectRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+      const cwd = canonicalRequest.authorizationRoot;
+      if (projectRoot === undefined || cwd === undefined) {
+        return unaryHttp(domainResultToHttp(invalidRequestResult()));
+      }
       const ctx = buildBodyInvocationContext(parsed, projectRoot, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-      let cwd = projectRoot;
-      try {
-        if (typeof parsed.workDir === 'string') cwd = canonicalizeWorkDir(parsed.workDir, projectRoot);
-      } catch (error: unknown) {
-        if (error instanceof WorkDirectoryError) return workDirectoryFailure(error);
-        throw error;
-      }
 
       const decision = await rpcPorts.sessions.start(
         parsed.provider,
@@ -514,7 +550,10 @@ export async function executeCatalogRequest(
       const unconfigured = ensureProviderScopeConfigured(rpcPorts, principal);
       if (unconfigured) return unaryHttp(unconfigured);
       const projectRoot = canonicalRequest.projectRoot;
-      if (projectRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+      const workDir = canonicalRequest.authorizationRoot;
+      if (projectRoot === undefined || workDir === undefined) {
+        return unaryHttp(domainResultToHttp(invalidRequestResult()));
+      }
       const ctx = buildBodyInvocationContext(parsed, projectRoot, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
@@ -531,15 +570,6 @@ export async function executeCatalogRequest(
         providerScope: _providerScope,
         ...rawWorkflowCommand
       } = parsed;
-      let workDir = projectRoot;
-      try {
-        if (typeof rawWorkflowCommand.workDir === 'string') {
-          workDir = canonicalizeWorkDir(rawWorkflowCommand.workDir, projectRoot);
-        }
-      } catch (error: unknown) {
-        if (error instanceof WorkDirectoryError) return workDirectoryFailure(error);
-        throw error;
-      }
       const workflowCommand: WorkflowPortInput = {
         expression: String(rawWorkflowCommand.expression),
         startPrompt: String(rawWorkflowCommand.startPrompt),

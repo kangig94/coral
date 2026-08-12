@@ -71,8 +71,10 @@ function daemonProtocolCtxViolations(): string[] {
     violations.push('src/kb-daemon/protocol.ts: missing KbDaemonRequestContextWire type literal');
   } else if (principal === null) {
     violations.push('src/kb-daemon/protocol.ts: KbDaemonRequestContextWire must carry principal');
-  } else if (principal.questionToken !== undefined || principal.type?.getText(sourceFile) !== 'PrincipalWire') {
-    violations.push('src/kb-daemon/protocol.ts: KbDaemonRequestContextWire.principal must be required PrincipalWire');
+  } else if (principal.questionToken !== undefined || principal.type?.getText(sourceFile) !== 'RawPrincipalWire') {
+    violations.push(
+      'src/kb-daemon/protocol.ts: KbDaemonRequestContextWire.principal must be required RawPrincipalWire',
+    );
   }
 
   for (const requestType of DAEMON_REQUEST_TYPES) {
@@ -131,7 +133,7 @@ function collectNullishAdminFallbacks(): string[] {
 }
 
 describe('KB daemon principal wire seam', () => {
-  it('requires PrincipalWire ctx on read, mutation, and expansion protocol requests', () => {
+  it('requires raw principal wire ctx on read, mutation, and expansion protocol requests', () => {
     expect(daemonProtocolCtxViolations()).toEqual([]);
   });
 

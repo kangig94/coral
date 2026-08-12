@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import type { HostRef, ProviderServerSpec } from './contract.js';
+import { encodeHostRef } from './host-ref-codec.js';
 import type {
   InspectedProviderResponseDiagnosticFact,
   ProviderHostDiagnosticsSnapshot,
@@ -29,7 +30,7 @@ export type HostAdmissionState = ReadonlyMap<AdmissionSlotKey, AdmissionEntry>;
 export const providerHostRemediationSchema = z
   .object({
     action: z.literal('evict-provider-host'),
-    command: z.literal('coral backend provider-host evict <host-ref>'),
+    command: z.literal('coral-cli backend provider-host evict <host-ref>'),
   })
   .strict();
 
@@ -37,7 +38,7 @@ export type ProviderHostRemediation = Readonly<z.output<typeof providerHostRemed
 
 export const PROVIDER_HOST_UNSERVICEABLE_REMEDIATION: ProviderHostRemediation = Object.freeze({
   action: 'evict-provider-host',
-  command: 'coral backend provider-host evict <host-ref>',
+  command: 'coral-cli backend provider-host evict <host-ref>',
 });
 
 export class ProviderHostUnserviceableError extends Error {
@@ -46,8 +47,11 @@ export class ProviderHostUnserviceableError extends Error {
   readonly remediation: ProviderHostRemediation;
 
   constructor(hostRef: HostRef) {
+    const encodedHostRef = encodeHostRef(hostRef);
     super(
-      `Provider host ${hostRef.provider}/${hostRef.instanceId} is unserviceable; evict that exact host before retrying fresh placement.`,
+      `Provider host ${encodedHostRef} (${hostRef.provider}/${hostRef.instanceId}) is unserviceable. ` +
+        `Run coral-cli backend provider-host inspect ${encodedHostRef}, then ` +
+        `coral-cli backend provider-host evict ${encodedHostRef} before retrying fresh placement.`,
     );
     this.name = 'ProviderHostUnserviceableError';
     this.hostRef = freezeHostRef(hostRef);

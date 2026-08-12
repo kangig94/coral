@@ -565,7 +565,7 @@ function createHarness(
       fatalErrors.push(error);
     },
   );
-  const reconciler = new ProviderOperationReconciler({
+  const reconcilerDependencies = {
     getProgressStore: () => progressStore,
     authorityFor: overrides.authorityFor ?? (() => authority),
     ...(overrides.acquireAuthority === undefined ? {} : { acquireAuthority: overrides.acquireAuthority }),
@@ -590,7 +590,9 @@ function createHarness(
       setTimeout: overrides.time?.setTimeout ?? (() => ({ unref: () => undefined })),
       clearTimeout: overrides.time?.clearTimeout ?? (() => undefined),
     },
-  });
+  } satisfies ConstructorParameters<typeof ProviderOperationReconciler>[0];
+  const createReconciler = (): ProviderOperationReconciler => new ProviderOperationReconciler(reconcilerDependencies);
+  const reconciler = createReconciler();
   const begin = (signal = new AbortController().signal) => {
     const attempt = providerOperationPrepareAttempt(authority, record.operation, prepared, record.prepareAttemptNumber);
     return reconciler.begin({
@@ -616,6 +618,7 @@ function createHarness(
     reconcilerFatalErrors,
     phasesBeforeMutation,
     begin,
+    restart: createReconciler,
     advance: (ms: number) => {
       now += ms;
     },
@@ -636,7 +639,7 @@ const parsedHostUnserviceableRefusal = providerOperationPreparePermanentRefusalS
   hostRef: hostUnserviceableRef,
   remediation: {
     action: 'evict-provider-host',
-    command: 'coral backend provider-host evict <host-ref>',
+    command: 'coral-cli backend provider-host evict <host-ref>',
   },
 });
 if (parsedHostUnserviceableRefusal.code !== 'provider_host_unserviceable') {
@@ -654,6 +657,25 @@ const hostUnserviceableDetail = {
   hostRef: hostUnserviceableRefusal.hostRef,
   remediation: hostUnserviceableRefusal.remediation,
 } as const;
+type CancelOperation = DurableProviderProxyOperationAuthority['cancelOperation'];
+
+const cleanupRetryCases = [
+  {
+    label: 'cancellation throws once',
+    failOnce: (async () => {
+      throw new Error('temporary cancellation transport failure');
+    }) satisfies CancelOperation,
+  },
+  {
+    label: 'cancellation acknowledgement mismatches once',
+    failOnce: (async (operation, prepareAttemptNumber, prepareAttemptKey) => ({
+      state: 'released-never-started',
+      operation,
+      prepareAttemptNumber: prepareAttemptNumber + 1,
+      prepareAttemptKey,
+    })) satisfies CancelOperation,
+  },
+] as const;
 
 describe('provider host unserviceable refusal durability', () => {
   function expectStructuredTerminal(appended: readonly unknown[]): void {
@@ -669,6 +691,37 @@ describe('provider host unserviceable refusal durability', () => {
       }),
       expect.objectContaining({ type: 'job.terminal.recorded' }),
     ]);
+  }
+
+  async function failCleanupOnce(failOnce: CancelOperation) {
+    const succeed: CancelOperation = async (operation, prepareAttemptNumber, prepareAttemptKey) => ({
+      state: 'released-never-started',
+      operation,
+      prepareAttemptNumber,
+      prepareAttemptKey,
+    });
+    const cancelOperation = vi.fn(succeed).mockImplementationOnce(failOnce);
+    const harness = createHarness({ cancelOperation });
+    const initial = providerOperationRecordSchema.parse({
+      ...providerOperationRecord('prestart-cleanup-pending'),
+      afterRelease: hostUnserviceableDirective,
+      lastError: hostUnserviceableLastError,
+    });
+    insertProviderOperation(harness.db, initial);
+
+    await harness.reconciler.reconcile(initial, harness.authority);
+
+    const retried = readProviderOperation(harness.db, initial.operation);
+    expect(retried).toMatchObject({
+      phase: 'prestart-cleanup-pending',
+      afterRelease: hostUnserviceableDirective,
+      retryCount: 1,
+    });
+    expect(retried?.lastError).toEqual(hostUnserviceableLastError);
+    if (retried?.phase !== 'prestart-cleanup-pending') {
+      throw new Error('cleanup retry did not preserve the prestart-cleanup record');
+    }
+    return { harness, retried, cancelOperation };
   }
 
   it('preserves the exact terminal payload through direct, ambiguous, startup, and disappearance paths', async () => {
@@ -727,6 +780,50 @@ describe('provider host unserviceable refusal durability', () => {
     expectStructuredTerminal(disappearance.appended);
     expect(disappearanceRecovery).not.toHaveBeenCalled();
   });
+
+  it.each(cleanupRetryCases)(
+    'preserves exact host evidence when $label before retry, restart, and disappearance',
+    async ({ failOnce }) => {
+      const retry = await failCleanupOnce(failOnce);
+      await retry.harness.reconciler.reconcile(retry.retried, retry.harness.authority);
+      expect(retry.cancelOperation).toHaveBeenCalledTimes(2);
+      expectStructuredTerminal(retry.harness.appended);
+
+      const restart = await failCleanupOnce(failOnce);
+      await restart.harness.restart().reconcileAtStartup(new AbortController().signal);
+      expect(restart.cancelOperation).toHaveBeenCalledTimes(2);
+      expectStructuredTerminal(restart.harness.appended);
+
+      const disappearance = await failCleanupOnce(failOnce);
+      const terminalize = disappearance.harness.terminalization.terminalize;
+      const terminalizeCalls = vi
+        .spyOn(disappearance.harness.terminalization, 'terminalize')
+        .mockImplementationOnce(() => {
+          throw new ProviderOperationAtomicTerminalizationError(
+            disappearance.retried.operation,
+            new Error('temporary terminalization failure'),
+          );
+        })
+        .mockImplementation(terminalize);
+      await disappearance.harness.reconciler.reconcile(disappearance.retried, disappearance.harness.authority);
+      const terminalizationRetried = readProviderOperation(disappearance.harness.db, disappearance.retried.operation);
+      expect(terminalizationRetried?.lastError).toEqual(hostUnserviceableLastError);
+      expect(disappearance.cancelOperation).toHaveBeenCalledTimes(2);
+
+      await expect(
+        disappearance.harness.reconciler.containmentDisappeared({
+          operation: disappearance.retried.operation,
+          setIdentity: providerProxySetIdentityFromRecord(disappearance.retried),
+          disappearanceReceipt: 'host-refusal-cleanup-retry-containment-absent',
+        }),
+      ).resolves.toMatchObject({
+        kind: 'accepted',
+        acceptance: { disposition: 'terminalization-committed' },
+      });
+      expect(terminalizeCalls).toHaveBeenCalledTimes(2);
+      expectStructuredTerminal(disappearance.harness.appended);
+    },
+  );
 });
 
 describe('ProviderOperationReconciler publication', () => {

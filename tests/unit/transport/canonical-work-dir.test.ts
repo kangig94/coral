@@ -169,6 +169,31 @@ describe('canonical work directory transport ingress', () => {
     expect(start).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['sessions.create', { provider: 'codex', prompt: 'hello' }],
+    ['workflow.run', { expression: 'architect', startPrompt: 'hello', provider: 'codex' }],
+  ] as const)('denies a bound credential when %s workDir escapes through a symlink', async (route, body) => {
+    const root = tempRoot();
+    const allowed = join(root, 'allowed');
+    const outside = join(root, 'outside');
+    mkdirSync(allowed);
+    mkdirSync(outside);
+    symlinkSync(outside, join(allowed, 'link'), 'dir');
+    const boundRoot = canonicalizeWorkDir(allowed, root);
+    const { ports, start, execute } = createPorts();
+
+    const result = await executeCatalogRequest(
+      catalogSpec(route),
+      { ...body, projectRoot: allowed, workDir: 'link' },
+      ports,
+      operator({ kind: 'project', root: boundRoot }),
+    );
+
+    expect(result).toMatchObject({ kind: 'unary', statusCode: 403, body: { code: 'scope_mismatch' } });
+    expect(start).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('uses one canonical value for session cwd, context, and a narrowed unbound principal', async () => {
     const root = tempRoot();
     const physicalProject = join(root, 'physical-project');
@@ -198,7 +223,7 @@ describe('canonical work directory transport ingress', () => {
     const [, input, ctx] = start.mock.calls[0];
     expect(input.cwd).toBe(realpathSync(physicalWorkDir));
     expect(ctx.projectRoot).toBe(realpathSync(physicalProject));
-    expect(ctx.principal.binding).toEqual({ kind: 'project', root: ctx.projectRoot });
+    expect(ctx.principal.binding).toEqual({ kind: 'project', root: input.cwd });
   });
 
   it('canonicalizes an explicit workflow workDir relative to the canonical request root', async () => {

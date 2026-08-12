@@ -38,6 +38,7 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
 import { spawnProviderServerTransport, type ProviderServerHandle } from '#src/providers/app-server-transport.js';
 import type { ProviderResponseDiagnosticFact } from '#src/providers/host-diagnostics.js';
 import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
+import { encodeHostRef } from '#src/providers/host-ref-codec.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { providerRequestFailed } from '#src/providers/fault.js';
@@ -1476,16 +1477,20 @@ describe('semantic-operation runtime: prepare refusal classification', () => {
       }),
     });
     const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
+    const encodedHostRef = encodeHostRef(hostRef);
 
     await expect(host.ensureProviderRoot(testKey(), preparedFixture({ provider: 'codex' }))).resolves.toEqual({
       state: 'permanent-refusal',
       code: 'provider_host_unserviceable',
       disposition: 'terminal-failure',
-      reason: `Provider host ${hostRef.provider}/${hostRef.instanceId} is unserviceable; evict that exact host before retrying fresh placement.`,
+      reason:
+        `Provider host ${encodedHostRef} (${hostRef.provider}/${hostRef.instanceId}) is unserviceable. ` +
+        `Run coral-cli backend provider-host inspect ${encodedHostRef}, then ` +
+        `coral-cli backend provider-host evict ${encodedHostRef} before retrying fresh placement.`,
       hostRef,
       remediation: {
         action: 'evict-provider-host',
-        command: 'coral backend provider-host evict <host-ref>',
+        command: 'coral-cli backend provider-host evict <host-ref>',
       },
     });
   });

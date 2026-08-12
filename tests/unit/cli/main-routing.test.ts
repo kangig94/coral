@@ -27,6 +27,9 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
+import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
+import { encodeHostRef } from '#src/providers/host-ref-codec.js';
+import type { HostRef } from '#src/providers/contract.js';
 
 const genericInstallMethod = 'shell' satisfies InstallMethod;
 
@@ -1636,6 +1639,57 @@ describe('cli main routing', () => {
     expect(process.exitCode).toBe(1);
     expect(stdout).toContain('Job job-1 failed');
     expect(mockState.streamWait).toHaveBeenCalledOnce();
+  });
+
+  it('renders a copyable provider-host recovery sequence through coral-cli wait', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const hostRef = {
+      provider: 'codex',
+      fingerprint: 'f'.repeat(64),
+      instanceId: 'blocked-host',
+      leaseMode: 'shared',
+    } satisfies HostRef;
+    const token = encodeHostRef(hostRef);
+    const refusal = new ProviderHostUnserviceableError(hostRef);
+    mockState.streamWait.mockImplementationOnce(async function* () {
+      yield {
+        type: 'progress' as const,
+        jobId: 'job-1',
+        seq: 1,
+        message: refusal.message,
+        timing: {
+          origin: 'runtime' as const,
+          originAt: '2026-07-03T08:00:00.000Z',
+          emittedAt: '2026-07-03T08:00:01.000Z',
+          elapsedMs: 1_000,
+        },
+      };
+      yield {
+        type: 'terminal' as const,
+        jobId: 'job-1',
+        seq: 2,
+        remainingJobIds: [] as string[],
+        resultPath: '/tmp/result.md',
+        result: {
+          content: '',
+          durationMs: 1_000,
+          outcome: {
+            kind: 'failed' as const,
+            causeRef: { stream: { kind: 'job' as const, id: 'job-1' }, seq: 1 },
+          },
+        },
+      };
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'job-1']);
+
+    expect(stdout).toContain(token);
+    expect(stdout).toContain(`coral-cli backend provider-host inspect ${token}`);
+    expect(stdout).toContain(`coral-cli backend provider-host evict ${token}`);
+    expect(stdout.indexOf('provider-host inspect')).toBeLessThan(stdout.indexOf('provider-host evict'));
+    expect(stderr).toBe('');
+    expect(process.exitCode).toBe(1);
   });
 
   it('returns the normalized provider child exit code from wait jobs', async () => {

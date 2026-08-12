@@ -38,6 +38,11 @@ import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
+import {
+  providerHostEvictResponseSchema,
+  providerHostInspectResponseSchema,
+  providerHostListResponseSchema,
+} from '../../transport/rpc/catalog.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import {
@@ -960,11 +965,13 @@ export function createCoordinatorCore(
     },
     recoveryQuarantine,
     providerHosts: {
-      list: async () => ({ hosts: await providerHostAdministration.list() }),
-      inspect: async (selector) => ({
-        host: await providerHostAdministration.inspect(selector as ProviderHostSelector),
-      }),
-      evict: async (selector) => providerHostAdministration.evict(selector as ProviderHostSelector),
+      list: async () => providerHostListResponseSchema.parse({ hosts: await providerHostAdministration.list() }),
+      inspect: async (selector) =>
+        providerHostInspectResponseSchema.parse({
+          host: await providerHostAdministration.inspect(selector as ProviderHostSelector),
+        }),
+      evict: async (selector) =>
+        providerHostEvictResponseSchema.parse(await providerHostAdministration.evict(selector as ProviderHostSelector)),
     },
     kb: kbRpcPort,
     discuss: {

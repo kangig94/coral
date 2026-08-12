@@ -267,9 +267,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   providerHostCommand
     .command('evict')
-    .description('Evict one exact live or retained-blocked provider host')
-    .argument('[host-ref]', 'Canonical ph1 provider-host reference')
-    .option('--work-dir <path>', 'Resolve exactly one provider host by work directory')
+    .description('Evict one exact provider host; may end work already attached to that host')
+    .argument('[host-ref]', 'Canonical ph1 reference copied from `coral-cli backend provider-host list`')
+    .option('--work-dir <path>', 'Resolve relative to the current directory; refuses on ambiguity')
     .action(async (hostRef: string | undefined, options: { workDir?: string }) => {
       try {
         const request = parseProviderHostSelector(hostRef, options.workDir);

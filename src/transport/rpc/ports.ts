@@ -11,6 +11,7 @@ import type { KbToolResult } from '../../kb/result.js';
 import type { ToolDomainResult } from '../tool-result.js';
 import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
+import type { ProviderHostEvictResponse, ProviderHostInspectResponse, ProviderHostListResponse } from './catalog.js';
 
 type SessionStartInput = Pick<
   JobLaunchRequest,
@@ -64,13 +65,13 @@ export interface RecoveryQuarantineRequestPort {
 }
 
 export interface ProviderHostRequestPort {
-  list(): Promise<unknown>;
+  list(): Promise<ProviderHostListResponse>;
   inspect(
     selector: Readonly<{ hostRef: ProviderHostRefInput }> | Readonly<{ workDir: CanonicalWorkDir }>,
-  ): Promise<unknown>;
+  ): Promise<ProviderHostInspectResponse>;
   evict(
     selector: Readonly<{ hostRef: ProviderHostRefInput }> | Readonly<{ workDir: CanonicalWorkDir }>,
-  ): Promise<unknown>;
+  ): Promise<ProviderHostEvictResponse>;
 }
 
 type ProviderHostRefInput =

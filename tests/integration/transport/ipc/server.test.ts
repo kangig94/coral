@@ -1,8 +1,25 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+import type * as HttpHandlerModule from '#src/transport/http/handler.js';
+
+const capturedComposition = vi.hoisted(() => ({ ports: null as HttpHandlerPorts | null }));
+
+vi.mock('#src/transport/http/handler.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof HttpHandlerModule>();
+  return {
+    ...actual,
+    createHttpHandler: (ports: HttpHandlerPorts) => {
+      capturedComposition.ports = ports;
+      return actual.createHttpHandler(ports);
+    },
+  };
+});
+
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 import { IpcRpcError, requestIpcMethod } from '#src/transport/ipc/client.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
@@ -16,6 +33,15 @@ import {
   parseProviderHostSelector,
 } from '#src/cli/commands/backend.js';
 import type { HostRef } from '#src/providers/contract.js';
+import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
+import type {
+  ProviderHostAdministrationAuthority,
+  ProviderHostManager,
+} from '#src/coordinator/live/provider-hosts/index.js';
+import type { ProviderHostInventoryRecord } from '#src/coordinator/services/provider-host-administration.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
 const tempDirs: string[] = [];
 
@@ -79,6 +105,56 @@ async function connectRawIpcSocket(socketPath: string): Promise<Socket> {
 
 function hasLogLine(ports: HttpHandlerPorts, text: string): boolean {
   return vi.mocked(ports.identity.log).mock.calls.some(([line]) => typeof line === 'string' && line.includes(text));
+}
+
+function createProductionProviderHostPorts(record: ProviderHostInventoryRecord) {
+  const administration = {
+    admissionSnapshot: () => ({ state: new Map(), tombstones: [] }),
+    listProviderHosts: vi.fn(() => [record]),
+    inspectProviderHost: vi.fn(() => record),
+    evictHost: vi.fn(async () => true),
+  };
+  const providerHostManager = {
+    openSession: async () => {
+      throw new Error('provider-host session creation was not expected');
+    },
+    attachSession: async () => null,
+    drainForHandoff: async () => undefined,
+    shutdown: async () => undefined,
+    routeAppServerOperation: () => null,
+    ...administration,
+  } satisfies ProviderHostManager & ProviderHostAdministrationAuthority;
+
+  capturedComposition.ports = null;
+  createCoordinatorCore(
+    {
+      runtime: createRealRuntime('prod'),
+      storeFormat: currentCoralStoreFormat(),
+      pluginRoot: process.cwd(),
+      backendNamespace: 'provider-host-response-contract-test',
+      bootSnapshot: {
+        version: '1.0.0',
+        bundleHash: '0123456789abcdef',
+        flavor: 'prod',
+        instanceId: 'test-instance',
+        token: 'operator-token',
+        bootToken: 'boot-token',
+        shutdownToken: 'shutdown-token',
+        now: () => 0,
+        log: vi.fn(),
+      },
+      createServerFn: (handler) => createServer(handler),
+      providerHostManager,
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
+      getConsumerStuck: () => [],
+    },
+    async () => [],
+  );
+
+  if (capturedComposition.ports === null) {
+    throw new Error('Production composition did not assemble transport ports.');
+  }
+  return { ports: capturedComposition.ports, administration };
 }
 
 function createPorts(): HttpHandlerPorts {
@@ -223,6 +299,7 @@ function createPorts(): HttpHandlerPorts {
 }
 
 afterEach(() => {
+  capturedComposition.ports = null;
   for (const root of tempDirs.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -256,25 +333,23 @@ describe('ipc server', () => {
     }
   });
 
-  it('drives the real provider-host list formatter/parser and sender through the strict IPC receiver', async () => {
-    const ports = createPorts();
+  it('drives the production provider-host response adapter and CLI sender through strict IPC schemas', async () => {
     const ref: HostRef = {
       provider: 'codex',
       fingerprint: 'a'.repeat(64),
       instanceId: 'host-instance',
       leaseMode: 'shared',
     };
-    const host = {
-      ownerId: 'coordinator:test-instance',
+    const record: ProviderHostInventoryRecord = {
       ref,
-      status: 'live' as const,
+      status: 'live',
       spec: {
         provider: 'codex',
         command: 'codex',
         args: ['app-server'],
         cwd: process.cwd(),
-        leaseMode: 'shared' as const,
-        idleRetirement: 'none' as const,
+        leaseMode: 'shared',
+        idleRetirement: 'none',
       },
       host: { owner: 'coordinator' },
       diagnostics: {
@@ -285,12 +360,12 @@ describe('ipc server', () => {
             generation: 2,
             requestId: 3,
             method: 'config/read',
-            response: { kind: 'failure' as const, rpcCode: -32_603, providerMessage: 'fixture', providerData: null },
+            response: { kind: 'failure', rpcCode: -32_603, providerMessage: 'fixture', providerData: null },
             hostLog: {
               startSeq: 4,
               endSeq: 5,
               truncated: true,
-              historical: [{ seq: 1, observedAt: 1, stream: 'stderr' as const, text: 'before' }],
+              historical: [{ seq: 1, observedAt: 1, stream: 'stderr', text: 'before' }],
               during: [],
               after: [],
             },
@@ -300,10 +375,8 @@ describe('ipc server', () => {
       },
       diagnosticsRetention: { ownerBudgetTruncated: false },
     };
-    const providerHosts = ports.providerHosts!;
-    vi.mocked(providerHosts.list).mockResolvedValue({ hosts: [host] });
-    vi.mocked(providerHosts.inspect).mockResolvedValue({ host });
-    vi.mocked(providerHosts.evict).mockResolvedValue({ ownerId: host.ownerId, hostRef: ref });
+    const host = { ownerId: 'coordinator:test-instance', ...record };
+    const { ports, administration } = createProductionProviderHostPorts(record);
     const listener = createIpcServer(ports);
     const socketPath = makeSocketPath();
     await listenIpcServer(listener, socketPath);
@@ -325,12 +398,12 @@ describe('ipc server', () => {
       expect(formatProviderHostInspect(inspected)).toContain('"truncatedBeforeSeq": 0');
       expect(formatProviderHostInspect(inspected)).toContain('"truncated": true');
       expect(formatProviderHostInspect(inspected)).toContain('"historical"');
-      expect(providerHosts.inspect).toHaveBeenCalledExactlyOnceWith({ hostRef: ref });
+      expect(administration.inspectProviderHost).toHaveBeenCalledExactlyOnceWith(ref);
 
       await expect(sender.inspect(parseProviderHostSelector(undefined, '.'))).resolves.toEqual({ host });
-      expect(providerHosts.inspect).toHaveBeenLastCalledWith({ workDir: process.cwd() });
+      expect(administration.inspectProviderHost).toHaveBeenLastCalledWith(ref);
       await expect(sender.evict(decodedSelector)).resolves.toEqual({ ownerId: host.ownerId, hostRef: ref });
-      expect(providerHosts.evict).toHaveBeenCalledExactlyOnceWith({ hostRef: ref });
+      expect(administration.evictHost).toHaveBeenCalledExactlyOnceWith(ref);
     } finally {
       await closeIpcServer(listener);
     }

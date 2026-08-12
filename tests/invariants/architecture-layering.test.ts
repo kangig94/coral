@@ -6,6 +6,7 @@ import {
   listProductionSourceFiles,
   parseProductionImportEdges,
   toCanonicalSrcPath,
+  type ParsedImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -39,6 +40,9 @@ const RUNTIME_INFRA_FORBIDDEN = [
  * the successor will read. The tree is clean today, which is exactly when stating it is cheap.
  */
 const PROVIDER_PROXY_ROOT = 'src/provider-proxy/';
+const PROVIDERS_ROOT = 'src/providers/';
+const PROVIDER_HOST_OWNER_ROOTS = ['src/coordinator/', PROVIDER_PROXY_ROOT] as const;
+const PROVIDER_SOURCE_FILES = [...PRODUCTION_FILES].filter((file) => file.startsWith(PROVIDERS_ROOT)).sort();
 const STORE_ROOT = 'src/store/';
 const PROVIDER_PROXY_FORBIDDEN = [
   STORE_ROOT,
@@ -151,6 +155,15 @@ function collectViolations(predicate: (source: string, target: string) => boolea
   return IMPORT_EDGES.filter(({ source, target }) => predicate(source, target)).map(
     ({ source, target }) => `${source} -> ${target}`,
   );
+}
+
+function providerHostOwnerImportViolations(edges: readonly ParsedImportEdge[]): string[] {
+  return edges
+    .filter(
+      ({ source, target }) => source.startsWith(PROVIDERS_ROOT) && startsWithAny(target, PROVIDER_HOST_OWNER_ROOTS),
+    )
+    .map(({ source, target }) => `${source} -> ${target}`)
+    .sort();
 }
 
 describe('architecture layering invariants', () => {
@@ -324,6 +337,31 @@ describe('architecture layering invariants', () => {
       .map((edge) => `${edge.source} -> ${edge.target}`);
 
     expect(violations).toEqual([]);
+  });
+
+  it('the shared providers domain reaches neither provider-host owner', () => {
+    expect(providerHostOwnerImportViolations(IMPORT_EDGES)).toEqual([]);
+  });
+
+  it('scans a non-empty providers domain and names only owner roots that contain production files', () => {
+    expect(PROVIDER_SOURCE_FILES.length).toBeGreaterThan(0);
+    expect(PROVIDER_HOST_OWNER_ROOTS.filter((root) => !referencesProductionPath(root))).toEqual([]);
+  });
+
+  it.each([
+    ['src/coordinator/index.ts', '../coordinator/index.js'],
+    ['src/provider-proxy/provider-root-authority.ts', '../provider-proxy/provider-root-authority.js'],
+  ] as const)('rejects a providers import of owner module %s', (target, specifier) => {
+    const mutation: ParsedImportEdge = {
+      source: 'src/providers/bootstrap.ts',
+      target,
+      specifier,
+      via: 'ImportDeclaration',
+      runtime: true,
+      typeOnly: false,
+    };
+
+    expect(providerHostOwnerImportViolations([mutation])).toEqual([`${mutation.source} -> ${target}`]);
   });
 
   it('the journal store does not reach into the provider proxy', () => {

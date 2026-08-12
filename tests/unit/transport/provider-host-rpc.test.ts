@@ -64,6 +64,38 @@ describe('provider-host RPC authorization', () => {
     expect(providerHostEvictRpcSpec.requires).toBe('system:shutdown');
   });
 
+  it.each([
+    [
+      'provider_host_inventory_unavailable',
+      'Retry the original command; if it persists, run `coral-cli backend status` and restore the unavailable owner before retrying.',
+    ],
+    ['provider_host_not_found', 'Rerun `coral-cli backend provider-host list`, then use a currently listed reference.'],
+    [
+      'provider_host_ambiguous',
+      'For one listed reference, run `coral-cli backend provider-host inspect <ref>` and verify it, then run `coral-cli backend provider-host evict <ref>`; never choose a match by position.',
+    ],
+    [
+      'provider_host_identity_integrity',
+      'Do not evict: preserve the complete error output and escalate the integrity failure.',
+    ],
+    [
+      'provider_host_stale',
+      'Rerun `coral-cli backend provider-host list` and act only on a currently listed reference.',
+    ],
+  ] as const)('returns actionable remediation for %s', async (code, remediation) => {
+    const inspect = vi.fn(async () => {
+      throw Object.assign(new Error(code), { code });
+    });
+    const ports = { providerHosts: { list: vi.fn(), inspect, evict: vi.fn() } } as unknown as HttpHandlerPorts;
+
+    await expect(
+      executeCatalogRequest(providerHostInspectRpcSpec, { workDir: '.', projectRoot: process.cwd() }, ports, operator),
+    ).resolves.toMatchObject({
+      kind: 'unary',
+      body: { code, remediation },
+    });
+  });
+
   it('returns every canonical matching token when work-directory resolution is ambiguous', async () => {
     const refs: readonly HostRef[] = [
       { provider: 'codex', fingerprint: 'a'.repeat(64), instanceId: 'first', leaseMode: 'shared' },

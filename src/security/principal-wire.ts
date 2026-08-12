@@ -29,8 +29,9 @@ export const principalWireSchema = z
     binding: rawResourceBindingSchema,
     attenuatedCaps: z.array(capabilitySchema).optional(),
   })
-  .strict()
-  .transform((wire): PrincipalWire => wire as PrincipalWire);
+  .strict();
+
+export type RawPrincipalWire = Readonly<z.infer<typeof principalWireSchema>>;
 
 const DEFAULT_WIRE_CONTEXT: Required<PrincipalWireContext> = {
   transport: 'wire',
@@ -55,17 +56,19 @@ export function principalToWire(principal: Principal): PrincipalWire {
   };
 }
 
+export function canonicalizePrincipalWire(value: unknown): PrincipalWire {
+  const wire = principalWireSchema.parse(value);
+  return {
+    ...wire,
+    binding:
+      wire.binding.kind === 'unbound'
+        ? wire.binding
+        : { kind: 'project', root: canonicalizeWorkDir(wire.binding.root, process.cwd()) },
+  };
+}
+
 export function parsePrincipalWire(value: unknown, context: PrincipalWireContext = {}): Principal | null {
   const parsed = principalWireSchema.safeParse(value);
   if (!parsed.success) return null;
-  const wire = parsed.data;
-  return principalFromWire(
-    wire.binding.kind === 'unbound'
-      ? wire
-      : {
-          ...wire,
-          binding: { kind: 'project', root: canonicalizeWorkDir(wire.binding.root, process.cwd()) },
-        },
-    context,
-  );
+  return principalFromWire(canonicalizePrincipalWire(parsed.data), context);
 }
