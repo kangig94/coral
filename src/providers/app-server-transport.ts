@@ -13,9 +13,10 @@ import {
   currentProviderHostLogSeq,
   inspectProviderHostDiagnostics,
   recordProviderResponseDiagnostic,
-  retainedProviderHostLogText,
   type ProviderHostDiagnosticsSnapshot,
   type ProviderHostDiagnosticsState,
+  type ProviderHostLogCursorSpan,
+  type ProviderResponseObservationSink,
 } from './host-diagnostics.js';
 
 export const PROVIDER_SERVER_MAX_JSONL_LINE_BYTES = MAX_BUFFER;
@@ -32,6 +33,56 @@ class ProviderServerLineTooLargeError extends Error {
     this.maxLineBytes = maxLineBytes;
     this.observedBytes = observedBytes;
     Object.setPrototypeOf(this, ProviderServerLineTooLargeError.prototype);
+  }
+}
+
+export type ProviderHostDiagnosticReference = Readonly<{
+  generation: number;
+  inspect: () => ProviderHostDiagnosticsSnapshot;
+}>;
+
+export class ProviderRpcError extends Error {
+  readonly requestId: number;
+  readonly method: string;
+  readonly rpcCode: number | undefined;
+  readonly providerMessage: string | undefined;
+  readonly providerData: unknown;
+  readonly hostLog: ProviderHostLogCursorSpan;
+
+  constructor(params: {
+    requestId: number;
+    method: string;
+    rpcCode: number | undefined;
+    providerMessage: string | undefined;
+    providerData: unknown;
+    hostLog: ProviderHostLogCursorSpan;
+  }) {
+    super(renderProviderRpcErrorMessage(params));
+    this.name = 'ProviderRpcError';
+    this.requestId = params.requestId;
+    this.method = params.method;
+    this.rpcCode = params.rpcCode;
+    this.providerMessage = params.providerMessage;
+    this.providerData = params.providerData;
+    this.hostLog = Object.freeze({ ...params.hostLog });
+    Object.setPrototypeOf(this, ProviderRpcError.prototype);
+  }
+}
+
+export class ProviderHostFault extends Error {
+  readonly provider: string;
+  readonly detail: string;
+  readonly data: unknown;
+  readonly diagnosticRef: ProviderHostDiagnosticReference;
+
+  constructor(provider: string, detail: string, diagnosticRef: ProviderHostDiagnosticReference, data?: unknown) {
+    super(`Provider server ${provider} ${detail}`);
+    this.name = 'ProviderHostFault';
+    this.provider = provider;
+    this.detail = detail;
+    this.data = data;
+    this.diagnosticRef = diagnosticRef;
+    Object.setPrototypeOf(this, ProviderHostFault.prototype);
   }
 }
 
@@ -76,6 +127,8 @@ type ProviderServerEntry = {
   stdoutBuffer: string;
   stdoutBufferBytes: number;
   diagnostics: ProviderHostDiagnosticsState;
+  diagnosticRef: ProviderHostDiagnosticReference;
+  observeProviderResponse: ProviderResponseObservationSink;
   closed: boolean;
   closeRequested: boolean;
   closePromise: Promise<Error | void>;
@@ -98,7 +151,10 @@ export type SpawnProviderServerOptions = {
   initializeTimeoutMs?: number;
 };
 
-export type SpawnProviderServerFn = (options: SpawnProviderServerOptions) => Promise<ProviderServerHandle>;
+export type SpawnProviderServerFn = (
+  options: SpawnProviderServerOptions,
+  observeProviderResponse: ProviderResponseObservationSink,
+) => Promise<ProviderServerHandle>;
 
 function resolveProviderServerInitializeTimeoutMs(timeoutMs: number | undefined): number {
   return timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0
@@ -110,8 +166,9 @@ export async function spawnProviderServerTransport(params: {
   runtime: Runtime;
   options: SpawnProviderServerOptions;
   generation: number;
+  observeProviderResponse: ProviderResponseObservationSink;
 }): Promise<ProviderServerHandle> {
-  const { runtime, options, generation } = params;
+  const { runtime, options, generation, observeProviderResponse } = params;
   if (options.signal?.aborted) {
     throw createProviderServerSpawnAbortError(options.provider, options.signal);
   }
@@ -138,6 +195,7 @@ export async function spawnProviderServerTransport(params: {
   const closePromise = new Promise<Error | void>((resolve) => {
     resolveClose = resolve;
   });
+  const diagnostics = createProviderHostDiagnostics();
 
   const entry: ProviderServerEntry = {
     provider: options.provider,
@@ -149,7 +207,9 @@ export async function spawnProviderServerTransport(params: {
     notificationHandlers: new Set(),
     stdoutBuffer: '',
     stdoutBufferBytes: 0,
-    diagnostics: createProviderHostDiagnostics(),
+    diagnostics,
+    diagnosticRef: createProviderHostDiagnosticReference(generation, diagnostics),
+    observeProviderResponse,
     closed: false,
     closeRequested: false,
     closePromise,
@@ -179,18 +239,14 @@ export async function spawnProviderServerTransport(params: {
 
   stdin.on('error', (error: Error) => {
     if (entry.closed) return;
-    const stdinError = createProviderServerError(entry.provider, `stdin error: ${error.message}`, {
-      stderr: retainedProviderHostLogText(entry.diagnostics),
-    });
+    const stdinError = createProviderHostFault(entry, `stdin error: ${error.message}`);
     backendLog.error(stdinError.message, error);
     detachProviderServer(entry, stdinError);
     gracefulKill(child, runtime);
   });
 
   child.on('error', (error: Error) => {
-    const closeError = createProviderServerError(options.provider, `failed: ${error.message}`, {
-      stderr: retainedProviderHostLogText(entry.diagnostics),
-    });
+    const closeError = createProviderHostFault(entry, `failed: ${error.message}`);
     if (!entry.closeRequested) {
       backendLog.error(`Provider server ${options.provider} failed`, error);
     }
@@ -207,9 +263,7 @@ export async function spawnProviderServerTransport(params: {
     let closeError: Error | undefined;
     if (!entry.closeRequested) {
       const detail = signal ? `exited unexpectedly (signal ${signal})` : `exited unexpectedly (exit ${code})`;
-      closeError = createProviderServerError(options.provider, detail, {
-        stderr: retainedProviderHostLogText(entry.diagnostics),
-      });
+      closeError = createProviderHostFault(entry, detail);
       if (code !== 0 || signal !== null) {
         backendLog.error(closeError.message);
       }
@@ -220,11 +274,7 @@ export async function spawnProviderServerTransport(params: {
   const rpc: ProviderServerRpc = {
     request: <TResult = unknown>(method: string, params: Record<string, unknown> = {}): Promise<TResult> => {
       if (entry.closed) {
-        return Promise.reject(
-          createProviderServerError(entry.provider, 'is closed', {
-            stderr: retainedProviderHostLogText(entry.diagnostics),
-          }),
-        );
+        return Promise.reject(createProviderHostFault(entry, 'is closed'));
       }
 
       const id = entry.nextRequestId;
@@ -237,9 +287,7 @@ export async function spawnProviderServerTransport(params: {
           sendProviderServerMessage(entry, { id, method, params });
         } catch (error) {
           entry.pending.delete(id);
-          reject(
-            error instanceof Error ? error : createProviderServerError(entry.provider, `failed to send ${method}`),
-          );
+          reject(error instanceof Error ? error : createProviderHostFault(entry, `failed to send ${method}`));
         }
       });
     },
@@ -248,8 +296,7 @@ export async function spawnProviderServerTransport(params: {
       try {
         sendProviderServerMessage(entry, { method, params });
       } catch (error) {
-        const notifyError =
-          error instanceof Error ? error : createProviderServerError(entry.provider, `failed to send ${method}`);
+        const notifyError = error instanceof Error ? error : createProviderHostFault(entry, `failed to send ${method}`);
         backendLog.error(notifyError.message, error);
         detachProviderServer(entry, notifyError);
         gracefulKill(entry.child, runtime);
@@ -271,12 +318,7 @@ export async function spawnProviderServerTransport(params: {
       // The child is alive but rejected `initialize` (protocol/version/auth
       // mismatch). Nothing upstream owns this handle yet, so kill and detach it
       // here before rethrowing — otherwise the OS process leaks per failure.
-      const initError =
-        error instanceof Error
-          ? error
-          : createProviderServerError(entry.provider, `initialize failed`, {
-              stderr: retainedProviderHostLogText(entry.diagnostics),
-            });
+      const initError = error instanceof Error ? error : createProviderHostFault(entry, `initialize failed`);
       detachProviderServer(entry, initError);
       gracefulKill(child, runtime);
       throw initError;
@@ -297,7 +339,7 @@ export async function spawnProviderServerTransport(params: {
     },
     closePromise,
     isClosed: () => entry.closed,
-    inspectDiagnostics: () => inspectProviderHostDiagnostics(entry.diagnostics),
+    inspectDiagnostics: entry.diagnosticRef.inspect,
     markExpectedClose: () => {
       entry.closeRequested = true;
     },
@@ -327,11 +369,7 @@ function initializeProviderServer(params: {
 
   const timeout = new Promise<never>((_, reject) => {
     timeoutHandle = runtime.time.setTimeout(() => {
-      reject(
-        createProviderServerError(entry.provider, `initialize timed out after ${timeoutMs}ms`, {
-          stderr: retainedProviderHostLogText(entry.diagnostics),
-        }),
-      );
+      reject(createProviderHostFault(entry, `initialize timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     timeoutHandle.unref?.();
   });
@@ -366,20 +404,30 @@ function createProviderServerInitializeAbortError(entry: ProviderServerEntry, si
   return new AbortError({ stage: `provider ${entry.provider} initialize`, reason });
 }
 
-function createProviderServerError(
-  provider: string,
-  detail: string,
-  extra?: { stderr?: string; rpcCode?: number; data?: unknown },
-): Error {
-  const stderr = extra?.stderr?.trim();
-  const suffix = stderr ? `: ${stderr}` : '';
-  const error = new Error(`Provider server ${provider} ${detail}${suffix}`) as Error & {
-    rpcCode?: number;
-    data?: unknown;
-  };
-  if (extra?.rpcCode !== undefined) error.rpcCode = extra.rpcCode;
-  if (extra?.data !== undefined) error.data = extra.data;
-  return error;
+function renderProviderRpcErrorMessage(params: {
+  method: string;
+  rpcCode: number | undefined;
+  providerMessage: string | undefined;
+  providerData: unknown;
+}): string {
+  const code = params.rpcCode === undefined ? '' : ` [code=${params.rpcCode}]`;
+  const cause = params.providerMessage === undefined ? '' : `: ${params.providerMessage}`;
+  const data = params.providerData === undefined ? '' : `; data=${JSON.stringify(params.providerData)}`;
+  return `${params.method} failed${code}${cause}${data}`;
+}
+
+function createProviderHostDiagnosticReference(
+  generation: number,
+  diagnostics: ProviderHostDiagnosticsState,
+): ProviderHostDiagnosticReference {
+  return Object.freeze({
+    generation,
+    inspect: () => inspectProviderHostDiagnostics(diagnostics),
+  });
+}
+
+function createProviderHostFault(entry: ProviderServerEntry, detail: string, data?: unknown): ProviderHostFault {
+  return new ProviderHostFault(entry.provider, detail, entry.diagnosticRef, data);
 }
 
 function rejectPendingProviderRequests(entry: ProviderServerEntry, error: Error): void {
@@ -396,13 +444,7 @@ function detachProviderServer(entry: ProviderServerEntry, error?: Error): void {
     entry.closeOutcome = error;
   }
   entry.notificationHandlers.clear();
-  rejectPendingProviderRequests(
-    entry,
-    error ??
-      createProviderServerError(entry.provider, 'closed', {
-        stderr: retainedProviderHostLogText(entry.diagnostics),
-      }),
-  );
+  rejectPendingProviderRequests(entry, error ?? createProviderHostFault(entry, 'closed'));
 }
 
 function encodeProviderServerMessage(message: unknown): string {
@@ -412,11 +454,14 @@ function encodeProviderServerMessage(message: unknown): string {
 function sendProviderServerMessage(entry: ProviderServerEntry, message: unknown): void {
   const stdin = entry.child.stdin;
   if (entry.closed || !stdin || stdin.destroyed) {
-    throw createProviderServerError(entry.provider, 'stdin is not available', {
-      stderr: retainedProviderHostLogText(entry.diagnostics),
-    });
+    throw createProviderHostFault(entry, 'stdin is not available');
   }
-  stdin.write(encodeProviderServerMessage(message));
+  const encoded = encodeProviderServerMessage(message);
+  try {
+    stdin.write(encoded);
+  } catch (error) {
+    throw createProviderHostFault(entry, `stdin error: ${errorMessage(error)}`);
+  }
 }
 
 function handleProviderServerStdout(entry: ProviderServerEntry, chunk: string | Buffer, runtime: Runtime): void {
@@ -455,13 +500,10 @@ function appendProviderServerLineFragment(entry: ProviderServerEntry, fragment: 
   const observedBytes = entry.stdoutBufferBytes + fragmentBytes;
   if (observedBytes > PROVIDER_SERVER_MAX_JSONL_LINE_BYTES) {
     const lineError = new ProviderServerLineTooLargeError(observedBytes);
-    const protocolError = createProviderServerError(entry.provider, 'emitted an oversized JSONL line', {
-      stderr: retainedProviderHostLogText(entry.diagnostics),
-      data: {
-        code: lineError.code,
-        maxLineBytes: lineError.maxLineBytes,
-        observedBytes: lineError.observedBytes,
-      },
+    const protocolError = createProviderHostFault(entry, 'emitted an oversized JSONL line', {
+      code: lineError.code,
+      maxLineBytes: lineError.maxLineBytes,
+      observedBytes: lineError.observedBytes,
     });
     backendLog.error(protocolError.message, lineError);
     entry.stdoutBuffer = '';
@@ -489,9 +531,9 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
   try {
     message = JSON.parse(line) as typeof message;
   } catch (error) {
-    const parseError = createProviderServerError(entry.provider, 'emitted invalid JSONL', {
-      stderr: retainedProviderHostLogText(entry.diagnostics),
-      data: { line, message: errorMessage(error) },
+    const parseError = createProviderHostFault(entry, 'emitted invalid JSONL', {
+      line,
+      message: errorMessage(error),
     });
     backendLog.error(parseError.message, error);
     detachProviderServer(entry, parseError);
@@ -507,7 +549,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
       });
     } catch (error) {
       const protocolError =
-        error instanceof Error ? error : createProviderServerError(entry.provider, 'failed to answer server request');
+        error instanceof Error ? error : createProviderHostFault(entry, 'failed to answer server request');
       backendLog.error(protocolError.message, error);
       detachProviderServer(entry, protocolError);
       gracefulKill(entry.child, runtime);
@@ -519,7 +561,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
     const endSeq = currentProviderHostLogSeq(entry.diagnostics);
     const pending = entry.pending.get(message.id);
     if (!pending) return;
-    recordProviderResponseDiagnostic(entry.diagnostics, {
+    const diagnostic = recordProviderResponseDiagnostic(entry.diagnostics, {
       generation: entry.generation,
       requestId: message.id,
       method: pending.method,
@@ -534,14 +576,18 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
       startSeq: pending.startSeq,
       endSeq,
     });
+    entry.observeProviderResponse(diagnostic);
     entry.pending.delete(message.id);
 
     if (message.error) {
       pending.reject(
-        createProviderServerError(entry.provider, `${pending.method} failed`, {
-          stderr: retainedProviderHostLogText(entry.diagnostics),
+        new ProviderRpcError({
+          requestId: message.id,
+          method: pending.method,
           rpcCode: message.error.code,
-          data: message.error.data,
+          providerMessage: message.error.message,
+          providerData: message.error.data,
+          hostLog: diagnostic.hostLog,
         }),
       );
       return;
@@ -552,10 +598,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
   }
 
   if (typeof message.method !== 'string') {
-    const protocolError = createProviderServerError(entry.provider, 'emitted a malformed JSON-RPC message', {
-      stderr: retainedProviderHostLogText(entry.diagnostics),
-      data: message,
-    });
+    const protocolError = createProviderHostFault(entry, 'emitted a malformed JSON-RPC message', message);
     backendLog.error(protocolError.message);
     detachProviderServer(entry, protocolError);
     gracefulKill(entry.child, runtime);
@@ -570,11 +613,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
     try {
       handler(notification);
     } catch (error) {
-      const dispatchError = createProviderServerError(
-        entry.provider,
-        `notification handler failed: ${errorMessage(error)}`,
-        { stderr: retainedProviderHostLogText(entry.diagnostics) },
-      );
+      const dispatchError = createProviderHostFault(entry, `notification handler failed: ${errorMessage(error)}`);
       backendLog.error(dispatchError.message, error);
       if (!entry.closed) {
         detachProviderServer(entry, dispatchError);
@@ -588,12 +627,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
 function beginProviderServerShutdown(entry: ProviderServerEntry, detail: string): void {
   if (entry.closed) return;
   entry.closeRequested = true;
-  detachProviderServer(
-    entry,
-    createProviderServerError(entry.provider, detail, {
-      stderr: retainedProviderHostLogText(entry.diagnostics),
-    }),
-  );
+  detachProviderServer(entry, createProviderHostFault(entry, detail));
 }
 
 function shutdownProviderServer(entry: ProviderServerEntry, detail: string, runtime: Runtime): void {

@@ -6,6 +6,9 @@ import {
   type ProviderServerHandle,
   type SpawnProviderServerOptions,
 } from '../providers/app-server-transport.js';
+import type { ProviderResponseDiagnosticFact } from '../providers/host-diagnostics.js';
+import { reduceHostServiceability, type HostServiceabilityState } from '../providers/host-serviceability.js';
+import { classifyProviderResponseServiceability } from '../providers/serviceability.js';
 import type { AppServerTransport, HostRef, ProviderServerSpec } from '../providers/contract.js';
 import type { AppServerHostAuthority, ManagedHostSession } from '../providers/internal/app-server-host.js';
 import type { ProviderOperationKey } from './ledger.js';
@@ -177,6 +180,7 @@ type HostPoolEntry = {
   readonly processStartedAtSeconds: number;
   readonly jobId: string | undefined;
   readonly cancellationMode: ProxyHostCancellationMode;
+  serviceability: HostServiceabilityState;
   refCount: number;
   rootTokenReleased: boolean;
   closePromise: Promise<void> | null;
@@ -199,14 +203,23 @@ function assertLeasePolicy(spec: ProviderServerSpec, jobId: string | undefined):
   }
 }
 
-function hostRefFor(entry: HostPoolEntry, runtime: Runtime): HostRef {
+function hostRefForIdentity(
+  spec: ProviderServerSpec,
+  instanceId: string,
+  jobId: string | undefined,
+  runtime: Runtime,
+): HostRef {
   const identity = {
-    provider: entry.spec.provider,
-    fingerprint: specFingerprint(runtime, entry.spec),
-    instanceId: entry.instanceId,
+    provider: spec.provider,
+    fingerprint: specFingerprint(runtime, spec),
+    instanceId,
   } as const;
-  if (entry.spec.leaseMode === 'shared') return Object.freeze({ ...identity, leaseMode: 'shared' as const });
-  return Object.freeze({ ...identity, leaseMode: 'job-exclusive' as const, ownerJobId: entry.jobId as string });
+  if (spec.leaseMode === 'shared') return Object.freeze({ ...identity, leaseMode: 'shared' as const });
+  return Object.freeze({ ...identity, leaseMode: 'job-exclusive' as const, ownerJobId: jobId as string });
+}
+
+function hostRefFor(entry: HostPoolEntry, runtime: Runtime): HostRef {
+  return hostRefForIdentity(entry.spec, entry.instanceId, entry.jobId, runtime);
 }
 
 function isMatchingHostRef(hostRef: HostRef, entry: HostPoolEntry, runtime: Runtime): boolean {
@@ -323,13 +336,39 @@ export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppSer
     if (existing !== undefined) return managedSessionFor(existing);
 
     reserveRootToken();
+    const generation = nextGeneration++;
+    const instanceId = runtime.ids.uuid();
+    const reservedRef = hostRefForIdentity(spec, instanceId, options?.jobId, runtime);
+    const initialServiceability = reduceHostServiceability(undefined, {
+      kind: 'instance-started',
+      instanceId: reservedRef.instanceId,
+    }) as HostServiceabilityState;
+    const slot: { current: HostPoolEntry | null } = { current: null };
+    const observeProviderResponse = (fact: ProviderResponseDiagnosticFact): void => {
+      const candidate = slot.current;
+      if (
+        candidate === null ||
+        entries.get(hostKey) !== candidate ||
+        !isMatchingHostRef(reservedRef, candidate, runtime) ||
+        candidate.handle.generation !== fact.generation
+      ) {
+        return;
+      }
+      const state = reduceHostServiceability(candidate.serviceability, {
+        kind: 'finding',
+        instanceId: reservedRef.instanceId,
+        serviceability: classifyProviderResponseServiceability(spec.provider, fact),
+      });
+      if (state !== undefined) candidate.serviceability = state;
+    };
     let handle: ProviderServerHandle | null = null;
     let liveRootCommitted = false;
     try {
       handle = await spawnProviderServerTransport({
         runtime,
         options: spawnOptionsFor(spec, options?.signal),
-        generation: nextGeneration++,
+        generation,
+        observeProviderResponse,
       });
       spawningRoots -= 1;
       liveRoots += 1;
@@ -345,16 +384,18 @@ export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppSer
       const entry: HostPoolEntry = {
         hostKey,
         spec,
-        instanceId: runtime.ids.uuid(),
+        instanceId,
         handle,
         transport: transportFor(handle),
         processStartedAtSeconds,
         jobId: options?.jobId,
         cancellationMode,
+        serviceability: initialServiceability,
         refCount: 0,
         rootTokenReleased: false,
         closePromise: null,
       };
+      slot.current = entry;
       entries.set(hostKey, entry);
       void handle.closePromise.then(
         () => releaseLiveRoot(entry),

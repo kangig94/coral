@@ -34,6 +34,8 @@ export type ProviderResponseDiagnosticFact = Readonly<{
   hostLog: ProviderHostLogCursorSpan;
 }>;
 
+export type ProviderResponseObservationSink = (fact: ProviderResponseDiagnosticFact) => void;
+
 export type InspectedProviderHostLogSpan = ProviderHostLogCursorSpan &
   Readonly<{
     truncated: boolean;

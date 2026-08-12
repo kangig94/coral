@@ -1,5 +1,8 @@
 import type { AppServerTransport, HostRef, ProviderServerSpec } from '../../../providers/contract.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from '../../../providers/app-server-transport.js';
+import type { ProviderResponseDiagnosticFact } from '../../../providers/host-diagnostics.js';
+import { reduceHostServiceability, type HostServiceabilityState } from '../../../providers/host-serviceability.js';
+import { classifyProviderResponseServiceability } from '../../../providers/serviceability.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import {
@@ -130,6 +133,17 @@ function isExactHostRef(value: HostRef): boolean {
   );
 }
 
+function hostRefsMatch(left: HostRef, right: HostRef): boolean {
+  return (
+    left.provider === right.provider &&
+    left.fingerprint === right.fingerprint &&
+    left.instanceId === right.instanceId &&
+    left.leaseMode === right.leaseMode &&
+    (left.leaseMode !== 'job-exclusive' ||
+      (right.leaseMode === 'job-exclusive' && left.ownerJobId === right.ownerJobId))
+  );
+}
+
 function waitForClose(operation: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
   if (signal === undefined) return operation;
   if (signal.aborted) {
@@ -155,6 +169,7 @@ export class DefaultProviderHostManager
   implements ProviderHostManager, ProviderProxyAuthorityRegistry, ProviderProxySetRegistration
 {
   private readonly entries = new Map<string, ProviderHostEntry>();
+  private readonly serviceabilityByEntry = new WeakMap<ProviderHostEntry, HostServiceabilityState>();
   private readonly pendingCloses = new Set<Promise<void>>();
   private readonly lifecyclePolicies = new Map<string, string>();
   private exclusiveSequence = 0;
@@ -319,17 +334,27 @@ export class DefaultProviderHostManager
 
     try {
       const handle = await ensureProviderServerHandle(entry, {
-        spawnProviderServer: (nextSpec) =>
-          this.spawnProviderServer({
-            provider: nextSpec.provider,
-            command: nextSpec.command,
-            args: nextSpec.args,
-            cwd: nextSpec.cwd,
-            exactEnv: entry.exactEnv,
-            ...(nextSpec.leaseMode === 'job-exclusive' && options?.signal ? { signal: options.signal } : {}),
-            initializeRequest: nextSpec.initializeRequest,
-            initializeTimeoutMs: nextSpec.initializeTimeoutMs,
-          }),
+        spawnProviderServer: (nextSpec) => {
+          const hostRef = hostRefFromEntry(entry);
+          const initialState = reduceHostServiceability(undefined, {
+            kind: 'instance-started',
+            instanceId: hostRef.instanceId,
+          });
+          if (initialState !== undefined) this.serviceabilityByEntry.set(entry, initialState);
+          return this.spawnProviderServer(
+            {
+              provider: nextSpec.provider,
+              command: nextSpec.command,
+              args: nextSpec.args,
+              cwd: nextSpec.cwd,
+              exactEnv: entry.exactEnv,
+              ...(nextSpec.leaseMode === 'job-exclusive' && options?.signal ? { signal: options.signal } : {}),
+              initializeRequest: nextSpec.initializeRequest,
+              initializeTimeoutMs: nextSpec.initializeTimeoutMs,
+            },
+            (fact) => this.observeProviderResponse(entry, hostRef, fact),
+          );
+        },
         runtime: this.runtime,
         shutdownHandle: (handle, nextSpec) => this.shutdownHandle(handle, nextSpec),
         attachHostNotificationListener: (nextEntry, handle) => this.attachHostNotificationListener(nextEntry, handle),
@@ -420,6 +445,29 @@ export class DefaultProviderHostManager
       hostRef,
       close: () => lease.release(),
     });
+  }
+
+  private observeProviderResponse(
+    entry: ProviderHostEntry,
+    expectedRef: HostRef,
+    fact: ProviderResponseDiagnosticFact,
+  ): void {
+    const handle = entry.handle;
+    if (
+      this.entries.get(entry.hostKey) !== entry ||
+      handle === null ||
+      handle.generation !== fact.generation ||
+      !hostRefsMatch(hostRefFromEntry(entry), expectedRef)
+    ) {
+      return;
+    }
+
+    const state = reduceHostServiceability(this.serviceabilityByEntry.get(entry), {
+      kind: 'finding',
+      instanceId: expectedRef.instanceId,
+      serviceability: classifyProviderResponseServiceability(entry.spec.provider, fact),
+    });
+    if (state !== undefined) this.serviceabilityByEntry.set(entry, state);
   }
 
   async drainForHandoff(signal?: AbortSignal): Promise<void> {

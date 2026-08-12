@@ -7,6 +7,8 @@ import {
   inspectProviderHostDiagnostics,
   PROVIDER_HOST_COMPLETED_OBSERVATION_LIMIT,
   PROVIDER_HOST_LOG_MAX_BYTES,
+  type ProviderResponseDiagnosticFact,
+  type ProviderResponseObservationSink,
 } from '#src/providers/host-diagnostics.js';
 
 const TEST_TIMEOUT_MS = 20_000;
@@ -73,6 +75,49 @@ describe('provider app-server transport diagnostics', () => {
     expect(Object.isFrozen(snapshot.hostLog.entries)).toBe(true);
   });
 
+  it('publishes exactly one canonical fact before settling each completed provider response', async () => {
+    const observations: ProviderResponseDiagnosticFact[] = [];
+    const order: string[] = [];
+    const handle = await spawnScriptedServer(cursorScopeScript(), (fact) => {
+      observations.push(fact);
+      order.push(`observed:${fact.requestId}`);
+    });
+    await waitUntil(() => handle.inspectDiagnostics().hostLog.entries.length > 0);
+
+    await handle.rpc.request('succeed').then(() => order.push('resolved:1'));
+    await handle.rpc.request('fail').then(
+      () => order.push('resolved:2'),
+      () => order.push('rejected:2'),
+    );
+
+    expect(order).toEqual(['observed:1', 'resolved:1', 'observed:2', 'rejected:2']);
+    expect(observations).toHaveLength(2);
+    expect(observations[0]).toEqual({
+      factSeq: 1,
+      generation: 17,
+      requestId: 1,
+      method: 'succeed',
+      response: { kind: 'success' },
+      hostLog: { startSeq: 1, endSeq: 2 },
+    });
+    expect(observations[1]).toEqual({
+      factSeq: 2,
+      generation: 17,
+      requestId: 2,
+      method: 'fail',
+      response: {
+        kind: 'failure',
+        rpcCode: -32_603,
+        providerMessage: 'configuration refused',
+        providerData: { reason: 'poisoned cwd' },
+      },
+      hostLog: { startSeq: 2, endSeq: 3 },
+    });
+    expect(Object.isFrozen(observations[0])).toBe(true);
+    expect(Object.isFrozen(observations[0]?.response)).toBe(true);
+    expect(Object.isFrozen(observations[0]?.hostLog)).toBe(true);
+  });
+
   it(
     'caps retained UTF-8 host-log payload and marks incomplete request spans',
     async () => {
@@ -129,7 +174,10 @@ describe('provider app-server transport diagnostics', () => {
     TEST_TIMEOUT_MS,
   );
 
-  async function spawnScriptedServer(script: string): Promise<ProviderServerHandle> {
+  async function spawnScriptedServer(
+    script: string,
+    observeProviderResponse: ProviderResponseObservationSink = () => {},
+  ): Promise<ProviderServerHandle> {
     const handle = await spawnProviderServerTransport({
       runtime: createRealRuntime('prod'),
       options: {
@@ -138,6 +186,7 @@ describe('provider app-server transport diagnostics', () => {
         args: ['-e', script],
       },
       generation: 17,
+      observeProviderResponse,
     });
     handles.push(handle);
     return handle;

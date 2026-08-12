@@ -1,6 +1,7 @@
 import type { Runtime } from '../../runtime/ports.js';
 import { type CliExecResult, type SpawnDurableJobOptions, spawnDurableJobTransport } from './durable-transport.js';
 import { type SpawnProviderServerOptions, spawnProviderServerTransport } from '../../providers/app-server-transport.js';
+import type { ProviderResponseObservationSink } from '../../providers/host-diagnostics.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import { getActiveLimit, parsePositiveInt } from './worker-limits.js';
 import type { AdmissionResult, LaunchPool, QueuedHandle } from '../../jobs/contracts/admission.js';
@@ -119,11 +120,15 @@ export class LaunchCoordinator {
     return Promise.reject(error instanceof Error ? error : new Error(String(error)));
   }
 
-  spawnProviderServer(options: SpawnProviderServerOptions) {
+  spawnProviderServer(
+    options: SpawnProviderServerOptions,
+    observeProviderResponse: ProviderResponseObservationSink = () => {},
+  ) {
     return spawnProviderServerTransport({
       runtime: this.runtime,
       options,
       generation: this.nextProviderServerGeneration++,
+      observeProviderResponse,
     });
   }
 
