@@ -126,6 +126,42 @@ describe('coordinator provider-host admission', () => {
     await manager.shutdown();
   });
 
+  it('correlates an openSession RPC rejection to its exact blocked coordinator host', async () => {
+    const providerCause = new Error('coordinator provider RPC rejected');
+    const server = createFakeProviderServerHandle({
+      generation: 151,
+      request: async (method) => {
+        if (method === 'turn/start') throw providerCause;
+        return {};
+      },
+    });
+    let sink: ProviderResponseObservationSink | undefined;
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      admission: createCoordinatorProviderHostAdmission(),
+      spawnProviderServer: async (_options, observationSink) => {
+        sink = observationSink;
+        return server.handle;
+      },
+      allocateProviderServerGeneration: () => 151,
+    });
+    const opened = await manager.openSession(createSharedSpec({ provider: 'codex', idleRetirement: 'none' }));
+    sink?.(rejectedConfigRead(151));
+
+    const rejection = await opened.session.rpc('turn/start', {}).catch((error: unknown) => error);
+
+    opened.close();
+    await manager.shutdown();
+    expect(rejection, 'coordinator openSession RPC lost its exact blocked host reference').toMatchObject({
+      name: 'ProviderHostUnserviceableResponseError',
+      hostRef: opened.hostRef,
+    });
+    expect(
+      (rejection as { providerCause?: unknown }).providerCause,
+      'coordinator openSession RPC lost the raw provider cause',
+    ).toBe(providerCause);
+  });
+
   it('keys job-exclusive admission by owner job and single-flights concurrent opens within that slot', async () => {
     const first = createFakeProviderServerHandle({ generation: 201 });
     const second = createFakeProviderServerHandle({ generation: 202 });

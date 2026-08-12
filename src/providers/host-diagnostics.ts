@@ -145,6 +145,15 @@ export function recordProviderResponseDiagnostic(
     response: copyResponse(input.response),
     hostLog: Object.freeze({ startSeq: input.startSeq, endSeq: input.endSeq }),
   });
+  retainProviderResponseDiagnostic(state, fact);
+
+  return fact;
+}
+
+function retainProviderResponseDiagnostic(
+  state: ProviderHostDiagnosticsState,
+  fact: ProviderResponseDiagnosticFact,
+): void {
   state.nextFactSeq += 1;
   state.completedObservations.push(fact);
 
@@ -154,8 +163,6 @@ export function recordProviderResponseDiagnostic(
       state.factsTruncatedBeforeSeq = state.completedObservations[0]?.factSeq ?? state.nextFactSeq;
     }
   }
-
-  return fact;
 }
 
 export function inspectProviderHostDiagnostics(state: ProviderHostDiagnosticsState): ProviderHostDiagnosticsSnapshot {

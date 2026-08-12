@@ -507,33 +507,90 @@ export function directCallableCalls(callable: CallableNode): readonly Executable
   return calls;
 }
 
-function callbackTargets(context: CallableClosureContext, expression: ts.Expression): readonly CallableNode[] {
+type CallableLeaf = Readonly<{
+  node: ts.Node;
+  expression: ts.Expression | undefined;
+  symbol: ts.Symbol | undefined;
+  targets: readonly CallableNode[];
+}>;
+
+function callableLeaves(
+  context: CallableClosureContext,
+  expression: ts.Expression,
+  seenSymbols = new Set<ts.Symbol>(),
+): readonly CallableLeaf[] {
   const unwrapped = unwrapExpression(expression);
-  const callable = expressionTargets(context, unwrapped);
-  if (callable.length > 0 && context.checker.getTypeAtLocation(unwrapped).getCallSignatures().length > 0) {
-    return callable;
+  if (
+    ts.isCallExpression(unwrapped) &&
+    ts.isPropertyAccessExpression(unwrapped.expression) &&
+    unwrapped.expression.expression.getText() === 'Object' &&
+    unwrapped.expression.name.text === 'freeze' &&
+    unwrapped.arguments[0] !== undefined
+  ) {
+    return callableLeaves(context, unwrapped.arguments[0], seenSymbols);
+  }
+  if (ts.isConditionalExpression(unwrapped)) {
+    return [
+      ...callableLeaves(context, unwrapped.whenTrue, new Set(seenSymbols)),
+      ...callableLeaves(context, unwrapped.whenFalse, new Set(seenSymbols)),
+    ];
   }
   if (ts.isObjectLiteralExpression(unwrapped)) {
     return unwrapped.properties.flatMap((property) => {
-      if (ts.isMethodDeclaration(property) && isCallableNode(property)) return [property];
-      if (ts.isPropertyAssignment(property)) return callbackTargets(context, property.initializer);
-      if (ts.isShorthandPropertyAssignment(property)) {
-        const valueSymbol = context.checker.getShorthandAssignmentValueSymbol(property);
-        return valueSymbol === undefined ? [] : symbolTargets(context, valueSymbol, new Set());
+      if (ts.isMethodDeclaration(property) && isCallableNode(property)) {
+        return [{ node: property, expression: undefined, symbol: undefined, targets: [property] }];
       }
-      if (ts.isSpreadAssignment(property)) return callbackTargets(context, property.expression);
+      if (ts.isPropertyAssignment(property)) {
+        return callableLeaves(context, property.initializer, new Set(seenSymbols));
+      }
+      if (ts.isShorthandPropertyAssignment(property)) {
+        const symbol = context.checker.getShorthandAssignmentValueSymbol(property);
+        if (
+          symbol === undefined ||
+          context.checker.getTypeOfSymbolAtLocation(symbol, property).getCallSignatures().length === 0
+        ) {
+          return [];
+        }
+        return [
+          {
+            node: property,
+            expression: undefined,
+            symbol,
+            targets: symbolTargets(context, symbol, new Set(seenSymbols)),
+          },
+        ];
+      }
+      if (ts.isSpreadAssignment(property)) {
+        return callableLeaves(context, property.expression, new Set(seenSymbols));
+      }
       return [];
     });
   }
   if (ts.isArrayLiteralExpression(unwrapped)) {
     return unwrapped.elements.flatMap((element) =>
-      ts.isSpreadElement(element) ? callbackTargets(context, element.expression) : callbackTargets(context, element),
+      ts.isSpreadElement(element)
+        ? callableLeaves(context, element.expression, new Set(seenSymbols))
+        : callableLeaves(context, element, new Set(seenSymbols)),
     );
   }
-  if (ts.isConditionalExpression(unwrapped)) {
-    return [...callbackTargets(context, unwrapped.whenTrue), ...callbackTargets(context, unwrapped.whenFalse)];
+  if (context.checker.getTypeAtLocation(unwrapped).getCallSignatures().length > 0) {
+    return [
+      {
+        node: unwrapped,
+        expression: unwrapped,
+        symbol: undefined,
+        targets: expressionTargets(context, unwrapped),
+      },
+    ];
   }
-  return [];
+  const rawSymbol = symbolAtExpression(context, unwrapped);
+  if (rawSymbol === undefined) return [];
+  const symbol = aliasedSymbol(context.checker, rawSymbol);
+  if (seenSymbols.has(symbol)) return [];
+  seenSymbols.add(symbol);
+  return (symbol.declarations ?? []).flatMap((declaration) =>
+    expressionInitializers(declaration).flatMap((initializer) => callableLeaves(context, initializer, seenSymbols)),
+  );
 }
 
 function callSite(sourceFile: ts.SourceFile, call: ExecutableCall): string {
@@ -554,15 +611,25 @@ function isBodylessProjectConstruction(context: CallableClosureContext, call: Ex
   );
 }
 
-function isCallableTyped(context: CallableClosureContext, expression: ts.Expression): boolean {
-  return context.checker.getTypeAtLocation(unwrapExpression(expression)).getCallSignatures().length > 0;
-}
-
 function isInjectedOrExternalCallable(context: CallableClosureContext, expression: ts.Expression): boolean {
   const unwrapped = unwrapExpression(expression);
   if (hasOnlyExternalDeclarations(context, unwrapped)) return true;
   const declarations = projectDeclarations(context, unwrapped);
   return declarations.length > 0 && declarations.every(isInjectedBoundaryDeclaration);
+}
+
+function isInjectedOrExternalCallableLeaf(context: CallableClosureContext, leaf: CallableLeaf): boolean {
+  if (leaf.expression !== undefined) return isInjectedOrExternalCallable(context, leaf.expression);
+  if (leaf.symbol === undefined) return false;
+  const declarations = aliasedSymbol(context.checker, leaf.symbol).declarations ?? [];
+  if (
+    declarations.length > 0 &&
+    declarations.every((declaration) => sourcePath(context, declaration.getSourceFile()) === undefined)
+  ) {
+    return true;
+  }
+  const project = declarations.filter((declaration) => sourcePath(context, declaration.getSourceFile()) !== undefined);
+  return project.length > 0 && project.every(isInjectedBoundaryDeclaration);
 }
 
 function executableTargets(context: CallableClosureContext, call: ExecutableCall): readonly CallableNode[] {
@@ -572,6 +639,16 @@ function executableTargets(context: CallableClosureContext, call: ExecutableCall
   return [...new Set([...expressionTargets(context, call.expression), ...signatureTarget])];
 }
 
+/**
+ * Follow the checker-resolved `src/` closure from each semantic root. The guarded executable edges are ordinary
+ * calls and `new` expressions, including explicit constructor bodies, imported aliases, concrete methods,
+ * object/registry callback values, and every callable leaf in statically decomposable object, array, conditional,
+ * and `Object.freeze` arguments. A callable leaf may remain unresolved only when that leaf is declared by an
+ * injected parameter/signature or outside `src/`; a locally stored or selected leaf fails closed even when a
+ * sibling leaf resolves. Direct calls through injected runtime callback boundaries and dependencies declared
+ * outside `src/` remain outside the static scope. Any other unresolved project edge fails closed, and callers
+ * assert non-vacuity over the resolved callable and edge sets.
+ */
 function analyzeRoots(context: CallableClosureContext, closureRoots: readonly ClosureRoot[]): CallableClosureAnalysis {
   const roots = closureRoots.map(({ callable }) => callable);
   const queue = closureRoots.map(({ callable, label }) => ({ callable, trace: [label] as readonly string[] }));
@@ -606,20 +683,20 @@ function analyzeRoots(context: CallableClosureContext, closureRoots: readonly Cl
       }
 
       const callArguments = call.arguments ?? [];
-      const callbacksByArgument = callArguments.map((argument) =>
-        callbackTargets(context, argument)
-          .map((node) => resolvedCallable(context, node))
-          .filter((target): target is ResolvedCallable => target !== undefined),
+      const callbackLeavesByArgument = callArguments.map((argument) =>
+        callableLeaves(context, argument).map((leaf) => ({
+          leaf,
+          targets: leaf.targets
+            .map((node) => resolvedCallable(context, node))
+            .filter((target): target is ResolvedCallable => target !== undefined),
+        })),
       );
-      const callbacks = callbacksByArgument.flat();
-      for (const [argumentIndex, argument] of callArguments.entries()) {
-        if (
-          callbacksByArgument[argumentIndex]?.length === 0 &&
-          isCallableTyped(context, argument) &&
-          !isInjectedOrExternalCallable(context, argument)
-        ) {
+      const callbacks = callbackLeavesByArgument.flatMap((leaves) => leaves.flatMap(({ targets }) => targets));
+      for (const [argumentIndex, leaves] of callbackLeavesByArgument.entries()) {
+        for (const { leaf, targets } of leaves) {
+          if (targets.length > 0 || isInjectedOrExternalCallableLeaf(context, leaf)) continue;
           unresolvedCalls.push(
-            `${current.callable.path}#${current.callable.symbol} -> ${site} argument ${argumentIndex + 1} '${argument.getText(current.callable.sourceFile)}' has callable type but no resolvable target`,
+            `${current.callable.path}#${current.callable.symbol} -> ${site} argument ${argumentIndex + 1} '${leaf.node.getText(current.callable.sourceFile)}' has callable type but no resolvable target (unresolved callable leaf)`,
           );
         }
       }
@@ -729,15 +806,6 @@ export function serviceabilityDecisionClosureAnalysis(
   );
 }
 
-/**
- * Follow the checker-resolved `src/` closure from each semantic root. The guarded executable edges are ordinary
- * calls and `new` expressions, including explicit constructor bodies, imported aliases, concrete methods,
- * object/registry callback values, and callable arguments (including callable object properties). A callable
- * argument may remain unresolved only when the expression itself is declared by an injected parameter/signature
- * or outside `src/`; a locally stored or selected callback fails closed. Direct calls through injected runtime
- * callback boundaries and dependencies declared outside `src/` remain outside the static scope. Any other
- * unresolved project edge fails closed, and callers assert non-vacuity over resolved callables and edges.
- */
 export function serviceabilityDecisionClosureInventory(
   repoRoot: string,
   productionFilePaths: readonly string[],

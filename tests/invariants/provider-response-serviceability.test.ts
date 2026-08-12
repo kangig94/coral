@@ -45,18 +45,15 @@ const PROXY_OWNER = 'src/provider-proxy/provider-root-authority.ts';
 const SERVICEABILITY_LITERALS = new Set(['serviceable', 'unserviceable', 'unknown']);
 const CALLABLE_CONTEXT = createCallableClosureContext(REPO_ROOT, PRODUCTION_FILES);
 const DECISION_CLOSURE_ANALYSIS = serviceabilityDecisionClosureAnalysis(REPO_ROOT, PRODUCTION_FILES, CALLABLE_CONTEXT);
-const TRANSPORT_FACT_DIAGNOSTIC_RETENTION_EXCLUSIONS = new Set([
-  `${DIAGNOSTICS}#currentProviderHostLogSeq`,
-  `${DIAGNOSTICS}#recordProviderResponseDiagnostic`,
-]);
+const TRANSPORT_FACT_RETENTION_EXCLUSIONS = new Set([`${DIAGNOSTICS}#retainProviderResponseDiagnostic`]);
 /**
  * This fact guard starts at the completed-response publisher and scans every checker-resolved project callable
- * reached through calls, constructors, and callbacks. Its only exclusions are the two exact diagnostics
- * retention operations above: `currentProviderHostLogSeq` reads the already-emitted host-log sequence, while
- * `recordProviderResponseDiagnostic` allocates a fact sequence and enforces the completed-observation retention
- * capacity. Those counters describe retained evidence after a real response; neither can create a response fact
- * from silence or decide its serviceability. Imported helpers such as `copyResponse` remain scanned, and every
- * unresolved project edge fails closed below.
+ * reached through calls, constructors, and individual callable leaves in statically decomposable callback
+ * containers. It scans both host-log cursor reads and response-fact construction. Its only exclusion is the exact
+ * `retainProviderResponseDiagnostic` helper, which receives an already-constructed fact and only advances its
+ * sequence before retaining and evicting completed observations. Imported construction helpers such as
+ * `copyResponse` remain scanned, every unresolved project edge fails closed, and the test asserts non-vacuity over
+ * the resolved guarded set.
  */
 const TRANSPORT_FACT_ANALYSIS = analyzeCallableClosure(CALLABLE_CONTEXT, [
   { path: TRANSPORT, symbol: 'handleProviderServerResponse' },
@@ -251,9 +248,7 @@ function decisionClosureInventory(): Readonly<Record<string, readonly ResolvedCa
 }
 
 function guardedTransportFactCallables(analysis: CallableClosureAnalysis): readonly ResolvedCallable[] {
-  return analysis.callables.filter(
-    ({ path, symbol }) => !TRANSPORT_FACT_DIAGNOSTIC_RETENTION_EXCLUSIONS.has(`${path}#${symbol}`),
-  );
+  return analysis.callables.filter(({ path, symbol }) => !TRANSPORT_FACT_RETENTION_EXCLUSIONS.has(`${path}#${symbol}`));
 }
 
 const DECISION_CLOSURE_MUTATIONS = [
@@ -299,6 +294,15 @@ const TRANSPORT_FACT_CLOSURE_MUTATIONS = [
   },
 ] as const;
 
+const CALLABLE_RESOLUTION_MUTATIONS = [
+  {
+    id: 'mixed-container-unresolved-callback',
+    root: { path: fixturePath('mixed-container-root.ts'), symbol: 'mixedContainerRoot' },
+    resolvedTarget: { path: fixturePath('mixed-container-root.ts'), symbol: 'resolvedCallback' },
+    signature: "argument 1 'unresolved' has callable type but no resolvable target",
+  },
+] as const;
+
 function decisionClosureMutationViolations(mutation: (typeof DECISION_CLOSURE_MUTATIONS)[number]): readonly string[] {
   const analysis = analyzeCallableClosure(MUTATION_FIXTURE_CONTEXT, [mutation.root]);
   if (analysis.unresolvedCalls.length > 0) return analysis.unresolvedCalls;
@@ -319,6 +323,12 @@ function transportFactMutationViolations(
   return callables.length === 0
     ? [`${mutation.root.path}#${mutation.root.symbol} resolved no guarded callables`]
     : callables.flatMap(decisionBoundViolations);
+}
+
+function callableResolutionMutationAnalysis(
+  mutation: (typeof CALLABLE_RESOLUTION_MUTATIONS)[number],
+): CallableClosureAnalysis {
+  return analyzeCallableClosure(MUTATION_FIXTURE_CONTEXT, [mutation.root]);
 }
 
 function callsNamed(sourceFile: ts.Node, name: string): ts.CallExpression[] {
@@ -480,12 +490,19 @@ describe('provider response serviceability decision layers', () => {
     expect(TRANSPORT_FACT_ANALYSIS.callables.length).toBeGreaterThan(0);
     expect(TRANSPORT_FACT_ANALYSIS.inspectedCallCount).toBeGreaterThan(0);
     expect(TRANSPORT_FACT_ANALYSIS.edges.length).toBeGreaterThan(0);
+    expect(TRANSPORT_FACT_ANALYSIS.callables.map(({ path, symbol }) => `${path}#${symbol}`)).toEqual(
+      expect.arrayContaining([
+        `${DIAGNOSTICS}#currentProviderHostLogSeq`,
+        `${DIAGNOSTICS}#recordProviderResponseDiagnostic`,
+        ...TRANSPORT_FACT_RETENTION_EXCLUSIONS,
+      ]),
+    );
     expect(
       TRANSPORT_FACT_ANALYSIS.callables
         .map(({ path, symbol }) => `${path}#${symbol}`)
-        .filter((key) => TRANSPORT_FACT_DIAGNOSTIC_RETENTION_EXCLUSIONS.has(key))
+        .filter((key) => TRANSPORT_FACT_RETENTION_EXCLUSIONS.has(key))
         .sort(),
-    ).toEqual([...TRANSPORT_FACT_DIAGNOSTIC_RETENTION_EXCLUSIONS].sort());
+    ).toEqual([...TRANSPORT_FACT_RETENTION_EXCLUSIONS].sort());
     const guardedCallables = guardedTransportFactCallables(TRANSPORT_FACT_ANALYSIS);
     expect(guardedCallables.length).toBeGreaterThan(0);
     expect(guardedCallables.flatMap(decisionBoundViolations)).toEqual([]);
@@ -509,6 +526,27 @@ describe('provider response serviceability decision layers', () => {
     },
   );
 
+  it.each(CALLABLE_RESOLUTION_MUTATIONS)(
+    'rejects the $id mutation while retaining its resolved sibling callback',
+    (mutation) => {
+      const analysis = callableResolutionMutationAnalysis(mutation);
+      expect(analysis.callables).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: mutation.resolvedTarget.path, symbol: mutation.resolvedTarget.symbol }),
+        ]),
+      );
+      expect(
+        analysis.edges.some(
+          ({ kind, to }) =>
+            kind === 'callback' &&
+            to.path === mutation.resolvedTarget.path &&
+            to.symbol === mutation.resolvedTarget.symbol,
+        ),
+      ).toBe(true);
+      expect(analysis.unresolvedCalls).toEqual([expect.stringContaining(mutation.signature)]);
+    },
+  );
+
   it('fails closed when an imported project callee has no checker-resolved implementation', () => {
     const analysis = analyzeCallableClosure(MUTATION_FIXTURE_CONTEXT, [
       { path: fixturePath('unresolved-root.ts'), symbol: 'unresolvedRoot' },
@@ -523,12 +561,15 @@ describe('provider response serviceability decision layers', () => {
     const activeMutation = activeServiceabilityMutation();
     const decisionMutation = DECISION_CLOSURE_MUTATIONS.find(({ id }) => id === activeMutation);
     const transportMutation = TRANSPORT_FACT_CLOSURE_MUTATIONS.find(({ id }) => id === activeMutation);
+    const callableResolutionMutation = CALLABLE_RESOLUTION_MUTATIONS.find(({ id }) => id === activeMutation);
     const violations =
       decisionMutation !== undefined
         ? decisionClosureMutationViolations(decisionMutation)
-        : transportMutation === undefined
-          ? []
-          : transportFactMutationViolations(transportMutation);
+        : transportMutation !== undefined
+          ? transportFactMutationViolations(transportMutation)
+          : callableResolutionMutation === undefined
+            ? []
+            : callableResolutionMutationAnalysis(callableResolutionMutation).unresolvedCalls;
     expect(violations).toEqual([]);
   });
 

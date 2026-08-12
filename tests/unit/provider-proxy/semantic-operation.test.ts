@@ -1697,6 +1697,33 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     replacement.close();
   });
 
+  it('correlates an openSession RPC rejection to its exact blocked proxy host', async () => {
+    const providerCause = new Error('proxy provider RPC rejected');
+    const server = fakeProviderServerHandle({
+      request: async (method) => {
+        if (method === 'turn/start') throw providerCause;
+        return {};
+      },
+    });
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const scope = selectedHostScope(authority, testKey(), 'shared-acknowledged-interrupt');
+    const opened = await scope.openSession(sharedSpec({ provider: 'codex' }));
+    vi.mocked(spawnProviderServerTransport).mock.calls[0]?.[0].observeProviderResponse(rejectedConfigRead(0));
+
+    const rejection = await opened.session.rpc('turn/start', {}).catch((error: unknown) => error);
+
+    opened.close();
+    expect(rejection, 'proxy openSession RPC lost its exact blocked host reference').toMatchObject({
+      name: 'ProviderHostUnserviceableResponseError',
+      hostRef: opened.hostRef,
+    });
+    expect(
+      (rejection as { providerCause?: unknown }).providerCause,
+      'proxy openSession RPC lost the raw provider cause',
+    ).toBe(providerCause);
+  });
+
   it("awaits exact live proxy close before confirmation and leaves another owner's live job untouched", async () => {
     const evictedClose = deferred();
     const continuingRpc = deferred<unknown>();
