@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import type {
   AppServerSession,
@@ -18,6 +22,12 @@ import {
 } from '#src/providers/codex/execution-plan.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { TEST_CODEX_ACCESS } from '../../../helpers/provider-credentials.js';
+
+const TEST_WORKSPACE = mkdtempSync(join(tmpdir(), 'coral-codex-thread-provider-'));
+const TEST_PERSISTED_CWD = join(TEST_WORKSPACE, 'persisted');
+mkdirSync(TEST_PERSISTED_CWD);
+
+afterAll(() => rmSync(TEST_WORKSPACE, { recursive: true, force: true }));
 
 function buildCodexExecutionPlan(options: Omit<Parameters<typeof buildCodexExecutionPlanWithHost>[0], 'hostPlan'>) {
   const host = buildCodexHost(options);
@@ -72,7 +82,7 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
     name: 'codex',
     conversationRef: 'thread-1',
     prompt: 'Resume and continue',
-    cwd: fixtureCanonicalWorkDir('/workspace'),
+    cwd: fixtureCanonicalWorkDir(TEST_WORKSPACE),
     bypassPermissions: false,
     coralEnv: {},
     ...overrides,
@@ -84,7 +94,7 @@ type CodexRuntime = ProviderAppServerRuntime<CodexExecutionPlan>;
 function makeRuntime(
   lease: AppServerSession,
   persistedContinuity: CodexRuntime['persistedContinuity'] = {
-    cwd: '/workspace/persisted',
+    cwd: TEST_PERSISTED_CWD,
     threadId: 'thread-1',
   },
   overrides: Partial<
@@ -137,7 +147,11 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
 describe('codexThreadProvider', () => {
   it.each([
     ['start', { action: 'exec' as const, conversationRef: undefined }, undefined],
-    ['resume', { action: 'resume' as const, conversationRef: 'thread-1' }, { cwd: '/workspace', threadId: 'thread-1' }],
+    [
+      'resume',
+      { action: 'resume' as const, conversationRef: 'thread-1' },
+      { cwd: TEST_WORKSPACE, threadId: 'thread-1' },
+    ],
   ])('rejects hostile effective config before %s RPCs and releases the lease', async (_mode, request, continuity) => {
     const downstreamRpc = vi.fn(async (method: string) => {
       throw new Error(`must not call ${method}`);
@@ -147,7 +161,7 @@ describe('codexThreadProvider', () => {
 
     const events = await collect(codexThreadProvider(makeRequest(request), runtime));
 
-    expect(lease.rpcMock).toHaveBeenCalledWith('config/read', { cwd: '/workspace', includeLayers: false });
+    expect(lease.rpcMock).toHaveBeenCalledWith('config/read', { cwd: TEST_WORKSPACE, includeLayers: false });
     expect(downstreamRpc).not.toHaveBeenCalled();
     expect(lease.rpcMock.mock.calls.map(([method]) => method)).not.toEqual(
       expect.arrayContaining(['thread/start', 'thread/resume', 'turn/start']),
@@ -220,14 +234,14 @@ describe('codexThreadProvider', () => {
           kind: 'continuity',
           conversationRef: 'thread-1',
           resumable: true,
-          providerContinuity: { cwd: '/workspace/persisted', threadId: 'thread-1', turnId: 'turn-1' },
+          providerContinuity: { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1', turnId: 'turn-1' },
         },
         { kind: 'progress', message: 'Thread ready (thread-1).' },
         {
           kind: 'continuity',
           conversationRef: 'thread-1',
           resumable: true,
-          providerContinuity: { cwd: '/workspace/persisted', threadId: 'thread-1', turnId: undefined },
+          providerContinuity: { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1', turnId: undefined },
         },
         { kind: 'progress', message: 'Turn completed.' },
         { kind: 'progress', message: expect.stringContaining('No rollout JSONL found matching thread thread-1') },
@@ -382,8 +396,8 @@ describe('codexThreadProvider', () => {
     const requestA = makeRequest({ sessionId: 'job-a', conversationRef: 'thread-a' });
     const requestB = makeRequest({ sessionId: 'job-b', conversationRef: 'thread-b' });
     const controllerB = new AbortController();
-    const runtimeA = makeRuntime(lease, { cwd: '/workspace', threadId: 'thread-a' });
-    const runtimeB = makeRuntime(lease, { cwd: '/workspace', threadId: 'thread-b' }, { signal: controllerB.signal });
+    const runtimeA = makeRuntime(lease, { cwd: TEST_WORKSPACE, threadId: 'thread-a' });
+    const runtimeB = makeRuntime(lease, { cwd: TEST_WORKSPACE, threadId: 'thread-b' }, { signal: controllerB.signal });
     runtimeA.executionPlan = buildCodexExecutionPlan({
       access: TEST_CODEX_ACCESS,
       request: requestA,
@@ -571,7 +585,7 @@ describe('codexThreadProvider', () => {
       conversationRef: 'thread-1',
       resumable: true,
       providerContinuity: {
-        cwd: '/workspace/persisted',
+        cwd: TEST_PERSISTED_CWD,
         threadId: 'thread-1',
         turnId: 'turn-1',
       },
@@ -611,7 +625,7 @@ describe('codexThreadProvider', () => {
       conversationRef: 'thread-1',
       resumable: true,
       providerContinuity: {
-        cwd: '/workspace/persisted',
+        cwd: TEST_PERSISTED_CWD,
         threadId: 'thread-1',
         turnId: 'turn-1',
       },
@@ -1363,7 +1377,7 @@ describe('codexThreadProvider', () => {
     });
     const runtime = makeRuntime(
       lease,
-      { cwd: '/workspace/persisted', threadId: 'thread-1' },
+      { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
       {
         env: {
           homedir: () => '/home/test',
@@ -1440,7 +1454,7 @@ describe('codexThreadProvider', () => {
     });
     const runtime = makeRuntime(
       lease,
-      { cwd: '/workspace/persisted', threadId: 'thread-1' },
+      { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
       { signal: controller.signal },
     );
     const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
@@ -1513,7 +1527,7 @@ describe('codexThreadProvider', () => {
     });
     const runtime = makeRuntime(
       lease,
-      { cwd: '/workspace/persisted', threadId: 'thread-1' },
+      { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
       { signal: controller.signal },
     );
     const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
@@ -1546,7 +1560,7 @@ describe('codexThreadProvider', () => {
     const requestedDelaysMs: number[] = [];
     const runtime = makeRuntime(
       lease,
-      { cwd: '/workspace/persisted', threadId: 'thread-1' },
+      { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
       {
         signal: controller.signal,
         time: {
@@ -1587,7 +1601,7 @@ describe('codexThreadProvider', () => {
     lease.interrupt = vi.fn(async () => ({ kind: 'not-accepted' as const, reason: 'test refusal' }));
     const runtime = makeRuntime(
       lease,
-      { cwd: '/workspace/persisted', threadId: 'thread-1' },
+      { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
       { signal: controller.signal },
     );
     const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
@@ -1621,7 +1635,7 @@ describe('codexThreadProvider', () => {
     const eventsPromise = collect(
       codexThreadProvider(
         makeRequest(),
-        makeRuntime(lease, { cwd: '/workspace/persisted', threadId: 'thread-1' }, { signal: controller.signal }),
+        makeRuntime(lease, { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' }, { signal: controller.signal }),
       ),
     );
     await vi.waitFor(() => expect(starts).toBe(1));

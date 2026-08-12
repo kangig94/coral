@@ -5,8 +5,11 @@ import { assertNever, errorMessage } from '../../infra/error-format.js';
 import type { AppServerProxyPlacementResult } from '../../jobs/contracts/app-server-proxy-route.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { buildJobEventRefs } from '../../jobs/refs.js';
-import type { ProviderOperationTerminalizationPort } from '../../jobs/provider-operation-terminalization.js';
-import type { ProviderOperationTerminalizationResult } from '../../jobs/provider-operation-terminalization.js';
+import {
+  providerHostUnserviceableLastError,
+  type ProviderOperationTerminalizationPort,
+  type ProviderOperationTerminalizationResult,
+} from '../../jobs/provider-operation-terminalization.js';
 import { isAbortStopCause, type ProviderStopCause } from '../../providers/contract.js';
 import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
@@ -1183,12 +1186,17 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
     refusal: ProviderOperationPreparePermanentRefusal,
   ): Extract<ProviderOperationRecord, { phase: 'prestart-cleanup-pending' }> {
-    return this.#prestartCleanupRecord(
-      record,
-      refusal.disposition === 'terminal-failure'
-        ? { kind: 'terminal-failed', code: refusal.code, reason: refusal.reason }
-        : { kind: 'local-authorized', reason: refusal.reason },
-    );
+    if (refusal.disposition !== 'terminal-failure') {
+      return this.#prestartCleanupRecord(record, { kind: 'local-authorized', reason: refusal.reason });
+    }
+    const directive = { kind: 'terminal-failed', code: refusal.code, reason: refusal.reason } as const;
+    return refusal.code === 'provider_host_unserviceable'
+      ? this.#prestartCleanupRecord(
+          record,
+          directive,
+          providerHostUnserviceableLastError(refusal, this.#deps.time.now()),
+        )
+      : this.#prestartCleanupRecord(record, directive);
   }
 
   async #driveGuardianActivation(

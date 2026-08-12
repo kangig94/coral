@@ -15,6 +15,9 @@ import {
 } from './execution-plan.js';
 import { codexAppServerLifecycle, codexPreflight, codexRecoveryLifecycle } from './provider-facets.js';
 import { codexThreadProvider } from './thread-provider.js';
+import { classifyCodexProviderResponseServiceability as classifyCodexProviderResponseServiceabilityImpl } from './serviceability.js';
+
+export const classifyCodexProviderResponseServiceability = classifyCodexProviderResponseServiceabilityImpl;
 
 type ArtifactRecoveryOptions = Parameters<ProviderRecoveryContract<CodexProviderAccess>['finalizeFromArtifacts']>[0];
 

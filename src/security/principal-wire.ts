@@ -30,16 +30,7 @@ export const principalWireSchema = z
     attenuatedCaps: z.array(capabilitySchema).optional(),
   })
   .strict()
-  .transform(
-    (wire): PrincipalWire => ({
-      subject: wire.subject,
-      binding:
-        wire.binding.kind === 'unbound'
-          ? wire.binding
-          : { kind: 'project', root: canonicalizeWorkDir(wire.binding.root, process.cwd()) },
-      attenuatedCaps: wire.attenuatedCaps,
-    }),
-  );
+  .transform((wire): PrincipalWire => wire as PrincipalWire);
 
 const DEFAULT_WIRE_CONTEXT: Required<PrincipalWireContext> = {
   transport: 'wire',
@@ -66,5 +57,15 @@ export function principalToWire(principal: Principal): PrincipalWire {
 
 export function parsePrincipalWire(value: unknown, context: PrincipalWireContext = {}): Principal | null {
   const parsed = principalWireSchema.safeParse(value);
-  return parsed.success ? principalFromWire(parsed.data, context) : null;
+  if (!parsed.success) return null;
+  const wire = parsed.data;
+  return principalFromWire(
+    wire.binding.kind === 'unbound'
+      ? wire
+      : {
+          ...wire,
+          binding: { kind: 'project', root: canonicalizeWorkDir(wire.binding.root, process.cwd()) },
+        },
+    context,
+  );
 }

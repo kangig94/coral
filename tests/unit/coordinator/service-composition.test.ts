@@ -384,7 +384,7 @@ function makeLaunchRecord(
     providerAction: 'exec',
     request: {
       prompt: 'recover me',
-      cwd: '/tmp/project',
+      cwd: projectRoot,
       bypassPermissions: false,
       coralEnv: {},
     },
@@ -2552,7 +2552,7 @@ describe('ExecutionService', () => {
           backendNamespace: TEST_BACKEND_NAMESPACE,
           request: {
             prompt: 'recover me',
-            cwd: '/tmp/project',
+            cwd: ctx.projectRoot,
             bypassPermissions: false,
             coralEnv: {},
           },
@@ -2827,7 +2827,7 @@ describe('ExecutionService', () => {
           backendNamespace: TEST_BACKEND_NAMESPACE,
           request: {
             prompt: 'recover me',
-            cwd: '/tmp/project',
+            cwd: ctx.projectRoot,
             bypassPermissions: false,
             coralEnv: {},
           },
@@ -3008,7 +3008,7 @@ describe('ExecutionService', () => {
           backendNamespace: TEST_BACKEND_NAMESPACE,
           request: {
             prompt: 'recover me',
-            cwd: '/tmp/project',
+            cwd: ctx.projectRoot,
             bypassPermissions: false,
             coralEnv: {},
           },

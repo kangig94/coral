@@ -6,8 +6,15 @@ import {
   type ProviderServerHandle,
   type SpawnProviderServerOptions,
 } from '../providers/app-server-transport.js';
-import type { ProviderResponseDiagnosticFact } from '../providers/host-diagnostics.js';
-import { reduceHostServiceability, type HostServiceabilityState } from '../providers/host-serviceability.js';
+import type { ProviderHostDiagnosticsSnapshot } from '../providers/host-diagnostics.js';
+import {
+  admissionSlotKey,
+  canonicalProviderHostSpecMetadata,
+  createHostAdmissionCollection,
+  type AdmissionSlotKey,
+  type HostAdmissionReservation,
+  type HostAdmissionSnapshot,
+} from '../providers/host-admission.js';
 import { classifyProviderResponseServiceability } from '../providers/serviceability.js';
 import type { AppServerTransport, HostRef, ProviderServerSpec } from '../providers/contract.js';
 import type { AppServerHostAuthority, ManagedHostSession } from '../providers/internal/app-server-host.js';
@@ -180,7 +187,6 @@ type HostPoolEntry = {
   readonly processStartedAtSeconds: number;
   readonly jobId: string | undefined;
   readonly cancellationMode: ProxyHostCancellationMode;
-  serviceability: HostServiceabilityState;
   refCount: number;
   rootTokenReleased: boolean;
   closePromise: Promise<void> | null;
@@ -245,6 +251,11 @@ export interface ProxyAppServerHostAuthority {
   forceClose(hostRef: HostRef): Promise<void>;
 }
 
+export interface ProxyProviderHostAdmissionAuthority {
+  admissionSnapshot(): HostAdmissionSnapshot;
+  confirmEvicted(hostRef: HostRef): boolean;
+}
+
 /**
  * The proxy's own narrower stand-in for `DefaultProviderHostManager`: pools app-server children by executable
  * identity (shared) or identity+job (job-exclusive, so this proxy's own stage-then-activate sequence reuses
@@ -254,9 +265,12 @@ export interface ProxyAppServerHostAuthority {
  * operation stops, which is a reported simplification (see the task report), not an attempt to reproduce that
  * policy exactly.
  */
-export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppServerHostAuthority {
+export function createProxyAppServerHostAuthority(
+  runtime: Runtime,
+): ProxyAppServerHostAuthority & ProxyProviderHostAdmissionAuthority {
   const entries = new Map<string, HostPoolEntry>();
   const closingEntries = new Set<HostPoolEntry>();
+  const admission = createHostAdmissionCollection({ classify: classifyProviderResponseServiceability });
   // Purely informational (mirrors `DefaultProviderHostManager`'s own per-acquisition counter,
   // `src/coordinator/live/admission.ts`); nothing in this pool reads it back.
   let nextGeneration = 0;
@@ -329,6 +343,7 @@ export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppSer
     cancellationMode: ProxyHostCancellationMode,
     spec: ProviderServerSpec,
     options?: Readonly<{ jobId?: string; signal?: AbortSignal }>,
+    placement?: Readonly<{ slot: AdmissionSlotKey; reservation: HostAdmissionReservation }>,
   ): Promise<ManagedHostSession> => {
     assertLeasePolicy(spec, options?.jobId);
     const hostKey = hostKeyFor(spec, operation, cancellationMode, options?.jobId);
@@ -339,49 +354,58 @@ export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppSer
     const generation = nextGeneration++;
     const instanceId = runtime.ids.uuid();
     const reservedRef = hostRefForIdentity(spec, instanceId, options?.jobId, runtime);
-    const initialServiceability = reduceHostServiceability(undefined, {
-      kind: 'instance-started',
-      instanceId: reservedRef.instanceId,
-    }) as HostServiceabilityState;
-    const slot: { current: HostPoolEntry | null } = { current: null };
-    const observeProviderResponse = (fact: ProviderResponseDiagnosticFact): void => {
-      const candidate = slot.current;
-      if (
-        candidate === null ||
-        entries.get(hostKey) !== candidate ||
-        !isMatchingHostRef(reservedRef, candidate, runtime) ||
-        candidate.handle.generation !== fact.generation
-      ) {
-        return;
-      }
-      const state = reduceHostServiceability(candidate.serviceability, {
-        kind: 'finding',
-        instanceId: reservedRef.instanceId,
-        serviceability: classifyProviderResponseServiceability(spec.provider, fact),
-      });
-      if (state !== undefined) candidate.serviceability = state;
-    };
+    if (placement === undefined) {
+      throw new Error('provider_host_admission_missing: fresh placement requires an admission reservation');
+    }
     let handle: ProviderServerHandle | null = null;
     let liveRootCommitted = false;
+    placement.reservation.reserveCandidate({
+      slot: placement.slot,
+      ref: reservedRef,
+      generation,
+      spec: canonicalProviderHostSpecMetadata(spec),
+      host: Object.freeze({
+        owner: 'provider-proxy',
+        hostKey,
+        ownerJobId: options?.jobId ?? null,
+        operationJobId: operation.jobId,
+        operationId: operation.operationId,
+        cancellationMode,
+      }),
+      inspectDiagnostics: () => handle?.inspectDiagnostics() ?? emptyDiagnostics(),
+    });
     try {
       handle = await spawnProviderServerTransport({
         runtime,
         options: spawnOptionsFor(spec, options?.signal),
         generation,
-        observeProviderResponse,
+        observeProviderResponse: (fact) => admission.observe(placement.slot, reservedRef, fact),
       });
       spawningRoots -= 1;
       liveRoots += 1;
       generationRootSlotsSpent += 1;
       liveRootCommitted = true;
+      let entry: HostPoolEntry | null = null;
+      let rootReleasedBeforeEntry = false;
+      const retire = () => {
+        if (entry !== null && entries.get(hostKey) === entry) entries.delete(hostKey);
+        placement.reservation.observeRetired(reservedRef);
+        if (entry !== null) {
+          releaseLiveRoot(entry);
+        } else if (!rootReleasedBeforeEntry) {
+          rootReleasedBeforeEntry = true;
+          liveRoots -= 1;
+        }
+      };
+      void handle.closePromise.then(retire, retire);
       const processStartedAtSeconds = probeProcessStartedAtSeconds(
         handle.pid,
         runtime.env.platform() as NodeJS.Platform,
       );
-      if (processStartedAtSeconds === null) {
+      if (processStartedAtSeconds === null || handle.isClosed()) {
         throw new Error(`Provider server ${spec.provider} could not have its own start time read after spawn.`);
       }
-      const entry: HostPoolEntry = {
+      entry = {
         hostKey,
         spec,
         instanceId,
@@ -390,25 +414,21 @@ export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppSer
         processStartedAtSeconds,
         jobId: options?.jobId,
         cancellationMode,
-        serviceability: initialServiceability,
         refCount: 0,
-        rootTokenReleased: false,
+        rootTokenReleased: rootReleasedBeforeEntry,
         closePromise: null,
       };
-      slot.current = entry;
       entries.set(hostKey, entry);
-      void handle.closePromise.then(
-        () => releaseLiveRoot(entry),
-        () => {},
-      );
+      placement.reservation.markLive(reservedRef, generation);
       return managedSessionFor(entry);
     } catch (error: unknown) {
       if (!liveRootCommitted) {
         spawningRoots -= 1;
+        placement.reservation.observeRetired(reservedRef);
       } else if (handle !== null) {
         try {
           await handle.close();
-          liveRoots -= 1;
+          placement.reservation.observeRetired(reservedRef);
         } catch {
           // A failed close retains the live-root token because process absence was not confirmed.
         }
@@ -445,7 +465,13 @@ export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppSer
           }
           cancellationMode = mode;
         },
-        openSession: (spec, options) => openSession(operation, selectedMode(), spec, options),
+        openSession: (spec, options) => {
+          const cancellationMode = selectedMode();
+          const slot = admissionSlotKey(hostKeyFor(spec, operation, cancellationMode, options?.jobId));
+          return admission.withFreshPlacement(slot, (reservation) =>
+            openSession(operation, cancellationMode, spec, options, { slot, reservation }),
+          );
+        },
         attachSession: (hostRef, expectation) => attachSession(operation, selectedMode(), hostRef, expectation),
       };
     },
@@ -492,5 +518,21 @@ export function createProxyAppServerHostAuthority(runtime: Runtime): ProxyAppSer
       }
       if (matched !== undefined) await closeEntry(matched);
     },
+
+    admissionSnapshot() {
+      return admission.snapshot();
+    },
+
+    confirmEvicted(hostRef) {
+      return admission.confirmEvicted(hostRef);
+    },
   };
+}
+
+function emptyDiagnostics(): ProviderHostDiagnosticsSnapshot {
+  return Object.freeze({
+    hostLog: Object.freeze({ entries: Object.freeze([]), retainedBytes: 0, truncatedBeforeSeq: 0 }),
+    completedObservations: Object.freeze([]),
+    factsTruncatedBeforeSeq: 0,
+  });
 }

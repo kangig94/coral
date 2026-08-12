@@ -80,7 +80,7 @@ describe('persisted recovery work-directory decoding', () => {
     const persistedCwd = join(requestCwd, 'deleted-continuity-cwd');
 
     expectPersistedRecoveryRefusal('Codex-continuity boundary', persistedCwd, requestCwd, () =>
-      resolveCodexHostCwd(requestCwd, { cwd: persistedCwd, threadId: 'thread-recovered' }),
+      resolveCodexHostCwd(requestCwd, { cwd: persistedCwd }),
     );
   });
 });

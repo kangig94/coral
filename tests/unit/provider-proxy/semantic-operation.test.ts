@@ -10,6 +10,8 @@ const providerRegistryDouble = vi.hoisted(() => ({
   rehydrateBinding: vi.fn(),
 }));
 vi.mock('#src/providers/bootstrap.js', () => ({
+  classifyProviderResponseServiceability: (_provider: string, fact: ProviderResponseDiagnosticFact) =>
+    fact.method === 'config/read' ? (fact.response.kind === 'success' ? 'serviceable' : 'unserviceable') : 'unknown',
   createBuiltInProviderRegistry: () => ({
     connectAppServerHost: () => {},
     rehydrateBinding: (binding: unknown) => providerRegistryDouble.rehydrateBinding(binding),
@@ -34,6 +36,8 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
 });
 
 import { spawnProviderServerTransport, type ProviderServerHandle } from '#src/providers/app-server-transport.js';
+import type { ProviderResponseDiagnosticFact } from '#src/providers/host-diagnostics.js';
+import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { providerRequestFailed } from '#src/providers/fault.js';
@@ -1452,6 +1456,36 @@ describe('semantic-operation runtime: prepare refusal classification', () => {
       reason: 'provider creation failed',
     });
   });
+
+  it('returns an exact terminal provider-host refusal when fresh placement is blocked', async () => {
+    const { proxy } = createTestProxy();
+    const hostRef = fakeHostRef('codex');
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        name: 'codex',
+        execute: unreachable('execute') as unknown as (
+          runtime: BoundProviderAppServerExecutionRuntime,
+        ) => AsyncIterable<ProviderEventBody>,
+        openReplacement: async () => {
+          throw new ProviderHostUnserviceableError(hostRef);
+        },
+      }),
+    });
+    const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
+
+    await expect(host.ensureProviderRoot(testKey(), preparedFixture({ provider: 'codex' }))).resolves.toEqual({
+      state: 'permanent-refusal',
+      code: 'provider_host_unserviceable',
+      disposition: 'terminal-failure',
+      reason: `Provider host ${hostRef.provider}/${hostRef.instanceId} is unserviceable; evict that exact host before retrying fresh placement.`,
+      hostRef,
+      remediation: {
+        action: 'evict-provider-host',
+        command: 'coral backend provider-host evict <host-ref>',
+      },
+    });
+  });
 });
 
 // --- createProxyAppServerHostAuthority: the host pool -----------------------------------------------------
@@ -1459,7 +1493,9 @@ describe('semantic-operation runtime: prepare refusal classification', () => {
 function fakeProviderServerHandle(options?: { pid?: number }): {
   handle: ProviderServerHandle;
   closeMock: ReturnType<typeof vi.fn>;
+  resolveClosed(): void;
 } {
+  const closed = deferred<Error | void>();
   const closeMock = vi.fn(async () => {});
   const handle: ProviderServerHandle = {
     pid: options?.pid ?? 1_000,
@@ -1470,7 +1506,7 @@ function fakeProviderServerHandle(options?: { pid?: number }): {
       notify: vi.fn(),
     },
     onNotification: vi.fn(() => () => {}) as unknown as ProviderServerHandle['onNotification'],
-    closePromise: new Promise(() => {}),
+    closePromise: closed.promise,
     isClosed: () => false,
     inspectDiagnostics: () => ({
       hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
@@ -1480,7 +1516,23 @@ function fakeProviderServerHandle(options?: { pid?: number }): {
     markExpectedClose: vi.fn(),
     close: closeMock,
   };
-  return { handle, closeMock };
+  return { handle, closeMock, resolveClosed: () => closed.resolve() };
+}
+
+function rejectedConfigRead(generation: number): ProviderResponseDiagnosticFact {
+  return {
+    factSeq: 1,
+    generation,
+    requestId: 1,
+    method: 'config/read',
+    response: {
+      kind: 'failure',
+      rpcCode: -32_603,
+      providerMessage: 'fixture rejection',
+      providerData: { cause: 'fixture' },
+    },
+    hostLog: { startSeq: 1, endSeq: 2 },
+  };
 }
 
 function sharedSpec(overrides: Partial<ProviderServerSpec> = {}): ProviderServerSpec {
@@ -1540,6 +1592,94 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     expect(first.hostRef.instanceId).toBe(second.hostRef.instanceId);
     first.close();
     second.close();
+  });
+
+  it('refuses fresh work on a blocked proxy host while exact attachment remains available', async () => {
+    const first = fakeProviderServerHandle();
+    const second = fakeProviderServerHandle({ pid: 1_001 });
+    first.handle.inspectDiagnostics = () => ({
+      hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 7 },
+      completedObservations: [],
+      factsTruncatedBeforeSeq: 12,
+    });
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(first.handle).mockResolvedValueOnce(second.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const hostSpec = sharedSpec({ provider: 'codex' });
+    const scope = selectedHostScope(authority, testKey(), 'shared-acknowledged-interrupt');
+    const opened = await scope.openSession(hostSpec);
+    const firstSpawn = vi.mocked(spawnProviderServerTransport).mock.calls[0]?.[0];
+    firstSpawn?.observeProviderResponse(rejectedConfigRead(0));
+
+    const attached = await scope.attachSession(opened.hostRef, { spec: hostSpec, jobId: 'attached-job' });
+    await expect(attached?.session.rpc('interrupt', {})).resolves.toEqual({});
+    await expect(scope.openSession(hostSpec)).rejects.toMatchObject({
+      code: 'provider_host_unserviceable',
+      hostRef: opened.hostRef,
+      remediation: { action: 'evict-provider-host' },
+    });
+    expect(spawnProviderServerTransport).toHaveBeenCalledOnce();
+
+    first.resolveClosed();
+    await vi.waitFor(() =>
+      expect(authority.admissionSnapshot().state.values().next().value?.phase).toBe('retired-blocked'),
+    );
+    expect(authority.admissionSnapshot().tombstones[0]).toMatchObject({
+      ref: opened.hostRef,
+      spec: { cwd: hostSpec.cwd },
+      retirement: { status: 'retired', processAbsent: true },
+      diagnostics: {
+        hostLog: { truncatedBeforeSeq: 7 },
+        factsTruncatedBeforeSeq: 12,
+      },
+    });
+    await expect(scope.openSession(hostSpec)).rejects.toMatchObject({ code: 'provider_host_unserviceable' });
+
+    expect(authority.confirmEvicted({ ...opened.hostRef, instanceId: 'stale-instance' })).toBe(false);
+    expect(authority.confirmEvicted(opened.hostRef)).toBe(true);
+    const replacement = await scope.openSession(hostSpec);
+    expect(replacement.hostRef.instanceId).not.toBe(opened.hostRef.instanceId);
+    expect(spawnProviderServerTransport).toHaveBeenCalledTimes(2);
+
+    firstSpawn?.observeProviderResponse(rejectedConfigRead(1));
+    expect(authority.admissionSnapshot().state.values().next().value).toMatchObject({
+      ref: replacement.hostRef,
+      generation: 1,
+      phase: 'live',
+    });
+
+    attached?.close();
+    opened.close();
+    replacement.close();
+  });
+
+  it('keeps operation-isolated admission keyed by operation identity', async () => {
+    const first = fakeProviderServerHandle();
+    const second = fakeProviderServerHandle({ pid: 1_001 });
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(first.handle).mockResolvedValueOnce(second.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const hostSpec = exclusiveSpec();
+    const firstScope = selectedHostScope(
+      authority,
+      { jobId: 'job-a', operationId: 'operation-a' },
+      'operation-isolated',
+    );
+    const opened = await firstScope.openSession(hostSpec, { jobId: 'job-a' });
+    vi.mocked(spawnProviderServerTransport).mock.calls[0]?.[0].observeProviderResponse(rejectedConfigRead(0));
+    first.resolveClosed();
+    await vi.waitFor(() => expect(authority.admissionSnapshot().tombstones).toHaveLength(1));
+
+    const secondScope = selectedHostScope(
+      authority,
+      { jobId: 'job-a', operationId: 'operation-b' },
+      'operation-isolated',
+    );
+    const otherOperation = await secondScope.openSession(hostSpec, { jobId: 'job-a' });
+    expect(otherOperation.hostRef.instanceId).not.toBe(opened.hostRef.instanceId);
+    expect(authority.admissionSnapshot().state.size).toBe(2);
+    expect(spawnProviderServerTransport).toHaveBeenCalledTimes(2);
+
+    opened.close();
+    otherOperation.close();
   });
 
   it('refuses a concurrent second isolated root and reuses the token after the first closes (C3-M7)', async () => {

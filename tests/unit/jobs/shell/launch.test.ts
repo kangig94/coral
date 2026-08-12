@@ -20,6 +20,7 @@ import {
 } from '#src/providers/stream.js';
 import type { AppServerTransport, HostRef, ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
 import type { AppServerHostAuthority } from '#src/providers/internal/app-server-host.js';
+import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 import type { AppServerProxyRoute } from '#src/jobs/contracts/app-server-proxy-route.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
@@ -387,10 +388,11 @@ function makeAppServerProvider(): {
 /** The minimal `AppServerHostAuthority` an app-server provider's *local* path needs to open a session at
  *  all — only `openSession` is ever reached (this fixture's provider never recovers/attaches), so
  *  `attachSession` stays a stub. */
-function fakeAppServerHostAuthority(): AppServerHostAuthority {
+function fakeAppServerHostAuthority(openError?: Error): AppServerHostAuthority {
   let counter = 0;
   return {
     openSession: async (spec, sessionOptions) => {
+      if (openError !== undefined) throw openError;
       counter += 1;
       const base = { provider: spec.provider, fingerprint: 'f'.repeat(64), instanceId: `inst-${counter}` };
       const hostRef: HostRef =
@@ -1487,6 +1489,52 @@ describe('ExecutionService launch', () => {
       expect(getInternals(service).progressStore.readTerminalProjection(decision.jobId)?.outcome).toEqual({
         kind: 'completed',
       });
+    });
+
+    it('terminalizes a local blocked-host admission with exact identity and remediation', async () => {
+      const { provider, execute } = makeAppServerProvider();
+      const hostRef: HostRef = {
+        provider: 'codex',
+        fingerprint: 'f'.repeat(64),
+        instanceId: 'blocked-local-host',
+        leaseMode: 'job-exclusive',
+        ownerJobId: 'owner-job',
+      };
+      mockState.getNewProvider.mockReturnValue(provider);
+      const service = createService(ctx, {
+        appServerHostAuthority: fakeAppServerHostAuthority(new ProviderHostUnserviceableError(hostRef)),
+      });
+
+      const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') throw new Error('expected running launch');
+      trackJob(decision.jobId);
+      await waitForTerminalEvent(service, decision.jobId);
+
+      const { progressStore } = getInternals(service);
+      const rows = progressStore
+        .getDb()
+        .prepare<
+          [string],
+          { body: Uint8Array }
+        >("SELECT body FROM events WHERE stream_id = ? AND type = 'job.progress.emitted' ORDER BY seq ASC")
+        .all(decision.jobId);
+      const bodies = rows.map((row) => JSON.parse(Buffer.from(row.body).toString('utf8')) as unknown);
+      expect(bodies).toContainEqual({
+        kind: 'domain',
+        stage: 'provider_operation_failed',
+        message: `Provider host ${hostRef.provider}/${hostRef.instanceId} is unserviceable; evict that exact host before retrying fresh placement.`,
+        detail: {
+          code: 'provider_host_unserviceable',
+          hostRef,
+          remediation: {
+            action: 'evict-provider-host',
+            command: 'coral backend provider-host evict <host-ref>',
+          },
+        },
+      });
+      expect(progressStore.readTerminalProjection(decision.jobId)?.outcome.kind).toBe('failed');
+      expect(execute).not.toHaveBeenCalled();
     });
 
     it('runs the local executor when the route explicitly authorizes local placement', async () => {

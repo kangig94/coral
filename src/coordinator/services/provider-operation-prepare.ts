@@ -28,7 +28,7 @@ import type {
  * reconciler to classify; they are not silently relabeled as transient here.
  */
 export const providerOperationPrepareMaterializationResultSchema = z
-  .discriminatedUnion('state', [
+  .union([
     z.object({ state: z.literal('prepared'), prepared: proxyPreparedAppServerOperationSchema }).strict(),
     providerOperationPreparePermanentRefusalSchema,
   ])

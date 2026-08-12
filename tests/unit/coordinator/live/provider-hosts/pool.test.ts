@@ -300,7 +300,7 @@ describe('provider host pool', () => {
     await manager.shutdown();
   });
 
-  it('keeps the exact acquired entry when equal-generation exclusive hosts share an owner job', async () => {
+  it('single-flights one job-exclusive placement for equal specs with the same owner job', async () => {
     const first = createFakeProviderServerHandle({ generation: 41 });
     const second = createFakeProviderServerHandle({ generation: 41 });
     const manager = new DefaultProviderHostManager({
@@ -312,7 +312,9 @@ describe('provider host pool', () => {
     const sessionA = await manager.openSession(createLaunch(spec), { jobId: 'same-job' });
     const sessionB = await manager.openSession(createLaunch(spec), { jobId: 'same-job' });
 
-    expect(sessionA.hostRef.instanceId).not.toBe(sessionB.hostRef.instanceId);
+    expect(sessionA.hostRef.instanceId).toBe(sessionB.hostRef.instanceId);
+    expect((manager as unknown as { entries: Map<string, ProviderHostEntry> }).entries.size).toBe(1);
+    expect(first.closeMock).not.toHaveBeenCalled();
     expect(await manager.attachSession(sessionA.hostRef, expectedHost(spec, 'same-job'))).not.toBeNull();
     expect(await manager.attachSession(sessionB.hostRef, expectedHost(spec, 'same-job'))).not.toBeNull();
 

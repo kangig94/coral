@@ -16,9 +16,11 @@ const PRODUCTION_FILES = listProductionSourceFiles(join(REPO_ROOT, 'src'));
 const CANONICAL_PATHS = new Map(
   PRODUCTION_FILES.map((filePath) => [toCanonicalSrcPath(REPO_ROOT, filePath), filePath] as const),
 );
-const SERVICEABILITY_COMPOSITION = 'src/providers/serviceability.ts';
+const SERVICEABILITY_COMPOSITION = 'src/providers/bootstrap.ts';
+const SERVICEABILITY_SEAM = 'src/providers/serviceability.ts';
 const TRANSPORT = 'src/providers/app-server-transport.ts';
 const DIAGNOSTICS = 'src/providers/host-diagnostics.ts';
+const ADMISSION = 'src/providers/host-admission.ts';
 const COORDINATOR_OWNER = 'src/coordinator/live/provider-hosts/index.ts';
 const COORDINATOR_SPAWNER = 'src/coordinator/live/admission.ts';
 const PROXY_OWNER = 'src/provider-proxy/provider-root-authority.ts';
@@ -228,13 +230,13 @@ describe('provider response serviceability decision layers', () => {
   it('wires a live sink through both host owners and the coordinator spawn forwarder', () => {
     const edges = parseProductionImportEdges(REPO_ROOT, PRODUCTION_FILES);
     const importers = edges
-      .filter((edge) => edge.runtime && edge.target === SERVICEABILITY_COMPOSITION)
+      .filter((edge) => edge.runtime && edge.target === SERVICEABILITY_SEAM)
       .map((edge) => edge.source)
       .sort();
     expect(importers).toEqual([COORDINATOR_OWNER, PROXY_OWNER].sort());
 
     const coordinatorOwnerCalls = callsNamed(parse(COORDINATOR_OWNER), 'spawnProviderServer');
-    expect(coordinatorOwnerCalls.some((call) => call.arguments.length === 2)).toBe(true);
+    expect(coordinatorOwnerCalls.some((call) => call.arguments.length === 3)).toBe(true);
     const coordinatorTransportCalls = callsNamed(parse(COORDINATOR_SPAWNER), 'spawnProviderServerTransport');
     expect(coordinatorTransportCalls.some((call) => objectArgumentHasProperty(call, 'observeProviderResponse'))).toBe(
       true,
@@ -244,14 +246,12 @@ describe('provider response serviceability decision layers', () => {
   });
 
   it('guards both owner sinks by reserved slot, exact ref, and transport generation', () => {
-    const coordinator = parse(COORDINATOR_OWNER).getText();
-    expect(coordinator).toContain('this.entries.get(entry.hostKey) !== entry');
-    expect(coordinator).toContain('hostRefsMatch(hostRefFromEntry(entry), expectedRef)');
-    expect(coordinator).toContain('handle.generation !== fact.generation');
+    expect(parse(COORDINATOR_OWNER).getText()).toContain('this.admission.observe(admission.slot, hostRef, fact)');
+    expect(parse(PROXY_OWNER).getText()).toContain('admission.observe(placement.slot, reservedRef, fact)');
 
-    const proxy = parse(PROXY_OWNER).getText();
-    expect(proxy).toContain('entries.get(hostKey) !== candidate');
-    expect(proxy).toContain('isMatchingHostRef(reservedRef, candidate, runtime)');
-    expect(proxy).toContain('candidate.handle.generation !== fact.generation');
+    const admission = parse(ADMISSION).getText();
+    expect(admission).toContain('matchingCandidate(state, slot, ref, fact.generation)');
+    expect(admission).toContain('exactHostRefsMatch(placement.ref, ref)');
+    expect(admission).toContain('current.generation === generation && exactHostRefsMatch(current.ref, ref)');
   });
 });

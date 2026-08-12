@@ -16,8 +16,10 @@ import {
   type ProviderHostDiagnosticsSnapshot,
   type ProviderHostDiagnosticsState,
   type ProviderHostLogCursorSpan,
-  type ProviderResponseObservationSink,
+  type ProviderResponseObservationSink as HostResponseObservationSink,
 } from './host-diagnostics.js';
+
+export type ProviderResponseObservationSink = HostResponseObservationSink;
 
 export const PROVIDER_SERVER_MAX_JSONL_LINE_BYTES = MAX_BUFFER;
 export const PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS = 30_000;
@@ -154,6 +156,7 @@ export type SpawnProviderServerOptions = {
 export type SpawnProviderServerFn = (
   options: SpawnProviderServerOptions,
   observeProviderResponse: ProviderResponseObservationSink,
+  generation: number,
 ) => Promise<ProviderServerHandle>;
 
 function resolveProviderServerInitializeTimeoutMs(timeoutMs: number | undefined): number {

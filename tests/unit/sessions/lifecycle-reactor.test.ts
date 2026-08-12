@@ -112,7 +112,7 @@ function createHarness(
   openDbs.add(db);
 
   const namespace = 'test-ns';
-  const projectRoot = '/workspace/project';
+  const projectRoot = process.cwd();
   const providerRegistry = new ProviderRegistry();
   const discardCalls: Array<readonly string[]> = [];
   const providerBuilder = options.interruptedRecovery

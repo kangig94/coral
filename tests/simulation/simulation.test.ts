@@ -12,7 +12,7 @@ type LaunchReceipt = {
   sessionId: string;
 };
 
-const COMPLETE_DETAIL_PROJECT_ROOT = '/tmp/sim/request-source';
+const COMPLETE_DETAIL_PROJECT_ROOT = process.cwd();
 
 const COMPLETE_SCENARIO: SimulationDocument = {
   world: {

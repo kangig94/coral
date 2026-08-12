@@ -27,7 +27,7 @@ import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { createHandoffCoresHarness, type HandoffCoresHarness } from './handoff-cores-harness.js';
 
 const SEED_TS = '2026-04-27T00:00:00.000Z';
-const PROJECT_ROOT = fixtureCanonicalWorkDir('/handoff-test-project');
+const PROJECT_ROOT = fixtureCanonicalWorkDir(process.cwd());
 const SESSION_ID = 'handoff-session';
 const TOPIC = 'should the new daemon rehydrate this discuss session?';
 

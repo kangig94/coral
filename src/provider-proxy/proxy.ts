@@ -41,6 +41,9 @@ import {
   proxyOperationAttachResultSchema as attachResultSchema,
   proxyOperationPrepareParamsSchema as prepareParamsSchema,
   proxyOperationPrepareResultSchema,
+  proxyOperationPreparePendingResultSchema,
+  proxyOperationPrepareCapacityResultSchema,
+  providerOperationPreparePermanentRefusalSchema,
   proxyOperationReservationParamsSchema as reservationParamsSchema,
   proxyControlOpenParamsSchema as openParamsSchema,
   proxyOperationInspectParamsSchema as inspectParamsSchema,
@@ -203,13 +206,22 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           if (request.hostFingerprint !== capsule.hostFingerprint) {
             throw new ProxyControlProtocolError('identity_mismatch', 'Prepare named a different host fingerprint.');
           }
-          return proxyOperationPrepareResultSchema.parse(
-            await supervisor.prepare(request.operation, {
-              prepareAttemptNumber: request.prepareAttemptNumber,
-              prepareAttemptKey: operationPrepareAttemptKey(request),
-              prepared: request.prepared,
-            }),
-          );
+          const result = await supervisor.prepare(request.operation, {
+            prepareAttemptNumber: request.prepareAttemptNumber,
+            prepareAttemptKey: operationPrepareAttemptKey(request),
+            prepared: request.prepared,
+          });
+          const state = result !== null && typeof result === 'object' && 'state' in result ? result.state : undefined;
+          if (state === 'pending-activation') {
+            return proxyOperationPreparePendingResultSchema.parse(result);
+          }
+          if (state === 'capacity') {
+            return proxyOperationPrepareCapacityResultSchema.parse(result);
+          }
+          if (state === 'permanent-refusal') {
+            return providerOperationPreparePermanentRefusalSchema.parse(result);
+          }
+          return proxyOperationPrepareResultSchema.parse(result);
         },
       },
     ],

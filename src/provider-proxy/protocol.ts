@@ -14,6 +14,8 @@ import {
   providerTerminalEventBodySchema,
 } from '../providers/contract.js';
 import { persistedProviderNameSchema } from '../providers/registry.js';
+import { hostRefSchema } from '../providers/host-ref-schema.js';
+import { providerHostRemediationSchema } from '../providers/host-admission.js';
 import {
   MAX_PROXY_OPERATION_LEDGERS,
   operationPrepareAttemptKeySchema,
@@ -760,7 +762,7 @@ export const providerOperationPrepareRefusalCodeSchema = z.enum([
   'proxy_prepare_refused',
 ]);
 
-export const providerOperationPreparePermanentRefusalSchema = z
+const genericProviderOperationPreparePermanentRefusalSchema = z
   .object({
     state: z.literal('permanent-refusal'),
     code: providerOperationPrepareRefusalCodeSchema,
@@ -769,11 +771,27 @@ export const providerOperationPreparePermanentRefusalSchema = z
   })
   .strict();
 
+export const providerHostUnserviceablePrepareRefusalSchema = z
+  .object({
+    state: z.literal('permanent-refusal'),
+    code: z.literal('provider_host_unserviceable'),
+    disposition: z.literal('terminal-failure'),
+    reason: z.string().min(1).max(4096),
+    hostRef: hostRefSchema,
+    remediation: providerHostRemediationSchema,
+  })
+  .strict();
+
+export const providerOperationPreparePermanentRefusalSchema = z.union([
+  providerHostUnserviceablePrepareRefusalSchema,
+  genericProviderOperationPreparePermanentRefusalSchema,
+]);
+
 export type ProviderOperationPreparePermanentRefusal = Readonly<
   z.output<typeof providerOperationPreparePermanentRefusalSchema>
 >;
 
-export const proxyOperationPrepareResultSchema = z.discriminatedUnion('state', [
+export const proxyOperationPrepareResultSchema = z.union([
   proxyOperationPreparePendingResultSchema,
   proxyOperationPrepareCapacityResultSchema,
   providerOperationPreparePermanentRefusalSchema,
@@ -786,32 +804,13 @@ export const proxyOperationRenewResultSchema = z
 
 export const activationFingerprintSchema = operationPrepareAttemptKeySchema;
 
-const proxyOperationHostRefIdentitySchema = z
-  .object({
-    provider: persistedProviderNameSchema,
-    fingerprint: hostFingerprintSchema,
-    instanceId: z.string().min(1),
-  })
-  .strict();
-
-export const proxyOperationHostRefSchema = z.discriminatedUnion('leaseMode', [
-  z.object({ ...proxyOperationHostRefIdentitySchema.shape, leaseMode: z.literal('shared') }).strict(),
-  z
-    .object({
-      ...proxyOperationHostRefIdentitySchema.shape,
-      leaseMode: z.literal('job-exclusive'),
-      ownerJobId: z.string().min(1),
-    })
-    .strict(),
-]);
-
 /** `operation.activate.v1`'s result and the receipt retained for replay. */
 export const proxyOperationActivateResultSchema = z
   .object({
     state: z.literal('executing'),
     activationFingerprint: activationFingerprintSchema,
     startedAt: z.string().datetime(),
-    hostRef: proxyOperationHostRefSchema,
+    hostRef: hostRefSchema,
     committedThroughProviderSeq: nonNegativeSafeIntegerSchema,
   })
   .strict();
@@ -883,7 +882,7 @@ const proxyOperationInspectPreExecutionBaseSchema = z.object({
   leaseExpiresInMs: z.number(),
 });
 
-export const proxyOperationInspectResultSchema = z.discriminatedUnion('state', [
+export const proxyOperationInspectResultSchema = z.union([
   z.object({ state: z.literal('absent') }).strict(),
   providerOperationPreparePermanentRefusalSchema,
   proxyOperationInspectPreExecutionBaseSchema.extend({ state: z.literal('preparing') }).strict(),

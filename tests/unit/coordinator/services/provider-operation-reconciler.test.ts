@@ -30,11 +30,15 @@ import {
 } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
-import { proxyOperationAttachResultSchema } from '#src/provider-proxy/protocol.js';
+import {
+  providerOperationPreparePermanentRefusalSchema,
+  proxyOperationAttachResultSchema,
+} from '#src/provider-proxy/protocol.js';
 import { createGrantRegistry, handoffSecretDigest, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import {
   ProviderOperationAtomicTerminalizationError,
   ProviderOperationTerminalMetadataError,
+  providerHostUnserviceableLastError,
   terminalizeProviderOperation,
   type ProviderOperationTerminalizationPort,
 } from '#src/jobs/provider-operation-terminalization.js';
@@ -233,7 +237,7 @@ const PREPARED = {
     action: 'exec',
     sessionId: 'session-1',
     prompt: 'do the thing',
-    cwd: fixtureCanonicalWorkDir('/workspace'),
+    cwd: fixtureCanonicalWorkDir(process.cwd()),
     bypassPermissions: false,
     coralEnv: {},
   },
@@ -435,7 +439,7 @@ function createHarness(
       owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
       sessionId: record.prepareSource.sessionId,
       provider: providerName,
-      projectRoot: fixtureCanonicalWorkDir('/workspace'),
+      projectRoot: fixtureCanonicalWorkDir(process.cwd()),
       backendNamespace: 'tests',
       jobKind: 'provider',
       phase: 'running',
@@ -446,7 +450,7 @@ function createHarness(
       owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
       sessionId: record.prepareSource.sessionId,
       provider: providerName,
-      projectRoot: fixtureCanonicalWorkDir('/workspace'),
+      projectRoot: fixtureCanonicalWorkDir(process.cwd()),
       backendNamespace: 'tests',
       pool: 'curate',
       enqueueSequence: 1,
@@ -455,7 +459,7 @@ function createHarness(
       providerAction: 'exec',
       request: {
         prompt: 'do the thing',
-        cwd: fixtureCanonicalWorkDir('/workspace'),
+        cwd: fixtureCanonicalWorkDir(process.cwd()),
         bypassPermissions: false,
         coralEnv: {},
       },
@@ -617,6 +621,113 @@ function createHarness(
     },
   };
 }
+
+const hostUnserviceableRef = {
+  provider: 'codex',
+  fingerprint: 'a'.repeat(64),
+  instanceId: 'blocked-host-instance',
+  leaseMode: 'shared',
+} as const;
+const parsedHostUnserviceableRefusal = providerOperationPreparePermanentRefusalSchema.parse({
+  state: 'permanent-refusal',
+  code: 'provider_host_unserviceable',
+  disposition: 'terminal-failure',
+  reason: 'The exact provider host is blocked.',
+  hostRef: hostUnserviceableRef,
+  remediation: {
+    action: 'evict-provider-host',
+    command: 'coral backend provider-host evict <host-ref>',
+  },
+});
+if (parsedHostUnserviceableRefusal.code !== 'provider_host_unserviceable') {
+  throw new Error('structured provider-host refusal fixture parsed as a generic refusal');
+}
+const hostUnserviceableRefusal = parsedHostUnserviceableRefusal;
+const hostUnserviceableDirective = {
+  kind: 'terminal-failed',
+  code: hostUnserviceableRefusal.code,
+  reason: hostUnserviceableRefusal.reason,
+} as const;
+const hostUnserviceableLastError = providerHostUnserviceableLastError(hostUnserviceableRefusal, 1);
+const hostUnserviceableDetail = {
+  code: hostUnserviceableRefusal.code,
+  hostRef: hostUnserviceableRefusal.hostRef,
+  remediation: hostUnserviceableRefusal.remediation,
+} as const;
+
+describe('provider host unserviceable refusal durability', () => {
+  function expectStructuredTerminal(appended: readonly unknown[]): void {
+    expect(appended).toEqual([
+      expect.objectContaining({
+        type: 'job.progress.emitted',
+        body: {
+          kind: 'domain',
+          stage: 'provider_operation_failed',
+          message: hostUnserviceableRefusal.reason,
+          detail: hostUnserviceableDetail,
+        },
+      }),
+      expect.objectContaining({ type: 'job.terminal.recorded' }),
+    ]);
+  }
+
+  it('preserves the exact terminal payload through direct, ambiguous, startup, and disappearance paths', async () => {
+    const directRecovery = vi.fn(async (record) => providerRecoveryAccepted(record.operation.jobId));
+    const direct = createHarness({
+      prepareOperation: async () => hostUnserviceableRefusal,
+      recoverLocalJob: directRecovery,
+    });
+    await expect(direct.begin()).resolves.toEqual({ kind: 'terminalized' });
+    expectStructuredTerminal(direct.appended);
+    expect(directRecovery).not.toHaveBeenCalled();
+
+    const ambiguousError = Object.assign(new Error('prepare reply was lost'), { code: 'control_call_failed' });
+    const ambiguousRecovery = vi.fn(async (record) => providerRecoveryAccepted(record.operation.jobId));
+    const ambiguous = createHarness({
+      prepareOperation: async () => {
+        throw ambiguousError;
+      },
+      inspectOperation: async () => hostUnserviceableRefusal,
+      recoverLocalJob: ambiguousRecovery,
+    });
+    await expect(ambiguous.begin()).resolves.toEqual({ kind: 'terminalized' });
+    expectStructuredTerminal(ambiguous.appended);
+    expect(ambiguousRecovery).not.toHaveBeenCalled();
+
+    const startupRecovery = vi.fn(async (record) => providerRecoveryAccepted(record.operation.jobId));
+    const startup = createHarness({ recoverLocalJob: startupRecovery });
+    const startupRecord = providerOperationRecordSchema.parse({
+      ...providerOperationRecord('prestart-cleanup-pending'),
+      afterRelease: hostUnserviceableDirective,
+      lastError: hostUnserviceableLastError,
+    });
+    insertProviderOperation(startup.db, startupRecord);
+    await startup.reconciler.reconcileAtStartup(new AbortController().signal);
+    expectStructuredTerminal(startup.appended);
+    expect(startupRecovery).not.toHaveBeenCalled();
+
+    const disappearanceRecovery = vi.fn(async (record) => providerRecoveryAccepted(record.operation.jobId));
+    const disappearance = createHarness({ recoverLocalJob: disappearanceRecovery });
+    const disappearanceRecord = providerOperationRecordSchema.parse({
+      ...providerOperationRecord('prestart-cleanup-pending'),
+      afterRelease: hostUnserviceableDirective,
+      lastError: hostUnserviceableLastError,
+    });
+    insertProviderOperation(disappearance.db, disappearanceRecord);
+    await expect(
+      disappearance.reconciler.containmentDisappeared({
+        operation: disappearanceRecord.operation,
+        setIdentity: providerProxySetIdentityFromRecord(disappearanceRecord),
+        disappearanceReceipt: 'blocked-host-containment-absent',
+      }),
+    ).resolves.toMatchObject({
+      kind: 'accepted',
+      acceptance: { disposition: 'terminalization-committed' },
+    });
+    expectStructuredTerminal(disappearance.appended);
+    expect(disappearanceRecovery).not.toHaveBeenCalled();
+  });
+});
 
 describe('ProviderOperationReconciler publication', () => {
   it.each([128, 129])(

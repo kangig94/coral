@@ -15,6 +15,7 @@ import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../../helpers/provider-credential
 
 const tempDirs: string[] = [];
 const httpServers: HttpServer[] = [];
+const PROJECT_ROOT = process.cwd();
 const waitTiming = {
   origin: 'runtime',
   originAt: '2026-07-03T08:00:00.000Z',
@@ -217,7 +218,7 @@ describe('subscription carriage', () => {
         token: 'test-boot-token',
       }).subscribe<ReturnType<typeof makeWaitEvents>[number]>('jobs.wait', {
         jobIds: ['job-1'],
-        projectRoot: '/tmp/project',
+        projectRoot: PROJECT_ROOT,
         timeoutSeconds: 30,
         cursor: expectedCursor,
       });
@@ -231,7 +232,7 @@ describe('subscription carriage', () => {
       expect(requests).toHaveLength(1);
       expect(requests[0]).toMatchObject({
         jobIds: ['job-1'],
-        projectRoot: '/tmp/project',
+        projectRoot: PROJECT_ROOT,
         timeoutSeconds: 30,
         cursor: expectedCursor,
       });
@@ -265,7 +266,7 @@ describe('subscription carriage', () => {
         token: 'test-boot-token',
       }).subscribe<ReturnType<typeof makeWaitEvents>[number]>('jobs.wait', {
         jobIds: ['job-1'],
-        projectRoot: '/tmp/project',
+        projectRoot: PROJECT_ROOT,
         timeoutSeconds: 30,
       });
 
@@ -296,7 +297,7 @@ describe('subscription carriage', () => {
         token: 'test-boot-token',
       }).subscribe<ReturnType<typeof makeWaitEvents>[number]>('jobs.wait', {
         jobIds: ['job-1'],
-        projectRoot: '/tmp/project',
+        projectRoot: PROJECT_ROOT,
         timeoutSeconds: 30,
         cursor: expectedCursor,
       });
@@ -314,7 +315,7 @@ describe('subscription carriage', () => {
         },
         body: JSON.stringify({
           jobIds: ['job-1'],
-          projectRoot: '/tmp/project',
+          projectRoot: PROJECT_ROOT,
           timeoutSeconds: 30,
         }),
       });
@@ -334,7 +335,7 @@ describe('subscription carriage', () => {
       expect(requests).toHaveLength(2);
       expect(requests[1]).toMatchObject({
         jobIds: ['job-1'],
-        projectRoot: '/tmp/project',
+        projectRoot: PROJECT_ROOT,
         timeoutSeconds: 30,
         cursor: expectedCursor,
       });

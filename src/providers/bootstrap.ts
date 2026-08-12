@@ -1,8 +1,25 @@
 import { ProviderRegistry } from './registry.js';
 import { claudeProviderDefinition } from './claude/definition.js';
-import { codexProviderDefinition } from './codex/definition.js';
+import { classifyCodexProviderResponseServiceability, codexProviderDefinition } from './codex/definition.js';
+import type { ProviderResponseDiagnosticFact } from './host-diagnostics.js';
+import type { HostServiceability } from './host-serviceability.js';
 
 const BUILT_IN_PROVIDERS = [codexProviderDefinition, claudeProviderDefinition] as const;
+
+export type ProviderResponseServiceabilityClassifier = (fact: ProviderResponseDiagnosticFact) => HostServiceability;
+
+export const PROVIDER_RESPONSE_SERVICEABILITY_CLASSIFIERS: Readonly<
+  Record<string, ProviderResponseServiceabilityClassifier>
+> = Object.freeze({
+  codex: classifyCodexProviderResponseServiceability,
+});
+
+export function classifyProviderResponseServiceability(
+  provider: string,
+  fact: ProviderResponseDiagnosticFact,
+): HostServiceability {
+  return PROVIDER_RESPONSE_SERVICEABILITY_CLASSIFIERS[provider]?.(fact) ?? 'unknown';
+}
 
 export function registerBuiltInProviders(registry: ProviderRegistry): void {
   let allRegistered = true;

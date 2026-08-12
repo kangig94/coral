@@ -79,6 +79,7 @@ describe('provider host recovery', () => {
         initializeTimeoutMs: 12_345,
       }),
       expect.any(Function),
+      expect.any(Number),
     );
     lease.close();
     await manager.shutdown();

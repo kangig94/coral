@@ -55,7 +55,12 @@ const CONTRACT_TARGETS = new Set([
   // inside `coordinator/live/`, so it crossed no seam to reach. Moving it to the domain that owns provider
   // process adaptation made the edge visible — it did not create one.
   'src/providers/app-server-transport.ts',
+  // Public provider-host seams used by the coordinator-owned pool. Admission policy, diagnostic snapshots,
+  // and serviceability classification remain provider-domain concepts.
   'src/providers/contract.ts',
+  'src/providers/host-admission.ts',
+  'src/providers/host-diagnostics.ts',
+  'src/providers/serviceability.ts',
   'src/providers/protocol.ts',
   'src/providers/registry.ts',
   'src/provider-proxy/bootstrap-capsule.ts',

@@ -365,6 +365,7 @@ export function createCoordinatorWorld(
     const created = createProviderHostManager({
       runtime,
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
+      allocateProviderServerGeneration: launchCoordinator.allocateProviderServerGeneration.bind(launchCoordinator),
       carrierBlocksRetirement,
       proxySetAcquisition: {
         pluginRoot,

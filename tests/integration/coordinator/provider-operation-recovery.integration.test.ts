@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { describe, expect, it, vi } from 'vitest';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -24,7 +27,11 @@ import { providerOperationRecordSchema } from '#src/store/provider-operation-rec
 import { providerOperationRecord } from '../../unit/store/provider-operation-fixtures.js';
 
 const NAMESPACE = 'provider-operation-recovery-integration';
-const PROJECT_ROOT = '/tmp/coral-provider-operation-recovery-integration';
+const PROJECT_ROOT = mkdtempSync(join(tmpdir(), 'coral-provider-operation-recovery-integration-'));
+
+afterAll(() => {
+  rmSync(PROJECT_ROOT, { recursive: true, force: true });
+});
 
 function seedQueuedProviderJob(progressStore: JobStore, jobId: string, sessionId: string): void {
   seedTestSessionProjection(progressStore.getDb(), {

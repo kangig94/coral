@@ -52,6 +52,11 @@ const PROVIDER_PROXY_FORBIDDEN = [
   'src/kb/',
 ] as const;
 const SECURITY_ROOT = 'src/security/';
+const SECURITY_ALLOWED = new Set([
+  // Security owns work-directory admission, but the branded canonical path and its realpath implementation
+  // are runtime contracts shared with persistence and recovery. These are the only non-security source edges.
+  'src/runtime/canonical-work-dir.ts',
+]);
 const TRANSPORT_ALLOWED = new Set([
   'src/expansion/rpc-contract.ts',
   'src/jobs/contracts/abort-registry.ts',
@@ -86,6 +91,10 @@ const COORDINATOR_ALLOWED = new Set([
   // there, which makes this edge visible rather than new.
   'src/providers/app-server-transport.ts',
   'src/providers/contract.ts',
+  'src/providers/host-admission.ts',
+  'src/providers/host-diagnostics.ts',
+  // Both independent host owners consume provider-owned serviceability policy while retaining their live state.
+  'src/providers/serviceability.ts',
 ]);
 const GENERIC_FILENAMES = ['utils.ts', 'types.ts', 'schemas.ts', 'shared.ts', 'shared-utils.ts'] as const;
 const DOMAIN_ROOT_DIRS = [
@@ -163,6 +172,10 @@ describe('architecture layering invariants', () => {
         return false;
       }
 
+      if (SECURITY_ALLOWED.has(target)) {
+        return false;
+      }
+
       return target.startsWith('src/');
     });
 
@@ -233,6 +246,13 @@ describe('architecture layering invariants', () => {
         ),
     );
     expect(unexercisedTransportTargets).toEqual([]);
+
+    const unexercisedSecurityTargets = [...SECURITY_ALLOWED].filter(
+      (target) =>
+        !referencesProductionPath(target) ||
+        !IMPORT_EDGES.some((edge) => edge.source.startsWith(SECURITY_ROOT) && edge.target === target),
+    );
+    expect(unexercisedSecurityTargets).toEqual([]);
 
     const unexercisedGlueSources = [...COORDINATOR_GLUE_EXEMPT].filter(
       (source) =>

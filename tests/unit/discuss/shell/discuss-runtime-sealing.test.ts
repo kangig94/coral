@@ -459,8 +459,8 @@ describe('runtime-sealed discuss behavior', () => {
   it('createSimulationBackend can list and recover persisted discuss state that exists only in runtime storage', async () => {
     const world = createSimulationBackend({
       recoverPersistedDiscuss: 'default',
-      projectRoot: '/virtual/backend/project',
-      pluginRoot: '/virtual/backend/plugin',
+      projectRoot: process.cwd(),
+      pluginRoot: process.cwd(),
     });
     activeBackends.push(world);
     const createdEvents = unwrap(
