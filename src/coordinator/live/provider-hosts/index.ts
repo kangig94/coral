@@ -4,12 +4,10 @@ import type { ProviderHostDiagnosticsSnapshot } from '../../../providers/host-di
 import {
   admissionSlotKey,
   canonicalProviderHostSpecMetadata,
-  createHostAdmissionCollection,
   type AdmissionSlotKey,
   type HostAdmissionReservation,
   type HostAdmissionSnapshot,
 } from '../../../providers/host-admission.js';
-import { classifyProviderResponseServiceability } from '../../../providers/serviceability.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import {
@@ -32,6 +30,7 @@ import {
   type ProviderProxyOperationAuthority,
 } from '../provider-proxy/operation-route.js';
 import type { ProviderProxySetLifecycleRef } from '../../services/provider-proxy-set-lifecycle-ref.js';
+import { createCoordinatorProviderHostAdmission } from '../provider-host-admission.js';
 export type { ProviderHostEntry } from './state.js';
 
 export interface ProviderHostManager {
@@ -170,9 +169,7 @@ export class DefaultProviderHostManager
   implements ProviderHostManager, ProviderProxyAuthorityRegistry, ProviderProxySetRegistration
 {
   private readonly entries = new Map<string, ProviderHostEntry>();
-  private readonly admission = createHostAdmissionCollection({
-    classify: classifyProviderResponseServiceability,
-  });
+  private readonly admission = createCoordinatorProviderHostAdmission();
   private readonly pendingCloses = new Set<Promise<void>>();
   private readonly lifecyclePolicies = new Map<string, string>();
   private nextProviderServerGeneration = 1;

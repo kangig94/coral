@@ -21,11 +21,74 @@ const SERVICEABILITY_SEAM = 'src/providers/serviceability.ts';
 const TRANSPORT = 'src/providers/app-server-transport.ts';
 const DIAGNOSTICS = 'src/providers/host-diagnostics.ts';
 const ADMISSION = 'src/providers/host-admission.ts';
+const SERVICEABILITY_REDUCER = 'src/providers/host-serviceability.ts';
+const COORDINATOR_ADMISSION_LEAF = 'src/coordinator/live/provider-host-admission.ts';
+const PROXY_ADMISSION_LEAF = 'src/provider-proxy/provider-host-admission.ts';
 const COORDINATOR_OWNER = 'src/coordinator/live/provider-hosts/index.ts';
 const COORDINATOR_SPAWNER = 'src/coordinator/live/admission.ts';
 const PROXY_OWNER = 'src/provider-proxy/provider-root-authority.ts';
 const CLASSIFIER_PATH = /^src\/providers\/([^/]+)\/serviceability\.ts$/u;
 const SERVICEABILITY_LITERALS = new Set(['serviceable', 'unserviceable', 'unknown']);
+
+type DecisionSymbol = Readonly<{ path: string; symbol: string }>;
+
+const STATIC_DECISION_SYMBOLS = {
+  factPublishers: [
+    { path: DIAGNOSTICS, symbol: 'recordProviderResponseDiagnostic' },
+    { path: TRANSPORT, symbol: 'handleProviderServerLine' },
+  ],
+  classifierDispatchers: [
+    { path: SERVICEABILITY_COMPOSITION, symbol: 'classifyProviderResponseServiceability' },
+    { path: SERVICEABILITY_SEAM, symbol: 'classifyProviderResponseServiceability' },
+  ],
+  serviceabilityReducers: [{ path: SERVICEABILITY_REDUCER, symbol: 'reduceHostServiceability' }],
+  admissionSymbols: [
+    { path: ADMISSION, symbol: 'reduceHostAdmission' },
+    { path: ADMISSION, symbol: 'createHostAdmissionCollection' },
+  ],
+  admissionCompositionLeaves: [
+    { path: COORDINATOR_ADMISSION_LEAF, symbol: 'createCoordinatorProviderHostAdmission' },
+    { path: PROXY_ADMISSION_LEAF, symbol: 'createProxyProviderHostAdmission' },
+  ],
+} satisfies Readonly<Record<string, readonly DecisionSymbol[]>>;
+
+const FORBIDDEN_CLASSIFIER_EVIDENCE = new Set([
+  'providerMessage',
+  'factSeq',
+  'generation',
+  'requestId',
+  'hostLog',
+  'startSeq',
+  'endSeq',
+]);
+
+const FORBIDDEN_DECISION_BOUND_TOKENS = new Set([
+  'age',
+  'attempt',
+  'attempts',
+  'clock',
+  'consecutive',
+  'count',
+  'counter',
+  'deadline',
+  'duration',
+  'elapsed',
+  'expired',
+  'expiry',
+  'failures',
+  'hrtime',
+  'millisecond',
+  'milliseconds',
+  'monotonic',
+  'ms',
+  'now',
+  'retry',
+  'streak',
+  'time',
+  'timeout',
+  'timestamp',
+  'uptime',
+]);
 
 function parse(relativePath: string): ts.SourceFile {
   const filePath = CANONICAL_PATHS.get(relativePath);
@@ -54,6 +117,13 @@ function exportedClassifierNames(sourceFile: ts.SourceFile): string[] {
       ? [statement.name.text]
       : [],
   );
+}
+
+function classifierFiles(): ReadonlyArray<{ provider: string; path: string; sourceFile: ts.SourceFile }> {
+  return [...CANONICAL_PATHS.keys()].flatMap((path) => {
+    const match = CLASSIFIER_PATH.exec(path);
+    return match?.[1] === undefined ? [] : [{ provider: match[1], path, sourceFile: parse(path) }];
+  });
 }
 
 function registeredClassifiers(): ReadonlyMap<string, string> {
@@ -130,6 +200,76 @@ function propertyNames(typeAliasName: string, sourceFile: ts.SourceFile): string
   );
 }
 
+function namedFunction(sourceFile: ts.SourceFile, name: string): ts.FunctionDeclaration | undefined {
+  return sourceFile.statements.find(
+    (statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === name,
+  );
+}
+
+function nameTokens(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/gu, '$1_$2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter((token) => token.length > 0);
+}
+
+function isForbiddenDecisionBoundName(name: string): boolean {
+  const tokens = nameTokens(name);
+  if (tokens.some((token) => FORBIDDEN_DECISION_BOUND_TOKENS.has(token))) return true;
+  if (tokens.includes('budget') && tokens.includes('retry')) return true;
+  if (tokens.includes('failure') && (tokens.includes('count') || tokens.includes('counter'))) return true;
+  return /(?:observed|started|finished|created|updated)_at/u.test(tokens.join('_'));
+}
+
+function decisionBoundViolations(spec: DecisionSymbol): string[] {
+  const sourceFile = parse(spec.path);
+  const declaration = namedFunction(sourceFile, spec.symbol);
+  if (declaration === undefined) return [`${spec.path}:${spec.symbol} is absent from the decision closure`];
+
+  const violations: string[] = [];
+  const report = (node: ts.Node, detail: string): void => {
+    const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+    violations.push(`${spec.path}:${spec.symbol}:${line + 1}:${character + 1} ${detail}`);
+  };
+  visit(declaration, (node) => {
+    if (ts.isIdentifier(node) && isForbiddenDecisionBoundName(node.text)) {
+      report(node, `references forbidden decision-bound symbol '${node.text}'`);
+    }
+    if (ts.isStringLiteralLike(node) && isForbiddenDecisionBoundName(node.text)) {
+      report(node, `references forbidden decision-bound text '${node.text}'`);
+    }
+    if (
+      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+      (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)
+    ) {
+      report(node, `mutates a decision counter with '${node.getText(sourceFile)}'`);
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      [
+        ts.SyntaxKind.PlusEqualsToken,
+        ts.SyntaxKind.MinusEqualsToken,
+        ts.SyntaxKind.AsteriskEqualsToken,
+        ts.SyntaxKind.SlashEqualsToken,
+      ].includes(node.operatorToken.kind)
+    ) {
+      report(node, `mutates decision state arithmetically with '${node.getText(sourceFile)}'`);
+    }
+  });
+  return [...new Set(violations)];
+}
+
+function decisionClosureInventory(): Readonly<Record<string, readonly DecisionSymbol[]>> {
+  return {
+    ...STATIC_DECISION_SYMBOLS,
+    providerClassifiers: classifierFiles().flatMap(({ path, sourceFile }) =>
+      exportedClassifierNames(sourceFile).map((symbol) => ({ path, symbol })),
+    ),
+  };
+}
+
 function callsNamed(sourceFile: ts.Node, name: string): ts.CallExpression[] {
   const calls: ts.CallExpression[] = [];
   visit(sourceFile, (node) => {
@@ -161,6 +301,13 @@ describe('provider response serviceability decision layers', () => {
     expect(propertyNames('ProviderResponseDiagnosticFact', diagnostics).sort()).toEqual(
       ['factSeq', 'generation', 'hostLog', 'method', 'requestId', 'response'].sort(),
     );
+    expect(propertyNames('ProviderHostLogCursorSpan', diagnostics).sort()).toEqual(['endSeq', 'startSeq']);
+    expect(
+      [
+        ...propertyNames('ProviderResponseDiagnosticFact', diagnostics),
+        ...propertyNames('ProviderHostLogCursorSpan', diagnostics),
+      ].filter(isForbiddenDecisionBoundName),
+    ).toEqual([]);
     expect(diagnostics.getText()).not.toMatch(/ProviderResponseDiagnosticFact[\s\S]{0,500}\bHostRef\b/u);
   });
 
@@ -187,12 +334,9 @@ describe('provider response serviceability decision layers', () => {
   });
 
   it('registers every provider-owned classifier and inventories every registration', () => {
-    const classifierFiles = [...CANONICAL_PATHS.keys()].flatMap((path) => {
-      const match = CLASSIFIER_PATH.exec(path);
-      return match?.[1] === undefined ? [] : [{ provider: match[1], path, sourceFile: parse(path) }];
-    });
+    const classifiers = classifierFiles();
     const registrations = registeredClassifiers();
-    const violations = classifierFiles.flatMap(({ provider, path, sourceFile }) => {
+    const violations = classifiers.flatMap(({ provider, path, sourceFile }) => {
       const exports = exportedClassifierNames(sourceFile);
       if (exports.length === 0) return [`${path} must export a provider response serviceability classifier`];
       const registered = registrations.get(provider);
@@ -201,29 +345,64 @@ describe('provider response serviceability decision layers', () => {
         : [`${path} classifier must be registered for provider '${provider}'`];
     });
     for (const [provider, classifier] of registrations) {
-      const sourceFile = classifierFiles.find((entry) => entry.provider === provider);
+      const sourceFile = classifiers.find((entry) => entry.provider === provider);
       if (sourceFile === undefined || !exportedClassifierNames(sourceFile.sourceFile).includes(classifier)) {
         violations.push(`registered classifier ${provider}:${classifier} is absent from the classifier inventory`);
       }
     }
 
-    expect(classifierFiles.length).toBeGreaterThan(0);
+    expect(classifiers.length).toBeGreaterThan(0);
     expect(registrations.size).toBeGreaterThan(0);
     expect(violations).toEqual([]);
   });
 
-  it('forbids every provider classifier from interpreting providerMessage prose', () => {
-    const violations = [...CANONICAL_PATHS.keys()].flatMap((path) => {
-      if (!CLASSIFIER_PATH.test(path)) return [];
-      const identifiers: string[] = [];
-      visit(parse(path), (node) => {
-        if (ts.isIdentifier(node) && node.text === 'providerMessage') identifiers.push(node.text);
-        if (ts.isStringLiteral(node) && node.text === 'providerMessage') identifiers.push(node.text);
+  it('limits every provider classifier to typed method/code/data evidence, never providerMessage prose', () => {
+    const violations = classifierFiles().flatMap(({ path, sourceFile }) => {
+      const forbiddenEvidence: string[] = [];
+      visit(sourceFile, (node) => {
+        if (ts.isIdentifier(node) && FORBIDDEN_CLASSIFIER_EVIDENCE.has(node.text)) {
+          forbiddenEvidence.push(node.text);
+        }
+        if (ts.isStringLiteral(node) && FORBIDDEN_CLASSIFIER_EVIDENCE.has(node.text)) {
+          forbiddenEvidence.push(node.text);
+        }
       });
-      return identifiers.length === 0
+      return forbiddenEvidence.length === 0
         ? []
-        : [`${path} must classify from typed method/code/data fields, never providerMessage prose`];
+        : [
+            `${path} must classify from typed method/code/data fields, never providerMessage prose or host-local cursors: ${[
+              ...new Set(forbiddenEvidence),
+            ].join(', ')}`,
+          ];
     });
+    expect(violations).toEqual([]);
+  });
+
+  it('inventories every non-empty serviceability decision category and every named symbol', () => {
+    const inventory = decisionClosureInventory();
+    expect(Object.keys(inventory).length).toBeGreaterThan(0);
+    expect(Object.entries(inventory).filter(([, symbols]) => symbols.length === 0)).toEqual([]);
+    expect(STATIC_DECISION_SYMBOLS.admissionCompositionLeaves).toHaveLength(2);
+
+    const missingSymbols = Object.values(inventory)
+      .flat()
+      .flatMap((spec) =>
+        namedFunction(parse(spec.path), spec.symbol) === undefined ? [`${spec.path}:${spec.symbol}`] : [],
+      );
+    expect(missingSymbols).toEqual([]);
+
+    const classifierSymbols = new Set(inventory.providerClassifiers?.map((spec) => spec.symbol) ?? []);
+    const uninventoriedRegistrations = [...registeredClassifiers()].flatMap(([provider, classifier]) =>
+      classifierSymbols.has(classifier) ? [] : [`${provider}:${classifier}`],
+    );
+    expect(uninventoriedRegistrations).toEqual([]);
+  });
+
+  it('keeps every classifier, reducer, admission symbol, and composition leaf free of clocks and numeric bounds', () => {
+    const decisionSymbols = Object.entries(decisionClosureInventory())
+      .filter(([category]) => category !== 'factPublishers')
+      .flatMap(([, symbols]) => symbols);
+    const violations = decisionSymbols.flatMap(decisionBoundViolations);
     expect(violations).toEqual([]);
   });
 
@@ -233,7 +412,15 @@ describe('provider response serviceability decision layers', () => {
       .filter((edge) => edge.runtime && edge.target === SERVICEABILITY_SEAM)
       .map((edge) => edge.source)
       .sort();
-    expect(importers).toEqual([COORDINATOR_OWNER, PROXY_OWNER].sort());
+    expect(importers).toEqual([COORDINATOR_ADMISSION_LEAF, PROXY_ADMISSION_LEAF].sort());
+
+    const admissionLeafImporters = edges
+      .filter(
+        (edge) => edge.runtime && (edge.target === COORDINATOR_ADMISSION_LEAF || edge.target === PROXY_ADMISSION_LEAF),
+      )
+      .map((edge) => edge.source)
+      .sort();
+    expect(admissionLeafImporters).toEqual([COORDINATOR_OWNER, PROXY_OWNER].sort());
 
     const coordinatorOwnerCalls = callsNamed(parse(COORDINATOR_OWNER), 'spawnProviderServer');
     expect(coordinatorOwnerCalls.some((call) => call.arguments.length === 3)).toBe(true);

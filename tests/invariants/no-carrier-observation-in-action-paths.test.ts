@@ -13,6 +13,9 @@ const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(join(REPO_ROOT, 'src'));
 const IMPORT_EDGES: ParsedImportEdge[] = parseProductionImportEdges(REPO_ROOT, PRODUCTION_FILE_PATHS);
 const CANONICAL_FILES = new Set(PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath)));
+const SERVICEABILITY_CLASSIFIER_PATH = /^src\/providers\/[^/]+\/serviceability\.ts$/u;
+const COORDINATOR_ADMISSION_LEAF = 'src/coordinator/live/provider-host-admission.ts';
+const PROXY_ADMISSION_LEAF = 'src/provider-proxy/provider-host-admission.ts';
 
 /**
  * Carrier observation's authority, and who may hold it.
@@ -52,6 +55,11 @@ const OBSERVATION_AUTHORITIES: readonly ObservationAuthority[] = [
     what: 'the bounded network carrier observer',
     permittedImporters: ['src/coordinator/composition/'],
   },
+  {
+    module: 'src/providers/serviceability.ts',
+    what: 'the derived provider-host serviceability classifier',
+    permittedImporters: [COORDINATOR_ADMISSION_LEAF, PROXY_ADMISSION_LEAF],
+  },
 ];
 
 /**
@@ -75,6 +83,58 @@ const ACTION_PATH_ROOTS = [
 const ACTION_PATH_MODULES: readonly string[] = [...CANONICAL_FILES]
   .filter((file) => ACTION_PATH_ROOTS.some((root) => (root.endsWith('/') ? file.startsWith(root) : file === root)))
   .sort();
+
+/**
+ * Runtime consumers allowed to participate in the serviceability decision. The two owner modules are
+ * intentionally absent: they receive only the admission collection created by their constrained leaf, never
+ * the classifier itself. Keeping this inventory explicit makes a moved or newly added decision module fail
+ * visibly instead of silently falling outside the walk.
+ */
+const SERVICEABILITY_RUNTIME_CONSUMERS = [
+  'src/providers/bootstrap.ts',
+  'src/providers/serviceability.ts',
+  'src/providers/host-serviceability.ts',
+  'src/providers/host-admission.ts',
+  ...[...CANONICAL_FILES].filter((file) => SERVICEABILITY_CLASSIFIER_PATH.test(file)),
+  COORDINATOR_ADMISSION_LEAF,
+  PROXY_ADMISSION_LEAF,
+] as const;
+
+/** Named capabilities a serviceability decision must never reach over runtime imports. */
+const DESTRUCTIVE_CAPABILITY_ROOTS = [
+  'src/coordinator/live/provider-hosts/drain.ts',
+  'src/provider-proxy/provider-root-authority.ts',
+  'src/coordinator/live/provider-hosts/recovery.ts',
+  'src/recovery/',
+  'src/coordinator/services/recovery/',
+  'src/coordinator/startup-recovery.ts',
+  'src/coordinator/shutdown-recovery.ts',
+  'src/jobs/reconcile/',
+  'src/coordinator/services/provider-operation-reconciler.ts',
+  'src/coordinator/services/terminal-materializer.ts',
+] as const;
+
+const DESTRUCTIVE_CAPABILITY_MODULES: readonly string[] = [...CANONICAL_FILES]
+  .filter((file) =>
+    DESTRUCTIVE_CAPABILITY_ROOTS.some((root) => (root.endsWith('/') ? file.startsWith(root) : file === root)),
+  )
+  .sort();
+
+type ConstrainedAdmissionLeaf = {
+  readonly module: string;
+  readonly permittedDependencies: readonly string[];
+};
+
+const CONSTRAINED_ADMISSION_LEAVES: readonly ConstrainedAdmissionLeaf[] = [
+  {
+    module: COORDINATOR_ADMISSION_LEAF,
+    permittedDependencies: ['src/providers/host-admission.ts', 'src/providers/serviceability.ts'],
+  },
+  {
+    module: PROXY_ADMISSION_LEAF,
+    permittedDependencies: ['src/providers/host-admission.ts', 'src/providers/serviceability.ts'],
+  },
+];
 
 function matches(module: string, allowed: readonly string[]): boolean {
   return allowed.some((entry) => (entry.endsWith('/') ? module.startsWith(entry) : module === entry));
@@ -135,6 +195,12 @@ function unmatchedRoots(roots: readonly string[]): string[] {
   return roots.filter((root) =>
     root.endsWith('/') ? ![...CANONICAL_FILES].some((file) => file.startsWith(root)) : !CANONICAL_FILES.has(root),
   );
+}
+
+function constrainedLeafImportViolations(edges: readonly ParsedImportEdge[], leaf: ConstrainedAdmissionLeaf): string[] {
+  return edges
+    .filter((edge) => edge.source === leaf.module && !leaf.permittedDependencies.includes(edge.target))
+    .map((edge) => `${leaf.module} -> ${edge.target} (${edge.via} ${edge.specifier})`);
 }
 
 describe('carrier observation never reaches mutation or recovery paths', () => {
@@ -234,4 +300,35 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
     // deleted, and the rule quietly stopped covering anything.
     expect(unmatchedRoots(ACTION_PATH_ROOTS)).toEqual([]);
   });
+
+  it('names a non-empty runtime serviceability consumer set whose every module exists', () => {
+    expect(SERVICEABILITY_RUNTIME_CONSUMERS.length).toBeGreaterThan(0);
+    expect(unmatchedRoots(SERVICEABILITY_RUNTIME_CONSUMERS)).toEqual([]);
+  });
+
+  it('names a non-empty destructive capability set whose every root exists', () => {
+    expect(DESTRUCTIVE_CAPABILITY_MODULES.length).toBeGreaterThan(0);
+    expect(unmatchedRoots(DESTRUCTIVE_CAPABILITY_ROOTS)).toEqual([]);
+  });
+
+  it('keeps every runtime serviceability consumer outbound-unreachable from destructive capabilities', () => {
+    const destructiveCapabilities = new Set(DESTRUCTIVE_CAPABILITY_MODULES);
+    const violations = SERVICEABILITY_RUNTIME_CONSUMERS.flatMap((consumer) =>
+      [...reachableFrom(consumer).entries()].flatMap(([module, path]) =>
+        destructiveCapabilities.has(module) ? [path.join(' -> ')] : [],
+      ),
+    );
+
+    expect([...new Set(violations)].sort()).toEqual([]);
+  });
+
+  it.each(CONSTRAINED_ADMISSION_LEAVES.map((leaf) => [leaf.module, leaf] as const))(
+    '%s imports only the classifier and narrow admission port modules',
+    (module, leaf) => {
+      expect(CANONICAL_FILES).toContain(module);
+      expect(leaf.permittedDependencies.length).toBeGreaterThan(0);
+      expect(unmatchedRoots(leaf.permittedDependencies)).toEqual([]);
+      expect(constrainedLeafImportViolations(IMPORT_EDGES, leaf)).toEqual([]);
+    },
+  );
 });

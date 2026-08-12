@@ -10,16 +10,15 @@ import type { ProviderHostDiagnosticsSnapshot } from '../providers/host-diagnost
 import {
   admissionSlotKey,
   canonicalProviderHostSpecMetadata,
-  createHostAdmissionCollection,
   type AdmissionSlotKey,
   type HostAdmissionReservation,
   type HostAdmissionSnapshot,
 } from '../providers/host-admission.js';
-import { classifyProviderResponseServiceability } from '../providers/serviceability.js';
 import type { AppServerTransport, HostRef, ProviderServerSpec } from '../providers/contract.js';
 import type { AppServerHostAuthority, ManagedHostSession } from '../providers/internal/app-server-host.js';
 import type { ProviderOperationKey } from './ledger.js';
 import type { ProxyPrepareCapacityCode } from './protocol.js';
+import { createProxyProviderHostAdmission } from './provider-host-admission.js';
 
 /**
  * Reconstructs and runs the live Claude/Codex kernel inside the proxy process.
@@ -270,7 +269,7 @@ export function createProxyAppServerHostAuthority(
 ): ProxyAppServerHostAuthority & ProxyProviderHostAdmissionAuthority {
   const entries = new Map<string, HostPoolEntry>();
   const closingEntries = new Set<HostPoolEntry>();
-  const admission = createHostAdmissionCollection({ classify: classifyProviderResponseServiceability });
+  const admission = createProxyProviderHostAdmission();
   // Purely informational (mirrors `DefaultProviderHostManager`'s own per-acquisition counter,
   // `src/coordinator/live/admission.ts`); nothing in this pool reads it back.
   let nextGeneration = 0;
