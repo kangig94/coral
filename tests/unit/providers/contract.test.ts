@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import { describe, expect, it } from 'vitest';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 import { sessionContinuityMutationSchema, type SessionContinuityMutation } from '#src/sessions/continuity-mutation.js';
 import {
@@ -54,7 +55,7 @@ const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
   sessionId: 'job-contract',
   prompt: 'hello',
-  cwd: process.cwd(),
+  cwd: fixtureCanonicalWorkDir(process.cwd()),
   bypassPermissions: false,
   coralEnv: {},
 };

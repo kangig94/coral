@@ -10,6 +10,7 @@ import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { ToolDomainResult } from '../tool-result.js';
 import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
+import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 
 type SessionStartInput = Pick<
   JobLaunchRequest,
@@ -21,7 +22,7 @@ export type WorkflowPortInput = {
   startPrompt: string;
   context?: string;
   provider: string;
-  workDir?: string;
+  workDir: CanonicalWorkDir;
   owner?: string;
 };
 

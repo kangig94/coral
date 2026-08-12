@@ -11,6 +11,7 @@ import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { createBoundJobsRecoveryHarness } from '#tests/helpers/bound-jobs-recovery.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/index.js';
 import type { RecoveryCapableService, ProviderRecoveryAuthority } from '#src/jobs/reconcile/contracts.js';
@@ -218,7 +219,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
     });
     const fakeService = createFakeService({ recoverQueuedJob });
     const createInvocationContext = (projectRoot: string): InvocationContext => ({
-      projectRoot,
+      projectRoot: fixtureCanonicalWorkDir(projectRoot),
       pluginRoot: '/tmp/plugin',
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
@@ -361,7 +362,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
     const recoverQueuedJob = vi.fn(async () => jobId);
     const fakeService = createFakeService({ recoverQueuedJob });
     const createInvocationContext = (projectRoot: string): InvocationContext => ({
-      projectRoot,
+      projectRoot: fixtureCanonicalWorkDir(projectRoot),
       pluginRoot: '/tmp/plugin',
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
@@ -454,7 +455,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
 
       const fakeService = createFakeService();
       const createInvocationContext = (projectRoot: string): InvocationContext => ({
-        projectRoot,
+        projectRoot: fixtureCanonicalWorkDir(projectRoot),
         pluginRoot: '/tmp/plugin',
         coralEnv: {},
         principal: testProjectPrincipal(projectRoot),

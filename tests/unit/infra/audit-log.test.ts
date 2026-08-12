@@ -10,6 +10,7 @@ import {
 import type { Capability } from '#src/security/capability.js';
 import type { Principal } from '#src/security/principal.js';
 import type { Decision } from '#src/security/policy/authorize.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 function parseAuditLine(line: string): Record<string, unknown> {
   expect(line.startsWith('audit ')).toBe(true);
@@ -64,7 +65,7 @@ describe('audit-log', () => {
       subject: 'agent',
       transport: 'ipc',
       credential: { kind: 'child-handle', id: 'secret-credential-id' },
-      binding: { kind: 'project', root: '/workspace/project' },
+      binding: { kind: 'project', root: fixtureCanonicalWorkDir('/workspace/project') },
       attenuatedCaps: new Set<Capability>(['kb:read', 'jobs:read']),
     };
     const binding = { kind: 'unbound' } as const;
@@ -95,7 +96,7 @@ describe('audit-log', () => {
   it('writes authorization decisions through the existing audit sink', () => {
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
     try {
-      const binding = { kind: 'project', root: '/workspace/project' } as const;
+      const binding = { kind: 'project', root: fixtureCanonicalWorkDir('/workspace/project') } as const;
       const decision = {
         ok: false,
         reason: 'unauthenticated',

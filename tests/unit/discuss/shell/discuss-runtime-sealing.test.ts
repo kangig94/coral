@@ -11,6 +11,7 @@ import { JobStore } from '#src/jobs/store.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { nowIsoString } from '#src/infra/time.js';
 import {
@@ -161,7 +162,8 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
   const registry = createDiscussContextRegistry();
   const providerRegistry = new ProviderRegistry();
   registerBuiltInProviders(providerRegistry);
-  const context = getOrCreateDiscussContext(registry, projectRoot, service, store, {
+  const canonicalProjectRoot = fixtureCanonicalWorkDir(projectRoot);
+  const context = getOrCreateDiscussContext(registry, canonicalProjectRoot, service, store, {
     runtime: {
       ids: runtime.ids,
       env: runtime.env,
@@ -184,7 +186,7 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
     providerRegistry,
   });
   const invocationCtx: InvocationContext = {
-    projectRoot,
+    projectRoot: canonicalProjectRoot,
     pluginRoot,
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
@@ -221,7 +223,7 @@ function createPersistedRecoveryHarness(): PersistedRecoveryHarness {
     getExecutionService: () => service,
   });
   const createInvocationContext = (root: string): InvocationContext => ({
-    projectRoot: root,
+    projectRoot: fixtureCanonicalWorkDir(root),
     pluginRoot,
     coralEnv: {},
     principal: testProjectPrincipal(root),
@@ -852,7 +854,7 @@ describe('runtime-sealed discuss behavior', () => {
       model: 'gpt-5',
       prompt: 'Recover the active job.',
       instruction: 'Use recovered output.',
-      cwd: harness.projectRoot,
+      cwd: fixtureCanonicalWorkDir(harness.projectRoot),
       invocationCtx: harness.invocationCtx,
       purpose: 'bid',
     });

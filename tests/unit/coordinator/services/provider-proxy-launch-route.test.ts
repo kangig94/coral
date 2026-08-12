@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AppServerProxyRouteRequest } from '#src/jobs/contracts/app-server-proxy-route.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const request: AppServerProxyRouteRequest = {
   jobId: randomUUID(),
@@ -16,7 +17,7 @@ const request: AppServerProxyRouteRequest = {
     provider: 'codex',
     command: 'codex',
     args: ['app-server'],
-    cwd: '/workspace',
+    cwd: fixtureCanonicalWorkDir('/workspace'),
     leaseMode: 'job-exclusive',
   },
   provider: 'codex',
@@ -25,7 +26,7 @@ const request: AppServerProxyRouteRequest = {
     action: 'exec',
     sessionId: 'session-1',
     prompt: 'do the thing',
-    cwd: '/workspace',
+    cwd: fixtureCanonicalWorkDir('/workspace'),
     bypassPermissions: false,
     coralEnv: {},
   },
@@ -36,7 +37,7 @@ const request: AppServerProxyRouteRequest = {
   childAuthorization: {
     principalWire: {
       subject: 'agent',
-      binding: { kind: 'project', root: '/workspace' },
+      binding: { kind: 'project', root: fixtureCanonicalWorkDir('/workspace') },
       attenuatedCaps: ['liveness', 'jobs:read'],
     },
     namespace: 'tests',

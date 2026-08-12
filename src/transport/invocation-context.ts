@@ -5,6 +5,7 @@ import {
 } from '../infra/env-sanitize.js';
 import { FORWARDED_NETWORK_ENV_KEYS } from '../infra/network-env.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { ProviderScope } from '../infra/provider-scope.js';
 import type { Principal } from '../security/principal.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from './context-profile.js';
@@ -74,16 +75,14 @@ export function buildControllerEnv(
 
 export function buildInvocationContext(
   body: Record<string, unknown>,
+  projectRoot: CanonicalWorkDir,
   pluginRoot: string,
   coralEnvSnapshot: Readonly<Record<string, string>>,
   principal: Principal,
   providerScope?: ProviderScope,
 ): InvocationContext | null {
-  if (typeof body.projectRoot !== 'string' || body.projectRoot.length === 0) {
-    return null;
-  }
   return {
-    projectRoot: body.projectRoot,
+    projectRoot,
     pluginRoot,
     coralEnv: buildControllerEnv(body, coralEnvSnapshot),
     principal,
@@ -92,7 +91,7 @@ export function buildInvocationContext(
 }
 
 export function buildInvocationContextFromQuery(
-  projectRoot: string,
+  projectRoot: CanonicalWorkDir,
   pluginRoot: string,
   coralEnvSnapshot: Readonly<Record<string, string>>,
   principal: Principal,

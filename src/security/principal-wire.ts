@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { CAPABILITIES, type Capability } from './capability.js';
 import type { Credential, Principal, ResourceBinding, Subject } from './principal.js';
+import { canonicalizeWorkDir } from '../runtime/canonical-work-dir.js';
 
 export type PrincipalWire = {
   readonly subject: Subject;
@@ -17,7 +18,7 @@ export type PrincipalWireContext = {
 const subjectSchema = z.enum(['operator', 'agent', 'system']);
 const capabilitySchema = z.enum(CAPABILITIES);
 
-const resourceBindingSchema = z.discriminatedUnion('kind', [
+const rawResourceBindingSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('unbound') }).strict(),
   z.object({ kind: z.literal('project'), root: z.string().min(1) }).strict(),
 ]);
@@ -25,10 +26,20 @@ const resourceBindingSchema = z.discriminatedUnion('kind', [
 export const principalWireSchema = z
   .object({
     subject: subjectSchema,
-    binding: resourceBindingSchema,
+    binding: rawResourceBindingSchema,
     attenuatedCaps: z.array(capabilitySchema).optional(),
   })
-  .strict();
+  .strict()
+  .transform(
+    (wire): PrincipalWire => ({
+      subject: wire.subject,
+      binding:
+        wire.binding.kind === 'unbound'
+          ? wire.binding
+          : { kind: 'project', root: canonicalizeWorkDir(wire.binding.root, process.cwd()) },
+      attenuatedCaps: wire.attenuatedCaps,
+    }),
+  );
 
 const DEFAULT_WIRE_CONTEXT: Required<PrincipalWireContext> = {
   transport: 'wire',

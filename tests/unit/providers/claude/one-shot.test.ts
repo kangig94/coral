@@ -6,6 +6,7 @@ import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
 import { claudeCurationCapability } from '#src/providers/claude/one-shot.js';
 import type { ProviderServerSpec, AppServerSession } from '#src/providers/contract.js';
 import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 beforeAll(() => vi.stubGlobal('__PLUGIN_ROOT__', '/test/plugin'));
 afterAll(() => vi.unstubAllGlobals());
@@ -171,7 +172,7 @@ describe('runClaudeOneShotTurn', () => {
         openServer: vi.fn(async () => lease),
       },
       {
-        cwd: '/workspace/kb',
+        cwd: fixtureCanonicalWorkDir('/workspace/kb'),
         prompt: 'Classify this note.',
         permissionMode: 'auto',
       },
@@ -292,7 +293,7 @@ describe('runClaudeOneShotTurn', () => {
         openServer: vi.fn(async () => lease),
       },
       {
-        cwd: '/workspace/kb',
+        cwd: fixtureCanonicalWorkDir('/workspace/kb'),
         prompt: 'Classify this note.',
       },
     );
@@ -416,7 +417,7 @@ describe('runClaudeOneShotTurn', () => {
         openServer: vi.fn(async () => lease),
       },
       {
-        cwd: '/workspace/kb',
+        cwd: fixtureCanonicalWorkDir('/workspace/kb'),
         prompt: 'Classify this note.',
       },
     );
@@ -536,7 +537,7 @@ describe('runClaudeOneShotTurn', () => {
         openServer: vi.fn(async () => lease),
       },
       {
-        cwd: '/workspace/kb',
+        cwd: fixtureCanonicalWorkDir('/workspace/kb'),
         prompt: 'Classify this note.',
       },
     );
@@ -590,7 +591,7 @@ describe('runClaudeOneShotTurn', () => {
           openServer: vi.fn(async () => lease),
         },
         {
-          cwd: '/workspace/kb',
+          cwd: fixtureCanonicalWorkDir('/workspace/kb'),
           prompt: 'Classify this note.',
         },
       ),
@@ -645,7 +646,7 @@ describe('runClaudeOneShotTurn', () => {
         ids: { uuid: () => 'turn-1', sha256: (value) => `hash:${value}` },
         openServer: vi.fn(async () => lease),
       },
-      { cwd: '/workspace/kb', prompt: 'Classify this note.', signal: controller.signal },
+      { cwd: fixtureCanonicalWorkDir('/workspace/kb'), prompt: 'Classify this note.', signal: controller.signal },
     );
     await turnStarted.promise;
     controller.abort('cancel-curation');
@@ -710,7 +711,7 @@ describe('runClaudeOneShotTurn', () => {
         ids: { uuid: () => 'turn-1', sha256: (value) => `hash:${value}` },
         openServer: vi.fn(async () => lease),
       },
-      { cwd: '/workspace/kb', prompt: 'Classify this note.', signal: controller.signal },
+      { cwd: fixtureCanonicalWorkDir('/workspace/kb'), prompt: 'Classify this note.', signal: controller.signal },
     );
     await turnStarted.promise;
     controller.abort('cancel-curation');

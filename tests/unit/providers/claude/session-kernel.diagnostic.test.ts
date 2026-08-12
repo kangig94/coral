@@ -7,6 +7,7 @@ import type {
   ProviderRequest,
 } from '#src/providers/contract.js';
 import { collectProviderEvents } from '#src/providers/stream.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   brokerNotificationMethods,
   type SessionEnsureParams,
@@ -38,7 +39,7 @@ const REQUEST: ProviderRequest = {
   sessionId: 'job-claude-diagnostic',
   name: 'claude',
   prompt: 'hello',
-  cwd: '/workspace',
+  cwd: fixtureCanonicalWorkDir('/workspace'),
   bypassPermissions: false,
   coralEnv: {},
 };

@@ -11,6 +11,7 @@ import {
 import { abortDiscussSession } from '#src/discuss/shell/operations.js';
 import { persistAbortEndForShutdown, recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
 import { appendRuntimeEvents, readSessionEvents } from '#src/discuss/shell/persistence.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { detachSession } from '#src/discuss/shell/registry.js';
 import {
   attachPersistedSession,
@@ -27,7 +28,7 @@ async function recoverSessions(harness: DiscussHarness) {
     harness.store,
     () => harness.context,
     (snapshot) => ({
-      projectRoot: snapshot.projectRoot,
+      projectRoot: fixtureCanonicalWorkDir(snapshot.projectRoot),
       pluginRoot: harness.ctx.pluginRoot,
       coralEnv: {},
       principal: testProjectPrincipal(snapshot.projectRoot),

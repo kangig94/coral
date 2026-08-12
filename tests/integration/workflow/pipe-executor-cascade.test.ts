@@ -31,6 +31,7 @@ import { workflowRegistry } from '#src/workflow/events.js';
 import type { CommitEventsFn } from '#src/store/append.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 type RecordedLaunchRequest = ProviderRequest & {
   instruction?: ProviderInstruction;
@@ -50,7 +51,7 @@ describe('pipe executor coral cascade invariant', () => {
     const SENTINEL_PROJECT = 'SENTINEL_PROJECT_' + suffix;
     const SENTINEL_CORAL = 'SENTINEL_CORAL_' + suffix;
 
-    const projectRoot = mkdtempSync(join(tmpdir(), 'pipe-cascade-proj-'));
+    const projectRoot = fixtureCanonicalWorkDir(mkdtempSync(join(tmpdir(), 'pipe-cascade-proj-')));
     const coralPluginRoot = mkdtempSync(join(tmpdir(), 'pipe-cascade-coral-'));
     // Isolate from the user's real ~/.coral state so stale-schema DBs created
     // before unrelated rename commits (e.g. shard_dir → scope_key) don't poison
@@ -174,6 +175,7 @@ describe('pipe executor coral cascade invariant', () => {
           expression: 'architect',
           startPrompt: 'hi',
           provider: 'codex',
+          workDir: projectRoot,
         },
         providerRegistry,
       );
@@ -209,7 +211,7 @@ describe('pipe executor coral cascade invariant', () => {
   });
 
   it('deletes workflow atom provider artifacts through retention reactor events', async () => {
-    const projectRoot = mkdtempSync(join(tmpdir(), 'pipe-retention-proj-'));
+    const projectRoot = fixtureCanonicalWorkDir(mkdtempSync(join(tmpdir(), 'pipe-retention-proj-')));
     const coralPluginRoot = mkdtempSync(join(tmpdir(), 'pipe-retention-coral-'));
     const isolatedHome = mkdtempSync(join(tmpdir(), 'pipe-retention-home-'));
     const originalHome = process.env.HOME;
@@ -316,6 +318,7 @@ describe('pipe executor coral cascade invariant', () => {
           expression: 'architect',
           startPrompt: 'hi',
           provider: 'codex',
+          workDir: projectRoot,
         },
         providerRegistry,
       );

@@ -18,7 +18,7 @@ import {
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
 import { operationalRouteSpecs, type IpcOperationalSpec } from '../rpc/operational-catalog.js';
-import { type CatalogRequestExecution, executeCatalogRequest, resolveRequestBinding } from '../dispatch.js';
+import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
 import { formatError } from '../../infra/error-format.js';
@@ -215,13 +215,7 @@ export function ipcAdapter(spec: RpcMethodSpec<unknown, unknown>, rpcPorts: Http
     method: spec.name,
     spec,
     dispatch: async (request, principal, abortSignal) =>
-      await executeCatalogRequest(
-        spec,
-        request,
-        rpcPorts,
-        bindPrincipalForIpcDispatch(principal, spec, request),
-        abortSignal,
-      ),
+      await executeCatalogRequest(spec, request, rpcPorts, principal, abortSignal),
   };
 }
 
@@ -276,18 +270,6 @@ function authorizeIpcOperation(
   }
   const payload = authorizationFailurePayload(spec);
   return requestErrorResponse(request.id, payload.message, payload);
-}
-
-function bindPrincipalForIpcDispatch(
-  principal: Principal,
-  spec: RpcMethodSpec<unknown, unknown>,
-  request: unknown,
-): Principal {
-  const requestedBinding = resolveRequestBinding(spec.requestBinding, request);
-  if (principal.binding.kind !== 'unbound' || requestedBinding.kind !== 'project') {
-    return principal;
-  }
-  return { ...principal, binding: requestedBinding };
 }
 
 function readPingSnapshot(rpcPorts: HttpHandlerPorts): {
@@ -743,8 +725,6 @@ async function dispatchFrame(
     socket.end();
     return;
   }
-  const executionPrincipal = bindPrincipalForIpcDispatch(principal, entry.spec, parsed.data);
-
   startRequest();
 
   let subscriptionController: AbortController | null = null;
@@ -754,7 +734,7 @@ async function dispatchFrame(
   try {
     subscriptionController = new AbortController();
     socket.once('close', abortDispatchOnClose);
-    const invocation = await entry.dispatch(parsed.data, executionPrincipal, subscriptionController.signal);
+    const invocation = await entry.dispatch(parsed.data, principal, subscriptionController.signal);
     if (invocation.kind === 'unary') {
       // Domain-level errors (statusCode >= 400) ride a JSON-RPC `error`
       // envelope so the client rejects with a typed error instead of

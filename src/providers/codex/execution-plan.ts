@@ -15,6 +15,7 @@ import { shouldUseWindowsCommandShell, windowsCommandName } from '../../infra/wi
 import { CODEX_ALLOWED_REQUEST_ENV_KEYS, CODEX_PROTECTED_REQUEST_ENV_KEYS } from './credential-policy.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { resolveCodexHostCwd } from './request-mapping.js';
+import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 
 export type CodexProviderAccess = { readonly home: string };
 
@@ -28,7 +29,7 @@ export type CodexExecutionPlan = ProviderExecutionPlan<
     access: CodexProviderAccess;
     command: string;
     args: readonly string[];
-    cwd: string;
+    cwd: CanonicalWorkDir;
     environment: readonly EnvironmentLayer[];
     leaseMode: 'shared';
   }>,

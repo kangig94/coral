@@ -86,7 +86,7 @@ export class ChildPrincipalRegistry {
       registration.childCaps ?? CHILD_PRINCIPAL_CAPABILITIES,
     );
 
-    return this.registerPersistedAuthorization({
+    return this.storeAuthorization({
       issuer: registration.issuer,
       authorization: {
         principalWire: principalToWire(childPrincipal),
@@ -105,8 +105,18 @@ export class ChildPrincipalRegistry {
       throw new Error('Provider operation child authorization has expired.');
     }
 
+    return this.storeAuthorization({
+      ...registration,
+      authorization: {
+        ...registration.authorization,
+        principalWire: principalWireSchema.parse(registration.authorization.principalWire),
+      },
+    });
+  }
+
+  private storeAuthorization(registration: PersistedChildPrincipalRegistration): ChildPrincipalCredential {
     const authorization: ChildPrincipalAuthorization = {
-      principalWire: principalWireSchema.parse(registration.authorization.principalWire),
+      principalWire: registration.authorization.principalWire,
       namespace: registration.authorization.namespace,
       expiresAtMs: registration.authorization.expiresAtMs,
     };

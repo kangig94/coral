@@ -7,6 +7,7 @@ import { buildCodexContinuity } from '#src/providers/codex/request-mapping.js';
 import { codexArtifactCapability, locateCodexRolloutArtifact } from '#src/providers/codex/artifacts.js';
 import type { ArtifactCleanupRuntime, AppServerTransport } from '#src/providers/contract.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
   return {
@@ -124,7 +125,7 @@ describe('codexAppServerLifecycle.probe', () => {
 
     await expect(
       codexAppServerLifecycle.probe?.(leaseWithRpc(rpc, { openai_base_url: 'https://proxy.invalid/v1' }), continuity, {
-        request: { cwd: '/workspace/project' },
+        request: { cwd: fixtureCanonicalWorkDir('/workspace/project') },
       }),
     ).rejects.toThrow("Unsupported Codex effective setting 'openai_base_url'");
     expect(rpc).not.toHaveBeenCalled();
@@ -140,7 +141,7 @@ describe('codexAppServerLifecycle.probe', () => {
 
     await expect(
       codexAppServerLifecycle.probe?.(leaseWithRpc(rpc), continuity, {
-        request: { cwd: '/workspace/project' },
+        request: { cwd: fixtureCanonicalWorkDir('/workspace/project') },
       }),
     ).resolves.toEqual({
       resumable: true,
@@ -170,7 +171,7 @@ describe('codexAppServerLifecycle.probe', () => {
 
     await expect(
       codexAppServerLifecycle.probe?.(leaseWithRpc(rpc), continuity, {
-        request: { cwd: '/workspace/project' },
+        request: { cwd: fixtureCanonicalWorkDir('/workspace/project') },
       }),
     ).rejects.toThrow('Codex recovery probe did not resume the exact requested thread id.');
   });
@@ -185,7 +186,7 @@ describe('codexAppServerLifecycle.probe', () => {
 
     await expect(
       codexAppServerLifecycle.probe?.(leaseWithRpc(rpc), continuity, {
-        request: { cwd: '/workspace/project' },
+        request: { cwd: fixtureCanonicalWorkDir('/workspace/project') },
       }),
     ).resolves.toEqual({
       resumable: false,

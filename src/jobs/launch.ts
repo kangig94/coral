@@ -5,6 +5,7 @@ import { retentionPolicySchema, type RetentionPolicy } from '../sessions/entry.j
 import { LAUNCH_POOLS, type LaunchPool } from './contracts/admission.js';
 import { discussionRunDescriptorSchema, type DiscussionRunDescriptor } from './discussion-run.js';
 import { executionOwnerSchema, type ExecutionOwner } from '../runtime/execution-owner.js';
+import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 
 export const sourceImportReadinessValues = ['commit', 'base-search', 'active-vector', 'all-equipped'] as const;
 const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);
@@ -61,7 +62,7 @@ export interface JobLaunchRequest {
   prompt: string;
   name?: string;
   model?: string;
-  cwd?: string;
+  cwd?: CanonicalWorkDir;
   jobId?: string;
   workflowSlotId?: string;
   workflowSlotGeneration?: number;
@@ -94,7 +95,7 @@ const providerLaunchRequestSchema = z
     prompt: z.string(),
     name: z.string().optional(),
     model: z.string().optional(),
-    cwd: z.string(),
+    cwd: canonicalWorkDirWireSchema,
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
     bypassPermissions: z.boolean(),
     systemPrompt: z.string().optional(),
@@ -107,7 +108,7 @@ const providerLaunchRequestSchema = z
 const workflowLaunchRequestSchema = z
   .object({
     prompt: z.string(),
-    cwd: z.string(),
+    cwd: canonicalWorkDirWireSchema,
     bypassPermissions: z.boolean(),
     coralEnv: z.record(z.string()),
   })
@@ -120,7 +121,7 @@ const providerJobLaunchBaseSchema = z
     sessionId: z.string().min(1),
     provider: z.string().min(1),
     providerAction: z.enum(['exec', 'resume']),
-    projectRoot: z.string(),
+    projectRoot: canonicalWorkDirWireSchema,
     backendNamespace: z.string(),
     bundleHash: z.string().optional(),
     pool: z.enum(LAUNCH_POOLS),
@@ -139,7 +140,7 @@ const providerJobLaunchRequestBodySchema = providerJobLaunchBaseSchema.extend({
 const workflowJobLaunchRequestBodySchema = z
   .object({
     owner: executionOwnerSchema,
-    projectRoot: z.string(),
+    projectRoot: canonicalWorkDirWireSchema,
     backendNamespace: z.string(),
     bundleHash: z.string().optional(),
     jobKind: z.literal('workflow'),
@@ -152,7 +153,7 @@ const workflowJobLaunchRequestBodySchema = z
 
 const kbJobLaunchBaseSchema = z.object({
   owner: executionOwnerSchema,
-  projectRoot: z.string(),
+  projectRoot: canonicalWorkDirWireSchema,
   backendNamespace: z.string(),
   bundleHash: z.string().optional(),
   jobKind: z.literal('kb'),

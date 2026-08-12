@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 import {
   allExecutionLifetimes,
@@ -290,7 +291,7 @@ describe('provider execution plan', () => {
         sessionId: 'session-1',
         name: 'claude',
         prompt: 'hello',
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         bypassPermissions: false,
         coralEnv: {
           CORAL_CLAUDE_MODEL_CAP: 'sonnet',
@@ -341,7 +342,7 @@ describe('provider execution plan', () => {
           sessionId: `session-${suffix}`,
           name: 'claude',
           prompt: 'hello',
-          cwd: '/workspace',
+          cwd: fixtureCanonicalWorkDir('/workspace'),
           model: `model-${suffix}`,
           effort: suffix === 'a' ? 'low' : 'high',
           bypassPermissions: false,
@@ -378,7 +379,7 @@ describe('provider execution plan', () => {
           action: 'exec',
           sessionId: `session-${suffix}`,
           prompt: 'hello',
-          cwd: '/workspace',
+          cwd: fixtureCanonicalWorkDir('/workspace'),
           bypassPermissions: false,
           coralEnv: {},
         },
@@ -408,7 +409,7 @@ describe('provider execution plan', () => {
       action: 'exec' as const,
       sessionId: 'session-attachment',
       prompt: 'recover',
-      cwd: '/workspace',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
       bypassPermissions: false,
       coralEnv: { CORAL_KB_PATH: '/kb', CORAL_OWNER: 'reviewer' },
     };
@@ -457,7 +458,7 @@ describe('provider execution plan', () => {
           action: 'exec',
           sessionId,
           prompt: 'hello',
-          cwd: '/workspace',
+          cwd: fixtureCanonicalWorkDir('/workspace'),
           bypassPermissions: false,
           coralEnv: {},
         },
@@ -496,7 +497,7 @@ describe('provider execution plan', () => {
           action: 'exec',
           sessionId: 'session-1',
           prompt: 'hello',
-          cwd: '/workspace',
+          cwd: fixtureCanonicalWorkDir('/workspace'),
           bypassPermissions: false,
           coralEnv: { [key]: value },
         },
@@ -525,7 +526,7 @@ describe('provider execution plan', () => {
             action: 'exec',
             sessionId: 'session-1',
             prompt: 'hello',
-            cwd: '/workspace',
+            cwd: fixtureCanonicalWorkDir('/workspace'),
             bypassPermissions: false,
             coralEnv: { [key]: value },
           },
@@ -554,7 +555,7 @@ describe('provider execution plan', () => {
           sessionId: 'session-1',
           name: 'claude',
           prompt: 'hello',
-          cwd: '/workspace',
+          cwd: fixtureCanonicalWorkDir('/workspace'),
           bypassPermissions: false,
           coralEnv: { [key]: value },
         },
@@ -588,7 +589,7 @@ describe('provider execution plan', () => {
             sessionId: 'session-1',
             name: 'claude',
             prompt: 'hello',
-            cwd: '/workspace',
+            cwd: fixtureCanonicalWorkDir('/workspace'),
             bypassPermissions: false,
             coralEnv: { [key]: value },
           },
@@ -613,7 +614,7 @@ describe('provider execution plan', () => {
       action: 'exec' as const,
       sessionId: 'session-1',
       prompt: 'hello',
-      cwd: '/workspace',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
       bypassPermissions: false,
       coralEnv: { CORAL_OWNER: 'reviewer', CORAL_EFFORT: 'high' },
     };
@@ -650,7 +651,7 @@ describe('provider execution plan', () => {
         sessionId: 'session-1',
         name: 'claude',
         prompt: 'hello',
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         bypassPermissions: false,
         coralEnv: {
           ANTHROPIC_API_KEY: 'request-secret',
@@ -675,7 +676,7 @@ describe('provider execution plan', () => {
         sessionId: 'session-1',
         name: 'codex',
         prompt: 'hello',
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         bypassPermissions: false,
         coralEnv: {
           OPENAI_API_KEY: 'request-secret',
@@ -721,7 +722,7 @@ describe('provider execution plan', () => {
         action: 'exec',
         sessionId: 'session-1',
         prompt: 'hello',
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         bypassPermissions: false,
         coralEnv: {},
       },
@@ -752,7 +753,7 @@ describe('provider execution plan', () => {
       sessionId: 'session-1',
       name: 'provider-session',
       prompt: 'continue',
-      cwd: '/workspace',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
       bypassPermissions: false,
       conversationRef: 'conversation-1',
       coralEnv: {},
@@ -811,7 +812,7 @@ describe('provider execution plan', () => {
       env: runtime.env,
       time: runtime.time,
       access: { ...TEST_CODEX_ACCESS, home: '/accounts/codex-a' },
-      cwd: '/workspace/project',
+      cwd: fixtureCanonicalWorkDir('/workspace/project'),
       baseEnv: runtime.env.fullSnapshot(),
       requestEnv: { CORAL_CODEX_EFFORT: 'high', CORAL_CLAUDE_MODEL_CAP: 'must-not-leak' },
       platform: runtime.env.platform(),
@@ -821,7 +822,7 @@ describe('provider execution plan', () => {
 
     expect(exec).toHaveBeenCalledWith('codex', ['app-server', '--help'], {
       timeout: 10_000,
-      cwd: '/workspace/project',
+      cwd: fixtureCanonicalWorkDir('/workspace/project'),
       env: {
         PATH: '/bin',
         HOME: expect.any(String),
@@ -844,7 +845,7 @@ describe('provider execution plan', () => {
         projectsRoot: 'C:\\Users\\operator\\.claude-work\\projects',
         routing: { kind: 'config-dir' },
       },
-      cwd: 'C:\\workspace',
+      cwd: fixtureCanonicalWorkDir('C:\\workspace'),
       baseEnv: { PATH: 'C:\\Windows\\System32' },
       requestEnv: {},
       platform: 'win32',
@@ -855,7 +856,7 @@ describe('provider execution plan', () => {
     expect(exec).toHaveBeenCalledWith('claude.cmd', ['--version'], {
       timeout: 10_000,
       encoding: 'utf-8',
-      cwd: 'C:\\workspace',
+      cwd: fixtureCanonicalWorkDir('C:\\workspace'),
       env: {
         PATH: 'C:\\Windows\\System32',
         CLAUDE_CONFIG_DIR: 'C:\\Users\\operator\\.claude-work',
@@ -873,7 +874,7 @@ describe('provider execution plan', () => {
       env: runtime.env,
       time: runtime.time,
       access: { home: 'C:\\Users\\operator\\.codex-work' },
-      cwd: 'C:\\workspace',
+      cwd: fixtureCanonicalWorkDir('C:\\workspace'),
       baseEnv: { PATH: 'C:\\Windows\\System32' },
       requestEnv: {},
       platform: 'win32',
@@ -884,7 +885,7 @@ describe('provider execution plan', () => {
     expect(exec).toHaveBeenCalledWith('codex.cmd', ['app-server', '--help'], {
       timeout: 10_000,
       encoding: 'utf-8',
-      cwd: 'C:\\workspace',
+      cwd: fixtureCanonicalWorkDir('C:\\workspace'),
       env: {
         PATH: 'C:\\Windows\\System32',
         CODEX_HOME: 'C:\\Users\\operator\\.codex-work',

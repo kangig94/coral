@@ -9,6 +9,7 @@ import type { HostRef } from '#src/providers/contract.js';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import { connectControlClient, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { SemanticOperationCancellationTimeoutError } from '#src/provider-proxy/semantic-operation-runner.js';
 import {
   OperationSupervisor,
@@ -74,7 +75,7 @@ const PREPARED: ProxyPreparedAppServerOperation = {
     action: 'exec',
     sessionId: 'session-1',
     prompt: 'hi',
-    cwd: '/tmp',
+    cwd: fixtureCanonicalWorkDir('/tmp'),
     bypassPermissions: false,
     coralEnv: {},
   },

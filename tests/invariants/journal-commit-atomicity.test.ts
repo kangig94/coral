@@ -30,6 +30,7 @@ import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js'
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const REPO_ROOT = process.cwd();
 const NOW = '2026-04-19T00:00:00.000Z';
@@ -513,7 +514,7 @@ function appendWorkflowSlotTerminal(
 
 function createRecoveryInvocationContext(projectRoot: string): InvocationContext {
   return {
-    projectRoot,
+    projectRoot: fixtureCanonicalWorkDir(projectRoot),
     pluginRoot: '/workspace/coral-plugin',
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),

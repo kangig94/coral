@@ -40,6 +40,11 @@ import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
+import {
+  canonicalizeWorkDir,
+  canonicalWorkDirWireSchema,
+  type CanonicalWorkDir,
+} from '../../runtime/canonical-work-dir.js';
 import type { Principal } from '../../security/principal.js';
 import { principalToWire } from '../../security/principal-wire.js';
 import { CoralSetupError } from '../../runtime/errors.js';
@@ -453,17 +458,25 @@ export function createCoordinatorCore(
   };
   const recoverySources = createRecoverySourceRegistry();
   const recoveryDb = () => getProgressStore().getDb();
-  const createRecoveryInvocationContext = (projectRoot: string): InvocationContext => ({
+  const createSystemInvocationContext = (
+    projectRoot: CanonicalWorkDir,
+    credentialId: string,
+    coralEnv: Record<string, string> = {},
+  ): InvocationContext => ({
     projectRoot,
     pluginRoot: identity.pluginRoot,
-    coralEnv: {},
+    coralEnv,
     principal: {
       subject: 'system',
       transport: 'internal',
-      credential: { kind: 'internal', id: 'recovery-retry' },
+      credential: { kind: 'internal', id: credentialId },
       binding: { kind: 'project', root: projectRoot },
     },
   });
+  const createRecoveryInvocationContext = (rawProjectRoot: string): InvocationContext => {
+    const projectRoot = canonicalizeWorkDir(rawProjectRoot, process.cwd());
+    return createSystemInvocationContext(projectRoot, 'recovery-retry');
+  };
   recoverySources.register('coordinator-job-recovery', (subject, signal, quarantine) =>
     createCoordinatorJobRecoveryRetryPlan(recoveryDb(), subject, signal, quarantine),
   );
@@ -584,17 +597,12 @@ export function createCoordinatorCore(
     return created;
   };
 
-  const readOnlyInvocationContext: InvocationContext = {
-    projectRoot: '',
-    pluginRoot: identity.pluginRoot,
-    coralEnv: invocationCoralEnvSnapshot(world.coralEnvSnapshot),
-    principal: {
-      subject: 'system',
-      transport: 'internal',
-      credential: { kind: 'internal', id: 'coordinator-readonly' },
-      binding: { kind: 'unbound' },
-    },
-  };
+  const readOnlyProjectRoot = canonicalizeWorkDir(process.cwd(), process.cwd());
+  const readOnlyInvocationContext = createSystemInvocationContext(
+    readOnlyProjectRoot,
+    'coordinator-readonly',
+    invocationCoralEnvSnapshot(world.coralEnvSnapshot),
+  );
   const recordHostedKbFailure = (operation: string, ctx: InvocationContext | undefined, result: KbToolResult): void => {
     if (result.ok || ctx === undefined) {
       return;
@@ -816,10 +824,15 @@ export function createCoordinatorCore(
       abort: control.abortJobs,
       waitStream: (request) =>
         services
-          .getExecutionService({
-            ...readOnlyInvocationContext,
-            projectRoot: request.projectRoot ?? readOnlyInvocationContext.projectRoot,
-          })
+          .getExecutionService(
+            createSystemInvocationContext(
+              request.projectRoot === undefined
+                ? readOnlyProjectRoot
+                : canonicalWorkDirWireSchema.parse(request.projectRoot),
+              'coordinator-readonly',
+              readOnlyInvocationContext.coralEnv,
+            ),
+          )
           .waitStream(request),
       list: (filters) => {
         const progressStore = getProgressStore();

@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import type { ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import { operationPrepareAttemptKey } from '#src/provider-proxy/ledger.js';
 import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   jointContainmentReceiptSchema,
   reservationSchema,
@@ -20,7 +21,7 @@ const PREPARED: ProxyPreparedAppServerOperation = {
     action: 'exec',
     sessionId: 'session-1',
     prompt: 'observe the operation',
-    cwd: '/project',
+    cwd: fixtureCanonicalWorkDir('/project'),
     bypassPermissions: false,
     coralEnv: {},
   },

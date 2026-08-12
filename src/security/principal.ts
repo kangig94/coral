@@ -1,4 +1,5 @@
 import type { Capability } from './capability.js';
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 
 export type Subject = 'operator' | 'agent' | 'system';
 
@@ -7,7 +8,9 @@ export type Credential = {
   readonly id: string;
 };
 
-export type ResourceBinding = { readonly kind: 'unbound' } | { readonly kind: 'project'; readonly root: string };
+export type ResourceBinding =
+  | { readonly kind: 'unbound' }
+  | { readonly kind: 'project'; readonly root: CanonicalWorkDir };
 
 export type Principal = {
   readonly subject: Subject;

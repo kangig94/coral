@@ -10,6 +10,7 @@ import type {
   AppServerSession,
 } from '#src/providers/contract.js';
 import type { BoundProvider, BoundProviderAppServerExecutionRuntime } from '#src/providers/bound-provider-contract.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import type { ProviderBindingEnvelope } from '#src/infra/provider-binding-envelope.js';
 import { collectProviderEvents } from '#src/providers/stream.js';
 import { commitContinuityEvent } from '#src/providers/internal/continuity-commit.js';
@@ -160,7 +161,7 @@ function makeRequest(provider: RegisteredProviderName, overrides: Partial<Provid
     sessionId: `job-${provider}-runtime-smoke`,
     name: provider,
     prompt: `Run ${provider} smoke coverage.`,
-    cwd: '/workspace',
+    cwd: fixtureCanonicalWorkDir('/workspace'),
     bypassPermissions: false,
     coralEnv: {},
     ...overrides,

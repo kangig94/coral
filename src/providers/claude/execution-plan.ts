@@ -17,6 +17,7 @@ import type { StoragePort } from '../../infra/port-types.js';
 import { resolveClaudeBrokerEntrypoint, type ClaudeBrokerHostPlan } from './request-mapping.js';
 import { claudeTransportEnv } from './transport-mode.js';
 import type { resolveClaudeTransportMode } from './transport-mode.js';
+import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 
 export type ClaudeProviderAccess =
   | {
@@ -42,7 +43,7 @@ export type ClaudeExecutionPlan = ProviderExecutionPlan<
     broker: Readonly<{
       command: string;
       args: readonly string[];
-      cwd: string;
+      cwd: CanonicalWorkDir;
       transportMode: ReturnType<typeof resolveClaudeTransportMode>;
       environment: readonly EnvironmentLayer[];
     }>;
@@ -172,7 +173,7 @@ export function compileClaudeBrokerHost(
 }
 
 export function createClaudeBrokerHost(options: {
-  readonly cwd: string;
+  readonly cwd: CanonicalWorkDir;
   readonly baseEnv: Readonly<Record<string, string>>;
   readonly platform: string;
   readonly storage: Pick<StoragePort, 'existsSync'>;

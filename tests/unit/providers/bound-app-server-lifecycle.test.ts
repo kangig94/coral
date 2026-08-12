@@ -6,12 +6,13 @@ import { ProviderRegistry } from '#src/providers/registry.js';
 import { collectProviderEvents } from '#src/providers/stream.js';
 import { defineFakeProvider, type AppServerTestProvider } from '#tests/helpers/scripted-provider.js';
 import { createDeferred } from '#tools/testing/deferred.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const REQUEST: ProviderRequest = {
   action: 'exec',
   sessionId: 'lifecycle-session',
   prompt: 'test lifecycle',
-  cwd: '/workspace',
+  cwd: fixtureCanonicalWorkDir('/workspace'),
   bypassPermissions: false,
   coralEnv: {},
 };
@@ -38,7 +39,7 @@ function harness(
         provider: hostProvider,
         command: 'fixture',
         args: ['app-server'],
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         leaseMode: 'job-exclusive',
       },
       interrupt: async () => {},

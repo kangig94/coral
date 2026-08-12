@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ProviderBindingRuntime } from '#src/providers/contracts/binding.js';
@@ -329,7 +330,7 @@ describe('provider binding lifecycle', () => {
         action: 'exec',
         sessionId: 'claude-session',
         prompt: 'test',
-        cwd: root,
+        cwd: fixtureCanonicalWorkDir(root),
         bypassPermissions: false,
         coralEnv: {},
       },
@@ -406,7 +407,7 @@ describe('provider binding lifecycle', () => {
         action: 'exec',
         sessionId: 'codex-session',
         prompt: 'test',
-        cwd: root,
+        cwd: fixtureCanonicalWorkDir(root),
         bypassPermissions: false,
         coralEnv: {},
       },

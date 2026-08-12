@@ -7,6 +7,7 @@ import { backendLog } from '#src/infra/backend-log.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 type ExclusiveProviderServerSpec = Extract<ProviderServerSpec, { leaseMode: 'job-exclusive' }>;
 
@@ -15,7 +16,7 @@ function createProviderServerSpec(overrides: Partial<ExclusiveProviderServerSpec
     provider: 'codex',
     command: 'codex',
     args: ['app-server'],
-    cwd: '/tmp/sim/project',
+    cwd: fixtureCanonicalWorkDir('/tmp/sim/project'),
     leaseMode: 'job-exclusive',
     initializeRequest: {
       method: 'initialize',

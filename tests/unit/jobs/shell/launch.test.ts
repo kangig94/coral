@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { allocateTestSession, initTestJob } from '../../../helpers/session.js';
+import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -373,7 +374,7 @@ function makeAppServerProvider(): {
         provider: 'codex',
         command: 'codex',
         args: ['app-server'],
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         leaseMode: 'job-exclusive',
       },
       interrupt: async () => {},
@@ -505,7 +506,7 @@ function realizePluginRoot(ctx: InvocationContext): string {
 }
 
 function _createScopedContext(name: string): InvocationContext {
-  const projectRoot = join(mockState.tmpHome, name);
+  const projectRoot = fixtureCanonicalWorkDir(join(mockState.tmpHome, name));
   mkdirSync(projectRoot, { recursive: true });
   const pluginRoot = join(projectRoot, 'plugin');
   mkdirSync(pluginRoot, { recursive: true });
@@ -616,7 +617,7 @@ describe('ExecutionService launch', () => {
     rmSync(mockState.tmpRoot, { recursive: true, force: true });
     mkdirSync(mockState.tmpRoot, { recursive: true });
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
-    const projectRoot = join(mockState.tmpHome, 'project');
+    const projectRoot = fixtureCanonicalWorkDir(join(mockState.tmpHome, 'project'));
     mkdirSync(projectRoot, { recursive: true });
     ctx = {
       projectRoot,
@@ -735,8 +736,14 @@ describe('ExecutionService launch', () => {
       service.executeWorkflow(
         'codex',
         _parseExpression('architect'),
-        { expression: 'architect', startPrompt: 'seed', provider: 'codex' },
+        {
+          expression: 'architect',
+          startPrompt: 'seed',
+          provider: 'codex',
+          workDir: ctx.projectRoot,
+        },
         ctx,
+        ctx.projectRoot,
       ),
     ).rejects.toThrow('workflow launch commit failed');
 

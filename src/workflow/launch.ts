@@ -1,4 +1,5 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { CompiledPlanSlot } from './plan.js';
 import {
   WorkflowExecutionError,
@@ -18,7 +19,7 @@ type LaunchContext = {
   atomIndex: number;
   stepPrompt: string;
   context?: string;
-  workDir?: string;
+  workDir?: CanonicalWorkDir;
   executionSvc: WorkflowExecutionPort;
   ctx: InvocationContext;
   signal?: AbortSignal;
@@ -174,7 +175,7 @@ export async function launchCompiledStepAtoms(
   ctx: InvocationContext,
   options: {
     context?: string;
-    workDir?: string;
+    workDir?: CanonicalWorkDir;
     signal?: AbortSignal;
     workflowJobId?: string;
     atomIndexFor?: (slot: CompiledPlanSlot, positionalIndex: number) => number;

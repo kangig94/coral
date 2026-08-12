@@ -10,6 +10,7 @@ import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
 import { codexTurnKernel } from '#src/providers/codex/thread-kernel.js';
 import { codexAppServerLifecycle } from '#src/providers/codex/provider-facets.js';
 import { commitContinuityEvent } from '#src/providers/internal/continuity-commit.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   buildCodexExecutionPlan as buildCodexExecutionPlanWithHost,
   buildCodexHost,
@@ -71,7 +72,7 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
     name: 'codex',
     conversationRef: 'thread-1',
     prompt: 'Resume and continue',
-    cwd: '/workspace',
+    cwd: fixtureCanonicalWorkDir('/workspace'),
     bypassPermissions: false,
     coralEnv: {},
     ...overrides,

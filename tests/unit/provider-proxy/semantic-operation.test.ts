@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 // `rebuildBoundProvider` builds a fresh registry per call via `createBuiltInProviderRegistry` and calls its
 // real `rehydrateBinding`, which needs a real, persisted Claude/Codex account binding to succeed. Mocking the
@@ -131,7 +132,7 @@ function preparedFixture(overrides: Partial<ProxyPreparedAppServerOperation> = {
       action: 'exec',
       sessionId: 'session-1',
       prompt: 'hello',
-      cwd: '/workspace',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
       bypassPermissions: false,
       coralEnv: {},
     },
@@ -196,7 +197,13 @@ function fakeBoundProvider(options: {
 }
 
 function fakeHostSpec(provider = 'claude'): ProviderServerSpec {
-  return { provider, command: provider, args: ['app-server'], cwd: '/workspace', leaseMode: 'job-exclusive' };
+  return {
+    provider,
+    command: provider,
+    args: ['app-server'],
+    cwd: fixtureCanonicalWorkDir('/workspace'),
+    leaseMode: 'job-exclusive',
+  };
 }
 
 function fakeHostRef(provider = 'claude'): HostRef {
@@ -930,7 +937,7 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
         sessionId: 'session-1',
         conversationRef: 'thread-1',
         prompt: 'hello',
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         bypassPermissions: false,
         coralEnv: {},
       },
@@ -1465,6 +1472,11 @@ function fakeProviderServerHandle(options?: { pid?: number }): {
     onNotification: vi.fn(() => () => {}) as unknown as ProviderServerHandle['onNotification'],
     closePromise: new Promise(() => {}),
     isClosed: () => false,
+    inspectDiagnostics: () => ({
+      hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+      completedObservations: [],
+      factsTruncatedBeforeSeq: 0,
+    }),
     markExpectedClose: vi.fn(),
     close: closeMock,
   };
@@ -1778,7 +1790,7 @@ describe('semantic-operation: specIdentityKey / specFingerprint', () => {
       idleRetirement: 'host-reported',
       leaseMode: 'shared',
       env: { B_VAR: '2', A_VAR: '1' },
-      cwd: '/workspace',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
       args: ['app-server'],
       command: 'claude',
       provider: 'claude',

@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { allocateTestSession } from '../../../helpers/session.js';
+import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -245,6 +246,11 @@ function _createFakeProviderServerHandle(options?: {
       onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
       closePromise,
       isClosed: () => false,
+      inspectDiagnostics: () => ({
+        hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+        completedObservations: [],
+        factsTruncatedBeforeSeq: 0,
+      }),
       markExpectedClose: markExpectedCloseMock,
       close: closeMock,
     } satisfies ProviderServerHandle,
@@ -424,7 +430,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
       streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
     ),
     appServerLifecycle: {
-      host: spec,
+      host: { ...spec, cwd: fixtureCanonicalWorkDir(spec.cwd) },
       interrupt: async (lease, continuity) => {
         const brokerSessionKey =
           typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
@@ -546,7 +552,7 @@ function _realizePluginRoot(ctx: InvocationContext): string {
 }
 
 function _createScopedContext(name: string): InvocationContext {
-  const projectRoot = join(mockState.tmpHome, name);
+  const projectRoot = fixtureCanonicalWorkDir(join(mockState.tmpHome, name));
   mkdirSync(projectRoot, { recursive: true });
   const pluginRoot = join(projectRoot, 'plugin');
   mkdirSync(pluginRoot, { recursive: true });
@@ -618,7 +624,7 @@ describe('ExecutionService abort', () => {
     rmSync(mockState.tmpRoot, { recursive: true, force: true });
     mkdirSync(mockState.tmpRoot, { recursive: true });
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
-    const projectRoot = join(mockState.tmpHome, 'project');
+    const projectRoot = fixtureCanonicalWorkDir(join(mockState.tmpHome, 'project'));
     mkdirSync(projectRoot, { recursive: true });
     ctx = {
       projectRoot,

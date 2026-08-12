@@ -1,5 +1,7 @@
 import type { Principal, ResourceBinding, Subject } from '#src/security/principal.js';
 
+import { fixtureCanonicalWorkDir } from './canonical-work-dir.js';
+
 type TestPrincipalOptions = {
   readonly subject?: Subject;
   readonly transport?: string;
@@ -20,5 +22,5 @@ export function testProjectPrincipal(
   projectRoot: string,
   options: Omit<TestPrincipalOptions, 'binding'> = {},
 ): Principal {
-  return testPrincipal({ ...options, binding: { kind: 'project', root: projectRoot } });
+  return testPrincipal({ ...options, binding: { kind: 'project', root: fixtureCanonicalWorkDir(projectRoot) } });
 }

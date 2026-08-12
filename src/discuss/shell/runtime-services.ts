@@ -2,6 +2,7 @@ import type { Database } from '../../store/db.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Principal } from '../../security/principal.js';
+import { canonicalizeWorkDir } from '../../runtime/canonical-work-dir.js';
 import type { JobExit, JobLaunch, JobStatus } from '../../jobs/records.js';
 import type { DiscussContext, DiscussLaunchDecision, DiscussService, DiscussWaitResult } from './types.js';
 import { clearAllDiscuss, getOrCreate as getOrCreateDiscussContext, hasRunningSessions } from './live-registry.js';
@@ -211,14 +212,15 @@ export function createDiscussRuntime({
         discussSourcesAtShutdown,
         getDiscussStoreForSource,
         (snapshot) => {
+          const projectRoot = canonicalizeWorkDir(snapshot.projectRoot, process.cwd());
           const principal: Principal = {
             subject: 'system',
             transport: 'internal',
             credential: { kind: 'internal', id: 'discuss-shutdown' },
-            binding: { kind: 'project', root: snapshot.projectRoot },
+            binding: { kind: 'project', root: projectRoot },
           };
           return getDiscussContext({
-            projectRoot: snapshot.projectRoot,
+            projectRoot,
             pluginRoot: world.identity.pluginRoot,
             coralEnv: {},
             principal,

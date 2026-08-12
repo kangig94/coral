@@ -13,6 +13,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 
@@ -39,14 +40,14 @@ function launchBody(jobId: string): Extract<JobLaunchRequestBody, { jobKind: 'pr
     sessionId: `session-${jobId}`,
     provider: 'codex',
     providerAction: 'exec',
-    projectRoot: `/workspace/${jobId}`,
+    projectRoot: fixtureCanonicalWorkDir(`/workspace/${jobId}`),
     backendNamespace: 'tests',
     jobKind: 'provider',
     pool: 'default',
     enqueueSequence: 0,
     request: {
       prompt: `prompt for ${jobId}`,
-      cwd: `/workspace/${jobId}`,
+      cwd: fixtureCanonicalWorkDir(`/workspace/${jobId}`),
       bypassPermissions: false,
       coralEnv: {},
     },
@@ -121,8 +122,8 @@ function workflowChildInput(options: {
       ...launchBody(options.jobId),
       owner: { kind: 'workflow', id: options.workflowId },
       sessionId: options.sessionId,
-      projectRoot: '/workspace',
-      request: { ...launchBody(options.jobId).request, cwd: '/workspace' },
+      projectRoot: fixtureCanonicalWorkDir('/workspace'),
+      request: { ...launchBody(options.jobId).request, cwd: fixtureCanonicalWorkDir('/workspace') },
       workflowSlotGeneration: options.generation,
       ...(options.replaces === undefined ? {} : { replacesWorkflowJobId: options.replaces }),
     },

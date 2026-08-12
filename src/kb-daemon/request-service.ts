@@ -48,10 +48,11 @@ import { kbSearchSchema, kbWakeUpSchema } from '../kb/tool-contracts.js';
 import { generateWakeUpPacket } from '../kb/ops/wake-up.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from '../kb/validation.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import { canonicalizeWorkDir, type CanonicalWorkDir, WorkDirectoryError } from '../runtime/canonical-work-dir.js';
 import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
 import type { Capability } from '../security/capability.js';
 import type { Principal, ResourceBinding } from '../security/principal.js';
-import { authorize, type Decision } from '../security/policy/authorize.js';
+import { authorizeCapability, authorizeResourceBinding, type Decision } from '../security/policy/authorize.js';
 import { capabilitiesFor } from '../security/policy/capabilities.js';
 import { parsePrincipalWire } from '../security/principal-wire.js';
 import {
@@ -71,10 +72,14 @@ type KbDaemonRequestServiceOptions = {
 };
 
 type KbDaemonRequestContext = {
-  projectRoot?: string;
+  projectRoot?: CanonicalWorkDir;
   pluginRoot?: string;
   coralEnv?: Record<string, string>;
   principal: Principal;
+};
+
+type RawKbDaemonRequestContext = Omit<KbDaemonRequestContext, 'projectRoot'> & {
+  projectRoot?: string;
 };
 
 type KbDaemonRequestServiceState = {
@@ -162,7 +167,7 @@ function parseRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
-function parseContext(value: unknown): KbDaemonRequestContext | undefined {
+function parseContext(value: unknown): RawKbDaemonRequestContext | undefined {
   const parsed = kbDaemonRequestContextWireSchema.safeParse(value);
   if (!parsed.success) {
     return undefined;
@@ -255,14 +260,34 @@ function requestedBindingFromContext(ctx: KbDaemonRequestContext): ResourceBindi
 }
 
 function authorizeDaemonRequest(
-  ctx: KbDaemonRequestContext,
+  rawCtx: RawKbDaemonRequestContext,
   method: string,
   requires: Capability,
-): KbToolResult | null {
+): KbDaemonRequestContext | KbToolResult {
+  const capabilityDecision = authorizeCapability(rawCtx.principal, requires);
+  if (!capabilityDecision.ok) {
+    const unbound = { kind: 'unbound' } as const;
+    writeAuthorizationDecisionAudit(rawCtx.principal, `kb-daemon.${method}`, capabilityDecision, unbound);
+    return unauthorized(method, capabilityDecision);
+  }
+
+  const projectRoot =
+    rawCtx.projectRoot === undefined ? undefined : canonicalizeWorkDir(rawCtx.projectRoot, process.cwd());
+  let principal = rawCtx.principal;
+  const ctx: KbDaemonRequestContext = {
+    ...(projectRoot === undefined ? {} : { projectRoot }),
+    ...(rawCtx.pluginRoot === undefined ? {} : { pluginRoot: rawCtx.pluginRoot }),
+    ...(rawCtx.coralEnv === undefined ? {} : { coralEnv: rawCtx.coralEnv }),
+    principal,
+  };
   const requestedBinding = requestedBindingFromContext(ctx);
-  const decision = authorize(ctx.principal, requires, requestedBinding);
-  writeAuthorizationDecisionAudit(ctx.principal, `kb-daemon.${method}`, decision, requestedBinding);
-  return decision.ok ? null : unauthorized(method, decision);
+  if (principal.binding.kind === 'unbound' && requestedBinding.kind === 'project') {
+    principal = { ...principal, binding: requestedBinding };
+    ctx.principal = principal;
+  }
+  const decision = authorizeResourceBinding(principal, requires, requestedBinding);
+  writeAuthorizationDecisionAudit(principal, `kb-daemon.${method}`, decision, requestedBinding);
+  return decision.ok ? ctx : unauthorized(method, decision);
 }
 
 function invalidRequestFromError(error: unknown): KbToolResult {
@@ -270,6 +295,9 @@ function invalidRequestFromError(error: unknown): KbToolResult {
 }
 
 function failed(error: unknown): KbToolResult {
+  if (error instanceof WorkDirectoryError) {
+    return kbError(error.code, error.message, { workDir: error.workDir, projectRoot: error.baseDir });
+  }
   const setupError = serializeCoralSetupError(error);
   if (setupError !== null) {
     return {
@@ -500,18 +528,15 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
   const read = async (request: KbDaemonKbReadRequest): Promise<KbToolResult> => {
     try {
       const args = parseRecord(request.args);
-      const ctx = parseContext(request.ctx);
-      if (ctx === undefined) {
+      const rawCtx = parseContext(request.ctx);
+      if (rawCtx === undefined) {
         return invalidRequest('KB daemon read request requires principal context.');
       }
-      const authorizationError = authorizeDaemonRequest(
-        ctx,
-        request.method,
-        KB_DAEMON_READ_CAPABILITIES[request.method],
-      );
-      if (authorizationError !== null) {
-        return authorizationError;
+      const authorization = authorizeDaemonRequest(rawCtx, request.method, KB_DAEMON_READ_CAPABILITIES[request.method]);
+      if ('ok' in authorization) {
+        return authorization;
       }
+      const ctx = authorization;
 
       switch (request.method) {
         case 'readSearch': {
@@ -638,18 +663,19 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
   const mutate = async (request: KbDaemonKbMutationRequest): Promise<KbToolResult> => {
     try {
       const args = parseRecord(request.args);
-      const ctx = parseContext(request.ctx);
-      if (ctx === undefined) {
+      const rawCtx = parseContext(request.ctx);
+      if (rawCtx === undefined) {
         return invalidRequest('KB daemon mutation request requires principal context.');
       }
-      const authorizationError = authorizeDaemonRequest(
-        ctx,
+      const authorization = authorizeDaemonRequest(
+        rawCtx,
         request.method,
         KB_DAEMON_MUTATION_CAPABILITIES[request.method],
       );
-      if (authorizationError !== null) {
-        return authorizationError;
+      if ('ok' in authorization) {
+        return authorization;
       }
+      const ctx = authorization;
 
       switch (request.method) {
         case 'createMemo':

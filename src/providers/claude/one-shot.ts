@@ -2,6 +2,7 @@ import type { StoragePort } from '../../infra/port-types.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { isRecord, readString } from '../../infra/json.js';
 import { AbortError } from '../../runtime/abort.js';
+import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import type { IdPort } from '../../runtime/ports.js';
 import type {
   EffortLevel,
@@ -23,7 +24,7 @@ import { isClaudeCurationUsageBudgetExhausted } from './usage-budget.js';
 import { buildClaudeControllerHost, type ClaudeProviderAccess } from './execution-plan.js';
 
 type ClaudeOneShotRequest = {
-  readonly cwd: string;
+  readonly cwd: CanonicalWorkDir;
   readonly prompt: string;
   readonly model?: string;
   readonly effort?: EffortLevel;

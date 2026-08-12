@@ -12,6 +12,7 @@ import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { ExecutionOwner } from '../runtime/execution-owner.js';
 import type { ProviderSessionLaunchDecision } from '../jobs/launch.js';
 import type { ClearContinuationLeaseInput, RecordContinuationLeaseInput, RetentionPolicy } from '../sessions/entry.js';
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 
 export type StepDetail = {
   stepIndex: number;
@@ -32,7 +33,7 @@ interface CoralDispatchInput {
   workflowSlotId?: string;
   workflowSlotGeneration?: number;
   replacesWorkflowJobId?: string;
-  cwd?: string;
+  cwd?: CanonicalWorkDir;
   effort?: string;
   bypassPermissions?: boolean;
   systemPrompt?: string;
@@ -51,7 +52,7 @@ interface ResumeInput {
   name?: string;
   model?: string;
   pool?: string;
-  cwd?: string;
+  cwd?: CanonicalWorkDir;
   effort?: string;
   bypassPermissions?: boolean;
   systemPrompt?: string;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 import { managed, none } from '#src/providers/capability.js';
 import { zodPersistedParser, zodValueParser } from '#src/providers/binding-parser.js';
@@ -26,7 +27,7 @@ const TEST_APP_SERVER_SPEC: ProviderServerSpec = {
   provider: 'fixture',
   command: 'fixture',
   args: [],
-  cwd: '/tmp',
+  cwd: fixtureCanonicalWorkDir('/tmp'),
   leaseMode: 'job-exclusive',
 };
 type ProviderFacetOverrides = Partial<Pick<ProviderImplementation<EmptyPlan>, 'preflight' | 'recovery'>> & {
@@ -346,7 +347,7 @@ describe('ProviderRegistry', () => {
     curation.state.result = 'retained-mutation';
 
     const bound = successfulBinding(registry, 'claude');
-    const request = { cwd: '/kb', prompt: 'curate' };
+    const request = { cwd: fixtureCanonicalWorkDir('/kb'), prompt: 'curate' };
     const baseEnv = { PATH: '/bin' };
     const prepared = bound.curation?.prepare(request, { baseEnv } as never);
     await expect(prepared?.complete()).resolves.toBe('curated');
@@ -1368,7 +1369,7 @@ describe('ProviderRegistry', () => {
           provider: 'single-request',
           command: 'single-request',
           args: [],
-          cwd: appServerRequest?.cwd ?? '/missing',
+          cwd: appServerRequest?.cwd ?? fixtureCanonicalWorkDir('/missing'),
           leaseMode: 'job-exclusive' as const,
         }),
       },
@@ -1406,7 +1407,7 @@ describe('ProviderRegistry', () => {
       action: 'exec',
       sessionId: 'single-request-session',
       prompt: 'prepared prompt',
-      cwd: '/tmp',
+      cwd: fixtureCanonicalWorkDir('/tmp'),
       bypassPermissions: false,
       coralEnv: { ROUTING: 'prepared' },
     };

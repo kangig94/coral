@@ -8,6 +8,7 @@ import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
 import type { AtomicFailedWorkflowDescendantReleaser, WorkflowRecoveryDescendant } from '#src/workflow/recover.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 type RecordedInput = {
   readonly input: ResolvableCoralEventInput<unknown, unknown>;
@@ -96,7 +97,7 @@ describe('selectFinalCauseRef precedence', () => {
       {
         jobId: 'workflow-1:slot:0',
         sessionId: 'session-1',
-        projectRoot: '/project',
+        projectRoot: fixtureCanonicalWorkDir('/project'),
         expectedSessionVersion: 4,
       },
     ];

@@ -1,4 +1,5 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import { errorMessage } from '../infra/error-format.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { PipelineAST } from './ast.js';
@@ -28,7 +29,7 @@ import { waitForAtoms } from './wait.js';
 type ExecutePlannedStepsOptions = {
   time: Pick<TimePort, 'now'>;
   context?: string;
-  workDir?: string;
+  workDir?: CanonicalWorkDir;
   signal?: AbortSignal;
   onProgress: (message: string) => void;
   staleTimeoutMs: number;
@@ -63,7 +64,7 @@ async function drainLaunchedAtoms(
     staleCheckIntervalMs: number;
     staleAbortTimeoutMs: number;
     drainDeadlineMs: number;
-    workDir?: string;
+    workDir?: CanonicalWorkDir;
     workflowJobId?: string;
     onProgress: (message: string) => void;
   },
@@ -107,7 +108,7 @@ async function awaitLaunchedStepResults(
     staleCheckIntervalMs: number;
     staleAbortTimeoutMs: number;
     drainDeadlineMs: number;
-    workDir?: string;
+    workDir?: CanonicalWorkDir;
     onProgress: (message: string) => void;
     completedStepDetails: StepDetail[];
     workflowJobId?: string;
@@ -264,7 +265,7 @@ export async function executePipeline(
   ctx: InvocationContext,
   options: {
     context?: string;
-    workDir?: string;
+    workDir?: CanonicalWorkDir;
     signal?: AbortSignal;
     onProgress?: (message: string) => void;
     staleTimeoutMs?: number;

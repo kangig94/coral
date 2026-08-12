@@ -14,6 +14,7 @@ import { listWorkflowProjections, readWorkflowProjection, readWorkflowView } fro
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { readCorpusState } from '#src/kb/state/corpus-state.js';
 import { reduceJobLaunchRequested } from '#src/jobs/projections.js';
 import { decodeProjectionJobStoredRow } from '#src/jobs/projection-row.js';
@@ -403,14 +404,14 @@ describe('persisted projection authority codecs', () => {
             sessionId: 'session-1',
             provider: 'codex',
             providerAction: 'exec',
-            projectRoot: '/workspace',
+            projectRoot: fixtureCanonicalWorkDir('/workspace'),
             backendNamespace: 'tests',
             jobKind: 'provider',
             pool: 'default',
             enqueueSequence: 1,
             request: {
               prompt: 'run',
-              cwd: '/workspace',
+              cwd: fixtureCanonicalWorkDir('/workspace'),
               bypassPermissions: false,
               coralEnv: {},
             },

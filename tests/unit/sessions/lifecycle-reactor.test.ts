@@ -14,6 +14,7 @@ import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/in
 import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { defineProvider } from '#src/providers/registry.js';
 import { managed, none } from '#src/providers/capability.js';
@@ -239,7 +240,7 @@ async function runCoordinatorStartupRecovery(harness: Harness): Promise<void> {
     throw new Error('These recovery actions must not require provider recovery authority.');
   };
   const createInvocationContext = (projectRoot: string) => ({
-    projectRoot,
+    projectRoot: fixtureCanonicalWorkDir(projectRoot),
     pluginRoot: projectRoot,
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),

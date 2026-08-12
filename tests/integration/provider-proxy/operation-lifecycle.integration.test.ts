@@ -28,6 +28,7 @@ vi.mock('#src/providers/bootstrap.js', async (importOriginal) => {
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import type { HostRef } from '#src/providers/contract.js';
 import { heartbeatOnce } from '#src/coordinator/live/provider-proxy/heartbeat.js';
 import {
@@ -407,7 +408,7 @@ const PREPARED: ProxyPreparedAppServerOperation = {
     action: 'exec',
     sessionId: 'session-1',
     prompt: 'do the thing',
-    cwd: '/project',
+    cwd: fixtureCanonicalWorkDir('/project'),
     bypassPermissions: false,
     coralEnv: {},
   },
@@ -652,7 +653,7 @@ async function launchThroughRoute(
         provider: 'codex',
         command: 'codex',
         args: ['app-server'],
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         leaseMode: 'job-exclusive',
       },
       provider: PREPARED.provider,
@@ -665,7 +666,7 @@ async function launchThroughRoute(
       childAuthorization: {
         principalWire: {
           subject: 'agent',
-          binding: { kind: 'project', root: '/project' },
+          binding: { kind: 'project', root: fixtureCanonicalWorkDir('/project') },
           attenuatedCaps: ['liveness', 'jobs:read'],
         },
         namespace: 'tests',

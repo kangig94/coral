@@ -1,6 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z } from 'zod';
 import { zodPersistedParser, zodValueParser } from '#src/providers/binding-parser.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 import { managed, none } from '#src/providers/capability.js';
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
@@ -205,7 +206,7 @@ describe('provider binding registry boundary', () => {
         action: 'exec',
         sessionId: 'session-a',
         prompt: 'test',
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         bypassPermissions: false,
         coralEnv: {},
       },

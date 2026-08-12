@@ -6,7 +6,17 @@ import { shouldUseWindowsCommandShell } from '../infra/windows-shell.js';
 import type { ChildProcessLike } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 import { AbortError } from '../runtime/abort.js';
-import { appendBuffer, gracefulKill, requirePipedHandles } from '../infra/process-supervision.js';
+import { gracefulKill, requirePipedHandles } from '../infra/process-supervision.js';
+import {
+  appendProviderHostLog,
+  createProviderHostDiagnostics,
+  currentProviderHostLogSeq,
+  inspectProviderHostDiagnostics,
+  recordProviderResponseDiagnostic,
+  retainedProviderHostLogText,
+  type ProviderHostDiagnosticsSnapshot,
+  type ProviderHostDiagnosticsState,
+} from './host-diagnostics.js';
 
 export const PROVIDER_SERVER_MAX_JSONL_LINE_BYTES = MAX_BUFFER;
 export const PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS = 30_000;
@@ -32,6 +42,7 @@ type ProviderServerNotification = {
 
 type ProviderServerPendingRequest = {
   method: string;
+  startSeq: number;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
 };
@@ -49,6 +60,7 @@ export type ProviderServerHandle = {
   onNotification: (handler: (message: ProviderServerNotification) => void) => () => void;
   closePromise: Promise<Error | void>;
   isClosed(): boolean;
+  inspectDiagnostics: () => ProviderHostDiagnosticsSnapshot;
   markExpectedClose: () => void;
   close: () => Promise<void>;
 };
@@ -63,7 +75,7 @@ type ProviderServerEntry = {
   notificationHandlers: Set<(message: ProviderServerNotification) => void>;
   stdoutBuffer: string;
   stdoutBufferBytes: number;
-  stderr: string;
+  diagnostics: ProviderHostDiagnosticsState;
   closed: boolean;
   closeRequested: boolean;
   closePromise: Promise<Error | void>;
@@ -137,7 +149,7 @@ export async function spawnProviderServerTransport(params: {
     notificationHandlers: new Set(),
     stdoutBuffer: '',
     stdoutBufferBytes: 0,
-    stderr: '',
+    diagnostics: createProviderHostDiagnostics(),
     closed: false,
     closeRequested: false,
     closePromise,
@@ -158,13 +170,17 @@ export async function spawnProviderServerTransport(params: {
   });
 
   childStderr.on('data', (chunk: string | Buffer) => {
-    entry.stderr = appendBuffer(entry.stderr, chunk.toString());
+    appendProviderHostLog(entry.diagnostics, {
+      observedAt: runtime.time.now(),
+      stream: 'stderr',
+      text: chunk.toString(),
+    });
   });
 
   stdin.on('error', (error: Error) => {
     if (entry.closed) return;
     const stdinError = createProviderServerError(entry.provider, `stdin error: ${error.message}`, {
-      stderr: entry.stderr,
+      stderr: retainedProviderHostLogText(entry.diagnostics),
     });
     backendLog.error(stdinError.message, error);
     detachProviderServer(entry, stdinError);
@@ -173,7 +189,7 @@ export async function spawnProviderServerTransport(params: {
 
   child.on('error', (error: Error) => {
     const closeError = createProviderServerError(options.provider, `failed: ${error.message}`, {
-      stderr: entry.stderr,
+      stderr: retainedProviderHostLogText(entry.diagnostics),
     });
     if (!entry.closeRequested) {
       backendLog.error(`Provider server ${options.provider} failed`, error);
@@ -191,7 +207,9 @@ export async function spawnProviderServerTransport(params: {
     let closeError: Error | undefined;
     if (!entry.closeRequested) {
       const detail = signal ? `exited unexpectedly (signal ${signal})` : `exited unexpectedly (exit ${code})`;
-      closeError = createProviderServerError(options.provider, detail, { stderr: entry.stderr });
+      closeError = createProviderServerError(options.provider, detail, {
+        stderr: retainedProviderHostLogText(entry.diagnostics),
+      });
       if (code !== 0 || signal !== null) {
         backendLog.error(closeError.message);
       }
@@ -202,14 +220,19 @@ export async function spawnProviderServerTransport(params: {
   const rpc: ProviderServerRpc = {
     request: <TResult = unknown>(method: string, params: Record<string, unknown> = {}): Promise<TResult> => {
       if (entry.closed) {
-        return Promise.reject(createProviderServerError(entry.provider, 'is closed', { stderr: entry.stderr }));
+        return Promise.reject(
+          createProviderServerError(entry.provider, 'is closed', {
+            stderr: retainedProviderHostLogText(entry.diagnostics),
+          }),
+        );
       }
 
       const id = entry.nextRequestId;
       entry.nextRequestId += 1;
 
       return new Promise<TResult>((resolve, reject) => {
-        entry.pending.set(id, { method, resolve: resolve as (value: unknown) => void, reject });
+        const startSeq = currentProviderHostLogSeq(entry.diagnostics);
+        entry.pending.set(id, { method, startSeq, resolve: resolve as (value: unknown) => void, reject });
         try {
           sendProviderServerMessage(entry, { id, method, params });
         } catch (error) {
@@ -251,7 +274,9 @@ export async function spawnProviderServerTransport(params: {
       const initError =
         error instanceof Error
           ? error
-          : createProviderServerError(entry.provider, `initialize failed`, { stderr: entry.stderr });
+          : createProviderServerError(entry.provider, `initialize failed`, {
+              stderr: retainedProviderHostLogText(entry.diagnostics),
+            });
       detachProviderServer(entry, initError);
       gracefulKill(child, runtime);
       throw initError;
@@ -272,6 +297,7 @@ export async function spawnProviderServerTransport(params: {
     },
     closePromise,
     isClosed: () => entry.closed,
+    inspectDiagnostics: () => inspectProviderHostDiagnostics(entry.diagnostics),
     markExpectedClose: () => {
       entry.closeRequested = true;
     },
@@ -303,7 +329,7 @@ function initializeProviderServer(params: {
     timeoutHandle = runtime.time.setTimeout(() => {
       reject(
         createProviderServerError(entry.provider, `initialize timed out after ${timeoutMs}ms`, {
-          stderr: entry.stderr,
+          stderr: retainedProviderHostLogText(entry.diagnostics),
         }),
       );
     }, timeoutMs);
@@ -372,7 +398,10 @@ function detachProviderServer(entry: ProviderServerEntry, error?: Error): void {
   entry.notificationHandlers.clear();
   rejectPendingProviderRequests(
     entry,
-    error ?? createProviderServerError(entry.provider, 'closed', { stderr: entry.stderr }),
+    error ??
+      createProviderServerError(entry.provider, 'closed', {
+        stderr: retainedProviderHostLogText(entry.diagnostics),
+      }),
   );
 }
 
@@ -383,7 +412,9 @@ function encodeProviderServerMessage(message: unknown): string {
 function sendProviderServerMessage(entry: ProviderServerEntry, message: unknown): void {
   const stdin = entry.child.stdin;
   if (entry.closed || !stdin || stdin.destroyed) {
-    throw createProviderServerError(entry.provider, 'stdin is not available', { stderr: entry.stderr });
+    throw createProviderServerError(entry.provider, 'stdin is not available', {
+      stderr: retainedProviderHostLogText(entry.diagnostics),
+    });
   }
   stdin.write(encodeProviderServerMessage(message));
 }
@@ -425,7 +456,7 @@ function appendProviderServerLineFragment(entry: ProviderServerEntry, fragment: 
   if (observedBytes > PROVIDER_SERVER_MAX_JSONL_LINE_BYTES) {
     const lineError = new ProviderServerLineTooLargeError(observedBytes);
     const protocolError = createProviderServerError(entry.provider, 'emitted an oversized JSONL line', {
-      stderr: entry.stderr,
+      stderr: retainedProviderHostLogText(entry.diagnostics),
       data: {
         code: lineError.code,
         maxLineBytes: lineError.maxLineBytes,
@@ -459,7 +490,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
     message = JSON.parse(line) as typeof message;
   } catch (error) {
     const parseError = createProviderServerError(entry.provider, 'emitted invalid JSONL', {
-      stderr: entry.stderr,
+      stderr: retainedProviderHostLogText(entry.diagnostics),
       data: { line, message: errorMessage(error) },
     });
     backendLog.error(parseError.message, error);
@@ -485,14 +516,30 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
   }
 
   if (typeof message.id === 'number') {
+    const endSeq = currentProviderHostLogSeq(entry.diagnostics);
     const pending = entry.pending.get(message.id);
     if (!pending) return;
+    recordProviderResponseDiagnostic(entry.diagnostics, {
+      generation: entry.generation,
+      requestId: message.id,
+      method: pending.method,
+      response: message.error
+        ? Object.freeze({
+            kind: 'failure',
+            rpcCode: message.error.code,
+            providerMessage: message.error.message,
+            providerData: message.error.data,
+          })
+        : Object.freeze({ kind: 'success' }),
+      startSeq: pending.startSeq,
+      endSeq,
+    });
     entry.pending.delete(message.id);
 
     if (message.error) {
       pending.reject(
         createProviderServerError(entry.provider, `${pending.method} failed`, {
-          stderr: entry.stderr,
+          stderr: retainedProviderHostLogText(entry.diagnostics),
           rpcCode: message.error.code,
           data: message.error.data,
         }),
@@ -506,7 +553,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
 
   if (typeof message.method !== 'string') {
     const protocolError = createProviderServerError(entry.provider, 'emitted a malformed JSON-RPC message', {
-      stderr: entry.stderr,
+      stderr: retainedProviderHostLogText(entry.diagnostics),
       data: message,
     });
     backendLog.error(protocolError.message);
@@ -526,7 +573,7 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
       const dispatchError = createProviderServerError(
         entry.provider,
         `notification handler failed: ${errorMessage(error)}`,
-        { stderr: entry.stderr },
+        { stderr: retainedProviderHostLogText(entry.diagnostics) },
       );
       backendLog.error(dispatchError.message, error);
       if (!entry.closed) {
@@ -541,7 +588,12 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
 function beginProviderServerShutdown(entry: ProviderServerEntry, detail: string): void {
   if (entry.closed) return;
   entry.closeRequested = true;
-  detachProviderServer(entry, createProviderServerError(entry.provider, detail, { stderr: entry.stderr }));
+  detachProviderServer(
+    entry,
+    createProviderServerError(entry.provider, detail, {
+      stderr: retainedProviderHostLogText(entry.diagnostics),
+    }),
+  );
 }
 
 function shutdownProviderServer(entry: ProviderServerEntry, detail: string, runtime: Runtime): void {

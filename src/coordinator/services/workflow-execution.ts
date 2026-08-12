@@ -6,7 +6,8 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type { CommitEventsFn } from '../../store/append.js';
-import { type WorkflowCommand } from '../../workflow/input.js';
+import type { CanonicalWorkflowCommand } from '../../workflow/compile.js';
+import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import type { PipelineAST } from '../../workflow/ast.js';
 import { executePipeline } from '../../workflow/executor.js';
 import { resolveDrainDeadlineMs } from '../../workflow/execution-constants.js';
@@ -53,9 +54,9 @@ export class WorkflowExecutionService {
   async executeWorkflow(
     providerName: string,
     ast: PipelineAST,
-    input: WorkflowCommand,
+    input: CanonicalWorkflowCommand,
     ctx: InvocationContext,
-    workDir?: string,
+    workDir: CanonicalWorkDir,
   ): Promise<WorkflowLaunchDecision> {
     if (!this.deps.providerRegistry.get(providerName)) {
       return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
@@ -82,7 +83,6 @@ export class WorkflowExecutionService {
     let plan: ReturnType<typeof buildWorkflowPlan>;
     try {
       plan = buildWorkflowPlan(jobId, ast, { defaultProvider: providerName });
-      const workflowLaunchCwd = workDir ?? boundCtx.projectRoot;
       this.deps.progressStore.commit((c) => {
         c.append(workflowPlanDeclaredEvent(jobId, plan, decodedScope.value));
         c.append({
@@ -101,7 +101,7 @@ export class WorkflowExecutionService {
             enqueueSequence: this.deps.progressStore.nextEnqueueSequence(),
             request: {
               prompt: input.startPrompt,
-              cwd: workflowLaunchCwd,
+              cwd: workDir,
               bypassPermissions: false,
               coralEnv: { ...boundCtx.coralEnv },
             },
@@ -164,10 +164,10 @@ export class WorkflowExecutionService {
     jobId: string,
     providerName: string,
     ast: PipelineAST,
-    input: WorkflowCommand,
+    input: CanonicalWorkflowCommand,
     ctx: InvocationContext,
     declaredPlan: ReturnType<typeof buildWorkflowPlan>,
-    workDir?: string,
+    workDir: CanonicalWorkDir,
   ): void {
     const signal = this.deps.abortRegistry.getSignal(jobId);
     if (!signal) return;

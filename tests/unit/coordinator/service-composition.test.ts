@@ -59,6 +59,7 @@ import { readWorkflowView } from '#src/workflow/read-queries.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   seedTestProviderContinuity,
   seedTestSessionContinuity,
@@ -444,6 +445,11 @@ function createFakeProviderServerHandle(options?: {
       onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
       closePromise,
       isClosed: () => false,
+      inspectDiagnostics: () => ({
+        hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+        completedObservations: [],
+        factsTruncatedBeforeSeq: 0,
+      }),
       markExpectedClose: markExpectedCloseMock,
       close: closeMock,
     } satisfies ProviderServerHandle,
@@ -619,7 +625,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
       streamProviderTerminal({ content: 'ok', durationMs: 0, outcome: { kind: 'completed' as const } }),
     ),
     appServerLifecycle: {
-      host: spec,
+      host: { ...spec, cwd: fixtureCanonicalWorkDir(spec.cwd) },
       interrupt: async (lease, continuity) => {
         const brokerSessionKey =
           typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
@@ -707,7 +713,7 @@ describe('ExecutionService', () => {
     rmSync(mockState.tmpRoot, { recursive: true, force: true });
     mkdirSync(mockState.tmpRoot, { recursive: true });
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
-    const projectRoot = join(mockState.tmpHome, 'project');
+    const projectRoot = fixtureCanonicalWorkDir(join(mockState.tmpHome, 'project'));
     mkdirSync(projectRoot, { recursive: true });
     ctx = {
       projectRoot,
@@ -763,8 +769,10 @@ describe('ExecutionService', () => {
           expression: 'architect@codex -> resolver@claude',
           startPrompt: 'seed',
           provider: 'codex',
+          workDir: ctx.projectRoot,
         },
         { ...ctx, providerScope: TEST_CODEX_SCOPE },
+        ctx.projectRoot,
       );
 
       expect(decision).toMatchObject({
@@ -1191,8 +1199,10 @@ describe('ExecutionService', () => {
         expression: 'architect -> resolver',
         startPrompt: 'seed',
         provider: 'codex',
+        workDir: ctx.projectRoot,
       },
       ctx,
+      ctx.projectRoot,
     );
 
     expect(decision.status).toBe('running');
@@ -1254,7 +1264,7 @@ describe('ExecutionService', () => {
     );
 
     const service = createService(ctx);
-    const workDir = join(mockState.tmpHome, 'child-workdir');
+    const workDir = fixtureCanonicalWorkDir(join(mockState.tmpHome, 'child-workdir'));
     mkdirSync(workDir, { recursive: true });
 
     const decision = await service.executeWorkflow(
@@ -1264,6 +1274,7 @@ describe('ExecutionService', () => {
         expression: 'architect -> resolver',
         startPrompt: 'seed',
         provider: 'codex',
+        workDir,
       },
       ctx,
       workDir,
@@ -1308,8 +1319,10 @@ describe('ExecutionService', () => {
         expression: 'architect',
         startPrompt: 'seed',
         provider: 'codex',
+        workDir: ctx.projectRoot,
       },
       ctx,
+      ctx.projectRoot,
     );
 
     expect(decision.status).toBe('running');
@@ -1362,8 +1375,10 @@ describe('ExecutionService', () => {
         expression: 'architect -> resolver',
         startPrompt: 'seed',
         provider: 'codex',
+        workDir: ctx.projectRoot,
       },
       ctx,
+      ctx.projectRoot,
     );
 
     expect(decision.status).toBe('running');
@@ -1439,8 +1454,10 @@ describe('ExecutionService', () => {
         expression: 'architect -> resolver',
         startPrompt: 'seed',
         provider: 'codex',
+        workDir: ctx.projectRoot,
       },
       ctx,
+      ctx.projectRoot,
     );
 
     expect(decision.status).toBe('running');
@@ -3153,7 +3170,7 @@ describe('ExecutionService adversarial', () => {
     rmSync(mockState.tmpRoot, { recursive: true, force: true });
     mkdirSync(mockState.tmpRoot, { recursive: true });
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'red-exec-home-'));
-    const projectRoot = join(mockState.tmpHome, 'project');
+    const projectRoot = fixtureCanonicalWorkDir(join(mockState.tmpHome, 'project'));
     mkdirSync(projectRoot, { recursive: true });
     ctx = {
       projectRoot,

@@ -63,6 +63,7 @@ import { createEventBodyCodec } from '../../../src/store/event-body-codec.js';
 import { composeReducers } from '../../../src/store/reducers.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
 import { setStoreServicesForTest } from '../../testing/store-services.js';
+import { fixtureCanonicalWorkDir } from '../../../tests/helpers/canonical-work-dir.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-script-types.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';
@@ -629,14 +630,15 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     root = projectRoot,
     coralEnv = { ...runtime.env.coralSnapshot() },
   ): InvocationContext => {
+    const canonicalRoot = fixtureCanonicalWorkDir(root);
     const principal: Principal = {
       subject: 'operator',
       transport: 'simulation',
       credential: { kind: 'simulation', id: 'operator' },
-      binding: { kind: 'project', root },
+      binding: { kind: 'project', root: canonicalRoot },
     };
     return {
-      projectRoot: root,
+      projectRoot: canonicalRoot,
       pluginRoot,
       coralEnv: { ...coralEnv },
       principal,

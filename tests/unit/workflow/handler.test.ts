@@ -8,9 +8,10 @@ import type { WorkflowCommand } from '#src/workflow/input.js';
 import { workflowCompiler } from '#src/workflow/compile.js';
 import { workflowCommands } from '#src/workflow/dispatch.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const ctx: InvocationContext = {
-  projectRoot: '/tmp/coral-workflow-project',
+  projectRoot: fixtureCanonicalWorkDir('/tmp/coral-workflow-project'),
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},
   principal: testProjectPrincipal('/tmp/coral-workflow-project'),
@@ -43,7 +44,10 @@ function createProviderRegistry(): ProviderRegistry {
 }
 
 function compileOrThrow(command: WorkflowCommand, providerRegistry: ProviderRegistry) {
-  const compiled = workflowCompiler.compile(command, providerRegistry);
+  const compiled = workflowCompiler.compile(
+    { ...command, workDir: fixtureCanonicalWorkDir(command.workDir ?? ctx.projectRoot) },
+    providerRegistry,
+  );
   if ('status' in compiled) {
     throw new Error(`expected compiled workflow, got ${compiled.status}`);
   }
@@ -125,6 +129,7 @@ describe('workflow api', () => {
         expression: 'architect@missing-provider',
         startPrompt: 'hello',
         provider: 'codex',
+        workDir: fixtureCanonicalWorkDir('/tmp/coral-workflow-cwd'),
       },
       providerRegistry,
     );
@@ -146,6 +151,7 @@ describe('workflow api', () => {
           expression: '(architect, architect)',
           startPrompt: 'test',
           provider: 'claude',
+          workDir: fixtureCanonicalWorkDir('/tmp/coral-workflow-cwd'),
         },
         providerRegistry,
       ),

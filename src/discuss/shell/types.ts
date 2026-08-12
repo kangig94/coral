@@ -9,6 +9,7 @@ import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { JobLaunchRequest, JobResumeRequest, ProviderSessionLaunchDecision } from '../../jobs/launch.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
+import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 
 export type AgentConfig = {
   name: string;
@@ -67,7 +68,7 @@ export type DiscussService = {
 };
 
 export type DiscussContext = {
-  projectRoot: string;
+  projectRoot: CanonicalWorkDir;
   sessions: Map<string, LiveDiscussSession>;
   service: DiscussService;
   store: DiscussSessionStore;

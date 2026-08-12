@@ -28,9 +28,10 @@ import { rehydrateCoralSetupError, serializeCoralSetupError } from '../runtime/e
 import { AbortError } from '../runtime/abort.js';
 import type { CurateAssistantPort } from '../kb/curate/assistant.js';
 import type { CurateUsageBudgetPort } from '../kb/curate/usage-budget.js';
-import { parsePrincipalWire } from '../security/principal-wire.js';
-import { authorize } from '../security/policy/authorize.js';
+import { parsePrincipalWire, principalToWire } from '../security/principal-wire.js';
+import { authorizeCapability, authorizeResourceBinding } from '../security/policy/authorize.js';
 import type { ResourceBinding } from '../security/principal.js';
+import { canonicalizeWorkDir, type CanonicalWorkDir, WorkDirectoryError } from '../runtime/canonical-work-dir.js';
 
 const DEFAULT_PARENT_WATCHDOG_INTERVAL_MS = 1_000;
 
@@ -50,8 +51,8 @@ type KbDaemonExpansionRpcPort = {
   expansionRpc(request: KbDaemonExpansionRequest): Promise<KbDaemonExpansionResult>;
 };
 
-function requestedBindingFromExpansionRequest(params: KbDaemonExpansionRequest): ResourceBinding {
-  return params.ctx.projectRoot === undefined ? { kind: 'unbound' } : { kind: 'project', root: params.ctx.projectRoot };
+function requestedBindingFromExpansionRequest(projectRoot: CanonicalWorkDir | undefined): ResourceBinding {
+  return projectRoot === undefined ? { kind: 'unbound' } : { kind: 'project', root: projectRoot };
 }
 
 function writeControlMessage(message: KbDaemonControlMessage): void {
@@ -103,7 +104,7 @@ export async function handleKbDaemonExpansionRpcRequest(
     };
   }
 
-  const principal = parsePrincipalWire(params.ctx.principal, {
+  let principal = parsePrincipalWire(params.ctx.principal, {
     transport: 'kb-daemon',
     credential: { kind: 'daemon-rpc', id: 'expansion-request' },
   });
@@ -115,8 +116,31 @@ export async function handleKbDaemonExpansionRpcRequest(
     };
   }
 
-  const requestedBinding = requestedBindingFromExpansionRequest(params);
-  const decision = authorize(principal, 'expansion:manage', requestedBinding);
+  const capabilityDecision = authorizeCapability(principal, 'expansion:manage');
+  if (!capabilityDecision.ok) {
+    const unbound = { kind: 'unbound' } as const;
+    writeAuthorizationDecisionAudit(principal, `kb-daemon.expansion.${params.method}`, capabilityDecision, unbound);
+    return {
+      ok: false,
+      code: 'unauthorized',
+      message: 'KB daemon expansion request requires expansion:manage.',
+      detail: capabilityDecision,
+    };
+  }
+
+  let projectRoot: CanonicalWorkDir | undefined;
+  try {
+    projectRoot =
+      params.ctx.projectRoot === undefined ? undefined : canonicalizeWorkDir(params.ctx.projectRoot, process.cwd());
+  } catch (error: unknown) {
+    if (!(error instanceof WorkDirectoryError)) throw error;
+    return { ok: false, code: error.code, message: error.message };
+  }
+  const requestedBinding = requestedBindingFromExpansionRequest(projectRoot);
+  if (principal.binding.kind === 'unbound' && requestedBinding.kind === 'project') {
+    principal = { ...principal, binding: requestedBinding };
+  }
+  const decision = authorizeResourceBinding(principal, 'expansion:manage', requestedBinding);
   writeAuthorizationDecisionAudit(principal, `kb-daemon.expansion.${params.method}`, decision, requestedBinding);
   if (!decision.ok) {
     return {
@@ -127,7 +151,14 @@ export async function handleKbDaemonExpansionRpcRequest(
     };
   }
 
-  return kbWriteHost.expansionRpc(params);
+  return kbWriteHost.expansionRpc({
+    ...params,
+    ctx: {
+      ...params.ctx,
+      ...(projectRoot === undefined ? {} : { projectRoot }),
+      principal: principalToWire(principal),
+    },
+  });
 }
 
 export type KbDaemonParentWatchdogOptions = {

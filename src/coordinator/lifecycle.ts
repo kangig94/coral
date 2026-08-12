@@ -6,6 +6,7 @@ import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import { canonicalizeWorkDir } from '../runtime/canonical-work-dir.js';
 import type { Principal } from '../security/principal.js';
 import type { DiscussContext } from '../discuss/shell/types.js';
 import type { RecoveredDiscussResume } from '../discuss/shell/recovery.js';
@@ -1201,7 +1202,8 @@ export function createLifecycle(
     pluginRoot,
     instanceId,
   });
-  function createInvocationContext(projectRoot: string): InvocationContext {
+  function createInvocationContext(rawProjectRoot: string): InvocationContext {
+    const projectRoot = canonicalizeWorkDir(rawProjectRoot, process.cwd());
     const principal: Principal = {
       subject: 'system',
       transport: 'internal',

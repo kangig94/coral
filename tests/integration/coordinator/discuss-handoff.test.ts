@@ -20,13 +20,14 @@ import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { attachSession, getSession } from '#src/discuss/shell/registry.js';
 import type { DiscussCreateInput } from '#src/discuss/session-types.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 
 import { createHandoffCoresHarness, type HandoffCoresHarness } from './handoff-cores-harness.js';
 
 const SEED_TS = '2026-04-27T00:00:00.000Z';
-const PROJECT_ROOT = '/handoff-test-project';
+const PROJECT_ROOT = fixtureCanonicalWorkDir('/handoff-test-project');
 const SESSION_ID = 'handoff-session';
 const TOPIC = 'should the new daemon rehydrate this discuss session?';
 

@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { authorize } from '#src/security/policy/authorize.js';
 import type { Capability } from '#src/security/capability.js';
 import type { Principal } from '#src/security/principal.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 function ids() {
   let counter = 0;
@@ -58,6 +63,42 @@ function childAuth(
 }
 
 describe('ChildPrincipalRegistry', () => {
+  it('keeps a nested canonical descendant authorized while denying a symlink target outside the parent root', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-child-principal-canonical-'));
+    const allowed = join(root, 'allowed');
+    const nested = join(allowed, 'nested');
+    const outside = join(root, 'outside');
+    const escape = join(allowed, 'escape');
+    mkdirSync(allowed);
+    mkdirSync(nested);
+    mkdirSync(outside);
+    symlinkSync(outside, escape, 'dir');
+
+    try {
+      const registry = new ChildPrincipalRegistry(ids());
+      const parentRoot = canonicalizeWorkDir(allowed, root);
+      const parent = testProjectPrincipal(parentRoot, { subject: 'agent' });
+      const credential = register(registry, parent, { childCaps: ['kb:read'] });
+      const child = registry.authenticate(childAuth(credential.handle), 'ns-a', 1_001);
+      if (child === null) throw new Error('Expected child authentication to succeed.');
+
+      expect(
+        authorize(child, 'kb:read', {
+          kind: 'project',
+          root: canonicalizeWorkDir(nested, parentRoot),
+        }),
+      ).toEqual({ ok: true });
+      expect(
+        authorize(child, 'kb:read', {
+          kind: 'project',
+          root: canonicalizeWorkDir(escape, parentRoot),
+        }),
+      ).toMatchObject({ ok: false, reason: 'resource_unbound' });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('authenticates an attenuated child principal whose effective caps stay within the parent', () => {
     const registry = new ChildPrincipalRegistry(ids());
     const parent = testProjectPrincipal('/workspace/project', { subject: 'agent' });
@@ -66,8 +107,9 @@ describe('ChildPrincipalRegistry', () => {
     const child = registry.authenticate(childAuth(credential.handle), 'ns-a', 1_001);
 
     expect(child).not.toBeNull();
-    expect(authorize(child, 'kb:read', { kind: 'project', root: '/workspace/project' })).toEqual({ ok: true });
-    expect(authorize(child, 'kb:write', { kind: 'project', root: '/workspace/project' })).toMatchObject({
+    const projectRoot = fixtureCanonicalWorkDir('/workspace/project');
+    expect(authorize(child, 'kb:read', { kind: 'project', root: projectRoot })).toEqual({ ok: true });
+    expect(authorize(child, 'kb:write', { kind: 'project', root: projectRoot })).toMatchObject({
       ok: false,
       reason: 'missing_capability',
     });

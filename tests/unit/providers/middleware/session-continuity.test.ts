@@ -11,6 +11,7 @@ import type {
 } from '#src/providers/contract.js';
 import type { ProviderTransportClose } from '#src/providers/protocol.js';
 import type { CodexExecutionPlan } from '#src/providers/codex/execution-plan.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { commitContinuityEvent, rejectContinuityEvent } from '#src/providers/internal/continuity-commit.js';
 import { sessionContinuity, type SessionContinuityContract } from '#src/providers/middleware/session-continuity.js';
 import { TEST_CODEX_PLAN } from '../../../helpers/provider-credentials.js';
@@ -26,7 +27,7 @@ const BASE_REQUEST: ProviderRequest = {
   sessionId: 'job-session-continuity',
   name: 'claude-opus-4-7',
   prompt: 'hello',
-  cwd: process.cwd(),
+  cwd: fixtureCanonicalWorkDir(process.cwd()),
   bypassPermissions: false,
   coralEnv: {},
 };

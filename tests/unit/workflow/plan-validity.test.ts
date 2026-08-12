@@ -15,6 +15,7 @@ import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/event
 import type { PlanSlot, WorkflowPlan } from '#src/workflow/plan.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const NOW = new Date('2026-04-30T00:00:00.000Z');
 
@@ -65,7 +66,7 @@ function launchInput(workflowId: string, slotId: string) {
     sessionId,
     provider: 'codex',
     providerAction: 'exec',
-    projectRoot: '/workspace/coral',
+    projectRoot: fixtureCanonicalWorkDir('/workspace/coral'),
     backendNamespace: 'tests',
     jobKind: 'provider',
     workflowSlotGeneration: 0,
@@ -73,7 +74,7 @@ function launchInput(workflowId: string, slotId: string) {
     enqueueSequence: 1,
     request: {
       prompt: 'run slot',
-      cwd: '/workspace/coral',
+      cwd: fixtureCanonicalWorkDir('/workspace/coral'),
       bypassPermissions: false,
       coralEnv: {},
     },

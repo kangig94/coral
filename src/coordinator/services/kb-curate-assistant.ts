@@ -5,6 +5,7 @@ import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { KbDaemonCurateAssistantHandler } from '../live/kb-daemon-supervisor.js';
 import type { KbDaemonCurateUsageBudgetHandler } from '../live/kb-daemon-supervisor.js';
 import { providerBindingFailureCode } from '../../providers/contracts/binding.js';
+import { canonicalizeWorkDir } from '../../runtime/canonical-work-dir.js';
 
 type ActiveSystemProviderRuntime = {
   readonly systemProviderScope?: SystemProviderScope;
@@ -69,7 +70,7 @@ export function createKbCurateAssistantHandler(options: {
     const curation = requireCurationCapability(bound);
     const prepared = curation.prepare(
       {
-        cwd: options.runtime.env.cwd(),
+        cwd: canonicalizeWorkDir(options.runtime.env.cwd(), process.cwd()),
         prompt: request.prompt,
         ...(request.model === undefined ? {} : { model: request.model }),
         ...(request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),

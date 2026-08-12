@@ -11,6 +11,7 @@ import type { ProviderSession } from '#src/sessions/entry.js';
 import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
 import { prepareFixtureExecutionPlan, type FixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   listProductionSourceFiles,
   parseProductionImportEdges,
@@ -403,9 +404,9 @@ describe('bound-provider execution architecture', () => {
     expect(Object.keys(definition)).toEqual(['name']);
     const decision = await service.start(
       'fixture',
-      { prompt: 'run', cwd: '/fixture', jobId: 'fixture-job' },
+      { prompt: 'run', cwd: fixtureCanonicalWorkDir('/fixture'), jobId: 'fixture-job' },
       {
-        projectRoot: '/fixture',
+        projectRoot: fixtureCanonicalWorkDir('/fixture'),
         pluginRoot: '/plugin',
         coralEnv: { FIXTURE_TUNING: 'precise', CORAL_CLAUDE_MODEL_CAP: 'must-not-leak' },
         principal: testProjectPrincipal('/fixture'),

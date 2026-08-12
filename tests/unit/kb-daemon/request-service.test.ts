@@ -1,4 +1,6 @@
 import { dirname, join } from 'node:path';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const searchMock = vi.hoisted(() => ({
@@ -31,7 +33,11 @@ import { memoDir, notePathFromName, wikiPathFromName } from '#src/kb/paths.js';
 import type { KnowledgeBaseRuntime } from '#src/kb/runtime-contract.js';
 import type { KbQueryRuntime } from '#src/read-model/kb-query-runtime.js';
 import type { PrincipalWire } from '#src/security/principal-wire.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+
+const PROJECT_ROOT = fixtureCanonicalWorkDir(realpathSync(process.cwd()));
+const tempDirs: string[] = [];
 
 type WithKbCallback<T> = (state: { kbRuntime: KnowledgeBaseRuntime; runtime: KbQueryRuntime }) => Promise<T> | T;
 
@@ -46,12 +52,12 @@ function createSearchKbRuntime(kb: unknown): KnowledgeBaseRuntime {
 function principalWire(projectRoot: string): PrincipalWire {
   return {
     subject: 'operator' as const,
-    binding: { kind: 'project' as const, root: projectRoot },
+    binding: { kind: 'project' as const, root: fixtureCanonicalWorkDir(projectRoot) },
   };
 }
 
-function daemonCtx(projectRoot = '/workspace/project-a', principal: PrincipalWire = principalWire(projectRoot)) {
-  return { projectRoot, pluginRoot: '/plugin', principal };
+function daemonCtx(projectRoot: string = PROJECT_ROOT, principal: PrincipalWire = principalWire(projectRoot)) {
+  return { projectRoot: fixtureCanonicalWorkDir(projectRoot), pluginRoot: '/plugin', principal };
 }
 
 const deniedSourceImportPrincipals: Array<[string, PrincipalWire]> = [
@@ -66,7 +72,7 @@ const deniedSourceImportPrincipals: Array<[string, PrincipalWire]> = [
     'attenuated operator without source import',
     {
       subject: 'operator',
-      binding: { kind: 'project', root: '/workspace/project-a' },
+      binding: { kind: 'project', root: PROJECT_ROOT },
       attenuatedCaps: ['liveness', 'kb:read', 'kb:write'],
     },
   ],
@@ -74,6 +80,9 @@ const deniedSourceImportPrincipals: Array<[string, PrincipalWire]> = [
 
 afterEach(() => {
   searchMock.searchKb.mockClear();
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 function writeNote(runtime: SimulationRuntime, slug: string): void {
@@ -174,6 +183,26 @@ function writeWiki(runtime: SimulationRuntime, slug: string): void {
 }
 
 describe('KB daemon request service', () => {
+  it('denies a project-bound principal when a requested symlink escapes its canonical root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-kb-canonical-'));
+    tempDirs.push(root);
+    const allowed = join(root, 'allowed');
+    const outside = join(root, 'outside');
+    const link = join(allowed, 'link');
+    mkdirSync(allowed);
+    mkdirSync(outside);
+    symlinkSync(outside, link, 'dir');
+    const runtime = new SimulationRuntime();
+    const read = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime }).read;
+
+    const result = await read({
+      method: 'listPrinciples',
+      ctx: daemonCtx(link, principalWire(allowed)),
+    });
+
+    expect(result).toMatchObject({ ok: false, code: 'unauthorized' });
+  });
+
   it('reads note entries from the daemon request runtime', async () => {
     const runtime = new SimulationRuntime();
     writeNote(runtime, 'alpha-note');
@@ -250,19 +279,16 @@ describe('KB daemon request service', () => {
 
   it.each([
     ['missing ctx', undefined],
-    ['missing principal', { projectRoot: '/workspace/project-a' }],
-    ['unknown subject', { projectRoot: '/workspace/project-a', principal: { subject: 'admin' } }],
-    [
-      'bad binding',
-      { projectRoot: '/workspace/project-a', principal: { subject: 'operator', binding: { kind: 'workspace' } } },
-    ],
+    ['missing principal', { projectRoot: PROJECT_ROOT }],
+    ['unknown subject', { projectRoot: PROJECT_ROOT, principal: { subject: 'admin' } }],
+    ['bad binding', { projectRoot: PROJECT_ROOT, principal: { subject: 'operator', binding: { kind: 'workspace' } } }],
     [
       'non-array attenuation',
       {
-        projectRoot: '/workspace/project-a',
+        projectRoot: PROJECT_ROOT,
         principal: {
           subject: 'operator',
-          binding: { kind: 'project', root: '/workspace/project-a' },
+          binding: { kind: 'project', root: PROJECT_ROOT },
           attenuatedCaps: 'expansion:manage',
         },
       },
@@ -282,7 +308,7 @@ describe('KB daemon request service', () => {
 
   it('uses project context for memo list reads', async () => {
     const runtime = new SimulationRuntime();
-    const projectRoot = '/workspace/project-a';
+    const projectRoot = PROJECT_ROOT;
     writeMemo(runtime, projectRoot);
     const read = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime }).read;
 
@@ -311,7 +337,7 @@ describe('KB daemon request service', () => {
 
   it('creates memos through the daemon request service', async () => {
     const runtime = new SimulationRuntime();
-    const projectRoot = '/workspace/project-a';
+    const projectRoot = PROJECT_ROOT;
     const service = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime });
 
     const missingContext = await service.mutate({
@@ -352,7 +378,7 @@ describe('KB daemon request service', () => {
 
   it('deletes memos through the daemon request service', async () => {
     const runtime = new SimulationRuntime();
-    const projectRoot = '/workspace/project-a';
+    const projectRoot = PROJECT_ROOT;
     writeMemo(runtime, projectRoot);
     const service = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime });
 
@@ -397,9 +423,9 @@ describe('KB daemon request service', () => {
         method: 'updateNote',
         args: { note: 'alpha-note' },
         ctx: {
-          projectRoot: '/workspace/project-a',
+          projectRoot: PROJECT_ROOT,
           pluginRoot: '/plugin',
-          principal: principalWire('/workspace/project-a'),
+          principal: principalWire(PROJECT_ROOT),
         },
       }),
     ).resolves.toMatchObject({
@@ -610,7 +636,7 @@ describe('KB daemon request service', () => {
     'denies createSource for %s before touching write runtime services',
     async (_label, principal) => {
       const runtime = new SimulationRuntime();
-      const projectRoot = '/workspace/project-a';
+      const projectRoot = PROJECT_ROOT;
       const insidePath = join(projectRoot, 'inside.md');
       runtime.storage.mkdirSync(projectRoot, { recursive: true });
       runtime.storage.writeFileSync(insidePath, '# Inside\n');

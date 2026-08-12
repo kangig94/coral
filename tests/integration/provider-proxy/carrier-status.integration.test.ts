@@ -26,6 +26,7 @@ import {
   type ProxyPreparedAppServerOperation,
 } from '#src/provider-proxy/protocol.js';
 import { createProxy } from '#src/provider-proxy/proxy.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const BOOTSTRAP_NONCE = 'a'.repeat(64);
 const HOST_FINGERPRINT = 'b'.repeat(64);
@@ -44,7 +45,7 @@ const PREPARED: ProxyPreparedAppServerOperation = {
     action: 'exec',
     sessionId: 'carrier-status-session',
     prompt: 'observe this operation',
-    cwd: '/project',
+    cwd: fixtureCanonicalWorkDir('/project'),
     bypassPermissions: false,
     coralEnv: {},
   },

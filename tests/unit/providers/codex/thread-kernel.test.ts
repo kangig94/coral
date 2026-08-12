@@ -9,6 +9,7 @@ import type {
 import type { CodexExecutionPlan } from '#src/providers/codex/execution-plan.js';
 import type { AppServerNotificationMessage } from '#src/providers/protocol.js';
 import type { DirentLike, EnvPort, StoragePort } from '#src/infra/port-types.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   PRE_TURN_MAILBOX_CAP,
   applyCodexNotificationForTest,
@@ -27,7 +28,7 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
     name: 'codex',
     conversationRef: 'request-thread',
     prompt: 'Resume and continue',
-    cwd: '/workspace/request',
+    cwd: fixtureCanonicalWorkDir('/workspace/request'),
     bypassPermissions: false,
     coralEnv: {},
     ...overrides,

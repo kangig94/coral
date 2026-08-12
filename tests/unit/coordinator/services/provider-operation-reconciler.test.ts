@@ -11,6 +11,7 @@ import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-pr
 import type { ProviderProxyAuthorityFault } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderOperationPrepareMaterializationResult } from '#src/coordinator/services/provider-operation-prepare.js';
 import type { ProviderOperationRecoveryAcceptance } from '#src/coordinator/services/recovery/index.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   ProviderOperationReconciler,
   providerOperationTerminationVerdict,
@@ -232,7 +233,7 @@ const PREPARED = {
     action: 'exec',
     sessionId: 'session-1',
     prompt: 'do the thing',
-    cwd: '/workspace',
+    cwd: fixtureCanonicalWorkDir('/workspace'),
     bypassPermissions: false,
     coralEnv: {},
   },
@@ -434,7 +435,7 @@ function createHarness(
       owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
       sessionId: record.prepareSource.sessionId,
       provider: providerName,
-      projectRoot: '/workspace',
+      projectRoot: fixtureCanonicalWorkDir('/workspace'),
       backendNamespace: 'tests',
       jobKind: 'provider',
       phase: 'running',
@@ -445,7 +446,7 @@ function createHarness(
       owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
       sessionId: record.prepareSource.sessionId,
       provider: providerName,
-      projectRoot: '/workspace',
+      projectRoot: fixtureCanonicalWorkDir('/workspace'),
       backendNamespace: 'tests',
       pool: 'curate',
       enqueueSequence: 1,
@@ -454,7 +455,7 @@ function createHarness(
       providerAction: 'exec',
       request: {
         prompt: 'do the thing',
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         bypassPermissions: false,
         coralEnv: {},
       },
