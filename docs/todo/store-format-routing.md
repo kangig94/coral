@@ -132,6 +132,35 @@ tenancy lets the successor recover stored work, and `pluginRootNamespace` stays 
 rather than ownership. `pluginRootNamespace()` must **not** enter the store path — it hashes
 installation provenance, not storage compatibility.
 
+## Constraint added by provider-host containment (2026-08-13)
+
+**Whatever routing does at startup, it happens after the coordinator has already reclaimed its
+local provider hosts.** This is a live ordering constraint, not a preference, and a routing
+design that ignores it reintroduces an unreclaimable process leak.
+
+`routeOrOpenBackendStoreAtStartup` (`src/coordinator/lifecycle.ts:924`) runs **before**
+`runStartupRecovery` (`:1013`) and may quarantine or reset the store. A coordinator-local
+provider host is a detached process group whose identity must survive that: if the only record
+of the group lived in the store, a reset would destroy the evidence while the group — an
+app-server plus the MCP children it leaks — kept running with nothing left that could name it.
+So `docs/todo/leaked-mcp-child-reaping.md` puts that record in a filesystem capsule under the
+generation run dir and runs its recovery walk **before** store routing, after canonical socket
+authority and provider validation.
+
+Two consequences for this document:
+
+1. **The pre-routing window is now load-bearing.** Any redesign of what happens before a store
+   is chosen must preserve "non-inheritable local hosts are already disposed of by this point",
+   including on the paths where the build goes on to hand off or reset.
+2. **Multiple stores make the outside-the-store choice more right, not less.** Once a machine
+   can hold several fingerprint-keyed stores, a record written into any one of them is invisible
+   from the others. Containment evidence therefore stays format-neutral by construction, in the
+   same category as `active-format.json` — one authority consulted regardless of which store
+   ends up open.
+
+Nothing here blocks routing, and routing does not block that work: the containment decision was
+made to be correct in both the current single-store world and the routed one.
+
 ## Decisions already made
 
 - **Retention: operator-only prune.** Count has no semantic relationship to diagnostic
