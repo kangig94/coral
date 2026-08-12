@@ -30,6 +30,7 @@ import {
 } from '../../../src/providers/execution-plan.js';
 import { readAppendedLines } from '../../../src/infra/file-tail.js';
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
+import type { CanonicalWorkDir } from '../../../src/runtime/canonical-work-dir.js';
 import type { ProviderScope } from '../../../src/infra/provider-scope.js';
 import type { Principal } from '../../../src/security/principal.js';
 import { providerProgressEvent, providerTerminalEvent, streamProviderEvents } from '../../../src/providers/stream.js';
@@ -41,6 +42,7 @@ import { sendJson } from '../../../src/transport/http/handler.js';
 import { TypedEventBus } from '../../../src/coordinator/event-bus.js';
 import { LaunchCoordinator } from '../../../src/coordinator/live/admission.js';
 import { createProviderHostManager } from '../../../src/coordinator/live/provider-hosts/index.js';
+import { createHostAdmissionCollection } from '../../../src/providers/host-admission.js';
 import { JobStore } from '../../../src/jobs/store.js';
 import { loadJobProjectionDetails } from '../../../src/jobs/read-queries.js';
 import { providerLookupPortFromCatalog } from '../../../src/providers/catalog.js';
@@ -63,7 +65,6 @@ import { createEventBodyCodec } from '../../../src/store/event-body-codec.js';
 import { composeReducers } from '../../../src/store/reducers.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
 import { setStoreServicesForTest } from '../../testing/store-services.js';
-import { fixtureCanonicalWorkDir } from '../../../tests/helpers/canonical-work-dir.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-script-types.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';
@@ -614,6 +615,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const providerHostManager = createProviderHostManager({
     runtime,
     spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
+    admission: createHostAdmissionCollection({ classify: () => 'unknown' }),
   });
 
   const hooks: SimulationHookLog = {
@@ -630,7 +632,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     root = projectRoot,
     coralEnv = { ...runtime.env.coralSnapshot() },
   ): InvocationContext => {
-    const canonicalRoot = fixtureCanonicalWorkDir(root);
+    const canonicalRoot = root as CanonicalWorkDir;
     const principal: Principal = {
       subject: 'operator',
       transport: 'simulation',

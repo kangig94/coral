@@ -33,6 +33,7 @@ import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/providers
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
+import { createHostAdmissionCollection } from '#src/providers/host-admission.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
@@ -255,7 +256,12 @@ function createService(
   }
   const progressStore = options.progressStore ?? createProgressStore();
   const providerHostManager =
-    options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer });
+    options.providerHostManager ??
+    createProviderHostManager({
+      runtime,
+      spawnProviderServer,
+      admission: createHostAdmissionCollection({ classify: () => 'unknown' }),
+    });
   providerRegistry.connectAppServerHost(providerHostManager);
   const getCurrentJournalSeq = () =>
     (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;

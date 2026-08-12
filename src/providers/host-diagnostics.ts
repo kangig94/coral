@@ -181,10 +181,6 @@ export function inspectProviderHostDiagnostics(state: ProviderHostDiagnosticsSta
   });
 }
 
-export function retainedProviderHostLogText(state: ProviderHostDiagnosticsState): string {
-  return state.hostLog.entries.map((entry) => entry.text).join('');
-}
-
 function inspectHostLogSpan(
   entries: readonly ProviderHostLogEntry[],
   span: ProviderHostLogCursorSpan,

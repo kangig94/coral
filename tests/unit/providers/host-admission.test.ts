@@ -92,7 +92,7 @@ describe('provider host admission state machine', () => {
     });
     expect(delegated).not.toHaveBeenCalled();
 
-    admission.observeRetired(hostRef);
+    admission.observeRetired(hostRef, 'closed');
     const retired = admission.snapshot();
     expect(retired.state.get(slot)?.phase).toBe('retired-blocked');
     expect(retired.tombstones).toEqual([
@@ -164,7 +164,7 @@ describe('provider host admission state machine', () => {
       reservation.markLive(first, 21);
     });
     admission.observe(slot, first, fact(21));
-    admission.observeRetired(first);
+    admission.observeRetired(first, 'closed');
     expect(admission.confirmEvicted(first)).toBe(true);
 
     await admission.withFreshPlacement(slot, async (reservation) => {
@@ -214,7 +214,7 @@ describe('provider host admission state machine', () => {
     admission.observe(slot, hostRef, fact(23));
     expect(admission.snapshot().state.get(slot)?.phase).toBe('blocked-live');
 
-    admission.observeRetired(hostRef);
+    admission.observeRetired(hostRef, 'closed');
     const tombstone = admission.snapshot().tombstones[0];
     expect(tombstone).toMatchObject({
       ref: hostRef,
@@ -263,7 +263,7 @@ describe('provider host admission state machine', () => {
     await Promise.all([opening, sameSlot]);
     expect(calls).toEqual(['a:first', 'b:first', 'a:second']);
 
-    admission.observeRetired(first);
+    admission.observeRetired(first, 'closed');
     expect(admission.snapshot().state.has(slotA)).toBe(false);
     expect(admission.snapshot().tombstones).toEqual([]);
   });

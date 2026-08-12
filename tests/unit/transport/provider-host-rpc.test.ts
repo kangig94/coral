@@ -70,11 +70,11 @@ describe('provider-host RPC authorization', () => {
       { provider: 'claude', fingerprint: 'b'.repeat(64), instanceId: 'second', leaseMode: 'shared' },
     ];
     const evict = vi.fn(async () => {
-      throw {
+      throw Object.assign(new Error('ambiguous provider host'), {
         code: 'provider_host_ambiguous',
         ownerIds: ['coordinator', 'proxy-a'],
         matches: refs,
-      };
+      });
     });
     const ports = { providerHosts: { list: vi.fn(), inspect: vi.fn(), evict } } as unknown as HttpHandlerPorts;
 
@@ -97,11 +97,11 @@ describe('provider-host RPC authorization', () => {
       { provider: 'codex', fingerprint: 'b'.repeat(64), instanceId: 'second', leaseMode: 'shared' },
     ];
     const inspect = vi.fn(async () => {
-      throw {
+      throw Object.assign(new Error('ambiguous provider host'), {
         code: 'provider_host_ambiguous',
         ownerIds: ['coordinator', 'proxy-a'],
         matches: refs,
-      };
+      });
     });
     const ports = { providerHosts: { list: vi.fn(), inspect, evict: vi.fn() } } as unknown as HttpHandlerPorts;
 

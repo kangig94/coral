@@ -167,7 +167,7 @@ export class ProviderHostAdministrationService {
     const unavailableOwnerIds: string[] = [];
     const rows: ProviderHostInventoryRow[] = [];
     for (const [index, response] of responses.entries()) {
-      const owner = owners[index] as ProviderHostAdministrationOwner;
+      const owner = owners[index];
       if (response.status === 'rejected') {
         unavailableOwnerIds.push(owner.ownerId);
         continue;
@@ -287,7 +287,7 @@ function resolveOne(
       },
     );
   }
-  const row = matches[0] as ProviderHostInventoryRow;
+  const row = matches[0];
   const owner = owners.find((candidate) => candidate.ownerId === row.ownerId);
   if (owner === undefined) {
     throw new ProviderHostAdministrationError('provider_host_inventory_unavailable', { ownerIds: [row.ownerId] });

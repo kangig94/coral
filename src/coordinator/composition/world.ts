@@ -17,6 +17,7 @@ import { createDiscussContextRegistry, type DiscussContextRegistry } from '../..
 
 import { LaunchCoordinator } from '../live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
+import { createHostAdmissionCollection } from '../../providers/host-admission.js';
 import type { ProviderProxyAuthorityRegistry } from '../live/provider-proxy/authority.js';
 import { LocalOperationRegistry } from '../services/operation-registry.js';
 import { ProviderProxySetClaimMirror } from '../services/provider-proxy-set-claim-mirror.js';
@@ -365,6 +366,7 @@ export function createCoordinatorWorld(
     const created = createProviderHostManager({
       runtime,
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
+      admission: options.providerHostAdmission ?? createHostAdmissionCollection({ classify: () => 'unknown' }),
       allocateProviderServerGeneration: launchCoordinator.allocateProviderServerGeneration.bind(launchCoordinator),
       carrierBlocksRetirement,
       proxySetAcquisition: {

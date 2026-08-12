@@ -242,7 +242,7 @@ export const providerHostInspectResultSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('matched'), host: providerHostInventoryRecordSchema }).strict(),
   z.object({ state: z.literal('stale') }).strict(),
 ]);
-export const providerHostEvictParamsSchema = providerHostInspectParamsSchema;
+export const providerHostEvictParamsSchema = z.object({ hostRef: hostRefSchema }).strict();
 export const providerHostEvictResultSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('evicted') }).strict(),
   z.object({ state: z.literal('stale') }).strict(),

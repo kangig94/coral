@@ -5,8 +5,10 @@ import type { ProviderHostInventoryRecord } from '../../services/provider-host-a
 import {
   admissionSlotKey,
   canonicalProviderHostSpecMetadata,
+  createHostAdmissionCollection,
   exactHostRefsMatch,
   type AdmissionSlotKey,
+  type HostAdmissionCollection,
   type HostAdmissionReservation,
   type HostAdmissionSnapshot,
 } from '../../../providers/host-admission.js';
@@ -32,7 +34,6 @@ import {
   type ProviderProxyOperationAuthority,
 } from '../provider-proxy/operation-route.js';
 import type { ProviderProxySetLifecycleRef } from '../../services/provider-proxy-set-lifecycle-ref.js';
-import { createCoordinatorProviderHostAdmission } from '../provider-host-admission.js';
 export type { ProviderHostEntry } from './state.js';
 
 export interface ProviderHostManager {
@@ -184,7 +185,7 @@ export class DefaultProviderHostManager
   implements ProviderHostManager, ProviderProxyAuthorityRegistry, ProviderProxySetRegistration
 {
   private readonly entries = new Map<string, ProviderHostEntry>();
-  private readonly admission = createCoordinatorProviderHostAdmission();
+  private readonly admission: HostAdmissionCollection;
   private readonly pendingCloses = new Set<Promise<void>>();
   private readonly closingEntries = new Map<ProviderHostEntry, Readonly<{ ref: HostRef; operation: Promise<void> }>>();
   private readonly lifecyclePolicies = new Map<string, string>();
@@ -217,6 +218,7 @@ export class DefaultProviderHostManager
     carrierBlocksRetirement?: (hostRef: HostRef) => boolean;
     proxySetAcquisition?: ProviderProxySetAcquisitionConfig;
     providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
+    admission?: HostAdmissionCollection;
   }) {
     this.runtime = options.runtime;
     this.idleTimeoutMs = options.idleTimeoutMs ?? parseIdleTimeoutMs(this.runtime.env.get('CORAL_BROKER_IDLE_MS'));
@@ -226,6 +228,7 @@ export class DefaultProviderHostManager
     this.carrierBlocksRetirement = options.carrierBlocksRetirement ?? (() => false);
     this.proxySetAcquisitionConfig = options.proxySetAcquisition;
     this.providerProxyLifecycleRef = options.providerProxyLifecycleRef;
+    this.admission = options.admission ?? createHostAdmissionCollection({ classify: () => 'unknown' });
   }
 
   /** Every set acquired so far and not yet reaped, acquired or inherited alike — see
@@ -408,7 +411,7 @@ export class DefaultProviderHostManager
         },
         createInstanceId: () => this.runtime.ids.uuid(),
         observeRetired: () => {
-          if (reservedRef !== null) admission?.reservation.observeRetired(reservedRef);
+          if (reservedRef !== null) admission?.reservation.observeRetired(reservedRef, 'closed');
         },
         ...(options?.signal === undefined ? {} : { signal: options.signal }),
       });
@@ -516,7 +519,7 @@ export class DefaultProviderHostManager
       if (matches.length !== 1) {
         throw new Error('provider_host_inventory_unavailable: live coordinator host could not be revalidated');
       }
-      const entry = matches[0] as ProviderHostEntry;
+      const entry = matches[0];
       const handle = entry.handle;
       if (handle === null || handle.isClosed()) {
         throw new Error('provider_host_inventory_unavailable: live coordinator host process is unavailable');
@@ -737,6 +740,7 @@ export function createProviderHostManager(options: {
   runtime: Runtime;
   idleTimeoutMs?: number;
   spawnProviderServer: SpawnProviderServerFn;
+  admission: HostAdmissionCollection;
   allocateProviderServerGeneration?: () => number;
   carrierBlocksRetirement?: (hostRef: HostRef) => boolean;
   proxySetAcquisition?: ProviderProxySetAcquisitionConfig;

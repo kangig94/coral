@@ -258,6 +258,28 @@ Per-client hook registration, each referenced by its own `plugin.json` (`.claude
 
 ## Runtime State Files
 
+### Provider host recovery
+
+Provider hosts are live process state, not runtime-state files. They appear here because their recovery commands are operator controls over the running coordinator:
+
+```bash
+coral-cli backend provider-host list
+coral-cli backend provider-host inspect <host-ref>
+coral-cli backend provider-host inspect --work-dir <path>
+coral-cli backend provider-host evict <host-ref>
+coral-cli backend provider-host evict --work-dir <path>
+```
+
+`list` prints every live and retained-blocked host from both process-local authorities: the coordinator's host manager and each live provider proxy. Its `HOST_REF` value is an opaque canonical `ph1...` reference; copy it unchanged into `inspect` or `evict`. `inspect` returns the selected host's owner, canonical non-secret launch metadata, status, bounded completed-response facts, sequenced stderr, per-request log spans, and truncation markers. Both reads require `system:debug`. Eviction requires `system:shutdown`, physically closes one exact live host (or confirms that one exact retained tombstone is already absent), and only then clears its blocked admission state.
+
+Inspect and evict require exactly one selector. A host reference names one concrete instance and is the safest choice. `--work-dir` is a resolver, not a broader eviction policy: Coral resolves it relative to the CLI's current directory, canonicalizes it with `realpath`, takes a complete all-owner inventory, and proceeds only when exactly one host has that cwd. A missing directory returns `invalid_work_directory`; no match returns `provider_host_not_found`; multiple matches return `provider_host_ambiguous`. An unavailable or malformed owner fails the whole inventory with `provider_host_inventory_unavailable`; Coral never returns a partial list or evicts from the owners that happened to answer.
+
+Eviction is deliberately destructive. It can end work attached to the selected host, so inspect first and prefer the exact reference. Other hosts and their jobs are untouched. A host classified `unserviceable` already refuses fresh placement but keeps exact attachment available so provider interrupt and probe can still reach work on that instance. Natural process exit does not clear the refusal: the owner retains a `retired-blocked` tombstone until the operator evicts that exact reference. A replacement instance then starts with serviceability `unknown`.
+
+A mute host does not classify itself. Silence produces no completed response fact, and Coral has no provider-turn timeout or failure counter from which to infer one, so operator eviction is also the recovery for a process that is alive but no longer answering. The same command covers a host that answers promptly with a typed prerequisite failure. Neither provider-side resource exhaustion nor provider per-cwd poisoning is fixed here; the controls make those upstream incidents scoped, diagnosable, and recoverable without restarting the daemon.
+
+Work-directory identity is now canonical at ingress. A symlink and its target select the same provider-host specification, so the symlink workaround previously documented for a poisoned cwd no longer creates a fresh host. Use exact inspection and eviction instead. If the directory was removed and cannot be resolved, Coral refuses before binding or launch and names the path and filesystem reason rather than falling back to the raw spelling.
+
 ### Store-reset incidents
 
 Once Coral reaches a reset decision, the reset is unconditional and needs no confirmation. Ordinary boot reaches that decision automatically for `older-incompatible` and `corrupt-or-unsupported`, and for a `newer-incompatible` store whose active-store selection is absent, malformed, or invalidated. When a selection names a valid newer local build, `backend store-reset discard` replays the same operator command through the handoff runner and the validated owner performs the discard; the current build does not reset the store. The reset path copies and durably verifies DB/WAL/SHM/format evidence under the private `store-reset-quarantine/.staging/<incident-id>/` transaction, durably publishes its manifest, removes the matching active files, then publishes `store-reset-quarantine/<incident-id>/`. Automatic incidents use schema V3 with required `resetPolicyCause: older-incompatible | corrupt-or-unsupported | newer-incompatible-invalid-target`; startup authors all three values, with the third produced by the active-store selection protocol's invalid-target classification. V2 incidents remain readable for diagnostics but are never eligible for automatic resume. Active Coral history and state from the previous store are unavailable after reset; KB Markdown is unaffected. When the explicit discard command resets, it prints the incident ID and warns that retained evidence is diagnostic-only. Completed evidence is retained indefinitely for support, never restored as product state. Coral provides no restore, migration, compatibility reader, upload, telemetry, pruning, or automatic issue creation.

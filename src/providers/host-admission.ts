@@ -9,6 +9,8 @@ import type {
 } from './host-diagnostics.js';
 import {
   reduceHostServiceability,
+  type HostAdmission,
+  type HostProcessState,
   type HostServiceability,
   type HostServiceabilityState,
 } from './host-serviceability.js';
@@ -124,7 +126,9 @@ export function reduceHostAdmission(state: HostAdmissionState, event: AdmissionE
     }
     case 'block': {
       const current = matchingCandidate(state, event.slot, event.ref, event.generation);
-      if (current === null || current.phase === 'retired-blocked' || current.phase === 'blocked-live') return state;
+      const admission: HostAdmission =
+        current?.phase === 'retired-blocked' || current?.phase === 'blocked-live' ? 'blocked' : 'candidate';
+      if (current === null || admission === 'blocked') return state;
       return withEntry(state, event.slot, Object.freeze({ ...current, phase: 'blocked-live' }));
     }
     case 'retired': {
@@ -158,7 +162,7 @@ type Placement = Readonly<{
 export type HostAdmissionReservation = Readonly<{
   reserveCandidate(placement: Placement): void;
   markLive(ref: HostRef, generation: number): void;
-  observeRetired(ref: HostRef): void;
+  observeRetired(ref: HostRef, processState: HostProcessState): void;
 }>;
 
 export type HostAdmissionCollection = Readonly<{
@@ -167,7 +171,7 @@ export type HostAdmissionCollection = Readonly<{
     delegate: (reservation: HostAdmissionReservation) => Promise<Result>,
   ): Promise<Result>;
   observe(slot: AdmissionSlotKey, ref: HostRef, fact: ProviderResponseDiagnosticFact): void;
-  observeRetired(ref: HostRef): void;
+  observeRetired(ref: HostRef, processState: HostProcessState): void;
   confirmEvicted(ref: HostRef): boolean;
   snapshot(): HostAdmissionSnapshot;
 }>;
@@ -181,7 +185,8 @@ export function createHostAdmissionCollection(options: {
   const tombstones = new Map<AdmissionSlotKey, ProviderHostTombstone>();
   const reservations = new Map<AdmissionSlotKey, Promise<void>>();
 
-  const observeRetired = (ref: HostRef): void => {
+  const observeRetired = (ref: HostRef, processState: HostProcessState): void => {
+    if (processState !== 'closed') return;
     const match = findExactRef(state, ref);
     if (match === null) return;
     const placement = placements.get(match.slot);

@@ -7,6 +7,7 @@ import type {
   ProviderResponseObservationSink,
 } from '#src/providers/host-diagnostics.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
+import { createCoordinatorProviderHostAdmission } from '#src/coordinator/live/provider-host-admission.js';
 import { createExclusiveSpec, createFakeProviderServerHandle, createSharedSpec, runtime } from './helpers.js';
 
 function rejectedConfigRead(generation: number): ProviderResponseDiagnosticFact {
@@ -46,6 +47,7 @@ describe('coordinator provider-host admission', () => {
     const manager = new DefaultProviderHostManager({
       runtime,
       spawnProviderServer,
+      admission: createCoordinatorProviderHostAdmission(),
       allocateProviderServerGeneration: () => generation++,
     });
     const hostSpec = createSharedSpec({ provider: 'codex', idleRetirement: 'none' });
@@ -139,6 +141,7 @@ describe('coordinator provider-host admission', () => {
     const manager = new DefaultProviderHostManager({
       runtime,
       spawnProviderServer,
+      admission: createCoordinatorProviderHostAdmission(),
       allocateProviderServerGeneration: () => generation++,
     });
     const hostSpec = createExclusiveSpec();
@@ -194,6 +197,7 @@ describe('coordinator provider-host admission', () => {
     const manager = new DefaultProviderHostManager({
       runtime,
       spawnProviderServer,
+      admission: createCoordinatorProviderHostAdmission(),
       allocateProviderServerGeneration: () => generation++,
     });
     const hostSpec = createExclusiveSpec();
@@ -245,6 +249,7 @@ describe('coordinator provider-host admission', () => {
     let sink: ProviderResponseObservationSink | undefined;
     const manager = new DefaultProviderHostManager({
       runtime,
+      admission: createCoordinatorProviderHostAdmission(),
       spawnProviderServer: async (_options, observationSink) => {
         sink = observationSink;
         return server.handle;

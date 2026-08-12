@@ -401,7 +401,7 @@ export function createProxyAppServerHostAuthority(
       let rootReleasedBeforeEntry = false;
       const retire = () => {
         if (entry !== null && entries.get(hostKey) === entry) entries.delete(hostKey);
-        placement.reservation.observeRetired(reservedRef);
+        placement.reservation.observeRetired(reservedRef, 'closed');
         if (entry !== null) {
           releaseLiveRoot(entry);
         } else if (!rootReleasedBeforeEntry) {
@@ -436,11 +436,11 @@ export function createProxyAppServerHostAuthority(
     } catch (error: unknown) {
       if (!liveRootCommitted) {
         spawningRoots -= 1;
-        placement.reservation.observeRetired(reservedRef);
+        placement.reservation.observeRetired(reservedRef, 'closed');
       } else if (handle !== null) {
         try {
           await handle.close();
-          placement.reservation.observeRetired(reservedRef);
+          placement.reservation.observeRetired(reservedRef, 'closed');
         } catch {
           // A failed close retains the live-root token because process absence was not confirmed.
         }
@@ -541,7 +541,7 @@ export function createProxyAppServerHostAuthority(
         if (matches.length !== 1) {
           throw new Error('provider_host_inventory_unavailable: live proxy host could not be revalidated');
         }
-        const entry = matches[0] as HostPoolEntry;
+        const entry = matches[0];
         if (entry.handle.isClosed()) {
           throw new Error('provider_host_inventory_unavailable: live proxy host process is unavailable');
         }

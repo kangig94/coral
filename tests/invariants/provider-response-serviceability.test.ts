@@ -23,6 +23,7 @@ const DIAGNOSTICS = 'src/providers/host-diagnostics.ts';
 const ADMISSION = 'src/providers/host-admission.ts';
 const SERVICEABILITY_REDUCER = 'src/providers/host-serviceability.ts';
 const COORDINATOR_ADMISSION_LEAF = 'src/coordinator/live/provider-host-admission.ts';
+const COORDINATOR_COMPOSITION = 'src/coordinator/index.ts';
 const PROXY_ADMISSION_LEAF = 'src/provider-proxy/provider-host-admission.ts';
 const COORDINATOR_OWNER = 'src/coordinator/live/provider-hosts/index.ts';
 const COORDINATOR_SPAWNER = 'src/coordinator/live/admission.ts';
@@ -420,7 +421,12 @@ describe('provider response serviceability decision layers', () => {
       )
       .map((edge) => edge.source)
       .sort();
-    expect(admissionLeafImporters).toEqual([COORDINATOR_OWNER, PROXY_OWNER].sort());
+    expect(admissionLeafImporters).toEqual([COORDINATOR_COMPOSITION, PROXY_OWNER].sort());
+
+    const coordinatorCompositionCalls = callsNamed(parse(COORDINATOR_COMPOSITION), 'createCoordinatorCore');
+    expect(coordinatorCompositionCalls.some((call) => objectArgumentHasProperty(call, 'providerHostAdmission'))).toBe(
+      true,
+    );
 
     const coordinatorOwnerCalls = callsNamed(parse(COORDINATOR_OWNER), 'spawnProviderServer');
     expect(coordinatorOwnerCalls.some((call) => call.arguments.length === 3)).toBe(true);
