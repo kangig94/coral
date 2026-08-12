@@ -1,0 +1,22 @@
+declare function spawnCallbackProviderTransport(options: {
+  observeProviderResponse(fact: unknown): void;
+}): void;
+
+function invokeSelected(callback: () => void): void {
+  callback();
+}
+
+function hiddenClose(handle: { close(): void }): void {
+  handle.close();
+}
+
+export function ownerLocalCallbackRoot(handle: { close(): void }): void {
+  const callbacks = new Map<string, () => void>([['close', () => hiddenClose(handle)]]);
+  spawnCallbackProviderTransport({
+    observeProviderResponse: () => {
+      const selected = callbacks.get('close');
+      if (selected === undefined) return;
+      invokeSelected(selected);
+    },
+  });
+}

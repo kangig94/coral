@@ -18,7 +18,7 @@ import {
   admissionSlotKey,
   canonicalProviderHostSpecMetadata,
   createHostAdmissionCollection,
-  PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING,
+  providerHostUnserviceableTerminalWarning,
 } from '#src/providers/host-admission.js';
 import { commitContinuityEvent } from '#src/providers/internal/continuity-commit.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -155,6 +155,131 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
 }
 
 describe('codexThreadProvider', () => {
+  it('does not transfer an unserviceable finding between hosts with identical RPC failures', async () => {
+    const generation = 1;
+    const requestId = 17;
+    const hostLog = Object.freeze({ startSeq: 2, endSeq: 3 });
+    const providerData = { reason: 'poisoned cwd' };
+    const classifiedAdmission = createHostAdmissionCollection({ classify: () => 'unserviceable' });
+    const otherAdmission = createHostAdmissionCollection({ classify: () => 'unknown' });
+    const classifiedSlot = admissionSlotKey('classified-host-slot');
+    const otherSlot = admissionSlotKey('other-host-slot');
+    const classifiedHostRef = Object.freeze({
+      provider: 'codex',
+      fingerprint: 'a'.repeat(64),
+      instanceId: 'classified-host',
+      leaseMode: 'shared' as const,
+    });
+    const otherHostRef = Object.freeze({
+      ...classifiedHostRef,
+      instanceId: 'other-host',
+    });
+
+    for (const [admission, slot, hostRef] of [
+      [classifiedAdmission, classifiedSlot, classifiedHostRef],
+      [otherAdmission, otherSlot, otherHostRef],
+    ] as const) {
+      await admission.withFreshPlacement(slot, async (reservation) => {
+        reservation.reserveCandidate({
+          slot,
+          ref: hostRef,
+          generation,
+          spec: canonicalProviderHostSpecMetadata({
+            provider: 'codex',
+            command: 'codex',
+            args: ['app-server'],
+            cwd: fixtureCanonicalWorkDir(TEST_WORKSPACE),
+            leaseMode: 'shared',
+            idleRetirement: 'none',
+          }),
+          host: Object.freeze({ owner: 'test' }),
+          inspectDiagnostics: () =>
+            Object.freeze({
+              hostLog: Object.freeze({ entries: Object.freeze([]), retainedBytes: 0, truncatedBeforeSeq: 0 }),
+              completedObservations: Object.freeze([]),
+              factsTruncatedBeforeSeq: 0,
+            }),
+        });
+        reservation.markLive(hostRef, generation);
+      });
+    }
+
+    const bothRequestsStarted = createDeferred<void>();
+    const classifiedFindingPublished = createDeferred<void>();
+    let startedRequests = 0;
+    const awaitBothRequests = async (): Promise<void> => {
+      startedRequests += 1;
+      if (startedRequests === 2) bothRequestsStarted.resolve();
+      await bothRequestsStarted.promise;
+    };
+    const rpcError = () =>
+      new ProviderRpcError({
+        requestId,
+        method: 'config/read',
+        rpcCode: -32_603,
+        providerMessage: 'configuration refused',
+        providerData,
+        hostLog,
+      });
+    const diagnosticFact = Object.freeze({
+      factSeq: 1,
+      generation,
+      requestId,
+      method: 'config/read',
+      response: Object.freeze({
+        kind: 'failure' as const,
+        rpcCode: -32_603,
+        providerMessage: 'configuration refused',
+        providerData,
+      }),
+      hostLog,
+    });
+    const classifiedLease = makeLease(
+      async (method) => {
+        throw new Error(`must not call ${method}`);
+      },
+      {},
+      () =>
+        classifiedAdmission.correlateTerminalFailure(classifiedHostRef, async () => {
+          await awaitBothRequests();
+          classifiedAdmission.observe(classifiedSlot, classifiedHostRef, diagnosticFact);
+          classifiedFindingPublished.resolve();
+          throw rpcError();
+        }),
+    );
+    const otherLease = makeLease(
+      async (method) => {
+        throw new Error(`must not call ${method}`);
+      },
+      {},
+      () =>
+        otherAdmission.correlateTerminalFailure(otherHostRef, async () => {
+          await awaitBothRequests();
+          await classifiedFindingPublished.promise;
+          otherAdmission.observe(otherSlot, otherHostRef, diagnosticFact);
+          throw rpcError();
+        }),
+    );
+
+    const [classifiedEvents, otherEvents] = await Promise.all([
+      collect(codexThreadProvider(makeRequest(), makeRuntime(classifiedLease))),
+      collect(codexThreadProvider(makeRequest(), makeRuntime(otherLease))),
+    ]);
+
+    expect(classifiedEvents).toEqual([
+      expect.objectContaining({
+        kind: 'terminal',
+        diagnostics: { warnings: [providerHostUnserviceableTerminalWarning(classifiedHostRef)] },
+      }),
+    ]);
+    expect(otherEvents).toEqual([
+      expect.objectContaining({
+        kind: 'terminal',
+        diagnostics: {},
+      }),
+    ]);
+  });
+
   it('retains the raw initial RPC cause and marks its provider-owned unserviceable classification', async () => {
     const generation = 1;
     const requestId = 17;
@@ -196,33 +321,34 @@ describe('codexThreadProvider', () => {
         throw new Error(`must not call ${method}`);
       },
       {},
-      async () => {
-        admission.observe(
-          slot,
-          hostRef,
-          Object.freeze({
-            factSeq: 1,
-            generation,
+      () =>
+        admission.correlateTerminalFailure(hostRef, async () => {
+          admission.observe(
+            slot,
+            hostRef,
+            Object.freeze({
+              factSeq: 1,
+              generation,
+              requestId,
+              method: 'config/read',
+              response: Object.freeze({
+                kind: 'failure',
+                rpcCode: -32_603,
+                providerMessage: 'configuration refused',
+                providerData,
+              }),
+              hostLog,
+            }),
+          );
+          throw new ProviderRpcError({
             requestId,
             method: 'config/read',
-            response: Object.freeze({
-              kind: 'failure',
-              rpcCode: -32_603,
-              providerMessage: 'configuration refused',
-              providerData,
-            }),
+            rpcCode: -32_603,
+            providerMessage: 'configuration refused',
+            providerData,
             hostLog,
-          }),
-        );
-        throw new ProviderRpcError({
-          requestId,
-          method: 'config/read',
-          rpcCode: -32_603,
-          providerMessage: 'configuration refused',
-          providerData,
-          hostLog,
-        });
-      },
+          });
+        }),
     );
 
     const events = await collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
@@ -238,7 +364,7 @@ describe('codexThreadProvider', () => {
             ),
           }),
         }),
-        diagnostics: { warnings: [PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING] },
+        diagnostics: { warnings: [providerHostUnserviceableTerminalWarning(hostRef)] },
       }),
     ]);
   });

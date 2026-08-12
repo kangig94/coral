@@ -69,7 +69,7 @@ import { TEST_CODEX_SCOPE, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-c
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { encodeHostRef } from '#src/providers/host-ref-codec.js';
-import { PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING } from '#src/providers/host-admission.js';
+import { providerHostUnserviceableTerminalWarning } from '#src/providers/host-admission.js';
 
 const progressTiming = {
   origin: 'runtime',
@@ -981,7 +981,7 @@ describe('ExecutionService wait', () => {
     expect(_readFileSync(resultPath, 'utf-8')).toBe('rebuild me\n');
   });
 
-  it('surfaces the exact provider-host recovery on the initial classified failure', async () => {
+  it('surfaces only the exact provider-host recovery on the initial classified failure', async () => {
     const service = createService(ctx);
     const { jobId, sessionId, progressStore } = createClaimedJob(service, ctx);
     const hostRef = Object.freeze({
@@ -1003,7 +1003,7 @@ describe('ExecutionService wait', () => {
       sessionId,
       { content: '', outcome: { kind: 'provider_exit', code: 1, note: rawCause }, durationMs: 0 },
       'error',
-      { diagnostics: { warnings: [PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING] } },
+      { diagnostics: { warnings: [providerHostUnserviceableTerminalWarning(hostRef)] } },
     );
 
     const terminal = await _waitForTerminalEvent(service, jobId);
@@ -1016,6 +1016,26 @@ describe('ExecutionService wait', () => {
         `Run coral-cli backend provider-host inspect ${encodedHostRef}, then ` +
         `coral-cli backend provider-host evict ${encodedHostRef} before retrying fresh placement.`,
     });
+
+    const other = createClaimedJob(service, ctx);
+    const otherHostRef = Object.freeze({ ...hostRef, instanceId: 'healthy-host' });
+    other.progressStore.appendRuntimeStarted(other.jobId, {
+      transport: 'app-server',
+      startTime: isoAt(runtime.time.now()),
+      providerMeta: { provider: 'codex', leaseState: 'acquired', hostRef: otherHostRef },
+    });
+    commitJobTerminal(
+      other.progressStore,
+      other.jobId,
+      other.sessionId,
+      { content: '', outcome: { kind: 'provider_exit', code: 1, note: rawCause }, durationMs: 0 },
+      'error',
+      { diagnostics: { warnings: [providerHostUnserviceableTerminalWarning(hostRef)] } },
+    );
+
+    const otherTerminal = await _waitForTerminalEvent(service, other.jobId);
+
+    expect(otherTerminal.result.outcome).toEqual({ kind: 'provider_exit', code: 1, note: rawCause });
   });
 
   it('rebuilds failed workflow result artifacts with lifecycle fault details', async () => {

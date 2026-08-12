@@ -10,6 +10,7 @@ import {
   type ParsedImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
 import {
+  analyzeCallableClosure,
   analyzeCallableExpressionClosure,
   createCallableClosureContext,
   directCallableCalls,
@@ -114,6 +115,14 @@ type DecisionAuthority = DecisionSymbol &
   }>;
 
 function permittedDecisionImporters(category: string, decision: DecisionSymbol): readonly string[] {
+  // Constructor traversal reaches the typed admission error's formatter and its host-ref codec. These exact
+  // helpers render an already-selected error/ref and expose no serviceability verdict or admission authority.
+  if (decision.path === HOST_ADMISSION && decision.symbol === 'providerHostUnserviceableMessage') {
+    return ['src/jobs/shell/wait.ts'];
+  }
+  if (decision.path === 'src/providers/host-ref-codec.ts' && decision.symbol === 'encodeHostRef') {
+    return ['src/cli/commands/backend.ts', HOST_ADMISSION, 'src/transport/dispatch.ts'];
+  }
   if (category === 'classifierDispatchers') {
     return decision.path === SERVICEABILITY_COMPOSITION && decision.symbol === 'classifyProviderResponseServiceability'
       ? [SERVICEABILITY_SEAM]
@@ -140,6 +149,7 @@ function permittedDecisionImporters(category: string, decision: DecisionSymbol):
         COORDINATOR_OWNER,
         COORDINATOR_WORLD,
         'src/coordinator/services/provider-host-administration.ts',
+        'src/jobs/shell/wait.ts',
         PROXY_OWNER,
       ];
     }
@@ -164,6 +174,13 @@ const SERVICEABILITY_DECISION_ANALYSIS = serviceabilityDecisionClosureAnalysis(
   PRODUCTION_FILE_PATHS,
   CALLABLE_CONTEXT,
 );
+/**
+ * Exact terminal helpers reached by a decision constructor but carrying no decision authority themselves.
+ * `errorMessage` only stringifies an already-caught value and is shared repository-wide; importing or calling it
+ * cannot reveal serviceability, alter admission, or reach another project callable. It remains in the checker
+ * closure (and therefore in the no-clock scan), but symbol-taint must stop at this named formatting leaf.
+ */
+const NON_AUTHORIZING_DECISION_CLOSURE_LEAVES = new Set(['src/infra/error-format.ts#errorMessage']);
 const SERVICEABILITY_DECISION_INVENTORY = Object.fromEntries(
   Object.entries(SERVICEABILITY_DECISION_ANALYSIS).map(([category, analysis]) => [
     category,
@@ -176,6 +193,7 @@ const SERVICEABILITY_DECISION_AUTHORITIES: readonly DecisionAuthority[] = [
       if (category === 'factPublishers') return authorities;
       for (const decision of decisions) {
         const key = `${decision.path}\0${decision.symbol}`;
+        if (NON_AUTHORIZING_DECISION_CLOSURE_LEAVES.has(`${decision.path}#${decision.symbol}`)) continue;
         const permittedImporters = permittedDecisionImporters(category, decision);
         const existing = authorities.get(key);
         authorities.set(
@@ -216,6 +234,7 @@ type OwnerObservationBoundary = Readonly<{
   module: string;
   transportCall: string;
   sink: Readonly<{ property: string }> | Readonly<{ argument: number }>;
+  physicalCloseRoot?: string;
 }>;
 
 const OWNER_OBSERVATION_BOUNDARIES: readonly OwnerObservationBoundary[] = [
@@ -223,22 +242,44 @@ const OWNER_OBSERVATION_BOUNDARIES: readonly OwnerObservationBoundary[] = [
     module: PROXY_OWNER,
     transportCall: 'spawnProviderServerTransport',
     sink: { property: 'observeProviderResponse' },
+    physicalCloseRoot: 'ProxyProviderHostAdministration.evictHost',
   },
   {
     module: COORDINATOR_OWNER,
     transportCall: 'spawnProviderServer',
     sink: { argument: 1 },
+    physicalCloseRoot: 'DefaultProviderHostManager.evictHost',
   },
 ];
-const OWNER_WRAPPER_CLOSE_MUTATION = {
-  id: 'owner-wrapper-close',
-  boundary: {
-    module: fixturePath('owner-root.ts'),
-    transportCall: 'spawnProviderTransport',
-    sink: { property: 'observeProviderResponse' },
+const OWNER_OBSERVATION_MUTATIONS = [
+  {
+    id: 'owner-wrapper-close',
+    boundary: {
+      module: fixturePath('owner-root.ts'),
+      transportCall: 'spawnProviderTransport',
+      sink: { property: 'observeProviderResponse' },
+    },
+    signature: `${fixturePath('owner-wrapper.ts')}:2:3 handle.close`,
   },
-  signature: `${fixturePath('owner-wrapper.ts')}:2:3 handle.close`,
-} as const;
+  {
+    id: 'owner-constructor-close',
+    boundary: {
+      module: fixturePath('owner-constructor-root.ts'),
+      transportCall: 'spawnConstructorProviderTransport',
+      sink: { property: 'observeProviderResponse' },
+    },
+    signature: `${fixturePath('owner-constructor-root.ts')}:7:5 handle.close`,
+  },
+  {
+    id: 'owner-locally-collected-callback-close',
+    boundary: {
+      module: fixturePath('owner-local-callback-root.ts'),
+      transportCall: 'spawnCallbackProviderTransport',
+      sink: { property: 'observeProviderResponse' },
+    },
+    signature: "argument 1 'selected' has callable type but no resolvable target",
+  },
+] as const satisfies ReadonlyArray<Readonly<{ id: string; boundary: OwnerObservationBoundary; signature: string }>>;
 
 /** Named capabilities a serviceability decision must never reach over runtime imports. */
 const DESTRUCTIVE_CAPABILITY_ROOTS = [
@@ -681,7 +722,15 @@ type OwnerObservationProof = Readonly<{
   visitedCallableCount: number;
   inspectedCallCount: number;
   observationPaths: readonly string[];
-  physicalCloseSites: readonly string[];
+  physicalCloseProof:
+    | Readonly<{
+        rootCount: number;
+        visitedCallableCount: number;
+        inspectedCallCount: number;
+        sites: readonly string[];
+        unresolvedCalls: readonly string[];
+      }>
+    | undefined;
   unresolvedCalls: readonly string[];
   violations: readonly string[];
 }>;
@@ -689,11 +738,13 @@ type OwnerObservationProof = Readonly<{
 /**
  * The owner rule is deliberately callable-grained rather than module-grained: it starts at the exact
  * transport response sink and uses the shared TypeScript-checker closure to follow imported aliases, concrete
- * methods, registry values, and statically identifiable callback targets across `src/`. Calls through injected
- * interface/runtime callback boundaries are outside that static scope; every other unresolved project call is
- * reported fail-closed. A direct `.close()` or a call imported from a named destructive-capability module ends
- * the path. The non-vacuity fields make a moved sink, empty resolved walk, or owner with no close capability
- * fail instead of silently weakening the analysis.
+ * methods, constructors, registry values, and statically identifiable callback targets across `src/`. A
+ * callable argument is unresolved unless its target is known or the expression itself is an injected/external
+ * boundary. Every other unresolved project edge is reported fail-closed. A direct `.close()` or a call imported
+ * from a named destructive-capability module ends the response path. For real owners, the separate physical-close
+ * proof starts at the exact operator-eviction method and follows the same resolved executable closure; its close
+ * sites and non-vacuity counts therefore cannot be satisfied by unrelated calls elsewhere in the module. Both
+ * closures fail closed on unresolved project edges.
  */
 function ownerObservationProof(boundary: OwnerObservationBoundary, context = CALLABLE_CONTEXT): OwnerObservationProof {
   const sourceFile = context.sourceFilesByPath.get(boundary.module);
@@ -706,19 +757,11 @@ function ownerObservationProof(boundary: OwnerObservationBoundary, context = CAL
       label: `${boundary.module}#${boundary.transportCall}.responseSink[${sinkIndex}]`,
     })),
   );
-  const physicalCloseSites: string[] = [];
-  const collectCloseSites = (node: ts.Node): void => {
-    if (ts.isCallExpression(node) && isPhysicalCloseCall(boundary.module, node)) {
-      physicalCloseSites.push(callSite(sourceFile, node));
-    }
-    ts.forEachChild(node, collectCloseSites);
-  };
-  collectCloseSites(sourceFile);
-
   const observationPaths: string[] = [];
   const violations: string[] = [];
   for (const current of closure.callables) {
     for (const call of directCallableCalls(current.node)) {
+      if (!ts.isCallExpression(call)) continue;
       if (isAdmissionObservation(call, current.sourceFile)) {
         observationPaths.push([...current.trace, callSite(current.sourceFile, call)].join(' -> '));
       }
@@ -727,6 +770,20 @@ function ownerObservationProof(boundary: OwnerObservationBoundary, context = CAL
       }
     }
   }
+  const physicalCloseClosure =
+    boundary.physicalCloseRoot === undefined
+      ? undefined
+      : analyzeCallableClosure(context, [{ path: boundary.module, symbol: boundary.physicalCloseRoot }]);
+  const physicalCloseSites =
+    physicalCloseClosure === undefined
+      ? []
+      : physicalCloseClosure.callables.flatMap((current) =>
+          directCallableCalls(current.node).flatMap((call) =>
+            ts.isCallExpression(call) && isPhysicalCloseCall(current.path, call)
+              ? [[...current.trace, callSite(current.sourceFile, call)].join(' -> ')]
+              : [],
+          ),
+        );
 
   return {
     transportCalls: boundarySinks.transportCalls,
@@ -735,7 +792,16 @@ function ownerObservationProof(boundary: OwnerObservationBoundary, context = CAL
     visitedCallableCount: closure.callables.length,
     inspectedCallCount: closure.inspectedCallCount,
     observationPaths: [...new Set(observationPaths)].sort(),
-    physicalCloseSites: [...new Set(physicalCloseSites)].sort(),
+    physicalCloseProof:
+      physicalCloseClosure === undefined
+        ? undefined
+        : {
+            rootCount: physicalCloseClosure.roots.length,
+            visitedCallableCount: physicalCloseClosure.callables.length,
+            inspectedCallCount: physicalCloseClosure.inspectedCallCount,
+            sites: [...new Set(physicalCloseSites)].sort(),
+            unresolvedCalls: physicalCloseClosure.unresolvedCalls,
+          },
     unresolvedCalls: closure.unresolvedCalls,
     violations: [...new Set(violations)].sort(),
   };
@@ -806,9 +872,12 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
     );
     expect(decisionEntries.length).toBeGreaterThan(0);
     expect(decisionEntries.filter(([, decisions]) => decisions.length === 0)).toEqual([]);
+    const resolvedDecisionKeys = new Set(
+      decisionEntries.flatMap(([, decisions]) => decisions.map(({ path, symbol }) => `${path}#${symbol}`)),
+    );
+    expect([...NON_AUTHORIZING_DECISION_CLOSURE_LEAVES].filter((key) => !resolvedDecisionKeys.has(key))).toEqual([]);
     expect(SERVICEABILITY_DECISION_AUTHORITIES).toHaveLength(
-      new Set(decisionEntries.flatMap(([, decisions]) => decisions.map(({ path, symbol }) => `${path}#${symbol}`)))
-        .size,
+      [...resolvedDecisionKeys].filter((key) => !NON_AUTHORIZING_DECISION_CLOSURE_LEAVES.has(key)).length,
     );
     expect(
       decisionEntries.flatMap(([category]) => SERVICEABILITY_DECISION_ANALYSIS[category]?.unresolvedCalls ?? []),
@@ -978,30 +1047,40 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
       expect(proof.transportCalls).toBeGreaterThan(0);
       expect(proof.sinkCount).toBe(proof.transportCalls);
       expect(proof.rootCount).toBe(proof.sinkCount);
+      expect(proof.visitedCallableCount).toBeGreaterThan(0);
       expect(proof.visitedCallableCount).toBeGreaterThanOrEqual(proof.rootCount);
       expect(proof.inspectedCallCount).toBeGreaterThan(0);
       expect(proof.observationPaths.length).toBeGreaterThan(0);
-      expect(proof.physicalCloseSites.length).toBeGreaterThan(0);
       expect(proof.unresolvedCalls).toEqual([]);
       expect(proof.violations).toEqual([]);
+      expect(proof.physicalCloseProof).toBeDefined();
+      if (proof.physicalCloseProof === undefined)
+        throw new Error(`Missing physical-close proof for ${boundary.module}`);
+      expect(proof.physicalCloseProof.rootCount).toBe(1);
+      expect(proof.physicalCloseProof.visitedCallableCount).toBeGreaterThan(0);
+      expect(proof.physicalCloseProof.inspectedCallCount).toBeGreaterThan(0);
+      expect(proof.physicalCloseProof.sites.length).toBeGreaterThan(0);
+      expect(proof.physicalCloseProof.unresolvedCalls).toEqual([]);
     },
   );
 
-  it('rejects the imported wrapper-to-close mutation through its resolved callable signature', () => {
-    const proof = ownerObservationProof(OWNER_WRAPPER_CLOSE_MUTATION.boundary, MUTATION_FIXTURE_CONTEXT);
-    expect(proof.transportCalls).toBe(1);
-    expect(proof.rootCount).toBe(1);
-    expect(proof.visitedCallableCount).toBeGreaterThan(proof.rootCount);
-    expect(proof.unresolvedCalls).toEqual([]);
-    expect(proof.violations.some((violation) => violation.includes(OWNER_WRAPPER_CLOSE_MUTATION.signature))).toBe(true);
-  });
+  it.each(OWNER_OBSERVATION_MUTATIONS)(
+    'rejects the $id mutation through its own closure-derived signature',
+    (mutation) => {
+      const proof = ownerObservationProof(mutation.boundary, MUTATION_FIXTURE_CONTEXT);
+      const findings = [...proof.unresolvedCalls, ...proof.violations];
+      expect(proof.transportCalls).toBe(1);
+      expect(proof.rootCount).toBe(1);
+      expect(proof.visitedCallableCount).toBeGreaterThanOrEqual(proof.rootCount);
+      expect(findings.some((finding) => finding.includes(mutation.signature))).toBe(true);
+    },
+  );
 
-  it('keeps the opt-in owner-wrapper mutation probe clean', () => {
-    const active = activeServiceabilityMutation() === OWNER_WRAPPER_CLOSE_MUTATION.id;
-    const violations = active
-      ? ownerObservationProof(OWNER_WRAPPER_CLOSE_MUTATION.boundary, MUTATION_FIXTURE_CONTEXT).violations
-      : [];
-    expect(violations).toEqual([]);
+  it('keeps the opt-in owner-observation mutation probe clean', () => {
+    const mutation = OWNER_OBSERVATION_MUTATIONS.find(({ id }) => id === activeServiceabilityMutation());
+    const proof =
+      mutation === undefined ? undefined : ownerObservationProof(mutation.boundary, MUTATION_FIXTURE_CONTEXT);
+    expect(proof === undefined ? [] : [...proof.unresolvedCalls, ...proof.violations]).toEqual([]);
   });
 
   it.each(CONSTRAINED_ADMISSION_LEAVES.map((leaf) => [leaf.module, leaf] as const))(

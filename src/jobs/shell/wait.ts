@@ -25,11 +25,12 @@ import type { JobProjectionDetail } from '../read-queries.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { resultPathFor as defaultResultPathFor } from '../terminal/export.js';
-import type { UsageSummary } from '../../providers/contract.js';
+import type { HostRef, UsageSummary } from '../../providers/contract.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import {
+  exactHostRefsMatch,
   providerHostUnserviceableMessage,
-  PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING,
+  readProviderHostUnserviceableTerminalWarning,
 } from '../../providers/host-admission.js';
 
 const ABORTED = 'wait-aborted' as const;
@@ -84,16 +85,22 @@ function toTerminalWaitEvent(
 function surfaceProviderHostRecovery(event: JobTerminalEvent, detail: JobProjectionDetail): JobTerminal {
   const outcome = event.result.outcome;
   const runtime = detail.runtime;
+  const warnings = detail.exit?.diagnostics.warnings ?? [];
   if (
     outcome.kind !== 'provider_exit' ||
     runtime?.transport !== 'app-server' ||
-    runtime.providerMeta.leaseState !== 'acquired' ||
-    !detail.exit?.diagnostics.warnings?.includes(PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING)
+    runtime.providerMeta.leaseState !== 'acquired'
   ) {
     return event.result;
   }
 
-  const recovery = providerHostUnserviceableMessage(runtime.providerMeta.hostRef);
+  const acquiredHostRef = runtime.providerMeta.hostRef;
+  const classifiedHostRef = warnings
+    .map(readProviderHostUnserviceableTerminalWarning)
+    .find((hostRef): hostRef is HostRef => hostRef !== null && exactHostRefsMatch(hostRef, acquiredHostRef));
+  if (classifiedHostRef === undefined) return event.result;
+
+  const recovery = providerHostUnserviceableMessage(classifiedHostRef);
   return {
     ...event.result,
     outcome: {

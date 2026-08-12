@@ -17,6 +17,7 @@ import {
   providerClassifierFiles,
   serviceabilityDecisionClosureAnalysis,
   STATIC_SERVICEABILITY_DECISION_SYMBOLS,
+  type CallableClosureAnalysis,
   type ResolvedCallable,
 } from './provider-serviceability-decision-inventory.js';
 import {
@@ -44,11 +45,18 @@ const PROXY_OWNER = 'src/provider-proxy/provider-root-authority.ts';
 const SERVICEABILITY_LITERALS = new Set(['serviceable', 'unserviceable', 'unknown']);
 const CALLABLE_CONTEXT = createCallableClosureContext(REPO_ROOT, PRODUCTION_FILES);
 const DECISION_CLOSURE_ANALYSIS = serviceabilityDecisionClosureAnalysis(REPO_ROOT, PRODUCTION_FILES, CALLABLE_CONTEXT);
+const TRANSPORT_FACT_DIAGNOSTIC_RETENTION_EXCLUSIONS = new Set([
+  `${DIAGNOSTICS}#currentProviderHostLogSeq`,
+  `${DIAGNOSTICS}#recordProviderResponseDiagnostic`,
+]);
 /**
- * This narrower fact guard starts at the completed-response publisher and follows every statically resolved
- * project call/callback. It scans implementations that remain in the transport module; imported diagnostics
- * retention is outside this rule because its sequence/capacity counters describe stored facts rather than a
- * serviceability decision. Unresolved project calls still fail closed below.
+ * This fact guard starts at the completed-response publisher and scans every checker-resolved project callable
+ * reached through calls, constructors, and callbacks. Its only exclusions are the two exact diagnostics
+ * retention operations above: `currentProviderHostLogSeq` reads the already-emitted host-log sequence, while
+ * `recordProviderResponseDiagnostic` allocates a fact sequence and enforces the completed-observation retention
+ * capacity. Those counters describe retained evidence after a real response; neither can create a response fact
+ * from silence or decide its serviceability. Imported helpers such as `copyResponse` remain scanned, and every
+ * unresolved project edge fails closed below.
  */
 const TRANSPORT_FACT_ANALYSIS = analyzeCallableClosure(CALLABLE_CONTEXT, [
   { path: TRANSPORT, symbol: 'handleProviderServerResponse' },
@@ -242,6 +250,12 @@ function decisionClosureInventory(): Readonly<Record<string, readonly ResolvedCa
   );
 }
 
+function guardedTransportFactCallables(analysis: CallableClosureAnalysis): readonly ResolvedCallable[] {
+  return analysis.callables.filter(
+    ({ path, symbol }) => !TRANSPORT_FACT_DIAGNOSTIC_RETENTION_EXCLUSIONS.has(`${path}#${symbol}`),
+  );
+}
+
 const DECISION_CLOSURE_MUTATIONS = [
   {
     id: 'imported-helper-clock',
@@ -262,9 +276,25 @@ const DECISION_CLOSURE_MUTATIONS = [
     signature: "references forbidden decision-bound symbol 'retryBudget'",
   },
   {
+    id: 'constructor-clock',
+    root: { path: fixturePath('constructor-root.ts'), symbol: 'constructorRoot' },
+    target: { path: fixturePath('constructor-root.ts'), symbol: 'ConstructorDecision.constructor' },
+    signature: "references forbidden decision-bound symbol 'now'",
+  },
+] as const;
+
+const TRANSPORT_FACT_CLOSURE_MUTATIONS = [
+  {
     id: 'transport-fact-counter',
     root: { path: fixturePath('transport-fact-root.ts'), symbol: 'handleProviderServerResponse' },
-    target: { path: fixturePath('transport-fact-root.ts'), symbol: 'publishTransportFact' },
+    signature: "references forbidden decision-bound symbol 'elapsedMs'",
+  },
+  {
+    id: 'imported-transport-fact-counter',
+    root: {
+      path: fixturePath('transport-fact-imported-root.ts'),
+      symbol: 'handleImportedProviderServerResponse',
+    },
     signature: "references forbidden decision-bound symbol 'elapsedMs'",
   },
 ] as const;
@@ -278,6 +308,17 @@ function decisionClosureMutationViolations(mutation: (typeof DECISION_CLOSURE_MU
   return target === undefined
     ? [`${mutation.target.path}#${mutation.target.symbol} was not resolved`]
     : decisionBoundViolations(target);
+}
+
+function transportFactMutationViolations(
+  mutation: (typeof TRANSPORT_FACT_CLOSURE_MUTATIONS)[number],
+): readonly string[] {
+  const analysis = analyzeCallableClosure(MUTATION_FIXTURE_CONTEXT, [mutation.root]);
+  if (analysis.unresolvedCalls.length > 0) return analysis.unresolvedCalls;
+  const callables = guardedTransportFactCallables(analysis);
+  return callables.length === 0
+    ? [`${mutation.root.path}#${mutation.root.symbol} resolved no guarded callables`]
+    : callables.flatMap(decisionBoundViolations);
 }
 
 function callsNamed(sourceFile: ts.Node, name: string): ts.CallExpression[] {
@@ -436,18 +477,33 @@ describe('provider response serviceability decision layers', () => {
 
   it('keeps the completed-response transport fact closure free of clocks and numeric bounds', () => {
     expect(TRANSPORT_FACT_ANALYSIS.unresolvedCalls).toEqual([]);
-    expect(TRANSPORT_FACT_ANALYSIS.roots).toHaveLength(1);
+    expect(TRANSPORT_FACT_ANALYSIS.callables.length).toBeGreaterThan(0);
     expect(TRANSPORT_FACT_ANALYSIS.inspectedCallCount).toBeGreaterThan(0);
     expect(TRANSPORT_FACT_ANALYSIS.edges.length).toBeGreaterThan(0);
-    const transportCallables = TRANSPORT_FACT_ANALYSIS.callables.filter(({ path }) => path === TRANSPORT);
-    expect(transportCallables.length).toBeGreaterThan(0);
-    expect(transportCallables.flatMap(decisionBoundViolations)).toEqual([]);
+    expect(
+      TRANSPORT_FACT_ANALYSIS.callables
+        .map(({ path, symbol }) => `${path}#${symbol}`)
+        .filter((key) => TRANSPORT_FACT_DIAGNOSTIC_RETENTION_EXCLUSIONS.has(key))
+        .sort(),
+    ).toEqual([...TRANSPORT_FACT_DIAGNOSTIC_RETENTION_EXCLUSIONS].sort());
+    const guardedCallables = guardedTransportFactCallables(TRANSPORT_FACT_ANALYSIS);
+    expect(guardedCallables.length).toBeGreaterThan(0);
+    expect(guardedCallables.flatMap(decisionBoundViolations)).toEqual([]);
   });
 
   it.each(DECISION_CLOSURE_MUTATIONS)(
     'rejects the $id mutation through its own resolved callable signature',
     (mutation) => {
       const violations = decisionClosureMutationViolations(mutation);
+      expect(violations.length).toBeGreaterThan(0);
+      expect(violations.some((violation) => violation.includes(mutation.signature))).toBe(true);
+    },
+  );
+
+  it.each(TRANSPORT_FACT_CLOSURE_MUTATIONS)(
+    'rejects the $id mutation through the transitive transport-fact guard',
+    (mutation) => {
+      const violations = transportFactMutationViolations(mutation);
       expect(violations.length).toBeGreaterThan(0);
       expect(violations.some((violation) => violation.includes(mutation.signature))).toBe(true);
     },
@@ -464,8 +520,16 @@ describe('provider response serviceability decision layers', () => {
   });
 
   it('keeps the opt-in decision-closure mutation probe clean', () => {
-    const selected = DECISION_CLOSURE_MUTATIONS.find(({ id }) => id === activeServiceabilityMutation());
-    expect(selected === undefined ? [] : decisionClosureMutationViolations(selected)).toEqual([]);
+    const activeMutation = activeServiceabilityMutation();
+    const decisionMutation = DECISION_CLOSURE_MUTATIONS.find(({ id }) => id === activeMutation);
+    const transportMutation = TRANSPORT_FACT_CLOSURE_MUTATIONS.find(({ id }) => id === activeMutation);
+    const violations =
+      decisionMutation !== undefined
+        ? decisionClosureMutationViolations(decisionMutation)
+        : transportMutation === undefined
+          ? []
+          : transportFactMutationViolations(transportMutation);
+    expect(violations).toEqual([]);
   });
 
   it('wires a live sink through both host owners and the coordinator spawn forwarder', () => {

@@ -496,7 +496,8 @@ export class DefaultProviderHostManager
   private managedSession(lease: ProviderServerLease, hostRef: HostRef): ManagedAppServerSession {
     return Object.freeze({
       session: Object.freeze({
-        rpc: lease.rpc.bind(lease),
+        rpc: <Result = unknown>(method: string, params: Record<string, unknown>) =>
+          this.admission.correlateTerminalFailure(hostRef, () => lease.rpc<Result>(method, params)),
         subscribe: lease.subscribe.bind(lease),
         closed: lease.closed,
       }),

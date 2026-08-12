@@ -1,0 +1,13 @@
+class ConstructorDecision {
+  constructor() {
+    Date.now();
+  }
+
+  evaluate(): boolean {
+    return true;
+  }
+}
+
+export function constructorRoot(): boolean {
+  return new ConstructorDecision().evaluate();
+}

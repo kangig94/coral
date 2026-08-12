@@ -143,7 +143,7 @@ describe('provider-host RPC authorization', () => {
     ],
     [
       'provider_host_identity_integrity',
-      'Do not evict: preserve the complete error output and escalate the integrity failure.',
+      'Do not evict: preserve the complete error output, then run `coral-cli backend status` to capture coordinator state before escalating the integrity failure.',
     ],
     [
       'provider_host_stale',

@@ -90,6 +90,8 @@ export type CallableNode =
   | ts.SetAccessorDeclaration
   | ts.ConstructorDeclaration;
 
+export type ExecutableCall = ts.CallExpression | ts.NewExpression;
+
 export type ResolvedCallable = DecisionSymbol &
   Readonly<{
     node: CallableNode;
@@ -322,6 +324,11 @@ function symbolTargets(
   seenSymbols.add(symbol);
   const targets = (symbol.declarations ?? []).flatMap((declaration) => {
     if (isCallableNode(declaration)) return [declaration];
+    if (ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration)) {
+      return declaration.members.filter(
+        (member): member is ts.ConstructorDeclaration => ts.isConstructorDeclaration(member) && isCallableNode(member),
+      );
+    }
     if (ts.isShorthandPropertyAssignment(declaration)) {
       const valueSymbol = context.checker.getShorthandAssignmentValueSymbol(declaration);
       return valueSymbol === undefined ? [] : symbolTargets(context, valueSymbol, new Set(seenSymbols));
@@ -340,6 +347,11 @@ function expressionTargets(
 ): readonly CallableNode[] {
   const unwrapped = unwrapExpression(expression);
   if (isCallableNode(unwrapped)) return [unwrapped];
+  if (ts.isClassExpression(unwrapped)) {
+    return unwrapped.members.filter(
+      (member): member is ts.ConstructorDeclaration => ts.isConstructorDeclaration(member) && isCallableNode(member),
+    );
+  }
   if (ts.isConditionalExpression(unwrapped)) {
     return [
       ...expressionTargets(context, unwrapped.whenTrue, new Set(seenSymbols)),
@@ -484,11 +496,11 @@ function unresolvedProjectCall(context: CallableClosureContext, expression: ts.E
   return rawSymbol !== undefined && (rawSymbol.flags & ts.SymbolFlags.Alias) !== 0;
 }
 
-export function directCallableCalls(callable: CallableNode): readonly ts.CallExpression[] {
-  const calls: ts.CallExpression[] = [];
+export function directCallableCalls(callable: CallableNode): readonly ExecutableCall[] {
+  const calls: ExecutableCall[] = [];
   const visit = (node: ts.Node): void => {
     if (node !== callable && isCallableNode(node)) return;
-    if (ts.isCallExpression(node)) calls.push(node);
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) calls.push(node);
     ts.forEachChild(node, visit);
   };
   visit(callable);
@@ -524,12 +536,41 @@ function callbackTargets(context: CallableClosureContext, expression: ts.Express
   return [];
 }
 
-function callSite(sourceFile: ts.SourceFile, call: ts.CallExpression): string {
+function callSite(sourceFile: ts.SourceFile, call: ExecutableCall): string {
   const { line, character } = sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile));
   return `${line + 1}:${character + 1} ${call.expression.getText(sourceFile)}`;
 }
 
 type ClosureRoot = Readonly<{ callable: ResolvedCallable; label: string }>;
+
+function isBodylessProjectConstruction(context: CallableClosureContext, call: ExecutableCall): boolean {
+  return (
+    ts.isNewExpression(call) &&
+    projectDeclarations(context, call.expression).some(
+      (declaration) =>
+        (ts.isClassDeclaration(declaration) || ts.isClassExpression(declaration)) &&
+        !declaration.members.some((member) => ts.isConstructorDeclaration(member) && isCallableNode(member)),
+    )
+  );
+}
+
+function isCallableTyped(context: CallableClosureContext, expression: ts.Expression): boolean {
+  return context.checker.getTypeAtLocation(unwrapExpression(expression)).getCallSignatures().length > 0;
+}
+
+function isInjectedOrExternalCallable(context: CallableClosureContext, expression: ts.Expression): boolean {
+  const unwrapped = unwrapExpression(expression);
+  if (hasOnlyExternalDeclarations(context, unwrapped)) return true;
+  const declarations = projectDeclarations(context, unwrapped);
+  return declarations.length > 0 && declarations.every(isInjectedBoundaryDeclaration);
+}
+
+function executableTargets(context: CallableClosureContext, call: ExecutableCall): readonly CallableNode[] {
+  const signatureDeclaration = context.checker.getResolvedSignature(call)?.declaration;
+  const signatureTarget =
+    signatureDeclaration !== undefined && isCallableNode(signatureDeclaration) ? [signatureDeclaration] : [];
+  return [...new Set([...expressionTargets(context, call.expression), ...signatureTarget])];
+}
 
 function analyzeRoots(context: CallableClosureContext, closureRoots: readonly ClosureRoot[]): CallableClosureAnalysis {
   const roots = closureRoots.map(({ callable }) => callable);
@@ -549,10 +590,14 @@ function analyzeRoots(context: CallableClosureContext, closureRoots: readonly Cl
     for (const call of directCallableCalls(current.callable.node)) {
       inspectedCallCount += 1;
       const site = `${current.callable.path}:${callSite(current.callable.sourceFile, call)}`;
-      const calleeTargets = expressionTargets(context, call.expression)
+      const calleeTargets = executableTargets(context, call)
         .map((node) => resolvedCallable(context, node))
         .filter((target): target is ResolvedCallable => target !== undefined);
-      if (calleeTargets.length === 0 && unresolvedProjectCall(context, call.expression)) {
+      if (
+        calleeTargets.length === 0 &&
+        !isBodylessProjectConstruction(context, call) &&
+        unresolvedProjectCall(context, call.expression)
+      ) {
         unresolvedCalls.push(`${current.callable.path}#${current.callable.symbol} -> ${site} is unresolved`);
       }
       for (const target of calleeTargets) {
@@ -560,10 +605,24 @@ function analyzeRoots(context: CallableClosureContext, closureRoots: readonly Cl
         queue.push({ callable: target, trace: [...current.trace, `${site} -> ${target.path}#${target.symbol}`] });
       }
 
-      const callbacks = call.arguments
-        .flatMap((argument) => callbackTargets(context, argument))
-        .map((node) => resolvedCallable(context, node))
-        .filter((target): target is ResolvedCallable => target !== undefined);
+      const callArguments = call.arguments ?? [];
+      const callbacksByArgument = callArguments.map((argument) =>
+        callbackTargets(context, argument)
+          .map((node) => resolvedCallable(context, node))
+          .filter((target): target is ResolvedCallable => target !== undefined),
+      );
+      const callbacks = callbacksByArgument.flat();
+      for (const [argumentIndex, argument] of callArguments.entries()) {
+        if (
+          callbacksByArgument[argumentIndex]?.length === 0 &&
+          isCallableTyped(context, argument) &&
+          !isInjectedOrExternalCallable(context, argument)
+        ) {
+          unresolvedCalls.push(
+            `${current.callable.path}#${current.callable.symbol} -> ${site} argument ${argumentIndex + 1} '${argument.getText(current.callable.sourceFile)}' has callable type but no resolvable target`,
+          );
+        }
+      }
       for (const target of callbacks) {
         edges.push({ from: current.callable, to: target, kind: 'callback', site });
         queue.push({ callable: target, trace: [...current.trace, `${site} => ${target.path}#${target.symbol}`] });
@@ -580,10 +639,16 @@ function analyzeRoots(context: CallableClosureContext, closureRoots: readonly Cl
   };
 }
 
-function topLevelCallable(sourceFile: ts.SourceFile, symbol: string): CallableNode | undefined {
+function rootCallable(sourceFile: ts.SourceFile, symbol: string): CallableNode | undefined {
   for (const statement of sourceFile.statements) {
     if (ts.isFunctionDeclaration(statement) && statement.name?.text === symbol && isCallableNode(statement)) {
       return statement;
+    }
+    if (ts.isClassDeclaration(statement)) {
+      const member = statement.members.find(
+        (candidate) => isCallableNode(candidate) && callableSymbol(candidate, sourceFile) === symbol,
+      );
+      if (member !== undefined && isCallableNode(member)) return member;
     }
     if (!ts.isVariableStatement(statement)) continue;
     for (const declaration of statement.declarationList.declarations) {
@@ -607,7 +672,7 @@ export function analyzeCallableClosure(
   const missing: string[] = [];
   const resolvedRoots = roots.flatMap((root): ClosureRoot[] => {
     const sourceFile = context.sourceFilesByPath.get(root.path);
-    const node = sourceFile === undefined ? undefined : topLevelCallable(sourceFile, root.symbol);
+    const node = sourceFile === undefined ? undefined : rootCallable(sourceFile, root.symbol);
     if (sourceFile === undefined || node === undefined) {
       missing.push(`${root.path}#${root.symbol}`);
       return [];
@@ -665,13 +730,13 @@ export function serviceabilityDecisionClosureAnalysis(
 }
 
 /**
- * Follow the checker-resolved `src/` call closure from each semantic root. The guarded scope includes imported
- * aliases, concrete method implementations, object/registry callback values, and callable arguments (including
- * callable object properties). Calls through injected interface/function parameters, callbacks selected only
- * at runtime from injected/external collections, and dependencies declared outside `src/` are explicit
- * authority boundaries. Any other project call that the checker cannot map to an implementation fails closed,
- * and callers assert the real closure contains resolved edges so an empty or disconnected analysis cannot pass
- * as a complete inventory.
+ * Follow the checker-resolved `src/` closure from each semantic root. The guarded executable edges are ordinary
+ * calls and `new` expressions, including explicit constructor bodies, imported aliases, concrete methods,
+ * object/registry callback values, and callable arguments (including callable object properties). A callable
+ * argument may remain unresolved only when the expression itself is declared by an injected parameter/signature
+ * or outside `src/`; a locally stored or selected callback fails closed. Direct calls through injected runtime
+ * callback boundaries and dependencies declared outside `src/` remain outside the static scope. Any other
+ * unresolved project edge fails closed, and callers assert non-vacuity over resolved callables and edges.
  */
 export function serviceabilityDecisionClosureInventory(
   repoRoot: string,

@@ -358,7 +358,14 @@ function workDirectoryFailure(error: WorkDirectoryError): CatalogRequestExecutio
   );
 }
 
-const PROVIDER_HOST_ADMINISTRATION_ERROR_CODES = new Set([
+type ProviderHostAdministrationErrorCode =
+  | 'provider_host_inventory_unavailable'
+  | 'provider_host_not_found'
+  | 'provider_host_ambiguous'
+  | 'provider_host_identity_integrity'
+  | 'provider_host_stale';
+
+const PROVIDER_HOST_ADMINISTRATION_ERROR_CODES = new Set<ProviderHostAdministrationErrorCode>([
   'provider_host_inventory_unavailable',
   'provider_host_not_found',
   'provider_host_ambiguous',
@@ -366,10 +373,17 @@ const PROVIDER_HOST_ADMINISTRATION_ERROR_CODES = new Set([
   'provider_host_stale',
 ]);
 
-function providerHostAdministrationFailure(error: unknown): CatalogRequestExecution | null {
-  if (!isRecord(error) || typeof error.code !== 'string' || !PROVIDER_HOST_ADMINISTRATION_ERROR_CODES.has(error.code)) {
-    return null;
-  }
+function isProviderHostAdministrationErrorCode(code: unknown): code is ProviderHostAdministrationErrorCode {
+  return (
+    typeof code === 'string' &&
+    PROVIDER_HOST_ADMINISTRATION_ERROR_CODES.has(code as ProviderHostAdministrationErrorCode)
+  );
+}
+
+function providerHostAdministrationDetail(error: Record<string, unknown>): {
+  ownerIds: string[];
+  hostRefs: string[];
+} {
   const ownerIds = Array.isArray(error.ownerIds)
     ? error.ownerIds.filter((value): value is string => typeof value === 'string')
     : [];
@@ -382,34 +396,51 @@ function providerHostAdministrationFailure(error: unknown): CatalogRequestExecut
         }
       })
     : [];
-  let message: string;
-  let remediation: string;
-  switch (error.code) {
+  return { ownerIds, hostRefs };
+}
+
+function providerHostAdministrationCopy(
+  code: ProviderHostAdministrationErrorCode,
+  ownerIds: readonly string[],
+  hostRefs: readonly string[],
+): { message: string; remediation: string } {
+  switch (code) {
     case 'provider_host_inventory_unavailable':
-      message = `Provider-host inventory is unavailable${ownerIds.length === 0 ? '.' : ` from: ${ownerIds.join(', ')}.`}`;
-      remediation =
-        'Retry the original command; if it persists, run `coral-cli backend shutdown`, then retry the original command to start a fresh coordinator.';
-      break;
+      return {
+        message: `Provider-host inventory is unavailable${ownerIds.length === 0 ? '.' : ` from: ${ownerIds.join(', ')}.`}`,
+        remediation:
+          'Retry the original command; if it persists, run `coral-cli backend shutdown`, then retry the original command to start a fresh coordinator.',
+      };
     case 'provider_host_not_found':
-      message = 'No live or retained-blocked provider host matches the selector.';
-      remediation = 'Rerun `coral-cli backend provider-host list`, then use a currently listed reference.';
-      break;
+      return {
+        message: 'No live or retained-blocked provider host matches the selector.',
+        remediation: 'Rerun `coral-cli backend provider-host list`, then use a currently listed reference.',
+      };
     case 'provider_host_ambiguous':
-      message = `The work directory matches multiple provider hosts: ${hostRefs.join(', ')}.`;
-      remediation =
-        'For one listed reference, run `coral-cli backend provider-host inspect <ref>` and verify it, then run `coral-cli backend provider-host evict <ref>`; never choose a match by position.';
-      break;
+      return {
+        message: `The work directory matches multiple provider hosts: ${hostRefs.join(', ')}.`,
+        remediation:
+          'For one listed reference, run `coral-cli backend provider-host inspect <ref>` and verify it, then run `coral-cli backend provider-host evict <ref>`; never choose a match by position.',
+      };
     case 'provider_host_identity_integrity':
-      message = `The exact provider-host identity matched multiple owners: ${hostRefs.join(', ')}.`;
-      remediation = 'Do not evict: preserve the complete error output and escalate the integrity failure.';
-      break;
+      return {
+        message: `The exact provider-host identity matched multiple owners: ${hostRefs.join(', ')}.`,
+        remediation:
+          'Do not evict: preserve the complete error output, then run `coral-cli backend status` to capture coordinator state before escalating the integrity failure.',
+      };
     case 'provider_host_stale':
-      message = `The selected provider host changed before the owner could revalidate it: ${hostRefs.join(', ')}.`;
-      remediation = 'Rerun `coral-cli backend provider-host list` and act only on a currently listed reference.';
-      break;
-    default:
-      return null;
+      return {
+        message: `The selected provider host changed before the owner could revalidate it: ${hostRefs.join(', ')}.`,
+        remediation: 'Rerun `coral-cli backend provider-host list` and act only on a currently listed reference.',
+      };
   }
+}
+
+function providerHostAdministrationFailure(error: unknown): CatalogRequestExecution | null {
+  if (!isRecord(error) || !isProviderHostAdministrationErrorCode(error.code)) return null;
+
+  const { ownerIds, hostRefs } = providerHostAdministrationDetail(error);
+  const { message, remediation } = providerHostAdministrationCopy(error.code, ownerIds, hostRefs);
   const statusCode =
     error.code === 'provider_host_not_found' ? 404 : error.code === 'provider_host_inventory_unavailable' ? 503 : 409;
   return unary(
@@ -543,73 +574,87 @@ async function executeRecoveryQuarantineCatalogRequest({
   return unary(await rpcPorts.recoveryQuarantine.clear(request as RecoveryQuarantineClearRequest, abortSignal));
 }
 
-async function executeProviderHostCatalogRequest({
-  spec,
+async function executeProviderHostListCatalogRequest({
+  rpcPorts,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const providerHosts = rpcPorts.providerHosts;
+  if (providerHosts === undefined) {
+    return providerHostAdministrationFailure({
+      code: 'provider_host_inventory_unavailable',
+      ownerIds: ['coordinator'],
+    }) as CatalogRequestExecution;
+  }
+  try {
+    return unary(providerHostListResponseSchema.parse(await providerHosts.list()));
+  } catch (error: unknown) {
+    const failure = providerHostAdministrationFailure(error);
+    if (failure !== null) return failure;
+    throw error;
+  }
+}
+
+async function executeProviderHostInspectCatalogRequest({
   request,
   canonicalRequest,
   rpcPorts,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
-  switch (spec.name) {
-    case 'coordinator.provider_host.list': {
-      if (rpcPorts.providerHosts === undefined) {
-        return providerHostAdministrationFailure({
-          code: 'provider_host_inventory_unavailable',
-          ownerIds: ['coordinator'],
-        }) as CatalogRequestExecution;
-      }
-      try {
-        return unary(providerHostListResponseSchema.parse(await rpcPorts.providerHosts.list()));
-      } catch (error: unknown) {
-        const failure = providerHostAdministrationFailure(error);
-        if (failure !== null) return failure;
-        throw error;
-      }
-    }
+  const providerHosts = rpcPorts.providerHosts;
+  if (providerHosts === undefined) {
+    return providerHostAdministrationFailure({
+      code: 'provider_host_inventory_unavailable',
+      ownerIds: ['coordinator'],
+    }) as CatalogRequestExecution;
+  }
+  try {
+    const selector = providerHostSelectorFromRequest(
+      request as ProviderHostSelectorRequest,
+      canonicalRequest.authorizationRoot,
+    );
+    return unary(providerHostInspectResponseSchema.parse(await providerHosts.inspect(selector)));
+  } catch (error: unknown) {
+    if (error instanceof WorkDirectoryError) return workDirectoryFailure(error);
+    const failure = providerHostAdministrationFailure(error);
+    if (failure !== null) return failure;
+    throw error;
+  }
+}
 
-    case 'coordinator.provider_host.inspect': {
-      if (rpcPorts.providerHosts === undefined) {
-        return providerHostAdministrationFailure({
-          code: 'provider_host_inventory_unavailable',
-          ownerIds: ['coordinator'],
-        }) as CatalogRequestExecution;
-      }
-      try {
-        const selector = providerHostSelectorFromRequest(
-          request as ProviderHostSelectorRequest,
-          canonicalRequest.authorizationRoot,
-        );
-        return unary(providerHostInspectResponseSchema.parse(await rpcPorts.providerHosts.inspect(selector)));
-      } catch (error: unknown) {
-        if (error instanceof WorkDirectoryError) return workDirectoryFailure(error);
-        const failure = providerHostAdministrationFailure(error);
-        if (failure !== null) return failure;
-        throw error;
-      }
-    }
+async function executeProviderHostEvictCatalogRequest({
+  request,
+  canonicalRequest,
+  rpcPorts,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const providerHosts = rpcPorts.providerHosts;
+  if (providerHosts === undefined) {
+    return providerHostAdministrationFailure({
+      code: 'provider_host_inventory_unavailable',
+      ownerIds: ['coordinator'],
+    }) as CatalogRequestExecution;
+  }
+  try {
+    const selector = providerHostSelectorFromRequest(
+      request as ProviderHostSelectorRequest,
+      canonicalRequest.authorizationRoot,
+    );
+    return unary(providerHostEvictResponseSchema.parse(await providerHosts.evict(selector)));
+  } catch (error: unknown) {
+    if (error instanceof WorkDirectoryError) return workDirectoryFailure(error);
+    const failure = providerHostAdministrationFailure(error);
+    if (failure !== null) return failure;
+    throw error;
+  }
+}
 
-    case 'coordinator.provider_host.evict': {
-      if (rpcPorts.providerHosts === undefined) {
-        return providerHostAdministrationFailure({
-          code: 'provider_host_inventory_unavailable',
-          ownerIds: ['coordinator'],
-        }) as CatalogRequestExecution;
-      }
-      try {
-        const selector = providerHostSelectorFromRequest(
-          request as ProviderHostSelectorRequest,
-          canonicalRequest.authorizationRoot,
-        );
-        return unary(providerHostEvictResponseSchema.parse(await rpcPorts.providerHosts.evict(selector)));
-      } catch (error: unknown) {
-        if (error instanceof WorkDirectoryError) return workDirectoryFailure(error);
-        const failure = providerHostAdministrationFailure(error);
-        if (failure !== null) return failure;
-        throw error;
-      }
-    }
-
+function executeProviderHostCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (context.spec.name) {
+    case 'coordinator.provider_host.list':
+      return executeProviderHostListCatalogRequest(context);
+    case 'coordinator.provider_host.inspect':
+      return executeProviderHostInspectCatalogRequest(context);
+    case 'coordinator.provider_host.evict':
+      return executeProviderHostEvictCatalogRequest(context);
     default:
-      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+      throw new Error(`Unhandled transport RPC route: ${context.spec.name}`);
   }
 }
 
@@ -733,200 +778,250 @@ async function executeExpansionCatalogRequest({
   }
 }
 
-async function executeJobsCatalogRequest({
-  spec,
+async function executeJobsAbortCatalogRequest({
+  request,
+  rpcPorts,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const parsed = request as { jobs: string[]; projectRoot: string };
+  const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, parsed.projectRoot);
+  if (scopeCheck.mismatch.length > 0) {
+    return unaryHttp(
+      domainResultToHttp(
+        domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
+      ),
+    );
+  }
+  if (scopeCheck.missing.length === parsed.jobs.length) {
+    return unary(
+      {
+        code: 'jobs_not_found',
+        message: 'Requested jobs were not found',
+        detail: { jobs: scopeCheck.missing },
+      },
+      404,
+    );
+  }
+
+  return unary(rpcPorts.jobs.abort(parsed.jobs));
+}
+
+async function executeJobsListCatalogRequest({
+  request,
+  rpcPorts,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const parsed = request as JobListFilters & { provider?: string };
+  const jobs = rpcPorts.jobs.list({
+    ...(parsed.projectRoot === undefined ? {} : { projectRoot: parsed.projectRoot }),
+    ...(parsed.phase === undefined ? {} : { phase: parsed.phase }),
+    ...(parsed.provider === undefined ? {} : { provider: parsed.provider }),
+    all: parsed.all === true,
+  });
+  jobs.sort((left, right) => right.status.updatedAt.localeCompare(left.status.updatedAt));
+  return unary({ jobs } satisfies JobsListResponse);
+}
+
+async function executeJobsDetailCatalogRequest({
+  request,
+  rpcPorts,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const parsed = request as { jobId: string; projectRoot: string };
+  const scopeCheck = rpcPorts.jobs.scopeCheck([parsed.jobId], parsed.projectRoot);
+  if (scopeCheck.mismatch.length > 0) {
+    return unaryHttp(
+      domainResultToHttp(
+        domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
+      ),
+    );
+  }
+  if (scopeCheck.missing.length === 1) {
+    return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
+  }
+
+  const detail = rpcPorts.jobs.detail(parsed.jobId);
+  if (!detail) {
+    return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
+  }
+  return unary(detail);
+}
+
+async function executeJobsWaitCatalogRequest({
   request,
   rpcPorts,
   abortSignal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
-  switch (spec.name) {
-    case 'jobs.abort': {
-      const parsed = request as { jobs: string[]; projectRoot: string };
-      const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, parsed.projectRoot);
-      if (scopeCheck.mismatch.length > 0) {
-        return unaryHttp(
-          domainResultToHttp(
-            domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
-          ),
-        );
-      }
-      if (scopeCheck.missing.length === parsed.jobs.length) {
-        return unary(
-          {
-            code: 'jobs_not_found',
-            message: 'Requested jobs were not found',
-            detail: { jobs: scopeCheck.missing },
-          },
-          404,
-        );
-      }
+  const parsed = request as {
+    jobIds: string[];
+    projectRoot: string;
+    timeoutSeconds?: number;
+    cursor?: { afterSeq: number };
+    supportsInterrupted?: boolean;
+  };
+  const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobIds, parsed.projectRoot);
+  if (scopeCheck.mismatch.length > 0) {
+    return unaryHttp(
+      domainResultToHttp(
+        domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
+      ),
+    );
+  }
+  if (scopeCheck.missing.length === parsed.jobIds.length) {
+    return unary(
+      {
+        code: 'jobs_not_found',
+        message: 'Requested jobs were not found',
+        detail: { jobs: scopeCheck.missing },
+      },
+      404,
+    );
+  }
 
-      return unary(rpcPorts.jobs.abort(parsed.jobs));
-    }
+  const { supportsInterrupted, ...waitFields } = parsed;
+  const waitRequest: WaitStreamRequest = waitFields;
+  return {
+    kind: 'subscription',
+    notifications: withInterruptedGate(
+      rpcPorts.jobs.waitStream(withAbortSignal(waitRequest, abortSignal)) as AsyncIterable<WaitStreamEvent>,
+      supportsInterrupted === true,
+    ),
+  };
+}
 
-    case 'jobs.list': {
-      const parsed = request as JobListFilters & { provider?: string };
-      const jobs = rpcPorts.jobs.list({
-        ...(parsed.projectRoot === undefined ? {} : { projectRoot: parsed.projectRoot }),
-        ...(parsed.phase === undefined ? {} : { phase: parsed.phase }),
-        ...(parsed.provider === undefined ? {} : { provider: parsed.provider }),
-        all: parsed.all === true,
-      });
-      jobs.sort((left, right) => right.status.updatedAt.localeCompare(left.status.updatedAt));
-      return unary({ jobs } satisfies JobsListResponse);
-    }
-
-    case 'jobs.detail': {
-      const parsed = request as { jobId: string; projectRoot: string };
-      const scopeCheck = rpcPorts.jobs.scopeCheck([parsed.jobId], parsed.projectRoot);
-      if (scopeCheck.mismatch.length > 0) {
-        return unaryHttp(
-          domainResultToHttp(
-            domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
-          ),
-        );
-      }
-      if (scopeCheck.missing.length === 1) {
-        return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
-      }
-
-      const detail = rpcPorts.jobs.detail(parsed.jobId);
-      if (!detail) {
-        return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
-      }
-      return unary(detail);
-    }
-
-    case 'jobs.wait': {
-      const parsed = request as {
-        jobIds: string[];
-        projectRoot: string;
-        timeoutSeconds?: number;
-        cursor?: { afterSeq: number };
-        supportsInterrupted?: boolean;
-      };
-      const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobIds, parsed.projectRoot);
-      if (scopeCheck.mismatch.length > 0) {
-        return unaryHttp(
-          domainResultToHttp(
-            domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
-          ),
-        );
-      }
-      if (scopeCheck.missing.length === parsed.jobIds.length) {
-        return unary(
-          {
-            code: 'jobs_not_found',
-            message: 'Requested jobs were not found',
-            detail: { jobs: scopeCheck.missing },
-          },
-          404,
-        );
-      }
-
-      const { supportsInterrupted, ...waitFields } = parsed;
-      const waitRequest: WaitStreamRequest = waitFields;
-      return {
-        kind: 'subscription',
-        notifications: withInterruptedGate(
-          rpcPorts.jobs.waitStream(withAbortSignal(waitRequest, abortSignal)) as AsyncIterable<WaitStreamEvent>,
-          supportsInterrupted === true,
-        ),
-      };
-    }
-
+function executeJobsCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (context.spec.name) {
+    case 'jobs.abort':
+      return executeJobsAbortCatalogRequest(context);
+    case 'jobs.list':
+      return executeJobsListCatalogRequest(context);
+    case 'jobs.detail':
+      return executeJobsDetailCatalogRequest(context);
+    case 'jobs.wait':
+      return executeJobsWaitCatalogRequest(context);
     default:
-      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+      throw new Error(`Unhandled transport RPC route: ${context.spec.name}`);
   }
 }
 
-async function executeDiscussCatalogRequest({
-  spec,
+async function executeDiscussSessionCreateCatalogRequest({
   request,
   canonicalRequest,
   rpcPorts,
   principal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
-  switch (spec.name) {
+  const parsed = request as Record<string, unknown>;
+  const recovering = ensureLaunchFenceInactive(rpcPorts);
+  if (recovering) return unaryHttp(recovering);
+  const unconfigured = ensureProviderScopeConfigured(rpcPorts, principal);
+  if (unconfigured) return unaryHttp(unconfigured);
+  const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
+  if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+
+  return unaryDomain(await rpcPorts.discuss.start(stripTransportContextKeys(parsed), ctx), 201);
+}
+
+async function executeDiscussSessionDetailCatalogRequest({
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const parsed = request as { projectRoot: string; sessionId: string; view?: 'control' | 'audit' };
+  const context = buildQueryContext(canonicalRequest.projectRoot, rpcPorts, principal);
+  const detail = rpcPorts.discuss.loadDetail(context.projectRoot, parsed.sessionId, parsed.view ?? 'control');
+  if (!detail) {
+    return unary({ code: 'session_not_found', message: 'Session not found' }, 404);
+  }
+  if (detail === 'audit_requires_ended_session') {
+    return unary({ code: 'audit_requires_ended_session', message: 'Audit requires ended session' }, 409);
+  }
+  return unary(detail);
+}
+
+async function executeDiscussSessionEventsCatalogRequest({
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const parsed = request as { sessionId: string; projectRoot: string; cursor?: number };
+  const context = buildQueryContext(canonicalRequest.projectRoot, rpcPorts, principal);
+  return unaryHttp(
+    domainResultToHttp(
+      rpcPorts.discuss.watch(
+        {
+          session: parsed.sessionId,
+          ...(parsed.cursor === undefined ? {} : { cursor: parsed.cursor }),
+        },
+        context,
+      ),
+    ),
+  );
+}
+
+async function executeDiscussSessionBidCatalogRequest({
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const parsed = request as Record<string, unknown> & { sessionId: string };
+  const recovering = ensureLaunchFenceInactive(rpcPorts);
+  if (recovering) return unaryHttp(recovering);
+  const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
+  if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+
+  const { sessionId } = parsed;
+  const args = stripTransportContextKeys(parsed);
+  return unaryHttp(domainResultToHttp(await rpcPorts.discuss.bid({ ...args, session: sessionId }, ctx)));
+}
+
+async function executeDiscussSessionSpeechCatalogRequest({
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const parsed = request as Record<string, unknown> & { sessionId: string };
+  const recovering = ensureLaunchFenceInactive(rpcPorts);
+  if (recovering) return unaryHttp(recovering);
+  const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
+  if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+
+  const { sessionId } = parsed;
+  const args = stripTransportContextKeys(parsed);
+  return unaryHttp(domainResultToHttp(await rpcPorts.discuss.speech({ ...args, session: sessionId }, ctx)));
+}
+
+async function executeDiscussSessionDeleteCatalogRequest({
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const parsed = request as { sessionId: string; projectRoot: string };
+  const context = buildQueryContext(canonicalRequest.projectRoot, rpcPorts, principal);
+  return unaryHttp(domainResultToHttp(await rpcPorts.discuss.abort({ session: parsed.sessionId }, context)));
+}
+
+async function executeDiscussCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (context.spec.name) {
     case 'discuss.persona.generate':
-      return unaryHttp(domainResultToHttp(rpcPorts.discuss.seed(request)));
-
-    case 'discuss.session.create': {
-      const parsed = request as Record<string, unknown>;
-      const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unaryHttp(recovering);
-      const unconfigured = ensureProviderScopeConfigured(rpcPorts, principal);
-      if (unconfigured) return unaryHttp(unconfigured);
-      const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
-      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-
-      return unaryDomain(await rpcPorts.discuss.start(stripTransportContextKeys(parsed), ctx), 201);
-    }
-
+      return unaryHttp(domainResultToHttp(context.rpcPorts.discuss.seed(context.request)));
+    case 'discuss.session.create':
+      return executeDiscussSessionCreateCatalogRequest(context);
     case 'discuss.session.list':
-      return unary({ sessions: rpcPorts.discuss.listSessions() } satisfies DiscussSessionsListResponse);
-
-    case 'discuss.session.detail': {
-      const parsed = request as { projectRoot: string; sessionId: string; view?: 'control' | 'audit' };
-      const context = buildQueryContext(canonicalRequest.projectRoot, rpcPorts, principal);
-      const detail = rpcPorts.discuss.loadDetail(context.projectRoot, parsed.sessionId, parsed.view ?? 'control');
-      if (!detail) {
-        return unary({ code: 'session_not_found', message: 'Session not found' }, 404);
-      }
-      if (detail === 'audit_requires_ended_session') {
-        return unary({ code: 'audit_requires_ended_session', message: 'Audit requires ended session' }, 409);
-      }
-      return unary(detail);
-    }
-
-    case 'discuss.session.events': {
-      const parsed = request as { sessionId: string; projectRoot: string; cursor?: number };
-      const context = buildQueryContext(canonicalRequest.projectRoot, rpcPorts, principal);
-      return unaryHttp(
-        domainResultToHttp(
-          rpcPorts.discuss.watch(
-            {
-              session: parsed.sessionId,
-              ...(parsed.cursor === undefined ? {} : { cursor: parsed.cursor }),
-            },
-            context,
-          ),
-        ),
-      );
-    }
-
-    case 'discuss.session.bid': {
-      const parsed = request as Record<string, unknown> & { sessionId: string };
-      const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
-      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-
-      const { sessionId } = parsed;
-      const args = stripTransportContextKeys(parsed);
-      return unaryHttp(domainResultToHttp(await rpcPorts.discuss.bid({ ...args, session: sessionId }, ctx)));
-    }
-
-    case 'discuss.session.speech': {
-      const parsed = request as Record<string, unknown> & { sessionId: string };
-      const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
-      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-
-      const { sessionId } = parsed;
-      const args = stripTransportContextKeys(parsed);
-      return unaryHttp(domainResultToHttp(await rpcPorts.discuss.speech({ ...args, session: sessionId }, ctx)));
-    }
-
-    case 'discuss.session.delete': {
-      const parsed = request as { sessionId: string; projectRoot: string };
-      const context = buildQueryContext(canonicalRequest.projectRoot, rpcPorts, principal);
-      return unaryHttp(domainResultToHttp(await rpcPorts.discuss.abort({ session: parsed.sessionId }, context)));
-    }
-
+      return unary({ sessions: context.rpcPorts.discuss.listSessions() } satisfies DiscussSessionsListResponse);
+    case 'discuss.session.detail':
+      return executeDiscussSessionDetailCatalogRequest(context);
+    case 'discuss.session.events':
+      return executeDiscussSessionEventsCatalogRequest(context);
+    case 'discuss.session.bid':
+      return executeDiscussSessionBidCatalogRequest(context);
+    case 'discuss.session.speech':
+      return executeDiscussSessionSpeechCatalogRequest(context);
+    case 'discuss.session.delete':
+      return executeDiscussSessionDeleteCatalogRequest(context);
     default:
-      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+      throw new Error(`Unhandled transport RPC route: ${context.spec.name}`);
   }
 }
 
@@ -1087,104 +1182,159 @@ async function executeKnowledgeBaseSourceCatalogRequest({
   }
 }
 
-async function executeKnowledgeBaseWikiCatalogRequest({
-  spec,
+type PreparedKnowledgeBaseWikiMutation =
+  | Readonly<{ ok: true; slug: string; args: Record<string, unknown>; ctx: InvocationContext }>
+  | Readonly<{ ok: false; execution: CatalogRequestExecution }>;
+
+function prepareKnowledgeBaseWikiMutation({
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): PreparedKnowledgeBaseWikiMutation {
+  const parsed = request as Record<string, unknown> & { slug: string };
+  const slug = decodePathSegment(parsed.slug);
+  if (slug === null) {
+    return { ok: false, execution: unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug'))) };
+  }
+  const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
+  if (!ctx) return { ok: false, execution: unaryHttp(domainResultToHttp(invalidRequestResult())) };
+
+  const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
+  return { ok: true, slug, args, ctx };
+}
+
+async function executeKnowledgeBaseWikiReadCatalogRequest({
+  request,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const parsed = request as { slug: string };
+  const slug = decodePathSegment(parsed.slug);
+  if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+  return unaryHttp(domainResultToHttp(await rpcPorts.kb.readWiki(slug, principal)));
+}
+
+async function executeKnowledgeBaseWikiCreateCatalogRequest({
   request,
   canonicalRequest,
   rpcPorts,
   principal,
 }: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
-  switch (spec.name) {
+  const parsed = request as Record<string, unknown>;
+  const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
+  if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+
+  return unaryDomain(await rpcPorts.kb.createWiki(stripTransportContextKeys(parsed), ctx), 201);
+}
+
+async function executeKnowledgeBaseWikiRewriteCatalogRequest(
+  context: AuthorizedCatalogRequest,
+): Promise<CatalogRequestExecution> {
+  const prepared = prepareKnowledgeBaseWikiMutation(context);
+  if (!prepared.ok) return prepared.execution;
+  return unaryHttp(
+    domainResultToHttp(await context.rpcPorts.kb.rewriteWiki({ ...prepared.args, slug: prepared.slug }, prepared.ctx)),
+  );
+}
+
+async function executeKnowledgeBaseWikiLinkCatalogRequest(
+  context: AuthorizedCatalogRequest,
+): Promise<CatalogRequestExecution> {
+  const prepared = prepareKnowledgeBaseWikiMutation(context);
+  if (!prepared.ok) return prepared.execution;
+  return unaryHttp(
+    domainResultToHttp(await context.rpcPorts.kb.linkWiki({ ...prepared.args, slug: prepared.slug }, prepared.ctx)),
+  );
+}
+
+async function executeKnowledgeBaseWikiUnlinkCatalogRequest(
+  context: AuthorizedCatalogRequest,
+): Promise<CatalogRequestExecution> {
+  const prepared = prepareKnowledgeBaseWikiMutation(context);
+  if (!prepared.ok) return prepared.execution;
+  return unaryHttp(
+    domainResultToHttp(await context.rpcPorts.kb.unlinkWiki({ ...prepared.args, slug: prepared.slug }, prepared.ctx)),
+  );
+}
+
+async function executeKnowledgeBaseWikiCiteCatalogRequest(
+  context: AuthorizedCatalogRequest,
+): Promise<CatalogRequestExecution> {
+  const prepared = prepareKnowledgeBaseWikiMutation(context);
+  if (!prepared.ok) return prepared.execution;
+  return unaryHttp(
+    domainResultToHttp(await context.rpcPorts.kb.citeWiki({ ...prepared.args, slug: prepared.slug }, prepared.ctx)),
+  );
+}
+
+async function executeKnowledgeBaseWikiAdoptCatalogRequest(
+  context: AuthorizedCatalogRequest,
+): Promise<CatalogRequestExecution> {
+  const prepared = prepareKnowledgeBaseWikiMutation(context);
+  if (!prepared.ok) return prepared.execution;
+  return unaryDomain(await context.rpcPorts.kb.adoptWiki({ ...prepared.args, slug: prepared.slug }, prepared.ctx), 201);
+}
+
+async function executeKnowledgeBaseWikiDeleteCatalogRequest({
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const parsed = request as Record<string, unknown> & { slug: string };
+  const slug = decodePathSegment(parsed.slug);
+  if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+  return unaryHttp(
+    domainResultToHttp(
+      await rpcPorts.kb.deleteWiki(
+        slug,
+        maybeBuildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal),
+      ),
+    ),
+  );
+}
+
+async function executeKnowledgeBaseWikiReadRoutesCatalogRequest(
+  context: AuthorizedCatalogRequest,
+): Promise<CatalogRequestExecution> {
+  switch (context.spec.name) {
     case 'kb.wiki.list':
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.listWikis(principal)));
-
-    case 'kb.wiki.read': {
-      const parsed = request as { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readWiki(slug, principal)));
-    }
-
-    case 'kb.wiki.create': {
-      const parsed = request as Record<string, unknown>;
-      const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
-      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-
-      return unaryDomain(await rpcPorts.kb.createWiki(stripTransportContextKeys(parsed), ctx), 201);
-    }
-
-    case 'kb.wiki.rewrite': {
-      const parsed = request as Record<string, unknown> & { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
-      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-
-      const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.rewriteWiki({ ...args, slug }, ctx)));
-    }
-
-    case 'kb.wiki.link': {
-      const parsed = request as Record<string, unknown> & { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
-      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-
-      const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.linkWiki({ ...args, slug }, ctx)));
-    }
-
-    case 'kb.wiki.unlink': {
-      const parsed = request as Record<string, unknown> & { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
-      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-
-      const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.unlinkWiki({ ...args, slug }, ctx)));
-    }
-
-    case 'kb.wiki.cite': {
-      const parsed = request as Record<string, unknown> & { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
-      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-
-      const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.citeWiki({ ...args, slug }, ctx)));
-    }
-
-    case 'kb.wiki.adopt': {
-      const parsed = request as Record<string, unknown> & { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
-      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-
-      const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
-      return unaryDomain(await rpcPorts.kb.adoptWiki({ ...args, slug }, ctx), 201);
-    }
-
-    case 'kb.wiki.delete': {
-      const parsed = request as Record<string, unknown> & { slug: string };
-      const slug = decodePathSegment(parsed.slug);
-      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(
-        domainResultToHttp(
-          await rpcPorts.kb.deleteWiki(
-            slug,
-            maybeBuildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal),
-          ),
-        ),
-      );
-    }
-
+      return unaryHttp(domainResultToHttp(await context.rpcPorts.kb.listWikis(context.principal)));
+    case 'kb.wiki.read':
+      return executeKnowledgeBaseWikiReadCatalogRequest(context);
     default:
-      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+      throw new Error(`Unhandled transport RPC route: ${context.spec.name}`);
   }
+}
+
+function executeKnowledgeBaseWikiMutationCatalogRequest(
+  context: AuthorizedCatalogRequest,
+): Promise<CatalogRequestExecution> {
+  switch (context.spec.name) {
+    case 'kb.wiki.create':
+      return executeKnowledgeBaseWikiCreateCatalogRequest(context);
+    case 'kb.wiki.rewrite':
+      return executeKnowledgeBaseWikiRewriteCatalogRequest(context);
+    case 'kb.wiki.link':
+      return executeKnowledgeBaseWikiLinkCatalogRequest(context);
+    case 'kb.wiki.unlink':
+      return executeKnowledgeBaseWikiUnlinkCatalogRequest(context);
+    case 'kb.wiki.cite':
+      return executeKnowledgeBaseWikiCiteCatalogRequest(context);
+    case 'kb.wiki.adopt':
+      return executeKnowledgeBaseWikiAdoptCatalogRequest(context);
+    case 'kb.wiki.delete':
+      return executeKnowledgeBaseWikiDeleteCatalogRequest(context);
+    default:
+      throw new Error(`Unhandled transport RPC route: ${context.spec.name}`);
+  }
+}
+
+function executeKnowledgeBaseWikiCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  return context.spec.name === 'kb.wiki.list' || context.spec.name === 'kb.wiki.read'
+    ? executeKnowledgeBaseWikiReadRoutesCatalogRequest(context)
+    : executeKnowledgeBaseWikiMutationCatalogRequest(context);
 }
 
 async function executeKnowledgeBaseCommunityCatalogRequest({

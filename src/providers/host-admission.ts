@@ -1,8 +1,9 @@
 import { z } from 'zod';
 
+import { errorMessage } from '../infra/error-format.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { HostRef, ProviderServerSpec } from './contract.js';
-import { encodeHostRef } from './host-ref-codec.js';
+import { decodeHostRef, encodeHostRef } from './host-ref-codec.js';
 import type {
   InspectedProviderResponseDiagnosticFact,
   ProviderHostDiagnosticsSnapshot,
@@ -53,22 +54,33 @@ export const PROVIDER_HOST_UNSERVICEABLE_REMEDIATION: ProviderHostRemediation = 
   command: 'coral-cli backend provider-host evict <host-ref>',
 });
 
-export const PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING = 'Provider host was classified unserviceable.';
+const PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING_PREFIX = 'Provider host ';
+const PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING_SUFFIX = ' was classified unserviceable.';
 
-export type ProviderHostUnserviceableFinding = Readonly<{
-  provider: string;
-  fact: ProviderResponseDiagnosticFact;
-}>;
+export function providerHostUnserviceableTerminalWarning(hostRef: HostRef): string {
+  return (
+    PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING_PREFIX +
+    encodeHostRef(hostRef) +
+    PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING_SUFFIX
+  );
+}
 
-type ProviderHostUnserviceableFindingListener = (finding: ProviderHostUnserviceableFinding) => void;
-
-const providerHostUnserviceableFindingListeners = new Set<ProviderHostUnserviceableFindingListener>();
-
-export function subscribeProviderHostUnserviceableFindings(
-  listener: ProviderHostUnserviceableFindingListener,
-): () => void {
-  providerHostUnserviceableFindingListeners.add(listener);
-  return () => providerHostUnserviceableFindingListeners.delete(listener);
+export function readProviderHostUnserviceableTerminalWarning(warning: string): HostRef | null {
+  if (
+    !warning.startsWith(PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING_PREFIX) ||
+    !warning.endsWith(PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING_SUFFIX)
+  ) {
+    return null;
+  }
+  const encoded = warning.slice(
+    PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING_PREFIX.length,
+    -PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING_SUFFIX.length,
+  );
+  try {
+    return decodeHostRef(encoded);
+  } catch {
+    return null;
+  }
 }
 
 export function providerHostUnserviceableMessage(hostRef: HostRef): string {
@@ -91,6 +103,20 @@ export class ProviderHostUnserviceableError extends Error {
     this.hostRef = freezeHostRef(hostRef);
     this.remediation = PROVIDER_HOST_UNSERVICEABLE_REMEDIATION;
     Object.setPrototypeOf(this, ProviderHostUnserviceableError.prototype);
+  }
+}
+
+export class ProviderHostUnserviceableResponseError extends Error {
+  readonly code = 'provider_host_unserviceable_response';
+  readonly hostRef: HostRef;
+  readonly providerCause: unknown;
+
+  constructor(hostRef: HostRef, providerCause: unknown) {
+    super(errorMessage(providerCause));
+    this.name = 'ProviderHostUnserviceableResponseError';
+    this.hostRef = freezeHostRef(hostRef);
+    this.providerCause = providerCause;
+    Object.setPrototypeOf(this, ProviderHostUnserviceableResponseError.prototype);
   }
 }
 
@@ -228,6 +254,7 @@ export type HostAdmissionCollection = Readonly<{
     delegate: (reservation: HostAdmissionReservation) => Promise<Result>,
   ): Promise<Result>;
   observe(slot: AdmissionSlotKey, ref: HostRef, fact: ProviderResponseDiagnosticFact): void;
+  correlateTerminalFailure<Result>(ref: HostRef, operation: () => Promise<Result>): Promise<Result>;
   observeRetired(ref: HostRef, processState: HostProcessState): void;
   confirmEvicted(ref: HostRef): boolean;
   snapshot(): HostAdmissionSnapshot;
@@ -272,6 +299,17 @@ export function createHostAdmissionCollection(options: {
       }),
     observe(slot, ref, fact) {
       observeProviderResponse(data, options.classify, slot, ref, fact);
+    },
+    async correlateTerminalFailure(ref, operation) {
+      try {
+        return await operation();
+      } catch (error: unknown) {
+        const match = findExactRef(data.state, ref);
+        if (match !== null && hostAdmissionForPhase(match.entry.phase) === 'blocked') {
+          throw new ProviderHostUnserviceableResponseError(match.entry.ref, error);
+        }
+        throw error;
+      }
     },
     observeRetired,
     confirmEvicted(ref) {
@@ -348,10 +386,6 @@ function observeProviderResponse(
   data.serviceability.set(slot, next);
   if (next.serviceability === 'unserviceable') {
     data.state = reduceHostAdmission(data.state, { kind: 'block', slot, ref, generation: fact.generation });
-  }
-  if (serviceability === 'unserviceable') {
-    const finding = Object.freeze({ provider: placement.spec.provider, fact });
-    for (const listener of providerHostUnserviceableFindingListeners) listener(finding);
   }
 }
 

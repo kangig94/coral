@@ -600,10 +600,16 @@ class ProxyProviderHostSessions {
 
   private managedSessionFor(entry: HostPoolEntry): ManagedHostSession {
     let released = false;
+    const hostRef = hostRefFor(entry, this.runtime);
     entry.refCount += 1;
     return Object.freeze({
-      session: entry.transport,
-      hostRef: hostRefFor(entry, this.runtime),
+      session: Object.freeze({
+        rpc: <Result = unknown>(method: string, params: Record<string, unknown>) =>
+          this.admission.correlateTerminalFailure(hostRef, () => entry.transport.rpc<Result>(method, params)),
+        subscribe: entry.transport.subscribe.bind(entry.transport),
+        closed: entry.transport.closed,
+      }),
+      hostRef,
       close: () => {
         if (released) return;
         released = true;

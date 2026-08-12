@@ -10,15 +10,11 @@ import type {
   ProviderRequest,
   ProviderRuntime,
   AppServerSession,
+  HostRef,
   ProviderTurnTerminalEvidence,
 } from '../contract.js';
 import { buildProviderFailureMessage } from '../app-server.js';
-import { ProviderRpcError } from '../app-server-transport.js';
-import {
-  PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING,
-  subscribeProviderHostUnserviceableFindings,
-} from '../host-admission.js';
-import type { ProviderResponseDiagnosticFact } from '../host-diagnostics.js';
+import { providerHostUnserviceableTerminalWarning, ProviderHostUnserviceableResponseError } from '../host-admission.js';
 import type { AppServerNotificationMessage } from '../protocol.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
@@ -79,7 +75,7 @@ type CodexKernelResult =
   | {
       kind: 'failed';
       message: string;
-      providerHostUnserviceable?: true;
+      providerHostUnserviceable?: HostRef;
       preserveRecoverySnapshot?: boolean;
       attempt?: TurnAttempt;
     }
@@ -1186,7 +1182,7 @@ function buildAbortedTerminal(state: CodexTurnState): Extract<ProviderEventBody,
 function buildFailedTerminal(
   state: CodexTurnState,
   message: string,
-  providerHostUnserviceable = false,
+  providerHostUnserviceable?: HostRef,
 ): Extract<ProviderEventBody, { kind: 'terminal' }> {
   const usage = normalizeCodexUsage(state.latestTokenCount);
   return {
@@ -1203,7 +1199,9 @@ function buildFailedTerminal(
       usage,
     }),
     diagnostics: buildJobDiagnostics({
-      ...(providerHostUnserviceable ? { warnings: [PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING] } : {}),
+      ...(providerHostUnserviceable === undefined
+        ? {}
+        : { warnings: [providerHostUnserviceableTerminalWarning(providerHostUnserviceable)] }),
     }),
   };
 }
@@ -1281,30 +1279,6 @@ async function finishInvocation(
   return buildFailedTerminal(state, result.message, result.providerHostUnserviceable);
 }
 
-function failedProviderRpcSignature(fact: ProviderResponseDiagnosticFact): string | null {
-  if (fact.response.kind !== 'failure') return null;
-  return JSON.stringify({
-    requestId: fact.requestId,
-    method: fact.method,
-    rpcCode: fact.response.rpcCode,
-    providerMessage: fact.response.providerMessage,
-    providerData: fact.response.providerData,
-    hostLog: fact.hostLog,
-  });
-}
-
-function providerRpcErrorSignature(error: unknown): string | null {
-  if (!(error instanceof ProviderRpcError)) return null;
-  return JSON.stringify({
-    requestId: error.requestId,
-    method: error.method,
-    rpcCode: error.rpcCode,
-    providerMessage: error.providerMessage,
-    providerData: error.providerData,
-    hostLog: error.hostLog,
-  });
-}
-
 async function retireAttempt(state: CodexTurnState, attempt: TurnAttempt): Promise<void> {
   clearCompletionTimer(state, attempt);
   attempt.lifecycle = 'settled';
@@ -1335,12 +1309,6 @@ export const codexTurnKernel: Provider<
     const lease = runtime.appServerSession;
     const state = createState(request, runtime);
     state.lease = lease;
-    const unserviceableProviderRpcSignatures = new Set<string>();
-    const clearHostFindingBinding = subscribeProviderHostUnserviceableFindings((finding) => {
-      if (finding.provider !== 'codex') return;
-      const signature = failedProviderRpcSignature(finding.fact);
-      if (signature !== null) unserviceableProviderRpcSignatures.add(signature);
-    });
     const clearNotificationBinding = lease.subscribe((message) => {
       applyNotification(state, message, emit);
     });
@@ -1414,14 +1382,14 @@ export const codexTurnKernel: Provider<
         return;
       }
 
-      const rpcSignature = providerRpcErrorSignature(error);
+      const providerError = error instanceof ProviderHostUnserviceableResponseError ? error.providerCause : error;
       const terminal = await finishInvocation(
         state,
         {
           kind: 'failed',
-          message: errorMessage(error),
-          ...(rpcSignature !== null && unserviceableProviderRpcSignatures.has(rpcSignature)
-            ? { providerHostUnserviceable: true as const }
+          message: errorMessage(providerError),
+          ...(error instanceof ProviderHostUnserviceableResponseError
+            ? { providerHostUnserviceable: error.hostRef }
             : {}),
           attempt: state.activeAttempt,
         },
@@ -1431,6 +1399,5 @@ export const codexTurnKernel: Provider<
     } finally {
       clearCompletionTimer(state, state.activeAttempt);
       clearNotificationBinding();
-      clearHostFindingBinding();
     }
   });

@@ -91,6 +91,13 @@ function trace(event) {
   fs.appendFileSync(path.join(stateDir, 'ordered-trace'), event + '\\n');
 }
 
+function record(name, value) {
+  fs.appendFileSync(path.join(stateDir, name), JSON.stringify(value) + '\\n');
+}
+
+const providerHostId = String(process.pid);
+record('provider-host-placements', { hostId: providerHostId });
+
 const threadId = 'scripted-codex-session';
 const turnId = 'scripted-codex-turn';
 
@@ -107,10 +114,16 @@ rl.on('line', (line) => {
       send({ id: message.id, result: {} });
       break;
     case 'config/read':
+      const attemptId = providerHostId + ':config/read:' + message.id;
+      record('config-read-attempts', { hostId: providerHostId, requestId: message.id, attemptId });
       if (fs.existsSync(path.join(stateDir, 'fail-config-read'))) {
         send({
           id: message.id,
-          error: { code: -32603, message: 'configuration refused', data: { reason: 'poisoned cwd' } },
+          error: {
+            code: -32603,
+            message: 'configuration refused',
+            data: { reason: 'poisoned cwd', attemptId },
+          },
         });
       } else {
         send({ id: message.id, result: { config: {} } });
@@ -375,6 +388,13 @@ function appendOrderedTrace(fixture: Fixture, event: string): void {
   writeFileSync(join(fixture.fakeStateDir, 'ordered-trace'), `${event}\n`, { flag: 'a' });
 }
 
+function readFakeRecords<RecordShape>(fixture: Fixture, name: string): RecordShape[] {
+  return readFileSync(join(fixture.fakeStateDir, name), 'utf-8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as RecordShape);
+}
+
 function providerSocketCount(fixture: Fixture): number {
   const coralRoot = join(fixture.home, '.coral');
   if (!existsSync(coralRoot)) return 0;
@@ -447,8 +467,21 @@ describe('mutating commands via IPC', () => {
       expect(wait.stderr()).toBe('');
 
       const visibleTerminal = wait.stdout();
+      const placements = readFakeRecords<{ hostId: string }>(fixture, 'provider-host-placements');
+      const configReadAttempts = readFakeRecords<{ hostId: string; requestId: number; attemptId: string }>(
+        fixture,
+        'config-read-attempts',
+      );
+      expect(placements).toHaveLength(1);
+      expect(configReadAttempts).toHaveLength(1);
+      expect(configReadAttempts[0]?.hostId).toBe(placements[0]?.hostId);
+      const initialAttempt = configReadAttempts[0];
+      if (initialAttempt === undefined) throw new Error('fake Codex recorded no initial config/read attempt');
       expect(visibleTerminal).toContain(
-        'config/read failed [code=-32603]: configuration refused; data={"reason":"poisoned cwd"}',
+        `config/read failed [code=-32603]: configuration refused; data=${JSON.stringify({
+          reason: 'poisoned cwd',
+          attemptId: initialAttempt.attemptId,
+        })}`,
       );
       const encodedHostRef = visibleTerminal.match(/ph1\.[A-Za-z0-9_-]+/)?.[0];
       expect(encodedHostRef).toBeDefined();
