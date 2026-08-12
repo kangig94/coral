@@ -123,9 +123,16 @@ function permittedDecisionImporters(category: string, decision: DecisionSymbol):
   }
   if (category === 'serviceabilityReducers') return [HOST_ADMISSION];
   if (category === 'admissionSymbols') {
-    return decision.symbol === 'createHostAdmissionCollection'
-      ? [SERVICEABILITY_SEAM, COORDINATOR_OWNER, COORDINATOR_WORLD]
-      : [];
+    if (decision.symbol === 'createHostAdmissionCollection') {
+      return [SERVICEABILITY_SEAM, COORDINATOR_OWNER, COORDINATOR_WORLD];
+    }
+    // The transitive admission closure also discovers this pure identity comparator. Owners and the
+    // administration facade legitimately reuse it without obtaining a serviceability verdict; keeping the
+    // exceptions exact preserves closure scanning while any new runtime consumer still fails closed.
+    if (decision.symbol === 'exactHostRefsMatch') {
+      return [COORDINATOR_OWNER, 'src/coordinator/services/provider-host-administration.ts', PROXY_OWNER];
+    }
+    return [];
   }
   if (category === 'admissionCompositionLeaves') {
     if (decision.symbol === 'createBuiltInProviderHostAdmission') {
@@ -150,10 +157,12 @@ const SERVICEABILITY_DECISION_AUTHORITIES: readonly DecisionAuthority[] = Object
 );
 
 /**
- * Runtime consumers allowed to participate in the serviceability decision. The two owner modules are
- * intentionally absent: they receive only the admission collection created by their constrained leaf, never
- * the classifier itself. Keeping this inventory explicit makes a moved or newly added decision module fail
- * visibly instead of silently falling outside the walk.
+ * Runtime consumers allowed to participate in the serviceability decision. The two owner modules are absent
+ * from this module-level walk because observation and physical close legitimately coexist in each file: they
+ * receive only the admission collection created by their constrained leaf, never the classifier itself. The
+ * callable-level owner proof below starts at each provider-response sink instead, so co-location is permitted
+ * while any executable path from observation to close is not. Keeping both inventories explicit makes a moved
+ * or newly added decision module or owner sink fail visibly instead of silently falling outside the checks.
  */
 const SERVICEABILITY_RUNTIME_CONSUMERS = [
   'src/providers/bootstrap.ts',
@@ -164,6 +173,25 @@ const SERVICEABILITY_RUNTIME_CONSUMERS = [
   COORDINATOR_ADMISSION_LEAF,
   PROXY_ADMISSION_LEAF,
 ] as const;
+
+type OwnerObservationBoundary = Readonly<{
+  module: string;
+  transportCall: string;
+  sink: Readonly<{ property: string }> | Readonly<{ argument: number }>;
+}>;
+
+const OWNER_OBSERVATION_BOUNDARIES: readonly OwnerObservationBoundary[] = [
+  {
+    module: PROXY_OWNER,
+    transportCall: 'spawnProviderServerTransport',
+    sink: { property: 'observeProviderResponse' },
+  },
+  {
+    module: COORDINATOR_OWNER,
+    transportCall: 'spawnProviderServer',
+    sink: { argument: 1 },
+  },
+];
 
 /** Named capabilities a serviceability decision must never reach over runtime imports. */
 const DESTRUCTIVE_CAPABILITY_ROOTS = [
@@ -184,6 +212,7 @@ const DESTRUCTIVE_CAPABILITY_MODULES: readonly string[] = [...CANONICAL_FILES]
     DESTRUCTIVE_CAPABILITY_ROOTS.some((root) => (root.endsWith('/') ? file.startsWith(root) : file === root)),
   )
   .sort();
+const DESTRUCTIVE_CAPABILITY_MODULE_SET = new Set(DESTRUCTIVE_CAPABILITY_MODULES);
 
 type ConstrainedAdmissionLeaf = {
   readonly module: string;
@@ -519,6 +548,255 @@ function constrainedLeafImportViolations(edges: readonly ParsedImportEdge[], lea
     .map((edge) => `${leaf.module} -> ${edge.target} (${edge.via} ${edge.specifier})`);
 }
 
+type CallableNode = ts.FunctionDeclaration | ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction;
+
+type LocalCallable = Readonly<{
+  node: CallableNode;
+  label: string;
+  className?: string;
+}>;
+
+type LocalCallableIndex = Readonly<{
+  topLevel: ReadonlyMap<string, LocalCallable>;
+  methods: ReadonlyMap<string, ReadonlyMap<string, LocalCallable>>;
+}>;
+
+function callableName(name: ts.PropertyName | undefined): string | undefined {
+  return name !== undefined && (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) ? name.text : undefined;
+}
+
+function callableIndex(sourceFile: ts.SourceFile): LocalCallableIndex {
+  const topLevel = new Map<string, LocalCallable>();
+  const methods = new Map<string, ReadonlyMap<string, LocalCallable>>();
+
+  for (const statement of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name !== undefined) {
+      topLevel.set(statement.name.text, { node: statement, label: statement.name.text });
+      continue;
+    }
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (
+          ts.isIdentifier(declaration.name) &&
+          declaration.initializer !== undefined &&
+          (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))
+        ) {
+          topLevel.set(declaration.name.text, { node: declaration.initializer, label: declaration.name.text });
+        }
+      }
+      continue;
+    }
+    if (!ts.isClassDeclaration(statement) || statement.name === undefined) continue;
+    const className = statement.name.text;
+    const classMethods = new Map<string, LocalCallable>();
+    for (const member of statement.members) {
+      if (ts.isMethodDeclaration(member)) {
+        const name = callableName(member.name);
+        if (name !== undefined) classMethods.set(name, { node: member, label: `${className}.${name}`, className });
+      } else if (
+        ts.isPropertyDeclaration(member) &&
+        member.initializer !== undefined &&
+        (ts.isArrowFunction(member.initializer) || ts.isFunctionExpression(member.initializer))
+      ) {
+        const name = callableName(member.name);
+        if (name !== undefined) {
+          classMethods.set(name, { node: member.initializer, label: `${className}.${name}`, className });
+        }
+      }
+    }
+    methods.set(className, classMethods);
+  }
+
+  return { topLevel, methods };
+}
+
+function enclosingClassName(node: ts.Node): string | undefined {
+  let current: ts.Node | undefined = node.parent;
+  while (current !== undefined) {
+    if (ts.isClassDeclaration(current)) return current.name?.text;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isSatisfiesExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function resolveCallable(
+  expression: ts.Expression,
+  className: string | undefined,
+  index: LocalCallableIndex,
+): LocalCallable | undefined {
+  const unwrapped = unwrapExpression(expression);
+  if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) {
+    return { node: unwrapped, label: 'inline response sink', className: enclosingClassName(unwrapped) };
+  }
+  if (ts.isIdentifier(unwrapped)) return index.topLevel.get(unwrapped.text);
+  if (
+    className !== undefined &&
+    ts.isPropertyAccessExpression(unwrapped) &&
+    unwrapped.expression.kind === ts.SyntaxKind.ThisKeyword
+  ) {
+    return index.methods.get(className)?.get(unwrapped.name.text);
+  }
+  return undefined;
+}
+
+function calledName(call: ts.CallExpression): string | undefined {
+  const expression = unwrapExpression(call.expression);
+  if (ts.isIdentifier(expression)) return expression.text;
+  return ts.isPropertyAccessExpression(expression) ? expression.name.text : undefined;
+}
+
+function isPhysicalCloseCall(module: string, call: ts.CallExpression): boolean {
+  const name = calledName(call);
+  if (name === 'close') return true;
+  if (name === undefined) return false;
+  return IMPORTED_RUNTIME_SYMBOLS.some(
+    (imported) =>
+      imported.source === module &&
+      imported.localSymbol === name &&
+      DESTRUCTIVE_CAPABILITY_MODULE_SET.has(imported.target),
+  );
+}
+
+function boundarySinkExpressions(
+  sourceFile: ts.SourceFile,
+  boundary: OwnerObservationBoundary,
+): Readonly<{ transportCalls: number; sinks: readonly ts.Expression[] }> {
+  let transportCalls = 0;
+  const sinks: ts.Expression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && calledName(node) === boundary.transportCall) {
+      transportCalls += 1;
+      if ('argument' in boundary.sink) {
+        const sink = node.arguments[boundary.sink.argument];
+        if (sink !== undefined) sinks.push(sink);
+      } else {
+        const propertyName = boundary.sink.property;
+        for (const object of node.arguments.filter(ts.isObjectLiteralExpression)) {
+          for (const property of object.properties) {
+            if (ts.isPropertyAssignment(property) && callableName(property.name) === propertyName) {
+              sinks.push(property.initializer);
+            } else if (ts.isShorthandPropertyAssignment(property) && property.name.text === propertyName) {
+              sinks.push(property.name);
+            }
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return { transportCalls, sinks };
+}
+
+function directCalls(callable: CallableNode): readonly ts.CallExpression[] {
+  const calls: ts.CallExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) calls.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(callable);
+  return calls;
+}
+
+function isAdmissionObservation(call: ts.CallExpression, sourceFile: ts.SourceFile): boolean {
+  const expression = unwrapExpression(call.expression);
+  if (!ts.isPropertyAccessExpression(expression) || expression.name.text !== 'observe') return false;
+  const receiver = expression.expression.getText(sourceFile);
+  return receiver === 'admission' || receiver.endsWith('.admission');
+}
+
+function callSite(sourceFile: ts.SourceFile, call: ts.CallExpression): string {
+  const { line, character } = sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile));
+  return `${sourceFile.fileName}:${line + 1}:${character + 1} ${call.expression.getText(sourceFile)}`;
+}
+
+type OwnerObservationProof = Readonly<{
+  transportCalls: number;
+  sinkCount: number;
+  rootCount: number;
+  observationPaths: readonly string[];
+  physicalCloseSites: readonly string[];
+  violations: readonly string[];
+}>;
+
+/**
+ * The owner rule is deliberately callable-grained rather than module-grained: it starts at the exact
+ * transport response sink and follows source-local top-level functions and same-class `this.method()` calls.
+ * A direct `.close()` or a call imported from a named destructive-capability module ends the path. The
+ * non-vacuity fields make a moved/unresolved sink or a module with no physical-close capability fail instead
+ * of silently weakening this deliberately narrow analysis.
+ */
+function ownerObservationProof(boundary: OwnerObservationBoundary): OwnerObservationProof {
+  const sourceFile = SOURCE_FILES_BY_CANONICAL_PATH.get(boundary.module);
+  if (sourceFile === undefined) throw new Error(`Missing owner module ${boundary.module}`);
+  const index = callableIndex(sourceFile);
+  const boundarySinks = boundarySinkExpressions(sourceFile, boundary);
+  const roots = boundarySinks.sinks.flatMap((sink, sinkIndex) => {
+    const callable = resolveCallable(sink, enclosingClassName(sink), index);
+    return callable === undefined
+      ? []
+      : [
+          {
+            ...callable,
+            label: `${boundary.module}#${boundary.transportCall}.responseSink[${sinkIndex}]`,
+          },
+        ];
+  });
+  const physicalCloseSites: string[] = [];
+  const collectCloseSites = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && isPhysicalCloseCall(boundary.module, node)) {
+      physicalCloseSites.push(callSite(sourceFile, node));
+    }
+    ts.forEachChild(node, collectCloseSites);
+  };
+  collectCloseSites(sourceFile);
+
+  const observationPaths: string[] = [];
+  const violations: string[] = [];
+  const queue = roots.map((root) => ({ callable: root, path: [root.label] as readonly string[] }));
+  const seen = new Set<CallableNode>();
+  while (queue.length > 0) {
+    const current = queue.shift() as Readonly<{ callable: LocalCallable; path: readonly string[] }>;
+    if (seen.has(current.callable.node)) continue;
+    seen.add(current.callable.node);
+    for (const call of directCalls(current.callable.node)) {
+      if (isAdmissionObservation(call, sourceFile)) {
+        observationPaths.push([...current.path, callSite(sourceFile, call)].join(' -> '));
+      }
+      if (isPhysicalCloseCall(boundary.module, call)) {
+        violations.push([...current.path, callSite(sourceFile, call)].join(' -> '));
+        continue;
+      }
+      const target = resolveCallable(call.expression, current.callable.className, index);
+      if (target !== undefined)
+        queue.push({ callable: target, path: [...current.path, `${boundary.module}#${target.label}`] });
+    }
+  }
+
+  return {
+    transportCalls: boundarySinks.transportCalls,
+    sinkCount: boundarySinks.sinks.length,
+    rootCount: roots.length,
+    observationPaths: [...new Set(observationPaths)].sort(),
+    physicalCloseSites: [...new Set(physicalCloseSites)].sort(),
+    violations: [...new Set(violations)].sort(),
+  };
+}
+
 describe('carrier observation never reaches mutation or recovery paths', () => {
   it.each(OBSERVATION_AUTHORITIES.map((authority) => [authority.module, authority] as const))(
     '%s exists, so this invariant cannot pass by naming nothing',
@@ -738,6 +1016,19 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
 
     expect([...new Set(violations)].sort()).toEqual([]);
   });
+
+  it.each(OWNER_OBSERVATION_BOUNDARIES.map((boundary) => [boundary.module, boundary] as const))(
+    '%s keeps its provider-response sink unable to reach physical close',
+    (_module, boundary) => {
+      const proof = ownerObservationProof(boundary);
+      expect(proof.transportCalls).toBeGreaterThan(0);
+      expect(proof.sinkCount).toBe(proof.transportCalls);
+      expect(proof.rootCount).toBe(proof.sinkCount);
+      expect(proof.observationPaths.length).toBeGreaterThan(0);
+      expect(proof.physicalCloseSites.length).toBeGreaterThan(0);
+      expect(proof.violations).toEqual([]);
+    },
+  );
 
   it.each(CONSTRAINED_ADMISSION_LEAVES.map((leaf) => [leaf.module, leaf] as const))(
     '%s imports only the classifier and narrow admission port modules',

@@ -96,7 +96,6 @@ import type { ProviderHostAdministrationAuthority, ProviderHostManager } from '.
 import {
   ProviderHostAdministrationService,
   type ProviderHostAdministrationOwner,
-  type ProviderHostSelector,
 } from '../services/provider-host-administration.js';
 import type { KbDaemonRequestContextWire } from '../../kb-daemon/protocol.js';
 import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-component.js';
@@ -968,10 +967,10 @@ export function createCoordinatorCore(
       list: async () => providerHostListResponseSchema.parse({ hosts: await providerHostAdministration.list() }),
       inspect: async (selector) =>
         providerHostInspectResponseSchema.parse({
-          host: await providerHostAdministration.inspect(selector as ProviderHostSelector),
+          host: await providerHostAdministration.inspect(selector),
         }),
       evict: async (selector) =>
-        providerHostEvictResponseSchema.parse(await providerHostAdministration.evict(selector as ProviderHostSelector)),
+        providerHostEvictResponseSchema.parse(await providerHostAdministration.evict(selector)),
     },
     kb: kbRpcPort,
     discuss: {

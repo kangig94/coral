@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
+import { canonicalWorkDirWireSchema } from '../runtime/canonical-work-dir.js';
+import type { HostRef as CanonicalHostRef } from './contract.js';
 import { hostRefSchema } from './host-ref-schema.js';
+
+export type HostRef = CanonicalHostRef;
 
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
 const providerHostLogEntrySchema = z
@@ -61,7 +65,7 @@ const providerHostSpecSchema = z
     provider: z.string().min(1),
     command: z.string().min(1),
     args: z.array(z.string()),
-    cwd: z.string().nullable(),
+    cwd: canonicalWorkDirWireSchema.nullable(),
     leaseMode: z.enum(['shared', 'job-exclusive']),
     idleRetirement: z.enum(['host-reported', 'none']).nullable(),
   })

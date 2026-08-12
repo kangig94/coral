@@ -80,14 +80,98 @@ export function providerClassifierFiles(
   });
 }
 
+type LocalFunction = ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction;
+
+function namedFunctions(sourceFile: ts.SourceFile): ReadonlyMap<string, LocalFunction> {
+  const functions = new Map<string, LocalFunction>();
+  for (const statement of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name !== undefined) {
+      functions.set(statement.name.text, statement);
+      continue;
+    }
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (
+        ts.isIdentifier(declaration.name) &&
+        declaration.initializer !== undefined &&
+        (ts.isFunctionExpression(declaration.initializer) || ts.isArrowFunction(declaration.initializer))
+      ) {
+        functions.set(declaration.name.text, declaration.initializer);
+      }
+    }
+  }
+  return functions;
+}
+
+function calledLocalFunctions(
+  declaration: LocalFunction,
+  functions: ReadonlyMap<string, LocalFunction>,
+): readonly string[] {
+  const called = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && functions.has(node.expression.text)) {
+      called.add(node.expression.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(declaration);
+  return [...called];
+}
+
+/**
+ * Follow same-module function calls from each semantic root. This is intentionally source-derived: helpers
+ * extracted from a decision remain in the guarded closure without requiring a second hand-maintained list.
+ * Function expressions nested inside a declaration are already part of that declaration's scanned syntax;
+ * calls they make to top-level helpers are discovered by the same walk.
+ */
+function localDecisionClosure(
+  roots: readonly DecisionSymbol[],
+  sourceFiles: ReadonlyMap<string, ts.SourceFile>,
+): readonly DecisionSymbol[] {
+  const closure: DecisionSymbol[] = [];
+  const seen = new Set<string>();
+  const queue = [...roots];
+
+  while (queue.length > 0) {
+    const current = queue.shift() as DecisionSymbol;
+    const key = `${current.path}\0${current.symbol}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    closure.push(current);
+
+    const sourceFile = sourceFiles.get(current.path);
+    if (sourceFile === undefined) continue;
+    const functions = namedFunctions(sourceFile);
+    const declaration = functions.get(current.symbol);
+    if (declaration === undefined) continue;
+    for (const symbol of calledLocalFunctions(declaration, functions)) {
+      queue.push({ path: current.path, symbol });
+    }
+  }
+
+  return closure;
+}
+
 export function serviceabilityDecisionClosureInventory(
   repoRoot: string,
   productionFilePaths: readonly string[],
 ): Readonly<Record<string, readonly DecisionSymbol[]>> {
-  return {
+  const sourceFiles = new Map(
+    productionFilePaths.map((filePath) => {
+      const path = toCanonicalSrcPath(repoRoot, filePath);
+      return [
+        path,
+        ts.createSourceFile(filePath, readFileSync(filePath, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS),
+      ] as const;
+    }),
+  );
+  const roots = {
     ...STATIC_SERVICEABILITY_DECISION_SYMBOLS,
     providerClassifiers: providerClassifierFiles(repoRoot, productionFilePaths).flatMap(({ path, sourceFile }) =>
       exportedClassifierNames(sourceFile).map((symbol) => ({ path, symbol })),
     ),
   };
+  return Object.fromEntries(
+    Object.entries(roots).map(([category, decisions]) => [category, localDecisionClosure(decisions, sourceFiles)]),
+  );
 }

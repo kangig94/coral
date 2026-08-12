@@ -40,6 +40,7 @@ import type {
 } from '#src/coordinator/live/provider-hosts/index.js';
 import type { ProviderHostInventoryRecord } from '#src/coordinator/services/provider-host-administration.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
@@ -151,10 +152,61 @@ function createProductionProviderHostPorts(record: ProviderHostInventoryRecord) 
     async () => [],
   );
 
-  if (capturedComposition.ports === null) {
+  const ports = capturedComposition.ports as HttpHandlerPorts | null;
+  if (ports === null) {
     throw new Error('Production composition did not assemble transport ports.');
   }
-  return { ports: capturedComposition.ports, administration };
+  return { ports, administration };
+}
+
+function providerHostInventoryRecord(): ProviderHostInventoryRecord {
+  return {
+    ref: {
+      provider: 'codex',
+      fingerprint: 'a'.repeat(64),
+      instanceId: 'host-instance',
+      leaseMode: 'shared',
+    },
+    status: 'live',
+    spec: {
+      provider: 'codex',
+      command: 'codex',
+      args: ['app-server'],
+      cwd: canonicalizeWorkDir(process.cwd(), process.cwd()),
+      leaseMode: 'shared',
+      idleRetirement: 'none',
+    },
+    host: { owner: 'coordinator' },
+    diagnostics: {
+      hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+      completedObservations: [
+        {
+          factSeq: 1,
+          generation: 2,
+          requestId: 3,
+          method: 'config/read',
+          response: { kind: 'failure', rpcCode: -32_603, providerMessage: 'fixture', providerData: null },
+          hostLog: {
+            startSeq: 4,
+            endSeq: 5,
+            truncated: true,
+            historical: [{ seq: 1, observedAt: 1, stream: 'stderr', text: 'before' }],
+            during: [],
+            after: [],
+          },
+        },
+      ],
+      factsTruncatedBeforeSeq: 0,
+    },
+    diagnosticsRetention: { ownerBudgetTruncated: false },
+  };
+}
+
+function withMalformedInventoryCwd(record: ProviderHostInventoryRecord): ProviderHostInventoryRecord {
+  return {
+    ...record,
+    spec: { ...record.spec, cwd: 'relative/provider-host' },
+  } as unknown as ProviderHostInventoryRecord;
 }
 
 function createPorts(): HttpHandlerPorts {
@@ -334,47 +386,8 @@ describe('ipc server', () => {
   });
 
   it('drives the production provider-host response adapter and CLI sender through strict IPC schemas', async () => {
-    const ref: HostRef = {
-      provider: 'codex',
-      fingerprint: 'a'.repeat(64),
-      instanceId: 'host-instance',
-      leaseMode: 'shared',
-    };
-    const record: ProviderHostInventoryRecord = {
-      ref,
-      status: 'live',
-      spec: {
-        provider: 'codex',
-        command: 'codex',
-        args: ['app-server'],
-        cwd: process.cwd(),
-        leaseMode: 'shared',
-        idleRetirement: 'none',
-      },
-      host: { owner: 'coordinator' },
-      diagnostics: {
-        hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
-        completedObservations: [
-          {
-            factSeq: 1,
-            generation: 2,
-            requestId: 3,
-            method: 'config/read',
-            response: { kind: 'failure', rpcCode: -32_603, providerMessage: 'fixture', providerData: null },
-            hostLog: {
-              startSeq: 4,
-              endSeq: 5,
-              truncated: true,
-              historical: [{ seq: 1, observedAt: 1, stream: 'stderr', text: 'before' }],
-              during: [],
-              after: [],
-            },
-          },
-        ],
-        factsTruncatedBeforeSeq: 0,
-      },
-      diagnosticsRetention: { ownerBudgetTruncated: false },
-    };
+    const record = providerHostInventoryRecord();
+    const ref: HostRef = record.ref;
     const host = { ownerId: 'coordinator:test-instance', ...record };
     const { ports, administration } = createProductionProviderHostPorts(record);
     const listener = createIpcServer(ports);
@@ -407,6 +420,25 @@ describe('ipc server', () => {
     } finally {
       await closeIpcServer(listener);
     }
+  });
+
+  it('rejects a non-canonical inventory cwd at the production external response sender', async () => {
+    const { ports } = createProductionProviderHostPorts(withMalformedInventoryCwd(providerHostInventoryRecord()));
+    const providerHosts = ports.providerHosts;
+    if (providerHosts === undefined) throw new Error('Production composition did not assemble provider-host ports.');
+
+    await expect(providerHosts.list()).rejects.toThrow(/provider_host_inventory_unavailable/u);
+  });
+
+  it('rejects a non-canonical inventory cwd at the real external response receiver', async () => {
+    const malformed = withMalformedInventoryCwd(providerHostInventoryRecord());
+    const sender = createProviderHostCommandOperations({
+      getClient: async () => ({
+        request: async <TResult>() => ({ hosts: [{ ownerId: 'coordinator:test-instance', ...malformed }] }) as TResult,
+      }),
+    });
+
+    await expect(sender.list()).rejects.toThrow(/Work directory must be absolute and normalized/u);
   });
 
   it('authenticates catalog requests through child principal handles and rejects over-cap/replayed requests', async () => {

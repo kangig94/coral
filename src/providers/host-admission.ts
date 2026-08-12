@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { HostRef, ProviderServerSpec } from './contract.js';
 import { encodeHostRef } from './host-ref-codec.js';
 import type {
@@ -75,7 +76,7 @@ export type ProviderHostCanonicalSpecMetadata = Readonly<{
   provider: string;
   command: string;
   args: readonly string[];
-  cwd: string | null;
+  cwd: CanonicalWorkDir | null;
   leaseMode: 'shared' | 'job-exclusive';
   idleRetirement: 'host-reported' | 'none' | null;
 }>;

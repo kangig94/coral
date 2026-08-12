@@ -11,6 +11,7 @@ import type { KbToolResult } from '../../kb/result.js';
 import type { ToolDomainResult } from '../tool-result.js';
 import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
+import type { HostRef } from '../../providers/host-inventory-schema.js';
 import type { ProviderHostEvictResponse, ProviderHostInspectResponse, ProviderHostListResponse } from './catalog.js';
 
 type SessionStartInput = Pick<
@@ -67,22 +68,12 @@ export interface RecoveryQuarantineRequestPort {
 export interface ProviderHostRequestPort {
   list(): Promise<ProviderHostListResponse>;
   inspect(
-    selector: Readonly<{ hostRef: ProviderHostRefInput }> | Readonly<{ workDir: CanonicalWorkDir }>,
+    selector: Readonly<{ hostRef: HostRef }> | Readonly<{ workDir: CanonicalWorkDir }>,
   ): Promise<ProviderHostInspectResponse>;
   evict(
-    selector: Readonly<{ hostRef: ProviderHostRefInput }> | Readonly<{ workDir: CanonicalWorkDir }>,
+    selector: Readonly<{ hostRef: HostRef }> | Readonly<{ workDir: CanonicalWorkDir }>,
   ): Promise<ProviderHostEvictResponse>;
 }
-
-type ProviderHostRefInput =
-  | Readonly<{ provider: string; fingerprint: string; instanceId: string; leaseMode: 'shared' }>
-  | Readonly<{
-      provider: string;
-      fingerprint: string;
-      instanceId: string;
-      leaseMode: 'job-exclusive';
-      ownerJobId: string;
-    }>;
 
 type MaybePromise<T> = T | Promise<T>;
 

@@ -9,6 +9,7 @@ import {
 } from '#src/cli/commands/backend.js';
 import { encodeHostRef } from '#src/providers/host-ref-codec.js';
 import type { HostRef } from '#src/providers/contract.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const ref: HostRef = {
   provider: 'codex',
@@ -25,7 +26,7 @@ const host = {
     provider: 'codex',
     command: 'codex',
     args: ['app-server'],
-    cwd: '/workspace',
+    cwd: fixtureCanonicalWorkDir('/workspace'),
     leaseMode: 'shared' as const,
     idleRetirement: 'none' as const,
   },

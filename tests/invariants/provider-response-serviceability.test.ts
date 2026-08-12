@@ -166,11 +166,25 @@ function propertyNames(typeAliasName: string, sourceFile: ts.SourceFile): string
   );
 }
 
-function namedFunction(sourceFile: ts.SourceFile, name: string): ts.FunctionDeclaration | undefined {
-  return sourceFile.statements.find(
-    (statement): statement is ts.FunctionDeclaration =>
-      ts.isFunctionDeclaration(statement) && statement.name?.text === name,
-  );
+function namedFunction(
+  sourceFile: ts.SourceFile,
+  name: string,
+): ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction | undefined {
+  for (const statement of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) return statement;
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (
+        ts.isIdentifier(declaration.name) &&
+        declaration.name.text === name &&
+        declaration.initializer !== undefined &&
+        (ts.isFunctionExpression(declaration.initializer) || ts.isArrowFunction(declaration.initializer))
+      ) {
+        return declaration.initializer;
+      }
+    }
+  }
+  return undefined;
 }
 
 function nameTokens(name: string): string[] {
@@ -280,7 +294,7 @@ describe('provider response serviceability decision layers', () => {
     const transport = parse(TRANSPORT);
     const responseHandler = transport.statements.find(
       (statement): statement is ts.FunctionDeclaration =>
-        ts.isFunctionDeclaration(statement) && statement.name?.text === 'handleProviderServerLine',
+        ts.isFunctionDeclaration(statement) && statement.name?.text === 'handleProviderServerResponse',
     );
     expect(responseHandler).toBeDefined();
     const observations = callsNamed(responseHandler as ts.FunctionDeclaration, 'observeProviderResponse');
@@ -344,6 +358,9 @@ describe('provider response serviceability decision layers', () => {
     expect(Object.keys(inventory).length).toBeGreaterThan(0);
     expect(Object.entries(inventory).filter(([, symbols]) => symbols.length === 0)).toEqual([]);
     expect(STATIC_SERVICEABILITY_DECISION_SYMBOLS.admissionCompositionLeaves).toHaveLength(3);
+    expect(inventory.admissionSymbols?.map((spec) => spec.symbol)).toEqual(
+      expect.arrayContaining(['hostAdmissionForPhase', 'assertFreshPlacementAllowed', 'observeProviderResponse']),
+    );
 
     const missingSymbols = Object.values(inventory)
       .flat()

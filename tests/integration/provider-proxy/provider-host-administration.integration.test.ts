@@ -221,6 +221,24 @@ describe('provider-host proxy controls', () => {
     expect(providerServer.closeMock).toHaveBeenCalledOnce();
     expect(providerHosts.listProviderHosts()).toEqual([]);
   });
+
+  it('rejects a non-canonical inventory cwd at the real proxy response sender', async () => {
+    const controls = authority.providerHosts;
+    if (controls === undefined) throw new Error('provider-host controls were not composed');
+    const live = providerHosts.listProviderHosts()[0];
+    if (live === undefined) throw new Error('provider-host fixture did not open a live host');
+    const malformed = {
+      ...live,
+      spec: { ...live.spec, cwd: 'relative/provider-host' },
+    } as unknown as typeof live;
+    const list = vi.spyOn(providerHosts, 'listProviderHosts').mockReturnValue([malformed]);
+
+    try {
+      await expect(controls.list()).rejects.toThrow(/Work directory must be absolute and normalized/u);
+    } finally {
+      list.mockRestore();
+    }
+  });
 });
 
 function fakeProviderServerHandle(): {

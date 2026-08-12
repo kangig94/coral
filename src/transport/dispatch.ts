@@ -1,3 +1,5 @@
+import { isAbsolute, relative } from 'node:path';
+
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
 import type { JobLaunchRequest } from '../jobs/launch.js';
 import type { JobsListResponse } from '../jobs/records.js';
@@ -258,6 +260,34 @@ function requestedBindingFor(
   return resolveRequestBinding(spec.requestBinding, projectRoot);
 }
 
+function authorizeCatalogResourceBinding(
+  spec: RpcMethodSpec<unknown, unknown>,
+  principal: Principal,
+  requires: Capability,
+  requestedBinding: ResourceBinding,
+): Decision {
+  const decision = authorizeResourceBinding(principal, requires, requestedBinding);
+  if (
+    !decision.ok ||
+    (spec.name !== 'coordinator.provider_host.inspect' && spec.name !== 'coordinator.provider_host.evict') ||
+    principal.binding.kind !== 'project' ||
+    requestedBinding.kind !== 'project'
+  ) {
+    return decision;
+  }
+
+  const descendant = relative(principal.binding.root, requestedBinding.root);
+  if (descendant === '' || (!descendant.startsWith('..') && !isAbsolute(descendant))) {
+    return decision;
+  }
+
+  return {
+    ok: false,
+    reason: 'resource_unbound',
+    detail: { requires, requestedBinding, principalBinding: principal.binding, subject: principal.subject },
+  };
+}
+
 function canonicalizeRequestProjectRoot(request: unknown): {
   request: unknown;
   projectRoot: CanonicalWorkDir | undefined;
@@ -288,7 +318,12 @@ function canonicalizeCatalogRequest(
   const canonical = canonicalizeRequestProjectRoot(request);
   if (
     canonical.projectRoot === undefined ||
-    (spec.name !== 'sessions.create' && spec.name !== 'workflow.run') ||
+    ![
+      'sessions.create',
+      'workflow.run',
+      'coordinator.provider_host.inspect',
+      'coordinator.provider_host.evict',
+    ].includes(spec.name) ||
     canonical.request === null ||
     typeof canonical.request !== 'object'
   ) {
@@ -353,7 +388,7 @@ function providerHostAdministrationFailure(error: unknown): CatalogRequestExecut
     case 'provider_host_inventory_unavailable':
       message = `Provider-host inventory is unavailable${ownerIds.length === 0 ? '.' : ` from: ${ownerIds.join(', ')}.`}`;
       remediation =
-        'Retry the original command; if it persists, run `coral-cli backend status` and restore the unavailable owner before retrying.';
+        'Retry the original command; if it persists, run `coral-cli backend shutdown`, then retry the original command to start a fresh coordinator.';
       break;
     case 'provider_host_not_found':
       message = 'No live or retained-blocked provider host matches the selector.';
@@ -390,11 +425,15 @@ function providerHostAdministrationFailure(error: unknown): CatalogRequestExecut
 
 function providerHostSelectorFromRequest(
   request: ProviderHostSelectorRequest,
+  canonicalWorkDir: CanonicalWorkDir | undefined,
 ):
   | Readonly<{ hostRef: Extract<ProviderHostSelectorRequest, { hostRef: unknown }>['hostRef'] }>
   | Readonly<{ workDir: CanonicalWorkDir }> {
   if ('hostRef' in request) return { hostRef: request.hostRef };
-  return { workDir: canonicalizeWorkDir(request.workDir, request.projectRoot) };
+  if (canonicalWorkDir === undefined) {
+    throw new Error('Validated provider-host work-directory selector has no canonical work directory.');
+  }
+  return { workDir: canonicalWorkDir };
 }
 
 function requiredCapability(spec: RpcMethodSpec<unknown, unknown>): Capability | null {
@@ -455,7 +494,7 @@ export async function executeCatalogRequest(
   request = canonicalRequest.request;
   const requestedBinding = requestedBindingFor(spec, canonicalRequest.authorizationRoot);
   principal = narrowUnboundPrincipal(principal, requestedBinding);
-  const authz = authorizeResourceBinding(principal, requires, requestedBinding);
+  const authz = authorizeCatalogResourceBinding(spec, principal, requires, requestedBinding);
   writeAuthorizationDecisionAudit(principal, spec.name, authz, requestedBinding);
   if (!authz.ok) {
     return authorizationFailure(authz, principal);
@@ -489,7 +528,10 @@ export async function executeCatalogRequest(
         }) as CatalogRequestExecution;
       }
       try {
-        const selector = providerHostSelectorFromRequest(request as ProviderHostSelectorRequest);
+        const selector = providerHostSelectorFromRequest(
+          request as ProviderHostSelectorRequest,
+          canonicalRequest.authorizationRoot,
+        );
         return unary(providerHostInspectResponseSchema.parse(await rpcPorts.providerHosts.inspect(selector)));
       } catch (error: unknown) {
         if (error instanceof WorkDirectoryError) return workDirectoryFailure(error);
@@ -507,7 +549,10 @@ export async function executeCatalogRequest(
         }) as CatalogRequestExecution;
       }
       try {
-        const selector = providerHostSelectorFromRequest(request as ProviderHostSelectorRequest);
+        const selector = providerHostSelectorFromRequest(
+          request as ProviderHostSelectorRequest,
+          canonicalRequest.authorizationRoot,
+        );
         return unary(providerHostEvictResponseSchema.parse(await rpcPorts.providerHosts.evict(selector)));
       } catch (error: unknown) {
         if (error instanceof WorkDirectoryError) return workDirectoryFailure(error);

@@ -276,6 +276,20 @@ type RootSpawnRequest = Readonly<{
   placement: FreshHostPlacement;
 }>;
 
+type RootSpawnTransaction = {
+  readonly request: RootSpawnRequest;
+  readonly generation: number;
+  readonly instanceId: string;
+  readonly reservedRef: HostRef;
+  handle: ProviderServerHandle | null;
+  liveRootCommitted: boolean;
+};
+
+type RootRetirement = {
+  entry: HostPoolEntry | null;
+  releasedBeforeEntry: boolean;
+};
+
 class ProxyProviderRootPool {
   private readonly runtime: Runtime;
   private readonly admission: HostAdmissionCollection;
@@ -341,91 +355,21 @@ class ProxyProviderRootPool {
   }
 
   async spawn(request: RootSpawnRequest): Promise<HostPoolEntry> {
-    this.reserveRootToken();
-    const { operation, cancellationMode, hostKey, spec, options, placement } = request;
-    const generation = this.nextGeneration++;
-    const instanceId = this.runtime.ids.uuid();
-    const reservedRef = hostRefForIdentity(spec, instanceId, options?.jobId, this.runtime);
-    let handle: ProviderServerHandle | null = null;
-    let liveRootCommitted = false;
-    placement.reservation.reserveCandidate({
-      slot: placement.slot,
-      ref: reservedRef,
-      generation,
-      spec: canonicalProviderHostSpecMetadata(spec),
-      host: Object.freeze({
-        owner: 'provider-proxy',
-        hostKey,
-        ownerJobId: options?.jobId ?? null,
-        operationJobId: operation.jobId,
-        operationId: operation.operationId,
-        cancellationMode,
-      }),
-      inspectDiagnostics: () => handle?.inspectDiagnostics() ?? emptyDiagnostics(),
-    });
-
+    const transaction = this.reserveSpawn(request);
+    const { spec, options, placement } = request;
+    const { reservedRef } = transaction;
     const admission = this.admission;
     try {
-      handle = await spawnProviderServerTransport({
+      const handle = await spawnProviderServerTransport({
         runtime: this.runtime,
         options: spawnOptionsFor(spec, options?.signal),
-        generation,
+        generation: transaction.generation,
         observeProviderResponse: (fact) => admission.observe(placement.slot, reservedRef, fact),
       });
-      this.spawningRoots -= 1;
-      this.liveRoots += 1;
-      this.generationRootSlotsSpent += 1;
-      liveRootCommitted = true;
-
-      let entry: HostPoolEntry | null = null;
-      let rootReleasedBeforeEntry = false;
-      const retire = (): void => {
-        if (entry !== null) this.remove(entry);
-        placement.reservation.observeRetired(reservedRef, 'closed');
-        if (entry !== null) {
-          this.releaseLiveRoot(entry);
-        } else if (!rootReleasedBeforeEntry) {
-          rootReleasedBeforeEntry = true;
-          this.liveRoots -= 1;
-        }
-      };
-      void handle.closePromise.then(retire, retire);
-
-      const processStartedAtSeconds = probeProcessStartedAtSeconds(
-        handle.pid,
-        this.runtime.env.platform() as NodeJS.Platform,
-      );
-      if (processStartedAtSeconds === null || handle.isClosed()) {
-        throw new Error(`Provider server ${spec.provider} could not have its own start time read after spawn.`);
-      }
-      entry = {
-        hostKey,
-        spec,
-        instanceId,
-        handle,
-        transport: transportFor(handle),
-        processStartedAtSeconds,
-        jobId: options?.jobId,
-        cancellationMode,
-        refCount: 0,
-        rootTokenReleased: rootReleasedBeforeEntry,
-        closePromise: null,
-      };
-      this.entries.set(hostKey, entry);
-      placement.reservation.markLive(reservedRef, generation);
-      return entry;
+      transaction.handle = handle;
+      return this.commitSpawnedRoot(transaction, handle);
     } catch (error: unknown) {
-      if (!liveRootCommitted) {
-        this.spawningRoots -= 1;
-        placement.reservation.observeRetired(reservedRef, 'closed');
-      } else if (handle !== null) {
-        try {
-          await handle.close();
-          placement.reservation.observeRetired(reservedRef, 'closed');
-        } catch {
-          // A failed close retains the live-root token because process absence was not confirmed.
-        }
-      }
+      await this.compensateFailedSpawn(transaction);
       throw error;
     }
   }
@@ -462,6 +406,102 @@ class ProxyProviderRootPool {
       );
     }
     this.spawningRoots += 1;
+  }
+
+  private reserveSpawn(request: RootSpawnRequest): RootSpawnTransaction {
+    this.reserveRootToken();
+    const { operation, cancellationMode, hostKey, spec, options, placement } = request;
+    const instanceId = this.runtime.ids.uuid();
+    const transaction: RootSpawnTransaction = {
+      request,
+      generation: this.nextGeneration++,
+      instanceId,
+      reservedRef: hostRefForIdentity(spec, instanceId, options?.jobId, this.runtime),
+      handle: null,
+      liveRootCommitted: false,
+    };
+    placement.reservation.reserveCandidate({
+      slot: placement.slot,
+      ref: transaction.reservedRef,
+      generation: transaction.generation,
+      spec: canonicalProviderHostSpecMetadata(spec),
+      host: Object.freeze({
+        owner: 'provider-proxy',
+        hostKey,
+        ownerJobId: options?.jobId ?? null,
+        operationJobId: operation.jobId,
+        operationId: operation.operationId,
+        cancellationMode,
+      }),
+      inspectDiagnostics: () => transaction.handle?.inspectDiagnostics() ?? emptyDiagnostics(),
+    });
+    return transaction;
+  }
+
+  private commitSpawnedRoot(transaction: RootSpawnTransaction, handle: ProviderServerHandle): HostPoolEntry {
+    const { request, generation, instanceId, reservedRef } = transaction;
+    const { cancellationMode, hostKey, spec, options, placement } = request;
+    this.spawningRoots -= 1;
+    this.liveRoots += 1;
+    this.generationRootSlotsSpent += 1;
+    transaction.liveRootCommitted = true;
+
+    const retirement = this.installRetirement(transaction, handle);
+    const processStartedAtSeconds = probeProcessStartedAtSeconds(
+      handle.pid,
+      this.runtime.env.platform() as NodeJS.Platform,
+    );
+    if (processStartedAtSeconds === null || handle.isClosed()) {
+      throw new Error(`Provider server ${spec.provider} could not have its own start time read after spawn.`);
+    }
+    const entry: HostPoolEntry = {
+      hostKey,
+      spec,
+      instanceId,
+      handle,
+      transport: transportFor(handle),
+      processStartedAtSeconds,
+      jobId: options?.jobId,
+      cancellationMode,
+      refCount: 0,
+      rootTokenReleased: retirement.releasedBeforeEntry,
+      closePromise: null,
+    };
+    retirement.entry = entry;
+    this.entries.set(hostKey, entry);
+    placement.reservation.markLive(reservedRef, generation);
+    return entry;
+  }
+
+  private installRetirement(transaction: RootSpawnTransaction, handle: ProviderServerHandle): RootRetirement {
+    const retirement: RootRetirement = { entry: null, releasedBeforeEntry: false };
+    const retire = (): void => {
+      if (retirement.entry !== null) this.remove(retirement.entry);
+      transaction.request.placement.reservation.observeRetired(transaction.reservedRef, 'closed');
+      if (retirement.entry !== null) {
+        this.releaseLiveRoot(retirement.entry);
+      } else if (!retirement.releasedBeforeEntry) {
+        retirement.releasedBeforeEntry = true;
+        this.liveRoots -= 1;
+      }
+    };
+    void handle.closePromise.then(retire, retire);
+    return retirement;
+  }
+
+  private async compensateFailedSpawn(transaction: RootSpawnTransaction): Promise<void> {
+    const { placement } = transaction.request;
+    if (!transaction.liveRootCommitted) {
+      this.spawningRoots -= 1;
+      placement.reservation.observeRetired(transaction.reservedRef, 'closed');
+    } else if (transaction.handle !== null) {
+      try {
+        await transaction.handle.close();
+        placement.reservation.observeRetired(transaction.reservedRef, 'closed');
+      } catch {
+        // A failed close retains the live-root token because process absence was not confirmed.
+      }
+    }
   }
 
   private releaseLiveRoot(entry: HostPoolEntry): void {

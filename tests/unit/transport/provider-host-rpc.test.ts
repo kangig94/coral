@@ -1,8 +1,14 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
+import { backendLog } from '#src/infra/backend-log.js';
 import type { Principal } from '#src/security/principal.js';
 import { encodeHostRef } from '#src/providers/host-ref-codec.js';
 import type { HostRef } from '#src/providers/contract.js';
+import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import {
   providerHostEvictRpcSpec,
@@ -65,9 +71,70 @@ describe('provider-host RPC authorization', () => {
   });
 
   it.each([
+    ['inspect', providerHostInspectRpcSpec, 'inspect'],
+    ['evict', providerHostEvictRpcSpec, 'evict'],
+  ] as const)(
+    'denies and audits a canonical work-directory escape before contacting the %s owner',
+    async (_route, spec, ownerMethod) => {
+      const root = mkdtempSync(join(tmpdir(), 'coral-provider-host-rpc-authz-'));
+      const allowed = join(root, 'allowed');
+      const outside = join(root, 'outside');
+      mkdirSync(allowed);
+      mkdirSync(outside);
+      symlinkSync(outside, join(allowed, 'escape'), 'dir');
+
+      const providerHosts = {
+        list: vi.fn(),
+        inspect: vi.fn(() => {
+          throw new Error('provider_host_inspect_owner_contacted_before_authorization');
+        }),
+        evict: vi.fn(() => {
+          throw new Error('provider_host_evict_owner_contacted_before_authorization');
+        }),
+      };
+      const ports = { providerHosts } as unknown as HttpHandlerPorts;
+      const boundOperator = {
+        ...operator,
+        binding: { kind: 'project', root: canonicalizeWorkDir(allowed, root) },
+      } satisfies Principal;
+      const canonicalOutside = canonicalizeWorkDir(outside, root);
+      const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+      try {
+        const result = await executeCatalogRequest(
+          spec,
+          { workDir: 'escape', projectRoot: allowed },
+          ports,
+          boundOperator,
+        );
+
+        expect(result).toMatchObject({ kind: 'unary', statusCode: 403, body: { code: 'scope_mismatch' } });
+        expect(providerHosts[ownerMethod]).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledOnce();
+        const auditLine = String(warn.mock.calls[0]?.[0]);
+        expect(auditLine.startsWith('audit ')).toBe(true);
+        const audit = JSON.parse(auditLine.slice('audit '.length)) as Record<string, unknown>;
+        expect(audit).toMatchObject({
+          event: 'authorization_decision',
+          method: spec.name,
+          binding: { kind: 'project', root: canonicalOutside },
+          decision: {
+            ok: false,
+            reason: 'resource_unbound',
+            detail: { requestedBinding: { kind: 'project', root: canonicalOutside } },
+          },
+        });
+      } finally {
+        warn.mockRestore();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([
     [
       'provider_host_inventory_unavailable',
-      'Retry the original command; if it persists, run `coral-cli backend status` and restore the unavailable owner before retrying.',
+      'Retry the original command; if it persists, run `coral-cli backend shutdown`, then retry the original command to start a fresh coordinator.',
     ],
     ['provider_host_not_found', 'Rerun `coral-cli backend provider-host list`, then use a currently listed reference.'],
     [

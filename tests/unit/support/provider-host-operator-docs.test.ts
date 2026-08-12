@@ -14,7 +14,9 @@ function catalogEntry(code: string): string {
 
 describe('provider-host operator documentation', () => {
   it('documents actionable recovery for every administration refusal', () => {
-    expect(catalogEntry('provider_host_inventory_unavailable')).toContain('coral-cli backend status');
+    expect(catalogEntry('provider_host_inventory_unavailable')).toContain(
+      'Retry the original command; if it persists, run `coral-cli backend shutdown`, then retry the original command to start a fresh coordinator.',
+    );
     expect(catalogEntry('provider_host_not_found')).toContain('coral-cli backend provider-host list');
     expect(catalogEntry('provider_host_ambiguous')).toContain('provider-host inspect <ref>');
     expect(catalogEntry('provider_host_ambiguous')).toContain('provider-host evict <ref>');

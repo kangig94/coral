@@ -93,6 +93,14 @@ type ProviderServerNotification = {
   params?: Record<string, unknown>;
 };
 
+type ProviderServerMessage = {
+  id?: number;
+  method?: string;
+  result?: unknown;
+  error?: { code?: number; message?: string; data?: unknown };
+  params?: Record<string, unknown>;
+};
+
 type ProviderServerPendingRequest = {
   method: string;
   startSeq: number;
@@ -539,15 +547,25 @@ function appendProviderServerLineFragment(entry: ProviderServerEntry, fragment: 
 function handleProviderServerLine(entry: ProviderServerEntry, line: string, runtime: Runtime): void {
   if (!line.trim() || entry.closed) return;
 
-  let message: {
-    id?: number;
-    method?: string;
-    result?: unknown;
-    error?: { code?: number; message?: string; data?: unknown };
-    params?: Record<string, unknown>;
-  };
+  const message = parseProviderServerLine(entry, line, runtime);
+  if (message === undefined) return;
+
+  if (typeof message.id === 'number' && typeof message.method === 'string') {
+    handleProviderServerRequest(entry, message.id, message.method, runtime);
+  } else if (typeof message.id === 'number') {
+    handleProviderServerResponse(entry, message.id, message);
+  } else {
+    handleProviderServerNotification(entry, message, runtime);
+  }
+}
+
+function parseProviderServerLine(
+  entry: ProviderServerEntry,
+  line: string,
+  runtime: Runtime,
+): ProviderServerMessage | undefined {
   try {
-    message = JSON.parse(line) as typeof message;
+    return JSON.parse(line) as ProviderServerMessage;
   } catch (error) {
     const parseError = createProviderHostFault(entry, 'emitted invalid JSONL', {
       line,
@@ -556,65 +574,78 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
     backendLog.error(parseError.message, error);
     detachProviderServer(entry, parseError);
     gracefulKill(entry.child, runtime);
-    return;
+    return undefined;
   }
+}
 
-  if (typeof message.id === 'number' && typeof message.method === 'string') {
-    try {
-      sendProviderServerMessage(entry, {
-        id: message.id,
-        error: buildJsonRpcError(-32601, `Unsupported provider-server request: ${message.method}`),
-      });
-    } catch (error) {
-      const protocolError =
-        error instanceof Error ? error : createProviderHostFault(entry, 'failed to answer server request');
-      backendLog.error(protocolError.message, error);
-      detachProviderServer(entry, protocolError);
-      gracefulKill(entry.child, runtime);
-    }
-    return;
-  }
-
-  if (typeof message.id === 'number') {
-    const endSeq = currentProviderHostLogSeq(entry.diagnostics);
-    const pending = entry.pending.get(message.id);
-    if (!pending) return;
-    const diagnostic = recordProviderResponseDiagnostic(entry.diagnostics, {
-      generation: entry.generation,
-      requestId: message.id,
-      method: pending.method,
-      response: message.error
-        ? Object.freeze({
-            kind: 'failure',
-            rpcCode: message.error.code,
-            providerMessage: message.error.message,
-            providerData: message.error.data,
-          })
-        : Object.freeze({ kind: 'success' }),
-      startSeq: pending.startSeq,
-      endSeq,
+function handleProviderServerRequest(
+  entry: ProviderServerEntry,
+  requestId: number,
+  method: string,
+  runtime: Runtime,
+): void {
+  try {
+    sendProviderServerMessage(entry, {
+      id: requestId,
+      error: buildJsonRpcError(-32601, `Unsupported provider-server request: ${method}`),
     });
-    entry.observeProviderResponse(diagnostic);
-    entry.pending.delete(message.id);
+  } catch (error) {
+    const protocolError =
+      error instanceof Error ? error : createProviderHostFault(entry, 'failed to answer server request');
+    backendLog.error(protocolError.message, error);
+    detachProviderServer(entry, protocolError);
+    gracefulKill(entry.child, runtime);
+  }
+}
 
-    if (message.error) {
-      pending.reject(
-        new ProviderRpcError({
-          requestId: message.id,
-          method: pending.method,
+function handleProviderServerResponse(
+  entry: ProviderServerEntry,
+  requestId: number,
+  message: ProviderServerMessage,
+): void {
+  const endSeq = currentProviderHostLogSeq(entry.diagnostics);
+  const pending = entry.pending.get(requestId);
+  if (!pending) return;
+  const diagnostic = recordProviderResponseDiagnostic(entry.diagnostics, {
+    generation: entry.generation,
+    requestId,
+    method: pending.method,
+    response: message.error
+      ? Object.freeze({
+          kind: 'failure',
           rpcCode: message.error.code,
           providerMessage: message.error.message,
           providerData: message.error.data,
-          hostLog: diagnostic.hostLog,
-        }),
-      );
-      return;
-    }
+        })
+      : Object.freeze({ kind: 'success' }),
+    startSeq: pending.startSeq,
+    endSeq,
+  });
+  entry.observeProviderResponse(diagnostic);
+  entry.pending.delete(requestId);
 
-    pending.resolve(message.result);
+  if (message.error) {
+    pending.reject(
+      new ProviderRpcError({
+        requestId,
+        method: pending.method,
+        rpcCode: message.error.code,
+        providerMessage: message.error.message,
+        providerData: message.error.data,
+        hostLog: diagnostic.hostLog,
+      }),
+    );
     return;
   }
 
+  pending.resolve(message.result);
+}
+
+function handleProviderServerNotification(
+  entry: ProviderServerEntry,
+  message: ProviderServerMessage,
+  runtime: Runtime,
+): void {
   if (typeof message.method !== 'string') {
     const protocolError = createProviderHostFault(entry, 'emitted a malformed JSON-RPC message', message);
     backendLog.error(protocolError.message);
