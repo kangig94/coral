@@ -17,7 +17,7 @@ import { createDiscussContextRegistry, type DiscussContextRegistry } from '../..
 
 import { LaunchCoordinator } from '../live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
-import { createHostAdmissionCollection } from '../../providers/host-admission.js';
+import { createHostAdmissionCollection, exactHostRefsMatch } from '../../providers/host-admission.js';
 import type { ProviderProxyAuthorityRegistry } from '../live/provider-proxy/authority.js';
 import { LocalOperationRegistry } from '../services/operation-registry.js';
 import { ProviderProxySetClaimMirror } from '../services/provider-proxy-set-claim-mirror.js';
@@ -149,18 +149,6 @@ function readConfiguredSystemProviderScope(
       context: { detail: error instanceof Error ? error.message : String(error) },
     });
   }
-}
-
-function exactHostRefsMatch(left: HostRef, right: HostRef): boolean {
-  if (
-    left.provider !== right.provider ||
-    left.fingerprint !== right.fingerprint ||
-    left.instanceId !== right.instanceId ||
-    left.leaseMode !== right.leaseMode
-  ) {
-    return false;
-  }
-  return left.leaseMode === 'shared' || (right.leaseMode === 'job-exclusive' && left.ownerJobId === right.ownerJobId);
 }
 
 /**

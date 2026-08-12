@@ -68,6 +68,8 @@ import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { TEST_CODEX_SCOPE, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { encodeHostRef } from '#src/providers/host-ref-codec.js';
+import { PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING } from '#src/providers/host-admission.js';
 
 const progressTiming = {
   origin: 'runtime',
@@ -977,6 +979,43 @@ describe('ExecutionService wait', () => {
     });
     expect(_existsSync(resultPath)).toBe(true);
     expect(_readFileSync(resultPath, 'utf-8')).toBe('rebuild me\n');
+  });
+
+  it('surfaces the exact provider-host recovery on the initial classified failure', async () => {
+    const service = createService(ctx);
+    const { jobId, sessionId, progressStore } = createClaimedJob(service, ctx);
+    const hostRef = Object.freeze({
+      provider: 'codex',
+      fingerprint: 'a'.repeat(64),
+      instanceId: 'poisoned-host',
+      leaseMode: 'shared' as const,
+    });
+    const encodedHostRef = encodeHostRef(hostRef);
+    const rawCause = 'Codex provider failed: config/read failed [code=-32603]: configuration refused';
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'app-server',
+      startTime: isoAt(runtime.time.now()),
+      providerMeta: { provider: 'codex', leaseState: 'acquired', hostRef },
+    });
+    commitJobTerminal(
+      progressStore,
+      jobId,
+      sessionId,
+      { content: '', outcome: { kind: 'provider_exit', code: 1, note: rawCause }, durationMs: 0 },
+      'error',
+      { diagnostics: { warnings: [PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING] } },
+    );
+
+    const terminal = await _waitForTerminalEvent(service, jobId);
+
+    expect(terminal.result.outcome).toEqual({
+      kind: 'provider_exit',
+      code: 1,
+      note:
+        `${rawCause}\n\nProvider host ${encodedHostRef} (codex/poisoned-host) is unserviceable. ` +
+        `Run coral-cli backend provider-host inspect ${encodedHostRef}, then ` +
+        `coral-cli backend provider-host evict ${encodedHostRef} before retrying fresh placement.`,
+    });
   });
 
   it('rebuilds failed workflow result artifacts with lifecycle fault details', async () => {

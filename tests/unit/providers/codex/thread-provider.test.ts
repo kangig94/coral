@@ -13,6 +13,13 @@ import type {
 import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
 import { codexTurnKernel } from '#src/providers/codex/thread-kernel.js';
 import { codexAppServerLifecycle } from '#src/providers/codex/provider-facets.js';
+import { ProviderRpcError } from '#src/providers/app-server-transport.js';
+import {
+  admissionSlotKey,
+  canonicalProviderHostSpecMetadata,
+  createHostAdmissionCollection,
+  PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING,
+} from '#src/providers/host-admission.js';
 import { commitContinuityEvent } from '#src/providers/internal/continuity-commit.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
@@ -45,11 +52,14 @@ type MockLease = AppServerSession & {
 function makeLease(
   rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>,
   effectiveConfig: Record<string, unknown> = {},
+  configRead?: (params: Record<string, unknown>) => Promise<unknown>,
 ): MockLease {
   const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
   const closed = createDeferred<Error | void>();
   const rpcMock = vi.fn((method: string, params: Record<string, unknown>) =>
-    method === 'config/read' ? Promise.resolve({ config: effectiveConfig }) : rpcImpl(method, params),
+    method === 'config/read'
+      ? (configRead?.(params) ?? Promise.resolve({ config: effectiveConfig }))
+      : rpcImpl(method, params),
   );
   const subscribeMock = vi.fn((next: (message: { method: string; params?: Record<string, unknown> }) => void) => {
     handlers.add(next);
@@ -145,6 +155,94 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
 }
 
 describe('codexThreadProvider', () => {
+  it('retains the raw initial RPC cause and marks its provider-owned unserviceable classification', async () => {
+    const generation = 1;
+    const requestId = 17;
+    const hostLog = Object.freeze({ startSeq: 2, endSeq: 3 });
+    const providerData = { reason: 'poisoned cwd' };
+    const admission = createHostAdmissionCollection({ classify: () => 'unserviceable' });
+    const slot = admissionSlotKey('initial-config-read-failure');
+    const hostRef = Object.freeze({
+      provider: 'codex',
+      fingerprint: 'a'.repeat(64),
+      instanceId: 'poisoned-host',
+      leaseMode: 'shared' as const,
+    });
+    await admission.withFreshPlacement(slot, async (reservation) => {
+      reservation.reserveCandidate({
+        slot,
+        ref: hostRef,
+        generation,
+        spec: canonicalProviderHostSpecMetadata({
+          provider: 'codex',
+          command: 'codex',
+          args: ['app-server'],
+          cwd: fixtureCanonicalWorkDir(TEST_WORKSPACE),
+          leaseMode: 'shared',
+          idleRetirement: 'none',
+        }),
+        host: Object.freeze({ owner: 'test' }),
+        inspectDiagnostics: () =>
+          Object.freeze({
+            hostLog: Object.freeze({ entries: Object.freeze([]), retainedBytes: 0, truncatedBeforeSeq: 0 }),
+            completedObservations: Object.freeze([]),
+            factsTruncatedBeforeSeq: 0,
+          }),
+      });
+      reservation.markLive(hostRef, generation);
+    });
+    const lease = makeLease(
+      async (method) => {
+        throw new Error(`must not call ${method}`);
+      },
+      {},
+      async () => {
+        admission.observe(
+          slot,
+          hostRef,
+          Object.freeze({
+            factSeq: 1,
+            generation,
+            requestId,
+            method: 'config/read',
+            response: Object.freeze({
+              kind: 'failure',
+              rpcCode: -32_603,
+              providerMessage: 'configuration refused',
+              providerData,
+            }),
+            hostLog,
+          }),
+        );
+        throw new ProviderRpcError({
+          requestId,
+          method: 'config/read',
+          rpcCode: -32_603,
+          providerMessage: 'configuration refused',
+          providerData,
+          hostLog,
+        });
+      },
+    );
+
+    const events = await collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        kind: 'terminal',
+        terminal: expect.objectContaining({
+          outcome: expect.objectContaining({
+            kind: 'provider_exit',
+            note: expect.stringContaining(
+              'config/read failed [code=-32603]: configuration refused; data={"reason":"poisoned cwd"}',
+            ),
+          }),
+        }),
+        diagnostics: { warnings: [PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING] },
+      }),
+    ]);
+  });
+
   it.each([
     ['start', { action: 'exec' as const, conversationRef: undefined }, undefined],
     [

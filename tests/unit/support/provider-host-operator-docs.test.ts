@@ -26,6 +26,8 @@ describe('provider-host operator documentation', () => {
 
   it('documents the failed-job recovery sequence', () => {
     const entry = catalogEntry('provider_host_unserviceable');
+    expect(entry).toContain("initial failing job's `coral-cli wait` output preserves the provider's raw failure cause");
+    expect(entry).toContain('no second placement attempt is required');
     expect(entry).toContain('`ph1.…`');
     expect(entry.indexOf('provider-host inspect <ref>')).toBeLessThan(entry.indexOf('provider-host evict <ref>'));
   });

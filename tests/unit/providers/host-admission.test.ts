@@ -6,6 +6,7 @@ import {
   createHostAdmissionCollection,
   PROVIDER_HOST_TOMBSTONE_DIAGNOSTIC_BYTE_BUDGET,
   ProviderHostUnserviceableError,
+  subscribeProviderHostUnserviceableFindings,
 } from '#src/providers/host-admission.js';
 import { hostRefSchema } from '#src/providers/host-ref-schema.js';
 import { providerOperationPreparePermanentRefusalSchema } from '#src/provider-proxy/protocol.js';
@@ -64,6 +65,42 @@ function collection() {
 }
 
 describe('provider host admission state machine', () => {
+  it('publishes only the provider-owned unserviceable classification for the accepted exact fact', async () => {
+    const admission = collection();
+    const slot = admissionSlotKey('finding-slot');
+    const hostRef = ref('finding-host');
+    const listener = vi.fn();
+    const unsubscribe = subscribeProviderHostUnserviceableFindings(listener);
+
+    try {
+      await admission.withFreshPlacement(slot, async (reservation) => {
+        reservation.reserveCandidate({
+          slot,
+          ref: hostRef,
+          generation: 7,
+          spec: canonicalProviderHostSpecMetadata(spec()),
+          host: Object.freeze({ owner: 'test' }),
+          inspectDiagnostics: diagnostics,
+        });
+        reservation.markLive(hostRef, 7);
+      });
+
+      admission.observe(slot, hostRef, fact(7, 'thread/start'));
+      admission.observe(slot, hostRef, fact(8));
+      expect(listener).not.toHaveBeenCalled();
+
+      const classifiedFact = fact(7);
+      admission.observe(slot, hostRef, classifiedFact);
+      expect(listener).toHaveBeenCalledOnce();
+      expect(listener).toHaveBeenCalledWith({ provider: 'codex', fact: classifiedFact });
+    } finally {
+      unsubscribe();
+    }
+
+    admission.observe(slot, hostRef, fact(7));
+    expect(listener).toHaveBeenCalledOnce();
+  });
+
   it('derives the fresh-placement admission decision from every phase', async () => {
     const admission = collection();
     const slot = admissionSlotKey('admission-decision-slot');

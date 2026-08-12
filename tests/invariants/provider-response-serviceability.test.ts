@@ -11,12 +11,19 @@ import {
   toCanonicalSrcPath,
 } from '#tests/helpers/ts-import-scanner.js';
 import {
+  analyzeCallableClosure,
+  createCallableClosureContext,
   exportedClassifierNames,
   providerClassifierFiles,
-  serviceabilityDecisionClosureInventory,
+  serviceabilityDecisionClosureAnalysis,
   STATIC_SERVICEABILITY_DECISION_SYMBOLS,
-  type DecisionSymbol,
+  type ResolvedCallable,
 } from './provider-serviceability-decision-inventory.js';
+import {
+  activeServiceabilityMutation,
+  fixturePath,
+  serviceabilityMutationFixtureContext,
+} from './provider-serviceability-call-closure-fixture.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const PRODUCTION_FILES = listProductionSourceFiles(join(REPO_ROOT, 'src'));
@@ -35,6 +42,18 @@ const COORDINATOR_OWNER = 'src/coordinator/live/provider-hosts/index.ts';
 const COORDINATOR_SPAWNER = 'src/coordinator/live/admission.ts';
 const PROXY_OWNER = 'src/provider-proxy/provider-root-authority.ts';
 const SERVICEABILITY_LITERALS = new Set(['serviceable', 'unserviceable', 'unknown']);
+const CALLABLE_CONTEXT = createCallableClosureContext(REPO_ROOT, PRODUCTION_FILES);
+const DECISION_CLOSURE_ANALYSIS = serviceabilityDecisionClosureAnalysis(REPO_ROOT, PRODUCTION_FILES, CALLABLE_CONTEXT);
+/**
+ * This narrower fact guard starts at the completed-response publisher and follows every statically resolved
+ * project call/callback. It scans implementations that remain in the transport module; imported diagnostics
+ * retention is outside this rule because its sequence/capacity counters describe stored facts rather than a
+ * serviceability decision. Unresolved project calls still fail closed below.
+ */
+const TRANSPORT_FACT_ANALYSIS = analyzeCallableClosure(CALLABLE_CONTEXT, [
+  { path: TRANSPORT, symbol: 'handleProviderServerResponse' },
+]);
+const MUTATION_FIXTURE_CONTEXT = serviceabilityMutationFixtureContext();
 
 const FORBIDDEN_CLASSIFIER_EVIDENCE = new Set([
   'providerMessage',
@@ -166,27 +185,6 @@ function propertyNames(typeAliasName: string, sourceFile: ts.SourceFile): string
   );
 }
 
-function namedFunction(
-  sourceFile: ts.SourceFile,
-  name: string,
-): ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction | undefined {
-  for (const statement of sourceFile.statements) {
-    if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) return statement;
-    if (!ts.isVariableStatement(statement)) continue;
-    for (const declaration of statement.declarationList.declarations) {
-      if (
-        ts.isIdentifier(declaration.name) &&
-        declaration.name.text === name &&
-        declaration.initializer !== undefined &&
-        (ts.isFunctionExpression(declaration.initializer) || ts.isArrowFunction(declaration.initializer))
-      ) {
-        return declaration.initializer;
-      }
-    }
-  }
-  return undefined;
-}
-
 function nameTokens(name: string): string[] {
   return name
     .replace(/([a-z0-9])([A-Z])/gu, '$1_$2')
@@ -203,15 +201,12 @@ function isForbiddenDecisionBoundName(name: string): boolean {
   return /(?:observed|started|finished|created|updated)_at/u.test(tokens.join('_'));
 }
 
-function decisionBoundViolations(spec: DecisionSymbol): string[] {
-  const sourceFile = parse(spec.path);
-  const declaration = namedFunction(sourceFile, spec.symbol);
-  if (declaration === undefined) return [`${spec.path}:${spec.symbol} is absent from the decision closure`];
-
+function decisionBoundViolations(callable: ResolvedCallable): string[] {
+  const { path, symbol, sourceFile, node: declaration } = callable;
   const violations: string[] = [];
   const report = (node: ts.Node, detail: string): void => {
     const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-    violations.push(`${spec.path}:${spec.symbol}:${line + 1}:${character + 1} ${detail}`);
+    violations.push(`${path}:${symbol}:${line + 1}:${character + 1} ${detail}`);
   };
   visit(declaration, (node) => {
     if (ts.isIdentifier(node) && isForbiddenDecisionBoundName(node.text)) {
@@ -241,8 +236,48 @@ function decisionBoundViolations(spec: DecisionSymbol): string[] {
   return [...new Set(violations)];
 }
 
-function decisionClosureInventory(): Readonly<Record<string, readonly DecisionSymbol[]>> {
-  return serviceabilityDecisionClosureInventory(REPO_ROOT, PRODUCTION_FILES);
+function decisionClosureInventory(): Readonly<Record<string, readonly ResolvedCallable[]>> {
+  return Object.fromEntries(
+    Object.entries(DECISION_CLOSURE_ANALYSIS).map(([category, analysis]) => [category, analysis.callables]),
+  );
+}
+
+const DECISION_CLOSURE_MUTATIONS = [
+  {
+    id: 'imported-helper-clock',
+    root: { path: fixturePath('imported-root.ts'), symbol: 'importedRoot' },
+    target: { path: fixturePath('imported-helper.ts'), symbol: 'importedDecisionHelper' },
+    signature: "references forbidden decision-bound symbol 'now'",
+  },
+  {
+    id: 'method-counter',
+    root: { path: fixturePath('method-root.ts'), symbol: 'methodRoot' },
+    target: { path: fixturePath('method-root.ts'), symbol: 'MethodDecision.evaluate' },
+    signature: "references forbidden decision-bound symbol 'attemptCount'",
+  },
+  {
+    id: 'callback-retry-budget',
+    root: { path: fixturePath('callback-root.ts'), symbol: 'callbackRoot' },
+    target: { path: fixturePath('callback-root.ts'), symbol: 'callbackDecision' },
+    signature: "references forbidden decision-bound symbol 'retryBudget'",
+  },
+  {
+    id: 'transport-fact-counter',
+    root: { path: fixturePath('transport-fact-root.ts'), symbol: 'handleProviderServerResponse' },
+    target: { path: fixturePath('transport-fact-root.ts'), symbol: 'publishTransportFact' },
+    signature: "references forbidden decision-bound symbol 'elapsedMs'",
+  },
+] as const;
+
+function decisionClosureMutationViolations(mutation: (typeof DECISION_CLOSURE_MUTATIONS)[number]): readonly string[] {
+  const analysis = analyzeCallableClosure(MUTATION_FIXTURE_CONTEXT, [mutation.root]);
+  if (analysis.unresolvedCalls.length > 0) return analysis.unresolvedCalls;
+  const target = analysis.callables.find(
+    ({ path, symbol }) => path === mutation.target.path && symbol === mutation.target.symbol,
+  );
+  return target === undefined
+    ? [`${mutation.target.path}#${mutation.target.symbol} was not resolved`]
+    : decisionBoundViolations(target);
 }
 
 function callsNamed(sourceFile: ts.Node, name: string): ts.CallExpression[] {
@@ -353,7 +388,7 @@ describe('provider response serviceability decision layers', () => {
     expect(violations).toEqual([]);
   });
 
-  it('inventories every non-empty serviceability decision category and every named symbol', () => {
+  it('resolves a non-vacuous transitive serviceability decision closure across project calls and callbacks', () => {
     const inventory = decisionClosureInventory();
     expect(Object.keys(inventory).length).toBeGreaterThan(0);
     expect(Object.entries(inventory).filter(([, symbols]) => symbols.length === 0)).toEqual([]);
@@ -362,12 +397,27 @@ describe('provider response serviceability decision layers', () => {
       expect.arrayContaining(['hostAdmissionForPhase', 'assertFreshPlacementAllowed', 'observeProviderResponse']),
     );
 
-    const missingSymbols = Object.values(inventory)
-      .flat()
-      .flatMap((spec) =>
-        namedFunction(parse(spec.path), spec.symbol) === undefined ? [`${spec.path}:${spec.symbol}`] : [],
-      );
-    expect(missingSymbols).toEqual([]);
+    const analyses = Object.values(DECISION_CLOSURE_ANALYSIS);
+    expect(analyses.flatMap(({ unresolvedCalls }) => unresolvedCalls)).toEqual([]);
+    expect(analyses.reduce((count, { inspectedCallCount }) => count + inspectedCallCount, 0)).toBeGreaterThan(0);
+    expect(analyses.flatMap(({ edges }) => edges).length).toBeGreaterThan(0);
+    expect(
+      analyses.flatMap(({ edges }) => edges).filter(({ from, to }) => from.path !== to.path).length,
+    ).toBeGreaterThan(0);
+    expect(analyses.flatMap(({ edges }) => edges).filter(({ kind }) => kind === 'callback').length).toBeGreaterThan(0);
+    expect(
+      new Set(
+        Object.values(inventory)
+          .flat()
+          .map(({ path, symbol }) => `${path}#${symbol}`),
+      ).size,
+    ).toBeGreaterThan(
+      new Set(
+        Object.values(STATIC_SERVICEABILITY_DECISION_SYMBOLS)
+          .flat()
+          .map(({ path, symbol }) => `${path}#${symbol}`),
+      ).size,
+    );
 
     const classifierSymbols = new Set(inventory.providerClassifiers?.map((spec) => spec.symbol) ?? []);
     const uninventoriedRegistrations = [...registeredClassifiers()].flatMap(([provider, classifier]) =>
@@ -382,6 +432,40 @@ describe('provider response serviceability decision layers', () => {
       .flatMap(([, symbols]) => symbols);
     const violations = decisionSymbols.flatMap(decisionBoundViolations);
     expect(violations).toEqual([]);
+  });
+
+  it('keeps the completed-response transport fact closure free of clocks and numeric bounds', () => {
+    expect(TRANSPORT_FACT_ANALYSIS.unresolvedCalls).toEqual([]);
+    expect(TRANSPORT_FACT_ANALYSIS.roots).toHaveLength(1);
+    expect(TRANSPORT_FACT_ANALYSIS.inspectedCallCount).toBeGreaterThan(0);
+    expect(TRANSPORT_FACT_ANALYSIS.edges.length).toBeGreaterThan(0);
+    const transportCallables = TRANSPORT_FACT_ANALYSIS.callables.filter(({ path }) => path === TRANSPORT);
+    expect(transportCallables.length).toBeGreaterThan(0);
+    expect(transportCallables.flatMap(decisionBoundViolations)).toEqual([]);
+  });
+
+  it.each(DECISION_CLOSURE_MUTATIONS)(
+    'rejects the $id mutation through its own resolved callable signature',
+    (mutation) => {
+      const violations = decisionClosureMutationViolations(mutation);
+      expect(violations.length).toBeGreaterThan(0);
+      expect(violations.some((violation) => violation.includes(mutation.signature))).toBe(true);
+    },
+  );
+
+  it('fails closed when an imported project callee has no checker-resolved implementation', () => {
+    const analysis = analyzeCallableClosure(MUTATION_FIXTURE_CONTEXT, [
+      { path: fixturePath('unresolved-root.ts'), symbol: 'unresolvedRoot' },
+    ]);
+    expect(analysis.inspectedCallCount).toBeGreaterThan(0);
+    expect(analysis.unresolvedCalls).toEqual([
+      expect.stringContaining(`${fixturePath('unresolved-root.ts')}#unresolvedRoot`),
+    ]);
+  });
+
+  it('keeps the opt-in decision-closure mutation probe clean', () => {
+    const selected = DECISION_CLOSURE_MUTATIONS.find(({ id }) => id === activeServiceabilityMutation());
+    expect(selected === undefined ? [] : decisionClosureMutationViolations(selected)).toEqual([]);
   });
 
   it('wires a live sink through both host owners and the coordinator spawn forwarder', () => {

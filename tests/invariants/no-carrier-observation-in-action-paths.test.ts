@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -11,23 +10,25 @@ import {
   type ParsedImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
 import {
-  serviceabilityDecisionClosureInventory,
+  analyzeCallableExpressionClosure,
+  createCallableClosureContext,
+  directCallableCalls,
+  serviceabilityDecisionClosureAnalysis,
   type DecisionSymbol,
 } from './provider-serviceability-decision-inventory.js';
+import {
+  activeServiceabilityMutation,
+  fixturePath,
+  serviceabilityMutationFixtureContext,
+} from './provider-serviceability-call-closure-fixture.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(join(REPO_ROOT, 'src'));
 const IMPORT_EDGES: ParsedImportEdge[] = parseProductionImportEdges(REPO_ROOT, PRODUCTION_FILE_PATHS);
 const CANONICAL_FILES = new Set(PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath)));
-const PRODUCTION_FILES_BY_CANONICAL_PATH = new Map(
-  PRODUCTION_FILE_PATHS.map((filePath) => [toCanonicalSrcPath(REPO_ROOT, filePath), filePath] as const),
-);
-const SOURCE_FILES_BY_CANONICAL_PATH = new Map(
-  [...PRODUCTION_FILES_BY_CANONICAL_PATH].map(([path, filePath]) => [
-    path,
-    ts.createSourceFile(filePath, readFileSync(filePath, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS),
-  ]),
-);
+const CALLABLE_CONTEXT = createCallableClosureContext(REPO_ROOT, PRODUCTION_FILE_PATHS);
+const SOURCE_FILES_BY_CANONICAL_PATH = CALLABLE_CONTEXT.sourceFilesByPath;
+const MUTATION_FIXTURE_CONTEXT = serviceabilityMutationFixtureContext();
 const SERVICEABILITY_CLASSIFIER_PATH = /^src\/providers\/[^/]+\/serviceability\.ts$/u;
 const SERVICEABILITY_COMPOSITION = 'src/providers/bootstrap.ts';
 const SERVICEABILITY_SEAM = 'src/providers/serviceability.ts';
@@ -114,14 +115,19 @@ type DecisionAuthority = DecisionSymbol &
 
 function permittedDecisionImporters(category: string, decision: DecisionSymbol): readonly string[] {
   if (category === 'classifierDispatchers') {
-    return decision.path === SERVICEABILITY_COMPOSITION ? [SERVICEABILITY_SEAM] : [];
+    return decision.path === SERVICEABILITY_COMPOSITION && decision.symbol === 'classifyProviderResponseServiceability'
+      ? [SERVICEABILITY_SEAM]
+      : [];
   }
   if (category === 'providerClassifiers') {
+    if (!decision.symbol.startsWith('classify')) return [];
     const match = SERVICEABILITY_CLASSIFIER_PATH.exec(decision.path);
     if (match === null) throw new Error(`Unexpected provider classifier path ${decision.path}`);
     return [decision.path.replace(/serviceability\.ts$/u, 'definition.ts')];
   }
-  if (category === 'serviceabilityReducers') return [HOST_ADMISSION];
+  if (category === 'serviceabilityReducers') {
+    return decision.symbol === 'reduceHostServiceability' ? [HOST_ADMISSION] : [];
+  }
   if (category === 'admissionSymbols') {
     if (decision.symbol === 'createHostAdmissionCollection') {
       return [SERVICEABILITY_SEAM, COORDINATOR_OWNER, COORDINATOR_WORLD];
@@ -130,7 +136,12 @@ function permittedDecisionImporters(category: string, decision: DecisionSymbol):
     // administration facade legitimately reuse it without obtaining a serviceability verdict; keeping the
     // exceptions exact preserves closure scanning while any new runtime consumer still fails closed.
     if (decision.symbol === 'exactHostRefsMatch') {
-      return [COORDINATOR_OWNER, 'src/coordinator/services/provider-host-administration.ts', PROXY_OWNER];
+      return [
+        COORDINATOR_OWNER,
+        COORDINATOR_WORLD,
+        'src/coordinator/services/provider-host-administration.ts',
+        PROXY_OWNER,
+      ];
     }
     return [];
   }
@@ -138,23 +149,50 @@ function permittedDecisionImporters(category: string, decision: DecisionSymbol):
     if (decision.symbol === 'createBuiltInProviderHostAdmission') {
       return [COORDINATOR_ADMISSION_LEAF, PROXY_ADMISSION_LEAF];
     }
-    return decision.path === COORDINATOR_ADMISSION_LEAF ? [COORDINATOR_COMPOSITION] : [PROXY_OWNER];
+    if (decision.path === COORDINATOR_ADMISSION_LEAF && decision.symbol === 'createCoordinatorProviderHostAdmission') {
+      return [COORDINATOR_COMPOSITION];
+    }
+    return decision.path === PROXY_ADMISSION_LEAF && decision.symbol === 'createProxyProviderHostAdmission'
+      ? [PROXY_OWNER]
+      : [];
   }
   throw new Error(`Unmapped serviceability decision category ${category}`);
 }
 
-const SERVICEABILITY_DECISION_INVENTORY = serviceabilityDecisionClosureInventory(REPO_ROOT, PRODUCTION_FILE_PATHS);
-const SERVICEABILITY_DECISION_AUTHORITIES: readonly DecisionAuthority[] = Object.entries(
-  SERVICEABILITY_DECISION_INVENTORY,
-).flatMap(([category, decisions]) =>
-  category === 'factPublishers'
-    ? []
-    : decisions.map((decision) => ({
-        ...decision,
-        category,
-        permittedImporters: permittedDecisionImporters(category, decision),
-      })),
+const SERVICEABILITY_DECISION_ANALYSIS = serviceabilityDecisionClosureAnalysis(
+  REPO_ROOT,
+  PRODUCTION_FILE_PATHS,
+  CALLABLE_CONTEXT,
 );
+const SERVICEABILITY_DECISION_INVENTORY = Object.fromEntries(
+  Object.entries(SERVICEABILITY_DECISION_ANALYSIS).map(([category, analysis]) => [
+    category,
+    analysis.callables.map(({ path, symbol }) => ({ path, symbol })),
+  ]),
+);
+const SERVICEABILITY_DECISION_AUTHORITIES: readonly DecisionAuthority[] = [
+  ...Object.entries(SERVICEABILITY_DECISION_INVENTORY)
+    .reduce((authorities, [category, decisions]) => {
+      if (category === 'factPublishers') return authorities;
+      for (const decision of decisions) {
+        const key = `${decision.path}\0${decision.symbol}`;
+        const permittedImporters = permittedDecisionImporters(category, decision);
+        const existing = authorities.get(key);
+        authorities.set(
+          key,
+          existing === undefined
+            ? { ...decision, category, permittedImporters }
+            : {
+                ...existing,
+                category: `${existing.category},${category}`,
+                permittedImporters: [...new Set([...existing.permittedImporters, ...permittedImporters])],
+              },
+        );
+      }
+      return authorities;
+    }, new Map<string, DecisionAuthority>())
+    .values(),
+];
 
 /**
  * Runtime consumers allowed to participate in the serviceability decision. The two owner modules are absent
@@ -192,6 +230,15 @@ const OWNER_OBSERVATION_BOUNDARIES: readonly OwnerObservationBoundary[] = [
     sink: { argument: 1 },
   },
 ];
+const OWNER_WRAPPER_CLOSE_MUTATION = {
+  id: 'owner-wrapper-close',
+  boundary: {
+    module: fixturePath('owner-root.ts'),
+    transportCall: 'spawnProviderTransport',
+    sink: { property: 'observeProviderResponse' },
+  },
+  signature: `${fixturePath('owner-wrapper.ts')}:2:3 handle.close`,
+} as const;
 
 /** Named capabilities a serviceability decision must never reach over runtime imports. */
 const DESTRUCTIVE_CAPABILITY_ROOTS = [
@@ -548,75 +595,8 @@ function constrainedLeafImportViolations(edges: readonly ParsedImportEdge[], lea
     .map((edge) => `${leaf.module} -> ${edge.target} (${edge.via} ${edge.specifier})`);
 }
 
-type CallableNode = ts.FunctionDeclaration | ts.MethodDeclaration | ts.FunctionExpression | ts.ArrowFunction;
-
-type LocalCallable = Readonly<{
-  node: CallableNode;
-  label: string;
-  className?: string;
-}>;
-
-type LocalCallableIndex = Readonly<{
-  topLevel: ReadonlyMap<string, LocalCallable>;
-  methods: ReadonlyMap<string, ReadonlyMap<string, LocalCallable>>;
-}>;
-
 function callableName(name: ts.PropertyName | undefined): string | undefined {
   return name !== undefined && (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) ? name.text : undefined;
-}
-
-function callableIndex(sourceFile: ts.SourceFile): LocalCallableIndex {
-  const topLevel = new Map<string, LocalCallable>();
-  const methods = new Map<string, ReadonlyMap<string, LocalCallable>>();
-
-  for (const statement of sourceFile.statements) {
-    if (ts.isFunctionDeclaration(statement) && statement.name !== undefined) {
-      topLevel.set(statement.name.text, { node: statement, label: statement.name.text });
-      continue;
-    }
-    if (ts.isVariableStatement(statement)) {
-      for (const declaration of statement.declarationList.declarations) {
-        if (
-          ts.isIdentifier(declaration.name) &&
-          declaration.initializer !== undefined &&
-          (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))
-        ) {
-          topLevel.set(declaration.name.text, { node: declaration.initializer, label: declaration.name.text });
-        }
-      }
-      continue;
-    }
-    if (!ts.isClassDeclaration(statement) || statement.name === undefined) continue;
-    const className = statement.name.text;
-    const classMethods = new Map<string, LocalCallable>();
-    for (const member of statement.members) {
-      if (ts.isMethodDeclaration(member)) {
-        const name = callableName(member.name);
-        if (name !== undefined) classMethods.set(name, { node: member, label: `${className}.${name}`, className });
-      } else if (
-        ts.isPropertyDeclaration(member) &&
-        member.initializer !== undefined &&
-        (ts.isArrowFunction(member.initializer) || ts.isFunctionExpression(member.initializer))
-      ) {
-        const name = callableName(member.name);
-        if (name !== undefined) {
-          classMethods.set(name, { node: member.initializer, label: `${className}.${name}`, className });
-        }
-      }
-    }
-    methods.set(className, classMethods);
-  }
-
-  return { topLevel, methods };
-}
-
-function enclosingClassName(node: ts.Node): string | undefined {
-  let current: ts.Node | undefined = node.parent;
-  while (current !== undefined) {
-    if (ts.isClassDeclaration(current)) return current.name?.text;
-    current = current.parent;
-  }
-  return undefined;
 }
 
 function unwrapExpression(expression: ts.Expression): ts.Expression {
@@ -631,26 +611,6 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
     current = current.expression;
   }
   return current;
-}
-
-function resolveCallable(
-  expression: ts.Expression,
-  className: string | undefined,
-  index: LocalCallableIndex,
-): LocalCallable | undefined {
-  const unwrapped = unwrapExpression(expression);
-  if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) {
-    return { node: unwrapped, label: 'inline response sink', className: enclosingClassName(unwrapped) };
-  }
-  if (ts.isIdentifier(unwrapped)) return index.topLevel.get(unwrapped.text);
-  if (
-    className !== undefined &&
-    ts.isPropertyAccessExpression(unwrapped) &&
-    unwrapped.expression.kind === ts.SyntaxKind.ThisKeyword
-  ) {
-    return index.methods.get(className)?.get(unwrapped.name.text);
-  }
-  return undefined;
 }
 
 function calledName(call: ts.CallExpression): string | undefined {
@@ -702,16 +662,6 @@ function boundarySinkExpressions(
   return { transportCalls, sinks };
 }
 
-function directCalls(callable: CallableNode): readonly ts.CallExpression[] {
-  const calls: ts.CallExpression[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) calls.push(node);
-    ts.forEachChild(node, visit);
-  };
-  visit(callable);
-  return calls;
-}
-
 function isAdmissionObservation(call: ts.CallExpression, sourceFile: ts.SourceFile): boolean {
   const expression = unwrapExpression(call.expression);
   if (!ts.isPropertyAccessExpression(expression) || expression.name.text !== 'observe') return false;
@@ -728,34 +678,34 @@ type OwnerObservationProof = Readonly<{
   transportCalls: number;
   sinkCount: number;
   rootCount: number;
+  visitedCallableCount: number;
+  inspectedCallCount: number;
   observationPaths: readonly string[];
   physicalCloseSites: readonly string[];
+  unresolvedCalls: readonly string[];
   violations: readonly string[];
 }>;
 
 /**
  * The owner rule is deliberately callable-grained rather than module-grained: it starts at the exact
- * transport response sink and follows source-local top-level functions and same-class `this.method()` calls.
- * A direct `.close()` or a call imported from a named destructive-capability module ends the path. The
- * non-vacuity fields make a moved/unresolved sink or a module with no physical-close capability fail instead
- * of silently weakening this deliberately narrow analysis.
+ * transport response sink and uses the shared TypeScript-checker closure to follow imported aliases, concrete
+ * methods, registry values, and statically identifiable callback targets across `src/`. Calls through injected
+ * interface/runtime callback boundaries are outside that static scope; every other unresolved project call is
+ * reported fail-closed. A direct `.close()` or a call imported from a named destructive-capability module ends
+ * the path. The non-vacuity fields make a moved sink, empty resolved walk, or owner with no close capability
+ * fail instead of silently weakening the analysis.
  */
-function ownerObservationProof(boundary: OwnerObservationBoundary): OwnerObservationProof {
-  const sourceFile = SOURCE_FILES_BY_CANONICAL_PATH.get(boundary.module);
+function ownerObservationProof(boundary: OwnerObservationBoundary, context = CALLABLE_CONTEXT): OwnerObservationProof {
+  const sourceFile = context.sourceFilesByPath.get(boundary.module);
   if (sourceFile === undefined) throw new Error(`Missing owner module ${boundary.module}`);
-  const index = callableIndex(sourceFile);
   const boundarySinks = boundarySinkExpressions(sourceFile, boundary);
-  const roots = boundarySinks.sinks.flatMap((sink, sinkIndex) => {
-    const callable = resolveCallable(sink, enclosingClassName(sink), index);
-    return callable === undefined
-      ? []
-      : [
-          {
-            ...callable,
-            label: `${boundary.module}#${boundary.transportCall}.responseSink[${sinkIndex}]`,
-          },
-        ];
-  });
+  const closure = analyzeCallableExpressionClosure(
+    context,
+    boundarySinks.sinks.map((expression, sinkIndex) => ({
+      expression,
+      label: `${boundary.module}#${boundary.transportCall}.responseSink[${sinkIndex}]`,
+    })),
+  );
   const physicalCloseSites: string[] = [];
   const collectCloseSites = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && isPhysicalCloseCall(boundary.module, node)) {
@@ -767,32 +717,26 @@ function ownerObservationProof(boundary: OwnerObservationBoundary): OwnerObserva
 
   const observationPaths: string[] = [];
   const violations: string[] = [];
-  const queue = roots.map((root) => ({ callable: root, path: [root.label] as readonly string[] }));
-  const seen = new Set<CallableNode>();
-  while (queue.length > 0) {
-    const current = queue.shift() as Readonly<{ callable: LocalCallable; path: readonly string[] }>;
-    if (seen.has(current.callable.node)) continue;
-    seen.add(current.callable.node);
-    for (const call of directCalls(current.callable.node)) {
-      if (isAdmissionObservation(call, sourceFile)) {
-        observationPaths.push([...current.path, callSite(sourceFile, call)].join(' -> '));
+  for (const current of closure.callables) {
+    for (const call of directCallableCalls(current.node)) {
+      if (isAdmissionObservation(call, current.sourceFile)) {
+        observationPaths.push([...current.trace, callSite(current.sourceFile, call)].join(' -> '));
       }
-      if (isPhysicalCloseCall(boundary.module, call)) {
-        violations.push([...current.path, callSite(sourceFile, call)].join(' -> '));
-        continue;
+      if (isPhysicalCloseCall(current.path, call)) {
+        violations.push([...current.trace, callSite(current.sourceFile, call)].join(' -> '));
       }
-      const target = resolveCallable(call.expression, current.callable.className, index);
-      if (target !== undefined)
-        queue.push({ callable: target, path: [...current.path, `${boundary.module}#${target.label}`] });
     }
   }
 
   return {
     transportCalls: boundarySinks.transportCalls,
     sinkCount: boundarySinks.sinks.length,
-    rootCount: roots.length,
+    rootCount: closure.roots.length,
+    visitedCallableCount: closure.callables.length,
+    inspectedCallCount: closure.inspectedCallCount,
     observationPaths: [...new Set(observationPaths)].sort(),
     physicalCloseSites: [...new Set(physicalCloseSites)].sort(),
+    unresolvedCalls: closure.unresolvedCalls,
     violations: [...new Set(violations)].sort(),
   };
 }
@@ -863,8 +807,18 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
     expect(decisionEntries.length).toBeGreaterThan(0);
     expect(decisionEntries.filter(([, decisions]) => decisions.length === 0)).toEqual([]);
     expect(SERVICEABILITY_DECISION_AUTHORITIES).toHaveLength(
-      decisionEntries.reduce((count, [, decisions]) => count + decisions.length, 0),
+      new Set(decisionEntries.flatMap(([, decisions]) => decisions.map(({ path, symbol }) => `${path}#${symbol}`)))
+        .size,
     );
+    expect(
+      decisionEntries.flatMap(([category]) => SERVICEABILITY_DECISION_ANALYSIS[category]?.unresolvedCalls ?? []),
+    ).toEqual([]);
+    expect(
+      decisionEntries.reduce(
+        (count, [category]) => count + (SERVICEABILITY_DECISION_ANALYSIS[category]?.inspectedCallCount ?? 0),
+        0,
+      ),
+    ).toBeGreaterThan(0);
     expect(unmatchedRoots(SERVICEABILITY_DECISION_AUTHORITIES.map((authority) => authority.path))).toEqual([]);
     expect(
       unmatchedRoots(SERVICEABILITY_DECISION_AUTHORITIES.flatMap((authority) => authority.permittedImporters)),
@@ -1024,11 +978,31 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
       expect(proof.transportCalls).toBeGreaterThan(0);
       expect(proof.sinkCount).toBe(proof.transportCalls);
       expect(proof.rootCount).toBe(proof.sinkCount);
+      expect(proof.visitedCallableCount).toBeGreaterThanOrEqual(proof.rootCount);
+      expect(proof.inspectedCallCount).toBeGreaterThan(0);
       expect(proof.observationPaths.length).toBeGreaterThan(0);
       expect(proof.physicalCloseSites.length).toBeGreaterThan(0);
+      expect(proof.unresolvedCalls).toEqual([]);
       expect(proof.violations).toEqual([]);
     },
   );
+
+  it('rejects the imported wrapper-to-close mutation through its resolved callable signature', () => {
+    const proof = ownerObservationProof(OWNER_WRAPPER_CLOSE_MUTATION.boundary, MUTATION_FIXTURE_CONTEXT);
+    expect(proof.transportCalls).toBe(1);
+    expect(proof.rootCount).toBe(1);
+    expect(proof.visitedCallableCount).toBeGreaterThan(proof.rootCount);
+    expect(proof.unresolvedCalls).toEqual([]);
+    expect(proof.violations.some((violation) => violation.includes(OWNER_WRAPPER_CLOSE_MUTATION.signature))).toBe(true);
+  });
+
+  it('keeps the opt-in owner-wrapper mutation probe clean', () => {
+    const active = activeServiceabilityMutation() === OWNER_WRAPPER_CLOSE_MUTATION.id;
+    const violations = active
+      ? ownerObservationProof(OWNER_WRAPPER_CLOSE_MUTATION.boundary, MUTATION_FIXTURE_CONTEXT).violations
+      : [];
+    expect(violations).toEqual([]);
+  });
 
   it.each(CONSTRAINED_ADMISSION_LEAVES.map((leaf) => [leaf.module, leaf] as const))(
     '%s imports only the classifier and narrow admission port modules',

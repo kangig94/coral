@@ -500,10 +500,56 @@ export async function executeCatalogRequest(
     return authorizationFailure(authz, principal);
   }
 
-  switch (spec.name) {
-    case 'coordinator.recovery_quarantine.clear':
-      return unary(await rpcPorts.recoveryQuarantine.clear(request as RecoveryQuarantineClearRequest, abortSignal));
+  return dispatchCatalogRequest({ spec, request, canonicalRequest, rpcPorts, principal, abortSignal });
+}
 
+type AuthorizedCatalogRequest = Readonly<{
+  spec: RpcMethodSpec<unknown, unknown>;
+  request: unknown;
+  canonicalRequest: ReturnType<typeof canonicalizeCatalogRequest>;
+  rpcPorts: HttpHandlerPorts;
+  principal: Principal;
+  abortSignal: AbortSignal | undefined;
+}>;
+
+function dispatchCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  if (context.spec.name.startsWith('jobs.')) return executeJobsCatalogRequest(context);
+  if (context.spec.name.startsWith('discuss.')) return executeDiscussCatalogRequest(context);
+  if (context.spec.name.startsWith('kb.')) return executeKnowledgeBaseCatalogRequest(context);
+  return executeCoordinatorCatalogRequest(context);
+}
+
+function executeCoordinatorCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const route = context.spec.name;
+  if (route.startsWith('coordinator.provider_host.')) return executeProviderHostCatalogRequest(context);
+
+  switch (route) {
+    case 'coordinator.recovery_quarantine.clear':
+      return executeRecoveryQuarantineCatalogRequest(context);
+    case 'sessions.create':
+      return executeCreateSessionCatalogRequest(context);
+    case 'workflow.run':
+      return executeWorkflowCatalogRequest(context);
+    default:
+      return executeExpansionCatalogRequest(context);
+  }
+}
+
+async function executeRecoveryQuarantineCatalogRequest({
+  request,
+  rpcPorts,
+  abortSignal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  return unary(await rpcPorts.recoveryQuarantine.clear(request as RecoveryQuarantineClearRequest, abortSignal));
+}
+
+async function executeProviderHostCatalogRequest({
+  spec,
+  request,
+  canonicalRequest,
+  rpcPorts,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (spec.name) {
     case 'coordinator.provider_host.list': {
       if (rpcPorts.providerHosts === undefined) {
         return providerHostAdministrationFailure({
@@ -562,75 +608,97 @@ export async function executeCatalogRequest(
       }
     }
 
-    case 'sessions.create': {
-      const parsed = request as Record<string, unknown> & { provider: string; prompt: string };
-      const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unaryHttp(recovering);
-      const unconfigured = ensureProviderScopeConfigured(rpcPorts, principal);
-      if (unconfigured) return unaryHttp(unconfigured);
-      const projectRoot = canonicalRequest.projectRoot;
-      const cwd = canonicalRequest.authorizationRoot;
-      if (projectRoot === undefined || cwd === undefined) {
-        return unaryHttp(domainResultToHttp(invalidRequestResult()));
-      }
-      const ctx = buildBodyInvocationContext(parsed, projectRoot, rpcPorts, principal);
-      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+    default:
+      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+  }
+}
 
-      const decision = await rpcPorts.sessions.start(
-        parsed.provider,
-        {
-          prompt: parsed.prompt,
-          ...(typeof parsed.agent === 'string' ? { agent: parsed.agent } : {}),
-          ...createSessionInputFields(parsed, cwd),
-        },
-        ctx,
-      );
-      return unaryHttp(launchToHttp(decision, 201));
-    }
+async function executeCreateSessionCatalogRequest({
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const parsed = request as Record<string, unknown> & { provider: string; prompt: string };
+  const recovering = ensureLaunchFenceInactive(rpcPorts);
+  if (recovering) return unaryHttp(recovering);
+  const unconfigured = ensureProviderScopeConfigured(rpcPorts, principal);
+  if (unconfigured) return unaryHttp(unconfigured);
+  const projectRoot = canonicalRequest.projectRoot;
+  const cwd = canonicalRequest.authorizationRoot;
+  if (projectRoot === undefined || cwd === undefined) {
+    return unaryHttp(domainResultToHttp(invalidRequestResult()));
+  }
+  const ctx = buildBodyInvocationContext(parsed, projectRoot, rpcPorts, principal);
+  if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-    case 'workflow.run': {
-      const parsed = request as Record<string, unknown>;
-      const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unaryHttp(recovering);
-      const unconfigured = ensureProviderScopeConfigured(rpcPorts, principal);
-      if (unconfigured) return unaryHttp(unconfigured);
-      const projectRoot = canonicalRequest.projectRoot;
-      const workDir = canonicalRequest.authorizationRoot;
-      if (projectRoot === undefined || workDir === undefined) {
-        return unaryHttp(domainResultToHttp(invalidRequestResult()));
-      }
-      const ctx = buildBodyInvocationContext(parsed, projectRoot, rpcPorts, principal);
-      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
+  const decision = await rpcPorts.sessions.start(
+    parsed.provider,
+    {
+      prompt: parsed.prompt,
+      ...(typeof parsed.agent === 'string' ? { agent: parsed.agent } : {}),
+      ...createSessionInputFields(parsed, cwd),
+    },
+    ctx,
+  );
+  return unaryHttp(launchToHttp(decision, 201));
+}
 
-      // Strip only the pure transport-context keys that are NOT workflow command
-      // fields. `owner` is a genuine workflowCommandSchema field and must reach
-      // executeWorkflow, so this deliberately does not use stripTransportContextKeys.
-      const {
-        projectRoot: _projectRoot,
-        effort: _effort,
-        claudeModelCap: _claudeModelCap,
-        claudeTransport: _claudeTransport,
-        networkEnv: _networkEnv,
-        coralEnv: _coralEnv,
-        providerScope: _providerScope,
-        ...rawWorkflowCommand
-      } = parsed;
-      const workflowCommand: WorkflowPortInput = {
-        expression: String(rawWorkflowCommand.expression),
-        startPrompt: String(rawWorkflowCommand.startPrompt),
-        provider: String(rawWorkflowCommand.provider),
-        ...(typeof rawWorkflowCommand.context === 'string' ? { context: rawWorkflowCommand.context } : {}),
-        ...(typeof rawWorkflowCommand.owner === 'string' ? { owner: rawWorkflowCommand.owner } : {}),
-        workDir,
-      };
-      const result = await rpcPorts.workflows.execute(workflowCommand, ctx);
-      if (result.kind === 'invalid_request') {
-        return unaryHttp(domainResultToHttp(invalidRequestResult(result.message, result.detail)));
-      }
+async function executeWorkflowCatalogRequest({
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const parsed = request as Record<string, unknown>;
+  const recovering = ensureLaunchFenceInactive(rpcPorts);
+  if (recovering) return unaryHttp(recovering);
+  const unconfigured = ensureProviderScopeConfigured(rpcPorts, principal);
+  if (unconfigured) return unaryHttp(unconfigured);
+  const projectRoot = canonicalRequest.projectRoot;
+  const workDir = canonicalRequest.authorizationRoot;
+  if (projectRoot === undefined || workDir === undefined) {
+    return unaryHttp(domainResultToHttp(invalidRequestResult()));
+  }
+  const ctx = buildBodyInvocationContext(parsed, projectRoot, rpcPorts, principal);
+  if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-      return unaryHttp(launchToHttp(result.decision, 202));
-    }
+  // Strip only the pure transport-context keys that are NOT workflow command
+  // fields. `owner` is a genuine workflowCommandSchema field and must reach
+  // executeWorkflow, so this deliberately does not use stripTransportContextKeys.
+  const {
+    projectRoot: _projectRoot,
+    effort: _effort,
+    claudeModelCap: _claudeModelCap,
+    claudeTransport: _claudeTransport,
+    networkEnv: _networkEnv,
+    coralEnv: _coralEnv,
+    providerScope: _providerScope,
+    ...rawWorkflowCommand
+  } = parsed;
+  const workflowCommand: WorkflowPortInput = {
+    expression: String(rawWorkflowCommand.expression),
+    startPrompt: String(rawWorkflowCommand.startPrompt),
+    provider: String(rawWorkflowCommand.provider),
+    ...(typeof rawWorkflowCommand.context === 'string' ? { context: rawWorkflowCommand.context } : {}),
+    ...(typeof rawWorkflowCommand.owner === 'string' ? { owner: rawWorkflowCommand.owner } : {}),
+    workDir,
+  };
+  const result = await rpcPorts.workflows.execute(workflowCommand, ctx);
+  if (result.kind === 'invalid_request') {
+    return unaryHttp(domainResultToHttp(invalidRequestResult(result.message, result.detail)));
+  }
 
+  return unaryHttp(launchToHttp(result.decision, 202));
+}
+
+async function executeExpansionCatalogRequest({
+  spec,
+  request,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (spec.name) {
     case 'coordinator.equipExpansion': {
       const parsed = request as { name: string };
       return unary(await rpcPorts.expansion.equipExpansion(parsed, principal));
@@ -660,6 +728,18 @@ export async function executeCatalogRequest(
       return unary(await rpcPorts.expansion.readBinding({ binding }, principal));
     }
 
+    default:
+      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+  }
+}
+
+async function executeJobsCatalogRequest({
+  spec,
+  request,
+  rpcPorts,
+  abortSignal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (spec.name) {
     case 'jobs.abort': {
       const parsed = request as { jobs: string[]; projectRoot: string };
       const scopeCheck = rpcPorts.jobs.scopeCheck(parsed.jobs, parsed.projectRoot);
@@ -755,6 +835,19 @@ export async function executeCatalogRequest(
       };
     }
 
+    default:
+      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+  }
+}
+
+async function executeDiscussCatalogRequest({
+  spec,
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (spec.name) {
     case 'discuss.persona.generate':
       return unaryHttp(domainResultToHttp(rpcPorts.discuss.seed(request)));
 
@@ -832,6 +925,34 @@ export async function executeCatalogRequest(
       return unaryHttp(domainResultToHttp(await rpcPorts.discuss.abort({ session: parsed.sessionId }, context)));
     }
 
+    default:
+      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+  }
+}
+
+function executeKnowledgeBaseCatalogRequest(context: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  const route = context.spec.name;
+  if (route.startsWith('kb.note.')) return executeKnowledgeBaseNoteCatalogRequest(context);
+  if (route.startsWith('kb.source.')) return executeKnowledgeBaseSourceCatalogRequest(context);
+  if (route.startsWith('kb.wiki.')) return executeKnowledgeBaseWikiCatalogRequest(context);
+  if (route.startsWith('kb.community.') || route === 'kb.wake_up') {
+    return executeKnowledgeBaseCommunityCatalogRequest(context);
+  }
+  if (route.startsWith('kb.memo.')) return executeKnowledgeBaseMemoCatalogRequest(context);
+  if (route.startsWith('kb.principle') || route === 'kb.reindex') {
+    return executeKnowledgeBasePrinciplesCatalogRequest(context);
+  }
+  return executeKnowledgeBaseSearchCatalogRequest(context);
+}
+
+async function executeKnowledgeBaseSearchCatalogRequest({
+  spec,
+  request,
+  rpcPorts,
+  principal,
+  abortSignal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (spec.name) {
     case 'kb.entries.search': {
       const parsed = request as {
         q: string;
@@ -853,6 +974,19 @@ export async function executeCatalogRequest(
     case 'kb.diagnose':
       return unaryHttp(domainResultToHttp(await rpcPorts.kb.diagnose(principal)));
 
+    default:
+      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+  }
+}
+
+async function executeKnowledgeBaseNoteCatalogRequest({
+  spec,
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (spec.name) {
     case 'kb.note.read': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
@@ -893,6 +1027,19 @@ export async function executeCatalogRequest(
       );
     }
 
+    default:
+      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+  }
+}
+
+async function executeKnowledgeBaseSourceCatalogRequest({
+  spec,
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (spec.name) {
     case 'kb.source.list':
       return unaryHttp(domainResultToHttp(await rpcPorts.kb.listSources(principal)));
 
@@ -935,6 +1082,19 @@ export async function executeCatalogRequest(
       );
     }
 
+    default:
+      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+  }
+}
+
+async function executeKnowledgeBaseWikiCatalogRequest({
+  spec,
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (spec.name) {
     case 'kb.wiki.list':
       return unaryHttp(domainResultToHttp(await rpcPorts.kb.listWikis(principal)));
 
@@ -1022,6 +1182,19 @@ export async function executeCatalogRequest(
       );
     }
 
+    default:
+      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+  }
+}
+
+async function executeKnowledgeBaseCommunityCatalogRequest({
+  spec,
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (spec.name) {
     case 'kb.wake_up': {
       const parsed = request as Record<string, unknown>;
       return unaryHttp(domainResultToHttp(await rpcPorts.kb.wakeUp(parsed, principal)));
@@ -1058,6 +1231,19 @@ export async function executeCatalogRequest(
       );
     }
 
+    default:
+      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+  }
+}
+
+async function executeKnowledgeBaseMemoCatalogRequest({
+  spec,
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (spec.name) {
     case 'kb.memo.list': {
       const parsed = request as { projectRoot: string; owner?: string };
       return unaryHttp(
@@ -1115,6 +1301,19 @@ export async function executeCatalogRequest(
       );
     }
 
+    default:
+      throw new Error(`Unhandled transport RPC route: ${spec.name}`);
+  }
+}
+
+async function executeKnowledgeBasePrinciplesCatalogRequest({
+  spec,
+  request,
+  canonicalRequest,
+  rpcPorts,
+  principal,
+}: AuthorizedCatalogRequest): Promise<CatalogRequestExecution> {
+  switch (spec.name) {
     case 'kb.principles.list': {
       const parsed = request as { q?: string; top_k?: number; verbose?: boolean };
       return unaryHttp(

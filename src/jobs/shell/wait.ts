@@ -5,6 +5,7 @@ import {
   type JobEvent,
   type JobProgressEvent,
   type JobStatus,
+  type JobTerminal,
   type JobTerminalEvent,
 } from '../records.js';
 import {
@@ -26,6 +27,10 @@ import { backendLog } from '../../infra/backend-log.js';
 import { resultPathFor as defaultResultPathFor } from '../terminal/export.js';
 import type { UsageSummary } from '../../providers/contract.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import {
+  providerHostUnserviceableMessage,
+  PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING,
+} from '../../providers/host-admission.js';
 
 const ABORTED = 'wait-aborted' as const;
 const TIMED_OUT = 'wait-timed-out' as const;
@@ -55,6 +60,7 @@ function toTerminalWaitEvent(
   resultPath: string,
   continuity: ContinuitySnapshot | null,
   usage: UsageSummary | undefined = event.usage,
+  result: JobTerminal = event.result,
 ): WaitStreamEvent {
   const remainingJobIds: string[] = [];
   for (const id of pending) {
@@ -69,9 +75,31 @@ function toTerminalWaitEvent(
     seq: event.seq,
     remainingJobIds,
     resultPath,
-    result: event.result,
+    result,
     continuity,
     ...(usage === undefined ? {} : { usage }),
+  };
+}
+
+function surfaceProviderHostRecovery(event: JobTerminalEvent, detail: JobProjectionDetail): JobTerminal {
+  const outcome = event.result.outcome;
+  const runtime = detail.runtime;
+  if (
+    outcome.kind !== 'provider_exit' ||
+    runtime?.transport !== 'app-server' ||
+    runtime.providerMeta.leaseState !== 'acquired' ||
+    !detail.exit?.diagnostics.warnings?.includes(PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING)
+  ) {
+    return event.result;
+  }
+
+  const recovery = providerHostUnserviceableMessage(runtime.providerMeta.hostRef);
+  return {
+    ...event.result,
+    outcome: {
+      ...outcome,
+      note: `${outcome.note}\n\n${recovery}`,
+    },
   };
 }
 
@@ -357,12 +385,14 @@ export class WaitCoordinator {
       return toProgressWaitEvent(event);
     }
 
+    const detail = this.deps.loadJobProjectionDetail(event.jobId);
     return toTerminalWaitEvent(
       event,
       pending,
       this.resultPathFor(event.jobId),
       this.readQueryContinuity(event.jobId),
       this.readTerminalUsage(event),
+      surfaceProviderHostRecovery(event, detail),
     );
   }
 

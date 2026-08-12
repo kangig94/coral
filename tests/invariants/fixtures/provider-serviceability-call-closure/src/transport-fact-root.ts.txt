@@ -1,0 +1,8 @@
+function publishTransportFact(): Readonly<{ ok: true }> {
+  const elapsedMs = 1;
+  return Object.freeze({ ok: elapsedMs > 0 });
+}
+
+export function handleProviderServerResponse(): Readonly<{ ok: true }> {
+  return publishTransportFact();
+}

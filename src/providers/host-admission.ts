@@ -53,18 +53,40 @@ export const PROVIDER_HOST_UNSERVICEABLE_REMEDIATION: ProviderHostRemediation = 
   command: 'coral-cli backend provider-host evict <host-ref>',
 });
 
+export const PROVIDER_HOST_UNSERVICEABLE_TERMINAL_WARNING = 'Provider host was classified unserviceable.';
+
+export type ProviderHostUnserviceableFinding = Readonly<{
+  provider: string;
+  fact: ProviderResponseDiagnosticFact;
+}>;
+
+type ProviderHostUnserviceableFindingListener = (finding: ProviderHostUnserviceableFinding) => void;
+
+const providerHostUnserviceableFindingListeners = new Set<ProviderHostUnserviceableFindingListener>();
+
+export function subscribeProviderHostUnserviceableFindings(
+  listener: ProviderHostUnserviceableFindingListener,
+): () => void {
+  providerHostUnserviceableFindingListeners.add(listener);
+  return () => providerHostUnserviceableFindingListeners.delete(listener);
+}
+
+export function providerHostUnserviceableMessage(hostRef: HostRef): string {
+  const encodedHostRef = encodeHostRef(hostRef);
+  return (
+    `Provider host ${encodedHostRef} (${hostRef.provider}/${hostRef.instanceId}) is unserviceable. ` +
+    `Run coral-cli backend provider-host inspect ${encodedHostRef}, then ` +
+    `coral-cli backend provider-host evict ${encodedHostRef} before retrying fresh placement.`
+  );
+}
+
 export class ProviderHostUnserviceableError extends Error {
   readonly code = 'provider_host_unserviceable';
   readonly hostRef: HostRef;
   readonly remediation: ProviderHostRemediation;
 
   constructor(hostRef: HostRef) {
-    const encodedHostRef = encodeHostRef(hostRef);
-    super(
-      `Provider host ${encodedHostRef} (${hostRef.provider}/${hostRef.instanceId}) is unserviceable. ` +
-        `Run coral-cli backend provider-host inspect ${encodedHostRef}, then ` +
-        `coral-cli backend provider-host evict ${encodedHostRef} before retrying fresh placement.`,
-    );
+    super(providerHostUnserviceableMessage(hostRef));
     this.name = 'ProviderHostUnserviceableError';
     this.hostRef = freezeHostRef(hostRef);
     this.remediation = PROVIDER_HOST_UNSERVICEABLE_REMEDIATION;
@@ -316,15 +338,20 @@ function observeProviderResponse(
   const current = matchingCandidate(data.state, slot, ref, fact.generation);
   const placement = data.placements.get(slot);
   if (current === null || placement === undefined || !exactHostRefsMatch(placement.ref, ref)) return;
+  const serviceability = classify(placement.spec.provider, fact);
   const next = reduceHostServiceability(data.serviceability.get(slot), {
     kind: 'finding',
     instanceId: ref.instanceId,
-    serviceability: classify(placement.spec.provider, fact),
+    serviceability,
   });
   if (next === undefined) return;
   data.serviceability.set(slot, next);
   if (next.serviceability === 'unserviceable') {
     data.state = reduceHostAdmission(data.state, { kind: 'block', slot, ref, generation: fact.generation });
+  }
+  if (serviceability === 'unserviceable') {
+    const finding = Object.freeze({ provider: placement.spec.provider, fact });
+    for (const listener of providerHostUnserviceableFindingListeners) listener(finding);
   }
 }
 
