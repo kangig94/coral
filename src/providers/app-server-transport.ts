@@ -171,6 +171,21 @@ export async function spawnProviderServerTransport(params: {
   generation: number;
   observeProviderResponse: ProviderResponseObservationSink;
 }): Promise<ProviderServerHandle> {
+  const spawned = spawnProviderServerProcess(params);
+  bindProviderServerEvents(spawned.entry, spawned.pipes, params.runtime);
+  const rpc = createProviderServerRpc(spawned.entry, params.runtime);
+  await initializeSpawnedProviderServer(spawned.entry, rpc, params.options, params.runtime);
+  return exposeProviderServerHandle(spawned.entry, rpc, params.runtime);
+}
+
+type ProviderServerPipes = ReturnType<typeof requirePipedHandles>;
+
+function spawnProviderServerProcess(params: {
+  runtime: Runtime;
+  options: SpawnProviderServerOptions;
+  generation: number;
+  observeProviderResponse: ProviderResponseObservationSink;
+}): Readonly<{ entry: ProviderServerEntry; pipes: ProviderServerPipes }> {
   const { runtime, options, generation, observeProviderResponse } = params;
   if (options.signal?.aborted) {
     throw createProviderServerSpawnAbortError(options.provider, options.signal);
@@ -184,22 +199,19 @@ export async function spawnProviderServerTransport(params: {
     shell: shouldUseWindowsCommandShell(command, runtime.env.platform()),
     ...(options.exactEnv ? { env: options.exactEnv } : { envAdditions: options.extraEnv }),
   });
-  const { stdin, stdout: childStdout, stderr: childStderr } = requirePipedHandles(child, options.command);
-
+  const pipes = requirePipedHandles(child, options.command);
   const pid = child.pid;
   if (pid === undefined) {
     throw new Error(`Failed to spawn ${options.command}: child pid is unavailable`);
   }
-
-  childStdout.setEncoding('utf8');
-  childStderr.setEncoding('utf8');
+  pipes.stdout.setEncoding('utf8');
+  pipes.stderr.setEncoding('utf8');
 
   let resolveClose!: (outcome: Error | void) => void;
   const closePromise = new Promise<Error | void>((resolve) => {
     resolveClose = resolve;
   });
   const diagnostics = createProviderHostDiagnostics();
-
   const entry: ProviderServerEntry = {
     provider: options.provider,
     child,
@@ -219,45 +231,40 @@ export async function spawnProviderServerTransport(params: {
     resolveClose,
     closeOutcome: undefined,
   };
+  return Object.freeze({ entry, pipes });
+}
 
+function bindProviderServerEvents(entry: ProviderServerEntry, pipes: ProviderServerPipes, runtime: Runtime): void {
   const finalizeClose = (outcome?: Error): void => {
-    if (outcome) {
-      entry.closeOutcome = outcome;
-    }
+    if (outcome) entry.closeOutcome = outcome;
     detachProviderServer(entry, outcome);
     entry.resolveClose(entry.closeRequested ? undefined : entry.closeOutcome);
   };
 
-  childStdout.on('data', (chunk: string | Buffer) => {
+  pipes.stdout.on('data', (chunk: string | Buffer) => {
     handleProviderServerStdout(entry, chunk, runtime);
   });
-
-  childStderr.on('data', (chunk: string | Buffer) => {
+  pipes.stderr.on('data', (chunk: string | Buffer) => {
     appendProviderHostLog(entry.diagnostics, {
       observedAt: runtime.time.now(),
       stream: 'stderr',
       text: chunk.toString(),
     });
   });
-
-  stdin.on('error', (error: Error) => {
+  pipes.stdin.on('error', (error: Error) => {
     if (entry.closed) return;
     const stdinError = createProviderHostFault(entry, `stdin error: ${error.message}`);
     backendLog.error(stdinError.message, error);
     detachProviderServer(entry, stdinError);
-    gracefulKill(child, runtime);
+    gracefulKill(entry.child, runtime);
   });
-
-  child.on('error', (error: Error) => {
+  entry.child.on('error', (error: Error) => {
     const closeError = createProviderHostFault(entry, `failed: ${error.message}`);
-    if (!entry.closeRequested) {
-      backendLog.error(`Provider server ${options.provider} failed`, error);
-    }
+    if (!entry.closeRequested) backendLog.error(`Provider server ${entry.provider} failed`, error);
     detachProviderServer(entry, closeError);
     entry.resolveClose(entry.closeRequested ? undefined : closeError);
   });
-
-  child.on('close', (code, signal) => {
+  entry.child.on('close', (code, signal) => {
     if (entry.closed) {
       entry.resolveClose(entry.closeRequested ? undefined : entry.closeOutcome);
       return;
@@ -267,19 +274,16 @@ export async function spawnProviderServerTransport(params: {
     if (!entry.closeRequested) {
       const detail = signal ? `exited unexpectedly (signal ${signal})` : `exited unexpectedly (exit ${code})`;
       closeError = createProviderHostFault(entry, detail);
-      if (code !== 0 || signal !== null) {
-        backendLog.error(closeError.message);
-      }
+      if (code !== 0 || signal !== null) backendLog.error(closeError.message);
     }
     finalizeClose(closeError);
   });
+}
 
-  const rpc: ProviderServerRpc = {
+function createProviderServerRpc(entry: ProviderServerEntry, runtime: Runtime): ProviderServerRpc {
+  return {
     request: <TResult = unknown>(method: string, params: Record<string, unknown> = {}): Promise<TResult> => {
-      if (entry.closed) {
-        return Promise.reject(createProviderHostFault(entry, 'is closed'));
-      }
-
+      if (entry.closed) return Promise.reject(createProviderHostFault(entry, 'is closed'));
       const id = entry.nextRequestId;
       entry.nextRequestId += 1;
 
@@ -306,41 +310,52 @@ export async function spawnProviderServerTransport(params: {
       }
     },
   };
+}
 
-  if (options.initializeRequest) {
-    try {
-      await initializeProviderServer({
-        entry,
-        rpc,
-        request: options.initializeRequest,
-        timeoutMs: options.initializeTimeoutMs,
-        runtime,
-        signal: options.signal,
-      });
-    } catch (error) {
-      // The child is alive but rejected `initialize` (protocol/version/auth
-      // mismatch). Nothing upstream owns this handle yet, so kill and detach it
-      // here before rethrowing — otherwise the OS process leaks per failure.
-      const initError = error instanceof Error ? error : createProviderHostFault(entry, `initialize failed`);
-      detachProviderServer(entry, initError);
-      gracefulKill(child, runtime);
-      throw initError;
-    }
+async function initializeSpawnedProviderServer(
+  entry: ProviderServerEntry,
+  rpc: ProviderServerRpc,
+  options: SpawnProviderServerOptions,
+  runtime: Runtime,
+): Promise<void> {
+  if (options.initializeRequest === undefined) return;
+  try {
+    await initializeProviderServer({
+      entry,
+      rpc,
+      request: options.initializeRequest,
+      timeoutMs: options.initializeTimeoutMs,
+      runtime,
+      signal: options.signal,
+    });
+  } catch (error) {
+    // The child is alive but rejected `initialize` (protocol/version/auth mismatch). Nothing upstream owns this
+    // handle yet, so kill and detach it here before rethrowing — otherwise the OS process leaks per failure.
+    const initError = error instanceof Error ? error : createProviderHostFault(entry, `initialize failed`);
+    detachProviderServer(entry, initError);
+    gracefulKill(entry.child, runtime);
+    throw initError;
   }
+}
 
+function exposeProviderServerHandle(
+  entry: ProviderServerEntry,
+  rpc: ProviderServerRpc,
+  runtime: Runtime,
+): ProviderServerHandle {
   return {
-    pid,
-    child,
-    generation,
+    pid: entry.pid,
+    child: entry.child,
+    generation: entry.generation,
     rpc,
-    onNotification: (handler: (message: ProviderServerNotification) => void): (() => void) => {
+    onNotification: (handler) => {
       if (entry.closed) return () => {};
       entry.notificationHandlers.add(handler);
       return () => {
         entry.notificationHandlers.delete(handler);
       };
     },
-    closePromise,
+    closePromise: entry.closePromise,
     isClosed: () => entry.closed,
     inspectDiagnostics: entry.diagnosticRef.inspect,
     markExpectedClose: () => {

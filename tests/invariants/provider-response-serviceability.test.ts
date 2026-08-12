@@ -343,7 +343,7 @@ describe('provider response serviceability decision layers', () => {
     const inventory = decisionClosureInventory();
     expect(Object.keys(inventory).length).toBeGreaterThan(0);
     expect(Object.entries(inventory).filter(([, symbols]) => symbols.length === 0)).toEqual([]);
-    expect(STATIC_SERVICEABILITY_DECISION_SYMBOLS.admissionCompositionLeaves).toHaveLength(2);
+    expect(STATIC_SERVICEABILITY_DECISION_SYMBOLS.admissionCompositionLeaves).toHaveLength(3);
 
     const missingSymbols = Object.values(inventory)
       .flat()
@@ -403,7 +403,7 @@ describe('provider response serviceability decision layers', () => {
     expect(parse(PROXY_OWNER).getText()).toContain('admission.observe(placement.slot, reservedRef, fact)');
 
     const admission = parse(ADMISSION).getText();
-    expect(admission).toContain('matchingCandidate(state, slot, ref, fact.generation)');
+    expect(admission).toContain('matchingCandidate(data.state, slot, ref, fact.generation)');
     expect(admission).toContain('exactHostRefsMatch(placement.ref, ref)');
     expect(admission).toContain('current.generation === generation && exactHostRefsMatch(current.ref, ref)');
   });

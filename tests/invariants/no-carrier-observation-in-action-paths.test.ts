@@ -114,9 +114,7 @@ type DecisionAuthority = DecisionSymbol &
 
 function permittedDecisionImporters(category: string, decision: DecisionSymbol): readonly string[] {
   if (category === 'classifierDispatchers') {
-    return decision.path === SERVICEABILITY_COMPOSITION
-      ? [SERVICEABILITY_SEAM]
-      : [COORDINATOR_ADMISSION_LEAF, PROXY_ADMISSION_LEAF];
+    return decision.path === SERVICEABILITY_COMPOSITION ? [SERVICEABILITY_SEAM] : [];
   }
   if (category === 'providerClassifiers') {
     const match = SERVICEABILITY_CLASSIFIER_PATH.exec(decision.path);
@@ -126,10 +124,13 @@ function permittedDecisionImporters(category: string, decision: DecisionSymbol):
   if (category === 'serviceabilityReducers') return [HOST_ADMISSION];
   if (category === 'admissionSymbols') {
     return decision.symbol === 'createHostAdmissionCollection'
-      ? [COORDINATOR_ADMISSION_LEAF, PROXY_ADMISSION_LEAF, COORDINATOR_OWNER, COORDINATOR_WORLD]
+      ? [SERVICEABILITY_SEAM, COORDINATOR_OWNER, COORDINATOR_WORLD]
       : [];
   }
   if (category === 'admissionCompositionLeaves') {
+    if (decision.symbol === 'createBuiltInProviderHostAdmission') {
+      return [COORDINATOR_ADMISSION_LEAF, PROXY_ADMISSION_LEAF];
+    }
     return decision.path === COORDINATOR_ADMISSION_LEAF ? [COORDINATOR_COMPOSITION] : [PROXY_OWNER];
   }
   throw new Error(`Unmapped serviceability decision category ${category}`);

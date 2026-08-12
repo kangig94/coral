@@ -12,6 +12,7 @@ import {
   canonicalProviderHostSpecMetadata,
   exactHostRefsMatch,
   type AdmissionSlotKey,
+  type HostAdmissionCollection,
   type HostAdmissionReservation,
   type HostAdmissionSnapshot,
 } from '../providers/host-admission.js';
@@ -259,115 +260,92 @@ export interface ProxyProviderHostAdministrationAuthority {
   evictHost(hostRef: HostRef): Promise<boolean>;
 }
 
-type ReadonlyWire<T> = T extends readonly (infer Entry)[]
-  ? readonly ReadonlyWire<Entry>[]
-  : T extends object
-    ? { readonly [Key in keyof T]: ReadonlyWire<T[Key]> }
-    : T;
+export type ProxyProviderHostInventoryRecord = ProviderHostInventoryRecordWire;
 
-export type ProxyProviderHostInventoryRecord = ReadonlyWire<ProviderHostInventoryRecordWire>;
+type FreshHostPlacement = Readonly<{
+  slot: AdmissionSlotKey;
+  reservation: HostAdmissionReservation;
+}>;
 
-/**
- * The proxy's own narrower stand-in for `DefaultProviderHostManager`: pools app-server children by executable
- * identity (shared) or identity+job (job-exclusive, so this proxy's own stage-then-activate sequence reuses
- * one process rather than spawning twice), ref-counts sessions, and closes a pool entry once its last
- * reference releases. Deliberately does not replicate the coordinator's idle-timer-based early retirement for
- * `idleRetirement: 'host-reported'` shared hosts — every host here stays open until its last referencing
- * operation stops, which is a reported simplification (see the task report), not an attempt to reproduce that
- * policy exactly.
- */
-export function createProxyAppServerHostAuthority(
-  runtime: Runtime,
-): ProxyAppServerHostAuthority & ProxyProviderHostAdministrationAuthority {
-  const entries = new Map<string, HostPoolEntry>();
-  const closingEntries = new Set<HostPoolEntry>();
-  const admission = createProxyProviderHostAdmission();
-  // Purely informational (mirrors `DefaultProviderHostManager`'s own per-acquisition counter,
-  // `src/coordinator/live/admission.ts`); nothing in this pool reads it back.
-  let nextGeneration = 0;
-  let liveRoots = 0;
-  let spawningRoots = 0;
-  let generationRootSlotsSpent = 0;
+type RootSpawnRequest = Readonly<{
+  operation: ProviderOperationKey;
+  cancellationMode: ProxyHostCancellationMode;
+  hostKey: string;
+  spec: ProviderServerSpec;
+  options: Readonly<{ jobId?: string; signal?: AbortSignal }> | undefined;
+  placement: FreshHostPlacement;
+}>;
 
-  const reserveRootToken = (): void => {
-    if (generationRootSlotsSpent >= PROVIDER_ROOT_ROTATION_THRESHOLD) {
-      throw new ProxyProviderRootCapacityError(
-        'provider_root_generation_draining',
-        `Provider root generation reached its ${PROVIDER_ROOT_ROTATION_THRESHOLD} root rotation threshold.`,
-      );
+class ProxyProviderRootPool {
+  private readonly runtime: Runtime;
+  private readonly admission: HostAdmissionCollection;
+  private readonly entries = new Map<string, HostPoolEntry>();
+  private readonly closingEntries = new Set<HostPoolEntry>();
+  private nextGeneration = 0;
+  private liveRoots = 0;
+  private spawningRoots = 0;
+  // Informational generation-local admission count; no serviceability decision reads it.
+  private generationRootSlotsSpent = 0;
+
+  constructor(runtime: Runtime, admission: HostAdmissionCollection) {
+    this.runtime = runtime;
+    this.admission = admission;
+  }
+
+  active(hostKey: string): HostPoolEntry | undefined {
+    return this.entries.get(hostKey);
+  }
+
+  remove(entry: HostPoolEntry): void {
+    if (this.entries.get(entry.hostKey) === entry) this.entries.delete(entry.hostKey);
+  }
+
+  matches(hostRef: HostRef, entry: HostPoolEntry): boolean {
+    return isMatchingHostRef(hostRef, entry, this.runtime);
+  }
+
+  allEntries(): ReadonlySet<HostPoolEntry> {
+    return new Set([...this.entries.values(), ...this.closingEntries]);
+  }
+
+  matchingEntries(hostRef: HostRef): ReadonlySet<HostPoolEntry> {
+    const matches = new Set<HostPoolEntry>();
+    for (const entry of this.entries.values()) {
+      if (this.matches(hostRef, entry)) matches.add(entry);
     }
-    if (liveRoots + spawningRoots + 1 > MAX_PROXY_LIVE_PROVIDER_ROOTS) {
-      throw new ProxyProviderRootCapacityError(
-        'provider_root_live_capacity',
-        `Provider root admission permits at most ${MAX_PROXY_LIVE_PROVIDER_ROOTS} live or spawning root.`,
-      );
+    for (const entry of this.closingEntries) {
+      if (this.matches(hostRef, entry)) matches.add(entry);
     }
-    spawningRoots += 1;
-  };
+    return matches;
+  }
 
-  const releaseLiveRoot = (entry: HostPoolEntry): void => {
-    if (entry.rootTokenReleased) return;
-    entry.rootTokenReleased = true;
-    liveRoots -= 1;
-  };
-
-  const closeEntry = (entry: HostPoolEntry): Promise<void> => {
-    if (entry.closePromise !== null) return entry.closePromise;
-    closingEntries.add(entry);
-    const closePromise = closeSpawnedHandle(entry.handle, entry.spec, runtime).then(() => releaseLiveRoot(entry));
-    entry.closePromise = closePromise;
-    void closePromise.then(
-      () => {
-        if (entry.closePromise === closePromise) closingEntries.delete(entry);
-      },
-      () => {
-        if (entry.closePromise === closePromise) entry.closePromise = null;
-      },
-    );
-    return closePromise;
-  };
-
-  const managedSessionFor = (entry: HostPoolEntry): ManagedHostSession => {
-    let released = false;
-    entry.refCount += 1;
-    return Object.freeze({
-      session: entry.transport,
-      hostRef: hostRefFor(entry, runtime),
-      close: () => {
-        if (released) return;
-        released = true;
-        entry.refCount -= 1;
-        if (entry.refCount > 0) return;
-        if (entries.get(entry.hostKey) === entry) entries.delete(entry.hostKey);
-        void closeEntry(entry).catch((error: unknown) => {
-          backendLog.error(
-            `semantic operation runtime: app-server host close failed for ${entry.spec.provider}`,
-            error,
-          );
-        });
-      },
-    });
-  };
-
-  const openSession = async (
-    operation: ProviderOperationKey,
-    cancellationMode: ProxyHostCancellationMode,
-    spec: ProviderServerSpec,
-    options?: Readonly<{ jobId?: string; signal?: AbortSignal }>,
-    placement?: Readonly<{ slot: AdmissionSlotKey; reservation: HostAdmissionReservation }>,
-  ): Promise<ManagedHostSession> => {
-    assertLeasePolicy(spec, options?.jobId);
-    const hostKey = hostKeyFor(spec, operation, cancellationMode, options?.jobId);
-    const existing = entries.get(hostKey);
-    if (existing !== undefined) return managedSessionFor(existing);
-
-    reserveRootToken();
-    const generation = nextGeneration++;
-    const instanceId = runtime.ids.uuid();
-    const reservedRef = hostRefForIdentity(spec, instanceId, options?.jobId, runtime);
-    if (placement === undefined) {
-      throw new Error('provider_host_admission_missing: fresh placement requires an admission reservation');
+  rootIdentity(hostRef: HostRef): Readonly<{ pid: number; processStartedAtSeconds: number }> | null {
+    for (const entry of this.entries.values()) {
+      if (this.matches(hostRef, entry)) {
+        return { pid: entry.handle.pid, processStartedAtSeconds: entry.processStartedAtSeconds };
+      }
     }
+    return null;
+  }
+
+  closed(hostRef: HostRef): Promise<Error | void> | null {
+    for (const entry of this.entries.values()) {
+      if (this.matches(hostRef, entry)) return entry.transport.closed;
+    }
+    return null;
+  }
+
+  async forceClose(hostRef: HostRef): Promise<void> {
+    const matched = this.takeForceCloseTarget(hostRef);
+    if (matched !== undefined) await this.close(matched);
+  }
+
+  async spawn(request: RootSpawnRequest): Promise<HostPoolEntry> {
+    this.reserveRootToken();
+    const { operation, cancellationMode, hostKey, spec, options, placement } = request;
+    const generation = this.nextGeneration++;
+    const instanceId = this.runtime.ids.uuid();
+    const reservedRef = hostRefForIdentity(spec, instanceId, options?.jobId, this.runtime);
     let handle: ProviderServerHandle | null = null;
     let liveRootCommitted = false;
     placement.reservation.reserveCandidate({
@@ -385,33 +363,37 @@ export function createProxyAppServerHostAuthority(
       }),
       inspectDiagnostics: () => handle?.inspectDiagnostics() ?? emptyDiagnostics(),
     });
+
+    const admission = this.admission;
     try {
       handle = await spawnProviderServerTransport({
-        runtime,
+        runtime: this.runtime,
         options: spawnOptionsFor(spec, options?.signal),
         generation,
         observeProviderResponse: (fact) => admission.observe(placement.slot, reservedRef, fact),
       });
-      spawningRoots -= 1;
-      liveRoots += 1;
-      generationRootSlotsSpent += 1;
+      this.spawningRoots -= 1;
+      this.liveRoots += 1;
+      this.generationRootSlotsSpent += 1;
       liveRootCommitted = true;
+
       let entry: HostPoolEntry | null = null;
       let rootReleasedBeforeEntry = false;
-      const retire = () => {
-        if (entry !== null && entries.get(hostKey) === entry) entries.delete(hostKey);
+      const retire = (): void => {
+        if (entry !== null) this.remove(entry);
         placement.reservation.observeRetired(reservedRef, 'closed');
         if (entry !== null) {
-          releaseLiveRoot(entry);
+          this.releaseLiveRoot(entry);
         } else if (!rootReleasedBeforeEntry) {
           rootReleasedBeforeEntry = true;
-          liveRoots -= 1;
+          this.liveRoots -= 1;
         }
       };
       void handle.closePromise.then(retire, retire);
+
       const processStartedAtSeconds = probeProcessStartedAtSeconds(
         handle.pid,
-        runtime.env.platform() as NodeJS.Platform,
+        this.runtime.env.platform() as NodeJS.Platform,
       );
       if (processStartedAtSeconds === null || handle.isClosed()) {
         throw new Error(`Provider server ${spec.provider} could not have its own start time read after spawn.`);
@@ -429,12 +411,12 @@ export function createProxyAppServerHostAuthority(
         rootTokenReleased: rootReleasedBeforeEntry,
         closePromise: null,
       };
-      entries.set(hostKey, entry);
+      this.entries.set(hostKey, entry);
       placement.reservation.markLive(reservedRef, generation);
-      return managedSessionFor(entry);
+      return entry;
     } catch (error: unknown) {
       if (!liveRootCommitted) {
-        spawningRoots -= 1;
+        this.spawningRoots -= 1;
         placement.reservation.observeRetired(reservedRef, 'closed');
       } else if (handle !== null) {
         try {
@@ -446,180 +428,280 @@ export function createProxyAppServerHostAuthority(
       }
       throw error;
     }
-  };
+  }
 
-  const attachSession = async (
+  close(entry: HostPoolEntry): Promise<void> {
+    if (entry.closePromise !== null) return entry.closePromise;
+    this.closingEntries.add(entry);
+    const closePromise = closeSpawnedHandle(entry.handle, entry.spec, this.runtime).then(() =>
+      this.releaseLiveRoot(entry),
+    );
+    entry.closePromise = closePromise;
+    void closePromise.then(
+      () => {
+        if (entry.closePromise === closePromise) this.closingEntries.delete(entry);
+      },
+      () => {
+        if (entry.closePromise === closePromise) entry.closePromise = null;
+      },
+    );
+    return closePromise;
+  }
+
+  private reserveRootToken(): void {
+    if (this.generationRootSlotsSpent >= PROVIDER_ROOT_ROTATION_THRESHOLD) {
+      throw new ProxyProviderRootCapacityError(
+        'provider_root_generation_draining',
+        `Provider root generation reached its ${PROVIDER_ROOT_ROTATION_THRESHOLD} root rotation threshold.`,
+      );
+    }
+    if (this.liveRoots + this.spawningRoots + 1 > MAX_PROXY_LIVE_PROVIDER_ROOTS) {
+      throw new ProxyProviderRootCapacityError(
+        'provider_root_live_capacity',
+        `Provider root admission permits at most ${MAX_PROXY_LIVE_PROVIDER_ROOTS} live or spawning root.`,
+      );
+    }
+    this.spawningRoots += 1;
+  }
+
+  private releaseLiveRoot(entry: HostPoolEntry): void {
+    if (entry.rootTokenReleased) return;
+    entry.rootTokenReleased = true;
+    this.liveRoots -= 1;
+  }
+
+  private takeForceCloseTarget(hostRef: HostRef): HostPoolEntry | undefined {
+    for (const entry of this.entries.values()) {
+      if (!this.matches(hostRef, entry)) continue;
+      this.assertForceCloseAllowed(entry);
+      this.entries.delete(entry.hostKey);
+      this.closingEntries.add(entry);
+      return entry;
+    }
+    for (const entry of this.closingEntries) {
+      if (!this.matches(hostRef, entry)) continue;
+      this.assertForceCloseAllowed(entry);
+      return entry;
+    }
+    return undefined;
+  }
+
+  private assertForceCloseAllowed(entry: HostPoolEntry): void {
+    if (entry.cancellationMode === 'shared-acknowledged-interrupt') {
+      throw new Error('provider_host_scope_shared_force_close_forbidden');
+    }
+  }
+}
+
+class ProxyProviderHostSessions {
+  private readonly runtime: Runtime;
+  private readonly admission: HostAdmissionCollection;
+  private readonly pool: ProxyProviderRootPool;
+
+  constructor(runtime: Runtime, admission: HostAdmissionCollection, pool: ProxyProviderRootPool) {
+    this.runtime = runtime;
+    this.admission = admission;
+    this.pool = pool;
+  }
+
+  beginOperation(operation: ProviderOperationKey): ProxyOperationHostScope {
+    let cancellationMode: ProxyHostCancellationMode | null = null;
+    const selectedMode = (): ProxyHostCancellationMode => {
+      if (cancellationMode === null) {
+        throw new Error('provider_host_scope_unselected: cancellation mode must be selected before acquisition');
+      }
+      return cancellationMode;
+    };
+
+    return {
+      selectCancellationMode(mode) {
+        if (cancellationMode !== null) {
+          throw new Error('provider_host_scope_already_selected: cancellation mode may be selected only once');
+        }
+        cancellationMode = mode;
+      },
+      openSession: (spec, options) => {
+        const mode = selectedMode();
+        const slot = admissionSlotKey(hostKeyFor(spec, operation, mode, options?.jobId));
+        return this.admission.withFreshPlacement(slot, (reservation) =>
+          this.openSession(operation, mode, spec, options, { slot, reservation }),
+        );
+      },
+      attachSession: (hostRef, expectation) => this.attachSession(operation, selectedMode(), hostRef, expectation),
+    };
+  }
+
+  private async openSession(
+    operation: ProviderOperationKey,
+    cancellationMode: ProxyHostCancellationMode,
+    spec: ProviderServerSpec,
+    options: Readonly<{ jobId?: string; signal?: AbortSignal }> | undefined,
+    placement: FreshHostPlacement,
+  ): Promise<ManagedHostSession> {
+    assertLeasePolicy(spec, options?.jobId);
+    const hostKey = hostKeyFor(spec, operation, cancellationMode, options?.jobId);
+    const existing = this.pool.active(hostKey);
+    if (existing !== undefined) return this.managedSessionFor(existing);
+    const entry = await this.pool.spawn({ operation, cancellationMode, hostKey, spec, options, placement });
+    return this.managedSessionFor(entry);
+  }
+
+  private async attachSession(
     operation: ProviderOperationKey,
     cancellationMode: ProxyHostCancellationMode,
     hostRef: HostRef,
     expectation: Readonly<{ spec: ProviderServerSpec; jobId?: string }>,
-  ): Promise<ManagedHostSession | null> => {
+  ): Promise<ManagedHostSession | null> {
     const hostKey = hostKeyFor(expectation.spec, operation, cancellationMode, expectation.jobId);
-    const entry = entries.get(hostKey);
-    if (entry === undefined || !isMatchingHostRef(hostRef, entry, runtime)) return null;
-    return managedSessionFor(entry);
-  };
+    const entry = this.pool.active(hostKey);
+    if (entry === undefined || !this.pool.matches(hostRef, entry)) return null;
+    return this.managedSessionFor(entry);
+  }
 
-  return {
-    beginOperation(operation) {
-      let cancellationMode: ProxyHostCancellationMode | null = null;
-      const selectedMode = (): ProxyHostCancellationMode => {
-        if (cancellationMode === null) {
-          throw new Error('provider_host_scope_unselected: cancellation mode must be selected before acquisition');
-        }
-        return cancellationMode;
-      };
-      return {
-        selectCancellationMode(mode) {
-          if (cancellationMode !== null) {
-            throw new Error('provider_host_scope_already_selected: cancellation mode may be selected only once');
-          }
-          cancellationMode = mode;
-        },
-        openSession: (spec, options) => {
-          const cancellationMode = selectedMode();
-          const slot = admissionSlotKey(hostKeyFor(spec, operation, cancellationMode, options?.jobId));
-          return admission.withFreshPlacement(slot, (reservation) =>
-            openSession(operation, cancellationMode, spec, options, { slot, reservation }),
+  private managedSessionFor(entry: HostPoolEntry): ManagedHostSession {
+    let released = false;
+    entry.refCount += 1;
+    return Object.freeze({
+      session: entry.transport,
+      hostRef: hostRefFor(entry, this.runtime),
+      close: () => {
+        if (released) return;
+        released = true;
+        entry.refCount -= 1;
+        if (entry.refCount > 0) return;
+        this.pool.remove(entry);
+        void this.pool.close(entry).catch((error: unknown) => {
+          backendLog.error(
+            `semantic operation runtime: app-server host close failed for ${entry.spec.provider}`,
+            error,
           );
-        },
-        attachSession: (hostRef, expectation) => attachSession(operation, selectedMode(), hostRef, expectation),
-      };
-    },
+        });
+      },
+    });
+  }
+}
 
-    rootIdentity(hostRef) {
-      for (const entry of entries.values()) {
-        if (isMatchingHostRef(hostRef, entry, runtime)) {
-          return { pid: entry.handle.pid, processStartedAtSeconds: entry.processStartedAtSeconds };
-        }
-      }
-      return null;
-    },
+class ProxyProviderHostAdministration {
+  private readonly admission: HostAdmissionCollection;
+  private readonly pool: ProxyProviderRootPool;
 
-    closed(hostRef) {
-      for (const entry of entries.values()) {
-        if (isMatchingHostRef(hostRef, entry, runtime)) return entry.transport.closed;
-      }
-      return null;
-    },
+  constructor(admission: HostAdmissionCollection, pool: ProxyProviderRootPool) {
+    this.admission = admission;
+    this.pool = pool;
+  }
 
-    async forceClose(hostRef) {
-      let matched: HostPoolEntry | undefined;
-      for (const entry of entries.values()) {
-        if (isMatchingHostRef(hostRef, entry, runtime)) {
-          if (entry.cancellationMode === 'shared-acknowledged-interrupt') {
-            throw new Error('provider_host_scope_shared_force_close_forbidden');
-          }
-          matched = entry;
-          entries.delete(entry.hostKey);
-          closingEntries.add(entry);
-          break;
-        }
+  listProviderHosts(): readonly ProxyProviderHostInventoryRecord[] {
+    const snapshot = this.admission.snapshot();
+    const processEntries = this.pool.allEntries();
+    const records: ProxyProviderHostInventoryRecord[] = [];
+    for (const admissionEntry of snapshot.state.values()) {
+      if (admissionEntry.phase === 'spawning' || admissionEntry.phase === 'retired-blocked') continue;
+      const matches = [...processEntries].filter((entry) => this.pool.matches(admissionEntry.ref, entry));
+      if (matches.length !== 1) {
+        throw new Error('provider_host_inventory_unavailable: live proxy host could not be revalidated');
       }
-      if (matched === undefined) {
-        for (const entry of closingEntries) {
-          if (isMatchingHostRef(hostRef, entry, runtime)) {
-            if (entry.cancellationMode === 'shared-acknowledged-interrupt') {
-              throw new Error('provider_host_scope_shared_force_close_forbidden');
-            }
-            matched = entry;
-            break;
-          }
-        }
-      }
-      if (matched !== undefined) await closeEntry(matched);
-    },
-
-    listProviderHosts() {
-      const snapshot = admission.snapshot();
-      const processEntries = new Set([...entries.values(), ...closingEntries]);
-      const records: ProxyProviderHostInventoryRecord[] = [];
-      for (const admissionEntry of snapshot.state.values()) {
-        if (admissionEntry.phase === 'spawning' || admissionEntry.phase === 'retired-blocked') continue;
-        const matches = [...processEntries].filter((entry) => isMatchingHostRef(admissionEntry.ref, entry, runtime));
-        if (matches.length !== 1) {
-          throw new Error('provider_host_inventory_unavailable: live proxy host could not be revalidated');
-        }
-        const entry = matches[0];
-        if (entry.handle.isClosed()) {
-          throw new Error('provider_host_inventory_unavailable: live proxy host process is unavailable');
-        }
-        records.push(
-          Object.freeze({
-            ref: admissionEntry.ref,
-            status: 'live',
-            spec: canonicalProviderHostSpecMetadata(entry.spec),
-            host: Object.freeze({
-              owner: 'provider-proxy',
-              hostKey: entry.hostKey,
-              ownerJobId: entry.jobId ?? null,
-              cancellationMode: entry.cancellationMode,
-            }),
-            diagnostics: entry.handle.inspectDiagnostics(),
-            diagnosticsRetention: Object.freeze({ ownerBudgetTruncated: false }),
-          }),
-        );
+      const entry = matches[0];
+      if (entry.handle.isClosed()) {
+        throw new Error('provider_host_inventory_unavailable: live proxy host process is unavailable');
       }
       records.push(
-        ...snapshot.tombstones.map((tombstone) =>
-          Object.freeze({
-            ref: tombstone.ref,
-            status: tombstone.phase,
-            spec: tombstone.spec,
-            host: tombstone.host,
-            diagnostics: tombstone.diagnostics,
-            diagnosticsRetention: tombstone.diagnosticsRetention,
+        Object.freeze({
+          ref: admissionEntry.ref,
+          status: 'live',
+          spec: canonicalProviderHostSpecMetadata(entry.spec),
+          host: Object.freeze({
+            owner: 'provider-proxy',
+            hostKey: entry.hostKey,
+            ownerJobId: entry.jobId ?? null,
+            cancellationMode: entry.cancellationMode,
           }),
-        ),
+          diagnostics: entry.handle.inspectDiagnostics(),
+          diagnosticsRetention: Object.freeze({ ownerBudgetTruncated: false }),
+        }),
       );
-      return Object.freeze(records);
-    },
+    }
+    records.push(
+      ...snapshot.tombstones.map((tombstone) =>
+        Object.freeze({
+          ref: tombstone.ref,
+          status: tombstone.phase,
+          spec: tombstone.spec,
+          host: tombstone.host,
+          diagnostics: tombstone.diagnostics,
+          diagnosticsRetention: tombstone.diagnosticsRetention,
+        }),
+      ),
+    );
+    return Object.freeze(records);
+  }
 
-    inspectProviderHost(hostRef) {
-      const matches = this.listProviderHosts().filter((record) => exactHostRefsMatch(record.ref, hostRef));
-      if (matches.length > 1) {
-        throw new Error('provider_host_identity_integrity: exact host ref matched multiple proxy records');
-      }
-      return matches[0] ?? null;
-    },
+  inspectProviderHost(hostRef: HostRef): ProxyProviderHostInventoryRecord | null {
+    const matches = this.listProviderHosts().filter((record) => exactHostRefsMatch(record.ref, hostRef));
+    if (matches.length > 1) {
+      throw new Error('provider_host_identity_integrity: exact host ref matched multiple proxy records');
+    }
+    return matches[0] ?? null;
+  }
 
-    async evictHost(hostRef) {
-      const snapshot = admission.snapshot();
-      const owned =
-        [...snapshot.state.values()].some((entry) => exactHostRefsMatch(entry.ref, hostRef)) ||
-        snapshot.tombstones.some((tombstone) => exactHostRefsMatch(tombstone.ref, hostRef));
-      if (!owned) return false;
+  async evictHost(hostRef: HostRef): Promise<boolean> {
+    const snapshot = this.admission.snapshot();
+    const owned =
+      [...snapshot.state.values()].some((entry) => exactHostRefsMatch(entry.ref, hostRef)) ||
+      snapshot.tombstones.some((tombstone) => exactHostRefsMatch(tombstone.ref, hostRef));
+    if (!owned) return false;
 
-      const matches = new Set<HostPoolEntry>();
-      for (const entry of entries.values()) {
-        if (isMatchingHostRef(hostRef, entry, runtime)) matches.add(entry);
-      }
-      for (const entry of closingEntries) {
-        if (isMatchingHostRef(hostRef, entry, runtime)) matches.add(entry);
-      }
-      if (matches.size > 1) {
-        throw new Error('provider_host_identity_integrity: exact host ref matched multiple proxy entries');
-      }
-      const matched = matches.values().next().value;
-      if (matched !== undefined) {
-        if (entries.get(matched.hostKey) === matched) entries.delete(matched.hostKey);
-        await closeEntry(matched);
-        admission.confirmEvicted(hostRef);
-        return true;
-      }
+    const matches = this.pool.matchingEntries(hostRef);
+    if (matches.size > 1) {
+      throw new Error('provider_host_identity_integrity: exact host ref matched multiple proxy entries');
+    }
+    const matched = matches.values().next().value;
+    if (matched !== undefined) {
+      this.pool.remove(matched);
+      await this.pool.close(matched);
+      this.admission.confirmEvicted(hostRef);
+      return true;
+    }
 
-      const tombstones = admission
-        .snapshot()
-        .tombstones.filter(
-          (tombstone) => tombstone.retirement.processAbsent && exactHostRefsMatch(tombstone.ref, hostRef),
-        );
-      if (tombstones.length !== 1) return false;
-      return admission.confirmEvicted(hostRef);
-    },
+    const tombstones = this.admission
+      .snapshot()
+      .tombstones.filter(
+        (tombstone) => tombstone.retirement.processAbsent && exactHostRefsMatch(tombstone.ref, hostRef),
+      );
+    if (tombstones.length !== 1) return false;
+    return this.admission.confirmEvicted(hostRef);
+  }
 
-    admissionSnapshot() {
-      return admission.snapshot();
-    },
+  admissionSnapshot(): HostAdmissionSnapshot {
+    return this.admission.snapshot();
+  }
+}
+
+/**
+ * The proxy's own narrower stand-in for `DefaultProviderHostManager`: pools app-server children by executable
+ * identity (shared) or identity+job (job-exclusive, so this proxy's own stage-then-activate sequence reuses
+ * one process rather than spawning twice), ref-counts sessions, and closes a pool entry once its last
+ * reference releases. Deliberately does not replicate the coordinator's idle-timer-based early retirement for
+ * `idleRetirement: 'host-reported'` shared hosts — every host here stays open until its last referencing
+ * operation stops, which is a reported simplification (see the task report), not an attempt to reproduce that
+ * policy exactly.
+ */
+export function createProxyAppServerHostAuthority(
+  runtime: Runtime,
+): ProxyAppServerHostAuthority & ProxyProviderHostAdministrationAuthority {
+  const admission = createProxyProviderHostAdmission();
+  const pool = new ProxyProviderRootPool(runtime, admission);
+  const sessions = new ProxyProviderHostSessions(runtime, admission, pool);
+  const administration = new ProxyProviderHostAdministration(admission, pool);
+
+  return {
+    beginOperation: (operation) => sessions.beginOperation(operation),
+    rootIdentity: (hostRef) => pool.rootIdentity(hostRef),
+    closed: (hostRef) => pool.closed(hostRef),
+    forceClose: (hostRef) => pool.forceClose(hostRef),
+    listProviderHosts: () => administration.listProviderHosts(),
+    inspectProviderHost: (hostRef) => administration.inspectProviderHost(hostRef),
+    evictHost: (hostRef) => administration.evictHost(hostRef),
+    admissionSnapshot: () => administration.admissionSnapshot(),
   };
 }
 

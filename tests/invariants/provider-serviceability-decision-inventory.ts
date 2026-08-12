@@ -24,6 +24,10 @@ export const STATIC_SERVICEABILITY_DECISION_SYMBOLS = {
   ],
   admissionCompositionLeaves: [
     {
+      path: 'src/providers/serviceability.ts',
+      symbol: 'createBuiltInProviderHostAdmission',
+    },
+    {
       path: 'src/coordinator/live/provider-host-admission.ts',
       symbol: 'createCoordinatorProviderHostAdmission',
     },

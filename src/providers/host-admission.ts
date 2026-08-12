@@ -25,6 +25,17 @@ export type AdmissionEntry = Readonly<{
   phase: 'spawning' | 'live' | 'blocked-live' | 'retired-blocked';
 }>;
 
+const HOST_ADMISSION_BY_PHASE = {
+  spawning: 'candidate',
+  live: 'candidate',
+  'blocked-live': 'blocked',
+  'retired-blocked': 'blocked',
+} as const satisfies Readonly<Record<AdmissionEntry['phase'], HostAdmission>>;
+
+function hostAdmissionForPhase(phase: AdmissionEntry['phase']): HostAdmission {
+  return HOST_ADMISSION_BY_PHASE[phase];
+}
+
 export type HostAdmissionState = ReadonlyMap<AdmissionSlotKey, AdmissionEntry>;
 
 export const providerHostRemediationSchema = z
@@ -119,39 +130,58 @@ export function exactHostRefsMatch(left: HostRef, right: HostRef): boolean {
 
 export function reduceHostAdmission(state: HostAdmissionState, event: AdmissionEvent): HostAdmissionState {
   switch (event.kind) {
-    case 'reserve': {
-      if (state.has(event.entry.slot)) return state;
-      return withEntry(state, event.entry.slot, event.entry);
-    }
-    case 'mark-live': {
-      const current = matchingCandidate(state, event.slot, event.ref, event.generation);
-      if (current === null || current.phase !== 'spawning') return state;
-      return withEntry(state, event.slot, Object.freeze({ ...current, phase: 'live' }));
-    }
-    case 'block': {
-      const current = matchingCandidate(state, event.slot, event.ref, event.generation);
-      const admission: HostAdmission =
-        current?.phase === 'retired-blocked' || current?.phase === 'blocked-live' ? 'blocked' : 'candidate';
-      if (current === null || admission === 'blocked') return state;
-      return withEntry(state, event.slot, Object.freeze({ ...current, phase: 'blocked-live' }));
-    }
-    case 'retired': {
-      const match = findExactRef(state, event.ref);
-      if (match === null) return state;
-      if (match.entry.phase === 'blocked-live') {
-        return withEntry(state, match.slot, Object.freeze({ ...match.entry, phase: 'retired-blocked' }));
-      }
-      if (match.entry.phase === 'retired-blocked') return state;
-      return withoutEntry(state, match.slot);
-    }
-    case 'confirm-evicted': {
-      const match = findExactRef(state, event.ref);
-      if (match === null || (match.entry.phase !== 'blocked-live' && match.entry.phase !== 'retired-blocked')) {
-        return state;
-      }
-      return withoutEntry(state, match.slot);
-    }
+    case 'reserve':
+      return reserveAdmissionCandidate(state, event.entry);
+    case 'mark-live':
+      return markAdmissionCandidateLive(state, event.slot, event.ref, event.generation);
+    case 'block':
+      return blockAdmissionCandidate(state, event.slot, event.ref, event.generation);
+    case 'retired':
+      return retireAdmissionCandidate(state, event.ref);
+    case 'confirm-evicted':
+      return confirmAdmissionCandidateEvicted(state, event.ref);
   }
+}
+
+function reserveAdmissionCandidate(state: HostAdmissionState, entry: AdmissionEntry): HostAdmissionState {
+  return state.has(entry.slot) ? state : withEntry(state, entry.slot, entry);
+}
+
+function markAdmissionCandidateLive(
+  state: HostAdmissionState,
+  slot: AdmissionSlotKey,
+  ref: HostRef,
+  generation: number,
+): HostAdmissionState {
+  const current = matchingCandidate(state, slot, ref, generation);
+  return current === null || current.phase !== 'spawning'
+    ? state
+    : withEntry(state, slot, Object.freeze({ ...current, phase: 'live' }));
+}
+
+function blockAdmissionCandidate(
+  state: HostAdmissionState,
+  slot: AdmissionSlotKey,
+  ref: HostRef,
+  generation: number,
+): HostAdmissionState {
+  const current = matchingCandidate(state, slot, ref, generation);
+  if (current === null || current.phase === 'blocked-live' || current.phase === 'retired-blocked') return state;
+  return withEntry(state, slot, Object.freeze({ ...current, phase: 'blocked-live' }));
+}
+
+function retireAdmissionCandidate(state: HostAdmissionState, ref: HostRef): HostAdmissionState {
+  const match = findExactRef(state, ref);
+  if (match === null || match.entry.phase === 'retired-blocked') return state;
+  return match.entry.phase === 'blocked-live'
+    ? withEntry(state, match.slot, Object.freeze({ ...match.entry, phase: 'retired-blocked' }))
+    : withoutEntry(state, match.slot);
+}
+
+function confirmAdmissionCandidateEvicted(state: HostAdmissionState, ref: HostRef): HostAdmissionState {
+  const match = findExactRef(state, ref);
+  if (match === null || (match.entry.phase !== 'blocked-live' && match.entry.phase !== 'retired-blocked')) return state;
+  return withoutEntry(state, match.slot);
 }
 
 type Placement = Readonly<{
@@ -180,135 +210,201 @@ export type HostAdmissionCollection = Readonly<{
   snapshot(): HostAdmissionSnapshot;
 }>;
 
+type HostAdmissionData = {
+  state: HostAdmissionState;
+  readonly placements: Map<AdmissionSlotKey, Placement>;
+  readonly serviceability: Map<AdmissionSlotKey, HostServiceabilityState>;
+};
+
+type TombstoneRetention = Readonly<{
+  retain(tombstone: ProviderHostTombstone): void;
+  delete(slot: AdmissionSlotKey): void;
+  snapshot(): readonly ProviderHostTombstone[];
+}>;
+
+type ReservationSerializer = Readonly<{
+  run<Result>(slot: AdmissionSlotKey, operation: () => Promise<Result>): Promise<Result>;
+}>;
+
 export function createHostAdmissionCollection(options: {
   classify(provider: string, fact: ProviderResponseDiagnosticFact): HostServiceability;
 }): HostAdmissionCollection {
-  let state: HostAdmissionState = new Map();
-  const placements = new Map<AdmissionSlotKey, Placement>();
-  const serviceability = new Map<AdmissionSlotKey, HostServiceabilityState>();
-  const tombstones = new Map<AdmissionSlotKey, ProviderHostTombstone>();
-  const reservations = new Map<AdmissionSlotKey, Promise<void>>();
+  const data: HostAdmissionData = {
+    state: new Map(),
+    placements: new Map(),
+    serviceability: new Map(),
+  };
+  const tombstones = createTombstoneRetention();
+  const reservations = createReservationSerializer();
 
   const observeRetired = (ref: HostRef, processState: HostProcessState): void => {
-    if (processState !== 'closed') return;
-    const match = findExactRef(state, ref);
-    if (match === null) return;
-    const placement = placements.get(match.slot);
-    const next = reduceHostAdmission(state, { kind: 'retired', ref });
-    const retired = next.get(match.slot);
-    if (retired?.phase === 'retired-blocked' && placement !== undefined) {
-      tombstones.set(match.slot, tombstoneFor(retired, placement));
-      rebalanceTombstoneDiagnostics(tombstones);
-    }
-    state = next;
-    if (retired?.phase !== 'retired-blocked') {
-      placements.delete(match.slot);
-      serviceability.delete(match.slot);
-    }
+    observeHostRetirement(data, tombstones, ref, processState);
   };
 
-  const reservationFor = (slot: AdmissionSlotKey): HostAdmissionReservation =>
-    Object.freeze({
-      reserveCandidate(placement) {
-        if (placement.slot !== slot) {
-          throw new Error('provider_host_admission_slot_mismatch: reservation used for a different slot');
-        }
-        const entry: AdmissionEntry = Object.freeze({
-          slot,
-          ref: freezeHostRef(placement.ref),
-          generation: placement.generation,
-          phase: 'spawning',
-        });
-        const next = reduceHostAdmission(state, { kind: 'reserve', entry });
-        if (next === state) {
-          throw new Error('provider_host_admission_reservation_conflict: slot already has a candidate');
-        }
-        state = next;
-        placements.set(slot, freezePlacement(placement));
-        const initial = reduceHostServiceability(undefined, {
-          kind: 'instance-started',
-          instanceId: placement.ref.instanceId,
-        });
-        if (initial !== undefined) serviceability.set(slot, initial);
-      },
-      markLive(ref, generation) {
-        state = reduceHostAdmission(state, { kind: 'mark-live', slot, ref, generation });
-      },
-      observeRetired,
-    });
+  return Object.freeze({
+    withFreshPlacement: (slot, delegate) =>
+      reservations.run(slot, () => {
+        assertFreshPlacementAllowed(data.state, slot);
+        return delegate(reservationFor(data, slot, observeRetired));
+      }),
+    observe(slot, ref, fact) {
+      observeProviderResponse(data, options.classify, slot, ref, fact);
+    },
+    observeRetired,
+    confirmEvicted(ref) {
+      return confirmHostEvicted(data, tombstones, ref);
+    },
+    snapshot() {
+      return Object.freeze({
+        state: new Map(data.state),
+        tombstones: tombstones.snapshot(),
+      });
+    },
+  });
+}
 
-  const withFreshPlacement = async <Result>(
-    slot: AdmissionSlotKey,
-    delegate: (reservation: HostAdmissionReservation) => Promise<Result>,
-  ): Promise<Result> => {
+function reservationFor(
+  data: HostAdmissionData,
+  slot: AdmissionSlotKey,
+  observeRetired: HostAdmissionReservation['observeRetired'],
+): HostAdmissionReservation {
+  return Object.freeze({
+    reserveCandidate(placement) {
+      if (placement.slot !== slot) {
+        throw new Error('provider_host_admission_slot_mismatch: reservation used for a different slot');
+      }
+      const entry: AdmissionEntry = Object.freeze({
+        slot,
+        ref: freezeHostRef(placement.ref),
+        generation: placement.generation,
+        phase: 'spawning',
+      });
+      const next = reduceHostAdmission(data.state, { kind: 'reserve', entry });
+      if (next === data.state) {
+        throw new Error('provider_host_admission_reservation_conflict: slot already has a candidate');
+      }
+      data.state = next;
+      data.placements.set(slot, freezePlacement(placement));
+      const initial = reduceHostServiceability(undefined, {
+        kind: 'instance-started',
+        instanceId: placement.ref.instanceId,
+      });
+      if (initial !== undefined) data.serviceability.set(slot, initial);
+    },
+    markLive(ref, generation) {
+      data.state = reduceHostAdmission(data.state, { kind: 'mark-live', slot, ref, generation });
+    },
+    observeRetired,
+  });
+}
+
+function assertFreshPlacementAllowed(state: HostAdmissionState, slot: AdmissionSlotKey): void {
+  const current = state.get(slot);
+  if (current !== undefined && hostAdmissionForPhase(current.phase) === 'blocked') {
+    throw new ProviderHostUnserviceableError(current.ref);
+  }
+}
+
+function observeProviderResponse(
+  data: HostAdmissionData,
+  classify: (provider: string, fact: ProviderResponseDiagnosticFact) => HostServiceability,
+  slot: AdmissionSlotKey,
+  ref: HostRef,
+  fact: ProviderResponseDiagnosticFact,
+): void {
+  const current = matchingCandidate(data.state, slot, ref, fact.generation);
+  const placement = data.placements.get(slot);
+  if (current === null || placement === undefined || !exactHostRefsMatch(placement.ref, ref)) return;
+  const next = reduceHostServiceability(data.serviceability.get(slot), {
+    kind: 'finding',
+    instanceId: ref.instanceId,
+    serviceability: classify(placement.spec.provider, fact),
+  });
+  if (next === undefined) return;
+  data.serviceability.set(slot, next);
+  if (next.serviceability === 'unserviceable') {
+    data.state = reduceHostAdmission(data.state, { kind: 'block', slot, ref, generation: fact.generation });
+  }
+}
+
+function observeHostRetirement(
+  data: HostAdmissionData,
+  tombstones: TombstoneRetention,
+  ref: HostRef,
+  processState: HostProcessState,
+): void {
+  if (processState !== 'closed') return;
+  const match = findExactRef(data.state, ref);
+  if (match === null) return;
+  const placement = data.placements.get(match.slot);
+  const next = reduceHostAdmission(data.state, { kind: 'retired', ref });
+  const retired = next.get(match.slot);
+  if (retired?.phase === 'retired-blocked' && placement !== undefined) {
+    tombstones.retain(tombstoneFor(retired, placement));
+  }
+  data.state = next;
+  if (retired?.phase !== 'retired-blocked') {
+    data.placements.delete(match.slot);
+    data.serviceability.delete(match.slot);
+  }
+}
+
+function confirmHostEvicted(data: HostAdmissionData, tombstones: TombstoneRetention, ref: HostRef): boolean {
+  const before = data.state;
+  const match = findExactRef(before, ref);
+  data.state = reduceHostAdmission(before, { kind: 'confirm-evicted', ref });
+  if (data.state === before || match === null) return false;
+  data.placements.delete(match.slot);
+  data.serviceability.delete(match.slot);
+  tombstones.delete(match.slot);
+  return true;
+}
+
+function createReservationSerializer(): ReservationSerializer {
+  const reservations = new Map<AdmissionSlotKey, Promise<void>>();
+
+  const run = async <Result>(slot: AdmissionSlotKey, operation: () => Promise<Result>): Promise<Result> => {
     const preceding = reservations.get(slot);
     if (preceding !== undefined) {
       await preceding;
-      return withFreshPlacement(slot, delegate);
+      return run(slot, operation);
     }
+
     let release!: () => void;
     const turn = new Promise<void>((resolve) => {
       release = resolve;
     });
     reservations.set(slot, turn);
-    let operation: Promise<Result>;
-    try {
-      const current = state.get(slot);
-      if (current?.phase === 'blocked-live' || current?.phase === 'retired-blocked') {
-        throw new ProviderHostUnserviceableError(current.ref);
-      }
-      operation = delegate(reservationFor(slot));
-    } catch (error: unknown) {
-      release();
+    const finish = (): void => {
       if (reservations.get(slot) === turn) reservations.delete(slot);
+      release();
+    };
+
+    try {
+      const result = operation();
+      void result.then(finish, finish);
+      return result;
+    } catch (error: unknown) {
+      finish();
       throw error;
     }
-    void operation.then(
-      () => {
-        if (reservations.get(slot) === turn) reservations.delete(slot);
-        release();
-      },
-      () => {
-        if (reservations.get(slot) === turn) reservations.delete(slot);
-        release();
-      },
-    );
-    return operation;
   };
 
+  return Object.freeze({ run });
+}
+
+function createTombstoneRetention(): TombstoneRetention {
+  const tombstones = new Map<AdmissionSlotKey, ProviderHostTombstone>();
   return Object.freeze({
-    withFreshPlacement,
-    observe(slot, ref, fact) {
-      const current = matchingCandidate(state, slot, ref, fact.generation);
-      const placement = placements.get(slot);
-      if (current === null || placement === undefined || !exactHostRefsMatch(placement.ref, ref)) return;
-      const nextServiceability = reduceHostServiceability(serviceability.get(slot), {
-        kind: 'finding',
-        instanceId: ref.instanceId,
-        serviceability: options.classify(placement.spec.provider, fact),
-      });
-      if (nextServiceability === undefined) return;
-      serviceability.set(slot, nextServiceability);
-      if (nextServiceability.serviceability === 'unserviceable') {
-        state = reduceHostAdmission(state, { kind: 'block', slot, ref, generation: fact.generation });
-      }
+    retain(tombstone) {
+      tombstones.set(tombstone.slot, tombstone);
+      rebalanceTombstoneDiagnostics(tombstones);
     },
-    observeRetired,
-    confirmEvicted(ref) {
-      const before = state;
-      const match = findExactRef(before, ref);
-      state = reduceHostAdmission(before, { kind: 'confirm-evicted', ref });
-      if (state === before || match === null) return false;
-      placements.delete(match.slot);
-      serviceability.delete(match.slot);
-      tombstones.delete(match.slot);
-      return true;
+    delete(slot) {
+      tombstones.delete(slot);
     },
     snapshot() {
-      return Object.freeze({
-        state: new Map(state),
-        tombstones: Object.freeze([...tombstones.values()]),
-      });
+      return Object.freeze([...tombstones.values()]);
     },
   });
 }

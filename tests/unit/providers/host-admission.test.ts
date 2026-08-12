@@ -64,6 +64,54 @@ function collection() {
 }
 
 describe('provider host admission state machine', () => {
+  it('derives the fresh-placement admission decision from every phase', async () => {
+    const admission = collection();
+    const slot = admissionSlotKey('admission-decision-slot');
+    const hostRef = ref('admission-decision-host');
+
+    const expectAdmissionDecision = async (
+      phase: 'spawning' | 'live' | 'blocked-live' | 'retired-blocked',
+      expected: 'candidate' | 'blocked',
+    ): Promise<void> => {
+      expect(admission.snapshot().state.get(slot)?.phase).toBe(phase);
+      const delegate = vi.fn(async () => undefined);
+      let actual: 'candidate' | 'blocked';
+      try {
+        await admission.withFreshPlacement(slot, delegate);
+        actual = 'candidate';
+      } catch (error: unknown) {
+        expect(error).toBeInstanceOf(ProviderHostUnserviceableError);
+        actual = 'blocked';
+      }
+
+      expect(actual, `${phase} admission decision`).toBe(expected);
+      expect(delegate).toHaveBeenCalledTimes(expected === 'candidate' ? 1 : 0);
+    };
+
+    await admission.withFreshPlacement(slot, async (reservation) => {
+      reservation.reserveCandidate({
+        slot,
+        ref: hostRef,
+        generation: 10,
+        spec: canonicalProviderHostSpecMetadata(spec()),
+        host: Object.freeze({ owner: 'test' }),
+        inspectDiagnostics: diagnostics,
+      });
+    });
+    await expectAdmissionDecision('spawning', 'candidate');
+
+    await admission.withFreshPlacement(slot, async (reservation) => {
+      reservation.markLive(hostRef, 10);
+    });
+    await expectAdmissionDecision('live', 'candidate');
+
+    admission.observe(slot, hostRef, fact(10));
+    await expectAdmissionDecision('blocked-live', 'blocked');
+
+    admission.observeRetired(hostRef, 'closed');
+    await expectAdmissionDecision('retired-blocked', 'blocked');
+  });
+
   it('retains a blocked exact ref across retirement until exact operator confirmation', async () => {
     const admission = collection();
     const slot = admissionSlotKey('shared-slot');

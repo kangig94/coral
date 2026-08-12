@@ -1,61 +1,13 @@
-import { z } from 'zod';
-
 import type { HostRef } from '../../providers/contract.js';
+import { exactHostRefsMatch } from '../../providers/host-admission.js';
 import {
-  exactHostRefsMatch,
-  type ProviderHostCanonicalOwnerMetadata,
-  type ProviderHostCanonicalSpecMetadata,
-} from '../../providers/host-admission.js';
-import { hostRefSchema } from '../../providers/host-ref-schema.js';
+  providerHostInventoryRecordSchema,
+  providerHostInventorySchema,
+  type ProviderHostInventoryRecordWire,
+} from '../../providers/host-inventory-schema.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 
-export type ProviderHostInventoryRecord = Readonly<{
-  ref: HostRef;
-  status: 'live' | 'retired-blocked';
-  spec: ProviderHostCanonicalSpecMetadata;
-  host: ProviderHostCanonicalOwnerMetadata;
-  diagnostics: ProviderHostDiagnosticsWire;
-  diagnosticsRetention: Readonly<{ ownerBudgetTruncated: boolean }>;
-}>;
-
-type ProviderHostLogEntryWire = Readonly<{
-  seq: number;
-  observedAt: number;
-  stream: 'stderr';
-  text: string;
-  startTruncated?: true;
-}>;
-
-export type ProviderHostDiagnosticsWire = Readonly<{
-  hostLog: Readonly<{
-    entries: readonly ProviderHostLogEntryWire[];
-    retainedBytes: number;
-    truncatedBeforeSeq: number;
-  }>;
-  completedObservations: readonly Readonly<{
-    factSeq: number;
-    generation: number;
-    requestId: number;
-    method: string;
-    response:
-      | Readonly<{ kind: 'success' }>
-      | Readonly<{
-          kind: 'failure';
-          rpcCode?: number;
-          providerMessage?: string;
-          providerData?: unknown;
-        }>;
-    hostLog: Readonly<{
-      startSeq: number;
-      endSeq: number;
-      truncated: boolean;
-      historical: readonly ProviderHostLogEntryWire[];
-      during: readonly ProviderHostLogEntryWire[];
-      after: readonly ProviderHostLogEntryWire[];
-    }>;
-  }>[];
-  factsTruncatedBeforeSeq: number;
-}>;
+export type ProviderHostInventoryRecord = ProviderHostInventoryRecordWire;
 
 export type ProviderHostInventoryRow = ProviderHostInventoryRecord & Readonly<{ ownerId: string }>;
 
@@ -189,83 +141,6 @@ export class ProviderHostAdministrationService {
     return Object.freeze({ owners, rows: Object.freeze(rows) });
   }
 }
-
-const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().safe();
-const hostLogEntrySchema = z
-  .object({
-    seq: nonNegativeSafeIntegerSchema,
-    observedAt: z.number(),
-    stream: z.literal('stderr'),
-    text: z.string(),
-    startTruncated: z.literal(true).optional(),
-  })
-  .strict();
-const inspectedHostLogSpanSchema = z
-  .object({
-    startSeq: nonNegativeSafeIntegerSchema,
-    endSeq: nonNegativeSafeIntegerSchema,
-    truncated: z.boolean(),
-    historical: z.array(hostLogEntrySchema),
-    during: z.array(hostLogEntrySchema),
-    after: z.array(hostLogEntrySchema),
-  })
-  .strict();
-const providerResponseSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('success') }).strict(),
-  z
-    .object({
-      kind: z.literal('failure'),
-      rpcCode: z.number().optional(),
-      providerMessage: z.string().optional(),
-      providerData: z.unknown().optional(),
-    })
-    .strict(),
-]);
-const inspectedFactSchema = z
-  .object({
-    factSeq: nonNegativeSafeIntegerSchema,
-    generation: nonNegativeSafeIntegerSchema,
-    requestId: nonNegativeSafeIntegerSchema,
-    method: z.string(),
-    response: providerResponseSchema,
-    hostLog: inspectedHostLogSpanSchema,
-  })
-  .strict();
-const diagnosticsSchema = z
-  .object({
-    hostLog: z
-      .object({
-        entries: z.array(hostLogEntrySchema),
-        retainedBytes: nonNegativeSafeIntegerSchema,
-        truncatedBeforeSeq: nonNegativeSafeIntegerSchema,
-      })
-      .strict(),
-    completedObservations: z.array(inspectedFactSchema),
-    factsTruncatedBeforeSeq: nonNegativeSafeIntegerSchema,
-  })
-  .strict();
-const specSchema = z
-  .object({
-    provider: z.string().min(1),
-    command: z.string().min(1),
-    args: z.array(z.string()),
-    cwd: z.string().nullable(),
-    leaseMode: z.enum(['shared', 'job-exclusive']),
-    idleRetirement: z.enum(['host-reported', 'none']).nullable(),
-  })
-  .strict();
-const hostMetadataValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
-const providerHostInventoryRecordSchema = z
-  .object({
-    ref: hostRefSchema,
-    status: z.enum(['live', 'retired-blocked']),
-    spec: specSchema,
-    host: z.record(hostMetadataValueSchema),
-    diagnostics: diagnosticsSchema,
-    diagnosticsRetention: z.object({ ownerBudgetTruncated: z.boolean() }).strict(),
-  })
-  .strict();
-const providerHostInventorySchema = z.array(providerHostInventoryRecordSchema);
 
 function resolveOne(
   owners: readonly ProviderHostAdministrationOwner[],
