@@ -1,3 +1,5 @@
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vi } from 'vitest';
 
@@ -41,6 +43,7 @@ import { ProviderRegistry } from '#src/providers/registry.js';
 import { registerBuiltInProviders } from '#src/providers/bootstrap.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import type { JobLaunchRequest } from '#src/jobs/launch.js';
+import { canonicalizeWorkDir, type CanonicalWorkDir } from '#src/runtime/canonical-work-dir.js';
 
 function resolveBackendNamespace(runtime: Runtime, pluginRoot: string): string {
   const paths = runtime.paths as { pluginRootNamespace?: (root: string) => string };
@@ -97,7 +100,7 @@ export function createExecutionServiceStub(overrides: Partial<ExecutionService> 
 
 export type DiscussHarness = {
   tmpRoot: string;
-  projectRoot: string;
+  projectRoot: CanonicalWorkDir;
   ctx: InvocationContext;
   store: DiscussSessionStore;
   context: DiscussContext;
@@ -215,8 +218,13 @@ export function createDiscussHarness(
 ): DiscussHarness {
   const harnessId = ++harnessCounter;
   const resolvedOptions = typeof options === 'string' ? { source: options } : options;
-  const tmpRoot = resolvedOptions.tmpRoot ?? `/tmp/sim/coral-discuss-${harnessId}`;
-  const projectRoot = resolvedOptions.projectRoot ?? join(tmpRoot, `project-${harnessId}`);
+  const ownsHostTmpRoot = resolvedOptions.tmpRoot === undefined;
+  const tmpRoot = resolvedOptions.tmpRoot ?? mkdtempSync(join(tmpdir(), `coral-discuss-${harnessId}-`));
+  const rawProjectRoot = resolvedOptions.projectRoot ?? join(tmpRoot, `project-${harnessId}`);
+  if (resolvedOptions.projectRoot === undefined) {
+    mkdirSync(rawProjectRoot, { recursive: true });
+  }
+  const projectRoot = canonicalizeWorkDir(rawProjectRoot, process.cwd());
   const pluginRoot = resolvedOptions.pluginRoot ?? join(tmpRoot, 'plugin');
 
   const runtime = resolvedOptions.runtime ?? new SimulationRuntime();
@@ -317,6 +325,9 @@ export function createDiscussHarness(
       store.dispose();
       cleanupLiveSessions(context);
       runtime.storage.rmSync(tmpRoot, { recursive: true, force: true });
+      if (ownsHostTmpRoot) {
+        rmSync(tmpRoot, { recursive: true, force: true });
+      }
       activeHarnesses.delete(harness);
     },
   };

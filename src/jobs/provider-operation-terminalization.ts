@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import type { JobProgressStore } from './contracts/job-store.js';
 import { elapsedDurationMs } from './duration.js';
 import { buildJobEventRefs } from './refs.js';
@@ -8,6 +10,18 @@ import type {
   ProviderOperationRecord,
   ProviderOperationTerminalDirective,
 } from '../store/provider-operation-record.js';
+import { hostRefSchema } from '../providers/host-ref-schema.js';
+import { providerHostRemediationSchema } from '../providers/host-admission.js';
+
+const PROVIDER_HOST_UNSERVICEABLE_EVIDENCE_PREFIX = 'provider_host_unserviceable:';
+const providerHostUnserviceableEvidenceSchema = z
+  .object({
+    hostRef: hostRefSchema,
+    remediation: providerHostRemediationSchema,
+  })
+  .strict();
+
+type ProviderHostUnserviceableEvidence = Readonly<z.output<typeof providerHostUnserviceableEvidenceSchema>>;
 
 type ProviderOperationTerminalizationStore = Pick<
   JobProgressStore,
@@ -59,6 +73,45 @@ export class ProviderOperationAtomicTerminalizationError extends Error {
   }
 }
 
+export function providerHostUnserviceableLastError(
+  evidence: ProviderHostUnserviceableEvidence,
+  observedAtMs: number,
+): NonNullable<ProviderOperationRecord['lastError']> {
+  const message = `${PROVIDER_HOST_UNSERVICEABLE_EVIDENCE_PREFIX}${JSON.stringify(
+    providerHostUnserviceableEvidenceSchema.parse({
+      hostRef: evidence.hostRef,
+      remediation: evidence.remediation,
+    }),
+  )}`;
+  if (message.length > 4096) {
+    throw new Error('Provider host unserviceable evidence exceeds the durable last-error limit.');
+  }
+  return {
+    observedAtMs,
+    code: 'provider_host_unserviceable',
+    message,
+  };
+}
+
+function readProviderHostUnserviceableEvidence(
+  lastError: ProviderOperationRecord['lastError'],
+): ProviderHostUnserviceableEvidence | null {
+  if (
+    lastError === null ||
+    lastError.code !== 'provider_host_unserviceable' ||
+    !lastError.message.startsWith(PROVIDER_HOST_UNSERVICEABLE_EVIDENCE_PREFIX)
+  ) {
+    return null;
+  }
+  try {
+    return providerHostUnserviceableEvidenceSchema.parse(
+      JSON.parse(lastError.message.slice(PROVIDER_HOST_UNSERVICEABLE_EVIDENCE_PREFIX.length)),
+    );
+  } catch {
+    return null;
+  }
+}
+
 export function terminalizeProviderOperation(
   store: ProviderOperationTerminalizationStore,
   record: ProviderOperationRecord,
@@ -97,6 +150,10 @@ export function terminalizeProviderOperation(
           },
         });
       } else {
+        const hostEvidence =
+          directive.code === 'provider_host_unserviceable'
+            ? readProviderHostUnserviceableEvidence(record.lastError)
+            : null;
         const cause = commit.append({
           type: 'job.progress.emitted',
           stream: { kind: 'job', id: record.operation.jobId },
@@ -107,7 +164,7 @@ export function terminalizeProviderOperation(
             kind: 'domain',
             stage: 'provider_operation_failed',
             message: directive.reason,
-            detail: { code: directive.code },
+            detail: hostEvidence === null ? { code: directive.code } : { code: directive.code, ...hostEvidence },
           },
         });
         appendJobTerminalRecorded(commit, {

@@ -4,6 +4,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
 import type { DefaultProviderHostManager, ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/providers/app-server-transport.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 export const runtime = createRealRuntime('prod');
 
@@ -15,7 +16,7 @@ export function createSharedSpec(overrides: Partial<SharedProviderServerSpec> = 
     provider: 'claude',
     command: process.execPath,
     args: ['broker.js'],
-    cwd: process.cwd(),
+    cwd: fixtureCanonicalWorkDir(process.cwd()),
     leaseMode: 'shared',
     idleRetirement: 'host-reported',
     ...overrides,
@@ -27,7 +28,7 @@ export function createExclusiveSpec(overrides: Partial<ExclusiveProviderServerSp
     provider: 'codex',
     command: 'codex',
     args: ['app-server'],
-    cwd: '/workspace',
+    cwd: fixtureCanonicalWorkDir('/workspace'),
     leaseMode: 'job-exclusive',
     ...overrides,
   };
@@ -59,6 +60,7 @@ export function createEntry(overrides: Partial<ProviderHostEntry> = {}): Provide
 export function createFakeProviderServerHandle(options?: {
   generation?: number;
   request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  close?: () => Promise<void>;
 }) {
   let isClosed = false;
   const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
@@ -80,6 +82,7 @@ export function createFakeProviderServerHandle(options?: {
   );
   const markExpectedCloseMock = vi.fn();
   const closeMock = vi.fn(async () => {
+    await options?.close?.();
     isClosed = true;
     closed.resolve();
   });
@@ -96,6 +99,11 @@ export function createFakeProviderServerHandle(options?: {
       onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
       closePromise: closed.promise,
       isClosed: () => isClosed,
+      inspectDiagnostics: () => ({
+        hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+        completedObservations: [],
+        factsTruncatedBeforeSeq: 0,
+      }),
       markExpectedClose: markExpectedCloseMock,
       close: closeMock,
     } satisfies ProviderServerHandle,

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { Capability } from '../../../src/security/capability.js';
 import type { Principal, ResourceBinding, Subject } from '../../../src/security/principal.js';
 import { authorize } from '../../../src/security/policy/authorize.js';
+import { fixtureCanonicalWorkDir } from '../../helpers/canonical-work-dir.js';
 
 function principal(subject: Subject, binding: ResourceBinding, attenuatedCaps?: Iterable<Capability>): Principal {
   return {
@@ -24,7 +25,7 @@ describe('authorize', () => {
   });
 
   it('denies capabilities outside the subject baseline or attenuation ceiling', () => {
-    const agent = principal('agent', { kind: 'project', root: '/workspace/project' });
+    const agent = principal('agent', { kind: 'project', root: fixtureCanonicalWorkDir('/workspace/project') });
     expect(authorize(agent, 'system:shutdown', { kind: 'unbound' })).toMatchObject({
       ok: false,
       reason: 'missing_capability',
@@ -47,23 +48,36 @@ describe('authorize', () => {
   });
 
   it('allows bound-project capabilities inside the principal project root', () => {
-    const projectAgent = principal('agent', { kind: 'project', root: '/workspace/project' });
+    const projectAgent = principal('agent', {
+      kind: 'project',
+      root: fixtureCanonicalWorkDir('/workspace/project'),
+    });
 
-    expect(authorize(projectAgent, 'kb:read', { kind: 'project', root: '/workspace/project' })).toEqual({
+    expect(
+      authorize(projectAgent, 'kb:read', {
+        kind: 'project',
+        root: fixtureCanonicalWorkDir('/workspace/project'),
+      }),
+    ).toEqual({
       ok: true,
     });
-    expect(authorize(projectAgent, 'kb:read', { kind: 'project', root: '/workspace/project/docs' })).toEqual({
-      ok: true,
-    });
+    expect(
+      authorize(projectAgent, 'kb:read', {
+        kind: 'project',
+        root: fixtureCanonicalWorkDir('/workspace/project/docs'),
+      }),
+    ).toEqual({ ok: true });
   });
 
   it('denies bound-project capabilities outside the principal project root or against unbound resources', () => {
-    const projectAgent = principal('agent', { kind: 'project', root: '/workspace/project' });
-
-    expect(authorize(projectAgent, 'kb:read', { kind: 'project', root: '/workspace/other' })).toMatchObject({
-      ok: false,
-      reason: 'resource_unbound',
+    const projectAgent = principal('agent', {
+      kind: 'project',
+      root: fixtureCanonicalWorkDir('/workspace/project'),
     });
+
+    expect(
+      authorize(projectAgent, 'kb:read', { kind: 'project', root: fixtureCanonicalWorkDir('/workspace/other') }),
+    ).toMatchObject({ ok: false, reason: 'resource_unbound' });
     expect(authorize(projectAgent, 'jobs:read', { kind: 'unbound' })).toMatchObject({
       ok: false,
       reason: 'resource_unbound',
@@ -73,14 +87,20 @@ describe('authorize', () => {
   it('allows unbound principals to satisfy bound-project capabilities for any requested binding', () => {
     const operator = principal('operator', { kind: 'unbound' });
 
-    expect(authorize(operator, 'kb:source:import', { kind: 'project', root: '/workspace/project' })).toEqual({
-      ok: true,
-    });
+    expect(
+      authorize(operator, 'kb:source:import', {
+        kind: 'project',
+        root: fixtureCanonicalWorkDir('/workspace/project'),
+      }),
+    ).toEqual({ ok: true });
     expect(authorize(operator, 'jobs:read', { kind: 'unbound' })).toEqual({ ok: true });
   });
 
   it('does not apply project binding checks to any-scoped capabilities', () => {
-    const projectAgent = principal('agent', { kind: 'project', root: '/workspace/project' });
+    const projectAgent = principal('agent', {
+      kind: 'project',
+      root: fixtureCanonicalWorkDir('/workspace/project'),
+    });
 
     expect(authorize(projectAgent, 'liveness', { kind: 'unbound' })).toEqual({ ok: true });
   });

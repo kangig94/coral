@@ -10,6 +10,7 @@ import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
 import { TEST_CLAUDE_BINDING, TEST_CODEX_BINDING } from '../../helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 function providerNames(providers: ProviderDefinition[]): string[] {
   return providers.map((provider) => provider.name);
@@ -31,7 +32,7 @@ function request(provider: 'claude' | 'codex'): ProviderRequest {
     action: 'exec',
     sessionId: `${provider}-session`,
     prompt: 'test',
-    cwd: '/workspace',
+    cwd: fixtureCanonicalWorkDir('/workspace'),
     bypassPermissions: false,
     coralEnv: {},
   };

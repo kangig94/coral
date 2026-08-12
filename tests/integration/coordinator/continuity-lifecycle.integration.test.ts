@@ -17,6 +17,7 @@ import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
@@ -149,7 +150,7 @@ describe('coordinator continuity lifecycle integration', () => {
     rmSync(mockState.tmpRoot, { recursive: true, force: true });
     mkdirSync(mockState.tmpRoot, { recursive: true });
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-continuity-home-'));
-    const projectRoot = join(mockState.tmpHome, 'project');
+    const projectRoot = fixtureCanonicalWorkDir(join(mockState.tmpHome, 'project'));
     mkdirSync(projectRoot, { recursive: true });
     ctx = {
       projectRoot,

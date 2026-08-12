@@ -41,6 +41,9 @@ import {
   proxyOperationAttachResultSchema as attachResultSchema,
   proxyOperationPrepareParamsSchema as prepareParamsSchema,
   proxyOperationPrepareResultSchema,
+  proxyOperationPreparePendingResultSchema,
+  proxyOperationPrepareCapacityResultSchema,
+  providerOperationPreparePermanentRefusalSchema,
   proxyOperationReservationParamsSchema as reservationParamsSchema,
   proxyControlOpenParamsSchema as openParamsSchema,
   proxyOperationInspectParamsSchema as inspectParamsSchema,
@@ -50,18 +53,26 @@ import {
   proxyOperationSettleParamsSchema as settleParamsSchema,
   proxyOperationRenewResultSchema,
   proxyOperationStopParamsSchema as stopParamsSchema,
+  providerHostEvictParamsSchema,
+  providerHostEvictResultSchema,
+  providerHostInspectParamsSchema,
+  providerHostInspectResultSchema,
+  providerHostListParamsSchema,
+  providerHostListResultSchema,
   type CoordinatorIdentity,
   type OperationIdentity,
   type ProxyIdentity,
   type ProxyPreparedAppServerOperation,
   type Reservation,
 } from './protocol.js';
+import type { ProxyProviderHostAdministrationAuthority } from './provider-root-authority.js';
 
 export type ProxyOptions<Scope extends symbol> = Readonly<{
   capsule: ProxyBootstrapCapsule;
   clock: MonotonicClock<Scope>;
   identity: ProxyIdentity;
   host: SemanticOperationHost;
+  providerHosts?: ProxyProviderHostAdministrationAuthority;
   timer: ControlEndpointTimer;
   mintChallenge(): string;
   mintReceipt(): string;
@@ -203,13 +214,22 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
           if (request.hostFingerprint !== capsule.hostFingerprint) {
             throw new ProxyControlProtocolError('identity_mismatch', 'Prepare named a different host fingerprint.');
           }
-          return proxyOperationPrepareResultSchema.parse(
-            await supervisor.prepare(request.operation, {
-              prepareAttemptNumber: request.prepareAttemptNumber,
-              prepareAttemptKey: operationPrepareAttemptKey(request),
-              prepared: request.prepared,
-            }),
-          );
+          const result = await supervisor.prepare(request.operation, {
+            prepareAttemptNumber: request.prepareAttemptNumber,
+            prepareAttemptKey: operationPrepareAttemptKey(request),
+            prepared: request.prepared,
+          });
+          const state = result !== null && typeof result === 'object' && 'state' in result ? result.state : undefined;
+          if (state === 'pending-activation') {
+            return proxyOperationPreparePendingResultSchema.parse(result);
+          }
+          if (state === 'capacity') {
+            return proxyOperationPrepareCapacityResultSchema.parse(result);
+          }
+          if (state === 'permanent-refusal') {
+            return providerOperationPreparePermanentRefusalSchema.parse(result);
+          }
+          return proxyOperationPrepareResultSchema.parse(result);
         },
       },
     ],
@@ -329,6 +349,51 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             nonce: request.nonce,
             operations: supervisor.status(request.operations),
           });
+        },
+      },
+    ],
+    [
+      'provider-host.list.v1',
+      {
+        authority: 'observation',
+        budgetMs: PROXY_STATUS_RPC_TIMEOUT_MS,
+        handle: (params) => {
+          providerHostListParamsSchema.parse(params);
+          if (options.providerHosts === undefined) {
+            throw new ProxyControlProtocolError('invalid_state', 'Provider-host administration is unavailable.');
+          }
+          return providerHostListResultSchema.parse({ hosts: options.providerHosts.listProviderHosts() });
+        },
+      },
+    ],
+    [
+      'provider-host.inspect.v1',
+      {
+        authority: 'observation',
+        budgetMs: PROXY_STATUS_RPC_TIMEOUT_MS,
+        handle: (params) => {
+          const request = providerHostInspectParamsSchema.parse(params);
+          if (options.providerHosts === undefined) {
+            throw new ProxyControlProtocolError('invalid_state', 'Provider-host administration is unavailable.');
+          }
+          const host = options.providerHosts.inspectProviderHost(request.hostRef);
+          return providerHostInspectResultSchema.parse(host === null ? { state: 'stale' } : { state: 'matched', host });
+        },
+      },
+    ],
+    [
+      'provider-host.evict.v1',
+      {
+        authority: 'active',
+        budgetMs: 'caller-deadline',
+        handle: async (params) => {
+          const request = providerHostEvictParamsSchema.parse(params);
+          if (options.providerHosts === undefined) {
+            throw new ProxyControlProtocolError('invalid_state', 'Provider-host administration is unavailable.');
+          }
+          return providerHostEvictResultSchema.parse(
+            (await options.providerHosts.evictHost(request.hostRef)) ? { state: 'evicted' } : { state: 'stale' },
+          );
         },
       },
     ],

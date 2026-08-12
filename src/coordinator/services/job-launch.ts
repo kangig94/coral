@@ -35,6 +35,11 @@ import {
 import { CHILD_PRINCIPAL_CAPABILITIES, type ChildPrincipalRegistry } from '../child-principal-registry.js';
 import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../security/child-principal-env.js';
 import type { ProviderOperationProtectedEnvironment } from '../../jobs/contracts/provider-operation-lifecycle.js';
+import { canonicalizeWorkDir, type CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
+
+type CanonicalContinuationProfile = Omit<EffectiveContinuationProfile, 'cwd'> & {
+  cwd: CanonicalWorkDir;
+};
 
 export interface JobLaunchServiceDeps {
   runtime: Runtime;
@@ -319,7 +324,7 @@ export class JobLaunchService {
     input: Pick<JobResumeRequest, 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'instruction'>,
     session: ProviderSession,
     ctx: InvocationContext,
-  ): EffectiveContinuationProfile {
+  ): CanonicalContinuationProfile {
     const coralEnv = buildEffectiveCoralEnv(ctx.coralEnv, {
       effort: input.effort,
       controllerProfile: session.controllerProfile,
@@ -327,7 +332,7 @@ export class JobLaunchService {
 
     return {
       model: input.model ?? session.model,
-      cwd: input.cwd ?? session.cwd,
+      cwd: input.cwd ?? canonicalizeWorkDir(session.cwd, ctx.projectRoot),
       effort: resolveEffort(input.effort),
       bypassPermissions: input.bypassPermissions ?? session.bypassPermissions ?? false,
       systemPrompt: input.systemPrompt ?? session.systemPrompt,

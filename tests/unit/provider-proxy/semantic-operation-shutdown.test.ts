@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 /**
  * `SemanticOperationRuntime.shutdown` (BLOCKING B6) coverage, kept in its own file rather than added to the
@@ -70,7 +71,7 @@ function preparedFixture(): ProxyPreparedAppServerOperation {
       action: 'exec',
       sessionId: 'session-1',
       prompt: 'hello',
-      cwd: '/workspace',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
       bypassPermissions: false,
       coralEnv: {},
     },
@@ -88,7 +89,13 @@ function unreachable(label: string): () => never {
 }
 
 function fakeHostSpec(provider = 'claude'): ProviderServerSpec {
-  return { provider, command: provider, args: ['app-server'], cwd: '/workspace', leaseMode: 'job-exclusive' };
+  return {
+    provider,
+    command: provider,
+    args: ['app-server'],
+    cwd: fixtureCanonicalWorkDir('/workspace'),
+    leaseMode: 'job-exclusive',
+  };
 }
 
 function fakeHostRef(provider = 'claude'): HostRef {
@@ -111,6 +118,7 @@ function fakeHostAuthority(): ProxyAppServerHostAuthority {
     rootIdentity: () => ({ pid: 4_242, processStartedAtSeconds: 1_700_000_000 }),
     closed: () => new Promise<Error | void>(() => {}),
     forceClose: async () => {},
+    evictHost: async () => false,
   };
 }
 
@@ -298,6 +306,7 @@ describe('semantic-operation runtime: shutdown (BLOCKING B6)', () => {
       rootIdentity: () => ({ pid: 4_242, processStartedAtSeconds: 1_700_000_000 }),
       closed: () => new Promise<Error | void>(() => {}),
       forceClose: () => new Promise<void>(() => {}),
+      evictHost: async () => false,
     } as ProxyAppServerHostAuthority;
     const host = createSemanticOperationRuntime({ runtime, hostAuthority, getProxy: () => proxy });
     await host.ensureProviderRoot(key, prepared);

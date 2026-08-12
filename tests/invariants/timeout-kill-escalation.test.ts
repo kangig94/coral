@@ -18,11 +18,12 @@
 // `safeKill` at all and instead reimplements the SIGTERM→SIGKILL escalation
 // from scratch against the raw `.kill()` primitive (it happened twice: a
 // verbatim copy of `gracefulKill` in the provider proxy's role spawner, and a
-// partial copy of `reapRecordedContainment` in its role main, both missing the
-// escalation's own correctness guarantees). The second describe block below
-// closes that gap: it flags a module that signals a literal `'SIGTERM'` and a
-// literal `'SIGKILL'` through the real `.kill()` primitive itself, outside the
-// two sanctioned helpers and their shared home.
+// second implementation of `reapRecordedContainment`'s discipline in its role
+// main). The second describe block below closes that gap: it flags a module
+// that signals a literal `'SIGTERM'` and a literal `'SIGKILL'` through the real
+// `.kill()` primitive itself, including when a local call routes those literals
+// through one or more parameters, outside the two sanctioned helpers and their
+// shared home.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -112,9 +113,8 @@ describe('process kills escalate SIGTERM→SIGKILL', () => {
 
 // Unlike `ALLOWLIST` above (sites where escalation is meaningless), every entry here IS a genuine, working
 // SIGTERM→SIGKILL escalation — just not one routed through `gracefulKill`/`reapRecordedContainment`. Each
-// predates this second check and sits in a domain this fix did not touch (the Claude appserver child
-// lifecycle, the coordinator's own acquisition-time guardian undo); recorded here as known debt with its own
-// reason, not silenced as a false positive. Migrating one to a sanctioned helper removes its entry.
+// is recorded as known debt or a target-shape exception with its own reason, not silenced as a false positive.
+// Migrating one to a sanctioned helper removes its entry.
 const HAND_ROLLED_ESCALATION_ALLOWLIST = new Map<string, string>([
   [
     'src/coordinator/live/provider-proxy/spawn-undo.ts',
@@ -124,12 +124,25 @@ const HAND_ROLLED_ESCALATION_ALLOWLIST = new Map<string, string>([
     'deliberately not gracefulKillByPid — a plain-child grace period would force-kill the guardian mid-reap of its own containment',
   ],
   [
+    'src/coordinator/handoff.ts',
+    // Handoff targets a separately discovered incumbent, not a child or recorded containment. Each signal
+    // requires a fresh pid/start-time check and its own capability, policy, cooldown, and audit handling.
+    'verified incumbent handoff escalation has no child handle or recorded containment and revalidates policy and identity before each audited signal',
+  ],
+  [
     'src/providers/claude/appserver/controller.ts',
     'pre-existing Claude appserver child-shutdown escalation (two call sites: shutdown() and the replacement-child path), not yet migrated to gracefulKill',
   ],
   [
     'src/providers/claude/appserver/print-controller.ts',
     'pre-existing Claude appserver child-shutdown escalation (shutdown()), not yet migrated to gracefulKill',
+  ],
+  [
+    'src/provider-proxy/role-main.ts',
+    // Guardian-construction unwind must synchronously confirm both a detached proxy group and an ordinary,
+    // non-detached reaper pid absent on its monotonic clock. `reapRecordedContainment` cannot represent the
+    // latter without falsely claiming it is a process-group leader; `gracefulKill` does not confirm absence.
+    'guardian-construction unwind confirms an ordinary non-detached child pid that neither sanctioned helper can represent without losing absence confirmation',
   ],
 ]);
 
@@ -148,29 +161,147 @@ function isKillPrimitiveCall(call: ts.CallExpression): boolean {
   return name === 'kill';
 }
 
-/** The literal signal `call` passes directly as one of its arguments, if any. Deliberately only a bare string
- *  literal argument, not any expression that might evaluate to one: `kill(pid, force ? 'SIGKILL' : 'SIGTERM')`
- *  is a caller choosing one signal at a time via a flag, not a hand-rolled two-step escalation, so neither
- *  branch of that ternary is "directly an argument" the way a bare literal is. */
-function literalKillSignal(call: ts.CallExpression): 'SIGTERM' | 'SIGKILL' | null {
-  for (const argument of call.arguments) {
-    if (ts.isStringLiteral(argument) && (argument.text === 'SIGTERM' || argument.text === 'SIGKILL')) {
-      return argument.text;
-    }
+/** Deliberately resolves only bare signal literals. A ternary chooses one signal at a time; it does not prove
+ *  that the module contains a two-step escalation. Local parameter flow is resolved separately below. */
+type KillSignal = 'SIGTERM' | 'SIGKILL';
+type LocalFunction = ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction;
+
+function literalSignal(expression: ts.Expression | undefined): KillSignal | null {
+  if (
+    expression &&
+    ts.isStringLiteral(expression) &&
+    (expression.text === 'SIGTERM' || expression.text === 'SIGKILL')
+  ) {
+    return expression.text;
   }
   return null;
 }
 
-/** Every literal signal a module signals through the real `.kill()` primitive, by walking its AST directly
- *  rather than scanning text — comments and unrelated strings are structurally invisible to this walk, not
- *  merely pattern-excluded from it. */
-function handRolledEscalationSignals(source: string): Set<'SIGTERM' | 'SIGKILL'> {
-  const sourceFile = ts.createSourceFile('scan.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const signals = new Set<'SIGTERM' | 'SIGKILL'>();
+function signalArgument(call: ts.CallExpression): ts.Expression | undefined {
+  return call.arguments[call.arguments.length - 1];
+}
+
+function localFunctions(sourceFile: ts.SourceFile): Map<string, LocalFunction> {
+  const functions = new Map<string, LocalFunction>();
+  for (const statement of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name !== undefined && statement.body !== undefined) {
+      functions.set(statement.name.text, statement);
+      continue;
+    }
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (
+        ts.isIdentifier(declaration.name) &&
+        declaration.initializer !== undefined &&
+        (ts.isFunctionExpression(declaration.initializer) || ts.isArrowFunction(declaration.initializer))
+      ) {
+        functions.set(declaration.name.text, declaration.initializer);
+      }
+    }
+  }
+  return functions;
+}
+
+function forEachCallIn(localFunction: LocalFunction, inspect: (call: ts.CallExpression) => void): void {
+  const body = localFunction.body;
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node) && isKillPrimitiveCall(node)) {
-      const signal = literalKillSignal(node);
-      if (signal !== null) signals.add(signal);
+    if (node !== body && ts.isFunctionLike(node)) return;
+    if (ts.isCallExpression(node)) inspect(node);
+    ts.forEachChild(node, visit);
+  };
+  if (body !== undefined) visit(body);
+}
+
+function localCalleeName(call: ts.CallExpression): string | null {
+  return ts.isIdentifier(call.expression) ? call.expression.text : null;
+}
+
+function parameterIndex(localFunction: LocalFunction, expression: ts.Expression): number | null {
+  if (!ts.isIdentifier(expression)) return null;
+  const index = localFunction.parameters.findIndex(
+    (parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === expression.text,
+  );
+  return index === -1 ? null : index;
+}
+
+type ParameterFlow = Readonly<{
+  callerName: string;
+  callerParameter: number;
+  calleeParameter: number;
+}>;
+
+/** Parameter positions that eventually reach the signal argument of a real kill primitive. The worklist
+ *  follows local wrapper calls too, so `outer(signal) -> inner(signal) -> process.kill(pid, signal)` remains
+ *  visible regardless of how many local functions separate the literal from `.kill()`. Function bodies are
+ *  walked once; propagation thereafter visits only the parameter-flow edges. */
+function signalParametersByFunction(
+  functions: ReadonlyMap<string, LocalFunction>,
+): ReadonlyMap<string, ReadonlySet<number>> {
+  const signalParameters = new Map([...functions.keys()].map((name) => [name, new Set<number>()]));
+  const callersByCallee = new Map<string, ParameterFlow[]>();
+  const pending: Array<Readonly<{ functionName: string; parameter: number }>> = [];
+
+  const markSignalParameter = (functionName: string, parameter: number): void => {
+    const parameters = signalParameters.get(functionName);
+    if (parameters === undefined || parameters.has(parameter)) return;
+    parameters.add(parameter);
+    pending.push({ functionName, parameter });
+  };
+
+  for (const [callerName, localFunction] of functions) {
+    forEachCallIn(localFunction, (call) => {
+      if (isKillPrimitiveCall(call)) {
+        const argument = signalArgument(call);
+        if (argument === undefined) return;
+        const index = parameterIndex(localFunction, argument);
+        if (index !== null) markSignalParameter(callerName, index);
+        return;
+      }
+
+      const calleeName = localCalleeName(call);
+      if (calleeName === null || !functions.has(calleeName)) return;
+      const flows = callersByCallee.get(calleeName) ?? [];
+      for (const [calleeParameter, argument] of call.arguments.entries()) {
+        const callerParameter = parameterIndex(localFunction, argument);
+        if (callerParameter !== null) {
+          flows.push({ callerName, callerParameter, calleeParameter });
+        }
+      }
+      callersByCallee.set(calleeName, flows);
+    });
+  }
+
+  while (pending.length > 0) {
+    const signalParameter = pending.pop();
+    if (signalParameter === undefined) continue;
+    for (const flow of callersByCallee.get(signalParameter.functionName) ?? []) {
+      if (flow.calleeParameter === signalParameter.parameter) {
+        markSignalParameter(flow.callerName, flow.callerParameter);
+      }
+    }
+  }
+  return signalParameters;
+}
+
+/** Every literal signal a module routes to the real `.kill()` primitive, by walking its AST and following
+ *  local parameter flow. Comments and unrelated strings are structurally invisible to this walk. */
+function handRolledEscalationSignals(source: string): Set<KillSignal> {
+  const sourceFile = ts.createSourceFile('scan.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const functions = localFunctions(sourceFile);
+  const signalParameters = signalParametersByFunction(functions);
+  const signals = new Set<KillSignal>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const directSignal = isKillPrimitiveCall(node) ? literalSignal(signalArgument(node)) : null;
+      if (directSignal !== null) signals.add(directSignal);
+
+      const calleeName = localCalleeName(node);
+      if (calleeName !== null) {
+        for (const index of signalParameters.get(calleeName) ?? []) {
+          const signal = literalSignal(node.arguments[index]);
+          if (signal !== null) signals.add(signal);
+        }
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -184,6 +315,23 @@ function hasHandRolledEscalation(source: string): boolean {
 }
 
 describe('process kills do not hand-roll a SIGTERM→SIGKILL escalation outside the sanctioned helpers', () => {
+  it('detects a parameter-routed local escalation mutation', () => {
+    const mutation = `
+      function signal(pid: number, value: NodeJS.Signals): void {
+        process.kill(pid, value);
+      }
+      function forward(pid: number, value: NodeJS.Signals): void {
+        signal(pid, value);
+      }
+      function reap(pid: number): void {
+        forward(pid, 'SIGTERM');
+        forward(pid, 'SIGKILL');
+      }
+    `;
+
+    expect(handRolledEscalationSignals(mutation)).toEqual(new Set<KillSignal>(['SIGTERM', 'SIGKILL']));
+  });
+
   it('no module combines a literal SIGTERM kill with a literal SIGKILL kill outside gracefulKill, reapRecordedContainment, or the documented allowlist', () => {
     const violations: string[] = [];
     for (const filePath of listSourceFiles(SRC_ROOT)) {

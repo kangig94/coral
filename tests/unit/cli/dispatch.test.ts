@@ -16,6 +16,7 @@ const mockState = vi.hoisted(() => ({
 }));
 
 const tempDirs: string[] = [];
+let projectRoot: string;
 
 function makeTempDir(): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-cli-provider-scope-'));
@@ -78,6 +79,7 @@ function stubNonChildInvocationEnv(): void {
 describe('command client routing', () => {
   beforeEach(() => {
     stubNonChildInvocationEnv();
+    projectRoot = makeTempDir();
   });
 
   afterEach(() => {
@@ -86,6 +88,23 @@ describe('command client routing', () => {
     for (const root of tempDirs.splice(0)) {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('sends the canonical target when the invocation project root is a symlink', async () => {
+    const physicalProject = join(projectRoot, 'physical-project');
+    const selectedProject = join(projectRoot, 'selected-project');
+    mkdirSync(physicalProject);
+    symlinkSync(physicalProject, selectedProject, 'dir');
+    mockState.request.mockResolvedValueOnce({ jobs: [] });
+
+    const client = makeClient(selectedProject, findCommand(buildProgram(), 'claude'));
+    await client.listJobs({ phase: 'running' });
+
+    expect(mockState.request).toHaveBeenCalledWith(
+      'jobs.list',
+      { projectRoot: realpathSync(physicalProject), phase: 'running' },
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
   });
 
   it('captures caller-default Claude as an explicit physical profile without requiring Codex', async () => {
@@ -107,7 +126,7 @@ describe('command client routing', () => {
       }),
     );
     mockState.request.mockResolvedValueOnce({ job: 'session-job' });
-    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'claude'));
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'claude'));
 
     await client.createSession('claude', 'hi', {});
 
@@ -136,7 +155,7 @@ describe('command client routing', () => {
     vi.stubEnv('CODEX_HOME', selectedCodex);
     vi.stubEnv('CLAUDE_CONFIG_DIR', join(callerHome, 'absent-claude'));
     mockState.request.mockResolvedValueOnce({ job: 'session-job' });
-    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'claude'));
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'claude'));
 
     await client.createSession('codex', 'hi', {});
 
@@ -162,7 +181,7 @@ describe('command client routing', () => {
     vi.stubEnv('CODEX_HOME', codexHome);
     vi.stubEnv('CLAUDE_CONFIG_DIR', claudeHome);
     mockState.request.mockResolvedValueOnce({ job: 'workflow-job' });
-    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'workflow'));
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'workflow'));
 
     await client.workflow('architect@claude -> resolver@codex', { provider: 'claude', startPrompt: 'seed' });
 
@@ -184,7 +203,7 @@ describe('command client routing', () => {
     vi.stubEnv('NO_PROXY', 'localhost');
     mockState.request.mockResolvedValueOnce({ job: 'session-job' });
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+    const client = makeClient(projectRoot, findCommand(program, 'claude'));
 
     await client.createSession('claude', 'hi', {});
 
@@ -207,7 +226,7 @@ describe('command client routing', () => {
     }
     mockState.request.mockResolvedValueOnce({ job: 'session-job' });
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+    const client = makeClient(projectRoot, findCommand(program, 'claude'));
 
     await client.createSession('claude', 'hi', {});
 
@@ -223,7 +242,7 @@ describe('command client routing', () => {
     vi.stubEnv('CLAUDE_CONFIG_DIR', makeTempDir());
     mockState.request.mockResolvedValueOnce({ job: 'workflow-job' });
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'workflow'));
+    const client = makeClient(projectRoot, findCommand(program, 'workflow'));
 
     await client.workflow('agent', { startPrompt: 'go' });
 
@@ -243,7 +262,7 @@ describe('command client routing', () => {
     vi.stubEnv('CORAL_ENV_PASSTHROUGH', 'FOO');
     mockState.request.mockResolvedValueOnce({ job: 'session-job' });
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+    const client = makeClient(projectRoot, findCommand(program, 'claude'));
 
     await client.createSession('claude', 'hi', {});
 
@@ -256,7 +275,7 @@ describe('command client routing', () => {
     vi.stubEnv('CORAL_CODEX_MODEL', 'gpt-5.6-sol');
     mockState.request.mockResolvedValueOnce({ job: 'workflow-job' });
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'workflow'));
+    const client = makeClient(projectRoot, findCommand(program, 'workflow'));
 
     await client.workflow('agent', { startPrompt: 'go' });
 
@@ -267,7 +286,7 @@ describe('command client routing', () => {
   it('omits projectRoot from jobs.list when listing across all projects', async () => {
     mockState.request.mockResolvedValueOnce({ jobs: [] });
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+    const client = makeClient(projectRoot, findCommand(program, 'claude'));
 
     await client.listJobs({ allProjects: true, phase: 'running' });
 
@@ -283,13 +302,13 @@ describe('command client routing', () => {
   it('scopes jobs.list to the caller project root by default', async () => {
     mockState.request.mockResolvedValueOnce({ jobs: [] });
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+    const client = makeClient(projectRoot, findCommand(program, 'claude'));
 
     await client.listJobs({ phase: 'running' });
 
     expect(mockState.request).toHaveBeenCalledWith(
       'jobs.list',
-      { projectRoot: '/tmp/project', phase: 'running' },
+      { projectRoot, phase: 'running' },
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
   });
@@ -297,13 +316,13 @@ describe('command client routing', () => {
   it('dispatches jobs.detail with the caller project root', async () => {
     mockState.request.mockResolvedValueOnce({ status: { jobId: 'job-1' }, events: [], readiness: 'ready', exit: null });
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'jobs', 'detail'));
+    const client = makeClient(projectRoot, findCommand(program, 'jobs', 'detail'));
 
     await client.detailJob('job-1');
 
     expect(mockState.request).toHaveBeenCalledWith(
       'jobs.detail',
-      { jobId: 'job-1', projectRoot: '/tmp/project' },
+      { jobId: 'job-1', projectRoot },
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
   });
@@ -320,7 +339,7 @@ describe('command client routing', () => {
     };
     mockState.readStore.discuss.watch.mockReturnValueOnce(watchState);
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'discuss', 'watch'));
+    const client = makeClient(projectRoot, findCommand(program, 'discuss', 'watch'));
 
     await expect(client.discussWatch('discuss-1', 3)).resolves.toBe(watchState);
 
@@ -335,7 +354,7 @@ describe('command client routing', () => {
     vi.stubEnv('CORAL_SESSION_ID', 'parent-session');
     vi.stubEnv('CORAL_KB_ENABLE', '1');
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'kb', 'reindex'));
+    const client = makeClient(projectRoot, findCommand(program, 'kb', 'reindex'));
 
     await expect(client.kbSearch({ query: 'child query' })).rejects.toThrow(
       'This nested Coral command has incomplete child credentials and was not sent',
@@ -349,7 +368,7 @@ describe('command client routing', () => {
   it('forwards kb search mode through transport dispatchers', async () => {
     mockState.request.mockResolvedValueOnce({ results: [], mode: 'vector' });
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'kb', 'reindex'));
+    const client = makeClient(projectRoot, findCommand(program, 'kb', 'reindex'));
 
     await client.kbSearch({
       query: 'contracts',
@@ -373,7 +392,7 @@ describe('command client routing', () => {
   it('dispatches kb diagnose over the transport surface for non-read clients', async () => {
     mockState.request.mockResolvedValueOnce({ incidents: [] });
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'kb', 'reindex'));
+    const client = makeClient(projectRoot, findCommand(program, 'kb', 'reindex'));
 
     await client.kbDiagnose({});
 
@@ -387,7 +406,7 @@ describe('command client routing', () => {
   it('renames the kb update note slug to `slug` without leaking the `note` key', async () => {
     mockState.request.mockResolvedValueOnce({ path: '/kb/notes/coral-kb-read.md' });
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'kb', 'reindex'));
+    const client = makeClient(projectRoot, findCommand(program, 'kb', 'reindex'));
 
     await client.kbUpdate({ note: 'coral-kb-read', content: 'updated body\n' });
 
@@ -396,7 +415,7 @@ describe('command client routing', () => {
       expect.objectContaining({
         slug: 'coral-kb-read',
         content: 'updated body\n',
-        projectRoot: '/tmp/project',
+        projectRoot,
       }),
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
@@ -407,7 +426,7 @@ describe('command client routing', () => {
   it('forwards kb reindex request arguments through transport dispatch', async () => {
     mockState.request.mockResolvedValueOnce({ status: 'running', job: 'kb-reindex-job' });
     const program = buildProgram();
-    const client = makeClient('/tmp/project', findCommand(program, 'kb', 'reindex'));
+    const client = makeClient(projectRoot, findCommand(program, 'kb', 'reindex'));
 
     await client.kbReindex({ async: true });
 
@@ -415,7 +434,7 @@ describe('command client routing', () => {
       'kb.reindex',
       expect.objectContaining({
         async: true,
-        projectRoot: '/tmp/project',
+        projectRoot,
       }),
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
@@ -427,6 +446,7 @@ describe('kb lazy reconcile', () => {
 
   beforeEach(() => {
     stubNonChildInvocationEnv();
+    projectRoot = makeTempDir();
   });
 
   afterEach(() => {
@@ -438,6 +458,9 @@ describe('kb lazy reconcile', () => {
       process.env.CORAL_KB_ENABLE = prevKbEnabled;
     }
     vi.unstubAllEnvs();
+    for (const root of tempDirs.splice(0)) {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('should continue on the KB-disabled daemon and explain idle setting inheritance once', async () => {
@@ -447,7 +470,7 @@ describe('kb lazy reconcile', () => {
       components: [{ id: 'kb', phase: 'offline', reason: KB_DISABLED_REASON }],
     });
     mockState.request.mockResolvedValueOnce({ status: 'running' });
-    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'kb', 'reindex'));
 
     await client.kbReindex({ async: true });
 
@@ -467,7 +490,7 @@ describe('kb lazy reconcile', () => {
     const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     mockState.health.mockResolvedValueOnce({ components: [{ id: 'kb', phase: 'online' }] });
     mockState.request.mockResolvedValueOnce({ status: 'running' });
-    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'kb', 'reindex'));
 
     await client.kbReindex({ async: true });
 
@@ -478,7 +501,7 @@ describe('kb lazy reconcile', () => {
   it('does not probe or restart when the caller wants KB disabled', async () => {
     process.env.CORAL_KB_ENABLE = '0';
     mockState.request.mockResolvedValueOnce({ status: 'running' });
-    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'kb', 'reindex'));
 
     await client.kbReindex({ async: true });
 
@@ -490,7 +513,7 @@ describe('kb lazy reconcile', () => {
     process.env.CORAL_KB_ENABLE = '1';
     mockState.health.mockRejectedValueOnce(new Error('unreachable'));
     mockState.request.mockResolvedValueOnce({ status: 'running' });
-    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
+    const client = makeClient(projectRoot, findCommand(buildProgram(), 'kb', 'reindex'));
 
     await client.kbReindex({ async: true });
 

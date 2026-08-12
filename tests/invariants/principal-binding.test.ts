@@ -9,6 +9,7 @@ import { resolveRequestBinding } from '#src/transport/dispatch.js';
 import { rpcCatalog, type RpcMethodSpec } from '#src/transport/rpc/catalog.js';
 import { operationalRouteSpecs, type OperationalRouteSpec } from '#src/transport/rpc/operational-catalog.js';
 import { testPrincipal, testProjectPrincipal } from '../helpers/principal.js';
+import { fixtureCanonicalWorkDir } from '../helpers/canonical-work-dir.js';
 
 function envWith(value?: string): { get(key: string): string | undefined } {
   return {
@@ -55,7 +56,7 @@ describe('principal request binding invariants', () => {
       projectRoot: '/workspace/project',
       filePath: 'paper.md',
     }) as { projectRoot: string };
-    const binding = resolveRequestBinding(spec.requestBinding, parsed);
+    const binding = resolveRequestBinding(spec.requestBinding, fixtureCanonicalWorkDir(parsed.projectRoot));
 
     expect(binding).toEqual({ kind: 'project', root: '/workspace/project' });
     expect(deriveSourceImportReadPolicy(binding, parsed.projectRoot, envWith('8192'))).toEqual({
@@ -74,12 +75,9 @@ describe('principal request binding invariants', () => {
     const spec = rpcSpec('jobs.list');
 
     expect(spec.requestBinding).toEqual({ kind: 'projectRoot', projectRoot: 'optional-all-projects' });
-    expectAllProjectReadPolicy(spec.requires, resolveRequestBinding(spec.requestBinding, spec.requestSchema.parse({})));
+    expectAllProjectReadPolicy(spec.requires, resolveRequestBinding(spec.requestBinding, undefined));
 
-    const projectBinding = resolveRequestBinding(
-      spec.requestBinding,
-      spec.requestSchema.parse({ projectRoot: '/workspace/project' }),
-    );
+    const projectBinding = resolveRequestBinding(spec.requestBinding, fixtureCanonicalWorkDir('/workspace/project'));
     expect(projectBinding).toEqual({ kind: 'project', root: '/workspace/project' });
     expect(
       authorize(testProjectPrincipal('/workspace/project', { subject: 'agent' }), spec.requires, projectBinding),
@@ -90,12 +88,9 @@ describe('principal request binding invariants', () => {
     const spec = operationalSpec('http.events.stream');
 
     expect(spec.requestBinding).toEqual({ kind: 'projectRoot', projectRoot: 'optional-all-projects' });
-    expectAllProjectReadPolicy(spec.requires, resolveRequestBinding(spec.requestBinding, { filterJobId: null }));
+    expectAllProjectReadPolicy(spec.requires, resolveRequestBinding(spec.requestBinding, undefined));
 
-    const projectBinding = resolveRequestBinding(spec.requestBinding, {
-      projectRoot: '/workspace/project',
-      filterJobId: null,
-    });
+    const projectBinding = resolveRequestBinding(spec.requestBinding, fixtureCanonicalWorkDir('/workspace/project'));
     expect(projectBinding).toEqual({ kind: 'project', root: '/workspace/project' });
     expect(
       authorize(testProjectPrincipal('/workspace/project', { subject: 'agent' }), spec.requires, projectBinding),
@@ -109,7 +104,10 @@ describe('principal request binding invariants', () => {
     const sourceRequest = sourceSpec.requestSchema.parse({ projectRoot, filePath: 'paper.md' }) as {
       projectRoot: string;
     };
-    const sourceBinding = resolveRequestBinding(sourceSpec.requestBinding, sourceRequest);
+    const sourceBinding = resolveRequestBinding(
+      sourceSpec.requestBinding,
+      fixtureCanonicalWorkDir(sourceRequest.projectRoot),
+    );
 
     expect(authorize(child, sourceSpec.requires, sourceBinding)).toEqual({ ok: true });
     expect(deriveSourceImportReadPolicy(child.binding, sourceRequest.projectRoot, envWith('8192')).kind).toBe(
@@ -118,16 +116,12 @@ describe('principal request binding invariants', () => {
 
     const jobsSpec = rpcSpec('jobs.list');
     expect(
-      authorize(
-        child,
-        jobsSpec.requires,
-        resolveRequestBinding(jobsSpec.requestBinding, jobsSpec.requestSchema.parse({})),
-      ),
+      authorize(child, jobsSpec.requires, resolveRequestBinding(jobsSpec.requestBinding, undefined)),
     ).toMatchObject({ ok: false, reason: 'resource_unbound' });
 
     const eventsSpec = operationalSpec('http.events.stream');
     expect(
-      authorize(child, eventsSpec.requires, resolveRequestBinding(eventsSpec.requestBinding, { filterJobId: null })),
+      authorize(child, eventsSpec.requires, resolveRequestBinding(eventsSpec.requestBinding, undefined)),
     ).toMatchObject({ ok: false, reason: 'resource_unbound' });
   });
 });

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 // `rebuildBoundProvider` builds a fresh registry per call via `createBuiltInProviderRegistry` and calls its
 // real `rehydrateBinding`, which needs a real, persisted Claude/Codex account binding to succeed. Mocking the
@@ -9,6 +10,8 @@ const providerRegistryDouble = vi.hoisted(() => ({
   rehydrateBinding: vi.fn(),
 }));
 vi.mock('#src/providers/bootstrap.js', () => ({
+  classifyProviderResponseServiceability: (_provider: string, fact: ProviderResponseDiagnosticFact) =>
+    fact.method === 'config/read' ? (fact.response.kind === 'success' ? 'serviceable' : 'unserviceable') : 'unknown',
   createBuiltInProviderRegistry: () => ({
     connectAppServerHost: () => {},
     rehydrateBinding: (binding: unknown) => providerRegistryDouble.rehydrateBinding(binding),
@@ -33,6 +36,9 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
 });
 
 import { spawnProviderServerTransport, type ProviderServerHandle } from '#src/providers/app-server-transport.js';
+import type { ProviderResponseDiagnosticFact } from '#src/providers/host-diagnostics.js';
+import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
+import { encodeHostRef } from '#src/providers/host-ref-codec.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { providerRequestFailed } from '#src/providers/fault.js';
@@ -131,7 +137,7 @@ function preparedFixture(overrides: Partial<ProxyPreparedAppServerOperation> = {
       action: 'exec',
       sessionId: 'session-1',
       prompt: 'hello',
-      cwd: '/workspace',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
       bypassPermissions: false,
       coralEnv: {},
     },
@@ -196,7 +202,13 @@ function fakeBoundProvider(options: {
 }
 
 function fakeHostSpec(provider = 'claude'): ProviderServerSpec {
-  return { provider, command: provider, args: ['app-server'], cwd: '/workspace', leaseMode: 'job-exclusive' };
+  return {
+    provider,
+    command: provider,
+    args: ['app-server'],
+    cwd: fixtureCanonicalWorkDir('/workspace'),
+    leaseMode: 'job-exclusive',
+  };
 }
 
 function fakeHostRef(provider = 'claude'): HostRef {
@@ -222,6 +234,7 @@ function fakeHostAuthority(): ProxyAppServerHostAuthority {
     rootIdentity: () => ({ pid: 4242, processStartedAtSeconds: 1_700_000_000 }),
     closed: () => new Promise<Error | void>(() => {}),
     forceClose: async () => {},
+    evictHost: async () => false,
   };
 }
 
@@ -607,6 +620,7 @@ describe('semantic-operation runtime: bounded cancellation', () => {
       rootIdentity: () => ({ pid: 4242, processStartedAtSeconds: 1_700_000_000 }),
       closed: () => transportClosed.promise,
       forceClose,
+      evictHost: async () => false,
     } as ProxyAppServerHostAuthority;
 
     providerRegistryDouble.rehydrateBinding.mockReturnValue({
@@ -716,6 +730,7 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
       rootIdentity: () => (rootAlive ? { pid: 4_242, processStartedAtSeconds: 1_700_000_000 } : null),
       closed: () => transportClosed.promise,
       forceClose,
+      evictHost: async () => false,
     };
     return { authority, forceClose, rootAlive: () => rootAlive };
   }
@@ -930,7 +945,7 @@ describe('semantic-operation runtime: capability-directed cancellation', () => {
         sessionId: 'session-1',
         conversationRef: 'thread-1',
         prompt: 'hello',
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         bypassPermissions: false,
         coralEnv: {},
       },
@@ -1445,30 +1460,103 @@ describe('semantic-operation runtime: prepare refusal classification', () => {
       reason: 'provider creation failed',
     });
   });
+
+  it('returns an exact terminal provider-host refusal when fresh placement is blocked', async () => {
+    const { proxy } = createTestProxy();
+    const hostRef = fakeHostRef('codex');
+    providerRegistryDouble.rehydrateBinding.mockReturnValue({
+      ok: true,
+      value: fakeBoundProvider({
+        name: 'codex',
+        execute: unreachable('execute') as unknown as (
+          runtime: BoundProviderAppServerExecutionRuntime,
+        ) => AsyncIterable<ProviderEventBody>,
+        openReplacement: async () => {
+          throw new ProviderHostUnserviceableError(hostRef);
+        },
+      }),
+    });
+    const host = createSemanticOperationRuntime({ runtime, hostAuthority: fakeHostAuthority(), getProxy: () => proxy });
+    const encodedHostRef = encodeHostRef(hostRef);
+
+    await expect(host.ensureProviderRoot(testKey(), preparedFixture({ provider: 'codex' }))).resolves.toEqual({
+      state: 'permanent-refusal',
+      code: 'provider_host_unserviceable',
+      disposition: 'terminal-failure',
+      reason:
+        `Provider host ${encodedHostRef} (${hostRef.provider}/${hostRef.instanceId}) is unserviceable. ` +
+        `Run coral-cli backend provider-host inspect ${encodedHostRef}, then ` +
+        `coral-cli backend provider-host evict ${encodedHostRef} before retrying fresh placement.`,
+      hostRef,
+      remediation: {
+        action: 'evict-provider-host',
+        command: 'coral-cli backend provider-host evict <host-ref>',
+      },
+    });
+  });
 });
 
 // --- createProxyAppServerHostAuthority: the host pool -----------------------------------------------------
 
-function fakeProviderServerHandle(options?: { pid?: number }): {
+function fakeProviderServerHandle(options?: {
+  pid?: number;
+  request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  close?: () => Promise<void>;
+}): {
   handle: ProviderServerHandle;
   closeMock: ReturnType<typeof vi.fn>;
+  resolveClosed(): void;
 } {
-  const closeMock = vi.fn(async () => {});
+  const closed = deferred<Error | void>();
+  let isClosed = false;
+  const closeMock = vi.fn(async () => {
+    await options?.close?.();
+    isClosed = true;
+    closed.resolve();
+  });
   const handle: ProviderServerHandle = {
     pid: options?.pid ?? 1_000,
     child: {} as never,
     generation: 1,
     rpc: {
-      request: vi.fn(async () => ({})) as unknown as ProviderServerHandle['rpc']['request'],
+      request: vi.fn(options?.request ?? (async () => ({}))) as unknown as ProviderServerHandle['rpc']['request'],
       notify: vi.fn(),
     },
     onNotification: vi.fn(() => () => {}) as unknown as ProviderServerHandle['onNotification'],
-    closePromise: new Promise(() => {}),
-    isClosed: () => false,
+    closePromise: closed.promise,
+    isClosed: () => isClosed,
+    inspectDiagnostics: () => ({
+      hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+      completedObservations: [],
+      factsTruncatedBeforeSeq: 0,
+    }),
     markExpectedClose: vi.fn(),
     close: closeMock,
   };
-  return { handle, closeMock };
+  return {
+    handle,
+    closeMock,
+    resolveClosed: () => {
+      isClosed = true;
+      closed.resolve();
+    },
+  };
+}
+
+function rejectedConfigRead(generation: number): ProviderResponseDiagnosticFact {
+  return {
+    factSeq: 1,
+    generation,
+    requestId: 1,
+    method: 'config/read',
+    response: {
+      kind: 'failure',
+      rpcCode: -32_603,
+      providerMessage: 'fixture rejection',
+      providerData: { cause: 'fixture' },
+    },
+    hostLog: { startSeq: 1, endSeq: 2 },
+  };
 }
 
 function sharedSpec(overrides: Partial<ProviderServerSpec> = {}): ProviderServerSpec {
@@ -1528,6 +1616,301 @@ describe('semantic-operation: createProxyAppServerHostAuthority (host pool)', ()
     expect(first.hostRef.instanceId).toBe(second.hostRef.instanceId);
     first.close();
     second.close();
+  });
+
+  it('refuses fresh work on a blocked proxy host while exact attachment remains available', async () => {
+    const first = fakeProviderServerHandle();
+    const second = fakeProviderServerHandle({ pid: 1_001 });
+    first.handle.inspectDiagnostics = () => ({
+      hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 7 },
+      completedObservations: [],
+      factsTruncatedBeforeSeq: 12,
+    });
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(first.handle).mockResolvedValueOnce(second.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const hostSpec = sharedSpec({ provider: 'codex' });
+    const scope = selectedHostScope(authority, testKey(), 'shared-acknowledged-interrupt');
+    const opened = await scope.openSession(hostSpec);
+    const firstSpawn = vi.mocked(spawnProviderServerTransport).mock.calls[0]?.[0];
+    firstSpawn?.observeProviderResponse(rejectedConfigRead(0));
+    expect(authority.listProviderHosts()).toEqual([
+      expect.objectContaining({
+        ref: opened.hostRef,
+        status: 'live',
+        spec: expect.objectContaining({ cwd: hostSpec.cwd }),
+      }),
+    ]);
+    expect(authority.inspectProviderHost(opened.hostRef)).toMatchObject({ ref: opened.hostRef, status: 'live' });
+    expect(first.closeMock, 'a negative finding performed a proxy close').not.toHaveBeenCalled();
+
+    const attached = await scope.attachSession(opened.hostRef, { spec: hostSpec, jobId: 'attached-job' });
+    await expect(attached?.session.rpc('interrupt', {})).resolves.toEqual({});
+    await expect(scope.openSession(hostSpec)).rejects.toMatchObject({
+      code: 'provider_host_unserviceable',
+      hostRef: opened.hostRef,
+      remediation: { action: 'evict-provider-host' },
+    });
+    expect(spawnProviderServerTransport).toHaveBeenCalledOnce();
+
+    first.resolveClosed();
+    await vi.waitFor(() =>
+      expect(authority.admissionSnapshot().state.values().next().value?.phase).toBe('retired-blocked'),
+    );
+    expect(authority.admissionSnapshot().tombstones[0]).toMatchObject({
+      ref: opened.hostRef,
+      spec: { cwd: hostSpec.cwd },
+      retirement: { status: 'retired', processAbsent: true },
+      diagnostics: {
+        hostLog: { truncatedBeforeSeq: 7 },
+        factsTruncatedBeforeSeq: 12,
+      },
+    });
+    expect(authority.listProviderHosts()).toEqual([
+      expect.objectContaining({
+        ref: opened.hostRef,
+        status: 'retired-blocked',
+        spec: expect.objectContaining({ cwd: hostSpec.cwd }),
+      }),
+    ]);
+    expect(authority.inspectProviderHost(opened.hostRef)).toMatchObject({
+      ref: opened.hostRef,
+      status: 'retired-blocked',
+    });
+    await expect(scope.openSession(hostSpec)).rejects.toMatchObject({ code: 'provider_host_unserviceable' });
+
+    expect(await authority.evictHost({ ...opened.hostRef, instanceId: 'stale-instance' })).toBe(false);
+    expect(await authority.evictHost(opened.hostRef)).toBe(true);
+    expect(first.closeMock, 'retired-blocked eviction attempted a second physical close').not.toHaveBeenCalled();
+    const replacement = await scope.openSession(hostSpec);
+    expect(replacement.hostRef.instanceId).not.toBe(opened.hostRef.instanceId);
+    expect(spawnProviderServerTransport).toHaveBeenCalledTimes(2);
+
+    firstSpawn?.observeProviderResponse(rejectedConfigRead(1));
+    expect(authority.admissionSnapshot().state.values().next().value).toMatchObject({
+      ref: replacement.hostRef,
+      generation: 1,
+      phase: 'live',
+    });
+
+    attached?.close();
+    opened.close();
+    replacement.close();
+  });
+
+  it('correlates an openSession RPC rejection to its exact blocked proxy host', async () => {
+    const providerCause = new Error('proxy provider RPC rejected');
+    const server = fakeProviderServerHandle({
+      request: async (method) => {
+        if (method === 'turn/start') throw providerCause;
+        return {};
+      },
+    });
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const scope = selectedHostScope(authority, testKey(), 'shared-acknowledged-interrupt');
+    const opened = await scope.openSession(sharedSpec({ provider: 'codex' }));
+    vi.mocked(spawnProviderServerTransport).mock.calls[0]?.[0].observeProviderResponse(rejectedConfigRead(0));
+
+    const rejection = await opened.session.rpc('turn/start', {}).catch((error: unknown) => error);
+
+    opened.close();
+    expect(rejection, 'proxy openSession RPC lost its exact blocked host reference').toMatchObject({
+      name: 'ProviderHostUnserviceableResponseError',
+      hostRef: opened.hostRef,
+    });
+    expect(
+      (rejection as { providerCause?: unknown }).providerCause,
+      'proxy openSession RPC lost the raw provider cause',
+    ).toBe(providerCause);
+  });
+
+  it("awaits exact live proxy close before confirmation and leaves another owner's live job untouched", async () => {
+    const evictedClose = deferred();
+    const continuingRpc = deferred<unknown>();
+    let rejectEvictedRpc!: (reason: unknown) => void;
+    const evictedRpc = new Promise<unknown>((_resolve, reject) => {
+      rejectEvictedRpc = reject;
+    });
+    const evicted = fakeProviderServerHandle({
+      pid: 1_010,
+      request: (method) => (method === 'live/job' ? evictedRpc : Promise.resolve({})),
+      close: () => {
+        rejectEvictedRpc(new Error('evicted proxy host closed'));
+        return evictedClose.promise;
+      },
+    });
+    const untouched = fakeProviderServerHandle({
+      pid: 1_011,
+      request: (method) => (method === 'live/job' ? continuingRpc.promise : Promise.resolve({})),
+    });
+    const replacement = fakeProviderServerHandle({ pid: 1_012 });
+    vi.mocked(spawnProviderServerTransport)
+      .mockResolvedValueOnce(evicted.handle)
+      .mockResolvedValueOnce(untouched.handle)
+      .mockResolvedValueOnce(replacement.handle);
+    const evictedOwner = createProxyAppServerHostAuthority(runtime);
+    const untouchedOwner = createProxyAppServerHostAuthority(runtime);
+    const evictedScope = selectedHostScope(
+      evictedOwner,
+      { jobId: 'job-a', operationId: 'operation-a' },
+      'shared-acknowledged-interrupt',
+    );
+    const untouchedScope = selectedHostScope(
+      untouchedOwner,
+      { jobId: 'job-b', operationId: 'operation-b' },
+      'shared-acknowledged-interrupt',
+    );
+    const first = await evictedScope.openSession(
+      sharedSpec({ provider: 'codex', cwd: fixtureCanonicalWorkDir('/workspace/a') }),
+    );
+    const second = await untouchedScope.openSession(
+      sharedSpec({ provider: 'codex', cwd: fixtureCanonicalWorkDir('/workspace/b') }),
+    );
+    const evictedJob = first.session.rpc('live/job', {}).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    const liveJob = second.session.rpc('live/job', {});
+    vi.mocked(spawnProviderServerTransport).mock.calls[0]?.[0].observeProviderResponse(rejectedConfigRead(0));
+
+    let evictionSettled = false;
+    const eviction = evictedOwner.evictHost(first.hostRef).then((result) => {
+      evictionSettled = true;
+      return result;
+    });
+    await vi.waitFor(() => expect(evicted.closeMock, 'ref A exact live close was not selected').toHaveBeenCalledOnce());
+    await expect(evictedJob).resolves.toMatchObject({ message: 'evicted proxy host closed' });
+
+    expect(evictionSettled, 'ref A eviction settled before ref A exact live close').toBe(false);
+    await expect(
+      evictedScope.openSession(sharedSpec({ provider: 'codex', cwd: fixtureCanonicalWorkDir('/workspace/a') })),
+      'ref A admission reopened before ref A exact live close settled',
+    ).rejects.toMatchObject({
+      code: 'provider_host_unserviceable',
+      hostRef: first.hostRef,
+    });
+    expect(untouched.closeMock, 'ref B was closed while evicting ref A').not.toHaveBeenCalled();
+
+    evictedClose.resolve();
+    await expect(eviction).resolves.toBe(true);
+    const reopened = await evictedScope.openSession(
+      sharedSpec({ provider: 'codex', cwd: fixtureCanonicalWorkDir('/workspace/a') }),
+    );
+    expect(reopened.hostRef.instanceId).not.toBe(first.hostRef.instanceId);
+    expect(untouched.closeMock, 'ref B was closed while evicting ref A').not.toHaveBeenCalled();
+    continuingRpc.resolve({ continued: true });
+    await expect(liveJob).resolves.toEqual({ continued: true });
+
+    first.close();
+    second.close();
+    reopened.close();
+  });
+
+  it('keeps a foreign retired proxy ref blocked while evicting an exact live ref', async () => {
+    const exactClose = deferred();
+    const retired = fakeProviderServerHandle({ pid: 1_020 });
+    const exact = fakeProviderServerHandle({ pid: 1_021, close: () => exactClose.promise });
+    const replacement = fakeProviderServerHandle({ pid: 1_022 });
+    vi.mocked(spawnProviderServerTransport)
+      .mockResolvedValueOnce(retired.handle)
+      .mockResolvedValueOnce(exact.handle)
+      .mockResolvedValueOnce(replacement.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const retiredScope = selectedHostScope(
+      authority,
+      { jobId: 'job-retired', operationId: 'operation-retired' },
+      'operation-isolated',
+    );
+    const exactScope = selectedHostScope(
+      authority,
+      { jobId: 'job-exact', operationId: 'operation-exact' },
+      'operation-isolated',
+    );
+    const hostSpec = sharedSpec({ provider: 'codex' });
+    const retiredSession = await retiredScope.openSession(hostSpec);
+    vi.mocked(spawnProviderServerTransport).mock.calls[0]?.[0].observeProviderResponse(rejectedConfigRead(0));
+    retired.resolveClosed();
+    await vi.waitFor(() => expect(authority.admissionSnapshot().tombstones).toHaveLength(1));
+
+    const exactSession = await exactScope.openSession(hostSpec);
+    vi.mocked(spawnProviderServerTransport).mock.calls[1]?.[0].observeProviderResponse(rejectedConfigRead(1));
+    const eviction = authority.evictHost(exactSession.hostRef);
+    await vi.waitFor(() =>
+      expect(exact.closeMock, 'ref A exact live close was not selected over foreign ref B').toHaveBeenCalledOnce(),
+    );
+    expect(retired.closeMock, 'foreign retired ref B received a second physical close').not.toHaveBeenCalled();
+    await expect(
+      retiredScope.openSession(hostSpec),
+      'foreign ref B admission was cleared while evicting ref A',
+    ).rejects.toMatchObject({ code: 'provider_host_unserviceable', hostRef: retiredSession.hostRef });
+
+    exactClose.resolve();
+    await expect(eviction).resolves.toBe(true);
+    const reopened = await exactScope.openSession(hostSpec);
+    expect(reopened.hostRef.instanceId).not.toBe(exactSession.hostRef.instanceId);
+    await expect(retiredScope.openSession(hostSpec)).rejects.toMatchObject({
+      code: 'provider_host_unserviceable',
+      hostRef: retiredSession.hostRef,
+    });
+
+    retiredSession.close();
+    exactSession.close();
+    reopened.close();
+  });
+
+  it('keeps proxy admission blocked when exact live close fails', async () => {
+    const server = fakeProviderServerHandle({
+      pid: 1_030,
+      close: async () => {
+        throw new Error('proxy close refused');
+      },
+    });
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(server.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const scope = selectedHostScope(authority, testKey(), 'shared-acknowledged-interrupt');
+    const hostSpec = sharedSpec({ provider: 'codex' });
+    const opened = await scope.openSession(hostSpec);
+    vi.mocked(spawnProviderServerTransport).mock.calls[0]?.[0].observeProviderResponse(rejectedConfigRead(0));
+
+    await expect(authority.evictHost(opened.hostRef)).rejects.toThrow('proxy close refused');
+    expect(authority.admissionSnapshot().state.values().next().value).toMatchObject({
+      ref: opened.hostRef,
+      phase: 'blocked-live',
+    });
+    await expect(scope.openSession(hostSpec)).rejects.toMatchObject({
+      code: 'provider_host_unserviceable',
+      hostRef: opened.hostRef,
+    });
+  });
+
+  it('keeps operation-isolated admission keyed by operation identity', async () => {
+    const first = fakeProviderServerHandle();
+    const second = fakeProviderServerHandle({ pid: 1_001 });
+    vi.mocked(spawnProviderServerTransport).mockResolvedValueOnce(first.handle).mockResolvedValueOnce(second.handle);
+    const authority = createProxyAppServerHostAuthority(runtime);
+    const hostSpec = exclusiveSpec();
+    const firstScope = selectedHostScope(
+      authority,
+      { jobId: 'job-a', operationId: 'operation-a' },
+      'operation-isolated',
+    );
+    const opened = await firstScope.openSession(hostSpec, { jobId: 'job-a' });
+    vi.mocked(spawnProviderServerTransport).mock.calls[0]?.[0].observeProviderResponse(rejectedConfigRead(0));
+    first.resolveClosed();
+    await vi.waitFor(() => expect(authority.admissionSnapshot().tombstones).toHaveLength(1));
+
+    const secondScope = selectedHostScope(
+      authority,
+      { jobId: 'job-a', operationId: 'operation-b' },
+      'operation-isolated',
+    );
+    const otherOperation = await secondScope.openSession(hostSpec, { jobId: 'job-a' });
+    expect(otherOperation.hostRef.instanceId).not.toBe(opened.hostRef.instanceId);
+    expect(authority.admissionSnapshot().state.size).toBe(2);
+    expect(spawnProviderServerTransport).toHaveBeenCalledTimes(2);
+
+    opened.close();
+    otherOperation.close();
   });
 
   it('refuses a concurrent second isolated root and reuses the token after the first closes (C3-M7)', async () => {
@@ -1778,7 +2161,7 @@ describe('semantic-operation: specIdentityKey / specFingerprint', () => {
       idleRetirement: 'host-reported',
       leaseMode: 'shared',
       env: { B_VAR: '2', A_VAR: '1' },
-      cwd: '/workspace',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
       args: ['app-server'],
       command: 'claude',
       provider: 'claude',

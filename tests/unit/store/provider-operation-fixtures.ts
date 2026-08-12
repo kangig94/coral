@@ -104,7 +104,7 @@ export function providerOperationRecord(
           childAuthorization: {
             principalWire: {
               subject: 'agent',
-              binding: { kind: 'project', root: '/workspace' },
+              binding: { kind: 'project', root: process.cwd() },
               attenuatedCaps: ['liveness', 'jobs:read'],
             },
             namespace: 'tests',

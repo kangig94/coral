@@ -1,8 +1,9 @@
 import type { Principal } from '../security/principal.js';
 import type { ProviderScope } from '../infra/provider-scope.js';
+import type { CanonicalWorkDir } from './canonical-work-dir.js';
 
 export type InvocationContext = {
-  projectRoot: string;
+  projectRoot: CanonicalWorkDir;
   pluginRoot: string;
   coralEnv: Record<string, string>;
   principal: Principal;

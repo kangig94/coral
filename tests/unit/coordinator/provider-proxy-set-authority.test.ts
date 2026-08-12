@@ -156,6 +156,24 @@ function authorityWithGuardianClient(
   return createProviderProxySetAuthority(deps);
 }
 
+function authorityWithProxyClient(proxyClient: ControlClient): ReturnType<typeof createProviderProxySetAuthority> {
+  const deps: ProviderProxySetAuthorityDependencies = {
+    proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
+    guardianClient: unreachableClient(),
+    proxyClient,
+    reaperClient: unreachableClient(),
+    guardianIdentity: GUARDIAN_IDENTITY,
+    reaperIdentity: REAPER_IDENTITY,
+    proxyIdentityFields: PROXY_IDENTITY,
+    heartbeats: inactiveHeartbeats(),
+    coordinatorIdentity: COORDINATOR_IDENTITY,
+    handoffCapsulePath: '/dev/null/unused-handoff-capsule.json',
+    runtime: unusedRuntimePorts(),
+    operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+  };
+  return createProviderProxySetAuthority(deps);
+}
+
 describe('createProviderProxySetAuthority: stopAndReap budget', () => {
   it('confirms a teardown against a stubborn target that spends the full SIGTERM+SIGKILL escalation', async () => {
     const time = new VirtualTime();
@@ -211,6 +229,47 @@ describe('createProviderProxySetAuthority: RPC response validation', () => {
 
     expect(result).not.toHaveProperty('disappearanceReceipt');
     expect(result).toHaveProperty('unconfirmed');
+  });
+
+  it('rejects a non-canonical inventory cwd at the real proxy response receiver', async () => {
+    const proxyClient: ControlClient = {
+      call: () =>
+        Promise.resolve({
+          hosts: [
+            {
+              ref: {
+                provider: 'codex',
+                fingerprint: 'a'.repeat(64),
+                instanceId: 'host-instance',
+                leaseMode: 'shared',
+              },
+              status: 'live',
+              spec: {
+                provider: 'codex',
+                command: 'codex',
+                args: ['app-server'],
+                cwd: 'relative/provider-host',
+                leaseMode: 'shared',
+                idleRetirement: 'none',
+              },
+              host: { owner: 'provider-proxy' },
+              diagnostics: {
+                hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+                completedObservations: [],
+                factsTruncatedBeforeSeq: 0,
+              },
+              diagnosticsRetention: { ownerBudgetTruncated: false },
+            },
+          ],
+        }),
+      faulted: new Promise<never>(() => undefined),
+      onFault: () => () => undefined,
+      close: () => {},
+    };
+    const controls = authorityWithProxyClient(proxyClient).providerHosts;
+    if (controls === undefined) throw new Error('provider-host controls were not composed');
+
+    await expect(controls.list()).rejects.toThrow(/Work directory must be absolute and normalized/u);
   });
 });
 

@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
 
 import {
   listProductionSourceFiles,
@@ -8,11 +9,37 @@ import {
   toCanonicalSrcPath,
   type ParsedImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
+import {
+  analyzeCallableClosure,
+  analyzeCallableExpressionClosure,
+  createCallableClosureContext,
+  directCallableCalls,
+  serviceabilityDecisionClosureAnalysis,
+  type DecisionSymbol,
+} from './provider-serviceability-decision-inventory.js';
+import {
+  activeServiceabilityMutation,
+  fixturePath,
+  serviceabilityMutationFixtureContext,
+} from './provider-serviceability-call-closure-fixture.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(join(REPO_ROOT, 'src'));
 const IMPORT_EDGES: ParsedImportEdge[] = parseProductionImportEdges(REPO_ROOT, PRODUCTION_FILE_PATHS);
 const CANONICAL_FILES = new Set(PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath)));
+const CALLABLE_CONTEXT = createCallableClosureContext(REPO_ROOT, PRODUCTION_FILE_PATHS);
+const SOURCE_FILES_BY_CANONICAL_PATH = CALLABLE_CONTEXT.sourceFilesByPath;
+const MUTATION_FIXTURE_CONTEXT = serviceabilityMutationFixtureContext();
+const SERVICEABILITY_CLASSIFIER_PATH = /^src\/providers\/[^/]+\/serviceability\.ts$/u;
+const SERVICEABILITY_COMPOSITION = 'src/providers/bootstrap.ts';
+const SERVICEABILITY_SEAM = 'src/providers/serviceability.ts';
+const HOST_ADMISSION = 'src/providers/host-admission.ts';
+const COORDINATOR_ADMISSION_LEAF = 'src/coordinator/live/provider-host-admission.ts';
+const PROXY_ADMISSION_LEAF = 'src/provider-proxy/provider-host-admission.ts';
+const COORDINATOR_OWNER = 'src/coordinator/live/provider-hosts/index.ts';
+const COORDINATOR_COMPOSITION = 'src/coordinator/index.ts';
+const COORDINATOR_WORLD = 'src/coordinator/composition/world.ts';
+const PROXY_OWNER = 'src/provider-proxy/provider-root-authority.ts';
 
 /**
  * Carrier observation's authority, and who may hold it.
@@ -52,6 +79,11 @@ const OBSERVATION_AUTHORITIES: readonly ObservationAuthority[] = [
     what: 'the bounded network carrier observer',
     permittedImporters: ['src/coordinator/composition/'],
   },
+  {
+    module: 'src/providers/serviceability.ts',
+    what: 'the derived provider-host serviceability classifier',
+    permittedImporters: [COORDINATOR_ADMISSION_LEAF, PROXY_ADMISSION_LEAF],
+  },
 ];
 
 /**
@@ -76,6 +108,216 @@ const ACTION_PATH_MODULES: readonly string[] = [...CANONICAL_FILES]
   .filter((file) => ACTION_PATH_ROOTS.some((root) => (root.endsWith('/') ? file.startsWith(root) : file === root)))
   .sort();
 
+type DecisionAuthority = DecisionSymbol &
+  Readonly<{
+    category: string;
+    permittedImporters: readonly string[];
+  }>;
+
+function permittedDecisionImporters(category: string, decision: DecisionSymbol): readonly string[] {
+  // Constructor traversal reaches the typed admission error's formatter and its host-ref codec. These exact
+  // helpers render an already-selected error/ref and expose no serviceability verdict or admission authority.
+  if (decision.path === HOST_ADMISSION && decision.symbol === 'providerHostUnserviceableMessage') {
+    return ['src/jobs/shell/wait.ts'];
+  }
+  if (decision.path === 'src/providers/host-ref-codec.ts' && decision.symbol === 'encodeHostRef') {
+    return ['src/cli/commands/backend.ts', HOST_ADMISSION, 'src/transport/dispatch.ts'];
+  }
+  if (category === 'classifierDispatchers') {
+    return decision.path === SERVICEABILITY_COMPOSITION && decision.symbol === 'classifyProviderResponseServiceability'
+      ? [SERVICEABILITY_SEAM]
+      : [];
+  }
+  if (category === 'providerClassifiers') {
+    if (!decision.symbol.startsWith('classify')) return [];
+    const match = SERVICEABILITY_CLASSIFIER_PATH.exec(decision.path);
+    if (match === null) throw new Error(`Unexpected provider classifier path ${decision.path}`);
+    return [decision.path.replace(/serviceability\.ts$/u, 'definition.ts')];
+  }
+  if (category === 'serviceabilityReducers') {
+    return decision.symbol === 'reduceHostServiceability' ? [HOST_ADMISSION] : [];
+  }
+  if (category === 'admissionSymbols') {
+    if (decision.symbol === 'createHostAdmissionCollection') {
+      return [SERVICEABILITY_SEAM, COORDINATOR_OWNER, COORDINATOR_WORLD];
+    }
+    // The transitive admission closure also discovers this pure identity comparator. Owners and the
+    // administration facade legitimately reuse it without obtaining a serviceability verdict; keeping the
+    // exceptions exact preserves closure scanning while any new runtime consumer still fails closed.
+    if (decision.symbol === 'exactHostRefsMatch') {
+      return [
+        COORDINATOR_OWNER,
+        COORDINATOR_WORLD,
+        'src/coordinator/services/provider-host-administration.ts',
+        'src/jobs/shell/wait.ts',
+        PROXY_OWNER,
+      ];
+    }
+    return [];
+  }
+  if (category === 'admissionCompositionLeaves') {
+    if (decision.symbol === 'createBuiltInProviderHostAdmission') {
+      return [COORDINATOR_ADMISSION_LEAF, PROXY_ADMISSION_LEAF];
+    }
+    if (decision.path === COORDINATOR_ADMISSION_LEAF && decision.symbol === 'createCoordinatorProviderHostAdmission') {
+      return [COORDINATOR_COMPOSITION];
+    }
+    return decision.path === PROXY_ADMISSION_LEAF && decision.symbol === 'createProxyProviderHostAdmission'
+      ? [PROXY_OWNER]
+      : [];
+  }
+  throw new Error(`Unmapped serviceability decision category ${category}`);
+}
+
+const SERVICEABILITY_DECISION_ANALYSIS = serviceabilityDecisionClosureAnalysis(
+  REPO_ROOT,
+  PRODUCTION_FILE_PATHS,
+  CALLABLE_CONTEXT,
+);
+/**
+ * Exact terminal helpers reached by a decision constructor but carrying no decision authority themselves.
+ * `errorMessage` only stringifies an already-caught value and is shared repository-wide; importing or calling it
+ * cannot reveal serviceability, alter admission, or reach another project callable. It remains in the checker
+ * closure (and therefore in the no-clock scan), but symbol-taint must stop at this named formatting leaf.
+ */
+const NON_AUTHORIZING_DECISION_CLOSURE_LEAVES = new Set(['src/infra/error-format.ts#errorMessage']);
+const SERVICEABILITY_DECISION_INVENTORY = Object.fromEntries(
+  Object.entries(SERVICEABILITY_DECISION_ANALYSIS).map(([category, analysis]) => [
+    category,
+    analysis.callables.map(({ path, symbol }) => ({ path, symbol })),
+  ]),
+);
+const SERVICEABILITY_DECISION_AUTHORITIES: readonly DecisionAuthority[] = [
+  ...Object.entries(SERVICEABILITY_DECISION_INVENTORY)
+    .reduce((authorities, [category, decisions]) => {
+      if (category === 'factPublishers') return authorities;
+      for (const decision of decisions) {
+        const key = `${decision.path}\0${decision.symbol}`;
+        if (NON_AUTHORIZING_DECISION_CLOSURE_LEAVES.has(`${decision.path}#${decision.symbol}`)) continue;
+        const permittedImporters = permittedDecisionImporters(category, decision);
+        const existing = authorities.get(key);
+        authorities.set(
+          key,
+          existing === undefined
+            ? { ...decision, category, permittedImporters }
+            : {
+                ...existing,
+                category: `${existing.category},${category}`,
+                permittedImporters: [...new Set([...existing.permittedImporters, ...permittedImporters])],
+              },
+        );
+      }
+      return authorities;
+    }, new Map<string, DecisionAuthority>())
+    .values(),
+];
+
+/**
+ * Runtime consumers allowed to participate in the serviceability decision. The two owner modules are absent
+ * from this module-level walk because observation and physical close legitimately coexist in each file: they
+ * receive only the admission collection created by their constrained leaf, never the classifier itself. The
+ * callable-level owner proof below starts at each provider-response sink instead, so co-location is permitted
+ * while any executable path from observation to close is not. Keeping both inventories explicit makes a moved
+ * or newly added decision module or owner sink fail visibly instead of silently falling outside the checks.
+ */
+const SERVICEABILITY_RUNTIME_CONSUMERS = [
+  'src/providers/bootstrap.ts',
+  'src/providers/serviceability.ts',
+  'src/providers/host-serviceability.ts',
+  'src/providers/host-admission.ts',
+  ...[...CANONICAL_FILES].filter((file) => SERVICEABILITY_CLASSIFIER_PATH.test(file)),
+  COORDINATOR_ADMISSION_LEAF,
+  PROXY_ADMISSION_LEAF,
+] as const;
+
+type OwnerObservationBoundary = Readonly<{
+  module: string;
+  transportCall: string;
+  sink: Readonly<{ property: string }> | Readonly<{ argument: number }>;
+  physicalCloseRoot?: string;
+}>;
+
+const OWNER_OBSERVATION_BOUNDARIES: readonly OwnerObservationBoundary[] = [
+  {
+    module: PROXY_OWNER,
+    transportCall: 'spawnProviderServerTransport',
+    sink: { property: 'observeProviderResponse' },
+    physicalCloseRoot: 'ProxyProviderHostAdministration.evictHost',
+  },
+  {
+    module: COORDINATOR_OWNER,
+    transportCall: 'spawnProviderServer',
+    sink: { argument: 1 },
+    physicalCloseRoot: 'DefaultProviderHostManager.evictHost',
+  },
+];
+const OWNER_OBSERVATION_MUTATIONS = [
+  {
+    id: 'owner-wrapper-close',
+    boundary: {
+      module: fixturePath('owner-root.ts'),
+      transportCall: 'spawnProviderTransport',
+      sink: { property: 'observeProviderResponse' },
+    },
+    signature: `${fixturePath('owner-wrapper.ts')}:2:3 handle.close`,
+  },
+  {
+    id: 'owner-constructor-close',
+    boundary: {
+      module: fixturePath('owner-constructor-root.ts'),
+      transportCall: 'spawnConstructorProviderTransport',
+      sink: { property: 'observeProviderResponse' },
+    },
+    signature: `${fixturePath('owner-constructor-root.ts')}:7:5 handle.close`,
+  },
+  {
+    id: 'owner-locally-collected-callback-close',
+    boundary: {
+      module: fixturePath('owner-local-callback-root.ts'),
+      transportCall: 'spawnCallbackProviderTransport',
+      sink: { property: 'observeProviderResponse' },
+    },
+    signature: "argument 1 'selected' has callable type but no resolvable target",
+  },
+] as const satisfies ReadonlyArray<Readonly<{ id: string; boundary: OwnerObservationBoundary; signature: string }>>;
+
+/** Named capabilities a serviceability decision must never reach over runtime imports. */
+const DESTRUCTIVE_CAPABILITY_ROOTS = [
+  'src/coordinator/live/provider-hosts/drain.ts',
+  'src/provider-proxy/provider-root-authority.ts',
+  'src/coordinator/live/provider-hosts/recovery.ts',
+  'src/recovery/',
+  'src/coordinator/services/recovery/',
+  'src/coordinator/startup-recovery.ts',
+  'src/coordinator/shutdown-recovery.ts',
+  'src/jobs/reconcile/',
+  'src/coordinator/services/provider-operation-reconciler.ts',
+  'src/coordinator/services/terminal-materializer.ts',
+] as const;
+
+const DESTRUCTIVE_CAPABILITY_MODULES: readonly string[] = [...CANONICAL_FILES]
+  .filter((file) =>
+    DESTRUCTIVE_CAPABILITY_ROOTS.some((root) => (root.endsWith('/') ? file.startsWith(root) : file === root)),
+  )
+  .sort();
+const DESTRUCTIVE_CAPABILITY_MODULE_SET = new Set(DESTRUCTIVE_CAPABILITY_MODULES);
+
+type ConstrainedAdmissionLeaf = {
+  readonly module: string;
+  readonly permittedDependencies: readonly string[];
+};
+
+const CONSTRAINED_ADMISSION_LEAVES: readonly ConstrainedAdmissionLeaf[] = [
+  {
+    module: COORDINATOR_ADMISSION_LEAF,
+    permittedDependencies: ['src/providers/host-admission.ts', 'src/providers/serviceability.ts'],
+  },
+  {
+    module: PROXY_ADMISSION_LEAF,
+    permittedDependencies: ['src/providers/host-admission.ts', 'src/providers/serviceability.ts'],
+  },
+];
+
 function matches(module: string, allowed: readonly string[]): boolean {
   return allowed.some((entry) => (entry.endsWith('/') ? module.startsWith(entry) : module === entry));
 }
@@ -94,18 +336,144 @@ function permittedImportViolations(edges: readonly ParsedImportEdge[], authority
     .map((edge) => `${edge.source} imports ${edge.specifier} (${edge.via}) from ${authority.module}`);
 }
 
+type ImportedRuntimeSymbol = Readonly<{
+  source: string;
+  target: string;
+  specifier: string;
+  via: ParsedImportEdge['via'];
+  localSymbol: string;
+  symbol: string;
+}>;
+
+function importEdgeKey(source: string, specifier: string, via: ParsedImportEdge['via']): string {
+  return `${source}\0${specifier}\0${via}`;
+}
+
+function runtimeImportedSymbols(): ImportedRuntimeSymbol[] {
+  const edgesBySyntax = new Map(
+    IMPORT_EDGES.filter((edge) => edge.runtime).map((edge) => [
+      importEdgeKey(edge.source, edge.specifier, edge.via),
+      edge,
+    ]),
+  );
+  const imports: ImportedRuntimeSymbol[] = [];
+
+  function record(
+    source: string,
+    specifier: string,
+    via: ParsedImportEdge['via'],
+    symbols: ReadonlyArray<Readonly<{ localSymbol: string; symbol: string }>>,
+  ): void {
+    const edge = edgesBySyntax.get(importEdgeKey(source, specifier, via));
+    if (edge === undefined) return;
+    for (const symbol of symbols) imports.push({ ...edge, ...symbol });
+  }
+
+  for (const [source, sourceFile] of SOURCE_FILES_BY_CANONICAL_PATH) {
+    const visit = (node: ts.Node): void => {
+      if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+        const symbols: Array<{ localSymbol: string; symbol: string }> = [];
+        const clause = node.importClause;
+        if (clause !== undefined && !clause.isTypeOnly) {
+          if (clause.name !== undefined) symbols.push({ localSymbol: clause.name.text, symbol: 'default' });
+          if (clause.namedBindings !== undefined) {
+            if (ts.isNamespaceImport(clause.namedBindings)) {
+              symbols.push({ localSymbol: clause.namedBindings.name.text, symbol: '*' });
+            } else {
+              symbols.push(
+                ...clause.namedBindings.elements.flatMap((element) =>
+                  element.isTypeOnly
+                    ? []
+                    : [
+                        {
+                          localSymbol: element.name.text,
+                          symbol: element.propertyName?.text ?? element.name.text,
+                        },
+                      ],
+                ),
+              );
+            }
+          }
+        }
+        record(source, node.moduleSpecifier.text, 'ImportDeclaration', symbols);
+      } else if (
+        ts.isExportDeclaration(node) &&
+        node.moduleSpecifier !== undefined &&
+        ts.isStringLiteralLike(node.moduleSpecifier)
+      ) {
+        let symbols: ReadonlyArray<Readonly<{ localSymbol: string; symbol: string }>>;
+        if (node.isTypeOnly) {
+          symbols = [];
+        } else if (node.exportClause !== undefined && ts.isNamedExports(node.exportClause)) {
+          symbols = node.exportClause.elements.flatMap((element) =>
+            element.isTypeOnly
+              ? []
+              : [
+                  {
+                    localSymbol: element.name.text,
+                    symbol: element.propertyName?.text ?? element.name.text,
+                  },
+                ],
+          );
+        } else {
+          symbols = [{ localSymbol: '*', symbol: '*' }];
+        }
+        record(source, node.moduleSpecifier.text, 'ExportDeclaration', symbols);
+      } else if (
+        ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments.length > 0 &&
+        ts.isStringLiteralLike(node.arguments[0])
+      ) {
+        record(source, node.arguments[0].text, 'DynamicImport', [{ localSymbol: '*', symbol: '*' }]);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+
+  return imports;
+}
+
+const IMPORTED_RUNTIME_SYMBOLS = runtimeImportedSymbols();
+const SERVICEABILITY_DECISION_IMPORTS: readonly ImportedRuntimeSymbol[] = IMPORTED_RUNTIME_SYMBOLS.flatMap((imported) =>
+  SERVICEABILITY_DECISION_AUTHORITIES.flatMap((authority) =>
+    imported.target === authority.path && (imported.symbol === '*' || imported.symbol === authority.symbol)
+      ? [{ ...imported, symbol: authority.symbol }]
+      : [],
+  ),
+);
+
+function decisionImportViolations(imports: readonly ImportedRuntimeSymbol[], authority: DecisionAuthority): string[] {
+  return imports
+    .filter(
+      (entry) =>
+        entry.target === authority.path &&
+        entry.symbol === authority.symbol &&
+        !matches(entry.source, authority.permittedImporters),
+    )
+    .map(
+      (entry) => `${entry.source} imports ${entry.symbol} from ${entry.target} via ${entry.specifier} (${entry.via})`,
+    );
+}
+
 /**
  * Runtime edges only. A `import type` is erased before anything runs, so it can hand no verdict to anyone —
  * and following it would report the module graph rather than the capability. Without this the walk reports
  * `recovery/index.ts -> handoff.ts -> lifecycle.ts -> …`, a chain whose middle two hops are type-only.
  */
-const ADJACENCY = new Map<string, string[]>();
-for (const edge of IMPORT_EDGES) {
-  if (!edge.runtime) continue;
-  const existing = ADJACENCY.get(edge.source);
-  if (existing === undefined) ADJACENCY.set(edge.source, [edge.target]);
-  else existing.push(edge.target);
+function runtimeAdjacency(edges: readonly ParsedImportEdge[]): Map<string, string[]> {
+  const adjacency = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!edge.runtime) continue;
+    const existing = adjacency.get(edge.source);
+    if (existing === undefined) adjacency.set(edge.source, [edge.target]);
+    else existing.push(edge.target);
+  }
+  return adjacency;
 }
+
+const ADJACENCY = runtimeAdjacency(IMPORT_EDGES);
 
 /**
  * Every module reachable from `entry` over runtime imports, with the shortest path that reached each one.
@@ -115,13 +483,16 @@ for (const edge of IMPORT_EDGES) {
  * wrapper function does, without re-exporting anything, so banning re-export closes one hop and leaves the
  * rest.
  */
-function reachableFrom(entry: string): Map<string, readonly string[]> {
+function reachableFrom(
+  entry: string,
+  adjacency: ReadonlyMap<string, readonly string[]> = ADJACENCY,
+): Map<string, readonly string[]> {
   const paths = new Map<string, readonly string[]>([[entry, [entry]]]);
   const queue = [entry];
   while (queue.length > 0) {
     const current = queue.shift() as string;
     const path = paths.get(current) as readonly string[];
-    for (const next of ADJACENCY.get(current) ?? []) {
+    for (const next of adjacency.get(current) ?? []) {
       if (paths.has(next)) continue;
       paths.set(next, [...path, next]);
       queue.push(next);
@@ -130,11 +501,310 @@ function reachableFrom(entry: string): Map<string, readonly string[]> {
   return paths;
 }
 
+function symbolKey(path: string, symbol: string): string {
+  return `${path}#${symbol}`;
+}
+
+function topLevelValueDeclarations(sourceFile: ts.SourceFile): ReadonlyMap<string, ts.Node> {
+  const declarations = new Map<string, ts.Node>();
+  for (const statement of sourceFile.statements) {
+    if (
+      (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) &&
+      statement.name !== undefined
+    ) {
+      declarations.set(statement.name.text, statement);
+      continue;
+    }
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name)) declarations.set(declaration.name.text, declaration);
+    }
+  }
+  return declarations;
+}
+
+function referencedIdentifiers(node: ts.Node): ReadonlySet<string> {
+  const names = new Set<string>();
+  const visit = (child: ts.Node): void => {
+    if (ts.isIdentifier(child)) names.add(child.text);
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return names;
+}
+
+function decisionTaintPaths(imports: readonly ImportedRuntimeSymbol[]): ReadonlyMap<string, readonly string[]> {
+  const paths = new Map<string, readonly string[]>(
+    SERVICEABILITY_DECISION_AUTHORITIES.map((authority) => {
+      const key = symbolKey(authority.path, authority.symbol);
+      return [key, [key]] as const;
+    }),
+  );
+  const declarations = new Map(
+    [...SOURCE_FILES_BY_CANONICAL_PATH].map(([path, sourceFile]) => [path, topLevelValueDeclarations(sourceFile)]),
+  );
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+
+    for (const imported of imports) {
+      const targetPath =
+        imported.symbol === '*'
+          ? [...paths]
+              .filter(([key]) => key.startsWith(`${imported.target}#`))
+              .sort(([left], [right]) => left.localeCompare(right))[0]?.[1]
+          : paths.get(symbolKey(imported.target, imported.symbol));
+      const localKey = symbolKey(imported.source, imported.localSymbol);
+      if (targetPath !== undefined && !paths.has(localKey)) {
+        paths.set(localKey, [localKey, ...targetPath]);
+        changed = true;
+      }
+    }
+
+    for (const [path, moduleDeclarations] of declarations) {
+      for (const [name, declaration] of moduleDeclarations) {
+        const declarationKey = symbolKey(path, name);
+        if (paths.has(declarationKey)) continue;
+        const dependencyPath = [...referencedIdentifiers(declaration)]
+          .map((identifier) => paths.get(symbolKey(path, identifier)))
+          .find((candidate) => candidate !== undefined);
+        if (dependencyPath !== undefined) {
+          paths.set(declarationKey, [declarationKey, ...dependencyPath]);
+          changed = true;
+        }
+      }
+    }
+
+    for (const [path, sourceFile] of SOURCE_FILES_BY_CANONICAL_PATH) {
+      for (const statement of sourceFile.statements) {
+        if (
+          !ts.isExportDeclaration(statement) ||
+          statement.moduleSpecifier !== undefined ||
+          statement.isTypeOnly ||
+          statement.exportClause === undefined ||
+          !ts.isNamedExports(statement.exportClause)
+        ) {
+          continue;
+        }
+        for (const element of statement.exportClause.elements) {
+          if (element.isTypeOnly) continue;
+          const localName = element.propertyName?.text ?? element.name.text;
+          const localPath = paths.get(symbolKey(path, localName));
+          const exportedKey = symbolKey(path, element.name.text);
+          if (localPath !== undefined && !paths.has(exportedKey)) {
+            paths.set(exportedKey, [exportedKey, ...localPath]);
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+
+  return paths;
+}
+
+function serviceabilityDecisionActionPathViolations(
+  imports: readonly ImportedRuntimeSymbol[],
+  actionModules: readonly string[] = ACTION_PATH_MODULES,
+): string[] {
+  const actionModuleSet = new Set(actionModules);
+  const taintPaths = decisionTaintPaths(imports);
+  const violations = imports.flatMap((imported) => {
+    if (!actionModuleSet.has(imported.source)) return [];
+    const path =
+      imported.symbol === '*'
+        ? [...taintPaths]
+            .filter(([key]) => key.startsWith(`${imported.target}#`))
+            .sort(([left], [right]) => left.localeCompare(right))[0]?.[1]
+        : taintPaths.get(symbolKey(imported.target, imported.symbol));
+    return path === undefined ? [] : [[imported.source, ...path].join(' -> ')];
+  });
+  return [...new Set(violations)].sort();
+}
+
 /** Roots naming nothing. A directory root matches by prefix, a file root by identity. */
 function unmatchedRoots(roots: readonly string[]): string[] {
   return roots.filter((root) =>
     root.endsWith('/') ? ![...CANONICAL_FILES].some((file) => file.startsWith(root)) : !CANONICAL_FILES.has(root),
   );
+}
+
+function constrainedLeafImportViolations(edges: readonly ParsedImportEdge[], leaf: ConstrainedAdmissionLeaf): string[] {
+  return edges
+    .filter((edge) => edge.source === leaf.module && !leaf.permittedDependencies.includes(edge.target))
+    .map((edge) => `${leaf.module} -> ${edge.target} (${edge.via} ${edge.specifier})`);
+}
+
+function callableName(name: ts.PropertyName | undefined): string | undefined {
+  return name !== undefined && (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) ? name.text : undefined;
+}
+
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isSatisfiesExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function calledName(call: ts.CallExpression): string | undefined {
+  const expression = unwrapExpression(call.expression);
+  if (ts.isIdentifier(expression)) return expression.text;
+  return ts.isPropertyAccessExpression(expression) ? expression.name.text : undefined;
+}
+
+function isPhysicalCloseCall(module: string, call: ts.CallExpression): boolean {
+  const name = calledName(call);
+  if (name === 'close') return true;
+  if (name === undefined) return false;
+  return IMPORTED_RUNTIME_SYMBOLS.some(
+    (imported) =>
+      imported.source === module &&
+      imported.localSymbol === name &&
+      DESTRUCTIVE_CAPABILITY_MODULE_SET.has(imported.target),
+  );
+}
+
+function boundarySinkExpressions(
+  sourceFile: ts.SourceFile,
+  boundary: OwnerObservationBoundary,
+): Readonly<{ transportCalls: number; sinks: readonly ts.Expression[] }> {
+  let transportCalls = 0;
+  const sinks: ts.Expression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && calledName(node) === boundary.transportCall) {
+      transportCalls += 1;
+      if ('argument' in boundary.sink) {
+        const sink = node.arguments[boundary.sink.argument];
+        if (sink !== undefined) sinks.push(sink);
+      } else {
+        const propertyName = boundary.sink.property;
+        for (const object of node.arguments.filter(ts.isObjectLiteralExpression)) {
+          for (const property of object.properties) {
+            if (ts.isPropertyAssignment(property) && callableName(property.name) === propertyName) {
+              sinks.push(property.initializer);
+            } else if (ts.isShorthandPropertyAssignment(property) && property.name.text === propertyName) {
+              sinks.push(property.name);
+            }
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return { transportCalls, sinks };
+}
+
+function isAdmissionObservation(call: ts.CallExpression, sourceFile: ts.SourceFile): boolean {
+  const expression = unwrapExpression(call.expression);
+  if (!ts.isPropertyAccessExpression(expression) || expression.name.text !== 'observe') return false;
+  const receiver = expression.expression.getText(sourceFile);
+  return receiver === 'admission' || receiver.endsWith('.admission');
+}
+
+function callSite(sourceFile: ts.SourceFile, call: ts.CallExpression): string {
+  const { line, character } = sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile));
+  return `${sourceFile.fileName}:${line + 1}:${character + 1} ${call.expression.getText(sourceFile)}`;
+}
+
+type OwnerObservationProof = Readonly<{
+  transportCalls: number;
+  sinkCount: number;
+  rootCount: number;
+  visitedCallableCount: number;
+  inspectedCallCount: number;
+  observationPaths: readonly string[];
+  physicalCloseProof:
+    | Readonly<{
+        rootCount: number;
+        visitedCallableCount: number;
+        inspectedCallCount: number;
+        sites: readonly string[];
+        unresolvedCalls: readonly string[];
+      }>
+    | undefined;
+  unresolvedCalls: readonly string[];
+  violations: readonly string[];
+}>;
+
+/**
+ * The owner rule is deliberately callable-grained rather than module-grained: it starts at the exact
+ * transport response sink and uses the shared TypeScript-checker closure to follow imported aliases, concrete
+ * methods, constructors, registry values, and statically identifiable callback targets across `src/`. A
+ * callable argument is unresolved unless its target is known or the expression itself is an injected/external
+ * boundary. Every other unresolved project edge is reported fail-closed. A direct `.close()` or a call imported
+ * from a named destructive-capability module ends the response path. For real owners, the separate physical-close
+ * proof starts at the exact operator-eviction method and follows the same resolved executable closure; its close
+ * sites and non-vacuity counts therefore cannot be satisfied by unrelated calls elsewhere in the module. Both
+ * closures fail closed on unresolved project edges.
+ */
+function ownerObservationProof(boundary: OwnerObservationBoundary, context = CALLABLE_CONTEXT): OwnerObservationProof {
+  const sourceFile = context.sourceFilesByPath.get(boundary.module);
+  if (sourceFile === undefined) throw new Error(`Missing owner module ${boundary.module}`);
+  const boundarySinks = boundarySinkExpressions(sourceFile, boundary);
+  const closure = analyzeCallableExpressionClosure(
+    context,
+    boundarySinks.sinks.map((expression, sinkIndex) => ({
+      expression,
+      label: `${boundary.module}#${boundary.transportCall}.responseSink[${sinkIndex}]`,
+    })),
+  );
+  const observationPaths: string[] = [];
+  const violations: string[] = [];
+  for (const current of closure.callables) {
+    for (const call of directCallableCalls(current.node)) {
+      if (!ts.isCallExpression(call)) continue;
+      if (isAdmissionObservation(call, current.sourceFile)) {
+        observationPaths.push([...current.trace, callSite(current.sourceFile, call)].join(' -> '));
+      }
+      if (isPhysicalCloseCall(current.path, call)) {
+        violations.push([...current.trace, callSite(current.sourceFile, call)].join(' -> '));
+      }
+    }
+  }
+  const physicalCloseClosure =
+    boundary.physicalCloseRoot === undefined
+      ? undefined
+      : analyzeCallableClosure(context, [{ path: boundary.module, symbol: boundary.physicalCloseRoot }]);
+  const physicalCloseSites =
+    physicalCloseClosure === undefined
+      ? []
+      : physicalCloseClosure.callables.flatMap((current) =>
+          directCallableCalls(current.node).flatMap((call) =>
+            ts.isCallExpression(call) && isPhysicalCloseCall(current.path, call)
+              ? [[...current.trace, callSite(current.sourceFile, call)].join(' -> ')]
+              : [],
+          ),
+        );
+
+  return {
+    transportCalls: boundarySinks.transportCalls,
+    sinkCount: boundarySinks.sinks.length,
+    rootCount: closure.roots.length,
+    visitedCallableCount: closure.callables.length,
+    inspectedCallCount: closure.inspectedCallCount,
+    observationPaths: [...new Set(observationPaths)].sort(),
+    physicalCloseProof:
+      physicalCloseClosure === undefined
+        ? undefined
+        : {
+            rootCount: physicalCloseClosure.roots.length,
+            visitedCallableCount: physicalCloseClosure.callables.length,
+            inspectedCallCount: physicalCloseClosure.inspectedCallCount,
+            sites: [...new Set(physicalCloseSites)].sort(),
+            unresolvedCalls: physicalCloseClosure.unresolvedCalls,
+          },
+    unresolvedCalls: closure.unresolvedCalls,
+    violations: [...new Set(violations)].sort(),
+  };
 }
 
 describe('carrier observation never reaches mutation or recovery paths', () => {
@@ -196,6 +866,120 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
     },
   );
 
+  it('derives every non-fact decision authority from the complete shared serviceability inventory', () => {
+    const decisionEntries = Object.entries(SERVICEABILITY_DECISION_INVENTORY).filter(
+      ([category]) => category !== 'factPublishers',
+    );
+    expect(decisionEntries.length).toBeGreaterThan(0);
+    expect(decisionEntries.filter(([, decisions]) => decisions.length === 0)).toEqual([]);
+    const resolvedDecisionKeys = new Set(
+      decisionEntries.flatMap(([, decisions]) => decisions.map(({ path, symbol }) => `${path}#${symbol}`)),
+    );
+    expect([...NON_AUTHORIZING_DECISION_CLOSURE_LEAVES].filter((key) => !resolvedDecisionKeys.has(key))).toEqual([]);
+    expect(SERVICEABILITY_DECISION_AUTHORITIES).toHaveLength(
+      [...resolvedDecisionKeys].filter((key) => !NON_AUTHORIZING_DECISION_CLOSURE_LEAVES.has(key)).length,
+    );
+    expect(
+      decisionEntries.flatMap(([category]) => SERVICEABILITY_DECISION_ANALYSIS[category]?.unresolvedCalls ?? []),
+    ).toEqual([]);
+    expect(
+      decisionEntries.reduce(
+        (count, [category]) => count + (SERVICEABILITY_DECISION_ANALYSIS[category]?.inspectedCallCount ?? 0),
+        0,
+      ),
+    ).toBeGreaterThan(0);
+    expect(unmatchedRoots(SERVICEABILITY_DECISION_AUTHORITIES.map((authority) => authority.path))).toEqual([]);
+    expect(
+      unmatchedRoots(SERVICEABILITY_DECISION_AUTHORITIES.flatMap((authority) => authority.permittedImporters)),
+    ).toEqual([]);
+  });
+
+  it('permits every serviceability decision symbol only at its declared runtime importers', () => {
+    const violations = SERVICEABILITY_DECISION_AUTHORITIES.flatMap((authority) =>
+      decisionImportViolations(SERVICEABILITY_DECISION_IMPORTS, authority),
+    );
+    expect(violations).toEqual([]);
+
+    const unexercisedPermissions = SERVICEABILITY_DECISION_AUTHORITIES.flatMap((authority) =>
+      authority.permittedImporters.flatMap((permittedImporter) =>
+        SERVICEABILITY_DECISION_IMPORTS.some(
+          (entry) =>
+            entry.target === authority.path &&
+            entry.symbol === authority.symbol &&
+            matches(entry.source, [permittedImporter]),
+        )
+          ? []
+          : [`${authority.path}#${authority.symbol} <- ${permittedImporter}`],
+      ),
+    );
+    expect(unexercisedPermissions).toEqual([]);
+  });
+
+  it('keeps every inventoried serviceability decision symbol unreachable from every action path', () => {
+    expect(serviceabilityDecisionActionPathViolations(IMPORTED_RUNTIME_SYMBOLS)).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: 'recovery imports the bootstrap dispatcher',
+      source: 'src/coordinator/services/recovery/service.ts',
+      target: SERVICEABILITY_COMPOSITION,
+      symbol: 'classifyProviderResponseServiceability',
+      specifier: '../../../providers/bootstrap.js',
+    },
+    {
+      name: 'reconciliation imports the bootstrap dispatcher',
+      source: 'src/jobs/reconcile/registry.ts',
+      target: SERVICEABILITY_COMPOSITION,
+      symbol: 'classifyProviderResponseServiceability',
+      specifier: '../../providers/bootstrap.js',
+    },
+    {
+      name: 'recovery imports a concrete provider classifier',
+      source: 'src/coordinator/services/recovery/service.ts',
+      target: 'src/providers/codex/serviceability.ts',
+      symbol: 'classifyCodexProviderResponseServiceability',
+      specifier: '../../../providers/codex/serviceability.js',
+    },
+    {
+      name: 'reconciliation imports a concrete provider classifier',
+      source: 'src/jobs/reconcile/registry.ts',
+      target: 'src/providers/codex/serviceability.ts',
+      symbol: 'classifyCodexProviderResponseServiceability',
+      specifier: '../../providers/codex/serviceability.js',
+    },
+  ])('rejects $name and names its own action path', ({ source, target, symbol, specifier }) => {
+    const authority = SERVICEABILITY_DECISION_AUTHORITIES.find(
+      (candidate) => candidate.path === target && candidate.symbol === symbol,
+    );
+    expect(authority).toBeDefined();
+    if (authority === undefined) throw new Error(`Missing decision authority ${target}#${symbol}`);
+
+    const edge: ParsedImportEdge = {
+      source,
+      target,
+      specifier,
+      via: 'ImportDeclaration',
+      runtime: true,
+      typeOnly: false,
+    };
+    const imported: ImportedRuntimeSymbol = {
+      source,
+      target,
+      specifier,
+      via: edge.via,
+      localSymbol: symbol,
+      symbol,
+    };
+
+    expect(decisionImportViolations([imported], authority)).toEqual([
+      `${source} imports ${symbol} from ${target} via ${specifier} (ImportDeclaration)`,
+    ]);
+    expect(serviceabilityDecisionActionPathViolations([...IMPORTED_RUNTIME_SYMBOLS, imported], [source])).toContain(
+      `${source} -> ${target}#${symbol}`,
+    );
+  });
+
   it('still bans a runtime edge from an unpermitted importer, even though a type-only edge from the same place passes', () => {
     const authority = OBSERVATION_AUTHORITIES[0];
     const unpermittedSource = 'src/coordinator/services/operation-registry.ts';
@@ -234,4 +1018,78 @@ describe('carrier observation never reaches mutation or recovery paths', () => {
     // deleted, and the rule quietly stopped covering anything.
     expect(unmatchedRoots(ACTION_PATH_ROOTS)).toEqual([]);
   });
+
+  it('names a non-empty runtime serviceability consumer set whose every module exists', () => {
+    expect(SERVICEABILITY_RUNTIME_CONSUMERS.length).toBeGreaterThan(0);
+    expect(unmatchedRoots(SERVICEABILITY_RUNTIME_CONSUMERS)).toEqual([]);
+  });
+
+  it('names a non-empty destructive capability set whose every root exists', () => {
+    expect(DESTRUCTIVE_CAPABILITY_MODULES.length).toBeGreaterThan(0);
+    expect(unmatchedRoots(DESTRUCTIVE_CAPABILITY_ROOTS)).toEqual([]);
+  });
+
+  it('keeps every runtime serviceability consumer outbound-unreachable from destructive capabilities', () => {
+    const destructiveCapabilities = new Set(DESTRUCTIVE_CAPABILITY_MODULES);
+    const violations = SERVICEABILITY_RUNTIME_CONSUMERS.flatMap((consumer) =>
+      [...reachableFrom(consumer).entries()].flatMap(([module, path]) =>
+        destructiveCapabilities.has(module) ? [path.join(' -> ')] : [],
+      ),
+    );
+
+    expect([...new Set(violations)].sort()).toEqual([]);
+  });
+
+  it.each(OWNER_OBSERVATION_BOUNDARIES.map((boundary) => [boundary.module, boundary] as const))(
+    '%s keeps its provider-response sink unable to reach physical close',
+    (_module, boundary) => {
+      const proof = ownerObservationProof(boundary);
+      expect(proof.transportCalls).toBeGreaterThan(0);
+      expect(proof.sinkCount).toBe(proof.transportCalls);
+      expect(proof.rootCount).toBe(proof.sinkCount);
+      expect(proof.visitedCallableCount).toBeGreaterThan(0);
+      expect(proof.visitedCallableCount).toBeGreaterThanOrEqual(proof.rootCount);
+      expect(proof.inspectedCallCount).toBeGreaterThan(0);
+      expect(proof.observationPaths.length).toBeGreaterThan(0);
+      expect(proof.unresolvedCalls).toEqual([]);
+      expect(proof.violations).toEqual([]);
+      expect(proof.physicalCloseProof).toBeDefined();
+      if (proof.physicalCloseProof === undefined)
+        throw new Error(`Missing physical-close proof for ${boundary.module}`);
+      expect(proof.physicalCloseProof.rootCount).toBe(1);
+      expect(proof.physicalCloseProof.visitedCallableCount).toBeGreaterThan(0);
+      expect(proof.physicalCloseProof.inspectedCallCount).toBeGreaterThan(0);
+      expect(proof.physicalCloseProof.sites.length).toBeGreaterThan(0);
+      expect(proof.physicalCloseProof.unresolvedCalls).toEqual([]);
+    },
+  );
+
+  it.each(OWNER_OBSERVATION_MUTATIONS)(
+    'rejects the $id mutation through its own closure-derived signature',
+    (mutation) => {
+      const proof = ownerObservationProof(mutation.boundary, MUTATION_FIXTURE_CONTEXT);
+      const findings = [...proof.unresolvedCalls, ...proof.violations];
+      expect(proof.transportCalls).toBe(1);
+      expect(proof.rootCount).toBe(1);
+      expect(proof.visitedCallableCount).toBeGreaterThanOrEqual(proof.rootCount);
+      expect(findings.some((finding) => finding.includes(mutation.signature))).toBe(true);
+    },
+  );
+
+  it('keeps the opt-in owner-observation mutation probe clean', () => {
+    const mutation = OWNER_OBSERVATION_MUTATIONS.find(({ id }) => id === activeServiceabilityMutation());
+    const proof =
+      mutation === undefined ? undefined : ownerObservationProof(mutation.boundary, MUTATION_FIXTURE_CONTEXT);
+    expect(proof === undefined ? [] : [...proof.unresolvedCalls, ...proof.violations]).toEqual([]);
+  });
+
+  it.each(CONSTRAINED_ADMISSION_LEAVES.map((leaf) => [leaf.module, leaf] as const))(
+    '%s imports only the classifier and narrow admission port modules',
+    (module, leaf) => {
+      expect(CANONICAL_FILES).toContain(module);
+      expect(leaf.permittedDependencies.length).toBeGreaterThan(0);
+      expect(unmatchedRoots(leaf.permittedDependencies)).toEqual([]);
+      expect(constrainedLeafImportViolations(IMPORT_EDGES, leaf)).toEqual([]);
+    },
+  );
 });

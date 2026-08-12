@@ -16,7 +16,8 @@ import type { TerminalWriteOptions } from '../jobs/contracts/job-store.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST } from '../workflow/ast.js';
-import type { WorkflowCommand } from '../workflow/input.js';
+import type { CanonicalWorkflowCommand } from '../workflow/compile.js';
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
 import { SessionManager } from '../sessions/shell.js';
@@ -243,9 +244,9 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
   async executeWorkflow(
     providerName: string,
     ast: PipelineAST,
-    input: WorkflowCommand,
+    input: CanonicalWorkflowCommand,
     ctx: InvocationContext,
-    workDir?: string,
+    workDir: CanonicalWorkDir,
   ): Promise<WorkflowLaunchDecision> {
     return this.workflowService.executeWorkflow(providerName, ast, input, ctx, workDir);
   }

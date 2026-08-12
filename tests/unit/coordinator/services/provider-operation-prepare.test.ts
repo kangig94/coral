@@ -11,6 +11,8 @@ import type { ProviderOperationPrepareSource } from '#src/store/provider-operati
 
 import { providerOperationRecord } from '../../store/provider-operation-fixtures.js';
 
+const canonicalProjectRoot = process.cwd();
+
 describe('materializeProviderOperationPrepare', () => {
   it('derives its strict materialization outcomes from the complete canonical refusal shape', () => {
     const prepared = {
@@ -92,7 +94,7 @@ describe('materializeProviderOperationPrepare', () => {
       owner: { kind: 'provider-session', id: source.sessionId },
       sessionId: source.sessionId,
       provider: 'codex',
-      projectRoot: '/workspace',
+      projectRoot: canonicalProjectRoot,
       backendNamespace: source.childAuthorization.namespace,
       pool: 'default',
       enqueueSequence: 1,
@@ -101,7 +103,7 @@ describe('materializeProviderOperationPrepare', () => {
       providerAction: 'exec',
       request: {
         prompt: 'do the thing',
-        cwd: '/workspace',
+        cwd: canonicalProjectRoot,
         bypassPermissions: false,
         coralEnv: {},
       },
@@ -150,7 +152,7 @@ describe('materializeProviderOperationPrepare', () => {
       owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
       sessionId: record.prepareSource.sessionId,
       provider: 'codex',
-      projectRoot: '/workspace',
+      projectRoot: canonicalProjectRoot,
       backendNamespace: record.prepareSource.childAuthorization.namespace,
       pool: 'discuss',
       enqueueSequence: 1,
@@ -159,7 +161,7 @@ describe('materializeProviderOperationPrepare', () => {
       providerAction: 'exec',
       request: {
         prompt: 'durable prompt',
-        cwd: '/workspace',
+        cwd: canonicalProjectRoot,
         bypassPermissions: false,
         coralEnv: {},
       },
@@ -193,7 +195,7 @@ describe('materializeProviderOperationPrepare', () => {
               engine: { dataDir: (id: string) => `/coral/engines/${id}` },
             },
             projectData: () => '/coral/project-data',
-            projectSource: () => '/workspace',
+            projectSource: () => canonicalProjectRoot,
           },
         } as unknown as ProviderOperationPrepareMaterializerDeps['runtime'],
         providerRegistry: {

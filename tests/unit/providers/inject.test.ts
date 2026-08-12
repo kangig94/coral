@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as KbPathsModule from '#src/kb/paths.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 let mockCoreFragment = '';
 let mockKbCommon = '';
@@ -217,7 +218,7 @@ describe('applyInjectBundle', () => {
     action: 'exec' as const,
     sessionId: 's-1',
     prompt: 'task',
-    cwd: '/tmp',
+    cwd: fixtureCanonicalWorkDir('/tmp'),
     bypassPermissions: false,
     coralEnv: {},
   };

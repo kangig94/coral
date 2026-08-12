@@ -1,14 +1,48 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+import type * as HttpHandlerModule from '#src/transport/http/handler.js';
+
+const capturedComposition = vi.hoisted(() => ({ ports: null as HttpHandlerPorts | null }));
+
+vi.mock('#src/transport/http/handler.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof HttpHandlerModule>();
+  return {
+    ...actual,
+    createHttpHandler: (ports: HttpHandlerPorts) => {
+      capturedComposition.ports = ports;
+      return actual.createHttpHandler(ports);
+    },
+  };
+});
+
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 import { IpcRpcError, requestIpcMethod } from '#src/transport/ipc/client.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type { Principal } from '#src/security/principal.js';
 import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
+import {
+  createProviderHostCommandOperations,
+  formatProviderHostInspect,
+  formatProviderHostList,
+  parseProviderHostSelector,
+} from '#src/cli/commands/backend.js';
+import type { HostRef } from '#src/providers/contract.js';
+import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
+import type {
+  ProviderHostAdministrationAuthority,
+  ProviderHostManager,
+} from '#src/coordinator/live/provider-hosts/index.js';
+import type { ProviderHostInventoryRecord } from '#src/coordinator/services/provider-host-administration.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
 const tempDirs: string[] = [];
 
@@ -72,6 +106,107 @@ async function connectRawIpcSocket(socketPath: string): Promise<Socket> {
 
 function hasLogLine(ports: HttpHandlerPorts, text: string): boolean {
   return vi.mocked(ports.identity.log).mock.calls.some(([line]) => typeof line === 'string' && line.includes(text));
+}
+
+function createProductionProviderHostPorts(record: ProviderHostInventoryRecord) {
+  const administration = {
+    admissionSnapshot: () => ({ state: new Map(), tombstones: [] }),
+    listProviderHosts: vi.fn(() => [record]),
+    inspectProviderHost: vi.fn(() => record),
+    evictHost: vi.fn(async () => true),
+  };
+  const providerHostManager = {
+    openSession: async () => {
+      throw new Error('provider-host session creation was not expected');
+    },
+    attachSession: async () => null,
+    drainForHandoff: async () => undefined,
+    shutdown: async () => undefined,
+    routeAppServerOperation: () => null,
+    ...administration,
+  } satisfies ProviderHostManager & ProviderHostAdministrationAuthority;
+
+  capturedComposition.ports = null;
+  createCoordinatorCore(
+    {
+      runtime: createRealRuntime('prod'),
+      storeFormat: currentCoralStoreFormat(),
+      pluginRoot: process.cwd(),
+      backendNamespace: 'provider-host-response-contract-test',
+      bootSnapshot: {
+        version: '1.0.0',
+        bundleHash: '0123456789abcdef',
+        flavor: 'prod',
+        instanceId: 'test-instance',
+        token: 'operator-token',
+        bootToken: 'boot-token',
+        shutdownToken: 'shutdown-token',
+        now: () => 0,
+        log: vi.fn(),
+      },
+      createServerFn: (handler) => createServer(handler),
+      providerHostManager,
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
+      getConsumerStuck: () => [],
+    },
+    async () => [],
+  );
+
+  const ports = capturedComposition.ports as HttpHandlerPorts | null;
+  if (ports === null) {
+    throw new Error('Production composition did not assemble transport ports.');
+  }
+  return { ports, administration };
+}
+
+function providerHostInventoryRecord(): ProviderHostInventoryRecord {
+  return {
+    ref: {
+      provider: 'codex',
+      fingerprint: 'a'.repeat(64),
+      instanceId: 'host-instance',
+      leaseMode: 'shared',
+    },
+    status: 'live',
+    spec: {
+      provider: 'codex',
+      command: 'codex',
+      args: ['app-server'],
+      cwd: canonicalizeWorkDir(process.cwd(), process.cwd()),
+      leaseMode: 'shared',
+      idleRetirement: 'none',
+    },
+    host: { owner: 'coordinator' },
+    diagnostics: {
+      hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+      completedObservations: [
+        {
+          factSeq: 1,
+          generation: 2,
+          requestId: 3,
+          method: 'config/read',
+          response: { kind: 'failure', rpcCode: -32_603, providerMessage: 'fixture', providerData: null },
+          hostLog: {
+            startSeq: 4,
+            endSeq: 5,
+            truncated: true,
+            historical: [{ seq: 1, observedAt: 1, stream: 'stderr', text: 'before' }],
+            during: [],
+            after: [],
+          },
+        },
+      ],
+      factsTruncatedBeforeSeq: 0,
+    },
+    diagnosticsRetention: { ownerBudgetTruncated: false },
+  };
+}
+
+function withMalformedInventoryCwd(record: ProviderHostInventoryRecord): ProviderHostInventoryRecord {
+  return {
+    ...record,
+    spec: { ...record.spec, cwd: 'relative/provider-host' },
+  } as unknown as ProviderHostInventoryRecord;
 }
 
 function createPorts(): HttpHandlerPorts {
@@ -200,6 +335,11 @@ function createPorts(): HttpHandlerPorts {
     recoveryQuarantine: {
       clear: vi.fn(async (request) => ({ ...request, disposition: 'advanced' as const })),
     },
+    providerHosts: {
+      list: vi.fn(),
+      inspect: vi.fn(),
+      evict: vi.fn(),
+    },
     expansion: {
       equipExpansion: vi.fn(),
       unequipExpansion: vi.fn(),
@@ -211,6 +351,7 @@ function createPorts(): HttpHandlerPorts {
 }
 
 afterEach(() => {
+  capturedComposition.ports = null;
   for (const root of tempDirs.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -242,6 +383,62 @@ describe('ipc server', () => {
     } finally {
       await closeIpcServer(listener);
     }
+  });
+
+  it('drives the production provider-host response adapter and CLI sender through strict IPC schemas', async () => {
+    const record = providerHostInventoryRecord();
+    const ref: HostRef = record.ref;
+    const host = { ownerId: 'coordinator:test-instance', ...record };
+    const { ports, administration } = createProductionProviderHostPorts(record);
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    try {
+      const sender = createProviderHostCommandOperations({
+        getClient: async () => ({
+          request: (method, params) =>
+            requestIpcMethod(socketPath, method, params, { auth: { kind: 'boot', token: 'boot-token' } }),
+        }),
+      });
+      const listed = await sender.list();
+      const formatted = formatProviderHostList(listed);
+      const token = formatted.split('\n')[1]?.split('\t')[0];
+      expect(token).toMatch(/^ph1\./);
+
+      const decodedSelector = parseProviderHostSelector(token, undefined);
+      const inspected = await sender.inspect(decodedSelector);
+      expect(inspected.host.ref).toEqual(ref);
+      expect(formatProviderHostInspect(inspected)).toContain('"truncatedBeforeSeq": 0');
+      expect(formatProviderHostInspect(inspected)).toContain('"truncated": true');
+      expect(formatProviderHostInspect(inspected)).toContain('"historical"');
+      expect(administration.inspectProviderHost).toHaveBeenCalledExactlyOnceWith(ref);
+
+      await expect(sender.inspect(parseProviderHostSelector(undefined, '.'))).resolves.toEqual({ host });
+      expect(administration.inspectProviderHost).toHaveBeenLastCalledWith(ref);
+      await expect(sender.evict(decodedSelector)).resolves.toEqual({ ownerId: host.ownerId, hostRef: ref });
+      expect(administration.evictHost).toHaveBeenCalledExactlyOnceWith(ref);
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('rejects a non-canonical inventory cwd at the production external response sender', async () => {
+    const { ports } = createProductionProviderHostPorts(withMalformedInventoryCwd(providerHostInventoryRecord()));
+    const providerHosts = ports.providerHosts;
+    if (providerHosts === undefined) throw new Error('Production composition did not assemble provider-host ports.');
+
+    await expect(providerHosts.list()).rejects.toThrow(/provider_host_inventory_unavailable/u);
+  });
+
+  it('rejects a non-canonical inventory cwd at the real external response receiver', async () => {
+    const malformed = withMalformedInventoryCwd(providerHostInventoryRecord());
+    const sender = createProviderHostCommandOperations({
+      getClient: async () => ({
+        request: async <TResult>() => ({ hosts: [{ ownerId: 'coordinator:test-instance', ...malformed }] }) as TResult,
+      }),
+    });
+
+    await expect(sender.list()).rejects.toThrow(/Work directory must be absolute and normalized/u);
   });
 
   it('authenticates catalog requests through child principal handles and rejects over-cap/replayed requests', async () => {

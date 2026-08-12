@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   discussDeleteQuerySchema,
   discussDetailQuerySchema,
@@ -197,7 +198,7 @@ describe('transport HTTP query parsing', () => {
   it('rebuilds InvocationContext from query params using the injected CORAL env snapshot only', () => {
     const principal = testProjectPrincipal('/repo/project');
     const context = buildInvocationContextFromQuery(
-      '/repo/project',
+      fixtureCanonicalWorkDir('/repo/project'),
       '/plugin/root',
       {
         CORAL_OWNER: 'transport-owner',

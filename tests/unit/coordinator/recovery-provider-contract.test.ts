@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import {
   planInterruptedAppServerRecovery,
@@ -33,18 +37,22 @@ import { insertProviderOperation, readProviderOperation } from '#src/store/provi
 
 import { providerOperationRecord } from '../store/provider-operation-fixtures.js';
 
+const TEST_PROJECT = mkdtempSync(join(tmpdir(), 'coral-recovery-provider-contract-'));
+
+afterAll(() => rmSync(TEST_PROJECT, { recursive: true, force: true }));
+
 const launchRecord = {
   jobId: 'job-recovery-contract',
   owner: { kind: 'provider-session', id: 'session-recovery-contract' },
   sessionId: 'session-recovery-contract',
   provider: 'fixture',
-  projectRoot: '/project',
+  projectRoot: TEST_PROJECT,
   backendNamespace: 'namespace',
   jobKind: 'provider',
   pool: 'default',
   enqueueSequence: 1,
   providerAction: 'exec',
-  request: { prompt: 'test', cwd: '/project', bypassPermissions: false, coralEnv: {} },
+  request: { prompt: 'test', cwd: TEST_PROJECT, bypassPermissions: false, coralEnv: {} },
   createdAt: '2026-07-22T00:00:00.000Z',
 } as const satisfies JobLaunch;
 
@@ -76,7 +84,7 @@ const durableRuntime = {
 
 const session = {
   sessionId: 'session-recovery-contract',
-  projectRoot: '/project',
+  projectRoot: TEST_PROJECT,
   conversationRef: undefined,
   providerContinuity: { checkpoint: 'persisted' },
   artifactHandles: [],
@@ -383,7 +391,7 @@ describe('interrupted provider HostRef recovery', () => {
         request: expect.objectContaining({
           action: 'exec',
           sessionId: 'session-recovery-contract',
-          cwd: '/project',
+          cwd: TEST_PROJECT,
         }),
       }),
     );

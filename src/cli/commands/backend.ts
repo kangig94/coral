@@ -23,11 +23,22 @@ import { shutdownBackend } from '../../transport/http/backend/shutdown.js';
 import { TOOL_TIMEOUT_MS } from '../../transport/http/sse.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../../transport/ipc/child-principal-auth.js';
 import { IpcRpcError } from '../../transport/ipc/client.js';
+import type { IpcClient } from '../../transport/ipc/client.js';
 import { ensure } from '../../transport/ipc/ensure.js';
 import {
   recoveryQuarantineClearRequestSchema,
   recoveryQuarantineClearResultSchema,
+  providerHostEvictResponseSchema,
+  providerHostInspectResponseSchema,
+  providerHostListRequestSchema,
+  providerHostListResponseSchema,
+  providerHostSelectorRequestSchema,
+  type ProviderHostEvictResponse,
+  type ProviderHostInspectResponse,
+  type ProviderHostListResponse,
+  type ProviderHostSelectorRequest,
 } from '../../transport/rpc/catalog.js';
+import { decodeHostRef, encodeHostRef } from '../../providers/host-ref-codec.js';
 import { getPluginRoot } from '../dispatch.js';
 import { emitError } from '../emit.js';
 import { errorCodeToExit } from '../errors.js';
@@ -78,11 +89,18 @@ export interface RecoveryQuarantineCommandOperations {
   clear(request: RecoveryQuarantineClearRequest): Promise<RecoveryQuarantineClearResult>;
 }
 
+export interface ProviderHostCommandOperations {
+  list(): Promise<ProviderHostListResponse>;
+  inspect(request: ProviderHostSelectorRequest): Promise<ProviderHostInspectResponse>;
+  evict(request: ProviderHostSelectorRequest): Promise<ProviderHostEvictResponse>;
+}
+
 export type BackendCommandOperations = Readonly<{
   storeReset?: StoreResetCommandOperations;
   kbCommit?: KbCommitCommandOperations;
   backendStatus?: BackendStatusCommandOperations;
   recoveryQuarantine?: RecoveryQuarantineCommandOperations;
+  providerHosts?: ProviderHostCommandOperations;
 }>;
 
 type RecoveryQuarantineReadRuntime = Pick<Runtime, 'flavor' | 'paths' | 'storage'>;
@@ -124,6 +142,32 @@ export function createRecoveryQuarantineCommandOperations(signal?: AbortSignal):
   };
 }
 
+export function createProviderHostCommandOperations(
+  options: {
+    getClient?: () => Promise<Pick<IpcClient, 'request'>>;
+  } = {},
+): ProviderHostCommandOperations {
+  const getClient = options.getClient ?? (async () => ensure(getPluginRoot()));
+  const request = async (method: string, params: unknown): Promise<unknown> => {
+    const client = await getClient();
+    return client.request(method, params, childPrincipalAuthOptions(childPrincipalAuthFromEnv()));
+  };
+  return {
+    list: async () => {
+      const params = providerHostListRequestSchema.parse({});
+      return providerHostListResponseSchema.parse(await request('coordinator.provider_host.list', params));
+    },
+    inspect: async (input) => {
+      const params = providerHostSelectorRequestSchema.parse(input);
+      return providerHostInspectResponseSchema.parse(await request('coordinator.provider_host.inspect', params));
+    },
+    evict: async (input) => {
+      const params = providerHostSelectorRequestSchema.parse(input);
+      return providerHostEvictResponseSchema.parse(await request('coordinator.provider_host.evict', params));
+    },
+  };
+}
+
 export function registerBackendCommands(program: Command, operations: BackendCommandOperations = {}): void {
   const {
     storeReset = {
@@ -140,6 +184,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       getStatus: () => getBackendStatusFull(getPluginRoot()),
     },
     recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
+    providerHosts = createProviderHostCommandOperations(),
   } = operations;
   const backend = program.command('backend').description('Backend administration and local incident inspection');
 
@@ -191,6 +236,45 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .action(() => {
       try {
         process.stdout.write(`${formatRecoveryQuarantineList(recoveryQuarantine.list())}\n`);
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    });
+
+  const providerHostCommand = backend.command('provider-host').description('Inspect and evict provider hosts');
+  providerHostCommand
+    .command('list')
+    .description('List live and retained-blocked provider hosts')
+    .action(async () => {
+      try {
+        process.stdout.write(`${formatProviderHostList(await providerHosts.list())}\n`);
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    });
+  providerHostCommand
+    .command('inspect')
+    .description('Inspect one exact live or retained-blocked provider host')
+    .argument('[host-ref]', 'Canonical ph1 provider-host reference')
+    .option('--work-dir <path>', 'Resolve exactly one provider host by work directory')
+    .action(async (hostRef: string | undefined, options: { workDir?: string }) => {
+      try {
+        const request = parseProviderHostSelector(hostRef, options.workDir);
+        process.stdout.write(`${formatProviderHostInspect(await providerHosts.inspect(request))}\n`);
+      } catch (error: unknown) {
+        emitError(error);
+      }
+    });
+  providerHostCommand
+    .command('evict')
+    .description('Evict one exact provider host; may end work already attached to that host')
+    .argument('[host-ref]', 'Canonical ph1 reference copied from `coral-cli backend provider-host list`')
+    .option('--work-dir <path>', 'Resolve relative to the current directory; refuses on ambiguity')
+    .action(async (hostRef: string | undefined, options: { workDir?: string }) => {
+      try {
+        const request = parseProviderHostSelector(hostRef, options.workDir);
+        const result = await providerHosts.evict(request);
+        process.stdout.write(`Evicted ${encodeHostRef(result.hostRef)} from ${result.ownerId}.\n`);
       } catch (error: unknown) {
         emitError(error);
       }
@@ -317,6 +401,36 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         emitError(error);
       }
     });
+}
+
+export function parseProviderHostSelector(
+  hostRef: string | undefined,
+  workDir: string | undefined,
+): ProviderHostSelectorRequest {
+  if ((hostRef === undefined) === (workDir === undefined)) {
+    throw new InvalidArgumentError('Provide exactly one selector: either <host-ref> or --work-dir <path>.');
+  }
+  if (hostRef !== undefined) {
+    try {
+      return { hostRef: decodeHostRef(hostRef) };
+    } catch (error: unknown) {
+      throw new InvalidArgumentError(error instanceof Error ? error.message : 'Invalid provider-host reference.');
+    }
+  }
+  return { workDir: workDir as string, projectRoot: process.cwd() };
+}
+
+export function formatProviderHostList(response: ProviderHostListResponse): string {
+  if (response.hosts.length === 0) return 'No provider hosts.';
+  const rows = response.hosts.map((host) =>
+    [encodeHostRef(host.ref), host.status, host.ownerId, host.ref.provider, host.spec.cwd ?? '-'].join('\t'),
+  );
+  return ['HOST_REF\tSTATUS\tOWNER\tPROVIDER\tWORK_DIR', ...rows].join('\n');
+}
+
+export function formatProviderHostInspect(response: ProviderHostInspectResponse): string {
+  const { ref, ...host } = response.host;
+  return JSON.stringify({ hostRef: encodeHostRef(ref), ...host }, null, 2);
 }
 
 function parseFlavor(value: string): BuildFlavor {

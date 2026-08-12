@@ -11,6 +11,7 @@ import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-pr
 import type { ProviderProxyAuthorityFault } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderOperationPrepareMaterializationResult } from '#src/coordinator/services/provider-operation-prepare.js';
 import type { ProviderOperationRecoveryAcceptance } from '#src/coordinator/services/recovery/index.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   ProviderOperationReconciler,
   providerOperationTerminationVerdict,
@@ -29,11 +30,15 @@ import {
 } from '#src/store/provider-operation-journal.js';
 import { providerOperationRecordSchema, type ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { OperationSupervisor } from '#src/provider-proxy/operation-supervisor.js';
-import { proxyOperationAttachResultSchema } from '#src/provider-proxy/protocol.js';
+import {
+  providerOperationPreparePermanentRefusalSchema,
+  proxyOperationAttachResultSchema,
+} from '#src/provider-proxy/protocol.js';
 import { createGrantRegistry, handoffSecretDigest, type HandoffCapsule } from '#src/provider-proxy/handoff-capsule.js';
 import {
   ProviderOperationAtomicTerminalizationError,
   ProviderOperationTerminalMetadataError,
+  providerHostUnserviceableLastError,
   terminalizeProviderOperation,
   type ProviderOperationTerminalizationPort,
 } from '#src/jobs/provider-operation-terminalization.js';
@@ -232,7 +237,7 @@ const PREPARED = {
     action: 'exec',
     sessionId: 'session-1',
     prompt: 'do the thing',
-    cwd: '/workspace',
+    cwd: fixtureCanonicalWorkDir(process.cwd()),
     bypassPermissions: false,
     coralEnv: {},
   },
@@ -434,7 +439,7 @@ function createHarness(
       owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
       sessionId: record.prepareSource.sessionId,
       provider: providerName,
-      projectRoot: '/workspace',
+      projectRoot: fixtureCanonicalWorkDir(process.cwd()),
       backendNamespace: 'tests',
       jobKind: 'provider',
       phase: 'running',
@@ -445,7 +450,7 @@ function createHarness(
       owner: { kind: 'provider-session', id: record.prepareSource.sessionId },
       sessionId: record.prepareSource.sessionId,
       provider: providerName,
-      projectRoot: '/workspace',
+      projectRoot: fixtureCanonicalWorkDir(process.cwd()),
       backendNamespace: 'tests',
       pool: 'curate',
       enqueueSequence: 1,
@@ -454,7 +459,7 @@ function createHarness(
       providerAction: 'exec',
       request: {
         prompt: 'do the thing',
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir(process.cwd()),
         bypassPermissions: false,
         coralEnv: {},
       },
@@ -560,7 +565,7 @@ function createHarness(
       fatalErrors.push(error);
     },
   );
-  const reconciler = new ProviderOperationReconciler({
+  const reconcilerDependencies = {
     getProgressStore: () => progressStore,
     authorityFor: overrides.authorityFor ?? (() => authority),
     ...(overrides.acquireAuthority === undefined ? {} : { acquireAuthority: overrides.acquireAuthority }),
@@ -585,7 +590,9 @@ function createHarness(
       setTimeout: overrides.time?.setTimeout ?? (() => ({ unref: () => undefined })),
       clearTimeout: overrides.time?.clearTimeout ?? (() => undefined),
     },
-  });
+  } satisfies ConstructorParameters<typeof ProviderOperationReconciler>[0];
+  const createReconciler = (): ProviderOperationReconciler => new ProviderOperationReconciler(reconcilerDependencies);
+  const reconciler = createReconciler();
   const begin = (signal = new AbortController().signal) => {
     const attempt = providerOperationPrepareAttempt(authority, record.operation, prepared, record.prepareAttemptNumber);
     return reconciler.begin({
@@ -611,11 +618,213 @@ function createHarness(
     reconcilerFatalErrors,
     phasesBeforeMutation,
     begin,
+    restart: createReconciler,
     advance: (ms: number) => {
       now += ms;
     },
   };
 }
+
+const hostUnserviceableRef = {
+  provider: 'codex',
+  fingerprint: 'a'.repeat(64),
+  instanceId: 'blocked-host-instance',
+  leaseMode: 'shared',
+} as const;
+const parsedHostUnserviceableRefusal = providerOperationPreparePermanentRefusalSchema.parse({
+  state: 'permanent-refusal',
+  code: 'provider_host_unserviceable',
+  disposition: 'terminal-failure',
+  reason: 'The exact provider host is blocked.',
+  hostRef: hostUnserviceableRef,
+  remediation: {
+    action: 'evict-provider-host',
+    command: 'coral-cli backend provider-host evict <host-ref>',
+  },
+});
+if (parsedHostUnserviceableRefusal.code !== 'provider_host_unserviceable') {
+  throw new Error('structured provider-host refusal fixture parsed as a generic refusal');
+}
+const hostUnserviceableRefusal = parsedHostUnserviceableRefusal;
+const hostUnserviceableDirective = {
+  kind: 'terminal-failed',
+  code: hostUnserviceableRefusal.code,
+  reason: hostUnserviceableRefusal.reason,
+} as const;
+const hostUnserviceableLastError = providerHostUnserviceableLastError(hostUnserviceableRefusal, 1);
+const hostUnserviceableDetail = {
+  code: hostUnserviceableRefusal.code,
+  hostRef: hostUnserviceableRefusal.hostRef,
+  remediation: hostUnserviceableRefusal.remediation,
+} as const;
+type CancelOperation = DurableProviderProxyOperationAuthority['cancelOperation'];
+
+const cleanupRetryCases = [
+  {
+    label: 'cancellation throws once',
+    failOnce: (async () => {
+      throw new Error('temporary cancellation transport failure');
+    }) satisfies CancelOperation,
+  },
+  {
+    label: 'cancellation acknowledgement mismatches once',
+    failOnce: (async (operation, prepareAttemptNumber, prepareAttemptKey) => ({
+      state: 'released-never-started',
+      operation,
+      prepareAttemptNumber: prepareAttemptNumber + 1,
+      prepareAttemptKey,
+    })) satisfies CancelOperation,
+  },
+] as const;
+
+describe('provider host unserviceable refusal durability', () => {
+  function expectStructuredTerminal(appended: readonly unknown[]): void {
+    expect(appended).toEqual([
+      expect.objectContaining({
+        type: 'job.progress.emitted',
+        body: {
+          kind: 'domain',
+          stage: 'provider_operation_failed',
+          message: hostUnserviceableRefusal.reason,
+          detail: hostUnserviceableDetail,
+        },
+      }),
+      expect.objectContaining({ type: 'job.terminal.recorded' }),
+    ]);
+  }
+
+  async function failCleanupOnce(failOnce: CancelOperation) {
+    const succeed: CancelOperation = async (operation, prepareAttemptNumber, prepareAttemptKey) => ({
+      state: 'released-never-started',
+      operation,
+      prepareAttemptNumber,
+      prepareAttemptKey,
+    });
+    const cancelOperation = vi.fn(succeed).mockImplementationOnce(failOnce);
+    const harness = createHarness({ cancelOperation });
+    const initial = providerOperationRecordSchema.parse({
+      ...providerOperationRecord('prestart-cleanup-pending'),
+      afterRelease: hostUnserviceableDirective,
+      lastError: hostUnserviceableLastError,
+    });
+    insertProviderOperation(harness.db, initial);
+
+    await harness.reconciler.reconcile(initial, harness.authority);
+
+    const retried = readProviderOperation(harness.db, initial.operation);
+    expect(retried).toMatchObject({
+      phase: 'prestart-cleanup-pending',
+      afterRelease: hostUnserviceableDirective,
+      retryCount: 1,
+    });
+    expect(retried?.lastError).toEqual(hostUnserviceableLastError);
+    if (retried?.phase !== 'prestart-cleanup-pending') {
+      throw new Error('cleanup retry did not preserve the prestart-cleanup record');
+    }
+    return { harness, retried, cancelOperation };
+  }
+
+  it('preserves the exact terminal payload through direct, ambiguous, startup, and disappearance paths', async () => {
+    const directRecovery = vi.fn(async (record) => providerRecoveryAccepted(record.operation.jobId));
+    const direct = createHarness({
+      prepareOperation: async () => hostUnserviceableRefusal,
+      recoverLocalJob: directRecovery,
+    });
+    await expect(direct.begin()).resolves.toEqual({ kind: 'terminalized' });
+    expectStructuredTerminal(direct.appended);
+    expect(directRecovery).not.toHaveBeenCalled();
+
+    const ambiguousError = Object.assign(new Error('prepare reply was lost'), { code: 'control_call_failed' });
+    const ambiguousRecovery = vi.fn(async (record) => providerRecoveryAccepted(record.operation.jobId));
+    const ambiguous = createHarness({
+      prepareOperation: async () => {
+        throw ambiguousError;
+      },
+      inspectOperation: async () => hostUnserviceableRefusal,
+      recoverLocalJob: ambiguousRecovery,
+    });
+    await expect(ambiguous.begin()).resolves.toEqual({ kind: 'terminalized' });
+    expectStructuredTerminal(ambiguous.appended);
+    expect(ambiguousRecovery).not.toHaveBeenCalled();
+
+    const startupRecovery = vi.fn(async (record) => providerRecoveryAccepted(record.operation.jobId));
+    const startup = createHarness({ recoverLocalJob: startupRecovery });
+    const startupRecord = providerOperationRecordSchema.parse({
+      ...providerOperationRecord('prestart-cleanup-pending'),
+      afterRelease: hostUnserviceableDirective,
+      lastError: hostUnserviceableLastError,
+    });
+    insertProviderOperation(startup.db, startupRecord);
+    await startup.reconciler.reconcileAtStartup(new AbortController().signal);
+    expectStructuredTerminal(startup.appended);
+    expect(startupRecovery).not.toHaveBeenCalled();
+
+    const disappearanceRecovery = vi.fn(async (record) => providerRecoveryAccepted(record.operation.jobId));
+    const disappearance = createHarness({ recoverLocalJob: disappearanceRecovery });
+    const disappearanceRecord = providerOperationRecordSchema.parse({
+      ...providerOperationRecord('prestart-cleanup-pending'),
+      afterRelease: hostUnserviceableDirective,
+      lastError: hostUnserviceableLastError,
+    });
+    insertProviderOperation(disappearance.db, disappearanceRecord);
+    await expect(
+      disappearance.reconciler.containmentDisappeared({
+        operation: disappearanceRecord.operation,
+        setIdentity: providerProxySetIdentityFromRecord(disappearanceRecord),
+        disappearanceReceipt: 'blocked-host-containment-absent',
+      }),
+    ).resolves.toMatchObject({
+      kind: 'accepted',
+      acceptance: { disposition: 'terminalization-committed' },
+    });
+    expectStructuredTerminal(disappearance.appended);
+    expect(disappearanceRecovery).not.toHaveBeenCalled();
+  });
+
+  it.each(cleanupRetryCases)(
+    'preserves exact host evidence when $label before retry, restart, and disappearance',
+    async ({ failOnce }) => {
+      const retry = await failCleanupOnce(failOnce);
+      await retry.harness.reconciler.reconcile(retry.retried, retry.harness.authority);
+      expect(retry.cancelOperation).toHaveBeenCalledTimes(2);
+      expectStructuredTerminal(retry.harness.appended);
+
+      const restart = await failCleanupOnce(failOnce);
+      await restart.harness.restart().reconcileAtStartup(new AbortController().signal);
+      expect(restart.cancelOperation).toHaveBeenCalledTimes(2);
+      expectStructuredTerminal(restart.harness.appended);
+
+      const disappearance = await failCleanupOnce(failOnce);
+      const terminalize = disappearance.harness.terminalization.terminalize;
+      const terminalizeCalls = vi
+        .spyOn(disappearance.harness.terminalization, 'terminalize')
+        .mockImplementationOnce(() => {
+          throw new ProviderOperationAtomicTerminalizationError(
+            disappearance.retried.operation,
+            new Error('temporary terminalization failure'),
+          );
+        })
+        .mockImplementation(terminalize);
+      await disappearance.harness.reconciler.reconcile(disappearance.retried, disappearance.harness.authority);
+      const terminalizationRetried = readProviderOperation(disappearance.harness.db, disappearance.retried.operation);
+      expect(terminalizationRetried?.lastError).toEqual(hostUnserviceableLastError);
+      expect(disappearance.cancelOperation).toHaveBeenCalledTimes(2);
+
+      await expect(
+        disappearance.harness.reconciler.containmentDisappeared({
+          operation: disappearance.retried.operation,
+          setIdentity: providerProxySetIdentityFromRecord(disappearance.retried),
+          disappearanceReceipt: 'host-refusal-cleanup-retry-containment-absent',
+        }),
+      ).resolves.toMatchObject({
+        kind: 'accepted',
+        acceptance: { disposition: 'terminalization-committed' },
+      });
+      expect(terminalizeCalls).toHaveBeenCalledTimes(2);
+      expectStructuredTerminal(disappearance.harness.appended);
+    },
+  );
+});
 
 describe('ProviderOperationReconciler publication', () => {
   it.each([128, 129])(

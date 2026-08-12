@@ -1,6 +1,7 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { BackendInfo } from '../../infra/backend-discovery.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
+import type { HostAdmissionCollection } from '../../providers/host-admission.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type {
   CoordinatorIdentity,
@@ -74,6 +75,7 @@ export type CoordinatorCoreOptions = {
   registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
   providerHostManager?: ProviderHostManager;
+  providerHostAdmission?: HostAdmissionCollection;
   /**
    * Builds the durable-effect handler for a proxy's `provider.event.v1` pushes (W2.3), fresh, once per proxy
    * set acquisition — never an already-built handler, because this option is consumed while composing

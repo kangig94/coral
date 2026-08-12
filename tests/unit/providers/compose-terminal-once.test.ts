@@ -8,6 +8,7 @@ import {
   type ProviderRuntime,
 } from '#src/providers/contract.js';
 import { TEST_CODEX_PLAN } from '../../helpers/provider-credentials.js';
+import { fixtureCanonicalWorkDir } from '../../helpers/canonical-work-dir.js';
 
 type TestProviderContext = typeof TEST_CODEX_PLAN;
 type TestProvider = Provider<TestProviderContext>;
@@ -17,7 +18,7 @@ const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
   sessionId: 'compose-terminal-once',
   prompt: 'hello',
-  cwd: process.cwd(),
+  cwd: fixtureCanonicalWorkDir(process.cwd()),
   bypassPermissions: false,
   coralEnv: {},
 };

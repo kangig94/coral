@@ -1,6 +1,7 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allocateTestSession } from '../../../helpers/session.js';
+import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js';
 import { TEST_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -912,7 +913,7 @@ function createActualRecoveryService(
 ) {
   return new modules.serviceModule.ExecutionService(
     {
-      projectRoot: options.projectRoot,
+      projectRoot: fixtureCanonicalWorkDir(options.projectRoot),
       pluginRoot: options.pluginRoot,
       coralEnv: {},
       principal: testProjectPrincipal(options.projectRoot),
@@ -1407,7 +1408,7 @@ describe('lifecycle recovery', () => {
       coordinatorCommit,
       getExecutionService: () => executionService,
       createInvocationContext: (projectRoot) => ({
-        projectRoot,
+        projectRoot: fixtureCanonicalWorkDir(projectRoot),
         pluginRoot,
         coralEnv: {},
         principal: testProjectPrincipal(projectRoot),
@@ -1430,7 +1431,7 @@ describe('lifecycle recovery', () => {
       coordinatorCommit,
     });
     const createInvocationContext = (projectRoot: string) => ({
-      projectRoot,
+      projectRoot: fixtureCanonicalWorkDir(projectRoot),
       pluginRoot,
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
@@ -1543,7 +1544,7 @@ describe('lifecycle recovery', () => {
     const coordinatorCommit = createTestJobJournalDeps(progressStore, runtime).coordinatorCommit;
     const executionService = { abort: vi.fn(() => ({ aborted: [], notFound: [] })) };
     const createInvocationContext = (root: string) => ({
-      projectRoot: root,
+      projectRoot: fixtureCanonicalWorkDir(root),
       pluginRoot,
       coralEnv: {},
       principal: testProjectPrincipal(root),
@@ -3211,7 +3212,7 @@ describe('lifecycle recovery', () => {
       providerRegistry,
       getRecoveryService: () => service as never,
       createInvocationContext: (root: string) => ({
-        projectRoot: root,
+        projectRoot: fixtureCanonicalWorkDir(root),
         pluginRoot,
         coralEnv: {},
         principal: testProjectPrincipal(root),
@@ -3228,7 +3229,7 @@ describe('lifecycle recovery', () => {
         eventBus,
         getRecoveryService: () => service as never,
         createInvocationContext: (root: string) => ({
-          projectRoot: root,
+          projectRoot: fixtureCanonicalWorkDir(root),
           pluginRoot,
           coralEnv: {},
           principal: testProjectPrincipal(root),
@@ -3256,7 +3257,7 @@ describe('lifecycle recovery', () => {
           loadJobDetails: modules.jobsReadQueriesModule.loadJobProjectionDetails,
           getExecutionService: () => service as never,
           createInvocationContext: (root: string) => ({
-            projectRoot: root,
+            projectRoot: fixtureCanonicalWorkDir(root),
             pluginRoot,
             coralEnv: {},
             principal: testProjectPrincipal(root),

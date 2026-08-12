@@ -1,0 +1,11 @@
+import { wrapperToPhysicalClose } from './owner-wrapper.js';
+
+declare function spawnProviderTransport(options: {
+  observeProviderResponse(fact: unknown): void;
+}): void;
+
+export function ownerRoot(handle: { close(): void }): void {
+  spawnProviderTransport({
+    observeProviderResponse: (fact) => wrapperToPhysicalClose(handle, fact),
+  });
+}

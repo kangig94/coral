@@ -251,10 +251,12 @@ function isStillTheRecordedProcess<Scope extends symbol>(
 }
 
 /**
- * Signals `target`, then confirms it gone rather than assuming so: waits up to `graceMs` for it to
- * disappear, then holds a further confirmation window before declaring success — the same
- * disappear-then-confirm discipline `reapRecordedContainment` (`infra/process-containment.ts`) itself uses,
- * so a target that flickers dead-then-alive across one lucky poll is not mistaken for reaped.
+ * Deliberate exception to the shared escalation helpers: guardian-construction unwind must handle both a
+ * detached proxy group and an ordinary, non-detached reaper pid. `reapRecordedContainment` cannot represent
+ * the latter without falsely claiming it is a process-group leader, while `gracefulKill` does not confirm
+ * absence. This keeps the required monotonic disappear-then-confirm discipline for both target shapes, so a
+ * target that flickers dead-then-alive across one lucky poll is not mistaken for reaped. The exception is
+ * documented and kept live by `timeout-kill-escalation.test.ts`.
  */
 async function signalAndConfirmAbsence<Scope extends symbol>(
   target: number,
@@ -872,6 +874,7 @@ export async function startProviderProxyRole(
     clock,
     identity,
     host: semantic.host,
+    providerHosts: hostAuthority,
     timer,
     mintChallenge: () => ports.runtime.ids.uuid(),
     mintReceipt: () => ports.runtime.ids.uuid(),

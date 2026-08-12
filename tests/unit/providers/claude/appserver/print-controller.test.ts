@@ -11,6 +11,7 @@ import type {
 import type { AppServerSession, ProviderAppServerRuntime, ProviderRequest } from '#src/providers/contract.js';
 import type { ClaudeExecutionPlan } from '#src/providers/claude/execution-plan.js';
 import { collectProviderEvents } from '#src/providers/stream.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { TEST_CLAUDE_PLAN } from '../../../../helpers/provider-credentials.js';
 
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
@@ -326,7 +327,7 @@ describe('PrintSessionController', () => {
       sessionId: TEST_SESSION_ID,
       name: 'claude',
       prompt: 'hello',
-      cwd: '/workspace',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
       bypassPermissions: false,
       coralEnv: {},
     };

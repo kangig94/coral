@@ -4,6 +4,7 @@ import { errorMessage } from '../infra/error-format.js';
 import { describeSessionJobClaimReleaseResult } from '../sessions/job-release.js';
 import type { SessionJobClaimReleaseResult } from '../sessions/contracts.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import { canonicalizeWorkDir, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { TimePort } from '../infra/port-types.js';
 import { nowIsoString } from '../infra/time.js';
 import type { JobTerminal } from '../jobs/records.js';
@@ -70,7 +71,7 @@ type RecoveredWorkflowFinalization = {
 export type WorkflowRecoveryDescendant = {
   readonly jobId: string;
   readonly sessionId: string;
-  readonly projectRoot: string;
+  readonly projectRoot: CanonicalWorkDir;
   readonly expectedSessionVersion: number;
 };
 
@@ -168,7 +169,7 @@ type WorkflowRecoveryContinuation = {
   readonly childIds: readonly string[];
   readonly providerSessions: readonly {
     readonly sessionId: string;
-    readonly projectRoot: string;
+    readonly projectRoot: CanonicalWorkDir;
     readonly version: number;
     readonly activeJobId: string | null;
     readonly continuationLease: ProviderSession['continuationLease'] | null;
@@ -183,6 +184,7 @@ type WorkflowRecoveryContinuation = {
 type HydratedWorkflowRecovery = {
   readonly envelope: RawWorkflowRecoveryEnvelope;
   readonly rootDetail: JobProjectionDetail;
+  readonly rootProjectRoot: CanonicalWorkDir;
   readonly projection: WorkflowProjectionRow | null;
   readonly childRows: readonly ProjectionJobStoredRow[];
   readonly slotDetailsByJob: Map<string, JobProjectionDetail>;
@@ -344,7 +346,7 @@ async function resumePendingReplacementIntents(deps: ResumeWorkflowDeps): Promis
       {
         sessionId: launch.sessionId,
         prompt: STALE_RESUME_PROMPT,
-        cwd: launch.request.cwd ?? deps.ctx.projectRoot,
+        cwd: canonicalizeWorkDir(launch.request.cwd, deps.ctx.projectRoot),
         parentWorkflowJobId: deps.workflowId,
         workflowSlotId: slot.slotId,
         workflowSlotGeneration: nextGeneration,
@@ -1040,20 +1042,45 @@ function parseWorkflowRecoveryContinuation(envelope: RawWorkflowRecoveryEnvelope
   if (new Set(sessionIds).size !== sessionIds.length) {
     throw new TypeError(`Workflow '${workflowId}' recovery continuation repeats a session reference.`);
   }
-  return parsed as WorkflowRecoveryContinuation;
+  const canonicalProviderSessions = providerSessions.map((value) => {
+    const session = asRecord(value, 'Workflow recovery provider-session reference');
+    return {
+      sessionId: session.sessionId as string,
+      projectRoot: canonicalizeWorkDir(session.projectRoot as string, process.cwd()),
+      version: session.version as number,
+      activeJobId: session.activeJobId as string | null,
+      continuationLease: session.continuationLease as ProviderSession['continuationLease'] | null,
+    };
+  });
+  const finalization =
+    intendedFinalization.kind === 'pending'
+      ? ({ kind: 'pending' } as const)
+      : ({
+          kind: 'intent',
+          intent: intendedFinalization.intent as WorkflowFinalizationIntent,
+        } as const);
+  return {
+    workflowId,
+    sourceRevision,
+    childIds: childIds as string[],
+    providerSessions: canonicalProviderSessions,
+    stage,
+    intendedFinalization: finalization,
+    completedObligations: completedObligations as string[],
+  };
 }
 
 function initialWorkflowContinuation(
   envelope: RawWorkflowRecoveryEnvelope,
   providerSessionsById: ReadonlyMap<string, ProviderSession>,
   slotDetailsByJob: ReadonlyMap<string, JobProjectionDetail>,
-  rootProjectRoot: string,
+  rootProjectRoot: CanonicalWorkDir,
 ): WorkflowRecoveryContinuation {
-  const projectRootsBySession = new Map<string, string>();
+  const projectRootsBySession = new Map<string, CanonicalWorkDir>();
   for (const detail of slotDetailsByJob.values()) {
     const status = detail.status;
     if (status?.sessionId !== null && status?.sessionId !== undefined) {
-      projectRootsBySession.set(status.sessionId, status.projectRoot);
+      projectRootsBySession.set(status.sessionId, canonicalizeWorkDir(status.projectRoot, process.cwd()));
     }
   }
   return {
@@ -1097,6 +1124,7 @@ function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreRea
   if (rootStatus === null || rootStatus.jobKind !== 'workflow') {
     throw new TypeError(`Workflow recovery root '${raw.job.projection.job_id}' is not a workflow job.`);
   }
+  const rootProjectRoot = canonicalizeWorkDir(rootStatus.projectRoot, process.cwd());
   const projection = raw.workflow === null ? null : hydrateWorkflowProjectionRow(raw.workflow);
   if (projection !== null && projection.workflowId !== rootStatus.jobId) {
     throw new TypeError(`Workflow recovery projection '${projection.workflowId}' names another root.`);
@@ -1150,11 +1178,11 @@ function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreRea
   const drain = drainRow === null ? null : decodeBody(drainRow, workflowDrainEnteredBodySchema, ctx);
   const recoveredContinuation = parseWorkflowRecoveryContinuation(raw);
   const continuation =
-    recoveredContinuation ??
-    initialWorkflowContinuation(raw, providerSessionsById, slotDetailsByJob, rootStatus.projectRoot);
+    recoveredContinuation ?? initialWorkflowContinuation(raw, providerSessionsById, slotDetailsByJob, rootProjectRoot);
   return {
     envelope: raw,
     rootDetail,
+    rootProjectRoot,
     projection,
     childRows,
     slotDetailsByJob,
@@ -1274,7 +1302,7 @@ type ResumeAllOptions = {
   progressStore: StoreReadContext;
   loadJobDetails: unknown;
   getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
-  createInvocationContext: (projectRoot: string) => InvocationContext;
+  createInvocationContext: (projectRoot: CanonicalWorkDir) => InvocationContext;
   finalizeWorkflow: (intent: WorkflowFinalizationIntent) => void;
   releaseFailedWorkflowDescendants: (workflowId: string) => readonly WorkflowRecoveryDescendantRelease[];
   signal?: AbortSignal;
@@ -1392,7 +1420,7 @@ async function settleWorkflowRecovery(
     if (status === null) {
       throw new Error('Workflow recovery could not hydrate its root job status.');
     }
-    const baseCtx = options.createInvocationContext(status.projectRoot);
+    const baseCtx = options.createInvocationContext(item.rootProjectRoot);
     const ctx: InvocationContext = { ...baseCtx, providerScope: projection.providerScope };
     recovered = await resumeWorkflow({
       progressStore: options.progressStore,

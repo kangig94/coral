@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createDeferred } from '#tools/testing/deferred.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 // `ensureProxySetFor` (the manager's own dedup/registry wiring) is what these tests exercise; the acquisition
 // attempt it delegates to is already covered end to end by `proxy-set-acquisition.test.ts` and the real-spawn
@@ -163,7 +164,7 @@ describe('provider host pool', () => {
   });
 
   it('hostKeyFromSpec normalizes env ordering and separates incompatible hosts', () => {
-    const base = createExclusiveSpec({ args: ['app-server'], cwd: '/workspace/a' });
+    const base = createExclusiveSpec({ args: ['app-server'], cwd: fixtureCanonicalWorkDir('/workspace/a') });
 
     expect(hostKeyFromSpec(base)).toBe(
       hostKeyFromSpec({
@@ -188,7 +189,7 @@ describe('provider host pool', () => {
         },
       }),
     );
-    expect(hostKeyFromSpec({ ...base, cwd: '/workspace/b' })).not.toBe(hostKeyFromSpec(base));
+    expect(hostKeyFromSpec({ ...base, cwd: fixtureCanonicalWorkDir('/workspace/b') })).not.toBe(hostKeyFromSpec(base));
     expect(hostKeyFromSpec({ ...base, env: { CODEX_HOME: '/accounts/a' } })).not.toBe(
       hostKeyFromSpec({ ...base, env: { CODEX_HOME: '/accounts/b' } }),
     );
@@ -299,7 +300,7 @@ describe('provider host pool', () => {
     await manager.shutdown();
   });
 
-  it('keeps the exact acquired entry when equal-generation exclusive hosts share an owner job', async () => {
+  it('single-flights one job-exclusive placement for equal specs with the same owner job', async () => {
     const first = createFakeProviderServerHandle({ generation: 41 });
     const second = createFakeProviderServerHandle({ generation: 41 });
     const manager = new DefaultProviderHostManager({
@@ -311,7 +312,9 @@ describe('provider host pool', () => {
     const sessionA = await manager.openSession(createLaunch(spec), { jobId: 'same-job' });
     const sessionB = await manager.openSession(createLaunch(spec), { jobId: 'same-job' });
 
-    expect(sessionA.hostRef.instanceId).not.toBe(sessionB.hostRef.instanceId);
+    expect(sessionA.hostRef.instanceId).toBe(sessionB.hostRef.instanceId);
+    expect((manager as unknown as { entries: Map<string, ProviderHostEntry> }).entries.size).toBe(1);
+    expect(first.closeMock).not.toHaveBeenCalled();
     expect(await manager.attachSession(sessionA.hostRef, expectedHost(spec, 'same-job'))).not.toBeNull();
     expect(await manager.attachSession(sessionB.hostRef, expectedHost(spec, 'same-job'))).not.toBeNull();
 
@@ -348,7 +351,7 @@ describe('provider host pool', () => {
       provider: 'same-provider',
       command: process.execPath,
       args: ['same-app-server.js'],
-      cwd: process.cwd(),
+      cwd: fixtureCanonicalWorkDir(process.cwd()),
     };
     const specFor = (mode: 'shared' | 'job-exclusive') =>
       mode === 'shared' ? createSharedSpec(identity) : createExclusiveSpec(identity);
@@ -377,7 +380,7 @@ describe('provider host pool', () => {
       provider: 'same-provider',
       command: process.execPath,
       args: ['same-app-server.js'],
-      cwd: process.cwd(),
+      cwd: fixtureCanonicalWorkDir(process.cwd()),
     };
     const exclusive = createExclusiveSpec(identity);
     const shared = createSharedSpec(identity);
@@ -419,11 +422,11 @@ describe('provider host pool', () => {
 
     const sharedSpec = createSharedSpec();
     const codexSpecA = createExclusiveSpec({
-      cwd: '/workspace/a',
+      cwd: fixtureCanonicalWorkDir('/workspace/a'),
       env: { PROJECT: 'a' },
     });
     const codexSpecB = createExclusiveSpec({
-      cwd: '/workspace/b',
+      cwd: fixtureCanonicalWorkDir('/workspace/b'),
       env: { PROJECT: 'b' },
     });
 

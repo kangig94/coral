@@ -11,6 +11,7 @@ import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput 
 import type { RecoverableTurnFailure } from './turn-recovery.js';
 import type { CodexExecutionPlan } from './execution-plan.js';
 import { zodPersistedParser } from '../binding-parser.js';
+import { canonicalizeWorkDir, type CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 
 const codexPersistedContinuitySchema = z
   .object({
@@ -277,10 +278,11 @@ function scopedCodexCwd(cwd: string | undefined, cwdScope: string | undefined): 
 }
 
 export function resolveCodexHostCwd(
-  requestCwd: string,
+  requestCwd: CanonicalWorkDir,
   persistedContinuity: ProviderContinuityBlob | undefined,
-): string {
-  return readCodexPersistedContinuity(persistedContinuity, { cwdScope: requestCwd }).cwd ?? requestCwd;
+): CanonicalWorkDir {
+  const persistedCwd = readCodexPersistedContinuity(persistedContinuity, { cwdScope: requestCwd }).cwd;
+  return persistedCwd === undefined ? requestCwd : canonicalizeWorkDir(persistedCwd, requestCwd);
 }
 
 function buildCodexTurnInput(prompt: string): UserInput[] {

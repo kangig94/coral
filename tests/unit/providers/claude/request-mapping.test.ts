@@ -11,6 +11,7 @@ import { buildClaudeExecutionPlan } from '#src/providers/claude/execution-plan.j
 import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
 import { TEST_CLAUDE_ACCESS } from '#tests/helpers/provider-credentials.js';
 import type { ClaudeBootstrapSignature } from '#src/providers/claude/request-prep.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { CORAL_CLAUDE_TRANSPORT_ENV } from '#src/providers/claude/transport-mode.js';
 
 const BOOTSTRAP_SIGNATURE: ClaudeBootstrapSignature = {
@@ -47,7 +48,7 @@ function prepareBroker(options: {
       action: 'exec',
       sessionId: 'session',
       prompt: 'test',
-      cwd: options.cwd ?? '/workspace',
+      cwd: fixtureCanonicalWorkDir(options.cwd ?? '/workspace'),
       bypassPermissions: false,
       coralEnv: options.coralEnv ?? {},
     },
@@ -164,7 +165,7 @@ describe('Claude appserver request mapping', () => {
       {
         action: 'exec',
         sessionId: 'fresh-session',
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         bypassPermissions: false,
         coralEnv: {},
         model: 'claude-sonnet-4-6',
@@ -196,7 +197,13 @@ describe('Claude appserver request mapping', () => {
     const brokerA = withPluginRoot(() => prepareBroker({ baseEnv: { PATH: '/bin' } }));
     const brokerB = withPluginRoot(() => prepareBroker({ baseEnv: { PATH: '/bin' } }));
     const ensureA = mapSessionEnsureParams(
-      { action: 'exec', sessionId: 'session-a', cwd: '/workspace', bypassPermissions: false, coralEnv: {} },
+      {
+        action: 'exec',
+        sessionId: 'session-a',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
+        bypassPermissions: false,
+        coralEnv: {},
+      },
       { sha256: () => 'system-hash' },
       {
         controllerEnv: { CLAUDE_CONFIG_DIR: '/accounts/a' },
@@ -204,7 +211,13 @@ describe('Claude appserver request mapping', () => {
       },
     );
     const ensureB = mapSessionEnsureParams(
-      { action: 'exec', sessionId: 'session-b', cwd: '/workspace', bypassPermissions: false, coralEnv: {} },
+      {
+        action: 'exec',
+        sessionId: 'session-b',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
+        bypassPermissions: false,
+        coralEnv: {},
+      },
       { sha256: () => 'system-hash' },
       {
         controllerEnv: { CLAUDE_CONFIG_DIR: '/accounts/b' },

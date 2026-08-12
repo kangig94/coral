@@ -5,6 +5,7 @@ import * as discussLoop from '#src/discuss/shell/loop.js';
 import { recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
 import { getSession } from '#src/discuss/shell/registry.js';
 import { handleSynthesis } from '#src/discuss/shell/flow/synthesis.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   advanceDiscussRuntime,
   cleanupDiscussHarnesses,
@@ -27,7 +28,7 @@ async function recoverSessions(harness: DiscussHarness) {
     harness.store,
     () => harness.context,
     (snapshot) => ({
-      projectRoot: snapshot.projectRoot,
+      projectRoot: fixtureCanonicalWorkDir(snapshot.projectRoot),
       pluginRoot: harness.ctx.pluginRoot,
       coralEnv: {},
       principal: testProjectPrincipal(snapshot.projectRoot),

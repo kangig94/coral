@@ -11,6 +11,8 @@ import { buildCodexExecutionPlan, type CodexProviderAccess } from '#src/provider
 import { codexAppServerLifecycle } from '#src/providers/codex/provider-facets.js';
 import type { ProviderBindingEnvelope } from '#src/infra/provider-binding-envelope.js';
 
+import { fixtureCanonicalWorkDir } from './canonical-work-dir.js';
+
 export const TEST_CODEX_ACCESS = {
   home: '/home/user/.codex',
 } as const satisfies CodexProviderAccess;
@@ -108,7 +110,7 @@ const TEST_EXECUTION_REQUEST = {
   action: 'exec',
   sessionId: 'test-session',
   prompt: 'test',
-  cwd: '/workspace',
+  cwd: fixtureCanonicalWorkDir('/workspace'),
   bypassPermissions: false,
   coralEnv: {},
 } as const;
@@ -189,7 +191,7 @@ export function prepareTestCodexAppServer(
     access: TEST_CODEX_ACCESS,
     request: {
       ...TEST_EXECUTION_REQUEST,
-      cwd: request.cwd,
+      cwd: fixtureCanonicalWorkDir(request.cwd),
       coralEnv: request.coralEnv ?? {},
     },
     persistedContinuity,
@@ -202,7 +204,7 @@ export function prepareTestCodexAppServer(
     hostPlan,
     request: {
       ...TEST_EXECUTION_REQUEST,
-      cwd: request.cwd,
+      cwd: fixtureCanonicalWorkDir(request.cwd),
       coralEnv: request.coralEnv ?? {},
     },
     persistedContinuity,

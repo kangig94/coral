@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { nonEmptyStringSchema } from '../infra/identifiers.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { ExecResult, IdPort, Runtime } from '../runtime/ports.js';
+import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { JsonValue } from '../infra/json-value.js';
 import type { ProviderExecutionPlan } from './execution-plan.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
@@ -68,7 +69,7 @@ export interface ProviderRequest {
   conversationRef?: string;
   prompt: string;
   model?: string;
-  cwd: string;
+  cwd: CanonicalWorkDir;
   effort?: EffortLevel;
   bypassPermissions: boolean;
   systemPrompt?: string;
@@ -93,7 +94,7 @@ export const providerRequestSchema = z
     conversationRef: nonEmptyStringSchema.optional(),
     prompt: z.string(),
     model: z.string().optional(),
-    cwd: z.string(),
+    cwd: canonicalWorkDirWireSchema,
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
     bypassPermissions: z.boolean(),
     systemPrompt: z.string().optional(),
@@ -119,7 +120,7 @@ interface ProviderServerSpecBase {
   provider: string;
   command: string;
   args: string[];
-  cwd: string;
+  cwd?: CanonicalWorkDir;
   env?: Record<string, string>;
   initializeRequest?: {
     method: string;
@@ -187,7 +188,7 @@ export interface AppServerSession extends AppServerTransport {
 }
 
 export type ProviderCurationRequest = {
-  readonly cwd: string;
+  readonly cwd: CanonicalWorkDir;
   readonly prompt: string;
   readonly model?: string;
   readonly permissionMode?: 'default' | 'auto' | 'bypassPermissions';

@@ -1,4 +1,5 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { WaitCursor, WaitStreamEvent } from '../jobs/wait.js';
 import { phaseForOutcome } from '../jobs/outcome.js';
@@ -34,7 +35,7 @@ export type WaitForAtomsOptions = {
   staleTimeoutMs: number;
   staleCheckIntervalMs: number;
   drainDeadlineMs: number;
-  workDir?: string;
+  workDir?: CanonicalWorkDir;
   onProgress: (message: string) => void;
   completedStepDetails?: StepDetail[];
   workflowJobId?: string;
@@ -60,7 +61,7 @@ export type WaitStaleRecoveryHandler = (
     signal?: AbortSignal;
     staleTimeoutMs: number;
     staleAbortTimeoutMs: number;
-    workDir?: string;
+    workDir?: CanonicalWorkDir;
     workflowJobId?: string;
     onProgress: (message: string) => void;
     buildPartialStepDetails: () => StepDetail[];

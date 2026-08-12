@@ -10,6 +10,9 @@ import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { ToolDomainResult } from '../tool-result.js';
 import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
+import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
+import type { HostRef } from '../../providers/host-inventory-schema.js';
+import type { ProviderHostEvictResponse, ProviderHostInspectResponse, ProviderHostListResponse } from './catalog.js';
 
 type SessionStartInput = Pick<
   JobLaunchRequest,
@@ -21,7 +24,7 @@ export type WorkflowPortInput = {
   startPrompt: string;
   context?: string;
   provider: string;
-  workDir?: string;
+  workDir: CanonicalWorkDir;
   owner?: string;
 };
 
@@ -60,6 +63,16 @@ interface WorkflowRequestPort {
 
 export interface RecoveryQuarantineRequestPort {
   clear(request: RecoveryQuarantineClearRequest, signal?: AbortSignal): Promise<RecoveryQuarantineClearResult>;
+}
+
+export interface ProviderHostRequestPort {
+  list(): Promise<ProviderHostListResponse>;
+  inspect(
+    selector: Readonly<{ hostRef: HostRef }> | Readonly<{ workDir: CanonicalWorkDir }>,
+  ): Promise<ProviderHostInspectResponse>;
+  evict(
+    selector: Readonly<{ hostRef: HostRef }> | Readonly<{ workDir: CanonicalWorkDir }>,
+  ): Promise<ProviderHostEvictResponse>;
 }
 
 type MaybePromise<T> = T | Promise<T>;
@@ -118,6 +131,7 @@ export interface RpcPorts {
   readonly jobs: JobsRequestPort;
   readonly workflows: WorkflowRequestPort;
   readonly recoveryQuarantine: RecoveryQuarantineRequestPort;
+  readonly providerHosts?: ProviderHostRequestPort;
   readonly kb: KbRequestPort;
   readonly discuss: DiscussRequestPort;
   readonly expansion: ExpansionRequestPort;

@@ -11,9 +11,10 @@ import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { TEST_CODEX_BINDING, TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { prepareFixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const ctx: InvocationContext = {
-  projectRoot: '/tmp/coral-project',
+  projectRoot: fixtureCanonicalWorkDir('/tmp/coral-project'),
   pluginRoot: '/tmp/coral-plugin',
   coralEnv: {},
   principal: testProjectPrincipal('/tmp/coral-project'),

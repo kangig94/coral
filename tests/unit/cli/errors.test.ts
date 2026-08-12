@@ -245,6 +245,7 @@ describe('cli errors', () => {
       ['kb_disabled', 'KB daemon supervisor is disabled: disabled (CORAL_KB_ENABLE=0)'],
       ['kb_initializing', 'Knowledge base is starting up — retry in ~5 seconds'],
       ['kb_offline', 'Knowledge base is offline'],
+      ['provider_host_inventory_unavailable', 'Provider-host inventory is temporarily unavailable.'],
     ] as const)('retries %s at exit 75 over IPC even though the wire carries no numeric status', (code, message) => {
       // src/transport/ipc/server.ts's requestErrorResponse puts only the raw domain body
       // (`{code, message, remediation?, detail?}`) on the JSON-RPC error `data` — no
@@ -271,6 +272,7 @@ describe('cli errors', () => {
       ['kb_disabled', undefined, 75],
       ['kb_initializing', undefined, 75],
       ['kb_offline', undefined, 75],
+      ['provider_host_inventory_unavailable', undefined, 75],
       ['backend_error', 503, 75],
       ['backend_unreachable', undefined, 69],
       ['missing_capability', undefined, 77],

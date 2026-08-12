@@ -25,6 +25,12 @@ function makeSocketPath(): string {
   return join(root, 'coordinator.sock');
 }
 
+function makeProjectRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), 'coral-http-ipc-project-'));
+  tempDirs.push(root);
+  return root;
+}
+
 function createPorts(): HttpHandlerPorts {
   return {
     identity: {
@@ -198,6 +204,7 @@ describe('http/ipc parity', () => {
       ) as typeof TEST_SYSTEM_PROVIDER_SCOPE,
     };
     let observedContext: Parameters<NonNullable<typeof ports.sessions.start>>[2] | undefined;
+    const projectRoot = makeProjectRoot();
     ports.sessions.start = vi.fn(async (_providerName, _input, ctx) => {
       observedContext = ctx;
       return { kind: 'provider-session' as const, status: 'running' as const, jobId: 'job-1', sessionId: 'session-1' };
@@ -207,7 +214,7 @@ describe('http/ipc parity', () => {
       {
         provider: 'claude',
         prompt: 'hello',
-        projectRoot: '/project-root',
+        projectRoot,
         providerScope: withTestProfileLocation(TEST_PROVIDER_SCOPE, 'claude', '/accounts/caller-claude'),
       },
       testPrincipal({ transport: 'ipc' }),
@@ -222,13 +229,14 @@ describe('http/ipc parity', () => {
     const spec = rpcCatalog.find((entry) => entry.name === 'sessions.create');
     if (!spec) throw new Error('sessions.create spec not found');
     const ports = createPorts();
+    const projectRoot = makeProjectRoot();
 
     await expect(
       ipcAdapter(spec, ports).dispatch(
         {
           provider: 'claude',
           prompt: 'hello',
-          projectRoot: '/project-root',
+          projectRoot,
           providerScope: TEST_SYSTEM_PROVIDER_SCOPE,
         },
         testPrincipal({ transport: 'ipc' }),
@@ -246,6 +254,7 @@ describe('http/ipc parity', () => {
     if (!spec) throw new Error('sessions.create spec not found');
     const ports = createPorts();
     let observedScope: unknown;
+    const projectRoot = makeProjectRoot();
     ports.sessions.start = vi.fn(async (_providerName, _input, ctx) => {
       observedScope = ctx.providerScope;
       return {
@@ -257,7 +266,7 @@ describe('http/ipc parity', () => {
     });
 
     await ipcAdapter(spec, ports).dispatch(
-      { provider: 'claude', prompt: 'hello', projectRoot: '/project-root' },
+      { provider: 'claude', prompt: 'hello', projectRoot },
       testPrincipal({ transport: 'http' }),
     );
 
@@ -268,31 +277,32 @@ describe('http/ipc parity', () => {
     {
       name: 'session',
       path: '/sessions',
-      body: { provider: 'codex', prompt: 'hello', projectRoot: '/project-root' },
+      body: (projectRoot: string) => ({ provider: 'codex', prompt: 'hello', projectRoot }),
       allocation: (ports: HttpHandlerPorts) => ports.sessions.start,
     },
     {
       name: 'workflow',
       path: '/workflow',
-      body: { expression: 'architect@codex', startPrompt: 'hello', projectRoot: '/project-root' },
+      body: (projectRoot: string) => ({ expression: 'architect@codex', startPrompt: 'hello', projectRoot }),
       allocation: (ports: HttpHandlerPorts) => ports.workflows.execute,
     },
     {
       name: 'discussion',
       path: '/discuss/sessions',
-      body: {
-        projectRoot: '/project-root',
+      body: (projectRoot: string) => ({
+        projectRoot,
         topic: 'Should we ship?',
         agents: [
           { name: 'alpha', persona: '# Alpha' },
           { name: 'beta', persona: '# Beta' },
         ],
-      },
+      }),
       allocation: (ports: HttpHandlerPorts) => ports.discuss.start,
     },
   ])('rejects HTTP $name allocation when the daemon system scope is absent', async ({ path, body, allocation }) => {
     const { systemProviderScope: _systemProviderScope, ...ports } = createPorts();
     const { baseUrl } = await startHttpServer(ports);
+    const projectRoot = makeProjectRoot();
 
     const response = await fetch(`${baseUrl}${path}`, {
       method: 'POST',
@@ -300,7 +310,7 @@ describe('http/ipc parity', () => {
         'Content-Type': 'application/json',
         'X-Coral-Backend-Token': ports.identity.token,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(body(projectRoot)),
     });
 
     expect(response.status).toBe(503);
@@ -320,6 +330,7 @@ describe('http/ipc parity', () => {
 
     const observedPrincipals: Array<{ subject: string; transport: string; binding: unknown }> = [];
     const ports = createPorts();
+    const projectRoot = makeProjectRoot();
     ports.sessions.start = vi.fn(async (_providerName, _input, ctx) => {
       observedPrincipals.push({
         subject: ctx.principal.subject,
@@ -337,13 +348,13 @@ describe('http/ipc parity', () => {
     const request = {
       provider: 'codex',
       prompt: 'hello',
-      projectRoot: '/project-root',
+      projectRoot,
     };
     const ipcResult = await ipcAdapter(spec, ports).dispatch(request, testPrincipal({ transport: 'ipc' }));
 
     expect(ipcResult.kind).toBe('unary');
     expect(observedPrincipals).toEqual([
-      { subject: 'operator', transport: 'ipc', binding: { kind: 'project', root: '/project-root' } },
+      { subject: 'operator', transport: 'ipc', binding: { kind: 'project', root: projectRoot } },
     ]);
 
     const { baseUrl } = await startHttpServer(ports);
@@ -363,15 +374,16 @@ describe('http/ipc parity', () => {
       sessionId: 'session-2',
     });
     expect(observedPrincipals).toEqual([
-      { subject: 'operator', transport: 'ipc', binding: { kind: 'project', root: '/project-root' } },
-      { subject: 'operator', transport: 'http', binding: { kind: 'project', root: '/project-root' } },
+      { subject: 'operator', transport: 'ipc', binding: { kind: 'project', root: projectRoot } },
+      { subject: 'operator', transport: 'http', binding: { kind: 'project', root: projectRoot } },
     ]);
   });
 
   it('rejects client-supplied source-import authority while deriving an HTTP project principal', async () => {
+    const projectRoot = makeProjectRoot();
     const bypassRequest = {
       filePath: '../outside.md',
-      projectRoot: '/project-root',
+      projectRoot,
       authority: 'admin',
     };
     expect(kbSourceCreateRequestSchema.safeParse(bypassRequest).success).toBe(false);
@@ -416,7 +428,7 @@ describe('http/ipc parity', () => {
         'Content-Type': 'application/json',
         'X-Coral-Backend-Token': ports.identity.token,
       },
-      body: JSON.stringify({ filePath: '../outside.md', projectRoot: '/project-root' }),
+      body: JSON.stringify({ filePath: '../outside.md', projectRoot }),
     });
 
     expect(acceptedResponse.status).toBe(201);
@@ -425,11 +437,11 @@ describe('http/ipc parity', () => {
       observedPrincipal: {
         subject: 'operator',
         transport: 'http',
-        binding: { kind: 'project', root: '/project-root' },
+        binding: { kind: 'project', root: projectRoot },
       },
     });
     expect(observedPrincipals).toEqual([
-      { subject: 'operator', transport: 'http', binding: { kind: 'project', root: '/project-root' } },
+      { subject: 'operator', transport: 'http', binding: { kind: 'project', root: projectRoot } },
     ]);
     expect(ports.kb.createSource).toHaveBeenCalledWith(
       { filePath: '../outside.md', readiness: 'base-search', async: false },
@@ -437,9 +449,9 @@ describe('http/ipc parity', () => {
         principal: expect.objectContaining({
           subject: 'operator',
           transport: 'http',
-          binding: { kind: 'project', root: '/project-root' },
+          binding: { kind: 'project', root: projectRoot },
         }),
-        projectRoot: '/project-root',
+        projectRoot,
       }),
     );
   });

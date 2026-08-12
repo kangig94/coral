@@ -53,6 +53,7 @@ import { buildJobEventRefs } from '../refs.js';
 import { resolveEquippedTools } from '../../expansion/equipped-tools.js';
 import { applyInjectBundle } from '../../providers/inject.js';
 import { ProviderBindingRuntimeError } from '../../providers/contracts/binding.js';
+import { ProviderHostUnserviceableError } from '../../providers/host-admission.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import { jobLaunchRequestedEvent } from '../store.js';
 import { writeDurableCliProcessRuntimeMeta } from '../runtime-meta-store.js';
@@ -1180,6 +1181,43 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         globalActive: error.detail.globalActive,
         globalLimit: error.detail.globalLimit,
       });
+      this.releaseTerminalJob(jobId, sessionId);
+      return;
+    }
+
+    if (error instanceof ProviderHostUnserviceableError) {
+      const durationMs = this.elapsedJobDurationMs(jobId);
+      try {
+        this.deps.progressStore.commit((commit) => {
+          const cause = commit.append({
+            type: 'job.progress.emitted',
+            stream: { kind: 'job', id: jobId },
+            namespace: currentStatus.backendNamespace,
+            project: currentStatus.projectRoot,
+            refs: buildJobEventRefs({ jobId, sessionId }),
+            body: {
+              kind: 'domain',
+              stage: 'provider_operation_failed',
+              message: error.message,
+              detail: {
+                code: error.code,
+                hostRef: error.hostRef,
+                remediation: error.remediation,
+              },
+            },
+          });
+          appendJobTerminalRecorded(commit, {
+            jobId,
+            sessionId,
+            namespace: currentStatus.backendNamespace,
+            project: currentStatus.projectRoot,
+            terminal: { content: '', durationMs, outcome: failedTerminalOutcome(cause) },
+          });
+          return undefined;
+        });
+      } catch (terminalError: unknown) {
+        throw new TerminalWriteError(jobId, terminalError);
+      }
       this.releaseTerminalJob(jobId, sessionId);
       return;
     }

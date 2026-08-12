@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { HostRef } from '#src/providers/contract.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { attachContinuityCommit } from '#src/providers/internal/continuity-commit.js';
 import { ControlEndpointError, type ControlEndpointTimer } from '#src/provider-proxy/control-endpoint.js';
 import { operationPrepareAttemptKey } from '#src/provider-proxy/ledger.js';
@@ -30,7 +31,7 @@ const PREPARED: ProxyPreparedAppServerOperation = {
     action: 'exec',
     sessionId: 'session-1',
     prompt: 'hi',
-    cwd: '/tmp',
+    cwd: fixtureCanonicalWorkDir('/tmp'),
     bypassPermissions: false,
     coralEnv: {},
   },

@@ -2,6 +2,9 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { TEST_PROVIDER_SCOPE, withTestProfileLocation } from '#tests/helpers/provider-credentials.js';
 import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { JobStore } from '#src/jobs/store.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -37,6 +40,8 @@ import { createRecoveryCoordinator } from '#src/coordinator/services/recovery/in
 import { createFailedWorkflowDescendantReleaser } from '#src/coordinator/services/workflow-recovery-descendants.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { createBoundJobsRecoveryHarness } from '#tests/helpers/bound-jobs-recovery.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { canonicalizeWorkDir, type CanonicalWorkDir } from '#src/runtime/canonical-work-dir.js';
 
 // NOTE: "running" and "queued" branches today share the same code path
 // (both hit waitForAtoms). We retain two tests so that if phase-differentiated
@@ -56,7 +61,7 @@ const fixedTime = {
   },
 };
 
-const PROJECT_ROOT = '/tmp/coral-workflow-project';
+const PROJECT_ROOT = canonicalizeWorkDir(process.cwd(), process.cwd());
 const BACKEND_NAMESPACE = 'workflow-test-ns';
 const noFailedWorkflowDescendants = () => [];
 
@@ -106,6 +111,7 @@ type SlotRecoveryState = {
 
 function createHarness(options: {
   expression?: string;
+  projectRoot?: string;
   atomPhase: 'running' | 'queued' | null;
   projectionPhase: 'running' | 'queued' | 'completed' | 'error' | 'aborted' | null;
   projectionLastSeq?: number;
@@ -122,6 +128,7 @@ function createHarness(options: {
     reducers: composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry),
   });
   const plan = createWorkflowPlan(options.expression);
+  const projectRoot = options.projectRoot ?? PROJECT_ROOT;
   commitWorkflowEvents(
     db,
     (c) => {
@@ -137,14 +144,14 @@ function createHarness(options: {
     owner: { kind: 'workflow', id: 'workflow-1' },
     sessionId: null,
     provider: null,
-    projectRoot: PROJECT_ROOT,
+    projectRoot,
     backendNamespace: BACKEND_NAMESPACE,
     jobKind: 'workflow',
     pool: 'default',
     enqueueSequence: progressStore.nextEnqueueSequence(),
     request: {
       prompt: '',
-      cwd: PROJECT_ROOT,
+      cwd: projectRoot,
       bypassPermissions: false,
       coralEnv: {},
     },
@@ -155,7 +162,7 @@ function createHarness(options: {
       type: 'job.runtime.started',
       stream: { kind: 'job', id: 'workflow-1' },
       namespace: BACKEND_NAMESPACE,
-      project: PROJECT_ROOT,
+      project: projectRoot,
       refs: { jobId: 'workflow-1', workflowId: 'workflow-1' },
       body: { transport: 'workflow', startedAt: new Date(runtime.time.now()).toISOString() },
     });
@@ -174,7 +181,7 @@ function createHarness(options: {
       seedTestSessionProjection(db, {
         sessionId,
         provider: slot.provider,
-        projectRoot: PROJECT_ROOT,
+        projectRoot,
         backendNamespace: BACKEND_NAMESPACE,
         activeJobId: slot.slotId,
       });
@@ -183,7 +190,7 @@ function createHarness(options: {
         owner: { kind: 'workflow', id: 'workflow-1' },
         sessionId,
         provider: slot.provider,
-        projectRoot: PROJECT_ROOT,
+        projectRoot,
         backendNamespace: BACKEND_NAMESPACE,
         jobKind: 'provider',
         pool: 'default',
@@ -194,7 +201,7 @@ function createHarness(options: {
         workflowSlotGeneration: 0,
         request: {
           prompt: '',
-          cwd: PROJECT_ROOT,
+          cwd: projectRoot,
           bypassPermissions: false,
           coralEnv: {},
         },
@@ -232,7 +239,7 @@ function createHarness(options: {
         projectionPhase,
         sessionId,
         slot.provider,
-        PROJECT_ROOT,
+        projectRoot,
         BACKEND_NAMESPACE,
         'workflow-1',
         slot.slotId,
@@ -268,7 +275,7 @@ function createHarness(options: {
   };
 
   const createInvocationContext = (projectRoot: string): InvocationContext => ({
-    projectRoot,
+    projectRoot: fixtureCanonicalWorkDir(projectRoot),
     pluginRoot: '/tmp/coral-workflow-plugin',
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
@@ -344,8 +351,98 @@ function setPendingReplacementLease(
 }
 
 describe('workflow recovery branch rules', () => {
-  it('completes a persisted replacement intent after a crash between stale abort and replacement launch', async () => {
+  it('constructs recovery context from the canonical target of a persisted symlink root', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-workflow-recovery-canonical-'));
+    const physicalProject = join(root, 'physical-project');
+    const selectedProject = join(root, 'selected-project');
+    mkdirSync(physicalProject);
+    symlinkSync(physicalProject, selectedProject, 'dir');
     const harness = createHarness({
+      projectRoot: selectedProject,
+      atomPhase: 'running',
+      projectionPhase: 'running',
+    });
+    const contextRoots: CanonicalWorkDir[] = [];
+
+    try {
+      const resumed = await resumeAll({
+        db: harness.db,
+        progressStore: harness.progressStore,
+        loadJobDetails: loadJobProjectionDetails,
+        getExecutionService: () => harness.executionSvc,
+        createInvocationContext: (projectRoot) => {
+          contextRoots.push(projectRoot);
+          return harness.createInvocationContext(projectRoot);
+        },
+        finalizeWorkflow: vi.fn(),
+        releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
+        time: fixedTime,
+      });
+
+      expect(resumed).toEqual(['workflow-1']);
+      expect(contextRoots).toEqual([realpathSync(physicalProject)]);
+    } finally {
+      harness.db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('quarantines an unresolvable persisted workflow root with the explicit work-directory failure', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-workflow-recovery-refusal-'));
+    const missingProjectRoot = join(root, 'deleted-project');
+    const harness = createHarness({
+      projectRoot: missingProjectRoot,
+      atomPhase: 'running',
+      projectionPhase: 'running',
+    });
+
+    try {
+      const resumed = await resumeAll({
+        db: harness.db,
+        progressStore: harness.progressStore,
+        loadJobDetails: loadJobProjectionDetails,
+        getExecutionService: () => harness.executionSvc,
+        createInvocationContext: harness.createInvocationContext,
+        finalizeWorkflow: vi.fn(),
+        releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
+        time: fixedTime,
+      });
+
+      expect(
+        resumed,
+        'AC11 silent divergence at the persisted-recovery workflow boundary: an unresolvable work directory was accepted',
+      ).toEqual([]);
+      const quarantine = harness.db
+        .prepare<[], { stage: string; error_message: string; disposition_detail: string }>(
+          `SELECT stage, error_message, disposition_detail
+             FROM recovery_quarantine
+            WHERE boundary_id = 'workflow-recovery'
+              AND subject_key = 'workflow-1'`,
+        )
+        .get();
+      expect(
+        quarantine,
+        'AC11 silent divergence at the persisted-recovery workflow boundary: the dedicated work-directory failure was not retained',
+      ).toMatchObject({
+        stage: 'hydrate',
+        error_message: expect.stringContaining(missingProjectRoot),
+        disposition_detail: 'workflow recovery hydration failed',
+      });
+      expect(quarantine?.error_message).toMatch(/ENOENT|no such file or directory/);
+    } finally {
+      harness.db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('completes a persisted replacement intent with the canonical target of its symlink cwd', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-workflow-replacement-canonical-'));
+    const physicalProject = join(root, 'physical-project');
+    const selectedProject = join(root, 'selected-project');
+    mkdirSync(physicalProject);
+    symlinkSync(physicalProject, selectedProject, 'dir');
+    const harness = createHarness({
+      projectRoot: selectedProject,
       atomPhase: 'running',
       projectionPhase: 'aborted',
       atomTerminals: {
@@ -359,6 +456,8 @@ describe('workflow recovery branch rules', () => {
       .get(sessionId);
     if (row === undefined) throw new Error('expected persisted provider session');
     const entry = JSON.parse(row.entry) as Record<string, unknown>;
+    entry.projectRoot = canonicalizeWorkDir(selectedProject, root);
+    entry.cwd = canonicalizeWorkDir(selectedProject, root);
     delete entry.activeJobId;
     entry.continuationLease = {
       status: 'pending',
@@ -376,6 +475,8 @@ describe('workflow recovery branch rules', () => {
       .run(JSON.stringify(entry), sessionId);
 
     vi.mocked(harness.executionSvc.resume).mockImplementationOnce(async (_provider, input) => {
+      if (input.cwd === undefined) throw new Error('Expected replacement recovery cwd.');
+      const cwd = input.cwd;
       const pendingEntry = JSON.parse(
         (
           harness.db
@@ -411,7 +512,7 @@ describe('workflow recovery branch rules', () => {
         owner: { kind: 'workflow', id: 'workflow-1' },
         sessionId,
         provider: slot.provider,
-        projectRoot: PROJECT_ROOT,
+        projectRoot: cwd,
         backendNamespace: BACKEND_NAMESPACE,
         jobKind: 'provider',
         pool: 'default',
@@ -421,7 +522,7 @@ describe('workflow recovery branch rules', () => {
         workflowSlotId: slot.slotId,
         workflowSlotGeneration: input.workflowSlotGeneration,
         replacesWorkflowJobId: input.replacesWorkflowJobId,
-        request: { prompt: input.prompt, cwd: PROJECT_ROOT, bypassPermissions: false, coralEnv: {} },
+        request: { prompt: input.prompt, cwd, bypassPermissions: false, coralEnv: {} },
         createdAt: '2026-04-27T00:00:01.000Z',
       } as const;
       commitInputs(
@@ -442,21 +543,21 @@ describe('workflow recovery branch rules', () => {
     const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
 
     try {
-      await expect(
-        resumeAll({
-          db: harness.db,
-          progressStore: harness.progressStore,
-          loadJobDetails: loadJobProjectionDetails,
-          getExecutionService: () => harness.executionSvc,
-          createInvocationContext: harness.createInvocationContext,
-          finalizeWorkflow,
-          releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
-          time: fixedTime,
-        }),
-      ).resolves.toEqual(['workflow-1']);
+      const resumed = await resumeAll({
+        db: harness.db,
+        progressStore: harness.progressStore,
+        loadJobDetails: loadJobProjectionDetails,
+        getExecutionService: () => harness.executionSvc,
+        createInvocationContext: harness.createInvocationContext,
+        finalizeWorkflow,
+        releaseFailedWorkflowDescendants: noFailedWorkflowDescendants,
+        time: fixedTime,
+      });
+      expect(resumed).toEqual(['workflow-1']);
       expect(harness.executionSvc.resume).toHaveBeenCalledWith(
         slot.provider,
         expect.objectContaining({
+          cwd: realpathSync(physicalProject),
           workflowSlotGeneration: 1,
           replacesWorkflowJobId: slot.slotId,
         }),
@@ -467,6 +568,7 @@ describe('workflow recovery branch rules', () => {
       );
     } finally {
       harness.db.close();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -710,7 +812,7 @@ describe('workflow recovery branch rules', () => {
   it('relaunches an absent step with persisted source A instead of replacement-daemon source B', async () => {
     const harness = createHarness({ atomPhase: null, projectionPhase: null });
     const replacementCredentials = withTestProfileLocation(TEST_PROVIDER_SCOPE, 'codex', '/replacement/.codex-b');
-    const createReplacementContext = (projectRoot: string): InvocationContext => ({
+    const createReplacementContext = (projectRoot: CanonicalWorkDir): InvocationContext => ({
       ...harness.createInvocationContext(projectRoot),
       providerScope: replacementCredentials,
     });
@@ -1167,7 +1269,7 @@ describe('workflow recovery branch rules', () => {
     ['lifecycle', 'invalid-lifecycle'],
   ] as const)('quarantines malformed workflow %s hydration and visits the next workflow', async (column, value) => {
     const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
-    appendRecoverableWorkflowRoot(harness.progressStore, 'workflow-2', '/tmp/coral-workflow-project-2');
+    appendRecoverableWorkflowRoot(harness.progressStore, 'workflow-2', PROJECT_ROOT);
     harness.db.prepare(`UPDATE projection_workflows SET ${column} = ? WHERE workflow_id = ?`).run(value, 'workflow-1');
     const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
     const releaseFailedWorkflowDescendants = vi.fn(() => []);
@@ -1214,7 +1316,7 @@ describe('workflow recovery branch rules', () => {
 
   it('contains invocation-context construction failure and visits the next workflow', async () => {
     const harness = createHarness({ atomPhase: 'running', projectionPhase: 'running' });
-    appendRecoverableWorkflowRoot(harness.progressStore, 'workflow-2', '/tmp/coral-workflow-project-2');
+    appendRecoverableWorkflowRoot(harness.progressStore, 'workflow-2', PROJECT_ROOT);
     const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
     const releaseFailedWorkflowDescendants = vi.fn(() => []);
     const getExecutionService = vi.fn(() => harness.executionSvc);
@@ -1253,7 +1355,7 @@ describe('workflow recovery branch rules', () => {
   });
 
   it('releases real adopted child state and continues to a healthy workflow after recovery fails', async () => {
-    const backend = createSimulationBackend();
+    const backend = createSimulationBackend({ projectRoot: PROJECT_ROOT, pluginRoot: PROJECT_ROOT });
     const failedWorkflowId = 'workflow-adopted-child';
     const healthyWorkflowId = 'workflow-after-adopted-child';
     const failedPlan = buildWorkflowPlan(failedWorkflowId, parseExpression('architect'), {

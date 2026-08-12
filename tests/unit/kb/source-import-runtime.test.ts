@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 import {
   ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV,
@@ -77,7 +78,7 @@ function envWith(value?: string): { get(key: string): string | undefined } {
 }
 
 function projectBinding(root: string): ResourceBinding {
-  return { kind: 'project', root };
+  return { kind: 'project', root: fixtureCanonicalWorkDir(root) };
 }
 
 function unboundBinding(): ResourceBinding {

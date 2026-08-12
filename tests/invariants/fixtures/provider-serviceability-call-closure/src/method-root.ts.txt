@@ -1,0 +1,10 @@
+class MethodDecision {
+  evaluate(): boolean {
+    const attemptCount = 1;
+    return attemptCount > 0;
+  }
+}
+
+export function methodRoot(): boolean {
+  return new MethodDecision().evaluate();
+}

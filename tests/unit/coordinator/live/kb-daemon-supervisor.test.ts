@@ -10,6 +10,7 @@ import {
 import type { Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
 import { CORAL_KB_EXTRA_LANGS_ENV } from '#src/kb/extra-langs.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 class FakeStdin extends EventEmitter {
   destroyed = false;
@@ -86,12 +87,13 @@ function createRuntime(
 }
 
 function daemonCtx(projectRoot = '/workspace/project-a') {
+  const canonicalProjectRoot = fixtureCanonicalWorkDir(projectRoot);
   return {
-    projectRoot,
+    projectRoot: canonicalProjectRoot,
     pluginRoot: '/plugin',
     principal: {
       subject: 'operator' as const,
-      binding: { kind: 'project' as const, root: projectRoot },
+      binding: { kind: 'project' as const, root: canonicalProjectRoot },
     },
   };
 }

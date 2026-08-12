@@ -19,6 +19,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 type Deferred<T = void> = {
   promise: Promise<T>;
@@ -471,7 +472,12 @@ describe('KB daemon runtime host', () => {
           readiness: 'base-search',
           async: false,
         },
-        { projectRoot, pluginRoot, coralEnv: {}, principal: testProjectPrincipal(projectRoot) },
+        {
+          projectRoot: fixtureCanonicalWorkDir(projectRoot),
+          pluginRoot,
+          coralEnv: {},
+          principal: testProjectPrincipal(projectRoot),
+        },
       );
       expect(importResult).toMatchObject({
         ok: true,
@@ -526,7 +532,12 @@ describe('KB daemon runtime host', () => {
             readiness: 'commit',
             async: false,
           },
-          { projectRoot, pluginRoot, coralEnv: {}, principal: testProjectPrincipal(projectRoot) },
+          {
+            projectRoot: fixtureCanonicalWorkDir(projectRoot),
+            pluginRoot,
+            coralEnv: {},
+            principal: testProjectPrincipal(projectRoot),
+          },
         ),
       ).resolves.toMatchObject({
         ok: false,
@@ -570,7 +581,12 @@ describe('KB daemon runtime host', () => {
           readiness: 'base-search',
           async: false,
         },
-        { projectRoot, pluginRoot, coralEnv: {}, principal: testProjectPrincipal(projectRoot) },
+        {
+          projectRoot: fixtureCanonicalWorkDir(projectRoot),
+          pluginRoot,
+          coralEnv: {},
+          principal: testProjectPrincipal(projectRoot),
+        },
       );
       expect(importResult).toMatchObject({ ok: true });
       await firstHost.dispose();

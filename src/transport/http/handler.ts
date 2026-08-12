@@ -12,14 +12,14 @@ import { isRecord } from '../../infra/json.js';
 import { isLoopbackRemoteAddress, normalizeRemoteAddressLiteral } from '../../infra/remote-address.js';
 import { CAPABILITIES, type Capability } from '../../security/capability.js';
 import type { Principal } from '../../security/principal.js';
-import { authorize, type AuthorizationFailureReason } from '../../security/policy/authorize.js';
-import { executeCatalogRequest, resolveRequestBinding } from '../dispatch.js';
 import {
-  rpcCatalog,
-  transportOperationalCarveouts,
-  type RequestBindingRule,
-  type RpcMethodSpec,
-} from '../rpc/catalog.js';
+  authorizeCapability,
+  authorizeResourceBinding,
+  type AuthorizationFailureReason,
+} from '../../security/policy/authorize.js';
+import { canonicalizeWorkDir, type CanonicalWorkDir, WorkDirectoryError } from '../../runtime/canonical-work-dir.js';
+import { executeCatalogRequest, resolveRequestBinding } from '../dispatch.js';
+import { rpcCatalog, transportOperationalCarveouts, type RpcMethodSpec } from '../rpc/catalog.js';
 import { operationalRouteSpecs, type HttpOperationalSpec } from '../rpc/operational-catalog.js';
 import { formatZodError } from '../validation.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../server-ports.js';
@@ -573,7 +573,13 @@ type TransportLocalRoute = {
 
 type ProjectedTransportLocalRoute = TransportLocalRoute & {
   pattern: RegExp;
-  handle: (req: IncomingMessage, res: ServerResponse, parsedUrl: URL, spec: HttpOperationalSpec) => Promise<void>;
+  handle: (
+    req: IncomingMessage,
+    res: ServerResponse,
+    parsedUrl: URL,
+    spec: HttpOperationalSpec,
+    projectRoot?: CanonicalWorkDir,
+  ) => Promise<void>;
 };
 
 const [healthPath, shutdownPath, kbRestartPath, eventsStreamPath] = transportOperationalCarveouts;
@@ -720,13 +726,8 @@ function sendAuthorizationFailure(
   sendJson(res, reason === 'resource_unbound' ? 403 : 401, httpAuthorizationFailurePayload(spec));
 }
 
-function authenticateCatalogPrincipal(
-  req: IncomingMessage,
-  deps: HttpHandlerPorts,
-  request: unknown,
-  bindingRule?: RequestBindingRule,
-): Principal | null {
-  return authenticateHttpBackendPrincipal(req, deps, resolveRequestBinding(bindingRule, request));
+function authenticateCatalogPrincipal(req: IncomingMessage, deps: HttpHandlerPorts): Principal | null {
+  return authenticateHttpBackendPrincipal(req, deps, { kind: 'unbound' });
 }
 
 async function handleCatalogUnaryRoute(
@@ -752,7 +753,7 @@ async function handleCatalogUnaryRoute(
     return;
   }
 
-  const principal = authenticateCatalogPrincipal(req, deps, request, spec.requestBinding);
+  const principal = authenticateCatalogPrincipal(req, deps);
   if (principal === null) {
     sendAuthorizationFailure(res, 'unauthenticated');
     return;
@@ -798,7 +799,7 @@ async function handleJobsWaitSubscription(
     ...request,
     cursor: inputCursor,
   };
-  const principal = authenticateCatalogPrincipal(req, deps, waitRequest, spec.requestBinding);
+  const principal = authenticateCatalogPrincipal(req, deps);
   if (principal === null) {
     controller.abort();
     sendAuthorizationFailure(res, 'unauthenticated');
@@ -1015,28 +1016,27 @@ async function readDetailedHealthSnapshot(
   return health;
 }
 
-function localOperationalRequestBinding(spec: HttpOperationalSpec, parsedUrl: URL): Principal['binding'] | ZodError {
+function localOperationalProjectRoot(spec: HttpOperationalSpec, parsedUrl: URL): string | undefined | ZodError {
   if (spec.dispatch.kind === 'event-stream') {
     const request = parseEventStreamRequest(`${parsedUrl.pathname}${parsedUrl.search}`);
     if (request instanceof Error) {
       return request;
     }
-    return resolveRequestBinding(spec.requestBinding, request);
+    return request.projectRoot;
   }
 
-  return resolveRequestBinding(spec.requestBinding, {});
+  return undefined;
 }
 
 function principalForLocalOperation(
   req: IncomingMessage,
   deps: HttpHandlerPorts,
   spec: HttpOperationalSpec,
-  binding: Principal['binding'],
 ): Principal | null {
   if (spec.authentication === 'none') {
     return HTTP_BOOTSTRAP_LIVENESS_PRINCIPAL;
   }
-  return authenticateHttpOperationalPrincipal(req, deps, binding);
+  return authenticateHttpOperationalPrincipal(req, deps, { kind: 'unbound' });
 }
 
 function authorizeLocalOperation(
@@ -1044,21 +1044,56 @@ function authorizeLocalOperation(
   res: ServerResponse,
   deps: HttpHandlerPorts,
   spec: HttpOperationalSpec,
-  binding: Principal['binding'],
-): boolean {
-  const principal = principalForLocalOperation(req, deps, spec, binding);
-  const decision = authorize(principal, spec.requires, binding);
+  rawProjectRoot: string | undefined,
+): { readonly projectRoot?: CanonicalWorkDir } | null {
+  let principal = principalForLocalOperation(req, deps, spec);
+  const unbound = { kind: 'unbound' } as const;
+  const capabilityDecision = authorizeCapability(principal, spec.requires);
+  if (!capabilityDecision.ok) {
+    writeAuthorizationDecisionAudit(principal, spec.id, capabilityDecision, unbound);
+    req.resume();
+    sendAuthorizationFailure(res, capabilityDecision.reason, spec);
+    return null;
+  }
+
+  let projectRoot: CanonicalWorkDir | undefined;
+  try {
+    projectRoot = rawProjectRoot === undefined ? undefined : canonicalizeWorkDir(rawProjectRoot, process.cwd());
+  } catch (error: unknown) {
+    if (!(error instanceof WorkDirectoryError)) throw error;
+    req.resume();
+    sendJson(res, 400, {
+      code: error.code,
+      message: error.message,
+      detail: { workDir: error.workDir, projectRoot: error.baseDir },
+    });
+    return null;
+  }
+
+  const binding = resolveRequestBinding(spec.requestBinding, projectRoot);
+  if (principal === null) {
+    throw new Error('Capability authorization accepted a missing principal.');
+  }
+  if (principal.binding.kind === 'unbound' && binding.kind === 'project') {
+    principal = { ...principal, binding };
+  }
+  const decision = authorizeResourceBinding(principal, spec.requires, binding);
   writeAuthorizationDecisionAudit(principal, spec.id, decision, binding);
   if (decision.ok) {
-    return true;
+    return projectRoot === undefined ? {} : { projectRoot };
   }
 
   req.resume();
   sendAuthorizationFailure(res, decision.reason, spec);
-  return false;
+  return null;
 }
 
-async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerPorts): Promise<void> {
+async function handleEventStream(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerPorts,
+  projectRoot?: CanonicalWorkDir,
+): Promise<void> {
   const streamId = deps.events.createStreamId();
   const streamRequest = parseEventStreamRequest(req.url ?? '');
   if (streamRequest instanceof Error) {
@@ -1066,7 +1101,7 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
     return;
   }
   const filterJobId = streamRequest.filterJobId;
-  const projectRoot = streamRequest.projectRoot ?? null;
+  const canonicalProjectRoot = projectRoot ?? null;
 
   deps.events.addResponse(res);
   if (res.writableEnded || res.destroyed) {
@@ -1104,14 +1139,14 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
   };
   const matchesJobScope = (jobId: string, eventProjectRoot?: string): boolean => {
     // Streams without projectRoot are intentionally suppressed; job events must be project-scoped.
-    if (projectRoot === null) return false;
+    if (canonicalProjectRoot === null) return false;
     if (filterJobId !== null && jobId !== filterJobId) return false;
-    if (eventProjectRoot !== undefined && eventProjectRoot !== projectRoot) return false;
-    const scopeCheck = deps.jobs.scopeCheck([jobId], projectRoot);
+    if (eventProjectRoot !== undefined && eventProjectRoot !== canonicalProjectRoot) return false;
+    const scopeCheck = deps.jobs.scopeCheck([jobId], canonicalProjectRoot);
     return scopeCheck.missing.length === 0 && scopeCheck.mismatch.length === 0;
   };
   const matchesDiscussScope = (payloadProjectRoot: string): boolean =>
-    projectRoot !== null && payloadProjectRoot === projectRoot;
+    canonicalProjectRoot !== null && payloadProjectRoot === canonicalProjectRoot;
 
   const onCreated: EventStreamHandlers['onJobCreated'] = (payload) => {
     if (closed || !matchesJobScope(payload.jobId, payload.projectRoot)) return;
@@ -1209,9 +1244,9 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
     {
       ...transportLocalRoutes[3],
       pattern: compilePathPattern(transportLocalRoutes[3].path),
-      handle: async (req, res) => {
+      handle: async (req, res, _parsedUrl, _spec, projectRoot) => {
         req.resume();
-        await handleEventStream(req, res, deps);
+        await handleEventStream(req, res, deps, projectRoot);
       },
     },
   ]);
@@ -1283,6 +1318,7 @@ export function createHttpHandler(
     const parsedUrl = new URL(req.url, 'http://localhost');
     const localMatch = matchRoute(localRoutes, req.method, parsedUrl.pathname);
     const localSpec = localMatch === null ? null : readHttpOperationalSpec(req.method, parsedUrl.pathname, parsedUrl);
+    let localProjectRoot: CanonicalWorkDir | undefined;
     if (localMatch !== null && localSpec === null) {
       req.resume();
       sendJson(res, 404, { code: 'not_found', message: 'Not found' });
@@ -1290,18 +1326,20 @@ export function createHttpHandler(
     }
 
     if (localMatch !== null && localSpec !== null) {
-      const binding = localOperationalRequestBinding(localSpec, parsedUrl);
-      if (binding instanceof Error) {
+      const rawProjectRoot = localOperationalProjectRoot(localSpec, parsedUrl);
+      if (rawProjectRoot instanceof Error) {
         req.resume();
-        sendValidationFailure(res, binding);
+        sendValidationFailure(res, rawProjectRoot);
         return;
       }
-      if (!authorizeLocalOperation(req, res, deps, localSpec, binding)) {
+      const authorization = authorizeLocalOperation(req, res, deps, localSpec, rawProjectRoot);
+      if (authorization === null) {
         return;
       }
+      localProjectRoot = authorization.projectRoot;
 
       if (!localSpec.requiresRunningLifecycle) {
-        await localMatch.route.handle(req, res, parsedUrl, localSpec);
+        await localMatch.route.handle(req, res, parsedUrl, localSpec, authorization.projectRoot);
         return;
       }
     } else if (authenticateHttpBackendPrincipal(req, deps, { kind: 'unbound' }) === null) {
@@ -1319,7 +1357,7 @@ export function createHttpHandler(
     }
 
     if (localMatch !== null && localSpec !== null) {
-      await localMatch.route.handle(req, res, parsedUrl, localSpec);
+      await localMatch.route.handle(req, res, parsedUrl, localSpec, localProjectRoot);
       return;
     }
 

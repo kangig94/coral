@@ -19,6 +19,7 @@ import {
 } from './request-prep.js';
 import { zodPersistedParser } from '../binding-parser.js';
 import type { resolveClaudeTransportMode } from './transport-mode.js';
+import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 
 export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
   bootstrapSignature?: ClaudeBootstrapSignature;
@@ -42,7 +43,7 @@ export const claudePersistedContinuityParser = zodPersistedParser(() => claudePe
 export type ClaudeBrokerHostPlan = Readonly<{
   command: string;
   args: readonly string[];
-  cwd: string;
+  cwd: CanonicalWorkDir;
   environment: Readonly<Record<string, string>>;
   transportMode: ReturnType<typeof resolveClaudeTransportMode>;
 }>;

@@ -153,6 +153,7 @@ export function errorCodeToExit(code: string, httpStatus?: number): number {
     code === 'kb_disabled' ||
     code === 'kb_initializing' ||
     code === 'kb_offline' ||
+    code === 'provider_host_inventory_unavailable' ||
     httpStatus === 503
   ) {
     return 75;

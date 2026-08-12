@@ -11,6 +11,9 @@ export type StaticCommandPath =
   | 'workflow'
   | 'backend recovery-quarantine list'
   | 'backend recovery-quarantine clear'
+  | 'backend provider-host list'
+  | 'backend provider-host inspect'
+  | 'backend provider-host evict'
   | 'expansion list'
   | 'expansion equip'
   | 'expansion unequip'
@@ -61,6 +64,9 @@ export const commandClassMap = {
   workflow: 'mutate',
   'backend recovery-quarantine list': 'directRead',
   'backend recovery-quarantine clear': 'mutate',
+  'backend provider-host list': 'servedRead',
+  'backend provider-host inspect': 'servedRead',
+  'backend provider-host evict': 'mutate',
   'expansion list': 'directRead',
   'expansion equip': 'mutate',
   'expansion unequip': 'mutate',
@@ -107,6 +113,7 @@ export const commandContainerPaths = new Set<string>([
   'backend',
   'backend kb-commit',
   'backend recovery-quarantine',
+  'backend provider-host',
   'backend store-reset',
   'discuss',
   'expansion',

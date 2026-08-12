@@ -1,10 +1,18 @@
 import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import type { AppServerProxyRouteRequest } from '#src/jobs/contracts/app-server-proxy-route.js';
 import type { DurableProviderProxyOperationAuthority } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { createAppServerProxyRoute } from '#src/coordinator/services/provider-proxy-launch-route.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+
+const TEST_WORKSPACE = mkdtempSync(join(tmpdir(), 'coral-provider-proxy-launch-route-'));
+
+afterAll(() => rmSync(TEST_WORKSPACE, { recursive: true, force: true }));
 
 const request: AppServerProxyRouteRequest = {
   jobId: randomUUID(),
@@ -16,7 +24,7 @@ const request: AppServerProxyRouteRequest = {
     provider: 'codex',
     command: 'codex',
     args: ['app-server'],
-    cwd: '/workspace',
+    cwd: fixtureCanonicalWorkDir(TEST_WORKSPACE),
     leaseMode: 'job-exclusive',
   },
   provider: 'codex',
@@ -25,7 +33,7 @@ const request: AppServerProxyRouteRequest = {
     action: 'exec',
     sessionId: 'session-1',
     prompt: 'do the thing',
-    cwd: '/workspace',
+    cwd: fixtureCanonicalWorkDir(TEST_WORKSPACE),
     bypassPermissions: false,
     coralEnv: {},
   },
@@ -36,7 +44,7 @@ const request: AppServerProxyRouteRequest = {
   childAuthorization: {
     principalWire: {
       subject: 'agent',
-      binding: { kind: 'project', root: '/workspace' },
+      binding: { kind: 'project', root: fixtureCanonicalWorkDir(TEST_WORKSPACE) },
       attenuatedCaps: ['liveness', 'jobs:read'],
     },
     namespace: 'tests',

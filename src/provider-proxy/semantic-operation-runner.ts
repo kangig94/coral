@@ -12,6 +12,7 @@ import {
   type ProviderStopCause,
 } from '../providers/contract.js';
 import type { AppServerHostAuthority } from '../providers/internal/app-server-host.js';
+import { ProviderHostUnserviceableError } from '../providers/host-admission.js';
 import type {
   BoundProvider,
   BoundProviderAppServerExecutionRuntime,
@@ -163,7 +164,7 @@ type BoundProviderReconstruction =
   | ProviderOperationPreparePermanentRefusal;
 
 function prepareRefusal(
-  code: ProviderOperationPreparePermanentRefusal['code'],
+  code: Exclude<ProviderOperationPreparePermanentRefusal['code'], 'provider_host_unserviceable'>,
   disposition: ProviderOperationPreparePermanentRefusal['disposition'],
   reason: string,
 ): ProviderOperationPreparePermanentRefusal {
@@ -828,6 +829,16 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
         });
       } catch (error: unknown) {
         if (abortController.signal.aborted) throw error;
+        if (error instanceof ProviderHostUnserviceableError) {
+          return providerOperationPreparePermanentRefusalSchema.parse({
+            state: 'permanent-refusal',
+            code: error.code,
+            disposition: 'terminal-failure',
+            reason: error.message,
+            hostRef: error.hostRef,
+            remediation: error.remediation,
+          });
+        }
         if (error instanceof ProxyProviderRootCapacityError) {
           return proxyOperationPrepareCapacityResultSchema.parse({
             state: 'capacity',

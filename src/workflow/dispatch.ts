@@ -1,8 +1,8 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { WorkflowLaunchDecision } from '../jobs/launch.js';
 import type { PipelineAST } from './ast.js';
-import type { CompiledWorkflow } from './compile.js';
-import type { WorkflowCommand } from './input.js';
+import type { CanonicalWorkflowCommand, CompiledWorkflow } from './compile.js';
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 
 export const workflowCommands = {
   execute(
@@ -10,9 +10,9 @@ export const workflowCommands = {
       executeWorkflow(
         providerName: string,
         ast: PipelineAST,
-        input: WorkflowCommand,
+        input: CanonicalWorkflowCommand,
         ctx: InvocationContext,
-        workDir?: string,
+        workDir: CanonicalWorkDir,
       ): Promise<WorkflowLaunchDecision>;
     },
     compiled: CompiledWorkflow,

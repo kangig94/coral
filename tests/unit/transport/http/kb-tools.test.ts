@@ -1,6 +1,7 @@
 import type * as FsMod from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as MemoMod from '#src/kb/ops/memo.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { memoDir, notePathFromName, wikiPathFromName } from '#src/kb/paths.js';
 import type * as SearchMod from '#src/kb/ops/search.js';
 import { KB_BARE_READ_ORDER, expandKbReadSelector, parseKbSelector } from '#src/kb/selector.js';
@@ -126,7 +127,7 @@ function createKbToolRuntime(): KnowledgeBaseRuntime {
 }
 
 const testContext: InvocationContext = {
-  projectRoot: '/tmp/project',
+  projectRoot: fixtureCanonicalWorkDir('/tmp/project'),
   pluginRoot: '/tmp/plugin',
   coralEnv: {},
   principal: testProjectPrincipal('/tmp/project'),

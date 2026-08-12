@@ -16,6 +16,7 @@ import { type CoordinatorServerController, createCoordinatorServer } from '#src/
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import type { JobStore } from '#src/jobs/store.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
@@ -218,7 +219,7 @@ describe('server discuss API', () => {
       registry.contexts.clear();
       for (const session of liveSessions) {
         const ctx = core.getDiscussContext({
-          projectRoot: session.projectRoot,
+          projectRoot: fixtureCanonicalWorkDir(session.projectRoot),
           pluginRoot: core.identity.pluginRoot,
           coralEnv: {},
           principal: testProjectPrincipal(session.projectRoot),

@@ -8,6 +8,7 @@ import type * as AppServerTransportModule from '#src/providers/app-server-transp
 import type * as ProviderBootstrapModule from '#src/providers/bootstrap.js';
 import type * as NodeProcessModule from '#src/infra/node-process.js';
 import type * as ProxySetAcquisitionModule from '#src/coordinator/live/provider-hosts/proxy-set-acquisition.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const rotationDoubles = vi.hoisted(() => ({
   ensureProxySet: vi.fn(),
@@ -158,7 +159,7 @@ const PREPARED: ProxyPreparedAppServerOperation = {
     action: 'exec',
     sessionId: 'session-1',
     prompt: 'do the thing',
-    cwd: '/project',
+    cwd: fixtureCanonicalWorkDir('/project'),
     bypassPermissions: false,
     coralEnv: {},
   },
@@ -536,7 +537,7 @@ const ROTATION_HOST_SPEC: ProviderServerSpec = {
   provider: 'codex',
   command: 'codex',
   args: ['app-server'],
-  cwd: '/workspace',
+  cwd: fixtureCanonicalWorkDir('/workspace'),
   leaseMode: 'job-exclusive',
 };
 
@@ -820,7 +821,7 @@ async function completeCapacityLocalHandoff(
       childAuthorization: {
         principalWire: {
           subject: 'agent',
-          binding: { kind: 'project', root: '/project' },
+          binding: { kind: 'project', root: fixtureCanonicalWorkDir('/project') },
           attenuatedCaps: ['liveness', 'jobs:read'],
         },
         namespace: 'tests',
@@ -1191,6 +1192,7 @@ describe('provider proxy cancellation relinquishment against a real guardian pai
       forceClose: async () => {
         throw new Error('shared unconfirmed cancellation force-closed one operation');
       },
+      evictHost: async () => false,
     };
     const ledger = createOperationLedger<ProxyPreparedAppServerOperation>();
     const proxy = {

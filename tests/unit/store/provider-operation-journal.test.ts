@@ -105,8 +105,8 @@ describe('provider operation journal', () => {
             ...pending.prepareSource.childAuthorization,
             principalWire: {
               subject: 'agent',
-              binding: { kind: 'project', root: `/${'x'.repeat(65_000)}` },
-              attenuatedCaps: ['liveness'],
+              binding: { kind: 'project', root: process.cwd() },
+              attenuatedCaps: Array.from({ length: 5_900 }, () => 'liveness'),
             },
           },
         },

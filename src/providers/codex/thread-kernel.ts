@@ -10,9 +10,11 @@ import type {
   ProviderRequest,
   ProviderRuntime,
   AppServerSession,
+  HostRef,
   ProviderTurnTerminalEvidence,
 } from '../contract.js';
 import { buildProviderFailureMessage } from '../app-server.js';
+import { providerHostUnserviceableTerminalWarning, ProviderHostUnserviceableResponseError } from '../host-admission.js';
 import type { AppServerNotificationMessage } from '../protocol.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
@@ -70,7 +72,13 @@ type CodexKernelResult =
       source: 'notification' | 'start_response' | 'inferred';
       attempt: TurnAttempt;
     }
-  | { kind: 'failed'; message: string; preserveRecoverySnapshot?: boolean; attempt?: TurnAttempt }
+  | {
+      kind: 'failed';
+      message: string;
+      providerHostUnserviceable?: HostRef;
+      preserveRecoverySnapshot?: boolean;
+      attempt?: TurnAttempt;
+    }
   | { kind: 'suspended'; reason: 'interrupt_unconfirmed'; attempt: TurnAttempt }
   | { kind: 'aborted'; reason: 'signal_abort'; preserveRecoverySnapshot?: boolean; attempt?: TurnAttempt };
 
@@ -1171,7 +1179,11 @@ function buildAbortedTerminal(state: CodexTurnState): Extract<ProviderEventBody,
   };
 }
 
-function buildFailedTerminal(state: CodexTurnState, message: string): Extract<ProviderEventBody, { kind: 'terminal' }> {
+function buildFailedTerminal(
+  state: CodexTurnState,
+  message: string,
+  providerHostUnserviceable?: HostRef,
+): Extract<ProviderEventBody, { kind: 'terminal' }> {
   const usage = normalizeCodexUsage(state.latestTokenCount);
   return {
     kind: 'terminal',
@@ -1186,7 +1198,11 @@ function buildFailedTerminal(state: CodexTurnState, message: string): Extract<Pr
       },
       usage,
     }),
-    diagnostics: buildJobDiagnostics({}),
+    diagnostics: buildJobDiagnostics({
+      ...(providerHostUnserviceable === undefined
+        ? {}
+        : { warnings: [providerHostUnserviceableTerminalWarning(providerHostUnserviceable)] }),
+    }),
   };
 }
 
@@ -1260,7 +1276,7 @@ async function finishInvocation(
   if (!result.preserveRecoverySnapshot && state.threadId !== null) {
     await checkpoint(state, state.threadId);
   }
-  return buildFailedTerminal(state, result.message);
+  return buildFailedTerminal(state, result.message, result.providerHostUnserviceable);
 }
 
 async function retireAttempt(state: CodexTurnState, attempt: TurnAttempt): Promise<void> {
@@ -1366,9 +1382,17 @@ export const codexTurnKernel: Provider<
         return;
       }
 
+      const providerError = error instanceof ProviderHostUnserviceableResponseError ? error.providerCause : error;
       const terminal = await finishInvocation(
         state,
-        { kind: 'failed', message: errorMessage(error), attempt: state.activeAttempt },
+        {
+          kind: 'failed',
+          message: errorMessage(providerError),
+          ...(error instanceof ProviderHostUnserviceableResponseError
+            ? { providerHostUnserviceable: error.hostRef }
+            : {}),
+          attempt: state.activeAttempt,
+        },
         emit,
       );
       if (terminal) emit(terminal);

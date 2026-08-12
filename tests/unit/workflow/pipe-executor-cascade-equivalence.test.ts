@@ -11,11 +11,12 @@ import { executePipeline } from '#src/workflow/executor.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const GOLDEN_PATH = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/pipe-executor-cascade.golden.json');
 
 const ctx: InvocationContext = {
-  projectRoot: '/tmp/coral-workflow-project',
+  projectRoot: fixtureCanonicalWorkDir('/tmp/coral-workflow-project'),
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},
   principal: testProjectPrincipal('/tmp/coral-workflow-project'),

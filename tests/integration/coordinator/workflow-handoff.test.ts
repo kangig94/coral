@@ -11,7 +11,10 @@
 // duplicating it at integration level adds churn without surfacing new
 // behavior, so it stays unimplemented.
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
@@ -28,8 +31,12 @@ import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js'
 
 import { createHandoffCoresHarness, type HandoffCoresHarness } from './handoff-cores-harness.js';
 
-const PROJECT_ROOT = '/handoff-workflow-project';
+const PROJECT_ROOT = mkdtempSync(join(tmpdir(), 'coral-handoff-workflow-project-'));
 const WORKFLOW_ID = 'workflow-handoff-1';
+
+afterAll(() => {
+  rmSync(PROJECT_ROOT, { recursive: true, force: true });
+});
 
 function workflowPlanForTest() {
   return buildWorkflowPlan(WORKFLOW_ID, parseExpression('architect'), { defaultProvider: 'codex' });

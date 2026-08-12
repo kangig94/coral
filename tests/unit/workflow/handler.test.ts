@@ -1,4 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
@@ -8,12 +12,17 @@ import type { WorkflowCommand } from '#src/workflow/input.js';
 import { workflowCompiler } from '#src/workflow/compile.js';
 import { workflowCommands } from '#src/workflow/dispatch.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+
+const TEST_PROJECT = mkdtempSync(join(tmpdir(), 'coral-workflow-handler-'));
+
+afterAll(() => rmSync(TEST_PROJECT, { recursive: true, force: true }));
 
 const ctx: InvocationContext = {
-  projectRoot: '/tmp/coral-workflow-project',
+  projectRoot: fixtureCanonicalWorkDir(TEST_PROJECT),
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},
-  principal: testProjectPrincipal('/tmp/coral-workflow-project'),
+  principal: testProjectPrincipal(TEST_PROJECT),
 };
 
 function createExecutionService(
@@ -43,7 +52,10 @@ function createProviderRegistry(): ProviderRegistry {
 }
 
 function compileOrThrow(command: WorkflowCommand, providerRegistry: ProviderRegistry) {
-  const compiled = workflowCompiler.compile(command, providerRegistry);
+  const compiled = workflowCompiler.compile(
+    { ...command, workDir: fixtureCanonicalWorkDir(command.workDir ?? ctx.projectRoot) },
+    providerRegistry,
+  );
   if ('status' in compiled) {
     throw new Error(`expected compiled workflow, got ${compiled.status}`);
   }
@@ -81,9 +93,10 @@ describe('workflow api', () => {
         expression: 'architect -> resolver',
         startPrompt: 'hello',
         provider: 'claude',
+        workDir: TEST_PROJECT,
       }),
       ctx,
-      undefined,
+      TEST_PROJECT,
     );
   });
 
@@ -114,7 +127,7 @@ describe('workflow api', () => {
       ctx,
       '/tmp/coral-workflow-cwd',
     );
-    expect(ctx.projectRoot).toBe('/tmp/coral-workflow-project');
+    expect(ctx.projectRoot).toBe(TEST_PROJECT);
   });
 
   it('returns a rejected LaunchDecision when a provider is unknown', async () => {
@@ -125,6 +138,7 @@ describe('workflow api', () => {
         expression: 'architect@missing-provider',
         startPrompt: 'hello',
         provider: 'codex',
+        workDir: fixtureCanonicalWorkDir('/tmp/coral-workflow-cwd'),
       },
       providerRegistry,
     );
@@ -146,6 +160,7 @@ describe('workflow api', () => {
           expression: '(architect, architect)',
           startPrompt: 'test',
           provider: 'claude',
+          workDir: fixtureCanonicalWorkDir('/tmp/coral-workflow-cwd'),
         },
         providerRegistry,
       ),
@@ -170,12 +185,12 @@ describe('workflow api', () => {
     expect(executionSvc.executeWorkflow).toHaveBeenCalledWith(
       'claude',
       [[{ kind: 'agent', namespace: 'coral', agent: 'architect', provider: 'claude' }]],
-      expect.objectContaining({ owner: 'team-owner' }),
+      expect.objectContaining({ owner: 'team-owner', workDir: TEST_PROJECT }),
       {
         ...ctx,
         coralEnv: { ...ctx.coralEnv, CORAL_OWNER: 'team-owner' },
       },
-      undefined,
+      TEST_PROJECT,
     );
   });
 });

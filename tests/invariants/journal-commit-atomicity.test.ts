@@ -1,11 +1,12 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 import { KbJobRecorder } from '#src/jobs/kb/recorder.js';
 import { WorkflowExecutionService } from '#src/coordinator/services/workflow-execution.js';
@@ -30,11 +31,14 @@ import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js'
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const REPO_ROOT = process.cwd();
 const NOW = '2026-04-19T00:00:00.000Z';
 const TEST_NAMESPACE = 'test-ns';
-const PROJECT_ROOT = '/workspace/coral';
+const PROJECT_ROOT = mkdtempSync(resolve(tmpdir(), 'coral-journal-atomicity-'));
+
+afterAll(() => rmSync(PROJECT_ROOT, { recursive: true, force: true }));
 const KB_RECORDER_PATH = 'src/jobs/kb/recorder.ts';
 const KB_SHELL_PATH = 'src/kb-daemon/services/shell.ts';
 const KB_SOURCE_IMPORT_SERVICE_PATH = 'src/kb-daemon/services/source-import.ts';
@@ -513,8 +517,8 @@ function appendWorkflowSlotTerminal(
 
 function createRecoveryInvocationContext(projectRoot: string): InvocationContext {
   return {
-    projectRoot,
-    pluginRoot: '/workspace/coral-plugin',
+    projectRoot: fixtureCanonicalWorkDir(projectRoot),
+    pluginRoot: resolve(PROJECT_ROOT, 'plugin'),
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
   };
@@ -607,13 +611,13 @@ describe('journal commit atomicity invariant', () => {
       });
 
       const { jobId, startedAtMs } = recorder.startInternalJob({
-        projectRoot: '/workspace/coral',
+        projectRoot: PROJECT_ROOT,
         operation: 'kb.reindex',
         request: {},
       });
       recorder.appendOperationFailureWithTerminal({
         jobId,
-        projectRoot: '/workspace/coral',
+        projectRoot: PROJECT_ROOT,
         operation: 'reindex',
         message: 'KB reindex failed: index unavailable',
         detail: { operation: 'reindex', cause: { message: 'index unavailable' } },

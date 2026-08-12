@@ -1,7 +1,17 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   CODEX_CAPACITY_CONTINUATION_PROMPT,
   CODEX_CYBER_POLICY_CONTINUATION_PROMPT,
@@ -69,7 +79,7 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
     action: 'exec',
     sessionId: 's-1',
     prompt: 'test',
-    cwd: '/tmp',
+    cwd: fixtureCanonicalWorkDir('/tmp'),
     effort: 'medium',
     bypassPermissions: false,
     coralEnv: {},
@@ -101,7 +111,7 @@ function makeTierRuntime(
       action: 'exec',
       sessionId: 'tier-test',
       prompt: 'test',
-      cwd: '/workspace',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
       bypassPermissions: false,
       coralEnv: {},
     },
@@ -115,7 +125,7 @@ function makeTierRuntime(
       action: 'exec',
       sessionId: 'tier-test',
       prompt: 'test',
-      cwd: '/workspace',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
       bypassPermissions: false,
       coralEnv: {},
     },
@@ -385,31 +395,50 @@ describe('Codex continuity refs', () => {
   });
 
   it('uses an in-scope persisted cwd for the Codex app-server cwd', () => {
+    const project = mkdtempSync(join(tmpdir(), 'coral-codex-project-'));
+    tempHomes.push(project);
+    const subdir = join(project, 'subdir');
+    mkdirSync(subdir);
     const continuity = {
-      cwd: '/workspace/project/subdir',
+      cwd: subdir,
       threadId: 'thread-1',
     };
 
-    const spec = prepareTestCodexAppServer({ cwd: '/workspace/project' }, continuity);
+    const spec = prepareTestCodexAppServer({ cwd: project }, continuity);
 
-    expect(spec.cwd).toBe('/workspace/project/subdir');
+    expect(spec.cwd).toBe(subdir);
     expect(spec.leaseMode).toBe('shared');
     expect(readCodexPersistedContinuity(continuity)).toEqual({
-      cwd: '/workspace/project/subdir',
+      cwd: subdir,
       threadId: 'thread-1',
       turnId: undefined,
     });
   });
 
+  it('canonicalizes an in-scope persisted symlink before constructing the app-server spec', () => {
+    const project = mkdtempSync(join(tmpdir(), 'coral-codex-project-'));
+    tempHomes.push(project);
+    const physical = join(project, 'physical');
+    const selected = join(project, 'selected');
+    mkdirSync(physical);
+    symlinkSync(physical, selected, 'dir');
+
+    const spec = prepareTestCodexAppServer({ cwd: project }, { cwd: selected, threadId: 'thread-1' });
+
+    expect(spec.cwd).toBe(physical);
+  });
+
   it('ignores a persisted cwd outside the current project scope', () => {
+    const project = mkdtempSync(join(tmpdir(), 'coral-codex-project-'));
+    tempHomes.push(project);
     const continuity = {
       cwd: '/tmp/attacker',
       threadId: 'thread-1',
     };
 
-    const spec = prepareTestCodexAppServer({ cwd: '/workspace/project' }, continuity);
+    const spec = prepareTestCodexAppServer({ cwd: project }, continuity);
 
-    expect(spec.cwd).toBe('/workspace/project');
+    expect(spec.cwd).toBe(project);
     expect(readCodexPersistedContinuity(continuity)).toEqual({
       cwd: '/tmp/attacker',
       threadId: 'thread-1',

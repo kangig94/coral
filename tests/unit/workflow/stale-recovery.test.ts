@@ -5,9 +5,10 @@ import type { LaunchedAtom, WorkflowExecutionPort } from '#src/workflow/executio
 import { recoverStaleAtom } from '#src/workflow/stale-recovery.js';
 import type { AwaitStepState } from '#src/workflow/wait.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const ctx: InvocationContext = {
-  projectRoot: '/tmp/coral-workflow-project',
+  projectRoot: fixtureCanonicalWorkDir('/tmp/coral-workflow-project'),
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},
   principal: testProjectPrincipal('/tmp/coral-workflow-project'),

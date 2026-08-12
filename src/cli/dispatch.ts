@@ -4,6 +4,7 @@ import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { resolvePluginRoot } from './plugin-root.js';
 
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import { canonicalizeWorkDir, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import { resolveUserHomeDir } from '../infra/path/index.js';
 import type { DiscussAbortResponse, DiscussStartResponse } from '../discuss/read-contract.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
@@ -339,7 +340,7 @@ function collectCoralEnv(): Record<string, string> {
   return env;
 }
 
-function createDefaultInvocationContext(projectRoot: string): InvocationContext {
+function createDefaultInvocationContext(projectRoot: CanonicalWorkDir): InvocationContext {
   const principal: Principal = {
     subject: 'operator',
     transport: 'cli',
@@ -472,7 +473,8 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
   }
 
   const commandClass = resolution.commandClass;
-  const defaultContext = createDefaultInvocationContext(projectRoot);
+  const canonicalProjectRoot = canonicalizeWorkDir(projectRoot, process.cwd());
+  const defaultContext = createDefaultInvocationContext(canonicalProjectRoot);
   const providerRegistry = createBuiltInProviderRegistry();
   const ipcAuth = childPrincipalAuthFromEnv();
   const ipcAuthOptions = () => childPrincipalAuthOptions(ipcAuth);
@@ -536,7 +538,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     });
   };
 
-  const readStore = () => getSharedReadCoralStore(projectRoot);
+  const readStore = () => getSharedReadCoralStore(canonicalProjectRoot);
 
   return {
     createSession: async (provider, prompt, options = {}) => {
@@ -562,7 +564,14 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     },
     listJobs: async (options = {}) => {
       const filters = {
-        ...(options.allProjects === true ? {} : { projectRoot: options.projectRoot ?? projectRoot }),
+        ...(options.allProjects === true
+          ? {}
+          : {
+              projectRoot:
+                options.projectRoot === undefined
+                  ? canonicalProjectRoot
+                  : canonicalizeWorkDir(options.projectRoot, canonicalProjectRoot),
+            }),
         ...(options.phase !== undefined ? { phase: options.phase } : {}),
         ...(options.provider !== undefined ? { provider: options.provider } : {}),
         ...(options.all === true ? { all: true } : {}),

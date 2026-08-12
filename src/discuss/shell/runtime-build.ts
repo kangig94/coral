@@ -12,6 +12,7 @@ import { isLivePhase } from '../../jobs/phase.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
+import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import type { AgentConfig, DiscussContext } from './types.js';
@@ -59,7 +60,7 @@ export type ExecuteAgentAttemptParams = {
   model: string | undefined;
   prompt: string;
   instruction: string;
-  cwd: string;
+  cwd: CanonicalWorkDir;
   invocationCtx: InvocationContext;
   purpose: DiscussAgentJobPurpose;
   timeoutMs?: number;

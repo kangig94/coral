@@ -1,0 +1,14 @@
+function invokeCallbacks(callbacks: readonly (() => void)[]): void {
+  for (const callback of callbacks) callback();
+}
+
+function resolvedCallback(): void {}
+
+function hiddenClose(handle: { close(): void }): void {
+  handle.close();
+}
+
+export function mixedContainerRoot(handle: { close(): void }): void {
+  const unresolved = [() => hiddenClose(handle)][0];
+  invokeCallbacks([resolvedCallback, unresolved]);
+}

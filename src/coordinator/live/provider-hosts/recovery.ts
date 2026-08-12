@@ -54,6 +54,7 @@ export async function ensureProviderServerHandle(
     clearIdleTimer: (entry: ProviderHostEntry) => void;
     removeEntry: (entry: ProviderHostEntry) => void;
     createInstanceId: () => string;
+    observeRetired?: (entry: ProviderHostEntry, instanceId: string) => void;
     signal?: AbortSignal;
   },
 ): Promise<ProviderServerHandle> {
@@ -64,7 +65,16 @@ export async function ensureProviderServerHandle(
     throw entry.closingError;
   }
   if (entry.spawnPromise === null) {
-    const spawned = options.spawnProviderServer(entry.spec);
+    const instanceId = options.createInstanceId();
+    entry.instanceId = instanceId;
+    let spawned: Promise<ProviderServerHandle>;
+    try {
+      spawned = options.spawnProviderServer(entry.spec);
+    } catch (error: unknown) {
+      options.observeRetired?.(entry, instanceId);
+      if (entry.instanceId === instanceId) entry.instanceId = null;
+      throw error;
+    }
     const initialization = initializeProviderServerHandle(entry, spawned, options);
     entry.spawnPromise = initialization;
     void initialization.then(
@@ -72,7 +82,11 @@ export async function ensureProviderServerHandle(
         if (entry.spawnPromise === initialization) entry.spawnPromise = null;
       },
       () => {
-        if (entry.spawnPromise === initialization) entry.spawnPromise = null;
+        if (entry.spawnPromise === initialization) {
+          entry.spawnPromise = null;
+          options.observeRetired?.(entry, instanceId);
+          if (entry.handle === null && entry.instanceId === instanceId) entry.instanceId = null;
+        }
       },
     );
   }
@@ -87,7 +101,7 @@ async function initializeProviderServerHandle(
     attachHostNotificationListener: (entry: ProviderHostEntry, handle: ProviderServerHandle) => void;
     clearIdleTimer: (entry: ProviderHostEntry) => void;
     removeEntry: (entry: ProviderHostEntry) => void;
-    createInstanceId: () => string;
+    observeRetired?: (entry: ProviderHostEntry, instanceId: string) => void;
   },
 ): Promise<ProviderServerHandle> {
   const handle = await spawned;
@@ -97,11 +111,12 @@ async function initializeProviderServerHandle(
     await options.shutdownHandle(handle, entry.spec).catch(() => {});
     throw new Error(closingError.message, { cause: closingError });
   }
-  entry.instanceId = options.createInstanceId();
   entry.handle = handle;
   options.attachHostNotificationListener(entry, handle);
+  const instanceId = entry.instanceId;
   const cleanup = () => {
     if (entry.handle === handle) {
+      if (instanceId !== null) options.observeRetired?.(entry, instanceId);
       entry.handle = null;
       entry.instanceId = null;
     }

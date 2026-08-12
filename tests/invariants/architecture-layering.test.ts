@@ -6,6 +6,7 @@ import {
   listProductionSourceFiles,
   parseProductionImportEdges,
   toCanonicalSrcPath,
+  type ParsedImportEdge,
 } from '#tests/helpers/ts-import-scanner.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -39,6 +40,9 @@ const RUNTIME_INFRA_FORBIDDEN = [
  * the successor will read. The tree is clean today, which is exactly when stating it is cheap.
  */
 const PROVIDER_PROXY_ROOT = 'src/provider-proxy/';
+const PROVIDERS_ROOT = 'src/providers/';
+const PROVIDER_HOST_OWNER_ROOTS = ['src/coordinator/', PROVIDER_PROXY_ROOT] as const;
+const PROVIDER_SOURCE_FILES = [...PRODUCTION_FILES].filter((file) => file.startsWith(PROVIDERS_ROOT)).sort();
 const STORE_ROOT = 'src/store/';
 const PROVIDER_PROXY_FORBIDDEN = [
   STORE_ROOT,
@@ -52,6 +56,11 @@ const PROVIDER_PROXY_FORBIDDEN = [
   'src/kb/',
 ] as const;
 const SECURITY_ROOT = 'src/security/';
+const SECURITY_ALLOWED = new Set([
+  // Security owns work-directory admission, but the branded canonical path and its realpath implementation
+  // are runtime contracts shared with persistence and recovery. These are the only non-security source edges.
+  'src/runtime/canonical-work-dir.ts',
+]);
 const TRANSPORT_ALLOWED = new Set([
   'src/expansion/rpc-contract.ts',
   'src/jobs/contracts/abort-registry.ts',
@@ -61,6 +70,9 @@ const TRANSPORT_ALLOWED = new Set([
   'src/jobs/records.ts',
   'src/jobs/wait.ts',
   'src/jobs/wait-stream-event.ts',
+  'src/providers/host-ref-codec.ts',
+  'src/providers/host-ref-schema.ts',
+  'src/providers/host-inventory-schema.ts',
   'src/sessions/command-schemas.ts',
   'src/discuss/command-schemas.ts',
   'src/discuss/read-contract.ts',
@@ -86,6 +98,10 @@ const COORDINATOR_ALLOWED = new Set([
   // there, which makes this edge visible rather than new.
   'src/providers/app-server-transport.ts',
   'src/providers/contract.ts',
+  'src/providers/host-admission.ts',
+  'src/providers/host-diagnostics.ts',
+  // Both independent host owners consume provider-owned serviceability policy while retaining their live state.
+  'src/providers/serviceability.ts',
 ]);
 const GENERIC_FILENAMES = ['utils.ts', 'types.ts', 'schemas.ts', 'shared.ts', 'shared-utils.ts'] as const;
 const DOMAIN_ROOT_DIRS = [
@@ -142,6 +158,15 @@ function collectViolations(predicate: (source: string, target: string) => boolea
   );
 }
 
+function providerHostOwnerImportViolations(edges: readonly ParsedImportEdge[]): string[] {
+  return edges
+    .filter(
+      ({ source, target }) => source.startsWith(PROVIDERS_ROOT) && startsWithAny(target, PROVIDER_HOST_OWNER_ROOTS),
+    )
+    .map(({ source, target }) => `${source} -> ${target}`)
+    .sort();
+}
+
 describe('architecture layering invariants', () => {
   it('runtime and infra import nothing from domains, transport, coordinator, or cli', () => {
     const violations = collectViolations(
@@ -160,6 +185,10 @@ describe('architecture layering invariants', () => {
       }
 
       if (target.startsWith(SECURITY_ROOT)) {
+        return false;
+      }
+
+      if (SECURITY_ALLOWED.has(target)) {
         return false;
       }
 
@@ -234,6 +263,13 @@ describe('architecture layering invariants', () => {
     );
     expect(unexercisedTransportTargets).toEqual([]);
 
+    const unexercisedSecurityTargets = [...SECURITY_ALLOWED].filter(
+      (target) =>
+        !referencesProductionPath(target) ||
+        !IMPORT_EDGES.some((edge) => edge.source.startsWith(SECURITY_ROOT) && edge.target === target),
+    );
+    expect(unexercisedSecurityTargets).toEqual([]);
+
     const unexercisedGlueSources = [...COORDINATOR_GLUE_EXEMPT].filter(
       (source) =>
         !referencesProductionPath(source) ||
@@ -302,6 +338,31 @@ describe('architecture layering invariants', () => {
       .map((edge) => `${edge.source} -> ${edge.target}`);
 
     expect(violations).toEqual([]);
+  });
+
+  it('the shared providers domain reaches neither provider-host owner', () => {
+    expect(providerHostOwnerImportViolations(IMPORT_EDGES)).toEqual([]);
+  });
+
+  it('scans a non-empty providers domain and names only owner roots that contain production files', () => {
+    expect(PROVIDER_SOURCE_FILES.length).toBeGreaterThan(0);
+    expect(PROVIDER_HOST_OWNER_ROOTS.filter((root) => !referencesProductionPath(root))).toEqual([]);
+  });
+
+  it.each([
+    ['src/coordinator/index.ts', '../coordinator/index.js'],
+    ['src/provider-proxy/provider-root-authority.ts', '../provider-proxy/provider-root-authority.js'],
+  ] as const)('rejects a providers import of owner module %s', (target, specifier) => {
+    const mutation: ParsedImportEdge = {
+      source: 'src/providers/bootstrap.ts',
+      target,
+      specifier,
+      via: 'ImportDeclaration',
+      runtime: true,
+      typeOnly: false,
+    };
+
+    expect(providerHostOwnerImportViolations([mutation])).toEqual([`${mutation.source} -> ${target}`]);
   });
 
   it('the journal store does not reach into the provider proxy', () => {

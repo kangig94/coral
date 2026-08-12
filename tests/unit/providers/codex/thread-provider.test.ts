@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import type {
   AppServerSession,
@@ -9,7 +13,15 @@ import type {
 import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
 import { codexTurnKernel } from '#src/providers/codex/thread-kernel.js';
 import { codexAppServerLifecycle } from '#src/providers/codex/provider-facets.js';
+import { ProviderRpcError } from '#src/providers/app-server-transport.js';
+import {
+  admissionSlotKey,
+  canonicalProviderHostSpecMetadata,
+  createHostAdmissionCollection,
+  providerHostUnserviceableTerminalWarning,
+} from '#src/providers/host-admission.js';
 import { commitContinuityEvent } from '#src/providers/internal/continuity-commit.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   buildCodexExecutionPlan as buildCodexExecutionPlanWithHost,
   buildCodexHost,
@@ -17,6 +29,12 @@ import {
 } from '#src/providers/codex/execution-plan.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { TEST_CODEX_ACCESS } from '../../../helpers/provider-credentials.js';
+
+const TEST_WORKSPACE = mkdtempSync(join(tmpdir(), 'coral-codex-thread-provider-'));
+const TEST_PERSISTED_CWD = join(TEST_WORKSPACE, 'persisted');
+mkdirSync(TEST_PERSISTED_CWD);
+
+afterAll(() => rmSync(TEST_WORKSPACE, { recursive: true, force: true }));
 
 function buildCodexExecutionPlan(options: Omit<Parameters<typeof buildCodexExecutionPlanWithHost>[0], 'hostPlan'>) {
   const host = buildCodexHost(options);
@@ -34,11 +52,14 @@ type MockLease = AppServerSession & {
 function makeLease(
   rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>,
   effectiveConfig: Record<string, unknown> = {},
+  configRead?: (params: Record<string, unknown>) => Promise<unknown>,
 ): MockLease {
   const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
   const closed = createDeferred<Error | void>();
   const rpcMock = vi.fn((method: string, params: Record<string, unknown>) =>
-    method === 'config/read' ? Promise.resolve({ config: effectiveConfig }) : rpcImpl(method, params),
+    method === 'config/read'
+      ? (configRead?.(params) ?? Promise.resolve({ config: effectiveConfig }))
+      : rpcImpl(method, params),
   );
   const subscribeMock = vi.fn((next: (message: { method: string; params?: Record<string, unknown> }) => void) => {
     handlers.add(next);
@@ -71,7 +92,7 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
     name: 'codex',
     conversationRef: 'thread-1',
     prompt: 'Resume and continue',
-    cwd: '/workspace',
+    cwd: fixtureCanonicalWorkDir(TEST_WORKSPACE),
     bypassPermissions: false,
     coralEnv: {},
     ...overrides,
@@ -83,7 +104,7 @@ type CodexRuntime = ProviderAppServerRuntime<CodexExecutionPlan>;
 function makeRuntime(
   lease: AppServerSession,
   persistedContinuity: CodexRuntime['persistedContinuity'] = {
-    cwd: '/workspace/persisted',
+    cwd: TEST_PERSISTED_CWD,
     threadId: 'thread-1',
   },
   overrides: Partial<
@@ -134,9 +155,227 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
 }
 
 describe('codexThreadProvider', () => {
+  it('does not transfer an unserviceable finding between hosts with identical RPC failures', async () => {
+    const generation = 1;
+    const requestId = 17;
+    const hostLog = Object.freeze({ startSeq: 2, endSeq: 3 });
+    const providerData = { reason: 'poisoned cwd' };
+    const classifiedAdmission = createHostAdmissionCollection({ classify: () => 'unserviceable' });
+    const otherAdmission = createHostAdmissionCollection({ classify: () => 'unknown' });
+    const classifiedSlot = admissionSlotKey('classified-host-slot');
+    const otherSlot = admissionSlotKey('other-host-slot');
+    const classifiedHostRef = Object.freeze({
+      provider: 'codex',
+      fingerprint: 'a'.repeat(64),
+      instanceId: 'classified-host',
+      leaseMode: 'shared' as const,
+    });
+    const otherHostRef = Object.freeze({
+      ...classifiedHostRef,
+      instanceId: 'other-host',
+    });
+
+    for (const [admission, slot, hostRef] of [
+      [classifiedAdmission, classifiedSlot, classifiedHostRef],
+      [otherAdmission, otherSlot, otherHostRef],
+    ] as const) {
+      await admission.withFreshPlacement(slot, async (reservation) => {
+        reservation.reserveCandidate({
+          slot,
+          ref: hostRef,
+          generation,
+          spec: canonicalProviderHostSpecMetadata({
+            provider: 'codex',
+            command: 'codex',
+            args: ['app-server'],
+            cwd: fixtureCanonicalWorkDir(TEST_WORKSPACE),
+            leaseMode: 'shared',
+            idleRetirement: 'none',
+          }),
+          host: Object.freeze({ owner: 'test' }),
+          inspectDiagnostics: () =>
+            Object.freeze({
+              hostLog: Object.freeze({ entries: Object.freeze([]), retainedBytes: 0, truncatedBeforeSeq: 0 }),
+              completedObservations: Object.freeze([]),
+              factsTruncatedBeforeSeq: 0,
+            }),
+        });
+        reservation.markLive(hostRef, generation);
+      });
+    }
+
+    const bothRequestsStarted = createDeferred<void>();
+    const classifiedFindingPublished = createDeferred<void>();
+    let startedRequests = 0;
+    const awaitBothRequests = async (): Promise<void> => {
+      startedRequests += 1;
+      if (startedRequests === 2) bothRequestsStarted.resolve();
+      await bothRequestsStarted.promise;
+    };
+    const rpcError = () =>
+      new ProviderRpcError({
+        requestId,
+        method: 'config/read',
+        rpcCode: -32_603,
+        providerMessage: 'configuration refused',
+        providerData,
+        hostLog,
+      });
+    const diagnosticFact = Object.freeze({
+      factSeq: 1,
+      generation,
+      requestId,
+      method: 'config/read',
+      response: Object.freeze({
+        kind: 'failure' as const,
+        rpcCode: -32_603,
+        providerMessage: 'configuration refused',
+        providerData,
+      }),
+      hostLog,
+    });
+    const classifiedLease = makeLease(
+      async (method) => {
+        throw new Error(`must not call ${method}`);
+      },
+      {},
+      () =>
+        classifiedAdmission.correlateTerminalFailure(classifiedHostRef, async () => {
+          await awaitBothRequests();
+          classifiedAdmission.observe(classifiedSlot, classifiedHostRef, diagnosticFact);
+          classifiedFindingPublished.resolve();
+          throw rpcError();
+        }),
+    );
+    const otherLease = makeLease(
+      async (method) => {
+        throw new Error(`must not call ${method}`);
+      },
+      {},
+      () =>
+        otherAdmission.correlateTerminalFailure(otherHostRef, async () => {
+          await awaitBothRequests();
+          await classifiedFindingPublished.promise;
+          otherAdmission.observe(otherSlot, otherHostRef, diagnosticFact);
+          throw rpcError();
+        }),
+    );
+
+    const [classifiedEvents, otherEvents] = await Promise.all([
+      collect(codexThreadProvider(makeRequest(), makeRuntime(classifiedLease))),
+      collect(codexThreadProvider(makeRequest(), makeRuntime(otherLease))),
+    ]);
+
+    expect(classifiedEvents).toEqual([
+      expect.objectContaining({
+        kind: 'terminal',
+        diagnostics: { warnings: [providerHostUnserviceableTerminalWarning(classifiedHostRef)] },
+      }),
+    ]);
+    expect(otherEvents).toEqual([
+      expect.objectContaining({
+        kind: 'terminal',
+        diagnostics: {},
+      }),
+    ]);
+  });
+
+  it('retains the raw initial RPC cause and marks its provider-owned unserviceable classification', async () => {
+    const generation = 1;
+    const requestId = 17;
+    const hostLog = Object.freeze({ startSeq: 2, endSeq: 3 });
+    const providerData = { reason: 'poisoned cwd' };
+    const admission = createHostAdmissionCollection({ classify: () => 'unserviceable' });
+    const slot = admissionSlotKey('initial-config-read-failure');
+    const hostRef = Object.freeze({
+      provider: 'codex',
+      fingerprint: 'a'.repeat(64),
+      instanceId: 'poisoned-host',
+      leaseMode: 'shared' as const,
+    });
+    await admission.withFreshPlacement(slot, async (reservation) => {
+      reservation.reserveCandidate({
+        slot,
+        ref: hostRef,
+        generation,
+        spec: canonicalProviderHostSpecMetadata({
+          provider: 'codex',
+          command: 'codex',
+          args: ['app-server'],
+          cwd: fixtureCanonicalWorkDir(TEST_WORKSPACE),
+          leaseMode: 'shared',
+          idleRetirement: 'none',
+        }),
+        host: Object.freeze({ owner: 'test' }),
+        inspectDiagnostics: () =>
+          Object.freeze({
+            hostLog: Object.freeze({ entries: Object.freeze([]), retainedBytes: 0, truncatedBeforeSeq: 0 }),
+            completedObservations: Object.freeze([]),
+            factsTruncatedBeforeSeq: 0,
+          }),
+      });
+      reservation.markLive(hostRef, generation);
+    });
+    const lease = makeLease(
+      async (method) => {
+        throw new Error(`must not call ${method}`);
+      },
+      {},
+      () =>
+        admission.correlateTerminalFailure(hostRef, async () => {
+          admission.observe(
+            slot,
+            hostRef,
+            Object.freeze({
+              factSeq: 1,
+              generation,
+              requestId,
+              method: 'config/read',
+              response: Object.freeze({
+                kind: 'failure',
+                rpcCode: -32_603,
+                providerMessage: 'configuration refused',
+                providerData,
+              }),
+              hostLog,
+            }),
+          );
+          throw new ProviderRpcError({
+            requestId,
+            method: 'config/read',
+            rpcCode: -32_603,
+            providerMessage: 'configuration refused',
+            providerData,
+            hostLog,
+          });
+        }),
+    );
+
+    const events = await collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        kind: 'terminal',
+        terminal: expect.objectContaining({
+          outcome: expect.objectContaining({
+            kind: 'provider_exit',
+            note: expect.stringContaining(
+              'config/read failed [code=-32603]: configuration refused; data={"reason":"poisoned cwd"}',
+            ),
+          }),
+        }),
+        diagnostics: { warnings: [providerHostUnserviceableTerminalWarning(hostRef)] },
+      }),
+    ]);
+  });
+
   it.each([
     ['start', { action: 'exec' as const, conversationRef: undefined }, undefined],
-    ['resume', { action: 'resume' as const, conversationRef: 'thread-1' }, { cwd: '/workspace', threadId: 'thread-1' }],
+    [
+      'resume',
+      { action: 'resume' as const, conversationRef: 'thread-1' },
+      { cwd: TEST_WORKSPACE, threadId: 'thread-1' },
+    ],
   ])('rejects hostile effective config before %s RPCs and releases the lease', async (_mode, request, continuity) => {
     const downstreamRpc = vi.fn(async (method: string) => {
       throw new Error(`must not call ${method}`);
@@ -146,7 +385,7 @@ describe('codexThreadProvider', () => {
 
     const events = await collect(codexThreadProvider(makeRequest(request), runtime));
 
-    expect(lease.rpcMock).toHaveBeenCalledWith('config/read', { cwd: '/workspace', includeLayers: false });
+    expect(lease.rpcMock).toHaveBeenCalledWith('config/read', { cwd: TEST_WORKSPACE, includeLayers: false });
     expect(downstreamRpc).not.toHaveBeenCalled();
     expect(lease.rpcMock.mock.calls.map(([method]) => method)).not.toEqual(
       expect.arrayContaining(['thread/start', 'thread/resume', 'turn/start']),
@@ -219,14 +458,14 @@ describe('codexThreadProvider', () => {
           kind: 'continuity',
           conversationRef: 'thread-1',
           resumable: true,
-          providerContinuity: { cwd: '/workspace/persisted', threadId: 'thread-1', turnId: 'turn-1' },
+          providerContinuity: { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1', turnId: 'turn-1' },
         },
         { kind: 'progress', message: 'Thread ready (thread-1).' },
         {
           kind: 'continuity',
           conversationRef: 'thread-1',
           resumable: true,
-          providerContinuity: { cwd: '/workspace/persisted', threadId: 'thread-1', turnId: undefined },
+          providerContinuity: { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1', turnId: undefined },
         },
         { kind: 'progress', message: 'Turn completed.' },
         { kind: 'progress', message: expect.stringContaining('No rollout JSONL found matching thread thread-1') },
@@ -381,8 +620,8 @@ describe('codexThreadProvider', () => {
     const requestA = makeRequest({ sessionId: 'job-a', conversationRef: 'thread-a' });
     const requestB = makeRequest({ sessionId: 'job-b', conversationRef: 'thread-b' });
     const controllerB = new AbortController();
-    const runtimeA = makeRuntime(lease, { cwd: '/workspace', threadId: 'thread-a' });
-    const runtimeB = makeRuntime(lease, { cwd: '/workspace', threadId: 'thread-b' }, { signal: controllerB.signal });
+    const runtimeA = makeRuntime(lease, { cwd: TEST_WORKSPACE, threadId: 'thread-a' });
+    const runtimeB = makeRuntime(lease, { cwd: TEST_WORKSPACE, threadId: 'thread-b' }, { signal: controllerB.signal });
     runtimeA.executionPlan = buildCodexExecutionPlan({
       access: TEST_CODEX_ACCESS,
       request: requestA,
@@ -570,7 +809,7 @@ describe('codexThreadProvider', () => {
       conversationRef: 'thread-1',
       resumable: true,
       providerContinuity: {
-        cwd: '/workspace/persisted',
+        cwd: TEST_PERSISTED_CWD,
         threadId: 'thread-1',
         turnId: 'turn-1',
       },
@@ -610,7 +849,7 @@ describe('codexThreadProvider', () => {
       conversationRef: 'thread-1',
       resumable: true,
       providerContinuity: {
-        cwd: '/workspace/persisted',
+        cwd: TEST_PERSISTED_CWD,
         threadId: 'thread-1',
         turnId: 'turn-1',
       },
@@ -1362,7 +1601,7 @@ describe('codexThreadProvider', () => {
     });
     const runtime = makeRuntime(
       lease,
-      { cwd: '/workspace/persisted', threadId: 'thread-1' },
+      { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
       {
         env: {
           homedir: () => '/home/test',
@@ -1439,7 +1678,7 @@ describe('codexThreadProvider', () => {
     });
     const runtime = makeRuntime(
       lease,
-      { cwd: '/workspace/persisted', threadId: 'thread-1' },
+      { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
       { signal: controller.signal },
     );
     const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
@@ -1512,7 +1751,7 @@ describe('codexThreadProvider', () => {
     });
     const runtime = makeRuntime(
       lease,
-      { cwd: '/workspace/persisted', threadId: 'thread-1' },
+      { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
       { signal: controller.signal },
     );
     const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
@@ -1545,7 +1784,7 @@ describe('codexThreadProvider', () => {
     const requestedDelaysMs: number[] = [];
     const runtime = makeRuntime(
       lease,
-      { cwd: '/workspace/persisted', threadId: 'thread-1' },
+      { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
       {
         signal: controller.signal,
         time: {
@@ -1586,7 +1825,7 @@ describe('codexThreadProvider', () => {
     lease.interrupt = vi.fn(async () => ({ kind: 'not-accepted' as const, reason: 'test refusal' }));
     const runtime = makeRuntime(
       lease,
-      { cwd: '/workspace/persisted', threadId: 'thread-1' },
+      { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' },
       { signal: controller.signal },
     );
     const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
@@ -1620,7 +1859,7 @@ describe('codexThreadProvider', () => {
     const eventsPromise = collect(
       codexThreadProvider(
         makeRequest(),
-        makeRuntime(lease, { cwd: '/workspace/persisted', threadId: 'thread-1' }, { signal: controller.signal }),
+        makeRuntime(lease, { cwd: TEST_PERSISTED_CWD, threadId: 'thread-1' }, { signal: controller.signal }),
       ),
     );
     await vi.waitFor(() => expect(starts).toBe(1));

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { CAPABILITIES, type Capability } from './capability.js';
 import type { Credential, Principal, ResourceBinding, Subject } from './principal.js';
+import { canonicalizeWorkDir } from '../runtime/canonical-work-dir.js';
 
 export type PrincipalWire = {
   readonly subject: Subject;
@@ -17,7 +18,7 @@ export type PrincipalWireContext = {
 const subjectSchema = z.enum(['operator', 'agent', 'system']);
 const capabilitySchema = z.enum(CAPABILITIES);
 
-const resourceBindingSchema = z.discriminatedUnion('kind', [
+const rawResourceBindingSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('unbound') }).strict(),
   z.object({ kind: z.literal('project'), root: z.string().min(1) }).strict(),
 ]);
@@ -25,10 +26,12 @@ const resourceBindingSchema = z.discriminatedUnion('kind', [
 export const principalWireSchema = z
   .object({
     subject: subjectSchema,
-    binding: resourceBindingSchema,
+    binding: rawResourceBindingSchema,
     attenuatedCaps: z.array(capabilitySchema).optional(),
   })
   .strict();
+
+export type RawPrincipalWire = Readonly<z.infer<typeof principalWireSchema>>;
 
 const DEFAULT_WIRE_CONTEXT: Required<PrincipalWireContext> = {
   transport: 'wire',
@@ -53,7 +56,19 @@ export function principalToWire(principal: Principal): PrincipalWire {
   };
 }
 
+export function canonicalizePrincipalWire(value: unknown): PrincipalWire {
+  const wire = principalWireSchema.parse(value);
+  return {
+    ...wire,
+    binding:
+      wire.binding.kind === 'unbound'
+        ? wire.binding
+        : { kind: 'project', root: canonicalizeWorkDir(wire.binding.root, process.cwd()) },
+  };
+}
+
 export function parsePrincipalWire(value: unknown, context: PrincipalWireContext = {}): Principal | null {
   const parsed = principalWireSchema.safeParse(value);
-  return parsed.success ? principalFromWire(parsed.data, context) : null;
+  if (!parsed.success) return null;
+  return principalFromWire(canonicalizePrincipalWire(parsed.data), context);
 }

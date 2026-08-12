@@ -7,6 +7,7 @@ import {
   rmSync,
 } from 'node:fs';
 import { allocateTestSession } from '../../../helpers/session.js';
+import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -67,6 +68,8 @@ import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { TEST_CODEX_SCOPE, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { encodeHostRef } from '#src/providers/host-ref-codec.js';
+import { providerHostUnserviceableTerminalWarning } from '#src/providers/host-admission.js';
 
 const progressTiming = {
   origin: 'runtime',
@@ -330,6 +333,11 @@ function _createFakeProviderServerHandle(options?: {
       onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
       closePromise,
       isClosed: () => false,
+      inspectDiagnostics: () => ({
+        hostLog: { entries: [], retainedBytes: 0, truncatedBeforeSeq: 0 },
+        completedObservations: [],
+        factsTruncatedBeforeSeq: 0,
+      }),
       markExpectedClose: markExpectedCloseMock,
       close: closeMock,
     } satisfies ProviderServerHandle,
@@ -509,7 +517,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
       streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
     ),
     appServerLifecycle: {
-      host: spec,
+      host: { ...spec, cwd: fixtureCanonicalWorkDir(spec.cwd) },
       interrupt: async (lease, continuity) => {
         const brokerSessionKey =
           typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
@@ -632,7 +640,7 @@ function _realizePluginRoot(ctx: InvocationContext): string {
 }
 
 function _createScopedContext(name: string): InvocationContext {
-  const projectRoot = join(mockState.tmpHome, name);
+  const projectRoot = fixtureCanonicalWorkDir(join(mockState.tmpHome, name));
   mkdirSync(projectRoot, { recursive: true });
   const pluginRoot = join(projectRoot, 'plugin');
   mkdirSync(pluginRoot, { recursive: true });
@@ -706,7 +714,7 @@ describe('ExecutionService wait', () => {
     rmSync(mockState.tmpRoot, { recursive: true, force: true });
     mkdirSync(mockState.tmpRoot, { recursive: true });
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
-    const projectRoot = join(mockState.tmpHome, 'project');
+    const projectRoot = fixtureCanonicalWorkDir(join(mockState.tmpHome, 'project'));
     mkdirSync(projectRoot, { recursive: true });
     ctx = {
       projectRoot,
@@ -971,6 +979,63 @@ describe('ExecutionService wait', () => {
     });
     expect(_existsSync(resultPath)).toBe(true);
     expect(_readFileSync(resultPath, 'utf-8')).toBe('rebuild me\n');
+  });
+
+  it('surfaces only the exact provider-host recovery on the initial classified failure', async () => {
+    const service = createService(ctx);
+    const { jobId, sessionId, progressStore } = createClaimedJob(service, ctx);
+    const hostRef = Object.freeze({
+      provider: 'codex',
+      fingerprint: 'a'.repeat(64),
+      instanceId: 'poisoned-host',
+      leaseMode: 'shared' as const,
+    });
+    const encodedHostRef = encodeHostRef(hostRef);
+    const rawCause = 'Codex provider failed: config/read failed [code=-32603]: configuration refused';
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'app-server',
+      startTime: isoAt(runtime.time.now()),
+      providerMeta: { provider: 'codex', leaseState: 'acquired', hostRef },
+    });
+    commitJobTerminal(
+      progressStore,
+      jobId,
+      sessionId,
+      { content: '', outcome: { kind: 'provider_exit', code: 1, note: rawCause }, durationMs: 0 },
+      'error',
+      { diagnostics: { warnings: [providerHostUnserviceableTerminalWarning(hostRef)] } },
+    );
+
+    const terminal = await _waitForTerminalEvent(service, jobId);
+
+    expect(terminal.result.outcome).toEqual({
+      kind: 'provider_exit',
+      code: 1,
+      note:
+        `${rawCause}\n\nProvider host ${encodedHostRef} (codex/poisoned-host) is unserviceable. ` +
+        `Run coral-cli backend provider-host inspect ${encodedHostRef}, then ` +
+        `coral-cli backend provider-host evict ${encodedHostRef} before retrying fresh placement.`,
+    });
+
+    const other = createClaimedJob(service, ctx);
+    const otherHostRef = Object.freeze({ ...hostRef, instanceId: 'healthy-host' });
+    other.progressStore.appendRuntimeStarted(other.jobId, {
+      transport: 'app-server',
+      startTime: isoAt(runtime.time.now()),
+      providerMeta: { provider: 'codex', leaseState: 'acquired', hostRef: otherHostRef },
+    });
+    commitJobTerminal(
+      other.progressStore,
+      other.jobId,
+      other.sessionId,
+      { content: '', outcome: { kind: 'provider_exit', code: 1, note: rawCause }, durationMs: 0 },
+      'error',
+      { diagnostics: { warnings: [providerHostUnserviceableTerminalWarning(hostRef)] } },
+    );
+
+    const otherTerminal = await _waitForTerminalEvent(service, other.jobId);
+
+    expect(otherTerminal.result.outcome).toEqual({ kind: 'provider_exit', code: 1, note: rawCause });
   });
 
   it('rebuilds failed workflow result artifacts with lifecycle fault details', async () => {

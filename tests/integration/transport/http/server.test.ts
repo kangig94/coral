@@ -1,5 +1,5 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allocateTestSession } from '../../../helpers/session.js';
 import {
   TEST_CODEX_BINDING,
@@ -122,9 +122,10 @@ function expectedDaemonPrincipalContext() {
 
 function expectedDaemonSystemContext() {
   return expect.objectContaining({
+    projectRoot: process.cwd(),
     principal: expect.objectContaining({
       subject: 'system',
-      binding: { kind: 'unbound' },
+      binding: { kind: 'project', root: process.cwd() },
     }),
   });
 }
@@ -133,6 +134,16 @@ const mockState = vi.hoisted(() => ({
   tmpHome: '',
   tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-backend-test-tmp-${process.pid}-${Date.now()}`,
 }));
+const ingressFixtureRoot = mkdtempSync(join(process.env.TMPDIR ?? '/tmp', 'coral-http-ingress-'));
+const DEFAULT_PROJECT_ROOT = join(ingressFixtureRoot, 'project');
+const DEFAULT_WORK_DIR = join(DEFAULT_PROJECT_ROOT, 'work');
+const ALTERNATE_PROJECT_ROOT = join(ingressFixtureRoot, 'alternate-project');
+mkdirSync(DEFAULT_WORK_DIR, { recursive: true });
+mkdirSync(ALTERNATE_PROJECT_ROOT, { recursive: true });
+
+afterAll(() => {
+  rmSync(ingressFixtureRoot, { recursive: true, force: true });
+});
 
 const createdJobIds = new Set<string>();
 let runtime: ReturnType<typeof createRealRuntime>;
@@ -846,7 +857,7 @@ describe('execution backend server', () => {
         'X-Coral-Backend-Token': backend.token,
       },
       body: JSON.stringify({
-        projectRoot: '/workspace/project-a',
+        projectRoot: ALTERNATE_PROJECT_ROOT,
         topic: 'alpha',
         content: 'memo body',
         owner: 'kang',
@@ -857,7 +868,7 @@ describe('execution backend server', () => {
     expect(mutateKb).toHaveBeenCalledWith({
       method: 'createMemo',
       args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
-      ctx: expectedDaemonProjectContext('/workspace/project-a'),
+      ctx: expectedDaemonProjectContext(ALTERNATE_PROJECT_ROOT),
     });
   });
 
@@ -902,7 +913,7 @@ describe('execution backend server', () => {
         'X-Coral-Backend-Token': started.token,
       },
       body: JSON.stringify({
-        projectRoot: '/workspace/project-a',
+        projectRoot: ALTERNATE_PROJECT_ROOT,
         topic: 'alpha',
         content: 'memo body',
         owner: 'kang',
@@ -913,7 +924,7 @@ describe('execution backend server', () => {
     expect(mutateKb).toHaveBeenCalledWith({
       method: 'createMemo',
       args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
-      ctx: expectedDaemonProjectContext('/workspace/project-a'),
+      ctx: expectedDaemonProjectContext(ALTERNATE_PROJECT_ROOT),
     });
   });
 
@@ -1030,7 +1041,7 @@ describe('execution backend server', () => {
       dispose: vi.fn(async () => undefined),
     };
     const backend = await startBackendServer({ kbDaemonSupervisor });
-    const projectRoot = '/workspace/project-a';
+    const projectRoot = ALTERNATE_PROJECT_ROOT;
     const projectRootQuery = encodeURIComponent(projectRoot);
     const getJson = async (path: string): Promise<unknown> => {
       const response = await fetch(`${backend.baseUrl}${path}`, {
@@ -1126,7 +1137,7 @@ describe('execution backend server', () => {
       dispose: vi.fn(async () => undefined),
     };
     const backend = await startBackendServer({ kbDaemonSupervisor });
-    const projectRoot = '/workspace/project-a';
+    const projectRoot = ALTERNATE_PROJECT_ROOT;
 
     const response = await fetch(`${backend.baseUrl}/kb/memos`, {
       method: 'POST',
@@ -1179,7 +1190,7 @@ describe('execution backend server', () => {
       dispose: vi.fn(async () => undefined),
     };
     const backend = await startBackendServer({ kbDaemonSupervisor });
-    const projectRoot = '/workspace/project-a';
+    const projectRoot = ALTERNATE_PROJECT_ROOT;
     const headers = {
       'Content-Type': 'application/json',
       'X-Coral-Backend-Token': backend.token,
@@ -1212,7 +1223,7 @@ describe('execution backend server', () => {
         headers,
         body: JSON.stringify({
           projectRoot,
-          filePath: '/workspace/project-a/source.md',
+          filePath: join(ALTERNATE_PROJECT_ROOT, 'source.md'),
           slug: 'alpha-source',
           readiness: 'base-search',
           async: true,
@@ -1256,7 +1267,7 @@ describe('execution backend server', () => {
       {
         method: 'createSource',
         args: {
-          filePath: '/workspace/project-a/source.md',
+          filePath: join(ALTERNATE_PROJECT_ROOT, 'source.md'),
           slug: 'alpha-source',
           readiness: 'base-search',
           async: true,
@@ -1278,7 +1289,7 @@ describe('execution backend server', () => {
 
   it('marks tracked daemon-owned KB jobs as error when the KB daemon exits', async () => {
     const jobId = 'kb-daemon-import-job-1';
-    const projectRoot = '/workspace/project-a';
+    const projectRoot = ALTERNATE_PROJECT_ROOT;
     const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
@@ -1321,7 +1332,7 @@ describe('execution backend server', () => {
       enqueueSequence: progressStore.nextEnqueueSequence(),
       operation: 'kb.source_import',
       request: {
-        filePath: '/workspace/project-a/source.md',
+        filePath: join(ALTERNATE_PROJECT_ROOT, 'source.md'),
         slug: 'alpha-source',
         readiness: 'base-search',
       },
@@ -1341,7 +1352,7 @@ describe('execution backend server', () => {
       },
       body: JSON.stringify({
         projectRoot,
-        filePath: '/workspace/project-a/source.md',
+        filePath: join(ALTERNATE_PROJECT_ROOT, 'source.md'),
         slug: 'alpha-source',
         readiness: 'base-search',
         async: true,
@@ -1390,7 +1401,7 @@ describe('execution backend server', () => {
 
   it('marks durable daemon-owned KB jobs as error when the daemon exits before proxy registration', async () => {
     const jobId = 'kb-daemon-unproxied-import-job-1';
-    const projectRoot = '/workspace/project-a';
+    const projectRoot = ALTERNATE_PROJECT_ROOT;
     const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
@@ -1437,7 +1448,7 @@ describe('execution backend server', () => {
       enqueueSequence: progressStore.nextEnqueueSequence(),
       operation: 'kb.source_import',
       request: {
-        filePath: '/workspace/project-a/source.md',
+        filePath: join(ALTERNATE_PROJECT_ROOT, 'source.md'),
         slug: 'alpha-source',
         readiness: 'base-search',
       },
@@ -1491,7 +1502,7 @@ describe('execution backend server', () => {
 
   it('removes daemon-owned KB abort proxies when the daemon-owned KB job reaches terminal state', async () => {
     const jobId = 'kb-daemon-import-job-terminal';
-    const projectRoot = '/workspace/project-a';
+    const projectRoot = ALTERNATE_PROJECT_ROOT;
     const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
@@ -1532,7 +1543,7 @@ describe('execution backend server', () => {
       enqueueSequence: progressStore.nextEnqueueSequence(),
       operation: 'kb.source_import',
       request: {
-        filePath: '/workspace/project-a/source.md',
+        filePath: join(ALTERNATE_PROJECT_ROOT, 'source.md'),
         slug: 'alpha-source',
         readiness: 'base-search',
       },
@@ -1552,7 +1563,7 @@ describe('execution backend server', () => {
       },
       body: JSON.stringify({
         projectRoot,
-        filePath: '/workspace/project-a/source.md',
+        filePath: join(ALTERNATE_PROJECT_ROOT, 'source.md'),
         slug: 'alpha-source',
         readiness: 'base-search',
         async: true,
@@ -1668,7 +1679,7 @@ describe('execution backend server', () => {
       jobId: 'job-local-health',
       sessionId: 'session-local-health',
       provider: 'codex',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
       bundleHash: '0123456789abcdef',
       initialPhase: 'running',
@@ -1677,7 +1688,7 @@ describe('execution backend server', () => {
       jobId: 'job-local-health',
       sessionId: 'session-local-health',
       provider: 'codex',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
     });
     stubRuntimeRecord(progressStore, { jobId: 'job-local-health' });
@@ -1685,7 +1696,7 @@ describe('execution backend server', () => {
       jobId: 'job-foreign-health',
       sessionId: 'session-foreign-health',
       provider: 'codex',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: foreignBackendNamespace,
       bundleHash: '0123456789abcdef',
       initialPhase: 'running',
@@ -1694,7 +1705,7 @@ describe('execution backend server', () => {
       jobId: 'job-foreign-health',
       sessionId: 'session-foreign-health',
       provider: 'codex',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: foreignBackendNamespace,
     });
     stubRuntimeRecord(progressStore, { jobId: 'job-foreign-health' });
@@ -1875,7 +1886,7 @@ describe('execution backend server', () => {
   });
 
   it('routes kb memo list and consolidated delete through the KB daemon RPC port', async () => {
-    const projectRoot = join(mockState.tmpHome, 'project');
+    const projectRoot = createProjectRoot('project');
     const readKb = vi.fn<KbDaemonSupervisor['readKb']>(async (request) => {
       expect(request.method).toBe('listMemos');
       return {
@@ -2438,7 +2449,7 @@ describe('execution backend server', () => {
 
       try {
         stream = await openHttpStream(
-          `${started.baseUrl}/events/stream?projectRoot=${encodeURIComponent('/tmp/project')}`,
+          `${started.baseUrl}/events/stream?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
           {
             'X-Coral-Backend-Token': 'test-token',
           },
@@ -2587,7 +2598,7 @@ describe('execution backend server', () => {
             },
             body: JSON.stringify({
               ...args,
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               owner: 'team-a',
               effort: 'high',
               claudeModelCap: 'sonnet',
@@ -2602,7 +2613,7 @@ describe('execution backend server', () => {
           expect(handler).toHaveBeenCalledTimes(1);
           expect(call?.[0]).toEqual(expectedBody.args);
           expect(call?.[1]).toMatchObject({
-            projectRoot: '/tmp/project',
+            projectRoot: DEFAULT_PROJECT_ROOT,
             pluginRoot: '/tmp/plugin',
             coralEnv: expect.objectContaining({
               CORAL_TEST_HTTP_BASE: 'daemon-base',
@@ -2621,7 +2632,7 @@ describe('execution backend server', () => {
     });
 
     it('routes GET /discuss/sessions inline through listDiscussSessions', async () => {
-      const sessions = [{ sessionId: 'session-1', projectRoot: '/tmp/project', authority: 'live' }];
+      const sessions = [{ sessionId: 'session-1', projectRoot: DEFAULT_PROJECT_ROOT, authority: 'live' }];
       const started = await startMockedRouteServer({
         listDiscussSessions: () => sessions as never,
       });
@@ -2667,7 +2678,7 @@ describe('execution backend server', () => {
 
         try {
           const response = await fetch(
-            `${started.baseUrl}/discuss/sessions/session-1/events?projectRoot=${encodeURIComponent('/tmp/project')}&cursor=3`,
+            `${started.baseUrl}/discuss/sessions/session-1/events?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}&cursor=3`,
             {
               headers: { 'X-Coral-Backend-Token': 'test-token' },
             },
@@ -2682,7 +2693,7 @@ describe('execution backend server', () => {
           expect(started.discussTools.handleDiscussWatch).toHaveBeenCalledWith(
             { session: 'session-1', cursor: 3 },
             expect.objectContaining({
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               pluginRoot: '/tmp/plugin',
               coralEnv: expect.objectContaining({
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
@@ -2704,7 +2715,7 @@ describe('execution backend server', () => {
 
         try {
           const response = await fetch(
-            `${started.baseUrl}/discuss/sessions/session-1?projectRoot=${encodeURIComponent('/tmp/project')}`,
+            `${started.baseUrl}/discuss/sessions/session-1?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
             {
               method: 'DELETE',
               headers: { 'X-Coral-Backend-Token': 'test-token' },
@@ -2720,7 +2731,7 @@ describe('execution backend server', () => {
           expect(started.discussTools.handleDiscussAbort).toHaveBeenCalledWith(
             { session: 'session-1' },
             expect.objectContaining({
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               pluginRoot: '/tmp/plugin',
               coralEnv: expect.objectContaining({
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
@@ -2871,7 +2882,7 @@ describe('execution backend server', () => {
 
         try {
           const response = await fetch(
-            `${started.baseUrl}/kb/memos/memo-1?projectRoot=${encodeURIComponent('/tmp/project')}`,
+            `${started.baseUrl}/kb/memos/memo-1?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
             {
               headers: { 'X-Coral-Backend-Token': 'test-token' },
             },
@@ -2886,7 +2897,7 @@ describe('execution backend server', () => {
           expect(started.kbTools.handleKbMemoRead).toHaveBeenCalledWith(
             'memo-1',
             expect.objectContaining({
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               pluginRoot: '/tmp/plugin',
               coralEnv: expect.objectContaining({
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
@@ -2903,7 +2914,10 @@ describe('execution backend server', () => {
       { path: '/kb/notes/missing-note', handlerName: 'handleKbNoteRead' },
       { path: '/kb/sources/missing-source', handlerName: 'handleKbSourceRead' },
       { path: '/kb/communities/missing-community', handlerName: 'handleKbCommunityRead' },
-      { path: '/kb/memos/missing-memo?projectRoot=%2Ftmp%2Fproject', handlerName: 'handleKbMemoRead' },
+      {
+        path: `/kb/memos/missing-memo?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
+        handlerName: 'handleKbMemoRead',
+      },
       { path: '/kb/principles/missing-principle', handlerName: 'handleKbPrincipleRead' },
     ])('returns 404 for missing per-kind KB reads on $path', async ({ path, handlerName }) => {
       const started = await startMockedRouteServer({
@@ -2977,7 +2991,7 @@ describe('execution backend server', () => {
 
         try {
           const response = await fetch(
-            `${started.baseUrl}/kb/memos?projectRoot=${encodeURIComponent('/tmp/project')}&owner=owner-a`,
+            `${started.baseUrl}/kb/memos?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}&owner=owner-a`,
             {
               headers: { 'X-Coral-Backend-Token': 'test-token' },
             },
@@ -2992,7 +3006,7 @@ describe('execution backend server', () => {
           expect(started.kbTools.handleKbMemoList).toHaveBeenCalledWith(
             { owner: 'owner-a' },
             expect.objectContaining({
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               pluginRoot: '/tmp/plugin',
               coralEnv: expect.objectContaining({
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
@@ -3062,7 +3076,7 @@ describe('execution backend server', () => {
             },
             body: JSON.stringify({
               ...args,
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               owner: 'team-a',
               effort: 'high',
               claudeModelCap: 'sonnet',
@@ -3077,7 +3091,7 @@ describe('execution backend server', () => {
           expect(handler).toHaveBeenCalledTimes(1);
           expect(call?.[0]).toEqual(expectedBody.args);
           expect(call?.[1]).toMatchObject({
-            projectRoot: '/tmp/project',
+            projectRoot: DEFAULT_PROJECT_ROOT,
             pluginRoot: '/tmp/plugin',
             coralEnv: expect.objectContaining({
               CORAL_TEST_HTTP_BASE: 'daemon-base',
@@ -3107,7 +3121,7 @@ describe('execution backend server', () => {
               topic: 'routing',
               content: 'memo',
               owner: 'owner-a',
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               effort: 'high',
               claudeModelCap: 'sonnet',
             }),
@@ -3122,7 +3136,7 @@ describe('execution backend server', () => {
           expect(started.kbTools.handleKbMemo).toHaveBeenCalledWith(
             { topic: 'routing', content: 'memo', owner: 'owner-a' },
             expect.objectContaining({
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               pluginRoot: '/tmp/plugin',
               coralEnv: expect.objectContaining({
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
@@ -3150,7 +3164,7 @@ describe('execution backend server', () => {
           },
           body: JSON.stringify({
             title: 'Updated',
-            projectRoot: '/tmp/project',
+            projectRoot: DEFAULT_PROJECT_ROOT,
           }),
         });
 
@@ -3163,7 +3177,7 @@ describe('execution backend server', () => {
         expect(started.kbTools.handleKbUpdate).toHaveBeenCalledWith(
           { note: 'contracts/overview', title: 'Updated' },
           expect.objectContaining({
-            projectRoot: '/tmp/project',
+            projectRoot: DEFAULT_PROJECT_ROOT,
             pluginRoot: '/tmp/plugin',
           }),
         );
@@ -3205,12 +3219,12 @@ describe('execution backend server', () => {
     it.each([
       {
         name: 'pattern delete',
-        query: `projectRoot=${encodeURIComponent('/tmp/project')}&pattern=${encodeURIComponent('*')}&owner=owner-a`,
+        query: `projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}&pattern=${encodeURIComponent('*')}&owner=owner-a`,
         expectedArgs: { pattern: '*', owner: 'owner-a' },
       },
       {
         name: 'purge',
-        query: `projectRoot=${encodeURIComponent('/tmp/project')}&all=true`,
+        query: `projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}&all=true`,
         expectedArgs: { all: true },
       },
     ])('routes DELETE /kb/memos for $name', async ({ query, expectedArgs }) => {
@@ -3232,7 +3246,7 @@ describe('execution backend server', () => {
           expect(started.kbTools.handleKbMemoDeleteConsolidated).toHaveBeenCalledWith(
             expectedArgs,
             expect.objectContaining({
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               pluginRoot: '/tmp/plugin',
               coralEnv: expect.objectContaining({
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
@@ -3366,7 +3380,7 @@ describe('execution backend server', () => {
           },
           body: JSON.stringify({
             ...args,
-            projectRoot: '/tmp/project',
+            projectRoot: DEFAULT_PROJECT_ROOT,
           }),
         });
 
@@ -3386,7 +3400,7 @@ describe('execution backend server', () => {
 
       try {
         const response = await fetch(
-          `${started.baseUrl}/discuss/sessions/session-1/events?projectRoot=${encodeURIComponent('/tmp/project')}`,
+          `${started.baseUrl}/discuss/sessions/session-1/events?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
           {
             headers: {
               'X-Coral-Backend-Token': 'test-token',
@@ -3452,9 +3466,9 @@ describe('execution backend server', () => {
 
     it.each([
       { path: '/discuss/persona-sets', args: {} },
-      { path: '/discuss/sessions', args: { projectRoot: '/tmp/project' } },
-      { path: '/discuss/sessions/session-1/bids', args: { projectRoot: '/tmp/project' } },
-      { path: '/discuss/sessions/session-1/speeches', args: { projectRoot: '/tmp/project' } },
+      { path: '/discuss/sessions', args: { projectRoot: DEFAULT_PROJECT_ROOT } },
+      { path: '/discuss/sessions/session-1/bids', args: { projectRoot: DEFAULT_PROJECT_ROOT } },
+      { path: '/discuss/sessions/session-1/speeches', args: { projectRoot: DEFAULT_PROJECT_ROOT } },
     ])('uses existing discuss validation on $path', async ({ path, args }) => {
       const { deps } = createHttpHandlerDeps();
       const started = await startHttpHandlerServer(deps);
@@ -3497,25 +3511,25 @@ describe('execution backend server', () => {
       {
         name: 'DELETE /kb/memos',
         method: 'DELETE',
-        path: `/kb/memos?projectRoot=${encodeURIComponent('/tmp/project')}&pattern=${encodeURIComponent('*')}&all=true`,
+        path: `/kb/memos?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}&pattern=${encodeURIComponent('*')}&all=true`,
       },
       {
         name: 'POST /kb/notes',
         method: 'POST',
         path: '/kb/notes',
-        body: { projectRoot: '/tmp/project' },
+        body: { projectRoot: DEFAULT_PROJECT_ROOT },
       },
       {
         name: 'POST /kb/sources',
         method: 'POST',
         path: '/kb/sources',
-        body: { projectRoot: '/tmp/project' },
+        body: { projectRoot: DEFAULT_PROJECT_ROOT },
       },
       {
         name: 'POST /kb/memos',
         method: 'POST',
         path: '/kb/memos',
-        body: { projectRoot: '/tmp/project' },
+        body: { projectRoot: DEFAULT_PROJECT_ROOT },
       },
     ])('uses KB validation on $name', async ({ method, path, body }) => {
       const { deps } = createHttpHandlerDeps();
@@ -3555,7 +3569,7 @@ describe('execution backend server', () => {
               'Content-Type': 'application/json',
               'X-Coral-Backend-Token': 'test-token',
             },
-            body: JSON.stringify({ projectRoot: '/tmp/project' }),
+            body: JSON.stringify({ projectRoot: DEFAULT_PROJECT_ROOT }),
           }),
           fetch(`${started.baseUrl}/kb/missing-action`, {
             method: 'POST',
@@ -3563,7 +3577,7 @@ describe('execution backend server', () => {
               'Content-Type': 'application/json',
               'X-Coral-Backend-Token': 'test-token',
             },
-            body: JSON.stringify({ projectRoot: '/tmp/project' }),
+            body: JSON.stringify({ projectRoot: DEFAULT_PROJECT_ROOT }),
           }),
         ]);
 
@@ -3587,7 +3601,7 @@ describe('execution backend server', () => {
       {
         name: 'GET /discuss/sessions/:id view',
         method: 'GET',
-        path: `/discuss/sessions/session-1?projectRoot=${encodeURIComponent('/tmp/project')}&view=bogus`,
+        path: `/discuss/sessions/session-1?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}&view=bogus`,
         expectedMessage: "view: Invalid enum value. Expected 'control' | 'audit', received 'bogus'",
       },
       {
@@ -3606,7 +3620,7 @@ describe('execution backend server', () => {
       {
         name: 'DELETE /kb/memos pattern/all',
         method: 'DELETE',
-        path: `/kb/memos?projectRoot=${encodeURIComponent('/tmp/project')}&pattern=${encodeURIComponent('*')}&all=true`,
+        path: `/kb/memos?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}&pattern=${encodeURIComponent('*')}&all=true`,
         expectedMessage: 'Exactly one of pattern or all=true must be provided',
       },
     ])(
@@ -3659,10 +3673,10 @@ describe('execution backend server', () => {
             body: JSON.stringify({
               provider: 'codex',
               prompt: 'hello',
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               agent: 'architect',
               model: 'gpt-5',
-              workDir: '/tmp/work',
+              workDir: DEFAULT_WORK_DIR,
               owner: 'team-a',
               effort: 'high',
               claudeModelCap: 'sonnet',
@@ -3684,13 +3698,13 @@ describe('execution backend server', () => {
               prompt: 'hello',
               agent: 'architect',
               model: 'gpt-5',
-              cwd: '/tmp/work',
+              cwd: DEFAULT_WORK_DIR,
               effort: 'high',
               bypassPermissions: true,
               systemPrompt: 'system',
             },
             expect.objectContaining({
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               pluginRoot: '/tmp/plugin',
               coralEnv: expect.objectContaining({
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
@@ -3725,7 +3739,7 @@ describe('execution backend server', () => {
             'Content-Type': 'application/json',
             'X-Coral-Backend-Token': 'test-token',
           },
-          body: JSON.stringify({ provider: 'codex', prompt: 'hello', projectRoot: '/tmp/project' }),
+          body: JSON.stringify({ provider: 'codex', prompt: 'hello', projectRoot: DEFAULT_PROJECT_ROOT }),
         });
 
         expect(response.status).toBe(503);
@@ -3755,7 +3769,7 @@ describe('execution backend server', () => {
           body: JSON.stringify({
             provider: 'codex',
             prompt: 'hello',
-            projectRoot: '/tmp/project',
+            projectRoot: DEFAULT_PROJECT_ROOT,
             providerScope: TEST_PROVIDER_SCOPE,
           }),
         });
@@ -3795,7 +3809,7 @@ describe('execution backend server', () => {
             body: JSON.stringify({
               provider: 'codex',
               prompt: 'hello',
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               bypassPermissions: true,
             }),
           });
@@ -3911,7 +3925,7 @@ describe('execution backend server', () => {
             body: JSON.stringify({
               provider: 'codex',
               prompt: 'hello',
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               bypassPermissions: true,
             }),
           });
@@ -3952,7 +3966,7 @@ describe('execution backend server', () => {
             body: JSON.stringify({
               provider: 'codex',
               prompt: 'hi',
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               agent: 'coral:architect',
             }),
           });
@@ -3971,7 +3985,7 @@ describe('execution backend server', () => {
               agent: 'coral:architect',
             }),
             expect.objectContaining({
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
             }),
           );
         } finally {
@@ -3996,7 +4010,7 @@ describe('execution backend server', () => {
             body: JSON.stringify({
               provider: 'codex',
               prompt: 'hi',
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               agent: 'INVALID!',
             }),
           });
@@ -4035,7 +4049,7 @@ describe('execution backend server', () => {
             body: JSON.stringify({
               provider: 'codex',
               prompt: 'hi',
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               agent: 'coral:does-not-exist',
             }),
           });
@@ -4075,8 +4089,8 @@ describe('execution backend server', () => {
               expression: 'architect',
               startPrompt: 'Begin',
               provider: 'codex',
-              workDir: '/tmp/workflow',
-              projectRoot: '/tmp/project',
+              workDir: DEFAULT_WORK_DIR,
+              projectRoot: DEFAULT_PROJECT_ROOT,
               owner: 'team-a',
               effort: 'high',
               claudeModelCap: 'sonnet',
@@ -4097,11 +4111,11 @@ describe('execution backend server', () => {
               expression: 'architect',
               startPrompt: 'Begin',
               provider: 'codex',
-              workDir: '/tmp/workflow',
+              workDir: DEFAULT_WORK_DIR,
               owner: 'team-a',
             },
             expect.objectContaining({
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               pluginRoot: '/tmp/plugin',
               coralEnv: expect.objectContaining({
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
@@ -4110,7 +4124,7 @@ describe('execution backend server', () => {
                 CORAL_CLAUDE_MODEL_CAP: 'sonnet',
               }),
             }),
-            '/tmp/workflow',
+            DEFAULT_WORK_DIR,
           );
         } finally {
           await _closeHttpServer(started.server);
@@ -4135,7 +4149,7 @@ describe('execution backend server', () => {
               expression: 'architect',
               startPrompt: 'Begin',
               provider: 'codex',
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               networkEnv: { HTTPS_PROXY: 'http://proxy.example:8443' },
             }),
           });
@@ -4170,7 +4184,7 @@ describe('execution backend server', () => {
               expression: 'architect',
               startPrompt: 'Begin',
               provider: 'codex',
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6-sol' },
             }),
           });
@@ -4219,8 +4233,8 @@ describe('execution backend server', () => {
             body: JSON.stringify({
               expression: 'architect',
               startPrompt: 'Begin',
-              workDir: '/tmp/workflow',
-              projectRoot: '/tmp/project',
+              workDir: DEFAULT_WORK_DIR,
+              projectRoot: DEFAULT_PROJECT_ROOT,
               claudeModelCap: 'sonnet',
             }),
           });
@@ -4233,13 +4247,13 @@ describe('execution backend server', () => {
               expression: 'architect',
               startPrompt: 'Begin',
               provider: 'claude',
-              workDir: '/tmp/workflow',
+              workDir: DEFAULT_WORK_DIR,
             },
             expect.objectContaining({
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
               pluginRoot: '/tmp/plugin',
             }),
-            '/tmp/workflow',
+            DEFAULT_WORK_DIR,
           );
         } finally {
           await _closeHttpServer(started.server);
@@ -4267,7 +4281,7 @@ describe('execution backend server', () => {
           body: JSON.stringify({
             expression: 'architect',
             startPrompt: 'Begin',
-            projectRoot: '/tmp/project',
+            projectRoot: DEFAULT_PROJECT_ROOT,
           }),
         });
 
@@ -4309,7 +4323,7 @@ describe('execution backend server', () => {
           body: JSON.stringify({
             expression: 'architect',
             startPrompt: 'Begin',
-            projectRoot: '/tmp/project',
+            projectRoot: DEFAULT_PROJECT_ROOT,
           }),
         });
 
@@ -4344,7 +4358,7 @@ describe('execution backend server', () => {
           },
           body: JSON.stringify({
             jobs: ['job-1', 'job-2'],
-            projectRoot: '/tmp/project',
+            projectRoot: DEFAULT_PROJECT_ROOT,
           }),
         });
 
@@ -4395,7 +4409,7 @@ describe('execution backend server', () => {
             },
             body: JSON.stringify({
               jobs: ['missing-job'],
-              projectRoot: '/tmp/project',
+              projectRoot: DEFAULT_PROJECT_ROOT,
             }),
           });
 
@@ -4416,7 +4430,7 @@ describe('execution backend server', () => {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
     });
     const backend = await startBackendServer({
@@ -4432,7 +4446,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         jobIds: ['job-1', 'missing-job'],
         timeoutSeconds: 1,
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
       }),
     });
     const body = await response.text();
@@ -4457,7 +4471,7 @@ describe('execution backend server', () => {
       jobIds: ['job-1', 'missing-job'],
       timeoutSeconds: 1,
       cursor: { afterSeq: 0 },
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
     });
   });
 
@@ -4469,7 +4483,7 @@ describe('execution backend server', () => {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
     });
     const backend = await startBackendServer({
@@ -4492,7 +4506,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         jobIds: ['job-1'],
         timeoutSeconds: 1,
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
       }),
     });
 
@@ -4504,7 +4518,7 @@ describe('execution backend server', () => {
       cursor: {
         afterSeq: 4,
       },
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
     });
   });
 
@@ -4537,7 +4551,7 @@ describe('execution backend server', () => {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
     });
     const backend = await startBackendServer({
@@ -4553,7 +4567,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         jobIds: ['job-1'],
         timeoutSeconds: 1,
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
       }),
     });
     const body = await response.text();
@@ -4576,14 +4590,14 @@ describe('execution backend server', () => {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
     });
     initTestJob(progressStore, {
       jobId: 'job-2',
       sessionId: 'session-2',
       provider: 'codex',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
     });
     const backend = await startBackendServer({
@@ -4592,7 +4606,7 @@ describe('execution backend server', () => {
     });
 
     const stream = await openHttpStream(
-      `${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent('/tmp/project')}&filter=job:job-1`,
+      `${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}&filter=job:job-1`,
       {
         'X-Coral-Backend-Token': backend.token,
       },
@@ -4613,14 +4627,14 @@ describe('execution backend server', () => {
         jobId: 'job-1',
         sessionId: 'session-1',
         provider: 'codex',
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
       });
       eventBus.emit('job:created', {
         kind: 'provider',
         jobId: 'job-2',
         sessionId: 'session-2',
         provider: 'codex',
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
       });
 
       const eventChunk = await stream.waitForText((text) => text.includes('event: job:created'));
@@ -4643,7 +4657,7 @@ describe('execution backend server', () => {
       jobId: 'job-no-project-root-stream',
       sessionId: 'session-no-project-root-stream',
       provider: 'codex',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
     });
     const backend = await startBackendServer({ eventBus });
@@ -4660,7 +4674,7 @@ describe('execution backend server', () => {
         jobId: 'job-no-project-root-stream',
         sessionId: 'session-no-project-root-stream',
         provider: 'codex',
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
       });
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -4681,7 +4695,7 @@ describe('execution backend server', () => {
       jobId: 'job-owned',
       sessionId: 'session-owned',
       provider: 'codex',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
     });
     initTestJob(progressStore, {
@@ -4694,7 +4708,7 @@ describe('execution backend server', () => {
     const backend = await startBackendServer({ eventBus });
 
     const stream = await openHttpStream(
-      `${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent('/tmp/project')}`,
+      `${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
       {
         'X-Coral-Backend-Token': backend.token,
       },
@@ -4722,7 +4736,7 @@ describe('execution backend server', () => {
         timing: waitTiming,
       });
       eventBus.emit('discuss:updated', {
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
         sessionId: 'owned-discuss',
         lastSeq: 2,
         status: 'active',
@@ -4749,14 +4763,17 @@ describe('execution backend server', () => {
     try {
       for (let index = 0; index < MAX_EVENT_STREAM_CONNECTIONS; index += 1) {
         streams.push(
-          await openHttpStream(`${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent('/tmp/project')}`, {
-            'X-Coral-Backend-Token': backend.token,
-          }),
+          await openHttpStream(
+            `${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
+            {
+              'X-Coral-Backend-Token': backend.token,
+            },
+          ),
         );
       }
 
       const response = await fetch(
-        `${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent('/tmp/project')}`,
+        `${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
         {
           headers: { 'X-Coral-Backend-Token': backend.token },
         },
@@ -4784,14 +4801,14 @@ describe('execution backend server', () => {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
     });
     stubLaunchRecord(progressStore, {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
     });
     progressStore.appendProgress('job-1', 'session-1', 'working');
@@ -4806,14 +4823,14 @@ describe('execution backend server', () => {
       jobId: 'job-2',
       sessionId: 'session-2',
       provider: 'claude',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
     });
     stubLaunchRecord(progressStore, {
       jobId: 'job-2',
       sessionId: 'session-2',
       provider: 'claude',
-      projectRoot: '/tmp/project',
+      projectRoot: DEFAULT_PROJECT_ROOT,
       backendNamespace: testBackendNamespace,
     });
     stubRuntimeRecord(progressStore, { jobId: 'job-2' });
@@ -4850,7 +4867,7 @@ describe('execution backend server', () => {
     );
 
     const detailResponse = await fetch(
-      `${backend.baseUrl}/jobs/job-1?projectRoot=${encodeURIComponent('/tmp/project')}`,
+      `${backend.baseUrl}/jobs/job-1?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
       {
         headers: { 'X-Coral-Backend-Token': backend.token },
       },
@@ -4879,7 +4896,7 @@ describe('execution backend server', () => {
     });
 
     const missingResponse = await fetch(
-      `${backend.baseUrl}/jobs/missing-job?projectRoot=${encodeURIComponent('/tmp/project')}`,
+      `${backend.baseUrl}/jobs/missing-job?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
       {
         headers: { 'X-Coral-Backend-Token': backend.token },
       },
@@ -4906,7 +4923,7 @@ describe('execution backend server', () => {
     });
 
     const response = await fetch(
-      `${backend.baseUrl}/jobs/job-foreign-project?projectRoot=${encodeURIComponent('/tmp/project')}`,
+      `${backend.baseUrl}/jobs/job-foreign-project?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
       {
         headers: { 'X-Coral-Backend-Token': backend.token },
       },
@@ -4983,7 +5000,7 @@ describe('execution backend server', () => {
         jobId: 'job-running',
         sessionId: 'session-running',
         provider: 'codex',
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
         backendNamespace: testBackendNamespace,
         initialPhase: 'running',
       });
@@ -4991,7 +5008,7 @@ describe('execution backend server', () => {
         jobId: 'job-running',
         sessionId: 'session-running',
         provider: 'codex',
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
         backendNamespace: testBackendNamespace,
       });
       stubRuntimeRecord(progressStore, { jobId: 'job-running' });
@@ -4999,7 +5016,7 @@ describe('execution backend server', () => {
         jobId: 'job-queued',
         sessionId: 'session-queued',
         provider: 'claude',
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
         backendNamespace: testBackendNamespace,
         initialPhase: 'queued',
       });
@@ -5007,21 +5024,21 @@ describe('execution backend server', () => {
         jobId: 'job-queued',
         sessionId: 'session-queued',
         provider: 'claude',
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
         backendNamespace: testBackendNamespace,
       });
       seedTestJobSession(progressStore, {
         jobId: 'job-completed',
         sessionId: 'session-completed',
         provider: 'claude',
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
         backendNamespace: testBackendNamespace,
       });
       stubLaunchRecord(progressStore, {
         jobId: 'job-completed',
         sessionId: 'session-completed',
         provider: 'claude',
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
         backendNamespace: testBackendNamespace,
       });
       commitJobTerminal(
@@ -5058,7 +5075,7 @@ describe('execution backend server', () => {
       expect(allBody.jobs.map((job) => job.jobId)).toEqual(['job-foreign-project', 'job-queued', 'job-running']);
 
       const projectScopedResponse = await fetch(
-        `${backend.baseUrl}/jobs?projectRoot=${encodeURIComponent('/tmp/project')}`,
+        `${backend.baseUrl}/jobs?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
         {
           headers: { 'X-Coral-Backend-Token': backend.token },
         },
@@ -5096,7 +5113,7 @@ describe('execution backend server', () => {
       ]);
 
       const allProjectsResponse = await fetch(
-        `${backend.baseUrl}/jobs?projectRoot=${encodeURIComponent('/tmp/project')}&all=1`,
+        `${backend.baseUrl}/jobs?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}&all=1`,
         {
           headers: { 'X-Coral-Backend-Token': backend.token },
         },
@@ -5134,7 +5151,7 @@ describe('execution backend server', () => {
       ]);
 
       const detailResponse = await fetch(
-        `${backend.baseUrl}/jobs/job-completed?projectRoot=${encodeURIComponent('/tmp/project')}`,
+        `${backend.baseUrl}/jobs/job-completed?projectRoot=${encodeURIComponent(DEFAULT_PROJECT_ROOT)}`,
         {
           headers: { 'X-Coral-Backend-Token': backend.token },
         },
@@ -5209,7 +5226,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         jobIds: ['job-1'],
         timeoutSeconds: 1,
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
         cursor: { afterSeq: 4 },
       }),
     });
@@ -5244,7 +5261,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         jobIds: ['job-foreign'],
         timeoutSeconds: 1,
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
       }),
     });
 
@@ -5272,7 +5289,7 @@ describe('execution backend server', () => {
       body: JSON.stringify({
         jobIds: ['missing-job'],
         timeoutSeconds: 1,
-        projectRoot: '/tmp/project',
+        projectRoot: DEFAULT_PROJECT_ROOT,
       }),
     });
 
@@ -5582,7 +5599,7 @@ describe('execution backend server', () => {
 
   it('tracks active daemon KB jobs before admin restart reconciliation', async () => {
     const jobId = 'kb-daemon-restart-active-job-1';
-    const projectRoot = '/workspace/project-a';
+    const projectRoot = ALTERNATE_PROJECT_ROOT;
     const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
@@ -5632,7 +5649,7 @@ describe('execution backend server', () => {
       enqueueSequence: progressStore.nextEnqueueSequence(),
       operation: 'kb.source_import',
       request: {
-        filePath: '/workspace/project-a/source.md',
+        filePath: join(ALTERNATE_PROJECT_ROOT, 'source.md'),
         slug: 'alpha-source',
         readiness: 'base-search',
       },
@@ -6369,12 +6386,12 @@ describe('execution backend server', () => {
       {
         name: 'session create',
         path: '/sessions',
-        body: { provider: 'codex', prompt: 'hello', projectRoot: '/tmp/project' },
+        body: { provider: 'codex', prompt: 'hello', projectRoot: DEFAULT_PROJECT_ROOT },
       },
       {
         name: 'workflow launch',
         path: '/workflow',
-        body: { expression: 'architect', startPrompt: 'hello', provider: 'codex', projectRoot: '/tmp/project' },
+        body: { expression: 'architect', startPrompt: 'hello', provider: 'codex', projectRoot: DEFAULT_PROJECT_ROOT },
       },
     ])('returns a 503 while the launch fence is active for $name', async ({ path, body }) => {
       const fenced = await startFencedToolServer();

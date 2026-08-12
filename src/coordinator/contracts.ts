@@ -19,7 +19,8 @@ import type { ProviderSession } from '../sessions/entry.js';
 import type { CommitEventsFn } from '../store/append.js';
 import type { ProviderBindingCatalog } from '../providers/catalog.js';
 import type { PipelineAST } from '../workflow/ast.js';
-import type { WorkflowCommand } from '../workflow/input.js';
+import type { CanonicalWorkflowCommand } from '../workflow/compile.js';
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { ChildPrincipalRegistry } from './child-principal-registry.js';
 import type { AppServerProxyRoute } from '../jobs/contracts/app-server-proxy-route.js';
@@ -42,9 +43,9 @@ interface CoordinatorWorkflowOps {
   executeWorkflow(
     providerName: string,
     ast: PipelineAST,
-    input: WorkflowCommand,
+    input: CanonicalWorkflowCommand,
     ctx: InvocationContext,
-    workDir?: string,
+    workDir: CanonicalWorkDir,
   ): Promise<WorkflowLaunchDecision>;
 }
 

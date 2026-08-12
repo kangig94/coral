@@ -5,8 +5,11 @@ import { assertNever, errorMessage } from '../../infra/error-format.js';
 import type { AppServerProxyPlacementResult } from '../../jobs/contracts/app-server-proxy-route.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { buildJobEventRefs } from '../../jobs/refs.js';
-import type { ProviderOperationTerminalizationPort } from '../../jobs/provider-operation-terminalization.js';
-import type { ProviderOperationTerminalizationResult } from '../../jobs/provider-operation-terminalization.js';
+import {
+  providerHostUnserviceableLastError,
+  type ProviderOperationTerminalizationPort,
+  type ProviderOperationTerminalizationResult,
+} from '../../jobs/provider-operation-terminalization.js';
 import { isAbortStopCause, type ProviderStopCause } from '../../providers/contract.js';
 import { operationPrepareAttemptKey } from '../../provider-proxy/ledger.js';
 import {
@@ -1183,12 +1186,17 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
     record: Extract<ProviderOperationRecord, { phase: 'prepare-pending' }>,
     refusal: ProviderOperationPreparePermanentRefusal,
   ): Extract<ProviderOperationRecord, { phase: 'prestart-cleanup-pending' }> {
-    return this.#prestartCleanupRecord(
-      record,
-      refusal.disposition === 'terminal-failure'
-        ? { kind: 'terminal-failed', code: refusal.code, reason: refusal.reason }
-        : { kind: 'local-authorized', reason: refusal.reason },
-    );
+    if (refusal.disposition !== 'terminal-failure') {
+      return this.#prestartCleanupRecord(record, { kind: 'local-authorized', reason: refusal.reason });
+    }
+    const directive = { kind: 'terminal-failed', code: refusal.code, reason: refusal.reason } as const;
+    return refusal.code === 'provider_host_unserviceable'
+      ? this.#prestartCleanupRecord(
+          record,
+          directive,
+          providerHostUnserviceableLastError(refusal, this.#deps.time.now()),
+        )
+      : this.#prestartCleanupRecord(record, directive);
   }
 
   async #driveGuardianActivation(
@@ -1908,16 +1916,23 @@ export class ProviderOperationReconciler implements ProviderContainmentDisappear
   async #recordRetry(record: ProviderOperationRecord, error: unknown): Promise<void> {
     this.#assertActiveDrive();
     const now = this.#deps.time.now();
+    const preserveHostRefusal =
+      record.phase === 'prestart-cleanup-pending' &&
+      record.afterRelease.kind === 'terminal-failed' &&
+      record.afterRelease.code === 'provider_host_unserviceable' &&
+      record.lastError?.code === 'provider_host_unserviceable';
     const next = providerOperationRecordSchema.parse({
       ...record,
       revision: record.revision + 1,
       retryCount: record.retryCount + 1,
       retryNotBeforeMs: now + retryDelayMs(record.retryCount),
-      lastError: {
-        observedAtMs: now,
-        code: providerOperationErrorCode(error),
-        message: providerOperationErrorReason(error),
-      },
+      lastError: preserveHostRefusal
+        ? record.lastError
+        : {
+            observedAtMs: now,
+            code: providerOperationErrorCode(error),
+            message: providerOperationErrorReason(error),
+          },
     });
     const transitioned = this.#transition(record, next);
     if (transitioned !== null) this.#schedule(retryDelayMs(record.retryCount));

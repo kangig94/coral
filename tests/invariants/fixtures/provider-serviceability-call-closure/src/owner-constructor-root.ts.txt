@@ -1,0 +1,17 @@
+declare function spawnConstructorProviderTransport(options: {
+  observeProviderResponse(fact: unknown): void;
+}): void;
+
+class HiddenCloser {
+  constructor(handle: { close(): void }) {
+    handle.close();
+  }
+}
+
+export function ownerConstructorRoot(handle: { close(): void }): void {
+  spawnConstructorProviderTransport({
+    observeProviderResponse: () => {
+      new HiddenCloser(handle);
+    },
+  });
+}

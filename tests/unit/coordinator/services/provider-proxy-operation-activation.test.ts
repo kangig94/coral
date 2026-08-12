@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 import { describe, expect, it } from 'vitest';
 
@@ -55,7 +56,7 @@ const PREPARED: ProxyPreparedAppServerOperation = {
     action: 'exec',
     sessionId: 'session-1',
     prompt: 'do the thing',
-    cwd: '/project',
+    cwd: fixtureCanonicalWorkDir('/project'),
     bypassPermissions: false,
     coralEnv: {},
   },

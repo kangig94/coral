@@ -6,6 +6,7 @@ import { errorMessage } from '../infra/error-format.js';
 import { isOwnerId } from '../infra/identifiers.js';
 import type { PipelineAST } from './ast.js';
 import type { WorkflowCommand } from './input.js';
+import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import {
   normalizeAst,
   validateNamespaces,
@@ -31,16 +32,23 @@ export function isWorkflowInputFailure(error: unknown): error is WorkflowInputEr
   return error instanceof WorkflowInputError || error instanceof ZodError;
 }
 
+export type CanonicalWorkflowCommand = Omit<WorkflowCommand, 'workDir'> & {
+  workDir: CanonicalWorkDir;
+};
+
 export type CompiledWorkflow = {
   providerName: string;
   ast: PipelineAST;
-  input: WorkflowCommand;
-  workDir?: string;
+  input: CanonicalWorkflowCommand;
+  workDir: CanonicalWorkDir;
   owner?: string;
 };
 
 export const workflowCompiler = {
-  compile(command: WorkflowCommand, providerRegistry: ProviderCatalog): CompiledWorkflow | RejectedLaunchDecision {
+  compile(
+    command: CanonicalWorkflowCommand,
+    providerRegistry: ProviderCatalog,
+  ): CompiledWorkflow | RejectedLaunchDecision {
     try {
       const ast = normalizeAst(parseExpression(command.expression), command.provider);
       validateNamespaces(ast);

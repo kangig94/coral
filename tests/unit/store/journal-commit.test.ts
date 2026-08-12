@@ -3,6 +3,7 @@ import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 import { TEST_CLAUDE_BINDING, TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
+import { fixtureCanonicalWorkDir } from '../../helpers/canonical-work-dir.js';
 
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { commit, type AppendContext } from '#src/store/append.js';
@@ -56,14 +57,14 @@ function launchBody(jobId: string, sessionId = `session-${jobId}`): JobLaunchReq
     owner: { kind: 'provider-session', id: sessionId },
     provider: 'codex',
     providerAction: 'exec',
-    projectRoot: `/workspace/${sessionId}`,
+    projectRoot: fixtureCanonicalWorkDir(`/workspace/${sessionId}`),
     backendNamespace: 'tests',
     jobKind: 'provider',
     pool: 'default',
     enqueueSequence: 0,
     request: {
       prompt: `prompt for ${jobId}`,
-      cwd: `/workspace/${sessionId}`,
+      cwd: fixtureCanonicalWorkDir(`/workspace/${sessionId}`),
       bypassPermissions: false,
       coralEnv: {},
     },

@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { makeEvent } from '#src/discuss/events.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
@@ -27,6 +30,8 @@ import {
 } from '#tests/unit/discuss/shell/discuss-test-helpers.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { TEST_CODEX_SCOPE, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 afterEach(() => {
   cleanupDiscussHarnesses();
@@ -40,7 +45,7 @@ async function recoverSessions(harness: DiscussHarness) {
     harness.store,
     () => harness.context,
     (snapshot) => ({
-      projectRoot: snapshot.projectRoot,
+      projectRoot: fixtureCanonicalWorkDir(snapshot.projectRoot),
       pluginRoot: harness.ctx.pluginRoot,
       coralEnv: {},
       principal: testProjectPrincipal(snapshot.projectRoot),
@@ -165,6 +170,54 @@ describe('Discuss provider scope', () => {
 });
 
 describe('Discuss executor and operations', () => {
+  it('passes the canonical target cwd through a discuss launch', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-discuss-canonical-'));
+    const physicalProject = join(root, 'physical-project');
+    const selectedProject = join(root, 'selected-project');
+    mkdirSync(physicalProject);
+    symlinkSync(physicalProject, selectedProject, 'dir');
+    const start = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
+      status: 'running',
+      jobId: 'job-canonical',
+      sessionId: 'exec-canonical',
+    });
+    const harness = createDiscussHarness(
+      createExecutionServiceStub({
+        start,
+        waitStreamOnce: vi.fn().mockResolvedValue({ content: 'done', continuity: null }),
+      }),
+      { projectRoot: physicalProject },
+    );
+    await persistSession(harness, { sessionId: 'canonical-discuss', recover: true });
+    const canonicalProject = canonicalizeWorkDir(selectedProject, root);
+    const invocationCtx = {
+      ...harness.ctx,
+      projectRoot: canonicalProject,
+      principal: testProjectPrincipal(canonicalProject),
+    };
+
+    try {
+      await runPlainTurn(harness.context, {
+        agentName: 'alpha',
+        sessionId: 'canonical-discuss',
+        provider: 'codex',
+        model: undefined,
+        prompt: 'Speak',
+        instruction: 'Use the canonical cwd.',
+        cwd: canonicalProject,
+        invocationCtx,
+        purpose: PURPOSE_SPEECH,
+      });
+
+      expect(start.mock.calls[0][1].cwd).toBe(realpathSync(physicalProject));
+      expect(start.mock.calls[0][2].projectRoot).toBe(realpathSync(physicalProject));
+    } finally {
+      harness.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('starts a first turn, binds the execution session, and records the finished attempt', async () => {
     const start = vi.fn().mockResolvedValue({
       kind: 'provider-session',
@@ -186,7 +239,7 @@ describe('Discuss executor and operations', () => {
       model: 'gpt-5',
       prompt: 'Bid now',
       instruction: 'System turn contract',
-      cwd: '/repo',
+      cwd: harness.ctx.projectRoot,
       invocationCtx: harness.ctx,
       purpose: PURPOSE_BID,
     });
@@ -197,7 +250,7 @@ describe('Discuss executor and operations', () => {
         prompt: 'Bid now',
         model: 'gpt-5',
         pool: 'discuss',
-        cwd: '/repo',
+        cwd: harness.ctx.projectRoot,
         bypassPermissions: true,
         owner: { kind: 'discussion', id: 'discuss-1' },
         discussionRun: { agent: 'alpha', purpose: 'bid', attempt: 1 },
@@ -238,7 +291,7 @@ describe('Discuss executor and operations', () => {
       model: 'gpt-5',
       prompt: 'Bid now',
       instruction: 'System turn contract',
-      cwd: '/repo',
+      cwd: fixtureCanonicalWorkDir('/repo'),
       invocationCtx: harness.ctx,
       purpose: PURPOSE_BID,
     }).catch((error: unknown) => error);
@@ -309,7 +362,7 @@ describe('Discuss executor and operations', () => {
       model: 'gpt-5',
       prompt: 'Speak now',
       instruction: 'Resume turn contract',
-      cwd: '/repo',
+      cwd: fixtureCanonicalWorkDir('/repo'),
       invocationCtx: harness.ctx,
       purpose: PURPOSE_SPEECH,
     });

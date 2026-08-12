@@ -1,3 +1,5 @@
+import { isAbsolute, relative } from 'node:path';
+
 import { ALL_CAPABILITIES, capabilityScope, type Capability } from '../capability.js';
 import type { Principal, ResourceBinding } from '../principal.js';
 import { capabilitiesFor } from './capabilities.js';
@@ -24,6 +26,18 @@ export function authorize(
   requires: Capability,
   requestedBinding: ResourceBinding,
 ): Decision {
+  const capabilityDecision = authorizeCapability(principal, requires, requestedBinding);
+  if (!capabilityDecision.ok) return capabilityDecision;
+  if (!principal) throw new Error('Capability authorization accepted a missing principal.');
+
+  return authorizeResourceBinding(principal, requires, requestedBinding);
+}
+
+export function authorizeCapability(
+  principal: Principal | null | undefined,
+  requires: Capability,
+  requestedBinding: ResourceBinding = { kind: 'unbound' },
+): Decision {
   if (!principal) {
     return {
       ok: false,
@@ -39,16 +53,21 @@ export function authorize(
       detail: { requires, requestedBinding, principalBinding: principal.binding, subject: principal.subject },
     };
   }
-
-  if (!bindingSatisfies(principal, requestedBinding, requires)) {
-    return {
-      ok: false,
-      reason: 'resource_unbound',
-      detail: { requires, requestedBinding, principalBinding: principal.binding, subject: principal.subject },
-    };
-  }
-
   return { ok: true };
+}
+
+export function authorizeResourceBinding(
+  principal: Principal,
+  requires: Capability,
+  requestedBinding: ResourceBinding,
+): Decision {
+  return bindingSatisfies(principal, requestedBinding, requires)
+    ? { ok: true }
+    : {
+        ok: false,
+        reason: 'resource_unbound',
+        detail: { requires, requestedBinding, principalBinding: principal.binding, subject: principal.subject },
+      };
 }
 
 function hasEffectiveCapability(principal: Principal, requires: Capability): boolean {
@@ -77,28 +96,6 @@ function bindingSatisfies(principal: Principal, requestedBinding: ResourceBindin
 }
 
 function containsProjectRoot(boundRoot: string, requestedRoot: string): boolean {
-  const bound = normalizeProjectRoot(boundRoot);
-  const requested = normalizeProjectRoot(requestedRoot);
-  return requested === bound || requested.startsWith(`${bound}/`);
-}
-
-function normalizeProjectRoot(root: string): string {
-  const usesAbsolutePrefix = root.startsWith('/') || root.startsWith('\\');
-  const parts: string[] = [];
-
-  for (const part of root.replace(/\\/gu, '/').split('/')) {
-    if (part.length === 0 || part === '.') {
-      continue;
-    }
-
-    if (part === '..') {
-      parts.pop();
-      continue;
-    }
-
-    parts.push(part);
-  }
-
-  const normalized = parts.join('/');
-  return usesAbsolutePrefix ? `/${normalized}` : normalized;
+  const descendant = relative(boundRoot, requestedRoot);
+  return descendant === '' || (!descendant.startsWith('..') && !isAbsolute(descendant));
 }

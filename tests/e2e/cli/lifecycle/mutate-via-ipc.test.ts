@@ -91,6 +91,13 @@ function trace(event) {
   fs.appendFileSync(path.join(stateDir, 'ordered-trace'), event + '\\n');
 }
 
+function record(name, value) {
+  fs.appendFileSync(path.join(stateDir, name), JSON.stringify(value) + '\\n');
+}
+
+const providerHostId = String(process.pid);
+record('provider-host-placements', { hostId: providerHostId });
+
 const threadId = 'scripted-codex-session';
 const turnId = 'scripted-codex-turn';
 
@@ -107,7 +114,20 @@ rl.on('line', (line) => {
       send({ id: message.id, result: {} });
       break;
     case 'config/read':
-      send({ id: message.id, result: { config: {} } });
+      const attemptId = providerHostId + ':config/read:' + message.id;
+      record('config-read-attempts', { hostId: providerHostId, requestId: message.id, attemptId });
+      if (fs.existsSync(path.join(stateDir, 'fail-config-read'))) {
+        send({
+          id: message.id,
+          error: {
+            code: -32603,
+            message: 'configuration refused',
+            data: { reason: 'poisoned cwd', attemptId },
+          },
+        });
+      } else {
+        send({ id: message.id, result: { config: {} } });
+      }
       break;
     case 'thread/start':
       secondOperation = fs.existsSync(path.join(stateDir, 'second-operation-armed'));
@@ -256,7 +276,7 @@ type CliRun = Readonly<{
   completed: Promise<number>;
 }>;
 
-function startCli(fixture: Fixture, promptPath: string): CliRun {
+function startCliCommand(fixture: Fixture, args: readonly string[]): CliRun {
   const {
     CORAL_CHILD: _coralChild,
     CORAL_CHILD_PRINCIPAL_HANDLE: _childPrincipal,
@@ -264,7 +284,7 @@ function startCli(fixture: Fixture, promptPath: string): CliRun {
     CORAL_SESSION_ID: _coralSessionId,
     ...topLevelEnv
   } = process.env;
-  const child = spawn('node', [join(fixture.root, 'bridge', 'coral-cli.cjs'), 'codex', '-i', promptPath], {
+  const child = spawn('node', [join(fixture.root, 'bridge', 'coral-cli.cjs'), ...args], {
     cwd: fixture.projectRoot,
     env: {
       ...topLevelEnv,
@@ -301,6 +321,10 @@ function startCli(fixture: Fixture, promptPath: string): CliRun {
     });
   });
   return { stdout: () => stdout, stderr: () => stderr, completed };
+}
+
+function startCli(fixture: Fixture, promptPath: string): CliRun {
+  return startCliCommand(fixture, ['codex', '-i', promptPath]);
 }
 
 function launchedJobId(stdout: string): string | null {
@@ -364,6 +388,13 @@ function appendOrderedTrace(fixture: Fixture, event: string): void {
   writeFileSync(join(fixture.fakeStateDir, 'ordered-trace'), `${event}\n`, { flag: 'a' });
 }
 
+function readFakeRecords<RecordShape>(fixture: Fixture, name: string): RecordShape[] {
+  return readFileSync(join(fixture.fakeStateDir, name), 'utf-8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as RecordShape);
+}
+
 function providerSocketCount(fixture: Fixture): number {
   const coralRoot = join(fixture.home, '.coral');
   if (!existsSync(coralRoot)) return 0;
@@ -413,6 +444,70 @@ afterEach(async () => {
 });
 
 describe('mutating commands via IPC', () => {
+  it("shows exact inspect and evict recovery when the initial job's config/read fails", async () => {
+    assertLifecycleBundleSetFresh(REPO_ROOT);
+
+    const fixture = createFixture();
+    const promptPath = join(fixture.projectRoot, 'poisoned-prompt.txt');
+    writeFileSync(promptPath, 'exercise the poisoned provider host', 'utf-8');
+    writeFileSync(join(fixture.fakeStateDir, 'fail-config-read'), 'armed');
+
+    let discoveryRecord: CoordinatorDiscoveryRecord | null = null;
+    try {
+      const launch = startCli(fixture, promptPath);
+      expect(await launch.completed).toBe(1);
+      expect(launch.stderr()).toBe('');
+      const jobId = launchedJobId(launch.stdout());
+      if (jobId === null) throw new Error('failed CLI never reported its provider job id');
+
+      await waitForCondition(() => readDiscoveryRecord(fixture.home, fixture.flavor) !== null, 10_000);
+      discoveryRecord = readDiscoveryRecord(fixture.home, fixture.flavor);
+      const wait = startCliCommand(fixture, ['wait', 'jobs', jobId]);
+      expect(await wait.completed).toBe(1);
+      expect(wait.stderr()).toBe('');
+
+      const visibleTerminal = wait.stdout();
+      const placements = readFakeRecords<{ hostId: string }>(fixture, 'provider-host-placements');
+      const configReadAttempts = readFakeRecords<{ hostId: string; requestId: number; attemptId: string }>(
+        fixture,
+        'config-read-attempts',
+      );
+      expect(placements).toHaveLength(1);
+      expect(configReadAttempts).toHaveLength(1);
+      expect(configReadAttempts[0]?.hostId).toBe(placements[0]?.hostId);
+      const initialAttempt = configReadAttempts[0];
+      if (initialAttempt === undefined) throw new Error('fake Codex recorded no initial config/read attempt');
+      expect(visibleTerminal).toContain(
+        `config/read failed [code=-32603]: configuration refused; data=${JSON.stringify({
+          reason: 'poisoned cwd',
+          attemptId: initialAttempt.attemptId,
+        })}`,
+      );
+      const encodedHostRef = visibleTerminal.match(/ph1\.[A-Za-z0-9_-]+/)?.[0];
+      expect(encodedHostRef).toBeDefined();
+      expect(visibleTerminal).toContain(`coral-cli backend provider-host inspect ${encodedHostRef}`);
+      expect(visibleTerminal).toContain(`coral-cli backend provider-host evict ${encodedHostRef}`);
+      expect(visibleTerminal.indexOf('config/read failed')).toBeLessThan(
+        visibleTerminal.indexOf(`provider-host inspect ${encodedHostRef}`),
+      );
+
+      const runtime = createRealRuntime('prod');
+      const db = openStoreDatabase({
+        storeFormat: currentCoralStoreFormat(),
+        path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
+        storage: runtime.storage,
+        readonly: true,
+      });
+      try {
+        expect(new CoralStore(db, createDefaultStoreReadContext()).jobs.list({ all: true })).toHaveLength(1);
+      } finally {
+        db.close();
+      }
+    } finally {
+      await shutdownBackend(discoveryRecord ?? readDiscoveryRecord(fixture.home, fixture.flavor));
+    }
+  }, 120_000);
+
   it('routes two durable operations through the discovered proxy before each faithful Codex checkpoint', async () => {
     assertLifecycleBundleSetFresh(REPO_ROOT);
 

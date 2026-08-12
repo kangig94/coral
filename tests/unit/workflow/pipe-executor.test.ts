@@ -15,9 +15,10 @@ import type { CompiledPlanSlot } from '#src/workflow/plan.js';
 import { recoverStaleAtom } from '#src/workflow/stale-recovery.js';
 import { waitForAtoms } from '#src/workflow/wait.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
 const ctx: InvocationContext = {
-  projectRoot: '/tmp/coral-workflow-project',
+  projectRoot: fixtureCanonicalWorkDir('/tmp/coral-workflow-project'),
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},
   principal: testProjectPrincipal('/tmp/coral-workflow-project'),
@@ -354,7 +355,7 @@ describe('workflow pipe executor', () => {
           staleAbortTimeoutMs: 30_000,
           workflowJobId: 'workflow-1',
           drainDeadlineMs: 15_000,
-          workDir: '/tmp/coral-workflow-cwd',
+          workDir: fixtureCanonicalWorkDir('/tmp/coral-workflow-cwd'),
           onProgress: vi.fn(),
           recoverStaleAtom,
           time: workflowTime,
@@ -914,7 +915,7 @@ describe('launchAtomWithRetry', () => {
       slot: planSlot(),
       atomIndex: 0,
       stepPrompt: 'do work',
-      workDir: '/tmp/coral-workflow-cwd',
+      workDir: fixtureCanonicalWorkDir('/tmp/coral-workflow-cwd'),
       executionSvc,
       ctx,
       completedStepDetails: [],

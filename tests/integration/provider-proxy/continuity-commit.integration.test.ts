@@ -32,6 +32,7 @@ import type { AppServerSession, HostRef, ProviderAppServerRuntime } from '#src/p
 import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
 import type { CodexExecutionPlan } from '#src/providers/codex/execution-plan.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { ProxyAppServerHostAuthority } from '#src/provider-proxy/provider-root-authority.js';
 import {
@@ -358,7 +359,7 @@ async function createHarness(
       action: 'exec',
       sessionId: session.sessionId,
       prompt: 'Say done.',
-      cwd: '/workspace',
+      cwd: fixtureCanonicalWorkDir('/workspace'),
       bypassPermissions: false,
       coralEnv: {},
     },
@@ -411,7 +412,7 @@ async function createHarness(
         provider: 'codex',
         command: 'codex',
         args: ['app-server'],
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         leaseMode: 'job-exclusive' as const,
       },
       execute: (executionRuntime: BoundProviderAppServerExecutionRuntime) => {
@@ -448,6 +449,7 @@ async function createHarness(
     rootIdentity: () => ({ pid: 4_242, processStartedAtSeconds: 1_700_000_000 }),
     closed: () => new Promise<never>(() => undefined),
     forceClose: async () => undefined,
+    evictHost: async () => false,
   };
 
   const timer = new ControlledTimer();
@@ -894,7 +896,7 @@ describe('provider proxy continuity commit bridge', () => {
         action: 'exec',
         sessionId: randomUUID(),
         prompt: 'late ACK guard',
-        cwd: '/workspace',
+        cwd: fixtureCanonicalWorkDir('/workspace'),
         bypassPermissions: false,
         coralEnv: {},
       },

@@ -8,6 +8,7 @@ import { recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.j
 import { getSession, getWatchState } from '#src/discuss/shell/registry.js';
 import * as discussSpeechFlow from '#src/discuss/shell/flow/speech.js';
 import { submitManualSpeech } from '#src/discuss/shell/operations.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
   advanceDiscussRuntime,
   cleanupDiscussHarnesses,
@@ -30,7 +31,7 @@ async function recoverSessions(harness: DiscussHarness) {
     harness.store,
     () => harness.context,
     (snapshot) => ({
-      projectRoot: snapshot.projectRoot,
+      projectRoot: fixtureCanonicalWorkDir(snapshot.projectRoot),
       pluginRoot: harness.ctx.pluginRoot,
       coralEnv: {},
       principal: testProjectPrincipal(snapshot.projectRoot),

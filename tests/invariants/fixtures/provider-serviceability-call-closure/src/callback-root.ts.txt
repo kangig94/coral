@@ -1,0 +1,12 @@
+function invoke(callback: () => boolean): boolean {
+  return callback();
+}
+
+function callbackDecision(): boolean {
+  const retryBudget = 1;
+  return retryBudget > 0;
+}
+
+export function callbackRoot(): boolean {
+  return invoke(callbackDecision);
+}

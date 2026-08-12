@@ -8,6 +8,7 @@ import { streamProviderTerminal } from '#src/providers/stream.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { checkpointClaimedTestContinuity } from '#tests/helpers/session.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { defineFakeProvider } from '#tests/helpers/scripted-provider.js';
 
@@ -55,7 +56,7 @@ function createRecoveryProvider(): ProviderRegistry {
         provider: 'codex',
         command: 'fixture-app-server',
         args: [],
-        cwd: '/handoff/cross-namespace',
+        cwd: fixtureCanonicalWorkDir('/handoff/cross-namespace'),
         leaseMode: 'shared',
         idleRetirement: 'none',
       },

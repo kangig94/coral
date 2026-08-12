@@ -13,6 +13,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { commit } from '#src/store/append.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
+import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
@@ -61,7 +62,7 @@ describe('workflow replacement launch atomicity', () => {
     const session = sessionManager.allocate({
       binding: TEST_CODEX_BINDING,
       name: 'replacement-session',
-      cwd: PROJECT_ROOT,
+      cwd: fixtureCanonicalWorkDir(PROJECT_ROOT),
       projectRoot: PROJECT_ROOT,
       backendNamespace: 'test-ns',
       retention: 'retain',
@@ -145,7 +146,7 @@ describe('workflow replacement launch atomicity', () => {
       action: 'resume',
       sessionId: session.sessionId,
       prompt: 'replacement',
-      cwd: PROJECT_ROOT,
+      cwd: fixtureCanonicalWorkDir(PROJECT_ROOT),
       bypassPermissions: false,
       coralEnv: {},
     };

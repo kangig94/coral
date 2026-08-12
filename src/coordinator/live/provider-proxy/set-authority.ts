@@ -16,9 +16,16 @@ import {
 } from '../../../provider-proxy/orphan-deadline.js';
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
+  PROXY_STATUS_RPC_TIMEOUT_MS,
   canonicalUuidSchema,
   guardianStopAndReapParamsSchema,
   guardianStopAndReapResultSchema,
+  providerHostEvictParamsSchema,
+  providerHostEvictResultSchema,
+  providerHostInspectParamsSchema,
+  providerHostInspectResultSchema,
+  providerHostListParamsSchema,
+  providerHostListResultSchema,
   reaperStopAndReapParamsSchema,
   reaperStopAndReapResultSchema,
   type CoordinatorIdentity,
@@ -200,6 +207,24 @@ export function createProviderProxySetAuthority(
 
   return {
     proxyInstanceId,
+    providerHosts: Object.freeze({
+      list: async () => {
+        const params = providerHostListParamsSchema.parse({});
+        const raw = await proxyClient.call('provider-host.list.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
+        return providerHostListResultSchema.parse(raw).hosts;
+      },
+      inspect: async (hostRef) => {
+        const params = providerHostInspectParamsSchema.parse({ hostRef });
+        const raw = await proxyClient.call('provider-host.inspect.v1', params, PROXY_STATUS_RPC_TIMEOUT_MS);
+        const result = providerHostInspectResultSchema.parse(raw);
+        return result.state === 'matched' ? result.host : null;
+      },
+      evict: async (hostRef) => {
+        const params = providerHostEvictParamsSchema.parse({ hostRef });
+        const raw = await proxyClient.call('provider-host.evict.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS);
+        return providerHostEvictResultSchema.parse(raw).state === 'evicted';
+      },
+    }),
     installRecoveryCredential,
     registerSuccessionOperation,
     stopAndReap: async (signal) => {

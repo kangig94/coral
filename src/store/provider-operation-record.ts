@@ -3,7 +3,6 @@ import { isAbsolute, normalize } from 'node:path';
 import { z } from 'zod';
 
 import { persistedProviderNameSchema } from '../providers/registry.js';
-import { principalWireSchema } from '../security/principal-wire.js';
 
 const canonicalUuidSchema = z
   .string()
@@ -27,6 +26,32 @@ const providerAbortCauseSchema = z.enum(['signal_abort', 'user_abort', 'queue_sh
 const providerStopCauseSchema = z.enum(['restart', 'handoff', 'signal_abort', 'user_abort', 'queue_shutdown']);
 const MAX_PROVIDER_OPERATION_RECORD_BYTES = 64 * 1024;
 const MAX_PRINCIPAL_WIRE_BYTES = 64 * 1024;
+
+const persistedPrincipalWireSchema = z
+  .object({
+    subject: z.enum(['operator', 'agent', 'system']),
+    binding: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('unbound') }).strict(),
+      z.object({ kind: z.literal('project'), root: z.string().min(1) }).strict(),
+    ]),
+    attenuatedCaps: z
+      .array(
+        z.enum([
+          'liveness',
+          'kb:read',
+          'kb:write',
+          'kb:source:import',
+          'jobs:read',
+          'jobs:control',
+          'discuss:participate',
+          'expansion:manage',
+          'system:shutdown',
+          'system:debug',
+        ]),
+      )
+      .optional(),
+  })
+  .strict();
 
 export const providerOperationIdentitySchema = z
   .object({
@@ -113,7 +138,7 @@ export const providerOperationActivationAckSchema = z
 
 const childAuthorizationSchema = z
   .object({
-    principalWire: principalWireSchema,
+    principalWire: persistedPrincipalWireSchema,
     namespace: z.string().min(1).max(1024),
     expiresAtMs: nonNegativeSafeIntegerSchema,
   })

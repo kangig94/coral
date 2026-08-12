@@ -15,6 +15,7 @@ import {
   resolveSpawnRecordingDir,
 } from './spawn-observer.js';
 import { createCoordinatorCore } from './composition/index.js';
+import { createCoordinatorProviderHostAdmission } from './live/provider-host-admission.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
@@ -461,6 +462,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     {
       ...coreOptions,
       providerRegistry,
+      providerHostAdmission: createCoordinatorProviderHostAdmission(),
       eventBus,
       runtime,
       storeFormat,

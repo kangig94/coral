@@ -1,5 +1,17 @@
 import type { AppServerTransport, HostRef, ProviderServerSpec } from '../../../providers/contract.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from '../../../providers/app-server-transport.js';
+import type { ProviderHostDiagnosticsSnapshot } from '../../../providers/host-diagnostics.js';
+import type { ProviderHostInventoryRecord } from '../../services/provider-host-administration.js';
+import {
+  admissionSlotKey,
+  canonicalProviderHostSpecMetadata,
+  createHostAdmissionCollection,
+  exactHostRefsMatch,
+  type AdmissionSlotKey,
+  type HostAdmissionCollection,
+  type HostAdmissionReservation,
+  type HostAdmissionSnapshot,
+} from '../../../providers/host-admission.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import {
@@ -45,6 +57,13 @@ export interface ProviderHostManager {
 }
 
 export type ProviderHostLifecycle = Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
+
+export interface ProviderHostAdministrationAuthority {
+  admissionSnapshot(): HostAdmissionSnapshot;
+  listProviderHosts(): readonly ProviderHostInventoryRecord[];
+  inspectProviderHost(hostRef: HostRef): ProviderHostInventoryRecord | null;
+  evictHost(hostRef: HostRef): Promise<boolean>;
+}
 
 /**
  * The registration half of the inheritance branch of proxy-set acquisition (W2.4/W2.5). The redemption
@@ -130,6 +149,17 @@ function isExactHostRef(value: HostRef): boolean {
   );
 }
 
+function entryMatchesHostRef(entry: ProviderHostEntry, hostRef: HostRef): boolean {
+  return (
+    entry.instanceId !== null &&
+    entry.spec.provider === hostRef.provider &&
+    hostFingerprintFromSpec(entry.spec) === hostRef.fingerprint &&
+    entry.instanceId === hostRef.instanceId &&
+    entry.spec.leaseMode === hostRef.leaseMode &&
+    (hostRef.leaseMode !== 'job-exclusive' || entry.jobId === hostRef.ownerJobId)
+  );
+}
+
 function waitForClose(operation: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
   if (signal === undefined) return operation;
   if (signal.aborted) {
@@ -155,12 +185,15 @@ export class DefaultProviderHostManager
   implements ProviderHostManager, ProviderProxyAuthorityRegistry, ProviderProxySetRegistration
 {
   private readonly entries = new Map<string, ProviderHostEntry>();
+  private readonly admission: HostAdmissionCollection;
   private readonly pendingCloses = new Set<Promise<void>>();
+  private readonly closingEntries = new Map<ProviderHostEntry, Readonly<{ ref: HostRef; operation: Promise<void> }>>();
   private readonly lifecyclePolicies = new Map<string, string>();
-  private exclusiveSequence = 0;
+  private nextProviderServerGeneration = 1;
   private acceptingAcquisitions = true;
   private readonly idleTimeoutMs: number;
   private readonly spawnProviderServer: SpawnProviderServerFn;
+  private readonly allocateProviderServerGeneration: () => number;
   private readonly runtime: Runtime;
   private readonly carrierBlocksRetirement: (hostRef: HostRef) => boolean;
   private readonly proxySetAcquisitionConfig?: ProviderProxySetAcquisitionConfig;
@@ -181,16 +214,21 @@ export class DefaultProviderHostManager
     runtime: Runtime;
     idleTimeoutMs?: number;
     spawnProviderServer: SpawnProviderServerFn;
+    allocateProviderServerGeneration?: () => number;
     carrierBlocksRetirement?: (hostRef: HostRef) => boolean;
     proxySetAcquisition?: ProviderProxySetAcquisitionConfig;
     providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
+    admission?: HostAdmissionCollection;
   }) {
     this.runtime = options.runtime;
     this.idleTimeoutMs = options.idleTimeoutMs ?? parseIdleTimeoutMs(this.runtime.env.get('CORAL_BROKER_IDLE_MS'));
     this.spawnProviderServer = options.spawnProviderServer;
+    this.allocateProviderServerGeneration =
+      options.allocateProviderServerGeneration ?? (() => this.nextProviderServerGeneration++);
     this.carrierBlocksRetirement = options.carrierBlocksRetirement ?? (() => false);
     this.proxySetAcquisitionConfig = options.proxySetAcquisition;
     this.providerProxyLifecycleRef = options.providerProxyLifecycleRef;
+    this.admission = options.admission ?? createHostAdmissionCollection({ classify: () => 'unknown' });
   }
 
   /** Every set acquired so far and not yet reaped, acquired or inherited alike — see
@@ -300,6 +338,7 @@ export class DefaultProviderHostManager
   private async acquireHostLease(
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },
+    admission?: Readonly<{ slot: AdmissionSlotKey; reservation: HostAdmissionReservation }>,
   ): Promise<Readonly<{ lease: ProviderServerLease; entry: ProviderHostEntry }>> {
     if (!this.acceptingAcquisitions) {
       throw new Error('provider_host_draining: provider host manager no longer accepts acquisitions');
@@ -318,18 +357,51 @@ export class DefaultProviderHostManager
     this.ensureProxySetFor(entry);
 
     try {
+      let reservedRef: HostRef | null = null;
       const handle = await ensureProviderServerHandle(entry, {
-        spawnProviderServer: (nextSpec) =>
-          this.spawnProviderServer({
-            provider: nextSpec.provider,
-            command: nextSpec.command,
-            args: nextSpec.args,
-            cwd: nextSpec.cwd,
-            exactEnv: entry.exactEnv,
-            ...(nextSpec.leaseMode === 'job-exclusive' && options?.signal ? { signal: options.signal } : {}),
-            initializeRequest: nextSpec.initializeRequest,
-            initializeTimeoutMs: nextSpec.initializeTimeoutMs,
-          }),
+        spawnProviderServer: (nextSpec) => {
+          if (admission === undefined) {
+            throw new Error('provider_host_admission_missing: fresh placement requires an admission reservation');
+          }
+          const hostRef = hostRefFromEntry(entry);
+          reservedRef = hostRef;
+          const generation = this.allocateProviderServerGeneration();
+          let spawnedHandle: ProviderServerHandle | null = null;
+          admission.reservation.reserveCandidate({
+            slot: admission.slot,
+            ref: hostRef,
+            generation,
+            spec: canonicalProviderHostSpecMetadata(entry.spec),
+            host: Object.freeze({
+              owner: 'coordinator',
+              hostKey: entry.hostKey,
+              identityKey: entry.identityKey,
+              ownerJobId: entry.jobId ?? null,
+            }),
+            inspectDiagnostics: () => spawnedHandle?.inspectDiagnostics() ?? emptyDiagnostics(),
+          });
+          const spawned = this.spawnProviderServer(
+            {
+              provider: nextSpec.provider,
+              command: nextSpec.command,
+              args: nextSpec.args,
+              cwd: nextSpec.cwd,
+              exactEnv: entry.exactEnv,
+              ...(nextSpec.leaseMode === 'job-exclusive' && options?.signal ? { signal: options.signal } : {}),
+              initializeRequest: nextSpec.initializeRequest,
+              initializeTimeoutMs: nextSpec.initializeTimeoutMs,
+            },
+            (fact) => this.admission.observe(admission.slot, hostRef, fact),
+            generation,
+          );
+          void spawned.then(
+            (handle) => {
+              spawnedHandle = handle;
+            },
+            () => {},
+          );
+          return spawned;
+        },
         runtime: this.runtime,
         shutdownHandle: (handle, nextSpec) => this.shutdownHandle(handle, nextSpec),
         attachHostNotificationListener: (nextEntry, handle) => this.attachHostNotificationListener(nextEntry, handle),
@@ -338,6 +410,9 @@ export class DefaultProviderHostManager
           if (this.entries.get(nextEntry.hostKey) === nextEntry) this.entries.delete(nextEntry.hostKey);
         },
         createInstanceId: () => this.runtime.ids.uuid(),
+        observeRetired: () => {
+          if (reservedRef !== null) admission?.reservation.observeRetired(reservedRef, 'closed');
+        },
         ...(options?.signal === undefined ? {} : { signal: options.signal }),
       });
       if (options?.signal !== undefined) {
@@ -351,6 +426,7 @@ export class DefaultProviderHostManager
       ) {
         throw entry.closingError ?? new Error('provider_host_draining: provider host acquisition lost drain race');
       }
+      admission?.reservation.markLive(hostRefFromEntry(entry), handle.generation);
       return Object.freeze({
         lease: createProviderServerLease(handle, () => this.releaseHostPin(entry)),
         entry,
@@ -365,8 +441,15 @@ export class DefaultProviderHostManager
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },
   ): Promise<ManagedAppServerSession> {
-    const { lease, entry } = await this.acquireHostLease(spec, options);
-    return this.managedSession(lease, hostRefFromEntry(entry));
+    if (!this.acceptingAcquisitions) {
+      throw new Error('provider_host_draining: provider host manager no longer accepts acquisitions');
+    }
+    if (options?.signal !== undefined) throwIfAborted(options.signal, 'provider_host_acquire');
+    const slot = this.admissionSlotFor(spec, options?.jobId);
+    return this.admission.withFreshPlacement(slot, async (reservation) => {
+      const { lease, entry } = await this.acquireHostLease(spec, options, { slot, reservation });
+      return this.managedSession(lease, hostRefFromEntry(entry));
+    });
   }
 
   async attachSession(
@@ -413,13 +496,99 @@ export class DefaultProviderHostManager
   private managedSession(lease: ProviderServerLease, hostRef: HostRef): ManagedAppServerSession {
     return Object.freeze({
       session: Object.freeze({
-        rpc: lease.rpc.bind(lease),
+        rpc: <Result = unknown>(method: string, params: Record<string, unknown>) =>
+          this.admission.correlateTerminalFailure(hostRef, () => lease.rpc<Result>(method, params)),
         subscribe: lease.subscribe.bind(lease),
         closed: lease.closed,
       }),
       hostRef,
       close: () => lease.release(),
     });
+  }
+
+  admissionSnapshot(): HostAdmissionSnapshot {
+    return this.admission.snapshot();
+  }
+
+  listProviderHosts(): readonly ProviderHostInventoryRecord[] {
+    const snapshot = this.admission.snapshot();
+    const processEntries = new Set([...this.entries.values(), ...this.closingEntries.keys()]);
+    const records: ProviderHostInventoryRecord[] = [];
+    for (const admissionEntry of snapshot.state.values()) {
+      if (admissionEntry.phase === 'spawning' || admissionEntry.phase === 'retired-blocked') continue;
+      const matches = [...processEntries].filter((entry) => entryMatchesHostRef(entry, admissionEntry.ref));
+      if (matches.length !== 1) {
+        throw new Error('provider_host_inventory_unavailable: live coordinator host could not be revalidated');
+      }
+      const entry = matches[0];
+      const handle = entry.handle;
+      if (handle === null || handle.isClosed()) {
+        throw new Error('provider_host_inventory_unavailable: live coordinator host process is unavailable');
+      }
+      records.push(
+        Object.freeze({
+          ref: admissionEntry.ref,
+          status: 'live',
+          spec: canonicalProviderHostSpecMetadata(entry.spec),
+          host: Object.freeze({
+            owner: 'coordinator',
+            hostKey: entry.hostKey,
+            identityKey: entry.identityKey,
+            ownerJobId: entry.jobId ?? null,
+          }),
+          diagnostics: handle.inspectDiagnostics(),
+          diagnosticsRetention: Object.freeze({ ownerBudgetTruncated: false }),
+        }),
+      );
+    }
+    records.push(
+      ...snapshot.tombstones.map((tombstone) =>
+        Object.freeze({
+          ref: tombstone.ref,
+          status: tombstone.phase,
+          spec: tombstone.spec,
+          host: tombstone.host,
+          diagnostics: tombstone.diagnostics,
+          diagnosticsRetention: tombstone.diagnosticsRetention,
+        }),
+      ),
+    );
+    return Object.freeze(records);
+  }
+
+  inspectProviderHost(hostRef: HostRef): ProviderHostInventoryRecord | null {
+    if (!isExactHostRef(hostRef)) return null;
+    const matches = this.listProviderHosts().filter((record) => exactHostRefsMatch(record.ref, hostRef));
+    if (matches.length > 1) {
+      throw new Error('provider_host_identity_integrity: exact host ref matched multiple coordinator records');
+    }
+    return matches[0] ?? null;
+  }
+
+  async evictHost(hostRef: HostRef): Promise<boolean> {
+    if (!isExactHostRef(hostRef)) return false;
+    const liveMatches = [...this.entries.values()].filter((entry) => entryMatchesHostRef(entry, hostRef));
+    const closingMatches = [...this.closingEntries.entries()].filter(([, closing]) =>
+      exactHostRefsMatch(closing.ref, hostRef),
+    );
+    const matchedEntries = new Set([...liveMatches, ...closingMatches.map(([entry]) => entry)]);
+    if (matchedEntries.size > 1) {
+      throw new Error('provider_host_identity_integrity: exact host ref matched multiple coordinator entries');
+    }
+    const matched = matchedEntries.values().next().value;
+    if (matched !== undefined) {
+      await this.closeProviderServerEntry(matched, 'evicted by operator', { confirmAbsence: true });
+      this.admission.confirmEvicted(hostRef);
+      return true;
+    }
+
+    const tombstones = this.admission
+      .snapshot()
+      .tombstones.filter(
+        (tombstone) => tombstone.retirement.processAbsent && exactHostRefsMatch(tombstone.ref, hostRef),
+      );
+    if (tombstones.length !== 1) return false;
+    return this.admission.confirmEvicted(hostRef);
   }
 
   async drainForHandoff(signal?: AbortSignal): Promise<void> {
@@ -462,12 +631,9 @@ export class DefaultProviderHostManager
       );
     }
     this.lifecyclePolicies.set(identityKey, requestedPolicy);
-    if (spec.leaseMode === 'shared') {
-      const existing = this.entries.get(identityKey);
-      if (existing) return existing;
-    }
-
-    const hostKey = spec.leaseMode === 'shared' ? identityKey : `${identityKey}\u0000job-${++this.exclusiveSequence}`;
+    const hostKey = spec.leaseMode === 'shared' ? identityKey : `${identityKey}\u0000job-${jobId ?? ''}`;
+    const existing = this.entries.get(hostKey);
+    if (existing) return existing;
 
     const created: ProviderHostEntry = {
       hostKey,
@@ -523,12 +689,22 @@ export class DefaultProviderHostManager
     clearIdleTimer(entry, this.runtime.time);
   }
 
+  private admissionSlotFor(spec: ProviderServerSpec, jobId: string | undefined): AdmissionSlotKey {
+    const fingerprint = hostFingerprintFromSpec(spec);
+    if (spec.leaseMode === 'shared') return admissionSlotKey(fingerprint);
+    if (jobId === undefined) {
+      throw new Error('provider_host_policy_invalid: job-exclusive acquisition requires a job id');
+    }
+    return admissionSlotKey(`${fingerprint}\u0000job-${jobId}`);
+  }
+
   private async closeProviderServerEntry(
     entry: ProviderHostEntry,
     detail: string,
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; confirmAbsence?: boolean } = {},
   ): Promise<void> {
     if (entry.closePromise === null) {
+      const ref = entry.instanceId === null ? null : hostRefFromEntry(entry);
       const operation = closeEntry(entry, detail, {
         runtime: this.runtime,
         entries: this.entries,
@@ -536,12 +712,24 @@ export class DefaultProviderHostManager
       });
       entry.closePromise = operation;
       this.pendingCloses.add(operation);
+      if (ref !== null) this.closingEntries.set(entry, Object.freeze({ ref, operation }));
       void operation.then(
-        () => this.pendingCloses.delete(operation),
-        () => this.pendingCloses.delete(operation),
+        () => {
+          this.pendingCloses.delete(operation);
+          if (this.closingEntries.get(entry)?.operation === operation) this.closingEntries.delete(entry);
+        },
+        () => {
+          this.pendingCloses.delete(operation);
+          if (entry.closePromise === operation) entry.closePromise = null;
+        },
       );
     }
-    await waitForClose(entry.closePromise, options.signal);
+    const operation = entry.closePromise;
+    try {
+      await waitForClose(operation, options.signal);
+    } catch (error: unknown) {
+      if (options.confirmAbsence) throw error;
+    }
   }
 
   private async shutdownHandle(handle: ProviderServerHandle, spec: ProviderServerSpec): Promise<void> {
@@ -553,9 +741,22 @@ export function createProviderHostManager(options: {
   runtime: Runtime;
   idleTimeoutMs?: number;
   spawnProviderServer: SpawnProviderServerFn;
+  admission: HostAdmissionCollection;
+  allocateProviderServerGeneration?: () => number;
   carrierBlocksRetirement?: (hostRef: HostRef) => boolean;
   proxySetAcquisition?: ProviderProxySetAcquisitionConfig;
   providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
-}): ProviderHostManager & ProviderProxyAuthorityRegistry & ProviderProxySetRegistration {
+}): ProviderHostManager &
+  ProviderHostAdministrationAuthority &
+  ProviderProxyAuthorityRegistry &
+  ProviderProxySetRegistration {
   return new DefaultProviderHostManager(options);
+}
+
+function emptyDiagnostics(): ProviderHostDiagnosticsSnapshot {
+  return Object.freeze({
+    hostLog: Object.freeze({ entries: Object.freeze([]), retainedBytes: 0, truncatedBeforeSeq: 0 }),
+    completedObservations: Object.freeze([]),
+    factsTruncatedBeforeSeq: 0,
+  });
 }

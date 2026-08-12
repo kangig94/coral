@@ -14,6 +14,7 @@ import type {
 import type { WatchEvent } from '../watch.js';
 import { isWithinLiveSessionBoundary } from '../events.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
+import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 
 const WATCH_BUFFER_CAP = 500;
 const subscriberCursors = new WeakMap<LiveDiscussSession, Map<WatchSubscriber, number>>();
@@ -96,7 +97,7 @@ export function createDiscussContextRegistry(): DiscussContextRegistry {
 
 export function getOrCreate(
   registry: DiscussContextRegistry,
-  projectRoot: string,
+  projectRoot: CanonicalWorkDir,
   service: DiscussService,
   store: DiscussSessionStore,
   options: DiscussContextConstructionOptions,

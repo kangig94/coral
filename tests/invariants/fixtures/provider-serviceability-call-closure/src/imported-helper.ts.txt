@@ -1,0 +1,4 @@
+export function importedDecisionHelper(): boolean {
+  Date.now();
+  return true;
+}

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../runtime/errors.js';
-import { principalWireSchema, type PrincipalWire } from '../security/principal-wire.js';
+import { principalWireSchema, type RawPrincipalWire } from '../security/principal-wire.js';
 
 export const KB_DAEMON_READY_MESSAGE = 'coral.kb_daemon.ready';
 export const KB_DAEMON_REQUEST_MESSAGE = 'coral.kb_daemon.request';
@@ -93,7 +93,7 @@ export type KbDaemonRequestContextWire = {
   readonly projectRoot?: string;
   readonly pluginRoot?: string;
   readonly coralEnv?: Record<string, string>;
-  readonly principal: PrincipalWire;
+  readonly principal: RawPrincipalWire;
 };
 
 export const kbDaemonRequestContextWireSchema = z
